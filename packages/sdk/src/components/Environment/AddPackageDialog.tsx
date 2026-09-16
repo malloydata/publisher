@@ -33,7 +33,7 @@ export default function AddPackageDialog({
       },
       success: "Package created",
       invalidates: [["packages", environmentName]],
-      onSettled: () => setOpen(false),
+      closeDialog: () => setOpen(false),
       resource: "package",
       action: "create",
    });

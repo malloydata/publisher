@@ -30,7 +30,7 @@ export function useCrudMutation<TVariables = void>({
    mutationFn,
    success,
    invalidates,
-   onSettled,
+   closeDialog,
    resource,
    action,
 }: {
@@ -39,8 +39,15 @@ export function useCrudMutation<TVariables = void>({
    success: string;
    /** The query keys the write invalidates. Name the narrowest that covers it. */
    invalidates: QueryKey[];
-   /** Closes the dialog. Runs before the refetch, so the dialog goes at once. */
-   onSettled: () => void;
+   /**
+    * Closes the dialog. Runs on SUCCESS only — a write that failed leaves
+    * something to correct and retry, so the form has to stay — and before the
+    * refetch, so the dialog goes at once rather than after the list reloads.
+    *
+    * Not called `onSettled`: that name means "success or error" everywhere
+    * else in React Query, and this is the opposite of that.
+    */
+   closeDialog: () => void;
    /** What is being written, for the event; see `ConsoleEvent`. */
    resource: ConsoleResource;
    action: "create" | "update" | "delete";
@@ -63,7 +70,7 @@ export function useCrudMutation<TVariables = void>({
             ok: true,
             durationMs: Date.now() - startedAt.current,
          });
-         onSettled();
+         closeDialog();
          for (const queryKey of invalidates)
             queryClient.invalidateQueries({ queryKey });
          setMessage(success);

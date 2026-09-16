@@ -36,7 +36,7 @@ export default function AddEnvironmentDialog() {
       },
       success: "Environment created",
       invalidates: [["environments"]],
-      onSettled: handleClose,
+      closeDialog: handleClose,
       resource: "environment",
       action: "create",
    });

@@ -20,27 +20,26 @@ import { EnvironmentStore } from "../service/environment_store";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
+type ApiModelSourceWrite = components["schemas"]["ModelSourceWriteRequest"];
+type ApiModelSourceWriteResult =
+   components["schemas"]["ModelSourceWriteResult"];
+
 /**
  * Which outcome an error from the write path represents.
  *
- * Read from the error's type rather than decided at each throw, so a branch
- * added later is classified by what it throws instead of being silently
- * counted as something else — or forgotten.
+ * Read from the error's TYPE rather than decided at each throw site, so a
+ * branch added later is classified by what it raises instead of being silently
+ * counted as something else — or forgotten. The three named types are the
+ * three refusals worth telling apart; everything else, from a frozen config to
+ * a 404 to something genuinely unexpected, shares one bucket because it shares
+ * the only fact an operator needs from it: nothing was written.
  */
 function outcomeOf(error: Error): DashboardWriteOutcome {
    if (error instanceof WriteConflictError) return "conflict";
    if (error instanceof CompileRefusedError) return "compile_failed";
    if (error instanceof WriteRolledBackError) return "rolled_back";
-   if (error instanceof BadRequestError || error instanceof FrozenConfigError)
-      return "refused";
-   // A 404 for an unknown package, or anything genuinely unexpected. Counted
-   // as refused rather than invented a bucket for: the endpoint did not write.
    return "refused";
 }
-
-type ApiModelSourceWrite = components["schemas"]["ModelSourceWriteRequest"];
-type ApiModelSourceWriteResult =
-   components["schemas"]["ModelSourceWriteResult"];
 
 /** The only files the write endpoint accepts: a dashboard, at the top of `dashboards/`. */
 const DASHBOARD_FILE = /^dashboards\/[^/]+\.malloy$/;

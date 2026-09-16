@@ -50,7 +50,7 @@ export default function EditPackageDialog({
       },
       success: "Package updated",
       invalidates: [["packages", environmentName]],
-      onSettled: handleClose,
+      closeDialog: handleClose,
       resource: "package",
       action: "update",
    });

@@ -33,7 +33,7 @@ export default function DeleteEnvironmentDialog({
          apiClients.environments.deleteEnvironment(environment.name),
       success: "Environment deleted",
       invalidates: [["environments"]],
-      onSettled: handleClose,
+      closeDialog: handleClose,
       resource: "environment",
       action: "delete",
    });

@@ -34,7 +34,7 @@ export default function DeletePackageDialog({
          apiClients.packages.deletePackage(environmentName, packageName),
       success: "Package deleted",
       invalidates: [["packages", environmentName]],
-      onSettled: handleClose,
+      closeDialog: handleClose,
       resource: "package",
       action: "delete",
    });

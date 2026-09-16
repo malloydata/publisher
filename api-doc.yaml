@@ -1666,8 +1666,10 @@ paths:
         merged: the caller re-opens and reapplies its change. Omit it to CREATE
         the file: a file that already exists is then refused with 409 too, so an
         unconditional overwrite is not something a caller can ask for by leaving
-        a field out. The check and the write happen under one hold of the
-        package lock, so two saves racing on one file cannot both pass it.
+        a field out. The check, the write, the reload and the restore all happen
+        under one hold of the package lock, so two saves racing on one file
+        cannot both pass the check, and a rollback cannot revert the other
+        writer's text instead of its own.
 
         A create answers 201 and an update 200; `created` in the body says the
         same thing.

@@ -127,5 +127,3 @@ export const StyledExplorerContent = styled("div")({
    width: "100%",
    overflowY: "auto",
 });
-
-// Package page styles

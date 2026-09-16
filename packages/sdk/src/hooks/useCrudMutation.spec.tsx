@@ -27,7 +27,7 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 
 const mount = (
    mutationFn: () => Promise<unknown>,
-   onSettled = () => {},
+   closeDialog = () => {},
    invalidates: string[][] = [["packages", "examples"]],
 ) =>
    renderHook(
@@ -36,7 +36,7 @@ const mount = (
             mutationFn,
             success: "Package deleted",
             invalidates,
-            onSettled,
+            closeDialog,
             resource: "package",
             action: "delete",
          }),
@@ -49,11 +49,11 @@ describe("useCrudMutation", () => {
    it("closes the dialog and reports success once the write lands", async () => {
       const events: ConsoleEvent[] = [];
       setConsoleEventHandler((e) => events.push(e));
-      const onSettled = mock(() => {});
-      const view = mount(() => Promise.resolve({ ok: true }), onSettled);
+      const closeDialog = mock(() => {});
+      const view = mount(() => Promise.resolve({ ok: true }), closeDialog);
 
       act(() => view.result.current.mutate());
-      await waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(closeDialog).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(events).toHaveLength(1));
       expect(events[0]).toMatchObject({
          type: "console.mutation",
@@ -81,11 +81,11 @@ describe("useCrudMutation", () => {
 
    it("does not close the dialog when the write fails", async () => {
       // There is something to correct and retry, so the form has to stay.
-      const onSettled = mock(() => {});
-      const view = mount(() => Promise.reject(new Error("nope")), onSettled);
+      const closeDialog = mock(() => {});
+      const view = mount(() => Promise.reject(new Error("nope")), closeDialog);
       act(() => view.result.current.mutate());
       await waitFor(() => expect(view.result.current.isPending).toBe(false));
-      expect(onSettled).not.toHaveBeenCalled();
+      expect(closeDialog).not.toHaveBeenCalled();
    });
 
    it("falls back to a sentence for a rejection that is not an Error", async () => {

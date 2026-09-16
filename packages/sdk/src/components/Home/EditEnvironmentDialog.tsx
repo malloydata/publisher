@@ -53,7 +53,7 @@ export default function EditEnvironmentDialog({
       },
       success: "Environment updated",
       invalidates: [["environments"]],
-      onSettled: handleClose,
+      closeDialog: handleClose,
       resource: "environment",
       action: "update",
    });
