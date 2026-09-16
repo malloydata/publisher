@@ -8,6 +8,14 @@
 // `by_brand` / `by_region`, whose `where:` clauses would add controls this page
 // is not about, which is the same reason grid.malloy inlines its nests.
 ##! experimental.givens
+
+// Also the narrative-header fixture. Model-level doc comments are a composite
+// dashboard's only prose surface, and Publisher renders them as markdown, so
+// the `**bold**` here is what the browser suite looks for: a plain-text render
+// would show the asterisks instead.
+##" Two rows of two, one of them a chart.
+##"
+##" The same layout as `grid`, authored as **tiles**.
 ## artifact { title="Tiled" tiles=["tiles -> order_tile", "tiles -> revenue_tile", "tiles -> brand_tile", "tiles -> region_tile"] } dashboard { columns=12 }
 import { orders } from '../orders.malloy'
 import { BRAND } from '../givens.malloy'

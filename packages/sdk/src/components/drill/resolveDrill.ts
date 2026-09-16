@@ -72,6 +72,27 @@ export interface DrillClickPayload {
     * a modifier was held (cmd/ctrl to open in a new tab).
     */
    event?: MouseEvent;
+   /**
+    * Where the click came from, as the host names it — for a dashboard, the
+    * tile expression whose result was clicked. Set by the host when it wraps
+    * a binding per tile; the renderer never fills it. What "the rows behind
+    * this value" runs against is read from here.
+    */
+   context?: string;
+}
+
+/**
+ * A click asking for the rows behind a value, on a surface that offers them.
+ * No tag is involved: any grouped value has rows behind it.
+ */
+export interface DrillRowsRequest {
+   /** The clicked field's name, as the result spells it. */
+   field: string;
+   rawValue: unknown;
+   /** The value as it read on screen. */
+   label: string;
+   /** {@link DrillClickPayload.context}, when the host set one. */
+   context?: string;
 }
 
 /** The literal `to=self`: filter the current view instead of leaving it. */
@@ -232,7 +253,7 @@ export function drillValueToFilter(value: unknown): string | undefined {
 }
 
 /** How the clicked value read on screen, for a menu label. */
-function drillValueLabel(value: unknown): string {
+export function drillValueLabel(value: unknown): string {
    if (value instanceof Date) return drillValueToFilter(value) ?? "";
    return String(value);
 }

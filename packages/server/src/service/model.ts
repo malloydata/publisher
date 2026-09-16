@@ -329,9 +329,23 @@ function isGivenBindingFailure(err: unknown): boolean {
 }
 
 /**
- * Name budget for {@link Model.requestChainProvesUngated}'s walk over a
- * request's own derivation declarations. Exceeding it fails the proof (and so
- * denies), which is why it only has to be larger than any real chain.
+ * Budget for a walk over a request's own derivation declarations. Exceeding it
+ * fails the proof (and so denies), which is why it only has to be larger than
+ * any real chain.
+ *
+ * Read by two walks that spend it differently, so it bounds two different
+ * things: {@link Model.requestChainProvesUngated} counts TOTAL NAMES visited
+ * (`seen.size`), while {@link Model.derivesFromCurated} counts STACK DEPTH
+ * (`inProgress.size`), since its every-base proof recurses. A wide, shallow
+ * derivation graph can therefore exhaust one and not the other. Both directions
+ * deny on exhaustion, so the divergence costs an over-denial rather than an
+ * admission, and only past a depth no hand-written query reaches.
+ *
+ * Note the two budgets bound different quantities: the authorize walk's bounds
+ * TOTAL WORK, while bounding depth leaves the boundary's total work at
+ * O(edges x depth). That is not a denial-of-service lever -- `every` short
+ * circuits on the first base that fails and positive results are memoized, so a
+ * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
 
@@ -2862,12 +2876,35 @@ export class Model {
     * derived name. The declared filter belongs to the source, not to the name
     * it is read under. Returns undefined when the run target does not derive
     * from a protected source.
+    *
+    * Scans {@link stripMalloyCommentsAndLiterals} text rather than the caller's
+    * raw text. Both reads here decide whether a filter is INJECTED, and there is
+    * no post-compile backstop on this path, so a name this walk fails to reach
+    * is served unfiltered and silently. Raw text let a caller arrange that four
+    * ways, each of which resolved to undefined on a query that really does read
+    * a protected source:
+    *
+    *  - a comment between `is` and the base (`source: a is -- c\n protected`)
+    *    ERASES the derivation edge, which the compiler still reads around;
+    *  - a declaration forged inside a string literal injects an edge, and
+    *    {@link buildSourceAliasMap} is last-declaration-wins, so it REPLACES the
+    *    real base for that name;
+    *  - a forged `run:` inside a literal or a comment re-points
+    *    {@link extractRunTargetSourceName} at a name that was never the target.
+    *
+    * Stripping first closes all four, because none of that text is syntax any
+    * more. It does not close a derivation that composes through a named
+    * `query:`, which this walk still cannot follow: it resolves a SINGLE source
+    * name, and a set-valued walk would have to decide which protected source's
+    * filters apply to a name with several bases. That needs its own change.
     */
    private resolveFilterSource(query?: string): string | undefined {
-      const target = extractRunTargetSourceName(query);
-      if (!target || !query) return undefined;
+      if (!query) return undefined;
+      const scanned = stripMalloyCommentsAndLiterals(query);
+      const target = extractRunTargetSourceName(scanned);
+      if (!target) return undefined;
 
-      const aliasOf = buildSourceAliasMap(query);
+      const aliasOf = buildSourceAliasMap(scanned);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;
@@ -3500,6 +3537,16 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
+         // The EFFECTIVE gate per source, inheritance already resolved by the
+         // extraction, so a suggest over a gated source learns which givens its
+         // gate reads.
+         new Map(
+            (this.sources ?? []).flatMap((source) =>
+               source.name
+                  ? [[source.name, source.authorize ?? []] as const]
+                  : [],
+            ),
+         ),
       );
    }
 
@@ -3759,27 +3806,78 @@ export class Model {
       );
    }
 
-   /** True if `name` reaches a curated source by walking the ad-hoc text's
-    *  `source: NAME is BASE` derivation declarations — composition over a
-    *  queryable source is itself queryable. */
+   /**
+    * True if `name` is PROVABLY a composition over the curated surface, by
+    * walking the ad-hoc text's own derivation declarations — composition over
+    * a queryable source is itself queryable.
+    *
+    * Reads {@link buildDerivationBaseMap} over
+    * {@link stripMalloyCommentsAndLiterals} text, the same hardened pair the
+    * authorize gate's {@link requestChainProvesUngated} uses, rather than the
+    * narrow {@link buildSourceAliasMap}. That map was `source:`-only,
+    * last-declaration-wins, and read RAW text, which cost correctness at both
+    * ends:
+    *
+    *  - **It missed `query:` hops.** The pre-aggregate idiom composes through
+    *    one — `query: agg is <curated> -> { … }`, `source: blended is agg
+    *    extend { … }`, `run: blended` — so the walk dead-ended on `agg`, a
+    *    name that is neither curated nor a `source:` alias, and denied a query
+    *    that only ever reads a source the caller may plainly read. Because
+    *    `/compile` is exempt from this boundary by design, the same text
+    *    compiled clean first, so the 404 explained nothing.
+    *  - **Raw text and last-wins were an admission hazard.** A declaration
+    *    forged inside a string literal (`where: note = 'source: x is
+    *    <curated>'`) or hidden behind a comment could inject an alias edge,
+    *    and last-wins let a second declaration REPLACE a name's real base.
+    *    Stripping closes the forging; the base map's set-per-name closes the
+    *    replacing.
+    *
+    * The quantifier is the part that has to be inverted from the authorize
+    * gate, and it is why the wider map is safe HERE. There, an extra edge
+    * widens DENIAL, so a name is denied if ANY branch reaches a gated source.
+    * Here an extra edge would widen ADMISSION, so a name is admitted only if
+    * EVERY declared base for it proves out: a shadowing or forged edge can
+    * then only add another obligation, never discharge one. For the ordinary
+    * one-base-per-name chain — everything that compiles — this is exactly the
+    * old walk's answer.
+    *
+    * Fails closed on anything it cannot ground: a name with no declared base,
+    * a chain longer than {@link REQUEST_CHAIN_MAX_NAMES}, and a cycle (a
+    * back-edge proves nothing, so `a is b` / `b is a` is not admitted).
+    */
    private derivesFromCurated(name: string, query: string): boolean {
       // Hoisted out of the walk: the own-closure set is the same for every link
       // in the derivation chain, and only the identity check varies by name.
       const own = this.ownCuratedSourceNames();
       const packageCurated = this.queryBoundary.packageCuratedSources;
-      const aliasOf = buildSourceAliasMap(query);
-      let current: string | undefined = name;
-      const seen = new Set<string>();
-      while (current && !seen.has(current)) {
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      // Only positive results are memoized: a name proven curated is proven
+      // wherever it appears, while a `false` may be the local verdict of the
+      // in-progress cycle guard rather than a property of the name.
+      const proven = new Set<string>();
+      const inProgress = new Set<string>();
+      const proves = (current: string): boolean => {
          if (
             own.has(current) ||
             this.admittedByPackage(current, packageCurated)
          )
             return true;
-         seen.add(current);
-         current = aliasOf.get(current);
-      }
-      return false;
+         if (proven.has(current)) return true;
+         // A back-edge grounds nothing, and neither does a chain this long —
+         // it is not a real derivation, so stop on the deny side.
+         if (inProgress.has(current)) return false;
+         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return false;
+         const bases = basesOf.get(current);
+         if (!bases || bases.size === 0) return false;
+         inProgress.add(current);
+         const ok = Array.from(bases).every((base) => proves(base));
+         inProgress.delete(current);
+         if (ok) proven.add(current);
+         return ok;
+      };
+      return proves(name);
    }
 
    /**

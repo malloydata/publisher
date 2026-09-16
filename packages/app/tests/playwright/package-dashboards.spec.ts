@@ -188,10 +188,14 @@ test.describe("package-dashboards", () => {
       // `control=select` becomes a combobox, labelled by `# label=` rather than
       // by the given's name.
       await expect(page.getByRole("combobox", { name: "Brand" })).toBeVisible();
-      // `range_min`/`range_max` become a slider, and no control appears for the
-      // givens this dashboard's query does not reference.
+      // `range_min`/`range_max` become a two-handled range slider, and no
+      // control appears for the givens this dashboard's query does not
+      // reference.
       await expect(
-         page.getByRole("slider", { name: "Minimum amount" }),
+         page.getByRole("slider", { name: "Minimum amount from" }),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("slider", { name: "Minimum amount to" }),
       ).toBeVisible();
       await expect(page.getByRole("combobox", { name: "Region" })).toHaveCount(
          0,
@@ -1087,6 +1091,77 @@ test.describe("package-dashboards", () => {
       );
    });
 
+   // The other card, and the last piece of the two that did not agree. Radius,
+   // padding, border, shadow and gap were reconciled already; the background was
+   // not, because the composite `Paper` left it unset and took MUI's white while
+   // the renderer card painted `theme.tile`. On a theme whose page is also white
+   // that is the difference between tiles that read as cards and tiles that read
+   // as nothing, and it is exactly the "they render differently" in #1069.
+   //
+   // Asserted across BOTH forms against one sentinel, rather than against a
+   // literal on the composite alone: the claim is that the two cards agree, so a
+   // test that only pins one of them would stay green if the renderer's card
+   // moved.
+   test("both dashboard forms paint their card with the theme's tile colour", async ({
+      page,
+   }) => {
+      const TILE_COLOR = "rgb(4, 5, 6)";
+      await page.route("**/api/v0/status", async (route) => {
+         const res = await route.fetch();
+         const body = await res.json();
+         await route.fulfill({
+            response: res,
+            json: {
+               ...body,
+               theme: {
+                  ...(body.theme ?? {}),
+                  palette: {
+                     ...(body.theme?.palette ?? {}),
+                     tile: { light: "#040506", dark: "#040506" },
+                  },
+               },
+            },
+         });
+      });
+
+      await openDashboard(page, "tiled");
+      const tile = page.locator(
+         '.MuiPaper-root:has([title="tiles -> brand_tile"])',
+      );
+      await expect(tile).toBeVisible({ timeout: 30_000 });
+      await expect
+         .poll(
+            () => tile.evaluate((el) => getComputedStyle(el).backgroundColor),
+            { timeout: 15_000 },
+         )
+         .toBe(TILE_COLOR);
+
+      await openDashboard(page, "grid");
+      const card = page.locator(".dashboard-item").first();
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect
+         .poll(
+            () => card.evaluate((el) => getComputedStyle(el).backgroundColor),
+            { timeout: 15_000 },
+         )
+         .toBe(TILE_COLOR);
+   });
+
+   // A dashboard's description is its narrative header, and it is MARKDOWN: the
+   // doc comment can carry paragraphs, emphasis, lists and inline code, and
+   // Malloy delivers the block with its newlines intact. Rendered as plain text
+   // it collapsed onto one line with the asterisks showing, which is what this
+   // asserts against: `<strong>` exists, and no literal `**` survives.
+   test("a dashboard's description renders as markdown", async ({ page }) => {
+      await openDashboard(page, "tiled");
+      const header = page.locator("h5", { hasText: "Tiled" }).locator("..");
+      await expect(header).toBeVisible({ timeout: 30_000 });
+      await expect(
+         header.locator("strong", { hasText: "tiles" }),
+      ).toBeVisible();
+      expect(await header.innerText()).not.toContain("**");
+   });
+
    // The claim the one-form decision rests on: a view laid out with `# colspan`
    // and `# break` lands in the same place as a composite tile as it does nested
    // under a `# dashboard` query. `tiled` is `grid` re-authored as tiles, so the
@@ -1135,7 +1210,7 @@ test.describe("package-dashboards", () => {
          // Normalized against the page's own grid: its leftmost left and its
          // rightmost right. Heights are deliberately not compared, since a tile
          // is capped and a card is not, and pinning them would make this a test
-         // about TILE_HEIGHT rather than about the colspans.
+         // about TILE_MAX_HEIGHT rather than about the colspans.
          const origin = Math.min(...boxes.map((b) => b.left));
          const span = Math.max(...boxes.map((b) => b.right)) - origin;
          const rows = [...new Set(boxes.map((b) => b.top))].sort(

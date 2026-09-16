@@ -26,9 +26,16 @@ import {
    isStringCondition,
    NumberFilterExpression,
    StringFilterExpression,
+   TemporalFilterExpression,
+   type Moment,
    type StringCondition,
    type StringFilter,
+   type TemporalFilter,
 } from "@malloydata/malloy-filter";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+
+dayjs.extend(utc);
 
 /** True for the `filter<…>` family, whose values are filter syntax, not plain. */
 export function isFilterType(type: string | undefined): boolean {
@@ -204,4 +211,185 @@ export function decodeAtLeast(value: string): number | undefined {
    }
    const bound = Number(parsed.values[0]);
    return Number.isFinite(bound) ? bound : undefined;
+}
+
+/**
+ * An inclusive number range, which is what a two-handled slider means:
+ * `encodeBetween(10, 20)` is `[10 to 20]`, Malloy's `>= 10 and <= 20`. The same
+ * spelling Malloyyo's `filters.between` writes, so a value set on either host
+ * reads back on the other.
+ */
+export function encodeBetween(lo: number, hi: number): string {
+   return NumberFilterExpression.unparse({
+      operator: "range",
+      startOperator: ">=",
+      startValue: String(lo),
+      endOperator: "<=",
+      endValue: String(hi),
+   });
+}
+
+/**
+ * The bounds back out of {@link encodeBetween}, or undefined for any other
+ * filter. Only the closed range round-trips: `(10 to 20]` and its kin exclude an
+ * end the slider's thumbs cannot express, and a negated range is not a range at
+ * all, so both fall through to the text box rather than being redrawn as
+ * something else.
+ */
+export function decodeBetween(value: string): [number, number] | undefined {
+   const text = value.trim();
+   if (text === "") return undefined;
+   const { parsed } = NumberFilterExpression.parse(text);
+   if (
+      parsed === null ||
+      parsed.operator !== "range" ||
+      parsed.not === true ||
+      parsed.startOperator !== ">=" ||
+      parsed.endOperator !== "<="
+   ) {
+      return undefined;
+   }
+   const lo = Number(parsed.startValue);
+   const hi = Number(parsed.endValue);
+   return Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi
+      ? [lo, hi]
+      : undefined;
+}
+
+/**
+ * The preset windows a time-range control offers for a `filter<date>` or
+ * `filter<timestamp>` given. The same six Malloyyo's `TimeRange` widget ships,
+ * spelled in Malloy's filter grammar: `today` is the current day, `7 days` is
+ * Malloy's "in the last 7 days", a rolling window ending now.
+ *
+ * Structured clauses rather than strings so the spelling on the wire is the
+ * filter package's own, and {@link decodeTimePreset} compares against the same
+ * structure the parser returns rather than against text that may be spelled
+ * `7 day`, `7 days` or `7  days` by whoever wrote the URL.
+ */
+export const TIME_PRESETS: readonly {
+   key: string;
+   label: string;
+   clause: TemporalFilter;
+}[] = [
+   {
+      key: "today",
+      label: "Today",
+      clause: { operator: "in", in: { moment: "today" } },
+   },
+   {
+      key: "7d",
+      label: "Last 7 days",
+      clause: { operator: "in_last", units: "day", n: "7" },
+   },
+   {
+      key: "30d",
+      label: "Last 30 days",
+      clause: { operator: "in_last", units: "day", n: "30" },
+   },
+   {
+      key: "90d",
+      label: "Last 90 days",
+      clause: { operator: "in_last", units: "day", n: "90" },
+   },
+   {
+      key: "12m",
+      label: "Last 12 months",
+      clause: { operator: "in_last", units: "month", n: "12" },
+   },
+];
+
+/** The filter text for one of {@link TIME_PRESETS}, by key. */
+export function encodeTimePreset(key: string): string | undefined {
+   const preset = TIME_PRESETS.find((p) => p.key === key);
+   return preset ? TemporalFilterExpression.unparse(preset.clause) : undefined;
+}
+
+/**
+ * Which preset a filter is, or undefined when it is none of them. Matched on the
+ * parsed clause, so `7 day` and `7 days` are the same window, and a negated or
+ * compound filter is not a preset however it is spelled.
+ */
+export function decodeTimePreset(value: string): string | undefined {
+   const text = value.trim();
+   if (text === "") return undefined;
+   const { parsed } = TemporalFilterExpression.parse(text);
+   if (parsed === null) return undefined;
+   for (const preset of TIME_PRESETS) {
+      const want = preset.clause;
+      if (want.operator !== parsed.operator) continue;
+      if (want.operator === "in" && parsed.operator === "in") {
+         if (parsed.not !== true && parsed.in.moment === want.in.moment) {
+            return preset.key;
+         }
+      }
+      if (want.operator === "in_last" && parsed.operator === "in_last") {
+         if (
+            parsed.not !== true &&
+            parsed.units === want.units &&
+            Number(parsed.n) === Number(want.n)
+         ) {
+            return preset.key;
+         }
+      }
+   }
+   return undefined;
+}
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * An inclusive range of whole days, as two `YYYY-MM-DD` strings, in Malloy's
+ * filter grammar.
+ *
+ * Malloy's `A to B` runs from the start of A up to but NOT including the start
+ * of B (`filter_compilers.ts`, `case 'to'`), while a reader picking "January
+ * 1st to January 31st" means both days. So the end is encoded as the day AFTER
+ * the last day picked: `encodeDayRange("2024-01-01", "2024-01-31")` is
+ * `2024-01-01 to 2024-02-01`. {@link decodeDayRange} undoes exactly that, so a
+ * range written by Malloyyo (which encodes the picked day verbatim) displays
+ * here as the days it actually selects.
+ */
+export function encodeDayRange(firstDay: string, lastDay: string): string {
+   const end = dayjs.utc(lastDay, "YYYY-MM-DD").add(1, "day");
+   return TemporalFilterExpression.unparse({
+      operator: "to",
+      fromMoment: { moment: "literal", literal: firstDay, units: "day" },
+      toMoment: {
+         moment: "literal",
+         literal: end.format("YYYY-MM-DD"),
+         units: "day",
+      },
+   });
+}
+
+/**
+ * The inclusive days back out of {@link encodeDayRange}, or undefined for any
+ * other filter. Both ends must be whole-day literals: a range with a time of
+ * day, a relative end (`2024-01-01 to now`), or a negation is not something two
+ * day pickers can show, and falls through to the text box.
+ */
+export function decodeDayRange(
+   value: string,
+): { firstDay: string; lastDay: string } | undefined {
+   const text = value.trim();
+   if (text === "") return undefined;
+   const { parsed } = TemporalFilterExpression.parse(text);
+   if (parsed === null || parsed.operator !== "to" || parsed.not === true) {
+      return undefined;
+   }
+   const from = dayLiteral(parsed.fromMoment);
+   const to = dayLiteral(parsed.toMoment);
+   if (from === undefined || to === undefined) return undefined;
+   const lastDay = dayjs.utc(to, "YYYY-MM-DD").subtract(1, "day");
+   if (!lastDay.isValid() || lastDay.isBefore(dayjs.utc(from, "YYYY-MM-DD"))) {
+      return undefined;
+   }
+   return { firstDay: from, lastDay: lastDay.format("YYYY-MM-DD") };
+}
+
+function dayLiteral(moment: Moment): string | undefined {
+   return moment.moment === "literal" && DAY.test(moment.literal)
+      ? moment.literal
+      : undefined;
 }

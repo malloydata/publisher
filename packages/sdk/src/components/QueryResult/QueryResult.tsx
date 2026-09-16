@@ -1,14 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Suspense } from "react";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { useQueryResult } from "../../hooks/useQueryResult";
 import { parseResourceUri } from "../../utils/formatting";
-import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { Loading } from "../Loading";
-import ResultContainer from "../RenderedResult/ResultContainer";
-import { useServer } from "../ServerProvider";
+import { ResultPanel } from "../RenderedResult/ResultPanel";
 
 interface QueryResultProps {
    query?: string;
@@ -72,7 +67,6 @@ export default function QueryResult({
 }: QueryResultProps) {
    const { modelPath, environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
-   const { apiClients } = useServer();
 
    if (!environmentName || !packageName) {
       throw new Error(
@@ -80,43 +74,21 @@ export default function QueryResult({
       );
    }
 
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: [resourceUri, query, sourceName, queryName],
-      queryFn: () =>
-         apiClients.models.executeQueryModel(
-            environmentName,
-            packageName,
-            modelPath,
-            {
-               query: query,
-               sourceName: sourceName,
-               queryName: queryName,
-               versionId: versionId,
-            },
-         ),
-      ...CHART_RESULT_QUERY_OPTIONS,
+   const state = useQueryResult({
+      environmentName,
+      packageName,
+      modelPath,
+      versionId,
+      query,
+      sourceName,
+      queryName,
    });
 
    return (
-      <>
-         {!isSuccess && !isError && (
-            <Loading text="Fetching Query Results..." />
-         )}
-         {isSuccess && (
-            <Suspense fallback={<div>Loading...</div>}>
-               <ResultContainer
-                  result={data.data.result}
-                  maxHeight={height}
-                  renderLogs={data.data.renderLogs}
-               />
-            </Suspense>
-         )}
-         {isError && (
-            <ApiErrorDisplay
-               context={`${environmentName} > ${packageName} > ${modelPath}`}
-               error={error}
-            />
-         )}
-      </>
+      <ResultPanel
+         state={state}
+         context={`${environmentName} > ${packageName} > ${modelPath}`}
+         maxHeight={height}
+      />
    );
 }

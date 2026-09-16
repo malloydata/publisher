@@ -15,7 +15,8 @@ Publisher discovers it at package load, lists it on the package page, and serves
 
 **One form:** `## artifact { tiles=[…] }` at model level, one tile per named view. The controls at the
 top are not written anywhere in the page; they are rendered from the `given:` declarations the tiles
-filter by. Cells are clickable where the model's dimension carries a `# drill` tag.
+filter by. Every grouped value in a tile is clickable: where the dimension carries a `# drill` tag
+it goes where the tag says, and otherwise it opens the rows behind the value.
 [`examples/storefront/dashboards/overview.malloy`](../examples/storefront/dashboards/overview.malloy)
 is the shipped one.
 
@@ -29,9 +30,11 @@ pipeline starts from its own query's source, and there is no way to combine two,
 unrelated sources has to be tiles.
 
 The format is the one [Malloyyo](https://github.com/malloydata/malloyyo) uses, so a model repo with
-a `dashboards/` directory largely works unchanged in either. One property differs: Publisher spells
-the grid width `# dashboard { columns=N }` rather than `dashboard_columns=N`, and reports the old
-name as a property it does not read rather than laying out at the default in silence. See
+a `dashboards/` directory largely works unchanged in either. The one grammar difference: Publisher
+spells the grid width `# dashboard { columns=N }` rather than `dashboard_columns=N`, and reports the
+old name as a property it does not read rather than laying out at the default in silence. One form
+Malloyyo accepts, `# artifact` on a `view:`, is not served here; the package warning says so and
+names the two spellings that are. The dated list of everything else that differs is
 [Where Publisher diverges](malloyyo-dashboards-design.md#where-publisher-diverges).
 
 ## Where the pieces live
@@ -40,9 +43,9 @@ name as a property it does not read rather than laying out at the default in sil
 storefront/
   publisher.json           # package manifest
   storefront.malloy        # sources, measures, reusable views, # drill tags
-  givens.malloy            # given: declarations, the filter controls
+  givens.malloy            # given: declarations the data app and notebooks share
   dashboards/
-    overview.malloy        # a dashboard: imports the model, names its tiles
+    overview.malloy        # a dashboard: declares its filters, names its tiles
     category.malloy
     regions.malloy
     _shared.malloy         # no artifact tag ⇒ a shared include, not a dashboard
@@ -72,7 +75,7 @@ after this one is the form to author a dashboard in.
 ```malloy
 ##! experimental.givens
 import { order_items, products } from '../storefront.malloy'
-import { CATEGORY, MIN_SALE } from '../givens.malloy'
+import '../givens.malloy'
 
 #" Revenue and margin at a glance, and where they come from.
 # artifact { title="Business Overview" } dashboard { columns=12 }
@@ -113,6 +116,13 @@ query: overview is order_items -> {
 
 - `# artifact { … }` is what makes the file a dashboard. `title=` names it; without one the title
   falls back to the `#"` doc comment above, then to the slug.
+- **The doc comment below the title is the page's prose header, and it renders as markdown.**
+  Paragraphs, emphasis, lists, links and inline code all work, and a bare doc-comment line separates
+  paragraphs. On a composite the lines are model-level (`##"`), because a doc comment attaches to an
+  object and at model level there is none — a `#"` there fails the package load with "Object
+  annotation not connected to any object". On the single-query form it is `#"`, attached to the
+  `query:`. Prose next to one tile is that tile's `# subtitle`, which is a tag string and therefore
+  one line; prose BETWEEN tiles is not something the format can express.
 - `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.
@@ -151,8 +161,11 @@ a package's dashboards is what makes them read as one product rather than as sev
 diverge.** On a `# dashboard` query a top-level `aggregate:` measure _is_ the card, so do not nest a
 `# big_value` view to get one: nested there it renders embedded, and each measure becomes a
 full-width bar inside a single tile instead of a row of cards. A dashboard has no top-level
-aggregates — a tile is one whole result — so there a `# big_value` view IS the KPI row, and it
-renders as one. `dashboards/overview.malloy` is that tile, at `# colspan=12`.
+aggregates — a tile is one whole result — so there a view of nothing but measures IS the KPI row: a
+tile whose result is one row of measures renders as big-value cards on its own, the way Malloyyo
+draws the same tile, and `# big_value` on the view says the same thing explicitly.
+`dashboards/overview.malloy` is that tile, at `# colspan=12`. To show such a row as a table instead,
+tag the view `# table`.
 
 Either way, a card's label is one line that ellipses rather than wrapping, so a narrow card truncates
 it silently: "Orders / customer" reads as "ORDERS / CUSTOMEI" at 1 column of 6.
@@ -196,15 +209,15 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 
 ### Tag reference
 
-| Construct                                                | What it does                                                                                                                   |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `## artifact { title= tiles=[…] givens{…} autorun= }`     | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
-| `# artifact { title= givens{…} autorun= }` on a `query:`  | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
-| `# dashboard { columns=N }`                              | Grid width, beside the artifact tag on either form. One spelling                                                                            |
+| Construct                                                                           | What it does                                                                                                                                |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `## artifact { title= tiles=[…] givens{…} autorun= }`                               | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
+| `# artifact { title= givens{…} autorun= }` on a `query:`                            | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
+| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. One spelling                                                                            |
 | `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
-| `# label="…"` on an aggregate                             | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
-| `# drill { to=[…] given=… }` on a source `dimension:`     | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
-| A `dashboards/*.malloy` with **no** artifact tag          | A shared include, skipped by discovery                                                                                                      |
+| `# label="…"` on an aggregate                                                       | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
+| `# drill { to=[…] given=… }` on a source `dimension:`                               | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
+| A `dashboards/*.malloy` with **no** artifact tag                                    | A shared include, skipped by discovery                                                                                                      |
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
@@ -221,8 +234,11 @@ Two spellings that bite:
 
 ## Filter controls
 
-Controls are not declared on the dashboard. They come from the `given:` declarations the query
-references, and the tags on each declaration are its control contract:
+Controls are the `given:` declarations the tiles reference. **Declare them in the dashboard file**:
+that is the convention, because it is the one file the dashboard builder edits, and a filter the
+builder adds has to be a declaration in it. A package-wide `givens.malloy` is for controls several
+surfaces share, the data app and notebooks here, and a dashboard can still import and bind those; it
+just cannot add to them. Either way the tags on the declaration are its control contract:
 
 ```malloy
 ##! experimental.givens
@@ -240,13 +256,14 @@ given: MIN_SALE :: filter<number> is f''
 given: SINCE :: date is @2023-01-01
 ```
 
-| Tag                                             | Renders as                                         |
-| ----------------------------------------------- | -------------------------------------------------- |
-| `control=select` + `suggest { … }`              | A dropdown whose options are queried from the data |
-| `control=multiselect` + `suggest { … }`         | The same, taking several values                    |
-| `range_min=` / `range_max=` on `filter<number>` | A slider instead of a text box                     |
-| none, on a `date` or `timestamp`                | A date picker                                      |
-| none, on a `filter<string>`                     | A text box taking Malloy filter syntax             |
+| Tag                                              | Renders as                                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `control=select` + `suggest { … }`               | A dropdown whose options are queried from the data                                         |
+| `control=multiselect` + `suggest { … }`          | The same, taking several values                                                            |
+| `range_min=` / `range_max=` on `filter<number>`  | A two-handled range slider (`[lo to hi]`, or `>= lo` with the upper handle at the ceiling) |
+| none, on a `filter<date>` or `filter<timestamp>` | A time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days  |
+| none, on a `date` or `timestamp`                 | A date picker                                                                              |
+| none, on a `filter<string>`                      | A text box taking Malloy filter syntax                                                     |
 
 A `suggest` reads either a `source=` and `dimension=` pair, or a named `query=` when the option list
 needs its own ordering or filtering. **The source or query has to resolve in the dashboard file**,
@@ -277,11 +294,28 @@ Which controls appear is decided per dashboard, by which givens its query refere
 and referencing two shows two. That is what lets one `CATEGORY` declaration scope revenue on one
 dashboard and margin on another without either redeclaring it.
 
-**Importing a given is what makes it bindable.** Malloy's given namespace is per-file, so a
-dashboard can only be _run_ with the givens its own file imports, even when the `where:` that
-references one lives up an import chain. A given the file does not import gets no control, and
-sending it at run time fails with "unknown given". Everything about givens themselves
-(declaration, types, defaults, access control) is in [givens.md](givens.md).
+**A given has to be in the dashboard file's own scope to be bindable**: declared there, or imported.
+Malloy's given namespace is per-file, so a dashboard can only be _run_ with the givens its own file
+declares or imports, even when a `where:` that references one lives up an import chain. A given the
+file cannot see gets no control, and sending it at run time fails with "unknown given". Everything
+about givens themselves (declaration, types, defaults, access control) is in [givens.md](givens.md).
+
+**Binding is per declaration, not per name.** Measured: a dashboard that declares its own `CATEGORY`
+and extends a source whose `where:` reads the model's `CATEGORY` gets a control that moves nothing,
+because the two are different declarations that happen to share a name. So a dashboard that declares
+its controls binds them on its **tiles**, as a `+ { where: field ~ $GIVEN }` refinement on each view
+that answers to the control, which is also exactly what the builder reads and writes. Model-level
+scoping (a `where:` inside a source, reading the model's givens) is the other design and still works:
+import that source and `import '../givens.malloy'` whole, and the controls render for the givens the
+tiles reach. The two do not mix on one given.
+
+**Declare in the dashboard when the dashboard is the thing being edited.** The builder adds and
+removes filters by writing `given:` declarations and tile bindings into the dashboard file, and it
+never edits imports or model files, so a control that lives in `givens.malloy` is one it can bind but
+not add, change or remove. Keep declarations in the model when several surfaces really share a
+control, and when row-level access or `#(authorize)` reads the given, since those are model concerns.
+A `filter<…>` given binds with `~`; a plain `date` or `number` given is a value, not a filter
+expression, and binds with `>=`, `<=` or `=`.
 
 <a id="apply"></a>
 
@@ -313,10 +347,11 @@ the results out:
 
 ```malloy
 ##! experimental.givens
-## artifact { title="Seasonality" tiles=["scoped_sales -> sales_by_month", "scoped_sales -> seasonality"] } dashboard { columns=12 }
-import { scoped_sales } from './_shared.malloy'
-import { products } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+## artifact { title="Seasonality" tiles=["seasonal -> revenue_trend", "seasonal -> by_season"] } dashboard { columns=12 }
+import { order_items, products } from '../storefront.malloy'
+
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
 ```
 
 Model-level because there is no query of its own to hang a `#` tag on, and model-level for a second
@@ -328,17 +363,21 @@ child. One view therefore presents identically whether it is named as a tile her
 `# dashboard` query, and there is no second grammar to learn:
 
 ```malloy
-source: overview is scoped_sales extend {
+source: seasonal is order_items extend {
   # colspan=8
   # break
   # label="Revenue by month"
-  view: revenue_trend is sales_by_month
+  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY }
 
   # colspan=4
-  # label="Revenue by state"
-  view: revenue_by_state is sales_by_state
+  # label="By season"
+  view: by_season is seasonality + { where: category ~ $CATEGORY }
 }
 ```
+
+The `+ { where: … }` on each view is the tile's **binding**: the controls it answers to, one clause
+per given. A view without one does not move when the control does, which is how a page keeps one
+tile fixed while the rest filter. The builder writes these clauses; see [Filter controls](#filter-controls).
 
 Tagging a thin re-declaration like that, rather than the shared view itself, is what lets one modelled
 view sit at different widths on different pages. `# colspan` is clamped to `columns` and a colspan
@@ -366,7 +405,7 @@ That is the job the shared include does here. `_shared.malloy` scopes the source
 // dashboards/_shared.malloy: no artifact tag, so an include rather than a dashboard.
 ##! experimental.givens
 import { order_items } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 
 source: scoped_sales is order_items extend {
   where: category ~ $CATEGORY and created_at >= $SINCE
@@ -418,6 +457,15 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   parameters it declares, spelled identically. So `given=brand` into a dashboard declaring `BRAND`
   opens it unfiltered. The load-time lint reports the case it can see: a `to=self` drill seeding a
   given no model in the package declares is an error at load.
+
+**The rows behind a value, and exploring from a tile.** On a composite dashboard every grouped
+value is clickable. A value whose dimension carries a `# drill` does what the tag says — one
+destination navigates at once, several open a menu — exactly as described below. A value with no
+drill opens the rows behind it: Malloy's `drill:` through the tile's view (`run: <source> -> {
+drill: <view>.<field> = <value>; select: *; limit: 200 }`), so the tile's own `where:` and the
+applied controls both hold. Each tile's heading shows "Explore from here" on hover, which opens the
+model explorer on the tile's source with its view as the query. Neither is available on the
+single-query form, whose one result names no tile.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
 underlined under the pointer: plain text at rest, a link when you reach for them. They carry a button
