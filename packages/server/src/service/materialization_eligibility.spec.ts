@@ -619,43 +619,136 @@ source: given_in_group_by is raw -> {
       }
    });
 
-   it("refuses a measure or join declared on the INPUT source that the query consumes", async () => {
-      // The two shapes that make excluding `fields` safe rather than merely
-      // convenient: both are field-declared entities that DO reach the build,
-      // and neither bakes anything that looks like a filter — the measure
-      // becomes `CASE WHEN base."org_id"=1 …` inside an aggregate, the join a
-      // conjunct on its ON clause.
-      //
-      // Their job is to catch an upstream change: if a future compiler stopped
-      // summarising a consumed field's given usage on the query, these would
-      // flip to admitted and every other case here would stay green.
+   it("admits a derivation that does not READ the input source's given", async () => {
+      // The shape a structural walk cannot get right: a base source that merely
+      // OFFERS a given-filtered join, dimension or measure, with persisted
+      // derivations over it that use different subsets. None of these three
+      // reads the given, none bakes it, and refusing them would reject every
+      // derivation of a base that joins a visibility source.
       const sources =
          await persistSources(`##! experimental { persistence givens }
 given: ORG_ID :: number is 1
 source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id, 100 AS amt")
-
-source: withmeas is raw extend {
-  measure: scoped_amt is amt.sum() { where: org_id = $ORG_ID }
-}
-#@ persist name="consumed_measure"
-source: consumed_measure is withmeas -> {
-  group_by: user_id
-  aggregate: total is scoped_amt
+source: orgs is duckdb.sql("SELECT 1 AS org_id, 'acme' AS name") extend {
+  where: org_id = $ORG_ID
 }
 
-source: scoped2 is raw extend { where: org_id = $ORG_ID }
-source: withjoin is raw extend { join_one: s3 is scoped2 on org_id = s3.org_id }
-#@ persist name="consumed_join"
-source: consumed_join is withjoin -> {
+source: offers_join is raw extend { join_one: o is orgs on org_id = o.org_id }
+#@ persist name="unused_join"
+source: unused_join is offers_join -> { select: org_id, user_id }
+
+source: offers_dim is raw extend { dimension: mine is org_id = $ORG_ID }
+#@ persist name="unused_dimension"
+source: unused_dimension is offers_dim -> { select: org_id, user_id }
+
+source: offers_measure is raw extend {
+  measure: scoped is amt.sum() { where: org_id = $ORG_ID }
+}
+#@ persist name="unused_measure"
+source: unused_measure is offers_measure -> {
   group_by: user_id
-  aggregate: t is s3.amt.sum()
+  aggregate: c is count()
 }`);
-      for (const name of ["consumed_measure", "consumed_join"]) {
+      for (const name of [
+         "unused_join",
+         "unused_dimension",
+         "unused_measure",
+      ]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).not.toThrow();
+      }
+   });
+
+   it("refuses the same declarations once the query READS them", async () => {
+      // The mirror of the case above, and the pair that decides the whole
+      // check: same declarations, same input sources, and the only difference is
+      // that the persisted query consumes them — which is exactly when the build
+      // substitutes the default.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id, 100 AS amt")
+source: orgs is duckdb.sql("SELECT 1 AS org_id, 'acme' AS name") extend {
+  where: org_id = $ORG_ID
+}
+
+source: offers_join is raw extend { join_one: o is orgs on org_id = o.org_id }
+#@ persist name="reads_join"
+source: reads_join is offers_join -> {
+  group_by: nm is o.name
+  aggregate: c is count()
+}
+
+source: offers_dim is raw extend { dimension: mine is org_id = $ORG_ID }
+#@ persist name="reads_dimension"
+source: reads_dimension is offers_dim -> { where: mine; select: org_id, user_id }
+
+source: offers_measure is raw extend {
+  measure: scoped is amt.sum() { where: org_id = $ORG_ID }
+}
+#@ persist name="reads_measure"
+source: reads_measure is offers_measure -> {
+  group_by: user_id
+  aggregate: t is scoped
+}`);
+      for (const name of ["reads_join", "reads_dimension", "reads_measure"]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
             assertColocatedPersistNotAuthorizeGated(sources[name]),
          ).toThrow(MaterializationEligibilityError);
       }
+   });
+
+   it("falls back to the structural walk when the marker is absent", () => {
+      // `query.givenUsage` is the compiler's own summary, so if a future version
+      // stops emitting it this check would otherwise read "no givens" and admit
+      // everything. Synthetic IR rather than Malloy source, because the marker
+      // cannot be removed from the compiler's output from here — and this is the
+      // branch a compiler change would silently take.
+      const noMarker = {
+         name: "no_marker",
+         _sourceDef: {
+            // A query carrying a given, with no `givenUsage` alongside it.
+            query: {
+               pipeline: [
+                  {
+                     filterList: [
+                        { node: "filterCondition", e: { node: "given" } },
+                     ],
+                  },
+               ],
+            },
+         },
+      } as unknown as PersistSource;
+      expect(() => assertColocatedPersistNotAuthorizeGated(noMarker)).toThrow(
+         MaterializationEligibilityError,
+      );
+
+      // And the same shape with the given only where it is applied at read stays
+      // admitted, so the fallback is not a blanket refusal.
+      const readTimeOnly = {
+         name: "read_time_only",
+         _sourceDef: {
+            query: { pipeline: [{}] },
+            filterList: [{ node: "filterCondition", e: { node: "given" } }],
+            fields: [{ name: "d", e: { node: "given" } }],
+         },
+      } as unknown as PersistSource;
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly),
+      ).not.toThrow();
+   });
+
+   it("refuses when the compiled definition cannot be read at all", () => {
+      const unreadable = {
+         name: "unreadable",
+         _sourceDef: null,
+      } as unknown as PersistSource;
+      expect(() => assertColocatedPersistNotAuthorizeGated(unreadable)).toThrow(
+         MaterializationEligibilityError,
+      );
    });
 
    it("admits a persisted query that references no given", async () => {

@@ -271,7 +271,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    // is no parameter equivalent of this shape to refuse here. (A parameter IS
    // frozen when a source is DERIVED from a parameterized one, which is a
    // different shape with its own gate.)
-   if (referencesGivenOutsideSourceFilters(persistSource)) {
+   if (buildSubstitutesAGiven(persistSource)) {
       recordEligibilityRefused("given_in_persisted_query");
       const what =
          origin === "preaggregate"
@@ -429,64 +429,53 @@ function referencesGiven(persistSource: PersistSource): boolean {
 }
 
 /**
- * Whether a given is referenced anywhere that defines the RELATION the build
- * writes, as opposed to the source's own `filterList`.
+ * Whether the BUILD substitutes a given's value into the relation it writes.
  *
- * The distinction decides whether a given is frozen or honoured. A given the
- * compiler meets while producing the persisted query has only one value
- * available at build time — the declaration default — so that value is
- * substituted and the artifact holds one caller's slice. The read path swaps
- * only the `FROM`, and nothing re-applies a filter that lives inside the
- * relation, so every caller is served that slice whatever they supply. A given
- * in the source's `filterList` is the opposite: absent from the build, applied
- * over the artifact at read with the caller's own value.
+ * That is the question, and the compiler answers it directly: a query source's
+ * `query.givenUsage` is the transitive summary of the givens its pipeline
+ * actually reads. Non-empty means a value was substituted while producing the
+ * persisted relation — and the only value available then is the declaration
+ * default, so the artifact holds one caller's slice and the read path, which
+ * swaps only the `FROM`, serves it to everyone. Empty means the given is applied
+ * when the source is READ, with the caller's own value, which is the documented
+ * form (docs/row-level-access.md).
  *
- * Measured on the two shapes, which differ only in where the `where:` sits:
+ * Checked against `getSQL()` across twelve shapes; `givenUsage` agreed with
+ * whether the build SQL carried the predicate in every one:
  *
- *   source: inside  is raw -> { where: org_id = $ORG_ID; select: * }
- *   source: outside is raw -> { select: * } extend { where: org_id = $ORG_ID }
+ *   baked        `where:` in the query · a given in a `group_by` · the input
+ *                source's own `where:` · a dimension, measure or join declared
+ *                on the INPUT source that the query READS
+ *   not baked    `where:`, dimension, measure or join in the persist source's
+ *                own extend block · the same declared on the input source and
+ *                NOT read by the query
  *
- * `inside` builds `… WHERE org_id = 1` and answers 2 rows for a caller asking
- * for org 2, whose live answer is 1. `outside` builds unfiltered and answers 1.
+ * The last row is why this reads `givenUsage` rather than walking the IR.
+ * `query.structRef` inlines the input source's whole definition, so a structural
+ * walk refuses every derivation of a base that merely OFFERS a given-filtered
+ * join — a base joining a visibility source, with persisted derivations over it
+ * using different subsets, is an ordinary shape. And the walk cannot be narrowed
+ * to fix it: for a dimension the query reads, the given sits in
+ * `structRef.fields`, exactly where an unread one sits.
  *
- * Implemented by walking everything EXCEPT the two top-level keys that are read
- * -time by construction — `filterList` (the source's own `where:`) and `fields`
- * (its dimensions, measures and joins, which are computed when the source is
- * queried). Everything else is refused, so a given reachable by a route this
- * code has not met counts as baked; an unwalkable IR refuses too, for the same
- * reason {@link referencesGiven} is fail-closed.
- *
- * Excluding `fields` does not open a hole, and not by luck: a persist source's
- * own `fields` is the RESULT SCHEMA of its query, while the fields of the source
- * the query READS reach through `$.query`. The two never hold the same entity,
- * so a field that is consumed — and therefore baked — is always visible on the
- * query side.
- * Measured across the shapes that differ in where the predicate is factored:
- *
- *   built with it          IR root      | not built with it        IR root
- *   ---------------------- ------------ | ------------------------ ----------
- *   where: in the query    query        | where: in extend         filterList
- *   dimension used by the  query        | dimension used by a      fields
- *     query                             |   `where:` in extend
- *   given in a group_by    query        | measure with a filter    fields
- *                                       | join to a filtered source fields
- *
- * The left column is what must be refused and every row of it surfaces under
- * `query`; the right column is applied per caller at read, and refusing it would
- * reject row-level access models that differ from the admitted one only by
- * factoring the predicate through a dimension, a measure or a join.
+ * The walk survives as the fallback for when the marker is absent or unreadable
+ * — a non-query source has no `query` at all — and it excludes the two top-level
+ * keys that are read-time by construction, `filterList` and the source's own
+ * `fields`. Unreadable IR refuses, as {@link referencesGiven} does.
  */
-function referencesGivenOutsideSourceFilters(
-   persistSource: PersistSource,
-): boolean {
+function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
    try {
       const def = persistSource._sourceDef as unknown;
       if (def === null || typeof def !== "object") {
          throw new Error("compiled source definition is not readable");
       }
-      // Dropped rather than emptied: an empty array or object would still be
-      // walked, and the point is that these are the places a given is honoured
-      // rather than frozen.
+      const query = (def as { query?: unknown }).query;
+      if (query !== null && typeof query === "object") {
+         const usage = (query as { givenUsage?: unknown }).givenUsage;
+         // Authoritative when present: it is transitive where a single field's
+         // own `refSummary` is not, which is the whole reason it is read here.
+         if (Array.isArray(usage)) return usage.length > 0;
+      }
       const {
          filterList: _sourceFilters,
          fields: _queryTimeFields,
