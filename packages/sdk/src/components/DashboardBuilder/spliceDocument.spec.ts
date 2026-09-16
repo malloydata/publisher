@@ -1106,3 +1106,56 @@ source: a is one extend {
       );
    });
 });
+
+/**
+ * A view name is unique within a source, not within a file. Two sources on one
+ * dashboard may each declare the same view, and the writer has to patch the
+ * one belonging to the tile it is editing.
+ */
+describe("spliceDashboardDocument: two sources, one view name", () => {
+   const SHARED = `##! experimental.givens
+
+## artifact { title="Shared" tiles=["a -> by_month", "b -> by_month"] } dashboard { columns=12 }
+import "../data_app.malloy"
+
+source: a is scoped_orders extend {
+  # colspan=6
+  view: by_month is by_month_view
+}
+
+source: b is scoped_orders extend {
+  # colspan=6
+  view: by_month is by_month_view
+}`;
+
+   it("retags the second source's view without touching the first's", async () => {
+      const out = await spliced(SHARED, (d) => {
+         const tile = d.tiles.find((t) => t.source === "b");
+         if (!tile) throw new Error("no tile on b");
+         tile.label = "B by month";
+      });
+      // The label landed inside `source: b`, and `source: a` is byte-identical
+      // to how it went in. Before the lookup was scoped to the source, the
+      // file-wide search found `a`'s declaration first and retagged a tile the
+      // author never touched.
+      const a = out.slice(out.indexOf("source: a"), out.indexOf("source: b"));
+      const b = out.slice(out.indexOf("source: b"));
+      expect(a).not.toContain("B by month");
+      expect(b).toContain('# label="B by month"');
+      expect(a).toBe(
+         SHARED.slice(SHARED.indexOf("source: a"), SHARED.indexOf("source: b")),
+      );
+   });
+
+   it("edits the first source's view when that is the tile", async () => {
+      const out = await spliced(SHARED, (d) => {
+         const tile = d.tiles.find((t) => t.source === "a");
+         if (!tile) throw new Error("no tile on a");
+         tile.label = "A by month";
+      });
+      const a = out.slice(out.indexOf("source: a"), out.indexOf("source: b"));
+      const b = out.slice(out.indexOf("source: b"));
+      expect(a).toContain('# label="A by month"');
+      expect(b).not.toContain("A by month");
+   });
+});
