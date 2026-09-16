@@ -383,6 +383,82 @@ class GoldenForJudge(unittest.TestCase):
         self.assertIn("unanswerable", rb.golden_for_judge({}))
         self.assertIn("unanswerable", rb.golden_for_judge(None))
 
+
+class HostedProbe(unittest.TestCase):
+    """What the hosted reachability probe concludes from its transcript.
+
+    Three outcomes that are three different problems: no tool granted (a login
+    that was never done), a tool that answered with an error (reachable and
+    authenticated, wrong call), and a payload.
+    """
+
+    TOOLS = ("mcp__hosted__get_context",)
+
+    def events(self, *blocks):
+        out = []
+        for kind, content in blocks:
+            out.append({"type": kind, "message": {"content": content}})
+        return out
+
+    def use(self, tid="t1", name="mcp__hosted__get_context"):
+        return {"type": "tool_use", "id": tid, "name": name, "input": {}}
+
+    def res(self, text, tid="t1", err=False):
+        return {"type": "tool_result", "tool_use_id": tid,
+                "content": text, "is_error": err}
+
+    def test_no_tool_call_at_all_is_not_granted(self):
+        ev = self.events(("assistant", [{"type": "text",
+                                         "text": "I have no such tool."}]))
+        self.assertEqual(rb.probe_outcome(ev, self.TOOLS)[0], "not_granted")
+
+    def test_an_errored_result_is_rejected_not_reached(self):
+        # The defect this replaces: a bare tool_use returned True without ever
+        # looking at its result, so a refused call passed the gate.
+        ev = self.events(("assistant", [self.use()]),
+                         ("user", [self.res("search_targets is required",
+                                            err=True)]))
+        outcome, said, payload = rb.probe_outcome(ev, self.TOOLS)
+        self.assertEqual(outcome, "rejected")
+        self.assertIn("search_targets is required", said)
+        self.assertIsNone(payload)
+
+    def test_a_payload_is_reached_and_comes_back(self):
+        ev = self.events(("assistant", [self.use()]),
+                         ("user", [self.res(json.dumps(
+                             {"retrieval": "semantic", "sources": []}))]))
+        outcome, _said, payload = rb.probe_outcome(ev, self.TOOLS)
+        self.assertEqual(outcome, "reached")
+        self.assertEqual(payload["retrieval"], "semantic")
+
+    def test_a_good_call_outweighs_an_earlier_refused_one(self):
+        ev = self.events(
+            ("assistant", [self.use("t1")]),
+            ("user", [self.res("nope", "t1", err=True)]),
+            ("assistant", [self.use("t2")]),
+            ("user", [self.res(json.dumps({"retrieval": "lexical"}), "t2")]))
+        self.assertEqual(rb.probe_outcome(ev, self.TOOLS)[0], "reached")
+
+    def test_a_call_with_no_result_is_not_a_missing_login(self):
+        ev = self.events(("assistant", [self.use()]))
+        self.assertEqual(rb.probe_outcome(ev, self.TOOLS)[0], "rejected")
+
+    def test_a_call_to_an_unallowed_tool_is_ignored(self):
+        ev = self.events(("assistant", [self.use(name="Bash")]),
+                         ("user", [self.res("ok")]))
+        self.assertEqual(rb.probe_outcome(ev, self.TOOLS)[0], "not_granted")
+
+    def test_the_probe_asks_for_the_arguments_the_tool_requires(self):
+        # A get_context with no arguments is a validation error on any server
+        # that enforces its required parameters, which is what the probe used
+        # to ask for.
+        a = argparse.Namespace(environment="examples", package="storefront")
+        args = rb.probe_arguments(a)
+        self.assertTrue(args["search_targets"])
+        self.assertEqual(args["scopes"],
+                         [{"environment": "examples", "package": "storefront"}])
+
+
 class UnscorablePreflight(unittest.TestCase):
     """A set of bare questions is a supported set, not a set to refuse.
 

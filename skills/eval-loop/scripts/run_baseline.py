@@ -755,6 +755,21 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     raise ValueError("tools/call returned no readable content")
 
 
+def probe_arguments(a: argparse.Namespace) -> dict[str, Any]:
+    """The arguments of the one cheap `get_context` every probe makes.
+
+    Defined once because two probes make this call and they must make the SAME
+    one. `search_targets` and `scopes` are both REQUIRED by the tool -- a call
+    with neither is a validation error, not a minimal call -- and the hosted
+    reachability probe used to ask for one with no arguments at all. It got the
+    rejection any server with required parameters gives, which is not the
+    reachability answer it was there to get.
+    """
+    return {"search_targets": [{"target_type": "source",
+                                "search_text": "data"}],
+            "scopes": [{"environment": a.environment, "package": a.package}]}
+
+
 def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     """One cheap `get_context`, reduced to (mode, reason).
 
@@ -764,10 +779,15 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     one, and it is reported as mode None so the gate below stops rather than
     waiting for something that cannot arrive.
     """
-    payload = mcp_call(
-        a.mcp_url, "get_context",
-        {"search_targets": [{"target_type": "source", "search_text": "data"}],
-         "scopes": [{"environment": a.environment, "package": a.package}]})
+    return retrieval_of(mcp_call(a.mcp_url, "get_context", probe_arguments(a)))
+
+
+def retrieval_of(payload: Any) -> tuple[str | None, str | None]:
+    """(mode, reason) out of a `get_context` payload, however it was fetched.
+
+    Split from `retrieval_probe` so a payload that arrived through the CLI
+    reads the same two fields by the same rule as one fetched over raw HTTP.
+    """
     if not isinstance(payload, dict):
         return None, "get_context returned no object"
     return payload.get("retrieval"), payload.get("retrieval_reason")
@@ -898,7 +918,63 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
     return f"ready: {said}"
 
 
-def hosted_tools_reachable(a: argparse.Namespace) -> tuple[bool, str]:
+def probe_outcome(events: list[dict[str, Any]], tools: tuple[str, ...]
+                  ) -> tuple[str, str, Any]:
+    """(outcome, what it said, the payload) out of a probe transcript.
+
+    Read from the TRANSCRIPT rather than from the agent's prose, because the
+    three things that can happen are three different problems and the prose
+    collapses them into one sentence:
+
+      not_granted  no call to an allowed tool appears at all. Nothing was
+                   reachable -- most often no cached OAuth token, so the server
+                   contributed no tools.
+      rejected     the call was made and the server ANSWERED IT WITH AN ERROR.
+                   The endpoint is reachable and authenticated; the arguments
+                   or the tool names are wrong. Reporting this as "not
+                   authenticated" sends someone to redo a login that was fine.
+      reached      the call returned a payload.
+
+    `rejected` used to read as `reached`: a bare `tool_use` returned True
+    without ever looking at its result, so a probe whose only call was refused
+    passed the gate it exists to be.
+    """
+    said, pending, payload = "", {}, None
+    outcome = "not_granted"
+    for e in events:
+        if e.get("type") == "assistant":
+            for c in e["message"].get("content") or []:
+                if c.get("type") == "text":
+                    said += c["text"]
+                if c.get("type") == "tool_use" and c["name"] in tools:
+                    pending[c.get("id")] = c["name"]
+        elif e.get("type") == "user":
+            for c in e["message"].get("content") or []:
+                if c.get("type") != "tool_result":
+                    continue
+                name = pending.pop(c.get("tool_use_id"), None)
+                if name is None:
+                    continue
+                text = result_text(c)
+                if c.get("is_error"):
+                    # Kept only while nothing better has arrived: one refused
+                    # call and one good call means the server works.
+                    if outcome != "reached":
+                        outcome, said = "rejected", f"{name}: {text[:300]}"
+                    continue
+                outcome = "reached"
+                said = name
+                payload = payload if payload is not None else resource_json(text)
+    if pending and outcome == "not_granted":
+        # Called, and the transcript ended before a result came back. The tool
+        # was granted, so this is not the missing-login case.
+        outcome, said = "rejected", (f"{sorted(pending.values())[0]} was called "
+                                     f"and no result came back")
+    return outcome, (said.strip()[:300] or "no reply"), payload
+
+
+def hosted_tools_reachable(a: argparse.Namespace
+                           ) -> tuple[str, str, Any]:
     """Spawn ONE cheap agent to prove the hosted tools are actually granted.
 
     A headless answerer cannot complete an OAuth flow. Without a cached token
@@ -908,7 +984,16 @@ def hosted_tools_reachable(a: argparse.Namespace) -> tuple[bool, str]:
     and the bill is the same as a real one.
 
     So one probe before the arm, costing a single small call. Returns
-    (reachable, what it said).
+    (outcome, what it said, the get_context payload) -- see `probe_outcome`.
+
+    It asks for the SAME call the retrieval gate makes, through
+    `probe_arguments`, and for the same reason the gate makes it that way:
+    `search_targets` and `scopes` are both required, so a `get_context` with no
+    arguments is a validation error on any server that enforces them. This
+    probe used to ask for exactly that, "or the closest tool you have" -- which
+    sent the agent at whatever else it could find, usually something outside
+    the allowed list, and the whole thing came back reported as a login
+    problem.
     """
     work = tempfile.mkdtemp(prefix="hostedprobe-")
     try:
@@ -917,20 +1002,15 @@ def hosted_tools_reachable(a: argparse.Namespace) -> tuple[bool, str]:
             json.dump({"mcpServers": {a.hosted_mcp_server: {
                 "type": "http", "url": a.mcp_url}}}, fh)
         events = claude(
-            "Call get_context once with no arguments, or the closest tool you "
-            "have. Reply with the single word REACHED if the call returned "
-            "anything at all, otherwise reply with the reason in one line.",
+            "Call get_context exactly once, with these arguments and no "
+            "others:\n\n"
+            f"{json.dumps(probe_arguments(a), indent=2)}\n\n"
+            "Do not call any other tool, and do not retry with different "
+            "arguments if it fails. Then reply with one line saying what "
+            "happened.",
             work, "sonnet", mcp=mcp, tools=a.hosted_tools, turns=4,
             timeout=120, skills=False, retry=0)
-        said = ""
-        for e in events:
-            if e.get("type") == "assistant":
-                for c in e["message"].get("content") or []:
-                    if c.get("type") == "text":
-                        said += c["text"]
-                    if c.get("type") == "tool_use" and c["name"] in a.hosted_tools:
-                        return True, c["name"]
-        return "REACHED" in said.upper(), said.strip()[:200] or "no reply"
+        return probe_outcome(events, a.hosted_tools)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -2296,26 +2376,45 @@ def main(argv: list[str] | None = None) -> int:
                          else manifest_skills(a.answerer_manifest,
                                               ext_repo or REPO_ROOT))
     a.judge_skills = list(JUDGE_SKILLS)
+    # The reachability probe's own `get_context` reply, when one was made. The
+    # retrieval gate reads it rather than making a second call it cannot
+    # authenticate; None means no probe ran.
+    a.probe_payload = None
     if a.target == "platform" and not a.rebuild:
-        ok, said = hosted_tools_reachable(a)
-        if not ok:
+        outcome, said, a.probe_payload = hosted_tools_reachable(a)
+        if outcome == "not_granted":
             raise SystemExit(
-                f"the hosted tools are not reachable, so every answerer in this "
-                f"run would find nothing to call and the arm would read as a "
+                f"no hosted tool could be called, so every answerer in this run "
+                f"would find nothing to call and the arm would read as a "
                 f"terrible model.\n"
                 f"  the probe said: {said}\n"
                 f"  looked for: {', '.join(a.hosted_tools)}\n"
-                f"  Two causes, and the probe cannot tell them apart:\n"
-                f"  (a) NOT AUTHENTICATED. A headless answerer cannot complete "
-                f"an OAuth flow, so authenticate once interactively under the "
-                f"SAME server name this run uses -- the token is cached per "
-                f"name:\n"
-                f"      claude mcp add --transport http {a.hosted_mcp_server} {a.mcp_url}\n"
-                f"      claude        # then /mcp -> {a.hosted_mcp_server} -> Authenticate\n"
-                f"  (b) WRONG TOOL NAMES. The server answered but exposes other "
-                f"tools; --hosted-tools takes the BARE names it actually has "
-                f"(the prefix is added). A local proxy fronting a hosted engine "
-                f"may expose either surface depending on how it is configured.")
+                f"  Most likely NOT AUTHENTICATED: a headless answerer cannot "
+                f"complete an OAuth flow, so the token has to be cached first, "
+                f"under the SAME server name this run uses (the cache is keyed "
+                f"on the name):\n"
+                f"      claude mcp add --transport http "
+                f"{a.hosted_mcp_server} {a.mcp_url}\n"
+                f"      claude mcp login {a.hosted_mcp_server}\n"
+                f"  `login` is the command that authenticates, and it needs a "
+                f"real terminal: it opens a browser and waits for the "
+                f"redirect, so a detached runner cannot complete it. Over SSH, "
+                f"`claude mcp login {a.hosted_mcp_server} --no-browser` prints "
+                f"the URL and takes the redirect pasted back.\n"
+                f"  Otherwise the server exposes tools under other names: "
+                f"--hosted-tools takes the BARE names it actually has (the "
+                f"prefix is added). A local proxy fronting a hosted engine may "
+                f"expose either surface depending on how it is configured.")
+        if outcome == "rejected":
+            raise SystemExit(
+                f"the hosted server is reachable and authenticated, and it "
+                f"REFUSED the probe call. This is not a login problem.\n"
+                f"  the probe said: {said}\n"
+                f"  it called get_context with:\n"
+                f"{json.dumps(probe_arguments(a), indent=6)}\n"
+                f"  Check --environment and --package name something this "
+                f"workspace serves, and that the tool takes these arguments on "
+                f"the version you are pointed at.")
         print(f"  hosted tools reachable via {a.hosted_mcp_server}")
     url_error = platform_url_error(a.target, a.mcp_url, a.hosted_mcp_server)
     if url_error:
