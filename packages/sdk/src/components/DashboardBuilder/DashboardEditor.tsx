@@ -3,6 +3,7 @@
 
 import DownloadIcon from "@mui/icons-material/Download";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -22,6 +23,7 @@ import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument } from "./document";
 import { previewGivens, previewTileQuery } from "./preview";
 import { readDashboardDocument, readFailed } from "./readDocument";
+import { sha256Hex } from "../../utils/sha256";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
 
 /**
@@ -74,7 +76,8 @@ export function DashboardEditor({
    onExit,
    onEvent,
 }: DashboardEditorProps) {
-   const { apiClients } = useServer();
+   const { apiClients, mutable } = useServer();
+   const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
    // so a host's handler changing identity does not re-open the document.
@@ -98,6 +101,22 @@ export function DashboardEditor({
    const packageText = (
       modelQuery.data?.data as { sourceText?: string } | undefined
    )?.sourceText;
+   // The hash of the package file as opened: what a save into the package
+   // hands back as `expectedHash`, so a copy someone else changed in the
+   // meantime is refused rather than overwritten.
+   const [packageHash, setPackageHash] = useState<string | undefined>(
+      undefined,
+   );
+   useEffect(() => {
+      if (packageText === undefined) return;
+      let stale = false;
+      void sha256Hex(packageText).then((hash) => {
+         if (!stale) setPackageHash(hash);
+      });
+      return () => {
+         stale = true;
+      };
+   }, [packageText]);
 
    // The host's copy, if one was saved earlier: offered, never assumed.
    const [workspace, setWorkspace] = useState<string | undefined>(undefined);
@@ -147,8 +166,12 @@ export function DashboardEditor({
       | undefined
    >(undefined);
    const [openError, setOpenError] = useState<string | undefined>(undefined);
+   // The text the builder last saved into the package. When that text comes
+   // back from the server it is not a new document to open — the builder
+   // already holds it, with its history — so the open effect leaves it be.
+   const savedRef = useRef<string | undefined>(undefined);
    useEffect(() => {
-      if (opening === undefined) return;
+      if (opening === undefined || opening === savedRef.current) return;
       let stale = false;
       void readDashboardDocument(opening).then((result) => {
          if (stale) return;
@@ -178,27 +201,82 @@ export function DashboardEditor({
       };
    }, [opening]);
 
-   const save = useCallback(
+   const locator =
+      workspace === undefined
+         ? undefined
+         : dashboardLocator(workspace, environmentName, packageName, modelPath);
+   const saveToBrowser = useCallback(
       async (source: string) => {
-         if (!storage || workspace === undefined)
+         if (!storage || !locator)
             throw new Error(
                "This host keeps no documents, so there is nowhere to save.",
             );
-         await storage.saveDocument(
-            dashboardLocator(
-               workspace,
-               environmentName,
-               packageName,
-               modelPath,
-            ),
-            source,
-         );
+         await storage.saveDocument(locator, source);
          setDraft(source);
          // Saving without choosing is choosing the package file.
          setResume((chosen) => chosen ?? false);
       },
-      [storage, workspace, environmentName, packageName, modelPath],
+      [storage, locator],
    );
+   // Into the package itself, when the server takes writes: compile-checked,
+   // written atomically and reloaded there, refused if the file changed since
+   // it was opened. A browser draft of the same file is superseded by it.
+   const saveToPackage = useCallback(
+      async (source: string) => {
+         if (packageHash === undefined)
+            throw new Error("The package file is still loading; try again.");
+         let result;
+         try {
+            result = await apiClients.models.putModelSource(
+               environmentName,
+               packageName,
+               modelPath,
+               { source, expectedHash: packageHash },
+            );
+         } catch (error) {
+            throw new Error(apiErrorMessage(error));
+         }
+         savedRef.current = source;
+         setPackageHash(result.data.contentHash);
+         if (storage && locator) {
+            await storage.deleteDocument(locator).catch(() => undefined);
+            setDraft(undefined);
+            setOffered(false);
+         }
+         setResume((chosen) => chosen ?? false);
+         // The package changed: the file, the manifest the live view reads,
+         // the package's dashboards list, and the dashboard the reader sees.
+         await queryClient.invalidateQueries({
+            queryKey: [
+               "dashboard-editor-model",
+               environmentName,
+               packageName,
+               modelPath,
+            ],
+         });
+         for (const key of [
+            "dashboard-editor-manifest",
+            "dashboards",
+            "dashboard",
+         ])
+            void queryClient.invalidateQueries({ queryKey: [key] });
+      },
+      [
+         apiClients,
+         environmentName,
+         packageName,
+         modelPath,
+         packageHash,
+         storage,
+         locator,
+         queryClient,
+      ],
+   );
+   const save = mutable
+      ? saveToPackage
+      : storage && locator
+        ? saveToBrowser
+        : undefined;
    const choose = (resumeDraft: boolean) => {
       startedAt.current = now();
       setResume(resumeDraft);
@@ -249,7 +327,7 @@ export function DashboardEditor({
                modelPath={modelPath}
                slug={dashboardName}
                opened={opened}
-               onSave={storage && workspace !== undefined ? save : undefined}
+               onSave={save}
                {...(onEvent ? { onEvent } : {})}
                toolbar={
                   onExit && (
@@ -259,9 +337,11 @@ export function DashboardEditor({
                   )
                }
                note={
-                  storage
-                     ? "Saved in this browser. Export puts the file in the package."
-                     : "Export puts the file in the package."
+                  mutable
+                     ? "Save writes the file into the package."
+                     : storage
+                       ? "Saved in this browser. Export puts the file in the package."
+                       : "Export puts the file in the package."
                }
             />
          )}
@@ -490,4 +570,12 @@ function Surface({
          </Box>
       </Stack>
    );
+}
+
+/** The server's own reason for a refused write, when it gave one. */
+function apiErrorMessage(error: unknown): string {
+   const data = (error as { response?: { data?: { message?: string } } })
+      .response?.data;
+   if (data?.message) return data.message;
+   return error instanceof Error ? error.message : String(error);
 }

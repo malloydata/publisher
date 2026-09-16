@@ -25,10 +25,13 @@ export const TEST_SERVER = "http://localhost/api/v0";
  * module. `ServerProvider` itself is stubbed alongside `useServer` because
  * `components/index.ts` re-exports both, and the barrel is in the graph.
  */
-export function mockServerProvider(apiClients: unknown) {
+export function mockServerProvider(
+   apiClients: unknown,
+   context: Record<string, unknown> = {},
+) {
    mock.module("../src/components/ServerProvider", () => ({
       ServerProvider: () => null,
-      useServer: () => ({ server: TEST_SERVER, apiClients }),
+      useServer: () => ({ server: TEST_SERVER, apiClients, ...context }),
    }));
 }
 
