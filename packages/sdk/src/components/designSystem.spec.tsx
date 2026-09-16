@@ -270,4 +270,47 @@ describe("BackLink", () => {
       );
       expect(onClick).toHaveBeenCalledTimes(1);
    });
+
+   it("suppresses the anchor's own navigation on a plain click", () => {
+      // The regression: with an href present and the default left alone, the
+      // page navigated twice — the host's router, and then a full document
+      // load that undid it.
+      const onClick = mock(() => {});
+      render(
+         <BackLink
+            label="storefront"
+            href="/examples/storefront"
+            onClick={onClick}
+         />,
+      );
+      const link = screen.getByRole("link", { name: "Back to storefront" });
+      const event = new MouseEvent("click", {
+         bubbles: true,
+         cancelable: true,
+      });
+      link.dispatchEvent(event);
+      expect(onClick).toHaveBeenCalledTimes(1);
+      expect(event.defaultPrevented).toBe(true);
+   });
+
+   it("leaves a modified click to the browser, so it opens a new tab", () => {
+      // The whole reason for the href. Handling this one would swallow it.
+      const onClick = mock(() => {});
+      render(
+         <BackLink
+            label="storefront"
+            href="/examples/storefront"
+            onClick={onClick}
+         />,
+      );
+      const link = screen.getByRole("link", { name: "Back to storefront" });
+      const event = new MouseEvent("click", {
+         bubbles: true,
+         cancelable: true,
+         metaKey: true,
+      });
+      link.dispatchEvent(event);
+      expect(onClick).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+   });
 });

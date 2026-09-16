@@ -18,11 +18,16 @@ import * as React from "react";
  * The click is the host's, so a Console navigates its router and an embedder
  * does whatever it does. Give it an `href` as well wherever the parent has a
  * URL: that is what makes it a link rather than a widget that looks like one —
- * focusable from the keyboard, announced as a link, and openable in a new tab
- * with a middle-click or a modified click, which reach the handler with their
- * event like any other navigation in the SDK. Without an `href` it still has to
- * be reachable, so it renders as a button rather than as an anchor with nothing
- * to point at, which is focusable by neither keyboard nor assistive technology.
+ * focusable from the keyboard, announced as a link, and shown in the status bar
+ * on hover. Without an `href` it still has to be reachable, so it renders as a
+ * button rather than as an anchor with nothing to point at, which is focusable
+ * by neither keyboard nor assistive technology.
+ *
+ * A PLAIN left click is the host's and the default is suppressed, or the page
+ * would navigate twice — once through the host's router and once as a document
+ * load, which is the slower of the two and undoes the first. A middle-click or
+ * a modified click is deliberately left to the browser: that is what opens the
+ * parent in a new tab, and it is the reason for the `href` in the first place.
  */
 export function BackLink({
    label,
@@ -35,12 +40,23 @@ export function BackLink({
    href?: string;
    onClick: (event: React.MouseEvent) => void;
 }) {
+   const handleClick = (event: React.MouseEvent) => {
+      const modified =
+         event.metaKey ||
+         event.ctrlKey ||
+         event.shiftKey ||
+         event.altKey ||
+         event.button !== 0;
+      if (href !== undefined && modified) return;
+      event.preventDefault();
+      onClick(event);
+   };
    return (
       <Link
          {...(href === undefined
             ? { component: "button" as const, type: "button" as const }
             : { href })}
-         onClick={onClick}
+         onClick={handleClick}
          underline="none"
          aria-label={`Back to ${label}`}
          sx={{

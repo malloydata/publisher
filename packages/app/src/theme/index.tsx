@@ -34,15 +34,22 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
    const textSecondary = isDark ? DARK_TEXT_SECONDARY : colors.grey.mid;
    const divider = isDark ? DARK_DIVIDER : colors.grey.light;
 
-   // Contained primary buttons read their bg from primary.main and text from
-   // contrastText, so this is the colour of every confirming action in the
-   // Console. The palette's anchor blue, which is also its first chart series:
-   // the button that saves a dashboard and the first line on it are the same
-   // hue, and the page has one accent rather than a neutral button beside
-   // coloured content. Lifted a step in dark mode, where the same blue on a
-   // slate ground goes muddy.
-   const primaryMain = isDark ? "#3b82f6" : PALETTE.blue;
-   const primaryHover = isDark ? "#60a5fa" : "#1d4ed8";
+   // Contained primary buttons read their bg from primary.main and their text
+   // from contrastText, so this is the colour of every confirming action in
+   // the Console. The palette's anchor blue, which is also its first chart
+   // series: the button that saves a dashboard and the first line on it are
+   // the same hue, and the page has one accent rather than a neutral button
+   // beside coloured content.
+   //
+   // Dark mode inverts the pair rather than shifting the blue. A mid blue on a
+   // slate page is only 3.5:1 against the page and puts white text at 3.7:1,
+   // under the 4.5:1 a label needs — and its hover state was worse than its
+   // resting one. A bright fill with a near-black label reads at 7:1 on both
+   // counts, and is what a dark theme wants anyway: the button is the lit
+   // thing on the page, not a darker patch of it.
+   const primaryMain = isDark ? "#60a5fa" : PALETTE.blue;
+   const primaryHover = isDark ? "#93c5fd" : "#1d4ed8";
+   const primaryContrast = isDark ? "#0f172a" : "#ffffff";
 
    return createTheme({
       cssVariables: { nativeColor: true },
@@ -52,7 +59,7 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
             main: primaryMain,
             light: colors.grey.light,
             dark: primaryHover,
-            contrastText: "#ffffff",
+            contrastText: primaryContrast,
          },
          secondary: {
             main: colors.grey.mid,
