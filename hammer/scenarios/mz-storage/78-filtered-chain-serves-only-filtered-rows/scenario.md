@@ -20,6 +20,15 @@ is_deleted`) with slices persisted on top of it (`is_open`, `not is_open`). It
 exercises a second path, because a chained build computes the downstream over its
 rebound parents rather than over the raw source.
 
+What is being relied on here, stated because the answers below do not show it: a
+filter is not part of what gets BUILT, so once their filters are set aside these
+two sources are the same relation. They content-address identically, share one
+physical table, and that table holds every row — including the ones both filters
+exclude. The artifact is deliberately wider than the source, and every reader of
+it owes the filter. Read-time correction is what makes the answers right, which
+is why `filter-survives-the-serve-shape-ladder` guards the read side so
+carefully: the rows to be excluded are sitting in the table.
+
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on

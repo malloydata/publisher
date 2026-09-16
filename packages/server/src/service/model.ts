@@ -4443,15 +4443,28 @@ export class Model {
                        : b,
                  );
          const materializer = this.buildServeShapeMaterializer(shaped, groups);
-         // The last tier is virtual bases plus their filters. It compiles for
-         // every source whose filters can be reproduced, which is the ordinary
-         // case; when one cannot, the shape does not compile and the caller's
-         // eager per-query compile turns that into serving live — the required
-         // answer, because the alternative is serving the rows the filter
-         // excludes. Returned without a probe either way: a probe here could
-         // only choose between two shapes that both fail. And when there is
-         // nothing to escalate, tier 0 IS that shape — skip too.
-         if (tier === lastTier || (tier === 0 && nothingToEscalate)) {
+         // The last tier is virtual bases plus their filters. Unlike the tiers
+         // above it, it can fail: a filter that cannot be reproduced (one
+         // reaching through a join whose target is not materialized, or over a
+         // column the source hides) fails every tier including this one. It is
+         // therefore PROBED, and a failure is answered by withholding the
+         // offending bindings — never by thinning their filters, which is the
+         // unfiltered serve this ladder exists to prevent.
+         if (tier === lastTier) {
+            try {
+               await materializer.getModel();
+               return materializer;
+            } catch (err) {
+               return await this.serveShapeWithoutUnservableBindings(
+                  shaped,
+                  keep,
+                  err,
+               );
+            }
+         }
+         // Nothing to escalate means tier 0 IS the floor's shape, and the loop
+         // would otherwise probe a shape it cannot improve on.
+         if (tier === 0 && nothingToEscalate) {
             return materializer;
          }
          try {
@@ -4481,6 +4494,84 @@ export class Model {
          })),
          [],
       );
+   }
+
+   /**
+    * The floor shape with every binding that cannot compile on its own removed.
+    *
+    * Reached only when the floor itself fails, which means at least one binding
+    * carries a filter the shape cannot reproduce. The whole shape is one model
+    * text, so without this the failure costs every source in the model its tier,
+    * not just the offending one. Each binding is probed alone — a compile per
+    * binding, on a failure path whose result is cached — and the survivors are
+    * rebuilt into one shape.
+    *
+    * Withholding, never thinning: a binding that does not compile is absent from
+    * the shape, so queries on it fail to resolve and serve live. Thinning its
+    * filters instead would serve it unfiltered, which is the defect this whole
+    * mechanism exists to prevent.
+    *
+    * Falls back to the failing shape when nothing survives, or when the
+    * survivors still do not compile together (a binding that compiles alone but
+    * not beside its siblings — an ordering cycle, say). Both send every query
+    * live, which is the safe answer.
+    */
+   private async serveShapeWithoutUnservableBindings(
+      shaped: ServeBinding[],
+      keep: ReadonlySet<string>,
+      floorError: unknown,
+   ): Promise<ModelMaterializer> {
+      const survivors: ServeBinding[] = [];
+      const withheld: string[] = [];
+      for (const binding of shaped) {
+         try {
+            await this.buildServeShapeMaterializer([binding], []).getModel();
+            survivors.push(binding);
+         } catch {
+            withheld.push(binding.sourceName);
+         }
+      }
+      const failing = this.buildServeShapeMaterializer(shaped, []);
+      if (withheld.length === 0 || survivors.length === 0) {
+         // Nothing to isolate (every binding compiles alone, so the failure is in
+         // their combination) or nothing left to serve. Either way the whole
+         // model serves live.
+         logger.warn(
+            "Storage serve shape failed at its floor and no binding could be isolated; serving live",
+            {
+               model: this.modelPath,
+               keep: [...keep],
+               error:
+                  floorError instanceof Error
+                     ? floorError.message
+                     : String(floorError),
+            },
+         );
+         return failing;
+      }
+      const narrowed = this.buildServeShapeMaterializer(survivors, []);
+      try {
+         await narrowed.getModel();
+      } catch {
+         logger.warn(
+            "Storage serve shape still failed after withholding unservable bindings; serving live",
+            { model: this.modelPath, withheld },
+         );
+         return failing;
+      }
+      logger.warn(
+         "Withheld storage serve bindings whose filters cannot be reproduced; those sources serve live",
+         {
+            model: this.modelPath,
+            withheld,
+            stillServed: survivors.map((b) => b.sourceName),
+            error:
+               floorError instanceof Error
+                  ? floorError.message
+                  : String(floorError),
+         },
+      );
+      return narrowed;
    }
 
    /** Build the transient serve-shape materializer for a set of bindings. */
