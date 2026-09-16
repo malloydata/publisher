@@ -141,16 +141,17 @@ export function DashboardEditor({
       setReadFailure(undefined);
       (async () => {
          try {
-            // Deferred: this hides an authoritative workspace from a reader who
-            // cannot write to it, who then falls back to the package. Fixing it
-            // means listing every workspace, preferring the authoritative one
-            // regardless, and arming Save only when it is writeable.
-            const writeable = await storage.listWorkspaces(true);
-            // The record when one declares itself, and otherwise what the
-            // editor has always taken.
+            // Every workspace, not only the writeable ones: a reader who
+            // cannot write to the record still has to be shown the record.
+            // Asking for writeable only would hide it and fall back to the
+            // package, which on a server that takes writes means publishing a
+            // deploy of the record over the record.
+            const all = await storage.listWorkspaces(false);
+            // The record when one declares itself, and otherwise the first
+            // writeable one, which is what the editor has always taken.
             const chosen =
-               writeable.find((candidate) => candidate.authoritative) ??
-               writeable[0];
+               all.find((candidate) => candidate.authoritative) ??
+               all.find((candidate) => candidate.writeable);
             if (stale) return;
             setWorkspace(chosen);
             if (chosen !== undefined) {
@@ -186,6 +187,9 @@ export function DashboardEditor({
    // The host's copy is the record: the editor opens it, writes back to it,
    // and never offers to "resume" it, because a record is not a pending edit.
    const authoritative = workspace?.authoritative === true;
+   // The package file is a deploy of the record, so opening it when the record
+   // itself could not be read would put a reader on the wrong document.
+   const blockedOnRecord = authoritative && readFailure !== undefined;
 
    // What the editor opens: the record when the host keeps one, the copy when
    // the reader chose to resume it, the package file otherwise. `generation`
@@ -194,21 +198,13 @@ export function DashboardEditor({
    const fromDraft = authoritative
       ? draft !== undefined
       : resume === true && draft !== undefined;
-   const latest = fromDraft ? draft : packageText;
    const [opened, setOpened] = useState<
       | { source: string; document: DashboardDocument; generation: number }
       | undefined
    >(undefined);
    const [openError, setOpenError] = useState<string | undefined>(undefined);
-   // The text this editor last wrote. State as well as a ref because what is
-   // open is derived from it during render, and a ref write does not
-   // re-render; the ref is what the open effect reads, so that effect keeps
-   // its single dependency and does not re-run when this clears.
-   const [saved, setSaved] = useState<string | undefined>(undefined);
-   const savedRef = useRef(saved);
-   savedRef.current = saved;
-   // The package's hash after that write, as the server computed it: the base
-   // the next save is spliced against.
+   // The package's hash after this editor's last write, as the server computed
+   // it: the base the next save is spliced against.
    const savedHashRef = useRef<string | undefined>(undefined);
    // The package file as it stood when the editor last opened a document. The
    // base a save is spliced against is the package's, which is NOT the text
@@ -216,34 +212,52 @@ export function DashboardEditor({
    // version held back while the reader keeps editing has moved the fetch
    // past the file the reader is answering for.
    const packageBaseRef = useRef<string | undefined>(undefined);
-   const packageTextRef = useRef(packageText);
-   packageTextRef.current = packageText;
-   // A save leaves every fetch behind `latest` holding the text it replaced,
-   // and on the package path it also drops the copy it superseded — so until
-   // the refetch lands, `latest` is the previous version, not a new one.
-   const wanted = saved ?? latest;
-   useEffect(() => {
-      // The save's own echo arrived: `latest` speaks for the file again, so a
-      // change someone else makes after this is seen rather than shadowed.
-      if (saved !== undefined && latest === saved) setSaved(undefined);
-   }, [latest, saved]);
+   // What this editor last wrote into the package, and the fetch it was
+   // written on top of. The write is in the file before the fetch behind
+   // `packageText` catches up, so until a fetch actually lands `packageText`
+   // is the text the save replaced rather than a version to open. Tied to the
+   // fetch and not to the text, so the NEXT fetch speaks for the file whether
+   // it carries this editor's write or someone else's.
+   const [wrote, setWrote] = useState<
+      { text: string; onFetch: number } | undefined
+   >(undefined);
+   const fetchedAt = modelQuery.dataUpdatedAt;
+   const fetchedAtRef = useRef(fetchedAt);
+   fetchedAtRef.current = fetchedAt;
+   const packageNow =
+      wrote !== undefined && wrote.onFetch === fetchedAt
+         ? wrote.text
+         : packageText;
+   const packageNowRef = useRef(packageNow);
+   packageNowRef.current = packageNow;
+   const latest = fromDraft ? draft : packageNow;
 
    // Whether the builder holds edits the record does not have, and the version
    // being held back because of them.
    const [dirty, setDirty] = useState(false);
    const [accepted, setAccepted] = useState<string | undefined>(undefined);
-   // What the builder is on: what it last wrote, or the text it was opened
-   // with. A save does not remount it, so these differ after one.
-   const current = saved ?? opened?.source;
+   // The text on this channel the editor has already reckoned with: what it
+   // opened, and what it wrote. Compared against the CHANNEL rather than
+   // against the builder, because the two diverge legitimately — a copy saved
+   // beside the package leaves the builder ahead of a package that has not
+   // moved, and reading that as an incoming version would offer a reader
+   // their own work back forever.
+   const [seen, setSeen] = useState<string | undefined>(undefined);
+   const incoming = latest !== undefined && latest !== seen;
+   // What the builder is on. A save does not remount it, so this follows the
+   // save rather than the text the builder was opened with.
+   const current = opened?.source;
    const holding =
-      dirty &&
-      current !== undefined &&
-      wanted !== undefined &&
-      wanted !== current &&
-      wanted !== accepted;
-   const opening = holding ? current : wanted;
-   const held = holding ? wanted : undefined;
+      incoming && dirty && current !== undefined && latest !== accepted;
+   const opening = holding ? current : incoming ? latest : (current ?? latest);
+   const held = holding ? latest : undefined;
 
+   // Read by the open effect so it keeps its single dependency: the guard must
+   // not re-run the effect when what it compares against changes.
+   const openedSourceRef = useRef(current);
+   openedSourceRef.current = current;
+   const latestRef = useRef(latest);
+   latestRef.current = latest;
    const fromRef = useRef<"package" | "draft" | "record">("package");
    fromRef.current = fromDraft
       ? authoritative
@@ -251,9 +265,13 @@ export function DashboardEditor({
          : "draft"
       : "package";
    useEffect(() => {
-      if (opening === undefined || opening === savedRef.current) return;
+      // Nothing is safe to open when the record could not be read; opening the
+      // package here would also report an open that never happened.
+      if (opening === undefined || blockedOnRecord) return;
+      if (opening === openedSourceRef.current) return;
       let stale = false;
-      const packageAtOpen = packageTextRef.current;
+      const packageAtOpen = packageNowRef.current;
+      const latestAtOpen = latestRef.current;
       void readDashboardDocument(opening).then((result) => {
          if (stale) return;
          if (readFailed(result)) {
@@ -268,9 +286,11 @@ export function DashboardEditor({
          // A different document is open, so what this editor wrote before is
          // no longer the base anything is spliced against; the package file
          // the reader is now answering for is the one current at this open.
-         setSaved(undefined);
          savedHashRef.current = undefined;
          packageBaseRef.current = packageAtOpen;
+         setWrote(undefined);
+         setAccepted(undefined);
+         setSeen(latestAtOpen);
          setOpened((previous) => ({
             source: opening,
             document: result.document,
@@ -286,7 +306,7 @@ export function DashboardEditor({
       return () => {
          stale = true;
       };
-   }, [opening]);
+   }, [opening, blockedOnRecord]);
 
    const locator =
       workspace === undefined
@@ -306,10 +326,16 @@ export function DashboardEditor({
                "This host keeps no documents, so there is nowhere to save.",
             );
          await storage.saveDocument(locator, source);
-         setSaved(source);
+         // The builder keeps its history and its text; what it holds is now
+         // this, not the text it was opened with.
+         setOpened((previous) => previous && { ...previous, source });
          setDraft(source);
+         // On the record, the channel IS the copy just written, so it is not
+         // an incoming version. A copy kept beside the package leaves the
+         // package where it was, so nothing on that channel has moved.
+         if (authoritative) setSeen(source);
          // Saving without choosing is choosing the package file.
-         if (!authoritative) setResume((chosen) => chosen ?? false);
+         else setResume((chosen) => chosen ?? false);
       },
       [storage, locator, authoritative],
    );
@@ -345,7 +371,9 @@ export function DashboardEditor({
          } catch (error) {
             throw new Error(apiErrorMessage(error));
          }
-         setSaved(source);
+         setOpened((previous) => previous && { ...previous, source });
+         setWrote({ text: source, onFetch: fetchedAtRef.current });
+         setSeen(source);
          savedHashRef.current = result.data.contentHash;
          setSupersedeFailure(undefined);
          if (storage && locator) {
@@ -362,7 +390,10 @@ export function DashboardEditor({
                } else setSupersedeFailure(storageErrorMessage(error));
             }
          }
-         setResume((chosen) => chosen ?? false);
+         // The package is what is open now, even if the copy beside it
+         // survived the supersede: reading the channel off a stale copy would
+         // put the builder back on the text this save replaced.
+         setResume(false);
          // The package changed: the file, the manifest the live view reads,
          // the package's dashboards list, and the dashboard the reader sees.
          await queryClient.invalidateQueries({
@@ -395,13 +426,14 @@ export function DashboardEditor({
    // writable, and writing the package there would edit a deploy of the
    // record instead of the record.
    const savesTo = authoritative ? "host" : mutable ? "package" : "browser";
+   const canWriteWorkspace = workspace?.writeable === true;
    const writer = authoritative
-      ? storage && locator
+      ? storage && locator && canWriteWorkspace
          ? saveToStorage
          : undefined
       : mutable
         ? saveToPackage
-        : storage && locator
+        : storage && locator && canWriteWorkspace
           ? saveToStorage
           : undefined;
    // A copy that could not be read is not a copy that is not there. Saving on
@@ -419,8 +451,7 @@ export function DashboardEditor({
       },
       [workspaceName],
    );
-   // Stable, because the builder fires this from an effect that depends on it:
-   // a new identity each render would report the same answer over and over.
+   // Stable: the builder fires this from an effect that depends on it.
    const reportDirty = useCallback((value: boolean) => {
       setDirty(value);
       onDirtyChangeRef.current?.(value);
@@ -429,7 +460,7 @@ export function DashboardEditor({
    // be held back, so it is never held.
    const choose = (resumeDraft: boolean) => {
       startedAt.current = now();
-      setAccepted(resumeDraft ? draft : packageText);
+      setAccepted(resumeDraft ? draft : packageNow);
       setResume(resumeDraft);
    };
    const acceptHeld = () => {
@@ -457,7 +488,7 @@ export function DashboardEditor({
    // Where the host's copy IS the document, a copy that could not be read
    // leaves nothing safe to edit: the package file is a deploy of the record,
    // so opening it and arming Save would publish it over the record.
-   if (authoritative && readFailure)
+   if (blockedOnRecord)
       return (
          <Alert severity="error" sx={{ m: 2 }}>
             This dashboard cannot be opened: {readFailure}
@@ -502,7 +533,9 @@ export function DashboardEditor({
             >
                {savesTo === "package"
                   ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
-                  : "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and overwrites it."}
+                  : savesTo === "host"
+                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
+                    : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
             </Alert>
          )}
          {supersedeFailure !== undefined && (
@@ -564,7 +597,10 @@ function caption({
 }): string {
    if (readFailure !== undefined)
       return `The saved copy could not be read, so Save is off: ${readFailure}`;
-   if (authoritative && workspace) return workspace.description;
+   if (authoritative && workspace)
+      return workspace.writeable
+         ? workspace.description
+         : `${workspace.description}: you cannot save into it.`;
    if (mutable) return "Save writes the file into the package.";
    if (workspace)
       return `${workspace.description}: this server does not take writes.`;

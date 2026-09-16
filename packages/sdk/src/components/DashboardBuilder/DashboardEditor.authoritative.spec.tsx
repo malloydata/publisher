@@ -129,6 +129,12 @@ const RECORD: Workspace = {
    description: "Saved to the draft branch",
    authoritative: true,
 };
+const READ_ONLY_RECORD: Workspace = {
+   name: "Branch",
+   writeable: false,
+   description: "Saved to the draft branch",
+   authoritative: true,
+};
 const BESIDE: Workspace = {
    name: "Branch",
    writeable: true,
@@ -145,8 +151,11 @@ class FakeStorage implements DocumentStorage {
    deleteFailure: unknown;
    constructor(private readonly workspace: Workspace) {}
 
-   async listWorkspaces(): Promise<Workspace[]> {
-      return [this.workspace];
+   async listWorkspaces(writeableOnly: boolean): Promise<Workspace[]> {
+      // Honoured, not ignored: a fixture that hands back a read-only
+      // workspace to a caller asking for writeable ones cannot tell whether
+      // the editor asked the right question.
+      return writeableOnly && !this.workspace.writeable ? [] : [this.workspace];
    }
    async listDocuments(
       _workspace: Workspace,
@@ -316,6 +325,22 @@ describe("DashboardEditor, when the host's store is the record", () => {
       expect(updateModelSource).not.toHaveBeenCalled();
    });
 
+   it("shows the record to a reader who cannot write to it, and offers no Save", async () => {
+      // Hiding it would fall back to the package, which on a server that takes
+      // writes means publishing a deploy of the record over the record.
+      serverContext.mutable = true;
+      const storage = new FakeStorage(READ_ONLY_RECORD);
+      storage.documents.set(PATH, withTitle("Recorded"));
+      mount(storage);
+
+      expect(await screen.findByText("Recorded")).toBeDefined();
+      expect(screen.queryByText("Storefront")).toBeNull();
+      expect(
+         screen.queryByRole("button", { name: "Save changes", hidden: true }),
+      ).toBeNull();
+      expect(screen.getByText(/you cannot save into it/)).toBeDefined();
+   });
+
    it("says where the record is, in the workspace's own words", async () => {
       const storage = new FakeStorage(RECORD);
       storage.documents.set(PATH, PACKAGE_FILE);
@@ -377,8 +402,19 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
       expect(
          await screen.findByText(/copy kept beside it could not be cleared/),
       ).toBeDefined();
-      // Still there, so the state must not claim otherwise.
-      expect(storage.documents.get(PATH)).toBeDefined();
+      // The backend's own reason, not a swallowed failure.
+      expect(screen.getByText(/the branch could not be reached/)).toBeDefined();
+      // The save stands, and the editor stays on it rather than on the copy.
+      expect(screen.getByText("Storefront")).toBeDefined();
+      await settle();
+      expect(screen.getByLabelText("Settings for Categories")).toBeDefined();
+
+      // The copy really is still there: a fresh visit is offered it again.
+      cleanup();
+      clearCache();
+      serverContext.mutable = true;
+      mount(storage);
+      expect(await screen.findByText(/edits to this dashboard/)).toBeDefined();
    });
 
    it("keeps a resumed copy on screen after saving it into the package, and splices the next save onto it", async () => {
@@ -407,10 +443,116 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
       // On "Saved" rather than on the call count, which rises before the write
       // it started has finished and would leave it running into the next test.
       await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
       expect(updateModelSource).toHaveBeenCalledTimes(2);
       const second = updateModelSource.mock.calls[1][3].source;
       expect(second).toContain('title="Drafted"');
       expect(second).toContain('# label="Regions"');
+   });
+});
+
+/**
+ * A save leaves the builder holding text the fetches behind it have not caught
+ * up with. Everything here is about that window: what the editor believes is
+ * open in it, and what it does with a version that lands during or after it.
+ */
+describe("DashboardEditor, after a save", () => {
+   it("keeps the next edit, on the package path", async () => {
+      serverContext.mutable = true;
+      mount(new FakeStorage(BESIDE));
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+      // The save alone must not have remounted the builder: its own write
+      // coming back is not a new version of the file.
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+
+      renameTile("Regions", "Categories");
+      await settle();
+      // The save's own text coming back is not a version to open, so the
+      // builder is not remounted out from under the edit that follows it, and
+      // the reader is not offered their own save back as someone else's.
+      expect(screen.getByLabelText("Settings for Regions")).toBeDefined();
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+      expect(screen.queryByText(/changed since you opened it/)).toBeNull();
+   });
+
+   it("keeps the next edit, on the record", async () => {
+      const storage = new FakeStorage(RECORD);
+      storage.documents.set(PATH, PACKAGE_FILE);
+      mount(storage);
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+      // The save alone must not have remounted the builder: its own write
+      // coming back is not a new version of the file.
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+
+      renameTile("Regions", "Categories");
+      await settle();
+      expect(screen.getByLabelText("Settings for Regions")).toBeDefined();
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+      expect(screen.queryByText(/changed since you opened it/)).toBeNull();
+   });
+
+   it("keeps the next edit, on the Console's copy beside the package", async () => {
+      const storage = new FakeStorage(BESIDE);
+      mount(storage);
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+      // The save alone must not have remounted the builder: its own write
+      // coming back is not a new version of the file.
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+
+      renameTile("Regions", "Categories");
+      await settle();
+      expect(screen.getByLabelText("Settings for Regions")).toBeDefined();
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+      expect(screen.queryByText(/changed since you opened it/)).toBeNull();
+   });
+
+   it("offers a version another writer landed while the save was in flight", async () => {
+      // The case compare-and-swap exists for: this editor's write never comes
+      // back, because someone else's landed after it. Reading "the fetch does
+      // not match what I wrote" as "not news" would hide it for good.
+      serverContext.mutable = true;
+      mount(new FakeStorage(BESIDE));
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+
+      await packageChangedTo(withTitle("Elsewhere"));
+      expect(await screen.findByText("Elsewhere")).toBeDefined();
+   });
+
+   it("still sees the package move after a copy is saved beside it", async () => {
+      // The copy going into storage leaves the package where it was, so the
+      // package's own next move is news even though the builder is ahead of it.
+      const storage = new FakeStorage(BESIDE);
+      mount(storage);
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+
+      await packageChangedTo(withTitle("Elsewhere"));
+      expect(await screen.findByText("Elsewhere")).toBeDefined();
    });
 });
 

@@ -75,8 +75,7 @@ export interface Workspace {
     *
     * Left out, the workspace is a place a reader's work is kept beside the
     * package — the Console's browser copy, a scratch space — and the package
-    * file is the record. That is the assumption every host made before this
-    * flag existed, so omitting it changes nothing.
+    * file is the record.
     *
     * The contract, which the editor relies on and does not police:
     *

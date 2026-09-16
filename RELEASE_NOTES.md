@@ -64,6 +64,11 @@ words, taken from `Workspace.description`, instead of asserting "this browser".
 `dashboard.saved` gains `where: "host"` and an optional `workspace`; `dashboard.opened`
 gains `from: "record"`.
 
+What this does not add is contention control on the record itself. `saveDocument` has
+no expected-version slot, so two people editing one authoritative workspace are still
+last writer wins, and the editor cannot detect it. Only the package path is
+compare-and-swap protected.
+
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
 A materialization is a run of one package's persist sources: `package_name` is NOT NULL on the row, every create takes a package, and the scheduler arms per package. The environment page nonetheless carried a second materializations surface on top of that — a cross-package list, plus a dialog that ticked packages and fired one ordinary per-package create for each — which read like a level of its own while offering strictly less than the package's own page. It is gone, and so is the one endpoint behind it, an aggregate that was the per-package query with the package predicate dropped.
