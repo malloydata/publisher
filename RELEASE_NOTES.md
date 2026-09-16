@@ -87,7 +87,7 @@ does not change that — a leftover marker of that shape stays inert rather than
 enforced, so it will not surface as a load failure on upgrade. Search for it explicitly rather than
 relying on the release to find it.
 
-## [Unreleased] — a dashboard's description is its narrative header, and it renders as markdown
+## [0.3.0] — a dashboard's description is its narrative header, and it renders as markdown
 
 A dashboard could already carry a block of prose and was throwing it away at the last step. Malloy
 delivers a doc comment with its newlines and blank lines intact — measured, `'## Why this page
@@ -106,7 +106,7 @@ round, with `#"` attached to its `query:`. And this is the whole prose surface a
 page, plus a one-line `# subtitle` per tile. Prose BETWEEN tiles needs a tile kind the format cannot
 express yet.
 
-## [Unreleased] — a property on a tile entry is reported instead of dropped
+## [0.3.0] — a property on a tile entry is reported instead of dropped
 
 `tiles=[intro { kind=text }]` compiled, loaded clean, and silently became the tile `intro` — a run
 expression that does not resolve, reported as a query error with no hint that the tag was the
@@ -114,7 +114,7 @@ problem. The shape parses today, so an author who has read about tile kinds anyw
 and be told nothing about why it did not work. The package lint now names the property and says where
 per-tile presentation actually goes.
 
-## [Unreleased] — a composite dashboard's tiles are cards again
+## [0.3.0] — a composite dashboard's tiles are cards again
 
 A tile on a `## artifact { tiles=[…] }` dashboard painted MUI's white instead of the instance theme's
 `tile` colour, which the theme itself describes as "a faint tint so tiles read as recessed cards on
@@ -130,7 +130,7 @@ neither can drift from the other unnoticed.
 Height stays deliberately different: a composite tile is capped so a grid of independent queries
 keeps even rows, where the single-query form sizes to its content.
 
-## [Unreleased] — a result panel is sized by what the renderer says it is, not by its DOM
+## [0.3.0] — a result panel is sized by what the renderer says it is, not by its DOM
 
 A panel decided its height by walking three levels into `@malloydata/render`'s output and reading
 whichever node it landed on, plus a class-name check on `.malloy-dashboard` for the one shape that
@@ -169,7 +169,7 @@ For SDK consumers: `ResultContainer`'s `maxHeight` is optional now, and leaving 
 carries `data-malloy-render-as` and `data-malloy-sizing` on its stage, so a panel at an unexpected
 height says which rule it took.
 
-## [Unreleased] — a dashboard imports its givens file whole
+## [0.3.0] — a dashboard imports its givens file whole
 
 The bundled examples, the dashboards doc and the `malloy-dashboards` skill all named the givens a
 dashboard uses (`import { CATEGORY, BRAND, … } from '../givens.malloy'`). They import the file whole
@@ -185,7 +185,7 @@ package keeps it, because the MCP surface, row-level access and `#(authorize)` a
 now also records that declaring one in a dashboard file works — the control renders and the tile
 filters — for a page that owns its own knob. That is the exception, not the convention.
 
-## [Unreleased] — dropdowns over a gated source load their options
+## [0.3.0] — dropdowns over a gated source load their options
 
 A `control=select` whose `suggest` read a source gated by `#(authorize)` (or scoped by a
 source-level `where:` on a given) resolved to "Options unavailable": the option query carried no
@@ -196,7 +196,7 @@ No other applied filter is sent, so the option list still does not depend on the
 `useSuggestOptions` takes the applied values as a new trailing optional argument; a caller that
 omits it, or a server too old to name the givens, behaves as before.
 
-## [Unreleased] — a control with a starting value can be cleared
+## [0.3.0] — a control with a starting value can be cleared
 
 A given seeded by `# artifact { givens { … } }` (or a notebook's `## givens { … }`) could not be
 cleared: the × dropped it from the URL, the host fed that URL back in, and the control snapped
@@ -205,7 +205,7 @@ and keeps the reader's edits across it, while a URL it did not write (a drill la
 button, a pasted link) still resets the controls as before. The limitation was documented as
 unreachable when no server populated starting values; both dashboards and notebooks have since.
 
-## [Unreleased] — `ApiErrorDisplay` is exported; two internal names are not
+## [0.3.0] — `ApiErrorDisplay` is exported; two internal names are not
 
 `@malloy-publisher/sdk` now exports `ApiErrorDisplay` and its props type. `Dashboard`,
 `DashboardTile` and `Notebook` all present request failures through it, and the SDK README has
@@ -214,7 +214,7 @@ through the barrels without being documented are no longer exported: `SourceExpl
 (the inner half of `SourcesExplorer`, which is the component to use) and `makeDimensionKey` (an
 internal of `useDimensionalFilterRangeData`; `getDimensionKey` stays).
 
-## [Unreleased] — the `pages/` URL alias is gone
+## [0.3.0] — the `pages/` URL alias is gone
 
 Data apps were renamed from `pages/<file>` to `data-apps/<file>` in 0.0.242, and that release
 promised the old spelling would stop redirecting one release later. It kept redirecting for
@@ -223,7 +223,7 @@ and the server no longer treats `pages` as an app route. A bookmark on the old s
 a package that ships its own `public/pages/` directory has those files back at
 `/<env>/<pkg>/pages/<file>`, which the alias had been shadowing.
 
-## [Unreleased] — the Workbook editor is gone; storage is now `DocumentStorage`
+## [0.3.0] — the Workbook editor is gone; storage is now `DocumentStorage`
 
 **Removed: the Workbook editor.** `Workbook`, `WorkbookList`, `WorkbookManager`, and
 `AnalyzePackageButton` are no longer exported from `@malloy-publisher/sdk`, and the Console's
@@ -247,7 +247,7 @@ rather than everything the page keeps in localStorage.
 defaulting to `BrowserDocumentStorage`. A host that passed a `WorkbookStorage` implementation renames
 its methods and adds `type` to its locators. No known host did.
 
-## [Unreleased] — dashboards written for Malloyyo look the same here
+## [0.3.0] — dashboards written for Malloyyo look the same here
 
 Three behaviors that differed on identical Malloy between Publisher and
 [Malloyyo](https://github.com/malloydata/malloyyo), found by checking Publisher's port against

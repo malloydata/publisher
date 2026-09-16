@@ -10,6 +10,7 @@ export type {
 export {
    DocumentStorageProvider,
    useDocumentStorage,
+   useOptionalDocumentStorage,
    type DocumentStorageProviderProps,
 } from "./DocumentStorageProvider";
 export { BrowserDocumentStorage } from "./BrowserDocumentStorage";
