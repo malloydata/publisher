@@ -76,14 +76,3 @@ export function PackageSection({
       </Box>
    );
 }
-
-/**
- * A row names its content type once. The glyph and the color behind it are two
- * halves of one signal, so the row derives both rather than letting a caller
- * pair a dashboard's icon with a model's color.
- *
- * That is not hypothetical tidying: with the two passed separately, four of the
- * six rows on this page had been handed the same teal, so color told a reader
- * nothing about four of the kinds it was there to distinguish. A rule each call
- * site has to remember is a rule some call sites will forget.
- */

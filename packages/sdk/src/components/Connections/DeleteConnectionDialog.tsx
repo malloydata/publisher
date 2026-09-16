@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { Delete } from "@mui/icons-material";
-import { Snackbar } from "@mui/material";
 import Button from "@mui/material/Button";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
@@ -24,7 +23,6 @@ export default function DeleteConnectionDialog({
    onDelete: () => void;
 }) {
    const [open, setOpen] = useState(false);
-   const [notificationMessage, setNotificationMessage] = useState("");
    const handleClickOpen = () => {
       setOpen(true);
    };
@@ -73,12 +71,6 @@ export default function DeleteConnectionDialog({
                through it stop working, and this cannot be undone.
             </Typography>
          </AppDialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
       </React.Fragment>
    );
 }

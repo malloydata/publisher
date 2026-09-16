@@ -334,15 +334,6 @@ export default function Package({
                    has no dashboards" is the wrong thing to conclude from a
                    transport error. The 404 above stays swallowed: that one is
                    an older Publisher with no route, which genuinely has none. */}
-               {/* A listing that FAILED renders identically to a package with
-                   no dashboards: `dashboards` falls back to `[]` and the
-                   section hides itself. Only `pkgQuery` reaches the error page,
-                   so nothing else here would say a word. Now that the listing
-                   carries a `versionId`, a host that resolves it on some routes
-                   and refuses it on others has a new way in, and "this package
-                   has no dashboards" is the wrong thing to conclude from a
-                   transport error. The 404 above stays swallowed: that one is
-                   an older Publisher with no route, which genuinely has none. */}
                {dashboardsQuery.isError && (
                   <Box sx={{ mb: 4 }}>
                      <Alert severity="warning">

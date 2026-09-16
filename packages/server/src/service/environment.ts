@@ -1470,33 +1470,6 @@ export class Environment {
    }
 
    /**
-    * The text of one model file as it is on disk, or undefined when there is
-    * no such file. Read under the package lock, like every other disk read of
-    * the canonical tree.
-    */
-   public async readModelFile(
-      packageName: string,
-      modelPath: string,
-   ): Promise<string | undefined> {
-      assertSafePackageName(packageName);
-      assertSafeRelativeModelPath(modelPath);
-      return this.withPackageLock(packageName, async () => {
-         const target = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-            modelPath,
-         );
-         try {
-            return await fs.promises.readFile(target, "utf8");
-         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT")
-               return undefined;
-            throw error;
-         }
-      });
-   }
-
-   /**
     * Write one model file's text, atomically: a sibling temporary file is
     * renamed over the target, so a reader never sees a half-written file and
     * a crash leaves either the old text or the new. Returns the text that was

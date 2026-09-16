@@ -127,24 +127,10 @@ export const StyledExplorerPage = styled("div")({
    height: "100%",
 });
 
-export const StyledExplorerBanner = styled("div")({
-   height: "30px",
-   backgroundColor: "rgba(225, 240, 255, 1)",
-   display: "flex",
-   padding: "4px",
-   alignItems: "center",
-});
-
 export const StyledExplorerContent = styled("div")({
    height: "75vh",
    width: "100%",
    overflowY: "auto",
-});
-
-export const StyledExplorerPanel = styled("div")({
-   position: "relative",
-   height: "100%",
-   flex: "0 0 auto",
 });
 
 // Package page styles
@@ -176,10 +162,3 @@ export const PackageSectionTitle = styled("div")(({ theme }) => ({
    paddingBottom: "8px",
    borderBottom: `1px solid ${theme.palette.divider}`,
 }));
-
-export const PackageContainer = styled("div")({
-   padding: "32px",
-   maxWidth: "1400px",
-   margin: "0 auto",
-   minHeight: "100vh",
-});
