@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -9,7 +8,6 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
    Alert,
    Box,
-   Button,
    Container,
    Dialog,
    DialogContent,
@@ -38,11 +36,12 @@ import { useServer } from "../ServerProvider";
 import { NewDashboardDialog } from "./NewDashboardDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
-import { MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon, {
    CONTENT_TINT,
    type ContentType,
 } from "./ContentTypeIcon";
+import { AddButton } from "../AddButton";
+import { ItemRow } from "../ItemRow";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -376,13 +375,10 @@ export default function Package({
                      count={dashboards.length}
                      action={
                         mutable ? (
-                           <Button
-                              size="small"
-                              startIcon={<AddIcon fontSize="small" />}
+                           <AddButton
+                              label="Dashboard"
                               onClick={() => setCreating(true)}
-                           >
-                              New dashboard
-                           </Button>
+                           />
                         ) : undefined
                      }
                   >
@@ -671,22 +667,30 @@ function PackageSection({
       <Box sx={{ mb: 4 }}>
          <Stack
             direction="row"
-            alignItems="baseline"
-            spacing={1}
-            sx={{ mb: 1 }}
+            alignItems="center"
+            justifyContent="space-between"
+            // Tall enough for the section's add button whether or not it has
+            // one, so a section with nothing to add does not sit tighter than
+            // its neighbours. The action is pushed right by the layout rather
+            // than by a margin on itself: `Stack`'s own spacing rule outranks
+            // an `ml: auto` on a child, which is how the button ended up
+            // beside the heading instead of at the edge.
+            sx={{ mb: 1, minHeight: 40 }}
          >
-            <Typography
-               variant="h6"
-               sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
-            >
-               {title}
-            </Typography>
-            {count !== undefined && (
-               <Typography variant="caption" color="text.secondary">
-                  ({count})
+            <Stack direction="row" alignItems="baseline" spacing={1}>
+               <Typography
+                  variant="h6"
+                  sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
+               >
+                  {title}
                </Typography>
-            )}
-            {action && <Box sx={{ ml: "auto" }}>{action}</Box>}
+               {count !== undefined && (
+                  <Typography variant="caption" color="text.secondary">
+                     ({count})
+                  </Typography>
+               )}
+            </Stack>
+            {action}
          </Stack>
          <Box>{children}</Box>
       </Box>
@@ -719,90 +723,16 @@ function PackageItemRow({
     *  `event.stopPropagation()` so the row click doesn't also fire. */
    trailingAction?: React.ReactNode;
 }) {
-   const interactive = !!onClick;
-   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (!onClick) return;
-      if (event.key === "Enter" || event.key === " ") {
-         event.preventDefault();
-         onClick(event as unknown as React.MouseEvent);
-      }
-   };
    return (
-      <Box
-         onClick={onClick}
-         onKeyDown={interactive ? handleKeyDown : undefined}
-         role={interactive ? "button" : undefined}
-         tabIndex={interactive ? 0 : undefined}
-         sx={(theme) => ({
-            display: "flex",
-            alignItems: "center",
-            gap: 1.5,
-            py: 1,
-            px: 1,
-            mx: -1,
-            cursor: interactive ? "pointer" : "default",
-            borderRadius: 1.5,
-            transition: "background-color 0.1s",
-            "&:hover": interactive
-               ? {
-                    backgroundColor:
-                       theme.palette.mode === "dark"
-                          ? "rgba(255, 255, 255, 0.08)"
-                          : "grey.100",
-                 }
-               : undefined,
-            "&:focus-visible": interactive
-               ? {
-                    outline: "2px solid",
-                    outlineColor: "primary.main",
-                    outlineOffset: 2,
-                 }
-               : undefined,
-         })}
-      >
-         <Box
-            sx={{
-               width: 32,
-               height: 32,
-               borderRadius: 1,
-               bgcolor: CONTENT_TINT[type],
-               color: "#FFFFFF",
-               display: "flex",
-               alignItems: "center",
-               justifyContent: "center",
-               flexShrink: 0,
-            }}
-         >
-            <ContentTypeIcon type={type} />
-         </Box>
-         <Typography
-            variant="body2"
-            sx={{
-               fontFamily: MONO_FONT_FAMILY,
-               flex: 1,
-               minWidth: 0,
-               overflow: "hidden",
-               textOverflow: "ellipsis",
-               whiteSpace: "nowrap",
-            }}
-         >
-            {label}
-         </Typography>
-         {rightLabel && (
-            <Typography
-               variant="caption"
-               color="text.secondary"
-               sx={{ flexShrink: 0 }}
-            >
-               {rightLabel}
-            </Typography>
-         )}
-         {trailingAction && (
-            <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
-               {trailingAction}
-            </Box>
-         )}
-      </Box>
+      <ItemRow
+         icon={<ContentTypeIcon type={type} />}
+         tint={CONTENT_TINT[type]}
+         label={label}
+         mono
+         {...(rightLabel === undefined ? {} : { rightLabel })}
+         {...(onClick === undefined ? {} : { onClick })}
+         {...(trailingAction === undefined ? {} : { trailingAction })}
+      />
    );
 }
 

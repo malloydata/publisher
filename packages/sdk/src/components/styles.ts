@@ -47,6 +47,22 @@ export const MALLOY_ACCENT = {
 } as const;
 
 /**
+ * The tints for what a SERVER holds, as against what a package holds. Three
+ * kinds — an environment, a package, a connection — listed on the home and
+ * environment pages, where `CONTENT_TINT`'s six never appear, so these are
+ * free to be their own family rather than compete with it.
+ *
+ * Picked in the hues the other two families leave open (indigo, gold, slate)
+ * and against the same 3:1 bar as `MALLOY_ACCENT`, measured against white:
+ * indigo 5.7:1, gold 4.6:1, slate 8.1:1.
+ */
+export const SURFACE_TINT = {
+   environment: "#4a5568", // slate
+   package: "#3b5bdb", // indigo
+   connection: "#8a6d1f", // gold
+} as const;
+
+/**
  * Monospace font stack used by code-like surfaces inside the SDK
  * (file-path labels in PackageItemRow, code blocks, etc.). Matches the
  * `MONO_FONT_FAMILY` defined in the publisher app's theme.

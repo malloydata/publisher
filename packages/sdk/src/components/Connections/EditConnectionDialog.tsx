@@ -802,8 +802,9 @@ export default function EditConnectionDialog({
                               onClick={addAttachedDatabase}
                               size="small"
                               variant="outlined"
+                              aria-label="Add database"
                            >
-                              Add Database
+                              Database
                            </Button>
                         </Box>
                         {attachedDatabases.length === 0 && (

@@ -23,6 +23,7 @@ import {
    ConnectionTypeEnum,
    DucklakeConnection,
 } from "../../client/api";
+import { AddButton } from "../AddButton";
 import {
    attachedDatabaseConnectionFieldName,
    attributesFieldName,
@@ -401,18 +402,7 @@ export default function AddConnectionDialog({
 
    return (
       <React.Fragment>
-         {/* Contained with a start icon, matching AddEnvironmentDialog and
-             AddPackageDialog. This was the only add-trigger of the three still
-             outlined and icon-less, which read as the secondary action on a
-             screen where it is the primary one. */}
-         <Button
-            variant="contained"
-            color="primary"
-            startIcon={<AddIcon />}
-            onClick={handleClickOpen}
-         >
-            Add Connection
-         </Button>
+         <AddButton label="Connection" onClick={handleClickOpen} />
          <Dialog open={open} onClose={handleClose}>
             <DialogTitle>Create New Connection</DialogTitle>
             <DialogContent>
@@ -655,8 +645,9 @@ export default function AddConnectionDialog({
                               onClick={addAttachedDatabase}
                               size="small"
                               variant="outlined"
+                              aria-label="Add database"
                            >
-                              Add Database
+                              Database
                            </Button>
                         </Box>
                         {attachedDatabases.length === 0 && (
