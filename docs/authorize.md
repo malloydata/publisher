@@ -131,9 +131,12 @@ source: c is duckdb.table('orders.parquet') extend {}
 #(authorize) org_id in $GROUPS
 source: d is duckdb.table('orders.parquet') extend {}
 
-// A path through a `join_one` is a field path like any other.
+// A path through a `join_one` is a field path like any other. Through a join
+// that fans out it is refused (`fanout_path`), because the gate would multiply rows.
 #(authorize) account.org_id = $ORG_ID
-source: e is orders_base extend { join_one: account is accounts on account_id = account.id }
+source: e is duckdb.table('orders.parquet') extend {
+  join_one: account is duckdb.table('accounts.parquet') on account_id = account.id
+}
 
 // A rule about the caller beside a rule about the row: both must admit.
 #(source-authorize) 'admin' in $GROUPS
