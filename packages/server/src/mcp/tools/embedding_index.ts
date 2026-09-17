@@ -362,7 +362,7 @@ function sourceColumn(source: string | undefined): string {
  * collision in the sync diff silently skips a delete or a re-embed. A control
  * character cannot appear in an identifier, so it cannot collide.
  */
-const KEY_SEPARATOR = "\u0000";
+export const KEY_SEPARATOR = "\u0000";
 
 /**
  * The stable key for one entity. Shared by the index dedup, the WeakMap-free
@@ -378,6 +378,42 @@ export function entityRowKey(
    name: string,
 ): string {
    return [kind, source, name].join(KEY_SEPARATOR);
+}
+
+/**
+ * One entry per (kind, source, name), which is the identity the vector cache
+ * keys on.
+ *
+ * A source is queryable at every model path that resolves it, so the entity
+ * list handed to retrieval carries one entry PER PATH -- three dashboards
+ * importing one shared include is three entries for each of its fields. That
+ * is correct for the response, where each path is its own card, and wrong for
+ * everything downstream of here: the embedding rows have no model_path in
+ * their primary key, so the duplicates embed identical text once per path and
+ * then upsert onto the same row. They also inflate the MAX_EMBEDDED_ENTITIES
+ * cap and `totalEntities`, which would let a package flip to lexical because
+ * someone added an importing file rather than because the model grew.
+ *
+ * Collapsed here, at the cache boundary, rather than at either call site, so
+ * the guarantee holds for any caller. The response fan-out is unaffected: it
+ * maps a hit back onto the live per-path entities itself (see the semantic
+ * block in get_context_tool), and reads modelPath from those, never from here.
+ *
+ * First wins. Two entities sharing a key but carrying different doc text
+ * already collide on the row's primary key, so which one is embedded was
+ * decided by write order before this existed; this makes it read order
+ * instead, which is at least stable.
+ */
+export function uniqueByEntityKey<
+   T extends { kind: string; name: string; source: string | undefined },
+>(entities: T[]): T[] {
+   const seen = new Set<string>();
+   return entities.filter((e) => {
+      const key = entityRowKey(e.kind, sourceColumn(e.source), e.name);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+   });
 }
 
 /**
@@ -832,6 +868,24 @@ export async function trySemanticSearch(args: {
    queries: Array<{ targetIndex: number; text: string; kinds: string[] }>;
    limit: number;
    sourceName?: string;
+   /**
+    * The (kind, source, name) triples the caller's scope admits, when it
+    * narrows by something this cache cannot express -- a `model_path`, which
+    * is not a column here, or an `entity_name`, whose rule exempts source rows.
+    * Omit when the scope is a source drill-down or nothing at all.
+    *
+    * Applied INSIDE the scan, with the kind filter and for the same reason:
+    * `belowCutoffCount` and `totalEntities` are computed there, and they are
+    * only interpretable when they describe the same set as `hits`. Filtered
+    * afterwards, a pin that matched nothing returned no sources beside a
+    * `belowCutoffCount` of 0 -- the combination this result's own docblock
+    * says cannot occur, read by an agent as "nothing cleared the floor" when
+    * the truth is "your pin matched nothing".
+    *
+    * An EMPTY array is a scope that admits nothing, and answers 0 of 0 rather
+    * than falling through to the unscoped set.
+    */
+   scopeKeys?: Array<{ kind: string; source: string; name: string }>;
 }): Promise<SemanticSearchResult> {
    const {
       db,
@@ -839,11 +893,14 @@ export async function trySemanticSearch(args: {
       pkg,
       environmentName,
       packageName,
-      entities,
       queries,
       limit,
       sourceName,
+      scopeKeys,
    } = args;
+   // Unique by the key the rows themselves use, before anything counts or
+   // embeds them. See uniqueByEntityKey.
+   const entities = uniqueByEntityKey(args.entities);
 
    if (entities.length > MAX_EMBEDDED_ENTITIES) {
       const key = `${environmentName}\x00${packageName}`;
@@ -860,6 +917,13 @@ export async function trySemanticSearch(args: {
          );
       }
       return { unavailable: "too-many-entities" };
+   }
+
+   // A scope that admits nothing answers 0 of 0, and answers it here: with no
+   // candidate row there is nothing to rank, and embedding the query text
+   // would be a provider call whose result cannot be used.
+   if (scopeKeys !== undefined && scopeKeys.length === 0) {
+      return { hits: [], belowCutoffCount: 0, totalEntities: 0 };
    }
 
    const providerKey = `${provider.model}\x00${provider.dimensions ?? ""}`;
@@ -1001,6 +1065,9 @@ export async function trySemanticSearch(args: {
       const targetKinds = queries.flatMap((q, k) =>
          q.kinds.map((kind) => ({ k, kind })),
       );
+      // Empty string when the caller sent no scope, which drops the CTE and
+      // its join from the statement entirely.
+      const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
       const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
       const scan = await db.all<{
          total: number;
@@ -1013,7 +1080,16 @@ export async function trySemanticSearch(args: {
          score: number | null;
       }>(
          `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
-         qk(target_idx, kind) AS (VALUES ${kindValues}),
+         qk(target_idx, kind) AS (VALUES ${kindValues}),${
+            scopeValues
+               ? `
+         -- The caller's scope, as rows: model_path is not a column here and
+         -- an entity_name scope exempts source rows, so neither can be
+         -- written as a predicate. Joined in scored so the counts below
+         -- describe the same set as the hits.
+         scope(kind, source, name) AS (VALUES ${scopeValues}),`
+               : ""
+         }
          -- An entity is scored against a target only if that target may
          -- claim its kind. This is where the claim lives, not downstream:
          -- ranked_per_target cuts each target's window from these rows, so a
@@ -1030,6 +1106,14 @@ export async function trySemanticSearch(args: {
               AND environment_name = ? AND package_name = ?
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
+              ${
+                 scopeValues
+                    ? `AND EXISTS (SELECT 1 FROM scope sc
+                                   WHERE sc.kind = entity_kind
+                                     AND sc.source = entity_source
+                                     AND sc.name = entity_name)`
+                    : ""
+              }
             GROUP BY entity_kind, entity_source, entity_name, q.target_idx
          ),
          per_entity AS (
@@ -1082,6 +1166,9 @@ export async function trySemanticSearch(args: {
          [
             ...queryVectors.map((v) => JSON.stringify(v)),
             ...targetKinds.map(({ kind }) => kind),
+            // Positional, so these sit where the `scope` CTE does: after the
+            // kinds and before the package predicates.
+            ...(scopeKeys ?? []).flatMap((k) => [k.kind, k.source, k.name]),
             environmentName,
             packageName,
             provider.model,
@@ -1341,8 +1428,11 @@ export async function getEmbeddingIndexStatus(
    provider: EmbeddingProvider,
    environmentName: string,
    packageName: string,
-   entities: IndexedEntity[],
+   allEntities: IndexedEntity[],
 ): Promise<EmbeddingIndexStatus> {
+   // Counted per cached entity, not per card: the same reason the search
+   // path dedupes. See uniqueByEntityKey.
+   const entities = uniqueByEntityKey(allEntities);
    const entityCount = entities.length;
    // Scoped to the provider's current model, because the search path is
    // (see trySemanticSearch) and the stale-row heal purges anything else.

@@ -162,6 +162,21 @@ export interface SerializedModel {
    givens?: unknown[];
    /** Notebook (.malloynb) only — per-cell pre-extracted info. */
    notebookCells?: SerializedNotebookCell[];
+   /**
+    * The model file's text EXACTLY as this compile read it, captured from the
+    * URL reader the compiler used.
+    *
+    * Shipped so a consumer that needs source text can read it from the same
+    * snapshot the IR's `DocumentLocation` coordinates were computed against.
+    * `get_context` slices a view's definition out of it (a view's code is not
+    * in the IR), and reading the file again later is not equivalent: a package
+    * whose most recent reload failed to compile keeps serving the model
+    * compiled BEFORE that save, so post-edit bytes cut at pre-edit coordinates
+    * yield text that is not the view -- mid-token, or another field entirely.
+    *
+    * `.malloy` models only; notebooks do not carry it.
+    */
+   modelSourceText?: string;
    /** Accumulated dataStyles from sibling `.styles.json` files. */
    dataStyles?: unknown;
    /** Wall-clock ms spent compiling this single model in the worker. */
