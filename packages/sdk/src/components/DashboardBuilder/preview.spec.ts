@@ -135,6 +135,24 @@ describe("previewTileQuery", () => {
       ).toBe("overview -> v");
    });
 
+   it("runs an inline tile the same as a reference, on its own name", () => {
+      // An inline body still names a view of the extension — `view: x is {
+      // … }` is as much a named view as `view: x is base_view` — so a
+      // binding takes the same `source -> x + { where: … }` path a reference
+      // tile does, rather than being sent unrefined.
+      const inline: DashboardTile = {
+         name: "kpis",
+         source: "overview",
+         declaration: { kind: "inline" },
+         filters: [{ field: "category", given: "CATEGORY" }],
+      };
+      const q = previewTileQuery(document, inline, runnable);
+      expect(q.expression).toBe(
+         "overview -> kpis + { where: category ~ $CATEGORY }",
+      );
+      expect(q.givenNames).toEqual(["CATEGORY"]);
+   });
+
    it("runs an inherited tile as the model has it, sending the whole row", () => {
       const inherited: DashboardTile = {
          name: "by_brand",

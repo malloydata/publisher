@@ -318,6 +318,203 @@ describe("spliceDashboardDocument: bindings", () => {
    });
 });
 
+/**
+ * `canBind` used to exclude an inline tile outright, because a `+ { where: …
+ * }` refinement written onto a query body would not read back. It does, once
+ * the binding is written INSIDE the body as a depth-1 `where:` statement in
+ * its first stage instead of a refinement after it — which is how the
+ * bundled `tiled.malloy` fixture, and most real dashboards, actually write a
+ * tile. These are that writer path.
+ */
+describe("spliceDashboardDocument: inline body bindings", () => {
+   const MULTILINE = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    group_by: category
+    aggregate: n is count()
+  }
+}`;
+
+   it("adds a binding as a new depth-1 where: line before the closing brace", async () => {
+      const out = await spliced(MULTILINE, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "  view: kpis is {\n    group_by: category\n    aggregate: n is count()\n    where: category ~ $CATEGORY\n  }",
+      );
+   });
+
+   it("rewrites an existing binding line in place", async () => {
+      const source = MULTILINE.replace(
+         "view: kpis is {\n    group_by: category",
+         "view: kpis is {\n    where: category ~ $CATEGORY\n    group_by: category",
+      );
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [{ field: "brand_name", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "  view: kpis is {\n    where: brand_name ~ $CATEGORY\n    group_by: category",
+      );
+      // Still one line, not a rewrite-in-place plus a stray append.
+      expect(out.match(/where:/g)).toHaveLength(1);
+   });
+
+   it("drops a removed binding's line entirely, no blank line left behind", async () => {
+      const source = MULTILINE.replace(
+         "view: kpis is {\n    group_by: category",
+         "view: kpis is {\n    where: category ~ $CATEGORY\n    group_by: category",
+      );
+      const out = await spliced(source, (d) => {
+         delete d.tiles[0].filters;
+      });
+      expect(out).toContain(MULTILINE);
+      expect(out).not.toContain("where:");
+   });
+
+   // A `nest:`'s own `where:` is depth 2, one level inside the nest's own
+   // brace, so it is never in the set of lines this scan owns — it survives a
+   // binding change to the OUTER tile exactly as written, and the new binding
+   // goes after the nest's closing brace, not inside it.
+   it("leaves a nest's own where: untouched and adds the new line after it", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    group_by: category
+    nest: by_month is {
+      where: month ~ $MONTH
+      aggregate: n is count()
+    }
+  }
+}`;
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(out).toContain("where: month ~ $MONTH");
+      expect(out).toContain(
+         "    nest: by_month is {\n      where: month ~ $MONTH\n      aggregate: n is count()\n    }\n    where: category ~ $CATEGORY\n  }",
+      );
+   });
+
+   // The compound line is unmodelled Malloy — never in the set this writer
+   // owns — so it survives a binding change exactly as written, and the new
+   // binding is its own line, not folded into it.
+   it("keeps a compound predicate untouched and adds the new binding beside it", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    where: category ~ $CATEGORY and status = 'open'
+    aggregate: n is count()
+  }
+}`;
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [{ field: "region", given: "REGION" }];
+      });
+      expect(out).toContain("where: category ~ $CATEGORY and status = 'open'");
+      expect(out).toContain(
+         "    where: category ~ $CATEGORY and status = 'open'\n    aggregate: n is count()\n    where: region ~ $REGION\n  }",
+      );
+   });
+
+   it("writes a one-line body's binding inline, before the closing brace", async () => {
+      const oneLiner = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is { aggregate: n is count() }
+}`;
+      const out = await spliced(oneLiner, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "view: kpis is { aggregate: n is count(), where: category ~ $CATEGORY }",
+      );
+      // And unbinding restores the file exactly as it was.
+      const restored = await spliced(out, (d) => {
+         delete d.tiles[0].filters;
+      });
+      expect(restored).toBe(oneLiner);
+   });
+
+   // A multi-stage `->` pipeline has no single first stage to write the
+   // binding into, and the reason names the shape, not the tile's kind.
+   it("refuses a filter change on a multi-stage body", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    group_by: category
+    aggregate: n is count()
+  } -> {
+    where: n > 10
+    select: category, n
+  }
+}`;
+      expect(
+         await refused(source, (d) => {
+            d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+         }),
+      ).toContain("multi-stage");
+   });
+
+   it("refuses a filter change on a compound { … } + { … } body", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is { aggregate: n is count() } + { limit: 5 }
+}`;
+      expect(
+         await refused(source, (d) => {
+            d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+         }),
+      ).toContain("compound refinement");
+   });
+
+   // The source-level `where:` sits outside every view's extent. Changing an
+   // unrelated tile's own binding must not touch it.
+   it("never touches a source-level where: while binding a tile", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis", "a -> other"] }
+import "../m.malloy"
+
+source: a is one extend {
+  where: brand_name ~ $BRAND
+
+  view: kpis is { aggregate: n is count() }
+  view: other is { aggregate: m is count() }
+}`;
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(out).toContain("  where: brand_name ~ $BRAND\n");
+      expect(out).toContain(
+         "view: kpis is { aggregate: n is count(), where: category ~ $CATEGORY }",
+      );
+   });
+
+   it("round-trips: bind, read back, unbind, read back to the original bytes", async () => {
+      const bound = await spliced(MULTILINE, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      const reopened = await openDocument(bound);
+      expect(reopened.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+      const unbound = await spliced(bound, (d) => {
+         delete d.tiles[0].filters;
+      });
+      expect(unbound).toBe(MULTILINE);
+      const reread = await openDocument(unbound);
+      expect(reread.tiles[0].filters).toBeUndefined();
+   });
+});
+
 describe("spliceDashboardDocument: the dashboard's own givens", () => {
    // The convention: a filter the builder adds is a declaration in THIS file.
    // A file that had none gets the experiment switch too, since a `given:`
@@ -1382,5 +1579,41 @@ source: regional is duckdb.sql("""
          expect(r.reason).toContain('brace inside a """ string');
          expect(r.reason).not.toContain("undefined");
       }
+   });
+});
+
+/**
+ * Both brace scanners in malloyText.ts used to count a `{` inside a trailing
+ * `//` comment as structure. `kpis`'s own extent ran through `other`, an
+ * unrelated view, out to the enclosing source's closing brace — so a filter
+ * bound to `kpis` returned `ok: true` and wrote the `where:` refinement after
+ * `other`, at the end of the source block, instead of inside `kpis`. The
+ * round-trip gate cannot catch this: the written text still reads back as a
+ * `view:` under the right source either way.
+ */
+describe("spliceDashboardDocument: a trailing comment holding an unbalanced brace", () => {
+   const SOURCE = `## artifact { title="T" tiles=["a -> kpis", "a -> other"] }
+import "../m.malloy"
+
+source: a is scoped_orders extend {
+  view: kpis is {
+    group_by: cat // the { brace here is unbalanced
+    aggregate: n is count()
+  }
+
+  view: other is { aggregate: m is count() }
+}`;
+
+   it("binds inside kpis's own body and never touches the unrelated view", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.tiles[0].filters = [{ field: "cat", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "  view: kpis is {\n    group_by: cat // the { brace here is unbalanced\n    aggregate: n is count()\n    where: cat ~ $CATEGORY\n  }",
+      );
+      expect(out).toContain("  view: other is { aggregate: m is count() }\n}");
+      expect(out).not.toContain(
+         "  view: other is { aggregate: m is count() }\n    where:",
+      );
    });
 });

@@ -202,6 +202,140 @@ source: a is one extend {
    });
 });
 
+describe("readDashboardDocument: inline body filters", () => {
+   // A binding on an inline body is a depth-1 `where:` statement in the body's
+   // own first stage, not a `+ { … }` refinement — the writer's job is to
+   // locate the same statements, so both sides read the shape the same way.
+   it("reads a depth-1 where: line as the tile's filter", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: category ~ $CATEGORY
+    group_by: category
+    aggregate: n is count()
+  }
+}`);
+      expect(doc.tiles[0].declaration).toEqual({ kind: "inline" });
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   it("reads it at the end, or between two other statements, the same way", async () => {
+      const last = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    group_by: category
+    aggregate: n is count()
+    where: category ~ $CATEGORY
+  }
+}`);
+      expect(last.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+
+      const middle = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    group_by: category
+    where: category ~ $CATEGORY
+    aggregate: n is count()
+  }
+}`);
+      expect(middle.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // A `nest:`'s own `where:` is depth 2, one level inside the nest's own
+   // brace, not depth 1 of the tile's body — it is that nested view's filter,
+   // not this tile's, and must not be reported as one.
+   it("does not read a nest's own where: as the tile's filter", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    group_by: category
+    nest: by_month is {
+      where: month ~ $MONTH
+      aggregate: n is count()
+    }
+  }
+}`);
+      expect(doc.tiles[0].filters).toBeUndefined();
+   });
+
+   // "Whose ENTIRE text is one or more binding clauses" — `a ~ $A and c = 1`
+   // matches BINDING_CLAUSE once, for `a ~ $A` alone, and the ` and c = 1`
+   // left over means the line is not READ as a binding at all.
+   it("does not read a compound predicate as a binding", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: category ~ $CATEGORY and status = 'open'
+    aggregate: n is count()
+  }
+}`);
+      expect(doc.tiles[0].filters).toBeUndefined();
+   });
+
+   // A second stage does not stop the FIRST stage's own binding from being
+   // read; only the WRITER refuses to touch a body shaped like this.
+   it("still reads a first-stage binding when a second stage follows", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: category ~ $CATEGORY
+    group_by: category
+    aggregate: n is count()
+  } -> {
+    where: n > 10
+    select: category, n
+  }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   it("reads a one-line body's binding alongside its query", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is { aggregate: n is count() where: category ~ $CATEGORY }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // A source-level `where:` sits outside every view's extent; it is read as
+   // part of no tile's filters, the same as it always was.
+   it("never attributes a source-level where: to a tile", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  where: brand_name ~ $BRAND
+
+  view: x is { aggregate: n is count() }
+}`);
+      expect(doc.tiles[0].filters).toBeUndefined();
+   });
+});
+
 describe("readDashboardDocument: the dashboard's own givens", () => {
    // The spelling `givens.malloy` and the docs use, and the one the builder
    // writes: one declaration per `given:` line, its control contract above it.

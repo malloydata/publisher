@@ -15,10 +15,13 @@ import {
    declarationsUnder,
    givenDeclarations,
    splitTrailingComment,
+   viewBodyStage1,
 } from "./malloyText";
 import {
    BINDING_CLAUSE,
    blockAbove,
+   cleanBindingClauses,
+   isBindingOnly,
    readDashboardDocument,
    readFailed,
 } from "./readDocument";
@@ -1002,33 +1005,180 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          });
       }
 
-      // The filter bindings live in the declaration itself, as a refinement.
-      // Only the BINDING clauses are ours to rewrite: a `limit:`, an `order_by:`
-      // or a `where:` on a literal that someone put in the same refinement is
-      // unmodelled Malloy and stays, ahead of the bindings, exactly as written.
-      // A trailing `//` comment is set aside first and put back after, because
-      // the refinement goes at the END of the code and a comment there would
-      // swallow it.
-      const { code, comment } = splitTrailingComment(lines[declLine]);
-      const existing = /\+\s*\{([\s\S]*)\}\s*$/.exec(code)?.[1] ?? "";
-      const kept = existing
-         .replace(BINDING_CLAUSE, "")
-         .replace(/\s*,\s*,\s*/g, ", ")
-         .replace(/^[\s,;]+|[\s,;]+$/g, "");
-      const bindings = (tile.filters ?? []).map(
-         (f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`,
-      );
-      const clauses = [...(kept ? [kept] : []), ...bindings];
-      const withoutRefinement = code.replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "");
-      const body =
-         clauses.length === 0
-            ? withoutRefinement
-            : `${withoutRefinement.trimEnd()} + { ${clauses.join(", ")} }`;
-      const rewritten = comment === "" ? body : `${body.trimEnd()} ${comment}`;
-      if (rewritten !== lines[declLine])
-         edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
+      // The filter bindings live in the declaration itself either way. Only
+      // the BINDING clauses are ours to rewrite: a `limit:`, an `order_by:`
+      // or a `where:` on a literal someone wrote is unmodeled Malloy and
+      // stays exactly as written, in both shapes below.
+      if (tile.declaration.kind === "reference") {
+         // A `+ { where: … }` refinement on the view reference. A trailing
+         // `//` comment is set aside first and put back after, because the
+         // refinement goes at the END of the code and a comment there would
+         // swallow it.
+         const { code, comment } = splitTrailingComment(lines[declLine]);
+         const existing = /\+\s*\{([\s\S]*)\}\s*$/.exec(code)?.[1] ?? "";
+         const kept = existing
+            .replace(BINDING_CLAUSE, "")
+            .replace(/\s*,\s*,\s*/g, ", ")
+            .replace(/^[\s,;]+|[\s,;]+$/g, "");
+         const bindings = (tile.filters ?? []).map(
+            (f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`,
+         );
+         const clauses = [...(kept ? [kept] : []), ...bindings];
+         const withoutRefinement = code.replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "");
+         const body =
+            clauses.length === 0
+               ? withoutRefinement
+               : `${withoutRefinement.trimEnd()} + { ${clauses.join(", ")} }`;
+         const rewritten =
+            comment === "" ? body : `${body.trimEnd()} ${comment}`;
+         if (rewritten !== lines[declLine])
+            edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
+      } else if (canonical(was.filters) !== canonical(tile.filters)) {
+         // An inline tile whose filters actually changed — nothing to do
+         // otherwise, and nothing safe to do for a body shape
+         // planInlineFilters refuses (see its doc comment).
+         const failure = planInlineFilters(ctx, tile, declLine);
+         if (failure) return failure;
+      }
    }
    return undefined;
+}
+
+/**
+ * Rewrite an inline tile's `where:` bindings: depth-1 statements in the
+ * body's own first stage (see {@link viewBodyStage1}), one per line for a
+ * multi-line body or comma-joined inside the braces for a one-line one.
+ * Existing binding lines are patched by GIVEN NAME, the same way
+ * {@link planTilePresentation}'s tags are: rewritten in place if changed,
+ * dropped if no longer bound, and a survivor carrying anything unmodeled (a
+ * compound predicate, say) is left untouched because it was never a binding
+ * to begin with. New bindings go after the last existing binding line, or
+ * before the first stage's closing brace when there is none.
+ *
+ * Refuses a body whose first stage this scan cannot pin down — a `->` second
+ * stage, or a `{ … } + { … }` compound refinement — because there would be no
+ * single place to put the binding. The reader still opens such a file; this
+ * only blocks WRITING a filter change onto it.
+ */
+function planInlineFilters(
+   ctx: SpliceContext,
+   tile: DashboardTile,
+   declLine: number,
+): SpliceFailure | undefined {
+   const { lines, wholeLine, indentOf, edits } = ctx;
+   const extent = declarationExtent(lines, declLine);
+   if ("unreadable" in extent) {
+      return {
+         ok: false,
+         reason: `Could not tell where \`${tile.name}\`'s body ends: ${extent.unreadable}.`,
+      };
+   }
+   const stage = viewBodyStage1(lines, declLine, extent.end);
+   if (stage.more) {
+      return {
+         ok: false,
+         reason:
+            `\`${tile.name}\`'s body is a multi-stage \`->\` pipeline or a ` +
+            `\`{ … } + { … }\` compound refinement, so there is no single ` +
+            `first stage to write its filter into.`,
+      };
+   }
+
+   const bindingText = (f: { field: string; given: string; op?: string }) =>
+      `where: ${f.field} ${f.op ?? "~"} $${f.given}`;
+
+   if (stage.oneLiner !== undefined) {
+      const { openCol, closeCol, content } = stage.oneLiner;
+      const clean = cleanBindingClauses(content);
+      let kept = content;
+      for (let i = clean.length - 1; i >= 0; i--)
+         kept = kept.slice(0, clean[i].start) + kept.slice(clean[i].end);
+      kept = kept.replace(/\s*,\s*,\s*/g, ", ").replace(/^[\s,]+|[\s,]+$/g, "");
+      const bindings = (tile.filters ?? []).map(bindingText);
+      const rebuilt = [...(kept ? [kept] : []), ...bindings].join(", ");
+      const raw = lines[declLine];
+      const before = raw.slice(0, openCol + 1);
+      const after = raw.slice(closeCol);
+      const rewritten = rebuilt
+         ? `${before} ${rebuilt} ${after}`
+         : `${before} ${after}`;
+      if (rewritten !== raw)
+         edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
+      return undefined;
+   }
+
+   const wantedByGiven = new Map((tile.filters ?? []).map((f) => [f.given, f]));
+   const existing: Array<{
+      line: number;
+      givens: string[];
+   }> = [];
+   for (const wl of stage.whereLines) {
+      const clean = isBindingOnly(wl.code);
+      if (!clean) continue; // not ours: a compound predicate or the like
+      existing.push({ line: wl.line, givens: clean.map((c) => c.given) });
+   }
+
+   const seenGivens = new Set<string>();
+   let lastBindingLine = -1;
+   for (const ex of existing) {
+      lastBindingLine = ex.line;
+      for (const given of ex.givens) seenGivens.add(given);
+      const stillWanted = ex.givens
+         .filter((given) => wantedByGiven.has(given))
+         .map(
+            (given) =>
+               wantedByGiven.get(given) as {
+                  field: string;
+                  given: string;
+                  op?: string;
+               },
+         );
+      const { comment } = splitTrailingComment(lines[ex.line]);
+      if (stillWanted.length === 0) {
+         edits.push({ ...wholeLine(ex.line), text: "" });
+         continue;
+      }
+      const rebuiltLine = stillWanted.map(bindingText).join(", ");
+      const withComment = comment ? `${rebuiltLine} ${comment}` : rebuiltLine;
+      if (withComment !== lines[ex.line].trim())
+         edits.push({
+            ...wholeLine(ex.line),
+            text: `${indentOf(ex.line)}${withComment}\n`,
+         });
+   }
+
+   const added = (tile.filters ?? []).filter((f) => !seenGivens.has(f.given));
+   if (added.length > 0) {
+      const bodyIndent =
+         existing.length > 0
+            ? indentOf(existing[0].line)
+            : firstBodyIndent(lines, declLine, stage.end, indentOf);
+      const text = added
+         .map((f) => `${bodyIndent}${bindingText(f)}\n`)
+         .join("");
+      const at =
+         lastBindingLine >= 0
+            ? wholeLine(lastBindingLine).end
+            : wholeLine(stage.end).start;
+      edits.push({ start: at, end: at, text });
+   }
+   return undefined;
+}
+
+/** The indent of the first statement inside a body with no binding line yet. */
+function firstBodyIndent(
+   lines: string[],
+   declLine: number,
+   stageEnd: number,
+   indentOf: (line: number) => string,
+): string {
+   for (let i = declLine + 1; i < stageEnd; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//"))
+         continue;
+      return indentOf(i);
+   }
+   return `${indentOf(declLine)}   `;
 }
 
 export async function spliceDashboardDocument(

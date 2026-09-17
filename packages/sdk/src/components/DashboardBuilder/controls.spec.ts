@@ -7,6 +7,7 @@ import {
    kindForFieldType,
    typeLabel,
    applyMapping,
+   canBind,
    controlsOf,
    declareControl,
    defaultOperator,
@@ -147,12 +148,13 @@ describe("mappings", () => {
       });
    });
 
-   it("applies a mapping as a diff and skips tiles that cannot bind", () => {
+   it("applies a mapping as a diff, including an inline tile's own first stage", () => {
       const d = doc();
       applyMapping(d, "SINCE", [
          { include: true, field: "created_at", op: ">=" },
          { include: true, field: "created_at", op: ">=" },
-         // Inline: cannot take a refinement, so ticking it does nothing.
+         // Inline: a depth-1 `where:` in its own first stage, same as a
+         // reference tile's refinement as far as applyMapping is concerned.
          { include: true, field: "created_at", op: ">=" },
       ]);
       expect(d.tiles[0].filters).toEqual([
@@ -162,7 +164,9 @@ describe("mappings", () => {
       expect(d.tiles[1].filters).toEqual([
          { field: "created_at", given: "SINCE", op: ">=" },
       ]);
-      expect(d.tiles[2].filters).toBeUndefined();
+      expect(d.tiles[2].filters).toEqual([
+         { field: "created_at", given: "SINCE", op: ">=" },
+      ]);
 
       // Unticking removes, and a `~` is left implicit.
       applyMapping(d, "SINCE", [
@@ -176,6 +180,40 @@ describe("mappings", () => {
       expect(d.tiles[1].filters).toEqual([
          { field: "created_at", given: "SINCE" },
       ]);
+      expect(d.tiles[2].filters).toBeUndefined();
+   });
+
+   it("still skips a tile the writer cannot locate at all: inherited", () => {
+      const d = doc();
+      d.tiles.push({
+         name: "by_region",
+         source: "orders",
+         declaration: { kind: "inherited" },
+      });
+      applyMapping(d, "SINCE", [
+         { include: false, field: "created_at" },
+         { include: false, field: "created_at" },
+         { include: false, field: "created_at" },
+         { include: true, field: "created_at", op: ">=" },
+      ]);
+      expect(d.tiles[3].filters).toBeUndefined();
+   });
+});
+
+describe("canBind", () => {
+   // The doc comment on canBind used to say an inline tile's body "is a
+   // query, not a reference", which stopped a filter from being addable on
+   // the majority of real dashboards: an inline body is how most tiles are
+   // actually written. Only `inherited` — a view declared on the model, which
+   // this file never writes — is excluded now.
+   it("excludes only inherited", () => {
+      const d = doc();
+      d.tiles.push({
+         name: "by_region",
+         source: "orders",
+         declaration: { kind: "inherited" },
+      });
+      expect(d.tiles.map((t) => canBind(t))).toEqual([true, true, true, false]);
    });
 });
 

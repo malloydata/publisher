@@ -11,10 +11,12 @@ import type {
 } from "./document";
 import {
    type DeclarationAt,
+   declarationExtent,
    declarationsUnder,
    givenDeclarations,
    splitTrailingComment,
    tileSteps,
+   viewBodyStage1,
 } from "./malloyText";
 
 /**
@@ -177,6 +179,112 @@ function filtersOf(refinement: string | undefined) {
          ...(m[2] === "~" ? {} : { op: m[2] }),
       });
    return out.length > 0 ? out : undefined;
+}
+
+/**
+ * The `where:` binding clauses in `content` that are ISOLATED — nothing but a
+ * separator (a comma, or nothing at all) between one clause's end and the
+ * next clause's start, or the end of `content`. `end` reaches through that
+ * separator, so a caller stripping a clean clause out never leaves a dangling
+ * comma behind.
+ *
+ * `where: a ~ $A and c = 1` matches BINDING_CLAUSE once, for `a ~ $A`, and
+ * fails this isolation check because ` and c = 1` follows it — a compound
+ * predicate, unmodeled Malloy, left exactly as written. `where: a ~ $A, where:
+ * b ~ $B` passes twice: the gap between them is a bare comma.
+ */
+export function cleanBindingClauses(content: string): Array<{
+   start: number;
+   end: number;
+   field: string;
+   given: string;
+   op?: string;
+}> {
+   const matches = [...content.matchAll(BINDING_CLAUSE)];
+   const out: Array<{
+      start: number;
+      end: number;
+      field: string;
+      given: string;
+      op?: string;
+   }> = [];
+   for (let i = 0; i < matches.length; i++) {
+      const m = matches[i];
+      const start = m.index as number;
+      const clauseEnd = start + m[0].length;
+      const gapEnd =
+         i + 1 < matches.length
+            ? (matches[i + 1].index as number)
+            : content.length;
+      if (!/^[\s,]*$/.test(content.slice(clauseEnd, gapEnd))) continue;
+      out.push({
+         start,
+         end: gapEnd,
+         field: m[1],
+         given: m[3],
+         ...(m[2] === "~" ? {} : { op: m[2] }),
+      });
+   }
+   return out;
+}
+
+/**
+ * Whether `code`'s entire text (once trimmed) is one or more binding clauses
+ * — the rule a depth-1 `where:` line inside an inline body's first stage must
+ * meet to be a builder-managed binding. `undefined` for anything else: no
+ * clause at all, a clause that does not start the text, or trailing text past
+ * the last clause — a compound predicate is exactly this last case.
+ */
+export function isBindingOnly(
+   code: string,
+): ReturnType<typeof cleanBindingClauses> | undefined {
+   const trimmed = code.trim();
+   const clean = cleanBindingClauses(trimmed);
+   if (clean.length === 0) return undefined;
+   if (clean[0].start !== 0) return undefined;
+   if (clean[clean.length - 1].end !== trimmed.length) return undefined;
+   return clean;
+}
+
+/**
+ * An inline body's filters from its multi-line first stage: one depth-1
+ * `where:` LINE per binding, or several clauses on one line, each checked
+ * whole via {@link isBindingOnly}. A line that fails — a compound predicate,
+ * say — is skipped, not reported: it is unmodeled Malloy, not a binding.
+ */
+function lineFilters(
+   whereLines: Array<{ line: number; code: string }>,
+): Array<{ field: string; given: string; op?: string }> | undefined {
+   const out: Array<{ field: string; given: string; op?: string }> = [];
+   for (const { code } of whereLines) {
+      const clean = isBindingOnly(code);
+      if (!clean) continue;
+      for (const c of clean)
+         out.push({
+            field: c.field,
+            given: c.given,
+            ...(c.op ? { op: c.op } : {}),
+         });
+   }
+   return out.length > 0 ? out : undefined;
+}
+
+/**
+ * A one-line body's filters: every ISOLATED binding clause anywhere in its
+ * braces, ignoring whatever query content sits alongside it — unlike
+ * {@link lineFilters}, the whole content is not required to be binding-only,
+ * because a one-liner's query and its bindings necessarily share the line.
+ */
+function oneLinerFilters(
+   content: string,
+): Array<{ field: string; given: string; op?: string }> | undefined {
+   const clean = cleanBindingClauses(content);
+   if (clean.length === 0) return undefined;
+   return clean.map((c) => ({
+      field: c.field,
+      given: c.given,
+      ...(c.op ? { op: c.op } : {}),
+   }));
 }
 
 /**
@@ -421,8 +529,29 @@ export async function readDashboardDocument(
       }
       const { tags } = blockAbove(lines, declLine);
       const t = parseAnnotation(tagText(tags)).tag;
-      const filters =
-         body.kind === "reference" ? filtersOf(body.refinement) : undefined;
+      let filters:
+         | Array<{ field: string; given: string; op?: string }>
+         | undefined;
+      if (body.kind === "reference") {
+         filters = filtersOf(body.refinement);
+      } else {
+         // Filters live as depth-1 `where:` statements in the body's own
+         // first stage rather than a `+ { … }` refinement — see
+         // BINDING_CLAUSE and viewBodyStage1 for the shape this scan trusts.
+         const extent = declarationExtent(lines, declLine);
+         if ("unreadable" in extent) {
+            return {
+               ok: false,
+               reason: `Could not read \`${viewName}\`'s body: ${extent.unreadable}.`,
+               line: declLine + 1,
+            };
+         }
+         const stage = viewBodyStage1(lines, declLine, extent.end);
+         filters =
+            stage.oneLiner !== undefined
+               ? oneLinerFilters(stage.oneLiner.content)
+               : lineFilters(stage.whereLines);
+      }
       tiles.push({
          name: viewName,
          source: sourceName,

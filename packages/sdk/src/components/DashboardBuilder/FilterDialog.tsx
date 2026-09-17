@@ -500,20 +500,12 @@ export function FilterDialog({
                               {title}
                            </Typography>
                            {!bindable[index] ? (
-                              <Tooltip
-                                 title={
-                                    tile.declaration.kind === "inherited"
-                                       ? "Declared on its source, which this dashboard does not write."
-                                       : "Its query is written out here rather than named, so a filter cannot be added to it."
-                                 }
-                              >
+                              <Tooltip title="Declared on its source, which this dashboard does not write.">
                                  <Typography
                                     variant="caption"
                                     sx={{ color: theme.tileTitle }}
                                  >
-                                    {tile.declaration.kind === "inherited"
-                                       ? "From the model"
-                                       : "Inline query"}
+                                    From the model
                                  </Typography>
                               </Tooltip>
                            ) : (

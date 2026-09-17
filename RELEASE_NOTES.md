@@ -382,6 +382,33 @@ implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/
 
 ---
 
+## [Unreleased] — the dashboard editor can now filter a tile whose view is written inline
+
+A dashboard tile's filter control used to refuse to bind on an `inline` tile — `view: x
+is { aggregate: … }` — because the only write path was a `+ { where: … }` refinement
+after the view reference, which does not exist to append to when there is no reference.
+That excluded the majority of real dashboards: writing a view's body inline, rather than
+as a named reference, is the common way people write one, and the bundled
+`tiled.malloy` fixture is entirely inline tiles.
+
+The fix is a second write path, not a workaround: a binding on an inline tile is now a
+depth-1 `where:` statement inside the body's own first stage, which is valid Malloy and
+reads back exactly like a reference tile's refinement does. Only that shape is
+recognized — a nested `where:` inside a `nest:`, a compound predicate such as `where: a
+~ $A and c = 1`, and a source-level `where:` outside any view are all left exactly as
+written, never touched and never reported as a binding. A tile whose body is a
+multi-stage `->` pipeline or a `{ … } + { … }` compound refinement still refuses a filter
+change, with a reason naming the shape.
+
+**Consequence for an existing file:** an author's own `where: x = $Y` written at depth 1
+of an inline view's first stage is now builder-managed the same way a reference tile's
+refinement already was. Once that filter's control is touched through the builder and
+the file is saved, that `where:` is regenerated from the control's bindings rather than
+preserved verbatim — the same contract a reference tile's refinement already had, now
+extended to the more common inline shape.
+
+---
+
 ## [0.2.7] — 500 and 502 responses no longer echo the internal error
 
 A 500 or a 502 returned `error.message` verbatim. That message is not always

@@ -10,6 +10,7 @@ import {
    givenDeclarations,
    splitTrailingComment,
    tileSteps,
+   viewBodyStage1,
 } from "./malloyText";
 
 const LINES = `##! experimental.givens
@@ -171,6 +172,51 @@ file:///data/orders.csv
   }
 }`.split("\n");
       expect(declarationExtent(lines, 1)).toEqual({ end: 1, opened: false });
+   });
+
+   // A brace inside a trailing `//` comment is text, not structure. Counted as
+   // structure it made `kpis`'s own extent run through `other`, an unrelated
+   // view, and out to the enclosing source's own closing brace — a corruption
+   // the round-trip gate cannot catch, since reader and writer share the same
+   // scan.
+   it("does not count a brace inside a trailing comment", () => {
+      const lines = `source: a is scoped_orders extend {
+  view: kpis is {
+    group_by: cat // the { brace here is unbalanced
+    aggregate: n is count()
+  }
+
+  view: other is { aggregate: m is count() }
+}`.split("\n");
+      expect(declarationExtent(lines, 1)).toEqual({ end: 4, opened: true });
+   });
+
+   // `//` inside a quoted literal is not a comment, so the brace that follows
+   // it on the same line is still structure.
+   it("still counts a brace that follows a // inside a quoted literal", () => {
+      const lines = `source: a is one extend {
+  view: x is { where: path ~ 'a//b' }
+}`.split("\n");
+      expect(declarationExtent(lines, 1)).toEqual({ end: 1, opened: true });
+   });
+});
+
+describe("viewBodyStage1", () => {
+   // The same defect as declarationExtent's, one level down: a stray `{` in a
+   // trailing comment inflated the depth count, which pushed every line after
+   // it one level too deep — deep enough that a real `where:` line, at what
+   // should be depth 1, stopped looking like the tile's own binding.
+   it("does not let a brace inside a trailing comment inflate the depth count", () => {
+      const lines = `  view: kpis is {
+    group_by: cat // the { brace here is unbalanced
+    where: cat ~ $CATEGORY
+    aggregate: n is count()
+  }`.split("\n");
+      const stage1 = viewBodyStage1(lines, 0, 4);
+      expect(stage1.whereLines).toEqual([
+         { line: 2, code: "where: cat ~ $CATEGORY" },
+      ]);
+      expect(stage1.end).toBe(4);
    });
 });
 

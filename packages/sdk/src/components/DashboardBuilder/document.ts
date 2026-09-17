@@ -99,9 +99,16 @@ export interface DashboardDrill {
  * - `reference` — `view: revenue_trend is sales_by_month` in this file. Fully
  *   editable: the layout tags sit above that line and the builder owns them.
  * - `inline` — `view: order_tile is { aggregate: order_count }` in this file.
- *   Its tags are editable for the same reason; its QUERY is not, because
- *   authoring a query body is a separate feature. The projection holds: the body
- *   is never rewritten, so it cannot be damaged.
+ *   Its tags are editable for the same reason, and so is a FILTER: a binding is
+ *   a depth-1 `where:` statement in the body's own first stage rather than a `+
+ *   { … }` refinement, but it is still a declaration this file owns and the
+ *   reader reads back — see {@link DashboardTile.filters} and BINDING_CLAUSE in
+ *   readDocument.ts. The QUERY otherwise is not editable, because authoring a
+ *   query body is a separate feature; the body is never rewritten beyond its
+ *   binding lines, so the rest of it cannot be damaged. A body shaped so that
+ *   its first stage is ambiguous — a multi-stage `->` pipeline, a `{ … } + { …
+ *   }` compound refinement — is read as-is but refuses a filter CHANGE; see
+ *   `planInlineFilters` in spliceDocument.ts.
  * - `inherited` — not declared in this file at all, as in a dashboard whose only
  *   tile is `orders -> by_brand` against an imported source. Nothing about it is
  *   editable here, because its tags live on the model's own view and the builder
@@ -129,7 +136,9 @@ export interface DashboardTile {
    source: string;
    declaration: TileDeclaration;
    /**
-    * Given bindings, emitted as a `+ { where: … }` refinement on the view.
+    * Given bindings: a `+ { where: … }` refinement on a `reference` tile, or a
+    * depth-1 `where:` statement in an `inline` tile's own first stage — see
+    * {@link TileDeclaration}.
     *
     * `op` is the comparison, and absent means `~`, which is how a `filter<…>`
     * given binds. A plain `date` or `number` given is a VALUE, not a filter,

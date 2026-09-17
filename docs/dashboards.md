@@ -303,11 +303,16 @@ about givens themselves (declaration, types, defaults, access control) is in [gi
 **Binding is per declaration, not per name.** Measured: a dashboard that declares its own `CATEGORY`
 and extends a source whose `where:` reads the model's `CATEGORY` gets a control that moves nothing,
 because the two are different declarations that happen to share a name. So a dashboard that declares
-its controls binds them on its **tiles**, as a `+ { where: field ~ $GIVEN }` refinement on each view
-that answers to the control, which is also exactly what the builder reads and writes. Model-level
-scoping (a `where:` inside a source, reading the model's givens) is the other design and still works:
-import that source and `import '../givens.malloy'` whole, and the controls render for the givens the
-tiles reach. The two do not mix on one given.
+its controls binds them on its **tiles**. A tile declared as a reference, `view: x is base_view`, gets
+a `+ { where: field ~ $GIVEN }` refinement after the reference; a tile whose body is written inline,
+`view: x is { aggregate: … }` — the common way people actually write one — gets the binding as a
+depth-1 `where:` statement inside the body's own first stage instead, since there is no reference to
+refine. Either way it is exactly what the builder reads and writes; a `where:` anywhere else in an
+inline body (nested inside a `nest:`, part of a compound predicate, or in a second pipeline stage) is
+left alone and is not a binding the builder will touch. Model-level scoping (a `where:` inside a
+source, reading the model's givens) is the other design and still works: import that source and
+`import '../givens.malloy'` whole, and the controls render for the givens the tiles reach. The two do
+not mix on one given.
 
 **Declare in the dashboard when the dashboard is the thing being edited.** The builder adds and
 removes filters by writing `given:` declarations and tile bindings into the dashboard file, and it

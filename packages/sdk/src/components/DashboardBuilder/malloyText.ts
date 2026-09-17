@@ -105,28 +105,54 @@ export function declarationExtent(
    let lastLine = -1;
    for (let i = line; i < lines.length; i++) {
       const raw = lines[i];
-      const trimmed = raw.trim();
-      // A blank line separating declarations is not part of either one's body
-      // — skipped like a tag or comment, so it is never swallowed into a
-      // blockless declaration's reported end.
-      if (
-         !tripleQuote &&
-         (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//"))
-      )
-         continue;
-      // Only outside a `"""` span: inside one, every line is string content, and
-      // SQL reaches for `<word>:` readily enough — `file:///data/orders.csv` in
-      // a `read_csv(…)` reads as the next declaration and ends the source at its
-      // first line.
-      if (!tripleQuote && i > line && !opened && /^\s*[a-z_]+:/.test(raw))
-         return { end: lastLine, opened: false };
+      // The code text to brace-scan for this line: everything but a trailing
+      // `//` comment, and everything but the `"""` string content when a span
+      // opened on an earlier line. `splitTrailingComment` is single-line, so a
+      // span already open at the start of this line has to be closed first —
+      // running it on the raw line would read SQL text as code.
+      let scan: string;
+      if (tripleQuote) {
+         const close = raw.indexOf('"""');
+         const stringContent = close < 0 ? raw : raw.slice(0, close);
+         if (stringContent.includes("{") || stringContent.includes("}"))
+            return {
+               unreadable:
+                  `line ${i + 1} holds a brace inside a """ string, which ` +
+                  `this scan cannot tell apart from the block it is looking for`,
+            };
+         if (close < 0) {
+            lastLine = i;
+            continue;
+         }
+         tripleQuote = false;
+         scan = splitTrailingComment(raw.slice(close + 3)).code;
+      } else {
+         const trimmed = raw.trim();
+         // A blank line separating declarations is not part of either one's
+         // body — skipped like a tag or comment, so it is never swallowed into
+         // a blockless declaration's reported end.
+         if (
+            trimmed === "" ||
+            trimmed.startsWith("#") ||
+            trimmed.startsWith("//")
+         )
+            continue;
+         // Only outside a `"""` span: inside one, every line is string content,
+         // and SQL reaches for `<word>:` readily enough — `file:///data/orders.csv`
+         // in a `read_csv(…)` reads as the next declaration and ends the source
+         // at its first line.
+         if (i > line && !opened && /^\s*[a-z_]+:/.test(raw))
+            return { end: lastLine, opened: false };
+         scan = splitTrailingComment(raw).code;
+      }
 
       let pos = 0;
       let overshoot = false;
-      while (pos < raw.length) {
+      while (pos < scan.length) {
          if (tripleQuote) {
-            const close = raw.indexOf('"""', pos);
-            const segment = close < 0 ? raw.slice(pos) : raw.slice(pos, close);
+            const close = scan.indexOf('"""', pos);
+            const segment =
+               close < 0 ? scan.slice(pos) : scan.slice(pos, close);
             if (segment.includes("{") || segment.includes("}"))
                return {
                   unreadable:
@@ -134,19 +160,19 @@ export function declarationExtent(
                      `this scan cannot tell apart from the block it is looking for`,
                };
             if (close < 0) {
-               pos = raw.length;
+               pos = scan.length;
                break;
             }
             tripleQuote = false;
             pos = close + 3;
             continue;
          }
-         if (raw.startsWith('"""', pos)) {
+         if (scan.startsWith('"""', pos)) {
             tripleQuote = true;
             pos += 3;
             continue;
          }
-         const ch = raw[pos];
+         const ch = scan[pos];
          if (ch === "{") {
             depth++;
             opened = true;
@@ -164,6 +190,106 @@ export function declarationExtent(
       if (opened && depth <= 0) return { end: i, opened: true };
    }
    return { end: lastLine, opened };
+}
+
+/**
+ * The body's FIRST stage: the lines from `declLine` through the matching
+ * close of the `{ … }` that follows `is`, and the depth-1 `where:` lines
+ * inside it — the only lines a builder-managed binding can occupy (a `nest:`'s
+ * own `where:` is depth 2 and never appears here).
+ *
+ * Stops the instant that brace closes, even when the same line goes on to
+ * reopen one (`} -> { …`, a second pipeline stage): a plain running depth
+ * count would read straight through a same-line reopen and misread a second
+ * stage's own `where:` as the tile's. `extentEnd` bounds the scan and is
+ * {@link declarationExtent}'s own `end`; the caller has already used it to
+ * confirm no brace hides inside a `"""` span in this declaration, so this
+ * scan does not repeat that check.
+ *
+ * `oneLiner` is set when the first stage opens and closes on `declLine`
+ * itself (`view: x is { aggregate: n is count() }`) — there is no separate
+ * line to add or patch a binding on, so the caller rewrites the braces'
+ * content as a whole instead of a line.
+ *
+ * `more` is set when text follows the first stage that this function does not
+ * cover: a `->` second stage, or a `{ … } + { … }` compound refinement.
+ * Either makes "the first stage" an ambiguous place to write a binding, which
+ * is for the caller to refuse.
+ */
+export interface ViewBodyStage1 {
+   end: number;
+   whereLines: Array<{ line: number; code: string }>;
+   oneLiner: { openCol: number; closeCol: number; content: string } | undefined;
+   more: boolean;
+}
+
+export function viewBodyStage1(
+   lines: string[],
+   declLine: number,
+   extentEnd: number,
+): ViewBodyStage1 {
+   let depth = 0;
+   let openAt = -1;
+   const whereLines: Array<{ line: number; code: string }> = [];
+   for (let i = declLine; i <= extentEnd && i < lines.length; i++) {
+      const raw = lines[i];
+      const trimmed = raw.trim();
+      if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//"))
+         continue;
+      const startDepth = depth;
+      const { code } = splitTrailingComment(raw);
+      let closedAt = -1;
+      for (let pos = 0; pos < code.length; pos++) {
+         const ch = code[pos];
+         if (ch === "{") {
+            if (depth === 0 && openAt < 0 && i === declLine) openAt = pos;
+            depth++;
+         } else if (ch === "}") {
+            depth--;
+            if (depth === 0) {
+               closedAt = pos;
+               break;
+            }
+         }
+      }
+      if (closedAt >= 0) {
+         const oneLiner =
+            i === declLine && openAt >= 0
+               ? {
+                    openCol: openAt,
+                    closeCol: closedAt,
+                    content: raw.slice(openAt + 1, closedAt),
+                 }
+               : undefined;
+         const afterClose = splitTrailingComment(raw.slice(closedAt + 1)).code;
+         let more = afterClose.trim().length > 0;
+         if (!more) {
+            for (let j = i + 1; j < lines.length; j++) {
+               const nextTrimmed = lines[j].trim();
+               if (
+                  nextTrimmed === "" ||
+                  nextTrimmed.startsWith("#") ||
+                  nextTrimmed.startsWith("//")
+               )
+                  continue;
+               more =
+                  nextTrimmed.startsWith("->") || nextTrimmed.startsWith("+");
+               break;
+            }
+         }
+         return { end: i, whereLines, oneLiner, more };
+      }
+      // startDepth 1 is a statement of the body ITSELF, one level inside the
+      // `{` that opened it; a `nest: y is { where: … }` puts its own `where:`
+      // at startDepth 2, which is why this check runs before this line's own
+      // braces (if any) are counted.
+      if (startDepth === 1 && code.trim().startsWith("where:"))
+         whereLines.push({ line: i, code: code.trim() });
+   }
+   // declarationExtent already guarantees the block closes somewhere at or
+   // before extentEnd; falling through here only means the caller passed an
+   // extentEnd that does not belong to this declaration.
+   return { end: extentEnd, whereLines, oneLiner: undefined, more: false };
 }
 
 /** The line declaring `<keyword>: <name> is`, or -1. */
