@@ -1,7 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { BackLink, DashboardBar, Loading } from "@malloy-publisher/sdk";
+import {
+   BackLink,
+   DashboardBar,
+   encodeResourceUri,
+   Loading,
+} from "@malloy-publisher/sdk";
 import { Box, Stack } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -64,9 +69,8 @@ export default function DashboardEditPage({
             }
          >
             <DashboardEditor
-               environmentName={environmentName}
-               packageName={packageName}
-               dashboardName={dashboardName}
+               resourceUri={encodeResourceUri({ environmentName, packageName })}
+               dashboard={dashboardName}
                onExit={() => navigate(dashboardPath)}
                onEvent={onEvent}
             />

@@ -696,6 +696,47 @@ Embedding into a **non-React** host page is a follow-up
 target a dashboard route yet, so an [HTML data app](html-data-apps.md) remains the surface with the
 complete embedding story.
 
+## Editing one in your own React app
+
+`<DashboardEditor>` is the other public export of `@malloy-publisher/sdk` for this component: the
+same builder the Console's own `/edit` route mounts, over the same `resourceUri` + `dashboard` shape
+as `<Dashboard>`, plus `onExit`, `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`,
+and a `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the
+package cannot be written (see the SDK README's
+[Document Storage](../packages/sdk/README.md#document-storage) section).
+
+```tsx
+import {
+  DashboardEditor,
+  encodeResourceUri,
+  ServerProvider,
+} from "@malloy-publisher/sdk";
+
+<ServerProvider baseURL="https://publisher.example.com/api/v0">
+  <DashboardEditor
+    resourceUri={encodeResourceUri({
+      environmentName: "examples",
+      packageName: "storefront",
+    })}
+    dashboard="overview"
+    onExit={() => navigate(-1)}
+  />
+</ServerProvider>;
+```
+
+An older host may still pass `environmentName`, `packageName` and `dashboardName` in place of
+`resourceUri` and `dashboard`; that form is deprecated but not removed, so a 0.4.1 integration keeps
+working untouched.
+
+`versionId` on the URI pins every READ the editor makes — the file, the manifest, the dashboard list,
+and the catalog behind the filter window's field search — exactly as it does for `<Dashboard>`. It
+never reaches the write: `updateModelSource` answers `501 Not Implemented` to a `versionId` on this
+route, same as everywhere else, and a version is a fixed point in history regardless. Pin one against
+a package that would otherwise take the editor's writes and Save turns itself off, with the toolbar
+caption saying why, rather than opening the editor onto a compare-and-swap it can never win. Pinning
+has no effect on a save that goes into a host's own document store or a browser draft instead:
+neither touches the package's write endpoint.
+
 ## Where dashboards stop
 
 Whatever renderer tags can express is the ceiling. There is deliberately no code escape hatch (no

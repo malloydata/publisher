@@ -81,9 +81,9 @@ A materialization is a run of one package's persist sources: `package_name` is N
 
 The dashboard builder shipped in 0.3.1 with an Export button: it handed back a copy of the file for someone to put in the package by hand. The Console now closes the loop instead.
 
-**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled *as the file* and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
+**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled _as the file_ and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
 
-The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means *create*, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
+The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means _create_, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
 
 **Like every write on this server it is unauthenticated** and belongs behind the gateway; `frozenConfig` turns it off. It opens no door that was shut — a caller who can reach it can already register a package — and it is recorded in [docs/security-posture.md](docs/security-posture.md).
 
@@ -245,14 +245,14 @@ height says which rule it took.
 
 The bundled examples, the dashboards doc and the `malloy-dashboards` skill all named the givens a
 dashboard uses (`import { CATEGORY, BRAND, … } from '../givens.malloy'`). They import the file whole
-now. A control renders for a given the tiles actually *reference*, not for every one in scope, so
+now. A control renders for a given the tiles actually _reference_, not for every one in scope, so
 the whole-file form brings no controls you did not ask for, and a named list only gives an author
 something to forget — with a missing control, not an error, as the result. It is also what Malloyyo
 documents for the same format, so a repo written for either side reads the same. Sources are
 unchanged and still named individually, which is the right form where a file wants a few specific
 things.
 
-Nothing about where a given is *declared* changes: that is the model, and `givens.malloy` is where a
+Nothing about where a given is _declared_ changes: that is the model, and `givens.malloy` is where a
 package keeps it, because the MCP surface, row-level access and `#(authorize)` all read it. The doc
 now also records that declaring one in a dashboard file works — the control renders and the tile
 filters — for a page that owns its own knob. That is the exception, not the convention.
@@ -406,6 +406,26 @@ refinement already was. Once that filter's control is touched through the builde
 the file is saved, that `where:` is regenerated from the control's bindings rather than
 preserved verbatim — the same contract a reference tile's refinement already had, now
 extended to the more common inline shape.
+
+---
+
+## [Unreleased] — `DashboardEditor` takes a `resourceUri`, and can now open a pinned version
+
+`DashboardEditor` was the only resource-addressed component in the SDK still taking loose
+`environmentName` / `packageName` props, under a `dashboardName` that disagreed with
+`Dashboard`'s own `dashboard` for the same slug, and with no way to pin a `versionId` the
+way every other resource-addressed component can. It now takes `resourceUri` + `dashboard`,
+matching `Dashboard` exactly; the old `environmentName` / `packageName` / `dashboardName`
+form still works, deprecated rather than removed, so an existing integration is unaffected.
+
+A `versionId` on the URI pins every read the editor makes — the file, the manifest, the
+dashboard list, and the catalog behind the filter window's field search — the same as it
+already does for `Dashboard`. It never reaches the write: Publisher answers `501 Not
+Implemented` to a `versionId` on `updateModelSource`, and a version is a fixed point in
+history regardless, so a pin against a package that would otherwise take the editor's
+writes now turns Save off instead, with the toolbar caption saying why. A save into a
+host's own document store or a browser draft is unaffected, since neither goes through
+that endpoint.
 
 ---
 
