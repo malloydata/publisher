@@ -400,6 +400,13 @@ written, never touched and never reported as a binding. A tile whose body is a
 multi-stage `->` pipeline or a `{ … } + { … }` compound refinement still refuses a filter
 change, with a reason naming the shape.
 
+**What the live editor shows while you work:** adding a filter to an inline tile previews
+correctly. Removing or changing one does not take effect in the preview until the file is
+saved, because the tile's preview runs the saved view, whose body already holds the saved
+`where:`, and the builder has no way to name that view unbound. A reference tile is exact
+either way, because it refines its base view. The saved result is correct in every case;
+this is the preview only.
+
 **Consequence for an existing file:** an author's own `where: x = $Y` written at depth 1
 of an inline view's first stage is now builder-managed the same way a reference tile's
 refinement already was. Once that filter's control is touched through the builder and

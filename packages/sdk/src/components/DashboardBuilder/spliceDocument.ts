@@ -1065,7 +1065,7 @@ function planInlineFilters(
    tile: DashboardTile,
    declLine: number,
 ): SpliceFailure | undefined {
-   const { lines, wholeLine, indentOf, edits } = ctx;
+   const { lines, starts, wholeLine, indentOf, edits } = ctx;
    const extent = declarationExtent(lines, declLine);
    if ("unreadable" in extent) {
       return {
@@ -1110,12 +1110,19 @@ function planInlineFilters(
    const wantedByGiven = new Map((tile.filters ?? []).map((f) => [f.given, f]));
    const existing: Array<{
       line: number;
+      startCol: number;
+      endCol: number;
       givens: string[];
    }> = [];
    for (const wl of stage.whereLines) {
       const clean = isBindingOnly(wl.code);
       if (!clean) continue; // not ours: a compound predicate or the like
-      existing.push({ line: wl.line, givens: clean.map((c) => c.given) });
+      existing.push({
+         line: wl.line,
+         startCol: wl.startCol,
+         endCol: wl.endCol,
+         givens: clean.map((c) => c.given),
+      });
    }
 
    const seenGivens = new Set<string>();
@@ -1133,17 +1140,44 @@ function planInlineFilters(
                   op?: string;
                },
          );
-      const { comment } = splitTrailingComment(lines[ex.line]);
+      const raw = lines[ex.line];
+      const lineStart = starts[ex.line];
       if (stillWanted.length === 0) {
-         edits.push({ ...wholeLine(ex.line), text: "" });
+         // A clause alone on its own line — nothing but indentation before
+         // it, nothing after — is dropped whole line and all, so no blank
+         // line is left behind. One sharing its line with the body's `{` or
+         // `}` (or another statement) has only its own span removed, so that
+         // brace survives; `before` keeps its original indent when there is
+         // nothing structural in it to trim, which is what a bare `}` left
+         // behind reuses as its own.
+         const beforeAll = raw.slice(0, ex.startCol);
+         const afterAll = raw.slice(ex.endCol);
+         const hasBefore = beforeAll.trim() !== "";
+         const hasAfter = afterAll.trim() !== "";
+         if (!hasBefore && !hasAfter) {
+            edits.push({ ...wholeLine(ex.line), text: "" });
+            continue;
+         }
+         const before = hasBefore ? beforeAll.trimEnd() : beforeAll;
+         const after = afterAll.trimStart();
+         const joined =
+            hasBefore && hasAfter ? `${before} ${after}` : `${before}${after}`;
+         edits.push({
+            start: lineStart,
+            end: wholeLine(ex.line).end,
+            text: `${joined}\n`,
+         });
          continue;
       }
       const rebuiltLine = stillWanted.map(bindingText).join(", ");
-      const withComment = comment ? `${rebuiltLine} ${comment}` : rebuiltLine;
-      if (withComment !== lines[ex.line].trim())
+      // A span replace of just the clause's own columns, not the whole
+      // line — a `{` or `}` sharing the line, or a trailing comment, sits
+      // outside [startCol, endCol) and is carried over untouched.
+      if (rebuiltLine !== raw.slice(ex.startCol, ex.endCol))
          edits.push({
-            ...wholeLine(ex.line),
-            text: `${indentOf(ex.line)}${withComment}\n`,
+            start: lineStart + ex.startCol,
+            end: lineStart + ex.endCol,
+            text: rebuiltLine,
          });
    }
 
@@ -1153,14 +1187,32 @@ function planInlineFilters(
          existing.length > 0
             ? indentOf(existing[0].line)
             : firstBodyIndent(lines, declLine, stage.end, indentOf);
-      const text = added
-         .map((f) => `${bodyIndent}${bindingText(f)}\n`)
-         .join("");
-      const at =
-         lastBindingLine >= 0
-            ? wholeLine(lastBindingLine).end
-            : wholeLine(stage.end).start;
-      edits.push({ start: at, end: at, text });
+      // A surviving binding on the body's own closing line: appending after
+      // the WHOLE line would land past the `}`, so the new binding is
+      // spliced in right after that clause's own span instead — still
+      // inside the body, and still after what was already there, which
+      // whole-line insertion could not be, either way.
+      const closingLineExisting = existing.find((e) => e.line === stage.end);
+      const closingLineSurvives =
+         closingLineExisting !== undefined &&
+         closingLineExisting.givens.some((g) => wantedByGiven.has(g));
+      if (closingLineExisting && closingLineSurvives) {
+         const at =
+            starts[closingLineExisting.line] + closingLineExisting.endCol;
+         const text = added
+            .map((f) => `\n${bodyIndent}${bindingText(f)}`)
+            .join("");
+         edits.push({ start: at, end: at, text });
+      } else {
+         const text = added
+            .map((f) => `${bodyIndent}${bindingText(f)}\n`)
+            .join("");
+         const at =
+            lastBindingLine >= 0 && lastBindingLine !== stage.end
+               ? wholeLine(lastBindingLine).end
+               : wholeLine(stage.end).start;
+         edits.push({ start: at, end: at, text });
+      }
    }
    return undefined;
 }
@@ -1178,7 +1230,10 @@ function firstBodyIndent(
          continue;
       return indentOf(i);
    }
-   return `${indentOf(declLine)}   `;
+   // A body with no statement to copy an indent from. Two spaces past the
+   // declaration's own, which is what the rest of this writer assumes when it
+   // has nothing else to go on.
+   return `${indentOf(declLine)}  `;
 }
 
 export async function spliceDashboardDocument(

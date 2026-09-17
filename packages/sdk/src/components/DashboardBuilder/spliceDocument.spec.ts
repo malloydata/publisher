@@ -513,6 +513,190 @@ source: a is one extend {
       const reread = await openDocument(unbound);
       expect(reread.tiles[0].filters).toBeUndefined();
    });
+
+   // The end-to-end shape of the corruption a quoted literal's brace used to
+   // cause: with the brace counted as structure, `kpis`'s own extent ran
+   // through `other`, an unrelated sibling view, and the new binding landed
+   // after it, at source scope — outside the tile it was meant for. The
+   // round-trip gate could not catch this on its own, because the reader
+   // shared the same scan and read the stray clause back as `kpis`'s own, so
+   // this checks the WRITTEN TEXT's placement directly rather than trusting
+   // a read-back.
+   it("places a new binding inside its own tile, not after a sibling view holding a brace in a literal", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is scoped_orders extend {
+  view: kpis is {
+    where: path ~ 'a{b'
+    aggregate: n is count()
+  }
+
+  view: other is { aggregate: m is count() }
+}`;
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [{ field: "cat", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "  view: kpis is {\n    where: path ~ 'a{b'\n    aggregate: n is count()\n    where: cat ~ $CATEGORY\n  }",
+      );
+      expect(out).toContain("  view: other is { aggregate: m is count() }\n}");
+      expect(out.match(/where: cat ~ \$CATEGORY/g)).toHaveLength(1);
+      const reopened = await openDocument(out);
+      expect(reopened.tiles[0].filters).toEqual([
+         { field: "cat", given: "CATEGORY" },
+      ]);
+   });
+
+   // The `}` variant: before the fix this refused outright, wrongly, on "a
+   // multi-stage pipeline" — the brace count went negative and the scan
+   // mistook it for an overshoot into the enclosing block.
+   it("places a new binding inside its own tile past a sibling holding a closing brace in a literal", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is scoped_orders extend {
+  view: kpis is {
+    where: path ~ 'a}b'
+    aggregate: n is count()
+  }
+
+  view: other is { aggregate: m is count() }
+}`;
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [{ field: "cat", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "  view: kpis is {\n    where: path ~ 'a}b'\n    aggregate: n is count()\n    where: cat ~ $CATEGORY\n  }",
+      );
+   });
+
+   // The one-line-body bug end to end: an already-bound one-liner whose
+   // where: shares its line with the query, ticked again for the same value.
+   // Before the fix the read said unbound, so the "same" bind was actually
+   // a fresh add, appending a second where: beside the first.
+   it("round-trips a one-line body's where: shared with query text without duplicating it", async () => {
+      const boundOneLiner = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is { where: category ~ $CATEGORY, aggregate: n is count() }
+}`;
+      const before = await openDocument(boundOneLiner);
+      expect(before.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+      const rebound = await spliced(boundOneLiner, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(rebound).toBe(boundOneLiner);
+      expect(rebound.match(/where:/g)).toHaveLength(1);
+      const after = await openDocument(rebound);
+      expect(after.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // The opening/closing-line bug end to end: a where: sharing its line with
+   // the body's own `{` or `}` read as unbound, so re-binding the same value
+   // appended a duplicate rather than being a no-op.
+   it("round-trips a where: sharing the body's opening brace line without duplicating it", async () => {
+      const sharedOpen = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is { where: category ~ $CATEGORY
+    aggregate: n is count()
+  }
+}`;
+      const before = await openDocument(sharedOpen);
+      expect(before.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+      const rebound = await spliced(sharedOpen, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(rebound).toBe(sharedOpen);
+      expect(rebound.match(/where:/g)).toHaveLength(1);
+      const after = await openDocument(rebound);
+      expect(after.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   it("round-trips a where: sharing the body's closing brace line without duplicating it", async () => {
+      const sharedClose = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    aggregate: n is count()
+    where: category ~ $CATEGORY }
+}`;
+      const before = await openDocument(sharedClose);
+      expect(before.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+      const rebound = await spliced(sharedClose, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(rebound).toBe(sharedClose);
+      expect(rebound.match(/where:/g)).toHaveLength(1);
+      const after = await openDocument(rebound);
+      expect(after.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // Dropping a binding that shares the body's closing line must leave the
+   // brace behind, not delete it along with the clause.
+   it("drops a binding sharing the closing brace line without losing the brace", async () => {
+      const sharedClose = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    aggregate: n is count()
+    where: category ~ $CATEGORY }
+}`;
+      const out = await spliced(sharedClose, (d) => {
+         delete d.tiles[0].filters;
+      });
+      // The closing brace itself, not just the text before it: dropped whole
+      // line and all, the view's own `}` would go with the where: clause.
+      expect(out).toContain("    aggregate: n is count()\n    }\n}");
+      expect(out).not.toContain("where:");
+      const reopened = await openDocument(out);
+      expect(reopened.tiles[0].declaration).toEqual({ kind: "inline" });
+   });
+
+   // Adding a second binding when the first already shares the closing
+   // brace line must keep it INSIDE the body, in the order asked for, not
+   // ahead of the surviving one and not past the `}`.
+   it("adds a second binding after one that shares the closing brace line, in order", async () => {
+      const sharedClose = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    aggregate: n is count()
+    where: category ~ $CATEGORY }
+}`;
+      const out = await spliced(sharedClose, (d) => {
+         d.tiles[0].filters = [
+            { field: "category", given: "CATEGORY" },
+            { field: "brand", given: "BRAND" },
+         ];
+      });
+      expect(out).toContain(
+         "    where: category ~ $CATEGORY\n    where: brand ~ $BRAND }",
+      );
+      const reopened = await openDocument(out);
+      expect(reopened.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+         { field: "brand", given: "BRAND" },
+      ]);
+   });
 });
 
 describe("spliceDashboardDocument: the dashboard's own givens", () => {

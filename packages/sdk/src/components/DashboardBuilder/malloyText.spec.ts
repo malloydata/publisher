@@ -199,6 +199,44 @@ file:///data/orders.csv
 }`.split("\n");
       expect(declarationExtent(lines, 1)).toEqual({ end: 1, opened: true });
    });
+
+   // A brace inside a `'…'` filter literal is text, not structure — the same
+   // corruption class as a brace inside a trailing comment, and a Malloy
+   // filter literal (`f'a{b'`) is single-quoted, so this is not exotic.
+   it("does not count a brace inside a single-quoted literal", () => {
+      const opening = `source: a is one extend {
+  view: kpis is {
+    where: path ~ 'a{b'
+    aggregate: n is count()
+  }
+
+  view: other is { aggregate: m is count() }
+}`.split("\n");
+      expect(declarationExtent(opening, 1)).toEqual({ end: 4, opened: true });
+
+      const closing = `source: a is one extend {
+  view: kpis is {
+    where: path ~ 'a}b'
+    aggregate: n is count()
+  }
+
+  view: other is { aggregate: m is count() }
+}`.split("\n");
+      expect(declarationExtent(closing, 1)).toEqual({ end: 4, opened: true });
+   });
+
+   // Same masking, double-quoted.
+   it("does not count a brace inside a double-quoted literal", () => {
+      const lines = `source: a is one extend {
+  view: kpis is {
+    where: path ~ "a{b"
+    aggregate: n is count()
+  }
+
+  view: other is { aggregate: m is count() }
+}`.split("\n");
+      expect(declarationExtent(lines, 1)).toEqual({ end: 4, opened: true });
+   });
 });
 
 describe("viewBodyStage1", () => {
@@ -213,10 +251,86 @@ describe("viewBodyStage1", () => {
     aggregate: n is count()
   }`.split("\n");
       const stage1 = viewBodyStage1(lines, 0, 4);
-      expect(stage1.whereLines).toEqual([
+      expect(
+         stage1.whereLines.map(({ line, code }) => ({ line, code })),
+      ).toEqual([{ line: 2, code: "where: cat ~ $CATEGORY" }]);
+      expect(stage1.end).toBe(4);
+   });
+
+   // Same masking as declarationExtent's: a brace inside a quoted literal on
+   // a depth-1 where: line must not throw off the depth count that decides
+   // where the body closes.
+   it("does not let a brace inside a quoted literal inflate the depth count", () => {
+      const lines = `  view: kpis is {
+    where: path ~ 'a{b'
+    where: cat ~ $CATEGORY
+    aggregate: n is count()
+  }`.split("\n");
+      const stage1 = viewBodyStage1(lines, 0, 4);
+      // Both lines depth-1, not just the one before the literal: a phantom
+      // `{` from 'a{b' would push `where: cat ~ $CATEGORY` to depth 2 and
+      // drop it from this list.
+      expect(
+         stage1.whereLines.map(({ line, code }) => ({ line, code })),
+      ).toEqual([
+         { line: 1, code: "where: path ~ 'a{b'" },
          { line: 2, code: "where: cat ~ $CATEGORY" },
       ]);
       expect(stage1.end).toBe(4);
+   });
+
+   // A depth-1 where: that shares its line with the `{` that opens the body:
+   // there is no line of its own to have a whole-line check match against.
+   it("collects a where: that shares the opening line with the body's brace", () => {
+      const lines = `  view: kpis is { where: a ~ $A
+    aggregate: n is count()
+  }`.split("\n");
+      const stage1 = viewBodyStage1(lines, 0, 2);
+      expect(
+         stage1.whereLines.map(({ line, code }) => ({ line, code })),
+      ).toEqual([{ line: 0, code: "where: a ~ $A" }]);
+      expect(stage1.end).toBe(2);
+   });
+
+   // Same, sharing the closing line with the body's `}` — the old scan
+   // returned as soon as it saw the brace close, before ever looking at the
+   // where: beside it.
+   it("collects a where: that shares the closing line with the body's brace", () => {
+      const lines = `  view: kpis is {
+    aggregate: n is count()
+    where: a ~ $A }`.split("\n");
+      const stage1 = viewBodyStage1(lines, 0, 2);
+      expect(
+         stage1.whereLines.map(({ line, code }) => ({ line, code })),
+      ).toEqual([{ line: 2, code: "where: a ~ $A" }]);
+      expect(stage1.end).toBe(2);
+   });
+
+   // A one-liner's own where — body opens AND closes on declLine — is
+   // reported only through `oneLiner.content`, never duplicated into
+   // `whereLines`.
+   it("does not also collect a one-liner's where: into whereLines", () => {
+      const lines = [
+         "  view: kpis is { aggregate: n is count(), where: a ~ $A }",
+      ];
+      const stage1 = viewBodyStage1(lines, 0, 0);
+      expect(stage1.whereLines).toEqual([]);
+      expect(stage1.oneLiner?.content).toBe(
+         " aggregate: n is count(), where: a ~ $A ",
+      );
+   });
+
+   // A nest's own where, one level deeper, must stay excluded even when it
+   // shares a line with the outer body's own depth-1 where — the segment
+   // scan tracks actual brace depth, not which line the text is on.
+   it("excludes a nested nest's where: even sharing a line with the outer one", () => {
+      const lines = `  view: kpis is {
+    nest: by_month is { where: month ~ $MONTH } where: a ~ $A
+  }`.split("\n");
+      const stage1 = viewBodyStage1(lines, 0, 2);
+      expect(
+         stage1.whereLines.map(({ line, code }) => ({ line, code })),
+      ).toEqual([{ line: 1, code: "where: a ~ $A" }]);
    });
 });
 

@@ -321,6 +321,49 @@ source: a is one extend {
       ]);
    });
 
+   // The boundary after a where: clause is the next statement keyword, not
+   // only the next binding clause or the end of the content — a one-line
+   // body's binding is followed by comma-joined query text, not nothing.
+   it("reads a one-line body's where: even when a comma joins it to more query text", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is { where: category ~ $CATEGORY, aggregate: n is count() }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // A where: sharing the line that opens the body's brace, or the line that
+   // closes it, is still read as the tile's own binding.
+   it("reads a where: sharing a line with the body's opening or closing brace", async () => {
+      const opening = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is { where: category ~ $CATEGORY
+    aggregate: n is count()
+  }
+}`);
+      expect(opening.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+
+      const closing = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    aggregate: n is count()
+    where: category ~ $CATEGORY }
+}`);
+      expect(closing.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
    // A source-level `where:` sits outside every view's extent; it is read as
    // part of no tile's filters, the same as it always was.
    it("never attributes a source-level where: to a tile", async () => {

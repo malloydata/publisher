@@ -124,9 +124,20 @@ export interface PreviewTileQuery {
  *
  * An inline tile takes the SAME path as a reference: `view: x is { … }` names
  * a view on the extension exactly as `view: x is base_view` does, so
- * `source -> x + { where: … }` runs it refined the same way. Without this, a
- * bound control on an inline tile — most tiles in practice — looked like it
- * did nothing in the live editor, and sent no given at all once saved.
+ * `source -> x + { where: … }` runs it refined. Without this, a bound control
+ * on an inline tile — most tiles in practice — looked like it did nothing in
+ * the live editor, and sent no given at all once saved.
+ *
+ * ADDITIVE, though, where a reference is exact. A reference tile refines its
+ * BASE view, which carries no bindings, so the preview is what the writer is
+ * about to produce. An inline tile has no base to name: `x` is the saved view,
+ * whose body already holds whatever bindings were saved into it, and this runs
+ * against the package's own model rather than the edited text. So adding a
+ * binding previews correctly, while REMOVING one leaves the saved `where:`
+ * filtering and CHANGING one applies the old and the new together, until the
+ * file is saved. Previewing those exactly would need the body re-emitted
+ * without its bindings, which this builder deliberately does not do: it
+ * splices, and never writes a view's body out from the document.
  */
 export function previewTileQuery(
    document: DashboardDocument,

@@ -18,6 +18,79 @@ const IDENT = "[A-Za-z_][A-Za-z0-9_]*";
 export const isIdentifier = (text: string) =>
    new RegExp(`^${IDENT}$`).test(text);
 
+/** Which quoted literal a position sits inside, if any. */
+type Quote = "'" | '"' | '"""' | undefined;
+
+/**
+ * Walks `text` one character at a time, classifying every position as inside
+ * a `'…'`, `"…"`, or `"""…"""` literal or not, and calls `onChar` for each.
+ * `start` carries a `"""` span already open from an earlier line — single-
+ * and double-quoted strings never cross a line in Malloy, only a `"""` block
+ * does — and the return value is that same carry for the next line.
+ *
+ * The one place quote rules are written: a brace-counter that skips
+ * characters where `quote` is set never mistakes `'a{b'` for structure, and a
+ * comment-finder that only looks for `//` where `quote` is undefined never
+ * mistakes `'http://x'` for a comment. `onChar` returning `false` stops the
+ * walk early, which the callers that bail out early (an overshoot, a brace
+ * found inside a `"""` span) use to avoid scanning the rest of the line.
+ */
+function walkQuoted(
+   text: string,
+   start: Quote,
+   onChar: (ch: string, i: number, quote: Quote) => boolean | void,
+): Quote {
+   let quote = start;
+   let i = 0;
+   while (i < text.length) {
+      if (quote === '"""') {
+         if (text.startsWith('"""', i)) {
+            if (onChar(text[i], i, quote) === false) return quote;
+            if (onChar(text[i + 1], i + 1, quote) === false) return quote;
+            if (onChar(text[i + 2], i + 2, quote) === false) return quote;
+            quote = undefined;
+            i += 3;
+            continue;
+         }
+         if (onChar(text[i], i, quote) === false) return quote;
+         i++;
+         continue;
+      }
+      if (quote !== undefined) {
+         if (text[i] === "\\") {
+            if (onChar(text[i], i, quote) === false) return quote;
+            i++;
+            if (i < text.length) {
+               if (onChar(text[i], i, quote) === false) return quote;
+               i++;
+            }
+            continue;
+         }
+         if (onChar(text[i], i, quote) === false) return quote;
+         if (text[i] === quote) quote = undefined;
+         i++;
+         continue;
+      }
+      if (text.startsWith('"""', i)) {
+         quote = '"""';
+         if (onChar(text[i], i, quote) === false) return quote;
+         if (onChar(text[i + 1], i + 1, quote) === false) return quote;
+         if (onChar(text[i + 2], i + 2, quote) === false) return quote;
+         i += 3;
+         continue;
+      }
+      if (text[i] === '"' || text[i] === "'") {
+         quote = text[i] as '"' | "'";
+         if (onChar(text[i], i, quote) === false) return quote;
+         i++;
+         continue;
+      }
+      if (onChar(text[i], i, undefined) === false) return quote;
+      i++;
+   }
+   return quote;
+}
+
 /** A one-line `<keyword>: <name> is <rest>` declaration. */
 export interface DeclarationAt {
    line: number;
@@ -146,45 +219,35 @@ export function declarationExtent(
          scan = splitTrailingComment(raw).code;
       }
 
-      let pos = 0;
+      // A `'…'`/`"…"` literal masks any brace inside it from this count —
+      // `'a{b'` is not structure — while a brace inside a `"""` span is still
+      // refused rather than guessed at, same as the carried-in case above.
       let overshoot = false;
-      while (pos < scan.length) {
-         if (tripleQuote) {
-            const close = scan.indexOf('"""', pos);
-            const segment =
-               close < 0 ? scan.slice(pos) : scan.slice(pos, close);
-            if (segment.includes("{") || segment.includes("}"))
-               return {
-                  unreadable:
+      let unreadable: string | undefined;
+      tripleQuote =
+         walkQuoted(scan, undefined, (ch, _pos, quote) => {
+            if (quote === '"""') {
+               if (ch === "{" || ch === "}") {
+                  unreadable =
                      `line ${i + 1} holds a brace inside a """ string, which ` +
-                     `this scan cannot tell apart from the block it is looking for`,
-               };
-            if (close < 0) {
-               pos = scan.length;
-               break;
+                     `this scan cannot tell apart from the block it is looking for`;
+                  return false;
+               }
+               return;
             }
-            tripleQuote = false;
-            pos = close + 3;
-            continue;
-         }
-         if (scan.startsWith('"""', pos)) {
-            tripleQuote = true;
-            pos += 3;
-            continue;
-         }
-         const ch = scan[pos];
-         if (ch === "{") {
-            depth++;
-            opened = true;
-         } else if (ch === "}") {
-            if (!opened) {
-               overshoot = true;
-               break;
+            if (quote !== undefined) return; // single/double: masked
+            if (ch === "{") {
+               depth++;
+               opened = true;
+            } else if (ch === "}") {
+               if (!opened) {
+                  overshoot = true;
+                  return false;
+               }
+               depth--;
             }
-            depth--;
-         }
-         pos++;
-      }
+         }) === '"""';
+      if (unreadable) return { unreadable };
       if (overshoot) return { end: lastLine, opened: false };
       lastLine = i;
       if (opened && depth <= 0) return { end: i, opened: true };
@@ -209,7 +272,17 @@ export function declarationExtent(
  * `oneLiner` is set when the first stage opens and closes on `declLine`
  * itself (`view: x is { aggregate: n is count() }`) — there is no separate
  * line to add or patch a binding on, so the caller rewrites the braces'
- * content as a whole instead of a line.
+ * content as a whole instead of a line, and a `where:` inside it is left for
+ * that whole-content rewrite rather than also collected into `whereLines`.
+ *
+ * A depth-1 `where:` is collected wherever it sits on a line, not only when
+ * it fills the whole line: the opening line of a multi-line body
+ * (`view: x is { where: a ~ $A`) and the closing line (`  where: a ~ $A }`)
+ * both put other text — the `{` or the `}` — alongside it. The line is split
+ * into whichever depth-1 stretch it holds by tracking where depth actually
+ * crosses 1, so a `nest: y is { where: b ~ $B }` sharing a line with the
+ * body's own where stays excluded: its where sits at depth 2 regardless of
+ * which line it is on.
  *
  * `more` is set when text follows the first stage that this function does not
  * cover: a `->` second stage, or a `{ … } + { … }` compound refinement.
@@ -218,7 +291,18 @@ export function declarationExtent(
  */
 export interface ViewBodyStage1 {
    end: number;
-   whereLines: Array<{ line: number; code: string }>;
+   whereLines: Array<{
+      line: number;
+      code: string;
+      /**
+       * The clause's own column span in the line, trimmed to exclude
+       * whatever `{`, `}`, or whitespace shares the line with it — so a
+       * writer can patch or drop just the clause without touching a brace
+       * beside it.
+       */
+      startCol: number;
+      endCol: number;
+   }>;
    oneLiner: { openCol: number; closeCol: number; content: string } | undefined;
    more: boolean;
 }
@@ -230,28 +314,58 @@ export function viewBodyStage1(
 ): ViewBodyStage1 {
    let depth = 0;
    let openAt = -1;
-   const whereLines: Array<{ line: number; code: string }> = [];
+   const whereLines: ViewBodyStage1["whereLines"] = [];
+   // A segment's raw text can carry leading/trailing whitespace inside its
+   // [start, end) span; trimming it down to the clause's own columns is what
+   // lets the writer patch or drop just the clause later, without disturbing
+   // a `{` or `}` sharing the same line.
+   const collect = (i: number, code: string, start: number, end: number) => {
+      const text = code.slice(start, end);
+      const trimmed = text.trim();
+      if (!trimmed.startsWith("where:")) return;
+      const startCol = start + (text.length - text.trimStart().length);
+      whereLines.push({
+         line: i,
+         code: trimmed,
+         startCol,
+         endCol: startCol + trimmed.length,
+      });
+   };
    for (let i = declLine; i <= extentEnd && i < lines.length; i++) {
       const raw = lines[i];
       const trimmed = raw.trim();
       if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//"))
          continue;
-      const startDepth = depth;
       const { code } = splitTrailingComment(raw);
       let closedAt = -1;
-      for (let pos = 0; pos < code.length; pos++) {
-         const ch = code[pos];
+      // The depth-1 stretch(es) of THIS line, as [start, end) offsets into
+      // `code` — usually one, but a nested block that opens and closes on
+      // the same line as a where can leave two either side of it.
+      const segments: Array<{ start: number; end: number }> = [];
+      let segStart = depth === 1 ? 0 : -1;
+      walkQuoted(code, undefined, (ch, pos, quote) => {
+         if (quote !== undefined) return; // literal content, not structure
          if (ch === "{") {
             if (depth === 0 && openAt < 0 && i === declLine) openAt = pos;
+            if (depth === 1 && segStart >= 0)
+               segments.push({ start: segStart, end: pos });
             depth++;
+            segStart = depth === 1 ? pos + 1 : -1;
          } else if (ch === "}") {
+            if (depth === 1 && segStart >= 0)
+               segments.push({ start: segStart, end: pos });
             depth--;
             if (depth === 0) {
                closedAt = pos;
-               break;
+               segStart = -1;
+               return false;
             }
+            segStart = depth === 1 ? pos + 1 : -1;
          }
-      }
+      });
+      if (closedAt < 0 && depth === 1 && segStart >= 0)
+         segments.push({ start: segStart, end: code.length });
+
       if (closedAt >= 0) {
          const oneLiner =
             i === declLine && openAt >= 0
@@ -277,14 +391,13 @@ export function viewBodyStage1(
                break;
             }
          }
+         // A one-liner's where is rewritten wholesale via `oneLiner.content`;
+         // collecting it here too would let the same clause bind twice.
+         if (!oneLiner)
+            for (const seg of segments) collect(i, code, seg.start, seg.end);
          return { end: i, whereLines, oneLiner, more };
       }
-      // startDepth 1 is a statement of the body ITSELF, one level inside the
-      // `{` that opened it; a `nest: y is { where: … }` puts its own `where:`
-      // at startDepth 2, which is why this check runs before this line's own
-      // braces (if any) are counted.
-      if (startDepth === 1 && code.trim().startsWith("where:"))
-         whereLines.push({ line: i, code: code.trim() });
+      for (const seg of segments) collect(i, code, seg.start, seg.end);
    }
    // declarationExtent already guarantees the block closes somewhere at or
    // before extentEnd; falling through here only means the caller passed an
@@ -373,30 +486,16 @@ export function splitTrailingComment(line: string): {
    /** The comment from its `//`, or "". */
    comment: string;
 } {
-   let quote: '"' | "'" | '"""' | undefined;
-   for (let i = 0; i < line.length; i++) {
-      if (quote === '"""') {
-         if (line.startsWith('"""', i)) {
-            quote = undefined;
-            i += 2;
-         }
-         continue;
+   let commentAt = -1;
+   walkQuoted(line, undefined, (ch, i, quote) => {
+      if (quote === undefined && ch === "/" && line[i + 1] === "/") {
+         commentAt = i;
+         return false;
       }
-      if (quote !== undefined) {
-         if (line[i] === "\\") i++;
-         else if (line[i] === quote) quote = undefined;
-         continue;
-      }
-      if (line.startsWith('"""', i)) {
-         quote = '"""';
-         i += 2;
-      } else if (line[i] === '"' || line[i] === "'") {
-         quote = line[i] as '"' | "'";
-      } else if (line.startsWith("//", i)) {
-         return { code: line.slice(0, i), comment: line.slice(i) };
-      }
-   }
-   return { code: line, comment: "" };
+   });
+   return commentAt < 0
+      ? { code: line, comment: "" }
+      : { code: line.slice(0, commentAt), comment: line.slice(commentAt) };
 }
 
 /** A tile expression's steps: `orders -> by_brand + { limit: 2 }`. */

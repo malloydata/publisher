@@ -127,6 +127,9 @@ beforeEach(() => {
    getDashboard.mockClear();
    listDashboards.mockClear();
    updateModelSource.mockClear();
+   // Uncleared, a tile query from an earlier test carries into the next one's
+   // assertions, where it looks like the component under test made it.
+   executeQueryModel.mockClear();
    serverContext.mutable = false;
 });
 
@@ -197,6 +200,22 @@ describe("versionId", () => {
       await waitFor(() =>
          expect(cacheKeys("dashboard-editor-catalog")[0]).toContain('"v7"'),
       );
+   });
+
+   // The pin has to reach the TILE QUERIES too, not just the file, manifest
+   // and catalog. Half-applied it is worse than absent: the editor shows v7's
+   // text and field list while every tile runs against the current package, so
+   // a view that changed between them displays data the file on screen does
+   // not describe, and nothing says so.
+   it("reaches the tile queries, not only the file the editor opens", async () => {
+      mountByUri("v7");
+      expect(await screen.findByText("Storefront")).toBeDefined();
+
+      await waitFor(() =>
+         expect(executeQueryModel.mock.calls.length).toBeGreaterThan(0),
+      );
+      for (const call of executeQueryModel.mock.calls)
+         expect((call[3] as { versionId?: string }).versionId).toBe("v7");
    });
 
    it("never reaches the write", async () => {

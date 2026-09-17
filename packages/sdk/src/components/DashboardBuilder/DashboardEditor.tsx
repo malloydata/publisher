@@ -854,6 +854,7 @@ function Surface({
                <DashboardTile
                   environmentName={environmentName}
                   packageName={packageName}
+                  versionId={versionId}
                   modelPath={modelPath}
                   tile={query.expression}
                   label={
@@ -873,6 +874,7 @@ function Surface({
          runnable,
          environmentName,
          packageName,
+         versionId,
          modelPath,
          applied,
          declaredTypes,

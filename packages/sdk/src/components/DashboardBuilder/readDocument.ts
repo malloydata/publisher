@@ -182,16 +182,22 @@ function filtersOf(refinement: string | undefined) {
 }
 
 /**
- * The `where:` binding clauses in `content` that are ISOLATED — nothing but a
- * separator (a comma, or nothing at all) between one clause's end and the
- * next clause's start, or the end of `content`. `end` reaches through that
- * separator, so a caller stripping a clean clause out never leaves a dangling
- * comma behind.
+ * The `where:` binding clauses in `content` that are ISOLATED — the text
+ * between one clause's end and whatever follows is nothing but a separator
+ * (a comma, or nothing at all) before the next binding clause, a top-level
+ * statement keyword, or the end of `content`. `end` reaches through that
+ * separator only — never into a following statement's own text — so a caller
+ * stripping a clean clause out never leaves a dangling comma behind, and
+ * never deletes the statement beside it.
  *
  * `where: a ~ $A and c = 1` matches BINDING_CLAUSE once, for `a ~ $A`, and
  * fails this isolation check because ` and c = 1` follows it — a compound
- * predicate, unmodeled Malloy, left exactly as written. `where: a ~ $A, where:
- * b ~ $B` passes twice: the gap between them is a bare comma.
+ * predicate, unmodeled Malloy, left exactly as written: `and` has no `:`
+ * after it, so it does not read as the next statement. `where: a ~ $A, where:
+ * b ~ $B` passes twice: the gap between them is a bare comma. `where: a ~
+ * $A, aggregate: n is count()` — a one-line body's binding sharing a line
+ * with its query — passes too: `aggregate:` is a statement keyword, not a
+ * continuation of the predicate.
  */
 export function cleanBindingClauses(content: string): Array<{
    start: number;
@@ -212,14 +218,17 @@ export function cleanBindingClauses(content: string): Array<{
       const m = matches[i];
       const start = m.index as number;
       const clauseEnd = start + m[0].length;
-      const gapEnd =
+      const boundary =
          i + 1 < matches.length
             ? (matches[i + 1].index as number)
             : content.length;
-      if (!/^[\s,]*$/.test(content.slice(clauseEnd, gapEnd))) continue;
+      const gap = content.slice(clauseEnd, boundary);
+      const separator = /^[\s,]*/.exec(gap)?.[0] ?? "";
+      const rest = gap.slice(separator.length);
+      if (rest !== "" && !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(rest)) continue;
       out.push({
          start,
-         end: gapEnd,
+         end: clauseEnd + separator.length,
          field: m[1],
          given: m[3],
          ...(m[2] === "~" ? {} : { op: m[2] }),
