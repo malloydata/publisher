@@ -421,6 +421,63 @@ source: a is one extend {
       );
    });
 
+   // The bug this fix exists for: `isBindingOnly` used to check only that the
+   // first clause starts at 0 and the last reaches the end, never the gap
+   // BETWEEN two clauses — so this whole line read as binding-only, and a
+   // splice that dropped one binding rewrote it down to just the surviving
+   // `where:`, deleting the tile's actual measure with nothing catching it
+   // (the reader only ever reported bindings, so the round-trip compared
+   // equal). Fixed, the line does not tile end to end and is never ours to
+   // touch, so a filter change leaves it exactly as written — the assertion
+   // is on the SURVIVING TEXT, not on the splice merely succeeding, because
+   // the un-fixed path also returns `ok: true`.
+   const TWO_BINDINGS_ONE_STATEMENT = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    where: a ~ $A, aggregate: n is count(), where: b ~ $B
+  }
+}`;
+
+   it("keeps the measure between two bindings when one is dropped from that line", async () => {
+      const out = await spliced(TWO_BINDINGS_ONE_STATEMENT, (d) => {
+         d.tiles[0].filters = [{ field: "a", given: "A" }];
+      });
+      expect(out).toContain("aggregate: n is count()");
+   });
+
+   it("keeps the measure between two bindings when one is changed on that line", async () => {
+      const out = await spliced(TWO_BINDINGS_ONE_STATEMENT, (d) => {
+         d.tiles[0].filters = [
+            { field: "a2", given: "A" },
+            { field: "b", given: "B" },
+         ];
+      });
+      expect(out).toContain("aggregate: n is count()");
+   });
+
+   // Guards the gap check above against over-tightening: a one-liner's
+   // binding and query necessarily share a line, so `oneLinerFilters` reads
+   // every isolated clause in the braces rather than requiring the whole
+   // content to be binding-only, and must keep doing so.
+   it("still reads and keeps a one-line body's binding alongside its measure", async () => {
+      const oneLiner = `## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is { where: c ~ $C, aggregate: n is count() }
+}`;
+      const before = await openDocument(oneLiner);
+      expect(before.tiles[0].filters).toEqual([{ field: "c", given: "C" }]);
+      const out = await spliced(oneLiner, (d) => {
+         d.tiles[0].filters = [{ field: "c", given: "C2" }];
+      });
+      expect(out).toContain(
+         "view: kpis is { aggregate: n is count(), where: c ~ $C2 }",
+      );
+   });
+
    it("writes a one-line body's binding inline, before the closing brace", async () => {
       const oneLiner = `## artifact { title="T" tiles=["a -> kpis"] }
 import "../m.malloy"

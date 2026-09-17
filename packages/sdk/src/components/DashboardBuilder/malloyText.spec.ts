@@ -332,6 +332,25 @@ describe("viewBodyStage1", () => {
          stage1.whereLines.map(({ line, code }) => ({ line, code })),
       ).toEqual([{ line: 1, code: "where: a ~ $A" }]);
    });
+
+   // The naive scan did not carry a `"""` span's open state across lines the
+   // way `declarationExtent` does, so a depth-1 `where:` line that opens a
+   // multi-line string collected as a whereLine truncated mid-string —
+   // `where: note ~ f"""` with no closing quote and no $GIVEN. Harmless here
+   // only because BINDING_CLAUSE never matches text without a `$`; a span
+   // whose content happened to start a line with `where: x ~ $Y` would have
+   // been collected as a real binding and rewritten, corrupting the string.
+   it('does not collect a where: from inside a multi-line """ span', () => {
+      const lines = `  view: kpis is {
+    where: note ~ f"""
+       plain text
+    """
+    aggregate: n is count()
+  }`.split("\n");
+      const stage1 = viewBodyStage1(lines, 0, 5);
+      expect(stage1.whereLines).toEqual([]);
+      expect(stage1.end).toBe(5);
+   });
 });
 
 describe("splitTrailingComment", () => {

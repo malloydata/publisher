@@ -314,6 +314,11 @@ export function viewBodyStage1(
 ): ViewBodyStage1 {
    let depth = 0;
    let openAt = -1;
+   // Carries a `"""` span open from an earlier line, same as
+   // `declarationExtent`'s own `tripleQuote` — single- and double-quoted
+   // literals never cross a line, so this is the only quote state that needs
+   // to carry across the loop.
+   let tripleQuote = false;
    const whereLines: ViewBodyStage1["whereLines"] = [];
    // A segment's raw text can carry leading/trailing whitespace inside its
    // [start, end) span; trimming it down to the clause's own columns is what
@@ -333,37 +338,70 @@ export function viewBodyStage1(
    };
    for (let i = declLine; i <= extentEnd && i < lines.length; i++) {
       const raw = lines[i];
-      const trimmed = raw.trim();
-      if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//"))
-         continue;
-      const { code } = splitTrailingComment(raw);
+      const enteringTripleQuote = tripleQuote;
+      let code: string;
+      if (tripleQuote) {
+         // The span already open at the start of this line has to be closed
+         // before `splitTrailingComment` runs, same reason as
+         // `declarationExtent`: it is single-line and blind to a carried
+         // state, so a `//` inside the string's own text would read as a
+         // real comment and truncate real code after the close.
+         const close = raw.indexOf('"""');
+         if (close < 0) continue; // the whole line is string content
+         tripleQuote = false;
+         code =
+            raw.slice(0, close + 3) +
+            splitTrailingComment(raw.slice(close + 3)).code;
+      } else {
+         const trimmed = raw.trim();
+         if (
+            trimmed === "" ||
+            trimmed.startsWith("#") ||
+            trimmed.startsWith("//")
+         )
+            continue;
+         code = splitTrailingComment(raw).code;
+      }
       let closedAt = -1;
       // The depth-1 stretch(es) of THIS line, as [start, end) offsets into
       // `code` — usually one, but a nested block that opens and closes on
-      // the same line as a where can leave two either side of it.
+      // the same line as a where can leave two either side of it. `segStart`
+      // is set the first time real (unmasked, depth-1) code shows up rather
+      // than preset from depth alone, so a line that begins inside an open
+      // `"""` span — where every character up to the close is masked — never
+      // starts a segment at column 0 and picks up the string's own text.
       const segments: Array<{ start: number; end: number }> = [];
-      let segStart = depth === 1 ? 0 : -1;
-      walkQuoted(code, undefined, (ch, pos, quote) => {
-         if (quote !== undefined) return; // literal content, not structure
-         if (ch === "{") {
-            if (depth === 0 && openAt < 0 && i === declLine) openAt = pos;
-            if (depth === 1 && segStart >= 0)
-               segments.push({ start: segStart, end: pos });
-            depth++;
-            segStart = depth === 1 ? pos + 1 : -1;
-         } else if (ch === "}") {
-            if (depth === 1 && segStart >= 0)
-               segments.push({ start: segStart, end: pos });
-            depth--;
-            if (depth === 0) {
-               closedAt = pos;
-               segStart = -1;
-               return false;
+      let segStart = -1;
+      const endQuote = walkQuoted(
+         code,
+         enteringTripleQuote ? '"""' : undefined,
+         (ch, pos, quote) => {
+            if (quote !== undefined) return; // literal or """ content, not structure
+            if (segStart < 0 && depth === 1) segStart = pos;
+            if (ch === "{") {
+               if (depth === 0 && openAt < 0 && i === declLine) openAt = pos;
+               if (depth === 1 && segStart >= 0)
+                  segments.push({ start: segStart, end: pos });
+               depth++;
+               segStart = depth === 1 ? pos + 1 : -1;
+            } else if (ch === "}") {
+               if (depth === 1 && segStart >= 0)
+                  segments.push({ start: segStart, end: pos });
+               depth--;
+               if (depth === 0) {
+                  closedAt = pos;
+                  segStart = -1;
+                  return false;
+               }
+               segStart = depth === 1 ? pos + 1 : -1;
             }
-            segStart = depth === 1 ? pos + 1 : -1;
-         }
-      });
-      if (closedAt < 0 && depth === 1 && segStart >= 0)
+         },
+      );
+      tripleQuote = endQuote === '"""';
+      // A line that ends still inside an open span has no real end to its
+      // trailing segment — the rest of it is string content on lines not yet
+      // scanned — so nothing is collected for it until the span closes.
+      if (closedAt < 0 && depth === 1 && segStart >= 0 && !tripleQuote)
          segments.push({ start: segStart, end: code.length });
 
       if (closedAt >= 0) {

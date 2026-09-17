@@ -238,11 +238,19 @@ export function cleanBindingClauses(content: string): Array<{
 }
 
 /**
- * Whether `code`'s entire text (once trimmed) is one or more binding clauses
- * — the rule a depth-1 `where:` line inside an inline body's first stage must
- * meet to be a builder-managed binding. `undefined` for anything else: no
- * clause at all, a clause that does not start the text, or trailing text past
- * the last clause — a compound predicate is exactly this last case.
+ * Whether `code`'s entire text (once trimmed) is TILED by binding clauses —
+ * the rule a depth-1 `where:` line inside an inline body's first stage must
+ * meet to be a builder-managed binding. Nothing before the first clause,
+ * nothing after the last, and nothing but a separator BETWEEN clauses:
+ * `cleanBindingClauses` accepts a following statement keyword as a clause's
+ * own boundary (that is what lets a one-liner's binding share a line with its
+ * query), so two clauses each passing in isolation can still leave a whole
+ * statement sitting unnoticed in the gap between them — a `where:` either
+ * side of an `aggregate:` reads as two clean clauses this way, and skipping
+ * the gap check would call the line binding-only anyway, dropping the
+ * aggregate along with the bindings on a splice. `undefined` for anything
+ * that fails any of the three checks — a compound predicate is one such case,
+ * an untiled statement between two clauses is another.
  */
 export function isBindingOnly(
    code: string,
@@ -252,6 +260,9 @@ export function isBindingOnly(
    if (clean.length === 0) return undefined;
    if (clean[0].start !== 0) return undefined;
    if (clean[clean.length - 1].end !== trimmed.length) return undefined;
+   for (let i = 1; i < clean.length; i++)
+      if (!/^[\s,]*$/.test(trimmed.slice(clean[i - 1].end, clean[i].start)))
+         return undefined;
    return clean;
 }
 

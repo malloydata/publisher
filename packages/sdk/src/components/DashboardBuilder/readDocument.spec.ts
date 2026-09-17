@@ -288,6 +288,43 @@ source: a is one extend {
       expect(doc.tiles[0].filters).toBeUndefined();
    });
 
+   // `cleanBindingClauses` accepts a following statement keyword as a clean
+   // clause's own boundary — the rule a one-liner's binding needs to share a
+   // line with its query — so two clean clauses either side of a real
+   // statement can each pass in isolation while the statement between them
+   // goes unnoticed. The whole-line check has to reject this shape: read as
+   // binding-only, a splice that owns the line would drop `aggregate:` along
+   // with the bindings.
+   it("does not read two bindings as binding-only with a statement between them", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: a ~ $A, aggregate: n is count(), where: b ~ $B
+  }
+}`);
+      expect(doc.tiles[0].filters).toBeUndefined();
+   });
+
+   // Two bindings alone on one line, comma-joined, are still binding-only —
+   // the gap between them is nothing but the separator, so the tightening
+   // above must not catch this shape too.
+   it("still reads two bindings on one line as binding-only", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: a ~ $A, where: b ~ $B
+  }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "a", given: "A" },
+         { field: "b", given: "B" },
+      ]);
+   });
+
    // A second stage does not stop the FIRST stage's own binding from being
    // read; only the WRITER refuses to touch a body shaped like this.
    it("still reads a first-stage binding when a second stage follows", async () => {
