@@ -20,6 +20,7 @@
 import {
    isJoined,
    isSourceDef,
+   modelDefToModelInfo,
    ModelDef,
    NamedModelObject,
    NamedQueryDef,
@@ -27,6 +28,7 @@ import {
    StructDef,
    TurtleDef,
 } from "@malloydata/malloy";
+import * as Malloy from "@malloydata/malloy-interfaces";
 import {
    annotationTexts,
    modelAnnotations,
@@ -143,7 +145,7 @@ function joinFieldNamesUnresolvableDeclaration(
 
 /**
  * Whether `a` sits strictly before `b` in a document (line first, then
- * character) — the tie-break `considerAuthorizeNoteOwner` uses to keep the
+ * character) — the tie-break `considerNoteOwner` uses to keep the
  * EARLIEST candidate rather than the last one visited (iteration order over
  * `modelDef.contents`/`sourceRegistry` is not guaranteed to be declaration
  * order).
@@ -156,7 +158,7 @@ function isEarlierPosition(
 }
 
 /**
- * Resolve which top-level struct actually WROTE a shared `#(authorize)` note
+ * Resolve which top-level struct actually WROTE a shared annotation note
  * object, keyed by the note itself, so `attributedAuthorizeOwnNotes` can stop
  * mistaking "this struct's `annotations` carries the note" for "this struct
  * declared the note" — see `validateAuthorizeProbes`'s doc for why that
@@ -196,7 +198,7 @@ function isEarlierPosition(
  * see the call sites' doc for why an unresolved note then behaves as
  * "inherited everywhere it's found", which stays fail-closed either way.
  */
-function considerAuthorizeNoteOwner(
+function considerNoteOwner(
    declaredBy: Map<AnnotationNote, StructDef>,
    note: AnnotationNote,
    candidate: StructDef,
@@ -220,6 +222,37 @@ function considerAuthorizeNoteOwner(
    ) {
       declaredBy.set(note, candidate);
    }
+}
+
+/**
+ * The stable `SourceInfo` for every source THIS model can resolve.
+ *
+ * `modelDef.contents` is the file's namespace: its own declarations plus
+ * exactly the names an `import { … }` selected, keyed by local (post-`as`)
+ * name. That is the set a query addressed to this model path can name, so it
+ * is the set discovery must report — no more (a name the file cannot resolve
+ * fails to compile) and no less (an imported name is queryable here).
+ *
+ * Malloy's `modelDefToModelInfo` emits only `modelDef.exports`, and the import
+ * statement stores imported names `exported: false`, so calling it directly
+ * drops every imported source. Widening `exports` for the call is the way to
+ * get the namespace out of it, since `sourceDefToSourceInfo` is not exported.
+ * The union (rather than a replacement) keeps exported queries in the result
+ * for any future caller that wants them; the `.filter` makes it moot today.
+ *
+ * This is the same set as Malloy's own `Model.explores`. The previous
+ * implementation instead re-loaded each imported FILE and took everything it
+ * exported, which attributed all of an imported file's sources to the importing
+ * one — names that resolve nowhere in it.
+ */
+export function collectSourceInfos(modelDef: ModelDef): Malloy.SourceInfo[] {
+   const names = Object.keys(modelDef.contents).filter((name) =>
+      isSourceDef(modelDef.contents[name]),
+   );
+   const exports = [...new Set([...modelDef.exports, ...names])];
+   return modelDefToModelInfo({ ...modelDef, exports }).entries.filter(
+      (entry) => entry.kind === "source",
+   ) as Malloy.SourceInfo[];
 }
 
 /**
@@ -342,7 +375,7 @@ export function extractSourcesFromModelDef(
    /**
     * source name → the subset of {@link authorizeOwnNotes} that
     * `authorizeNoteDeclaredBy` resolved back to THIS struct as the one that
-    * actually WROTE the note (see `considerAuthorizeNoteOwner`'s doc). Feeds
+    * actually WROTE the note (see `considerNoteOwner`'s doc). Feeds
     * ONLY `validateAuthorizeProbes`'s own-vs-inherited diagnostic — whether an
     * unexpressible probe throws (a genuine authoring mistake at the
     * declaring source) or warns-and-scopes-to-one-entry-point (a derivation
@@ -385,7 +418,7 @@ export function extractSourcesFromModelDef(
    const gatedSourceOwnAuthorizeNotes = new Set<AnnotationNote>();
    // Every `#(authorize)`-tagged note object seen above, resolved to the ONE
    // top-level struct whose OWN `source:` line actually wrote it — see
-   // `considerAuthorizeNoteOwner`'s doc. Feeds `authorizeOwnNotes` below so a
+   // `considerNoteOwner`'s doc. Feeds `authorizeOwnNotes` below so a
    // struct that merely CARRIES a copied note (every plain `extend {}` /
    // `except:` / `accept:` derivation of a gated base) is no longer
    // mistaken for one that DECLARED it.
@@ -407,7 +440,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes(struct.annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
-            considerAuthorizeNoteOwner(authorizeNoteDeclaredBy, note, struct);
+            considerNoteOwner(authorizeNoteDeclaredBy, note, struct);
          }
       }
       nearMissAuthorize.push(
@@ -441,7 +474,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes((entry as StructDef).annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
-            considerAuthorizeNoteOwner(
+            considerNoteOwner(
                authorizeNoteDeclaredBy,
                note,
                entry as StructDef,
@@ -580,7 +613,7 @@ export function extractSourcesFromModelDef(
          // `ownGates`/`authorize`/`authorizeMap` below keep reading by TEXT
          // regardless of who declared it: the effective gate genuinely
          // applies to an inheriting entry point, only this diagnostic SIGNAL
-         // changes. See `considerAuthorizeNoteOwner`'s doc for the mechanism
+         // changes. See `considerNoteOwner`'s doc for the mechanism
          // and why simpler alternatives don't work.
          attributedAuthorizeOwnNotes.set(
             sourceName,

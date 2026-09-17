@@ -63,7 +63,24 @@ for a failing query either: the tunnel is dialed lazily, and on config load this
 release logs a warning naming each SSH connection that pins no host key while the
 opt-in is off, so the list is in the startup log before anyone runs a query.
 
-## [Unreleased] — the dashboard editor is not the only writer, and the browser is not the only store
+## [Unreleased] — compile and sqlSource now count against the concurrency cap
+
+`PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
+flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`,
+but not `compile` or `sqlSource` -- and both of those reach the database too:
+compile resolves a source's schema against the connection, and sqlSource runs a
+live introspection. A burst of either bypassed the cap its sibling routes
+enforce. The legacy `/projects/...` routes and the `compile_model` MCP tool had
+the same gap, so all three surfaces are gated together; leaving one open would
+just move the bypass.
+
+What changes for an operator: the cap now has to be sized for authoring traffic
+as well as query traffic. An agent loop or a notebook that compiles on every edit
+draws on the same pool a query does, so a deployment that sits near its cap may
+start seeing 503s on compile and sqlSource that it did not see before. The cap
+defaults to 32 and `0` still disables it entirely.
+
+## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the
 editor was written when the browser was the only implementation and the editor was the
@@ -100,23 +117,6 @@ What this does not add is contention control on the record itself. `saveDocument
 no expected-version slot, so two people editing one authoritative workspace are still
 last writer wins, and the editor cannot detect it. Only the package path is
 compare-and-swap protected.
-
-## [Unreleased] — compile and sqlSource now count against the concurrency cap
-
-`PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
-flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`,
-but not `compile` or `sqlSource` -- and both of those reach the database too:
-compile resolves a source's schema against the connection, and sqlSource runs a
-live introspection. A burst of either bypassed the cap its sibling routes
-enforce. The legacy `/projects/...` routes and the `compile_model` MCP tool had
-the same gap, so all three surfaces are gated together; leaving one open would
-just move the bypass.
-
-What changes for an operator: the cap now has to be sized for authoring traffic
-as well as query traffic. An agent loop or a notebook that compiles on every edit
-draws on the same pool a query does, so a deployment that sits near its cap may
-start seeing 503s on compile and sqlSource that it did not see before. The cap
-defaults to 32 and `0` still disables it entirely.
 
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
@@ -432,6 +432,43 @@ implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/
 ---
 
 ## [0.2.7] — 500 and 502 responses no longer echo the internal error
+
+A 500 or a 502 returned `error.message` verbatim. That message is not always
+something a caller should see: an unrecognised internal failure carries a stack
+fragment or a filesystem path, and a connection failure wraps the driver's own
+text, which can name an internal host and port, echo the SQL the caller sent, or
+distinguish "refused" from "timed out" from "auth failed" -- a reachability
+oracle for anything the server can reach.
+
+Both now answer with a fixed message (`Internal server error.`,
+`Upstream connection error.`) and the real error is logged server-side instead.
+The status codes are unchanged.
+
+The MCP endpoint gets the same treatment for the same reason. An unclassified
+tool error is answered by `getInternalError`, and a connection failure matches
+none of the classifier's branches, so the driver text withheld over HTTP would
+otherwise have stayed readable over `/mcp`. It is now withheld there too. Only
+that class is withheld: an operational failure keeps its message, because a tool
+error that says nothing is what the classifier exists to avoid.
+
+Two things are deliberately _not_ generalised, because the point is to drop what
+a caller cannot use rather than everything:
+
+- Every 4xx keeps its message. A 400 compile error, a 404 naming the package it
+  could not find, and the 424 that quotes an offending annotation are all
+  actionable, and a caller needs them to fix the request.
+- A 502 the server wrote itself keeps its message too. A message the server
+  composed names nothing internal, so it is marked caller-safe at the point it is
+  raised; only the driver passthrough is generalised. A new throw site that does
+  not mark itself is generalised by default. (The table-not-found case that used
+  to rely on this is a 404 in 0.2.6, so it no longer reaches the 502 branch at
+  all.)
+
+If you parse the body of a 5xx rather than reading its status, that text is now
+fixed. The detail moved to the logs, which is where it was always meant to be:
+before this change it reached them only incidentally, via response-body logging.
+
+---
 
 ## [0.2.6] — a bad table reference answers 404 or 400, not 502
 
