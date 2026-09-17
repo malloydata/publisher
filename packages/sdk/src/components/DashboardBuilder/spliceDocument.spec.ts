@@ -152,7 +152,7 @@ ${declaration}
          bind,
       );
       expect(out).toContain(
-         "  view: by_cat is by_category + { limit: 5, where: category ~ $CATEGORY } // top five",
+         "  view: by_cat is by_category + { limit: 5 where: category ~ $CATEGORY } // top five",
       );
    });
 
@@ -174,7 +174,7 @@ ${declaration}
          bind,
       );
       expect(out).toContain(
-         "  view: by_cat is by_category + { where: path ~ 'a//b', where: category ~ $CATEGORY }",
+         "  view: by_cat is by_category + { where: path ~ 'a//b' where: category ~ $CATEGORY }",
       );
    });
 });
@@ -299,7 +299,7 @@ describe("spliceDashboardDocument: bindings", () => {
    it("keeps an unmodelled clause in the refinement", async () => {
       const source = SOURCE.replace(
          "view: by_cat is by_category",
-         "view: by_cat is by_category + { limit: 5, where: category ~ $CATEGORY }",
+         "view: by_cat is by_category + { limit: 5 where: category ~ $CATEGORY }",
       );
       const out = await spliced(source, (d) => {
          d.tiles[0].filters = [
@@ -308,7 +308,7 @@ describe("spliceDashboardDocument: bindings", () => {
          ];
       });
       expect(out).toContain(
-         "view: by_cat is by_category + { limit: 5, where: category ~ $CATEGORY, where: brand ~ $BRAND }",
+         "view: by_cat is by_category + { limit: 5 where: category ~ $CATEGORY, where: brand ~ $BRAND }",
       );
       // And clearing the bindings leaves the clause that was never ours.
       const cleared = await spliced(source, (d) => {
@@ -384,8 +384,8 @@ import "../m.malloy"
 source: a is one extend {
   view: kpis is {
     group_by: category
-    nest: by_month is {
-      where: month ~ $MONTH
+    nest: by_mth is {
+      where: mth ~ $MONTH
       aggregate: n is count()
     }
   }
@@ -393,9 +393,9 @@ source: a is one extend {
       const out = await spliced(source, (d) => {
          d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
       });
-      expect(out).toContain("where: month ~ $MONTH");
+      expect(out).toContain("where: mth ~ $MONTH");
       expect(out).toContain(
-         "    nest: by_month is {\n      where: month ~ $MONTH\n      aggregate: n is count()\n    }\n    where: category ~ $CATEGORY\n  }",
+         "    nest: by_mth is {\n      where: mth ~ $MONTH\n      aggregate: n is count()\n    }\n    where: category ~ $CATEGORY\n  }",
       );
    });
 
@@ -440,21 +440,35 @@ source: a is one extend {
   }
 }`;
 
-   it("keeps the measure between two bindings when one is dropped from that line", async () => {
-      const out = await spliced(TWO_BINDINGS_ONE_STATEMENT, (d) => {
+   // Leaving the line alone is necessary but not sufficient: $A and $B still
+   // filter from text the builder cannot rewrite, so writing a managed
+   // `where:` for either would filter on that control twice, and only one of
+   // the two could ever be unticked again. Refused, and named.
+   it("refuses to bind a given the unmanaged line already filters on", async () => {
+      const reason = await refused(TWO_BINDINGS_ONE_STATEMENT, (d) => {
          d.tiles[0].filters = [{ field: "a", given: "A" }];
       });
-      expect(out).toContain("aggregate: n is count()");
+      expect(reason).toContain("already filters on `$A`");
    });
 
-   it("keeps the measure between two bindings when one is changed on that line", async () => {
-      const out = await spliced(TWO_BINDINGS_ONE_STATEMENT, (d) => {
+   it("refuses the same way when the binding is changed rather than added", async () => {
+      const reason = await refused(TWO_BINDINGS_ONE_STATEMENT, (d) => {
          d.tiles[0].filters = [
             { field: "a2", given: "A" },
             { field: "b", given: "B" },
          ];
       });
-      expect(out).toContain("aggregate: n is count()");
+      expect(reason).toContain("already filters on");
+   });
+
+   // And an edit that touches neither given leaves the line exactly as written.
+   it("leaves the unmanaged line alone on an unrelated change", async () => {
+      const out = await spliced(TWO_BINDINGS_ONE_STATEMENT, (d) => {
+         d.tiles[0].colspan = 4;
+      });
+      expect(out).toContain(
+         "where: a ~ $A, aggregate: n is count(), where: b ~ $B",
+      );
    });
 
    // Guards the gap check above against over-tightening: a one-liner's

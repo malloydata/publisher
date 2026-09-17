@@ -400,6 +400,22 @@ written, never touched and never reported as a binding. A tile whose body is a
 multi-stage `->` pipeline or a `{ … } + { … }` compound refinement still refuses a filter
 change, with a reason naming the shape.
 
+Recognizing that shape is a question about statements, and every scan here reads a line
+at a time, so the two can disagree: a clause list or a predicate carried onto a second
+line (`where: a ~ $A,` then `b ~ $B`) is only half-visible to a line-oriented reader.
+Such a `where:` is now unmodeled Malloy on both write paths -- read past, written around,
+never rewritten -- because rewriting the half that was read would strand the half that
+was not. The same isolation rule now governs a `+ { where: … }` refinement, which
+previously matched binding clauses anywhere in the refinement with no such check.
+
+Two guards back that up. A given already filtered on by a `where:` the builder does not
+manage cannot also be bound as a managed clause, because the two would filter on the same
+control while only one could ever be unbound again; that is refused with a reason naming
+the given. And every rewrite is now parsed by Malloy before it is written: a file that
+parsed before the edit must still parse after it, or nothing is written. That check sees
+the whole file, which the existing read-back gate cannot -- the gate compares tiles, tags
+and filters, so text stranded beside a clause it rewrote is invisible to it.
+
 **What the live editor shows while you work:** adding a filter to an inline tile previews
 correctly. Removing or changing one does not take effect in the preview until the file is
 saved, because the tile's preview runs the saved view, whose body already holds the saved

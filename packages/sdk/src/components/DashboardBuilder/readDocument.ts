@@ -168,24 +168,32 @@ function viewBody(
 export const BINDING_CLAUSE =
    /where:\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(~|>=|<=|!=|=|>|<)\s*\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
-/** `where: products.brand ~ $BRAND`, `where: created_at >= $SINCE` … */
+/**
+ * `where: products.brand ~ $BRAND`, `where: created_at >= $SINCE` … from a
+ * `+ { … }` refinement. Only ISOLATED clauses count: the writer removes what
+ * it reads here by span, so a clause it reads out of `where: a ~ $A and c =
+ * 1` would take the predicate's other half with it and leave `and c = 1`
+ * behind as invalid Malloy. A compound predicate reads as no binding and is
+ * left exactly as written.
+ */
 function filtersOf(refinement: string | undefined) {
    if (!refinement) return undefined;
-   const out: Array<{ field: string; given: string; op?: string }> = [];
-   for (const m of refinement.matchAll(BINDING_CLAUSE))
-      out.push({
-         field: m[1],
-         given: m[3],
-         ...(m[2] === "~" ? {} : { op: m[2] }),
-      });
-   return out.length > 0 ? out : undefined;
+   const clean = cleanBindingClauses(refinement);
+   if (clean.length === 0) return undefined;
+   return clean.map((c) => ({
+      field: c.field,
+      given: c.given,
+      ...(c.op ? { op: c.op } : {}),
+   }));
 }
 
 /**
  * The `where:` binding clauses in `content` that are ISOLATED — the text
  * between one clause's end and whatever follows is nothing but a separator
  * (a comma, or nothing at all) before the next binding clause, a top-level
- * statement keyword, or the end of `content`. `end` reaches through that
+ * statement keyword, a closing brace, or the end of `content`. The brace
+ * counts because a refinement arrives here still wrapped in its own `{ … }`,
+ * and a clause that ends the block is as isolated as one that ends the text. `end` reaches through that
  * separator only — never into a following statement's own text — so a caller
  * stripping a clean clause out never leaves a dangling comma behind, and
  * never deletes the statement beside it.
@@ -225,7 +233,12 @@ export function cleanBindingClauses(content: string): Array<{
       const gap = content.slice(clauseEnd, boundary);
       const separator = /^[\s,]*/.exec(gap)?.[0] ?? "";
       const rest = gap.slice(separator.length);
-      if (rest !== "" && !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(rest)) continue;
+      if (
+         rest !== "" &&
+         !rest.startsWith("}") &&
+         !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(rest)
+      )
+         continue;
       out.push({
          start,
          end: clauseEnd + separator.length,
@@ -273,10 +286,11 @@ export function isBindingOnly(
  * say — is skipped, not reported: it is unmodeled Malloy, not a binding.
  */
 function lineFilters(
-   whereLines: Array<{ line: number; code: string }>,
+   whereLines: Array<{ line: number; code: string; continued: boolean }>,
 ): Array<{ field: string; given: string; op?: string }> | undefined {
    const out: Array<{ field: string; given: string; op?: string }> = [];
-   for (const { code } of whereLines) {
+   for (const { code, continued } of whereLines) {
+      if (continued) continue; // only half of it was read; not a binding
       const clean = isBindingOnly(code);
       if (!clean) continue;
       for (const c of clean)

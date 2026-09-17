@@ -302,9 +302,42 @@ export interface ViewBodyStage1 {
        */
       startCol: number;
       endCol: number;
+      /**
+       * The clause runs onto the next line, so only part of it was read.
+       * Never a builder-managed binding -- rewriting it would strand the
+       * half this scan cannot see -- but still reported, because a writer
+       * has to know the text is there.
+       */
+      continued: boolean;
    }>;
    oneLiner: { openCol: number; closeCol: number; content: string } | undefined;
    more: boolean;
+}
+
+/**
+ * Malloy's unit is the statement; this scan's unit is the line. A `where:`
+ * whose predicate or clause list runs onto the NEXT line is therefore only
+ * half-read here, and treating that half as a binding is what lets a rewrite
+ * delete the line and orphan its continuation into invalid Malloy. Such a
+ * line is dropped: it becomes unmodeled Malloy that is read past and written
+ * around, never rewritten.
+ *
+ * A line is a continuation of the one before it unless it opens a new
+ * statement (`aggregate:`, another `where:`, …) or closes the block. A
+ * trailing comma settles it on its own — `where: a ~ $A,` is a clause list
+ * that has not finished, whatever follows.
+ */
+function statementTerminated(
+   wl: { line: number; code: string },
+   codeLines: Array<{ line: number; text: string }>,
+   stageEnd: number,
+): boolean {
+   if (wl.code.trimEnd().endsWith(",")) return false;
+   const next = codeLines.find((c) => c.line > wl.line && c.line <= stageEnd);
+   if (next === undefined) return true;
+   return (
+      next.text.startsWith("}") || /^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(next.text)
+   );
 }
 
 export function viewBodyStage1(
@@ -320,6 +353,10 @@ export function viewBodyStage1(
    // to carry across the loop.
    let tripleQuote = false;
    const whereLines: ViewBodyStage1["whereLines"] = [];
+   // Every line that contributed real code, in order. The continuation check
+   // below needs to know what follows a `where:` line, and comment/blank
+   // lines are skipped above, so they never reach this list.
+   const codeLines: Array<{ line: number; text: string }> = [];
    // A segment's raw text can carry leading/trailing whitespace inside its
    // [start, end) span; trimming it down to the clause's own columns is what
    // lets the writer patch or drop just the clause later, without disturbing
@@ -334,6 +371,7 @@ export function viewBodyStage1(
          code: trimmed,
          startCol,
          endCol: startCol + trimmed.length,
+         continued: false,
       });
    };
    for (let i = declLine; i <= extentEnd && i < lines.length; i++) {
@@ -362,6 +400,7 @@ export function viewBodyStage1(
             continue;
          code = splitTrailingComment(raw).code;
       }
+      codeLines.push({ line: i, text: code.trim() });
       let closedAt = -1;
       // The depth-1 stretch(es) of THIS line, as [start, end) offsets into
       // `code` — usually one, but a nested block that opens and closes on
@@ -433,7 +472,15 @@ export function viewBodyStage1(
          // collecting it here too would let the same clause bind twice.
          if (!oneLiner)
             for (const seg of segments) collect(i, code, seg.start, seg.end);
-         return { end: i, whereLines, oneLiner, more };
+         return {
+            end: i,
+            whereLines: whereLines.map((wl) => ({
+               ...wl,
+               continued: !statementTerminated(wl, codeLines, i),
+            })),
+            oneLiner,
+            more,
+         };
       }
       for (const seg of segments) collect(i, code, seg.start, seg.end);
    }

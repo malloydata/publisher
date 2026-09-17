@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { MalloyTranslator } from "@malloydata/malloy";
+
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -18,13 +20,34 @@ import {
    viewBodyStage1,
 } from "./malloyText";
 import {
-   BINDING_CLAUSE,
    blockAbove,
    cleanBindingClauses,
    isBindingOnly,
    readDashboardDocument,
    readFailed,
 } from "./readDocument";
+
+/**
+ * The syntax errors Malloy's own parser reports for `text`, as a multiset of
+ * messages.
+ *
+ * The first `translate()` is enough and is all we want: a document with
+ * imports comes back NOT final, asking for the urls it needs, and by then the
+ * parse has already happened while nothing has been resolved. So this sees
+ * every syntax error and none of the semantic ones, which are not this
+ * writer's business -- a dashboard referring to a source in a file we decline
+ * to hand over is not damage we caused.
+ */
+function syntaxErrors(text: string): string[] {
+   const url = "file://splice-check.malloy";
+   const result = new MalloyTranslator(url, null, {
+      urls: { [url]: text },
+   }).translate() as { problems?: Array<{ code?: string; message?: string }> };
+   return (result.problems ?? [])
+      .filter((p) => p.code === "syntax-error")
+      .map((p) => p.message ?? "")
+      .sort();
+}
 
 /**
  * Write a change back into a `dashboards/*.malloy` file by PATCHING it.
@@ -1016,19 +1039,48 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          // swallow it.
          const { code, comment } = splitTrailingComment(lines[declLine]);
          const existing = /\+\s*\{([\s\S]*)\}\s*$/.exec(code)?.[1] ?? "";
-         const kept = existing
-            .replace(BINDING_CLAUSE, "")
+         // Removed by SPAN, never by a global regex over the free text: the
+         // regex matches the `where: a ~ $A` prefix of `where: a ~ $A and c
+         // = 1` too, and cutting that out strands `and c = 1` as a statement
+         // of its own. `cleanBindingClauses` reports only clauses it is safe
+         // to excise whole.
+         const cleanExisting = cleanBindingClauses(existing);
+         let kept = existing;
+         for (let i = cleanExisting.length - 1; i >= 0; i--)
+            kept =
+               kept.slice(0, cleanExisting[i].start) +
+               kept.slice(cleanExisting[i].end);
+         kept = kept
             .replace(/\s*,\s*,\s*/g, ", ")
             .replace(/^[\s,;]+|[\s,;]+$/g, "");
+         const collision = (tile.filters ?? []).find((f) =>
+            new RegExp(`\\$${f.given}\\b`).test(kept),
+         );
+         if (collision) {
+            return {
+               ok: false,
+               reason:
+                  `\`${tile.name}\` already filters on \`$${collision.given}\` in ` +
+                  `a \`where:\` the builder does not manage, so binding it ` +
+                  `again would filter on it twice. Edit that \`where:\` in ` +
+                  `the file instead.`,
+            };
+         }
          const bindings = (tile.filters ?? []).map(
             (f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`,
          );
-         const clauses = [...(kept ? [kept] : []), ...bindings];
+         // Bindings are comma-joined to each other, but only SPACED from
+         // whatever was already there: Malloy rejects a comma after a
+         // `limit:`, while a space parses after every statement form.
+         const clauses = [
+            ...(kept ? [kept] : []),
+            ...(bindings.length > 0 ? [bindings.join(", ")] : []),
+         ];
          const withoutRefinement = code.replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "");
          const body =
             clauses.length === 0
                ? withoutRefinement
-               : `${withoutRefinement.trimEnd()} + { ${clauses.join(", ")} }`;
+               : `${withoutRefinement.trimEnd()} + { ${clauses.join(" ")} }`;
          const rewritten =
             comment === "" ? body : `${body.trimEnd()} ${comment}`;
          if (rewritten !== lines[declLine])
@@ -1114,15 +1166,38 @@ function planInlineFilters(
       endCol: number;
       givens: string[];
    }> = [];
+   // Text in the first stage that this writer does NOT own: a compound
+   // predicate, or a clause list running onto the next line. It is left
+   // exactly as written -- but a given it mentions cannot also be bound as a
+   // managed clause, because the two would filter on the same control while
+   // only one of them is the builder's to remove again.
+   const unmanaged: string[] = [];
    for (const wl of stage.whereLines) {
-      const clean = isBindingOnly(wl.code);
-      if (!clean) continue; // not ours: a compound predicate or the like
+      const clean = wl.continued ? undefined : isBindingOnly(wl.code);
+      if (!clean) {
+         unmanaged.push(wl.code);
+         continue; // not ours: a compound predicate or the like
+      }
       existing.push({
          line: wl.line,
          startCol: wl.startCol,
          endCol: wl.endCol,
          givens: clean.map((c) => c.given),
       });
+   }
+
+   const collision = (tile.filters ?? []).find((f) =>
+      unmanaged.some((text) => new RegExp(`\\$${f.given}\\b`).test(text)),
+   );
+   if (collision) {
+      return {
+         ok: false,
+         reason:
+            `\`${tile.name}\` already filters on \`$${collision.given}\` in a ` +
+            `\`where:\` the builder does not manage, so binding it again ` +
+            `would filter on it twice. Edit that \`where:\` in the file ` +
+            `instead.`,
+      };
    }
 
    const seenGivens = new Set<string>();
@@ -1334,9 +1409,37 @@ export async function spliceDashboardDocument(
 
    const spliced = applyEdits(sourceText, edits);
 
-   // The gate. Read back what was actually written and compare it against what
-   // was asked for. Comments survived because they were never rewritten;
-   // correctness is established here rather than assumed.
+   // The first gate, and the only one that can see damage OUTSIDE the part of
+   // the file the builder models. The readback below compares the projection
+   // -- tiles, tags, filters -- so text this writer strands beside a binding
+   // it did rewrite is invisible to it: the orphan is not a filter, so the
+   // comparison it would have to fail never looks at it. Malloy's parser is
+   // the only reader here that judges the whole file.
+   //
+   // What this promises is narrow on purpose: a file that parsed before still
+   // parses after. It says nothing about one that was already broken -- an
+   // editor can open a file the compiler rejects, and refusing every save on
+   // it would trap the user with no way out.
+   //
+   // Comparing the two error lists instead, and refusing what looks new, is
+   // what this replaced: the parser's messages quote the tokens around the
+   // error, so inserting an unrelated line rewrites the message of a fault
+   // that was already there and it reads as one we just caused.
+   if (syntaxErrors(sourceText).length === 0) {
+      const broke = syntaxErrors(spliced);
+      if (broke.length > 0) {
+         return {
+            ok: false,
+            reason:
+               "The edit would have produced a file Malloy cannot parse, so " +
+               `it was not written (${broke[0]}). Your changes are still here.`,
+         };
+      }
+   }
+
+   // The second gate. Read back what was actually written and compare it
+   // against what was asked for. Comments survived because they were never
+   // rewritten; correctness is established here rather than assumed.
    const after = await readDashboardDocument(spliced);
    if (readFailed(after)) {
       return {
