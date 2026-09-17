@@ -59,7 +59,10 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 source: mz_plain is base -> { aggregate: c is count() }`);
       expect(sources.mz_plain).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_plain, deriveAnnotationFields(sources.mz_plain)),
+         assertMaterializationEligible(
+            sources.mz_plain,
+            deriveAnnotationFields(sources.mz_plain),
+         ),
       ).not.toThrow();
    });
 
@@ -71,7 +74,10 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 source: mz_bound(threshold::number is 5) is base -> { aggregate: c is count() }`);
       expect(sources.mz_bound).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_bound, deriveAnnotationFields(sources.mz_bound)),
+         assertMaterializationEligible(
+            sources.mz_bound,
+            deriveAnnotationFields(sources.mz_bound),
+         ),
       ).not.toThrow();
    });
 
@@ -82,12 +88,18 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_free"
 source: mz_free(threshold::number) is base -> { aggregate: c is count() }`);
       expect(sources.mz_free).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_free, deriveAnnotationFields(sources.mz_free))).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_free, deriveAnnotationFields(sources.mz_free))).toThrow(
-         /unbound parameter/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_free,
+            deriveAnnotationFields(sources.mz_free),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_free,
+            deriveAnnotationFields(sources.mz_free),
+         ),
+      ).toThrow(/unbound parameter/i);
    });
 
    it("refuses a given the BUILD would substitute, which is the one the artifact freezes", async () => {
@@ -170,12 +182,18 @@ source: mz_partition is base -> { aggregate: c is count() }`);
             }
          ).filterList ?? [],
       ).toHaveLength(0);
-      expect(() => assertMaterializationEligible(sources.mz_partition, deriveAnnotationFields(sources.mz_partition))).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_partition, deriveAnnotationFields(sources.mz_partition))).toThrow(
-         /partition/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_partition,
+            deriveAnnotationFields(sources.mz_partition),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_partition,
+            deriveAnnotationFields(sources.mz_partition),
+         ),
+      ).toThrow(/partition/i);
    });
 
    it("refuses a source protected by its own #(authorize) gate", async () => {
@@ -187,12 +205,18 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_authz"
 source: mz_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_authz).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_authz, deriveAnnotationFields(sources.mz_authz))).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_authz, deriveAnnotationFields(sources.mz_authz))).toThrow(
-         /authorize/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_authz,
+            deriveAnnotationFields(sources.mz_authz),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_authz,
+            deriveAnnotationFields(sources.mz_authz),
+         ),
+      ).toThrow(/authorize/i);
    });
 
    it("refuses a source protected by a no-given, fixed-predicate #(authorize) gate", async () => {
@@ -209,12 +233,18 @@ source: base is duckdb.sql("SELECT 1 AS org_id") extend {}
 #@ persist name="mz_dim_authz"
 source: mz_dim_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_dim_authz).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_dim_authz, deriveAnnotationFields(sources.mz_dim_authz))).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_dim_authz, deriveAnnotationFields(sources.mz_dim_authz))).toThrow(
-         /authorize/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_dim_authz,
+            deriveAnnotationFields(sources.mz_dim_authz),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_dim_authz,
+            deriveAnnotationFields(sources.mz_dim_authz),
+         ),
+      ).toThrow(/authorize/i);
    });
 
    it("refuses a source that reaches an #(authorize) gate through a JOIN", async () => {
@@ -232,7 +262,10 @@ source: mz_authz_joined is joiner extend {
 } -> { aggregate: c is count() }`);
       expect(sources.mz_authz_joined).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_authz_joined, deriveAnnotationFields(sources.mz_authz_joined)),
+         assertMaterializationEligible(
+            sources.mz_authz_joined,
+            deriveAnnotationFields(sources.mz_authz_joined),
+         ),
       ).toThrow(MaterializationEligibilityError);
    });
 
@@ -253,10 +286,16 @@ $role = 'analyst'
 source: mz_block_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_block_authz).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_block_authz, deriveAnnotationFields(sources.mz_block_authz)),
+         assertMaterializationEligible(
+            sources.mz_block_authz,
+            deriveAnnotationFields(sources.mz_block_authz),
+         ),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertMaterializationEligible(sources.mz_block_authz, deriveAnnotationFields(sources.mz_block_authz)),
+         assertMaterializationEligible(
+            sources.mz_block_authz,
+            deriveAnnotationFields(sources.mz_block_authz),
+         ),
       ).toThrow(/authorize/i);
    });
 
@@ -285,7 +324,10 @@ source: mz_authz_annotated_join is joiner extend {
 } -> { aggregate: c is count() }`);
       expect(sources.mz_authz_annotated_join).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_authz_annotated_join, deriveAnnotationFields(sources.mz_authz_annotated_join)),
+         assertMaterializationEligible(
+            sources.mz_authz_annotated_join,
+            deriveAnnotationFields(sources.mz_authz_annotated_join),
+         ),
       ).not.toThrow();
    });
 
@@ -314,7 +356,10 @@ source: orders__preagg__category is orders -> {
          ),
       ).toThrow(/authorize/i);
       expect(() =>
-         assertMaterializationEligible(sources.orders__preagg__category, deriveAnnotationFields(sources.orders__preagg__category)),
+         assertMaterializationEligible(
+            sources.orders__preagg__category,
+            deriveAnnotationFields(sources.orders__preagg__category),
+         ),
       ).toThrow(/authorize/i);
    });
 
@@ -342,7 +387,10 @@ source: orders__preagg__dim_category is orders -> {
          ),
       ).toThrow(/authorize/i);
       expect(() =>
-         assertMaterializationEligible(sources.orders__preagg__dim_category, deriveAnnotationFields(sources.orders__preagg__dim_category)),
+         assertMaterializationEligible(
+            sources.orders__preagg__dim_category,
+            deriveAnnotationFields(sources.orders__preagg__dim_category),
+         ),
       ).toThrow(/authorize/i);
    });
 
@@ -499,7 +547,10 @@ source: mz_colocated_given is base -> { select: * } extend { where: tenant = $te
       // given wherever it sits), but the colocated check deliberately does not
       // apply that rule — it refuses only a given the BUILD would freeze.
       expect(() =>
-         assertMaterializationEligible(sources.mz_colocated_given, deriveAnnotationFields(sources.mz_colocated_given)),
+         assertMaterializationEligible(
+            sources.mz_colocated_given,
+            deriveAnnotationFields(sources.mz_colocated_given),
+         ),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),

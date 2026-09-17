@@ -29,7 +29,10 @@ source: raw is duckdb.sql("""SELECT * FROM (VALUES (1,7,'a'),(2,9,'b')) AS t(org
 `;
 
 async function resolve(body: string) {
-   const { sources } = await compilePersistSources(connections, `${HEAD}\n${body}`);
+   const { sources } = await compilePersistSources(
+      connections,
+      `${HEAD}\n${body}`,
+   );
    const source: PersistSource = sources["p"];
    expect(source).toBeDefined();
    // Through `deriveAnnotationFields`, not a hand-built record: the claim that

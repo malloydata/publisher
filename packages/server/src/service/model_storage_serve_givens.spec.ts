@@ -61,7 +61,9 @@ async function buildModel(): Promise<Model> {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
    await duckdb.runSQL(STORED);
    const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
-   const urlReader = new InMemoryURLReader(new Map([[`${ROOT}m.malloy`, MODEL]]));
+   const urlReader = new InMemoryURLReader(
+      new Map([[`${ROOT}m.malloy`, MODEL]]),
+   );
    const runtime = new Runtime({
       urlReader,
       connections: new FixedConnectionMap(connMap, "duckdb"),

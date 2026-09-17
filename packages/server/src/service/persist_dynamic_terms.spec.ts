@@ -36,7 +36,10 @@ source: scoped is raw extend { where: org_id = $ORG_ID }
 `;
 
 async function persistSource(body: string): Promise<PersistSource> {
-   const { sources } = await compilePersistSources(connections, `${HEAD}\n${body}`);
+   const { sources } = await compilePersistSources(
+      connections,
+      `${HEAD}\n${body}`,
+   );
    const source = sources["p"];
    expect(source).toBeDefined();
    return source;
@@ -60,7 +63,7 @@ source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
       // The assertion that makes the admission mean something: the value the
       // given would have taken is NOT in the artifact, so the rows are every
       // caller's and the term is the reader's to apply.
-      expect(await buildSQL(source)).not.toContain("org_id\"=1");
+      expect(await buildSQL(source)).not.toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result).toEqual({
@@ -74,7 +77,7 @@ source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
          `#@ persist name="p" storage=credible
 source: p is scoped extend { where: s != 'zzz' }`,
       );
-      expect(await buildSQL(source)).not.toContain("org_id\"=1");
+      expect(await buildSQL(source)).not.toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result.ok).toBe(true);
@@ -107,7 +110,7 @@ source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
       );
       // The refusal's justification, asserted rather than assumed: the
       // default's value IS in the artifact, so no read-time term can undo it.
-      expect(await buildSQL(source)).toContain("org_id\"=1");
+      expect(await buildSQL(source)).toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result.ok).toBe(false);
@@ -119,7 +122,7 @@ source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
          `#@ persist name="p" storage=credible
 source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is count() }`,
       );
-      expect(await buildSQL(source)).toContain("org_id\"=1");
+      expect(await buildSQL(source)).toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result.ok).toBe(false);
@@ -135,7 +138,7 @@ source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is cou
          `#@ persist name="p" storage=credible
 source: p is scoped -> { group_by: s; aggregate: n is count() }`,
       );
-      expect(await buildSQL(source)).toContain("org_id\"=1");
+      expect(await buildSQL(source)).toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result.ok).toBe(false);
@@ -154,7 +157,7 @@ describe("classifyDynamicTerms: read-time positions v1 does not admit", () => {
          `#@ persist name="p" storage=credible
 source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }`,
       );
-      expect(await buildSQL(source)).not.toContain("org_id\"=1");
+      expect(await buildSQL(source)).not.toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result.ok).toBe(false);
@@ -171,7 +174,7 @@ source: p is raw -> { select: * } extend {
   join_one: v is vis on v.user_id = user_id and v.org_id = $ORG_ID
 }`,
       );
-      expect(await buildSQL(source)).not.toContain("org_id\"=1");
+      expect(await buildSQL(source)).not.toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result.ok).toBe(false);
@@ -189,7 +192,7 @@ source: p is raw -> { select: * } extend {
   join_one: v is (vis extend { where: org_id = $ORG_ID }) on v.user_id = user_id
 }`,
       );
-      expect(await buildSQL(source)).not.toContain("org_id\"=1");
+      expect(await buildSQL(source)).not.toContain('org_id"=1');
 
       const result = classifyDynamicTerms(source);
       expect(result.ok).toBe(false);
