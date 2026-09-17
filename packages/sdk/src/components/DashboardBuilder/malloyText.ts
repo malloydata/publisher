@@ -289,6 +289,51 @@ export function declarationExtent(
  * Either makes "the first stage" an ambiguous place to write a binding, which
  * is for the caller to refuse.
  */
+/**
+ * `text` with the contents of every quoted literal replaced by NUL, preserving
+ * length. A given's name written inside a string -- `where: label = 'costs
+ * $B'` -- is not a use of that given, and a caller scanning raw text for
+ * `$NAME` would otherwise refuse an edit over a false match.
+ */
+export function maskQuoted(text: string): string {
+   const out = text.split("");
+   walkQuoted(text, undefined, (_ch, i, quote) => {
+      if (quote !== undefined) out[i] = "\0";
+   });
+   return out.join("");
+}
+
+/**
+ * `text` with every character that is not at brace depth 0 -- and every
+ * character inside a quoted literal -- replaced by NUL, preserving length so
+ * offsets into the result are offsets into `text`.
+ *
+ * A binding is a statement of the view the builder owns. A `where:` inside a
+ * `nest:`, or inside a filtered measure's own `count() { … }`, belongs to that
+ * inner block and is not the tile's filter, so a scan looking for bindings
+ * must not see it at all. Braces survive the masking because the scan still
+ * has to notice that a block is THERE: a clause followed by `{` is a clause
+ * with a block after it, not an isolated one.
+ *
+ * NUL rather than a space because the isolation test treats whitespace as a
+ * separator it may reach through; masked text has to fail that test, not pass
+ * it invisibly.
+ */
+export function maskNested(text: string): string {
+   const out = text.split("");
+   let depth = 0;
+   walkQuoted(text, undefined, (ch, i, quote) => {
+      if (quote !== undefined) {
+         out[i] = "\0";
+         return;
+      }
+      if (ch === "}") depth--;
+      if (depth > 0) out[i] = "\0";
+      if (ch === "{") depth++;
+   });
+   return out.join("");
+}
+
 export interface ViewBodyStage1 {
    end: number;
    whereLines: Array<{

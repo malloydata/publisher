@@ -1,8 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { MalloyTranslator } from "@malloydata/malloy";
-
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -16,6 +14,7 @@ import {
    declarationLine,
    declarationsUnder,
    givenDeclarations,
+   maskQuoted,
    splitTrailingComment,
    viewBodyStage1,
 } from "./malloyText";
@@ -38,7 +37,12 @@ import {
  * writer's business -- a dashboard referring to a source in a file we decline
  * to hand over is not damage we caused.
  */
-function syntaxErrors(text: string): string[] {
+export async function syntaxErrors(text: string): Promise<string[]> {
+   // Imported dynamically, never statically: `builder-entry.ts` installs the
+   // `process.env` shim the parser's dependencies read at module scope, and a
+   // static import here would be evaluated before that shim runs. The reader
+   // loads the parser the same way, for the same reason.
+   const { MalloyTranslator } = await import("@malloydata/malloy");
    const url = "file://splice-check.malloy";
    const result = new MalloyTranslator(url, null, {
       urls: { [url]: text },
@@ -1053,19 +1057,8 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          kept = kept
             .replace(/\s*,\s*,\s*/g, ", ")
             .replace(/^[\s,;]+|[\s,;]+$/g, "");
-         const collision = (tile.filters ?? []).find((f) =>
-            new RegExp(`\\$${f.given}\\b`).test(kept),
-         );
-         if (collision) {
-            return {
-               ok: false,
-               reason:
-                  `\`${tile.name}\` already filters on \`$${collision.given}\` in ` +
-                  `a \`where:\` the builder does not manage, so binding it ` +
-                  `again would filter on it twice. Edit that \`where:\` in ` +
-                  `the file instead.`,
-            };
-         }
+         const clash = givenCollision(tile.filters, kept);
+         if (clash) return collisionRefusal(tile.name, clash.given);
          const bindings = (tile.filters ?? []).map(
             (f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`,
          );
@@ -1112,6 +1105,33 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
  * single place to put the binding. The reader still opens such a file; this
  * only blocks WRITING a filter change onto it.
  */
+/**
+ * The requested binding whose given already appears in `text`, if any. `text`
+ * is whatever the builder does NOT own, with the managed clauses removed, and
+ * quoted literals are masked so a given's name inside a string is not mistaken
+ * for a use of it.
+ */
+function givenCollision(
+   filters: Array<{ field: string; given: string; op?: string }> | undefined,
+   text: string,
+): { given: string } | undefined {
+   const scanned = maskQuoted(text);
+   return (filters ?? []).find((f) => {
+      const name = f.given.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`\\$${name}(?![A-Za-z0-9_])`).test(scanned);
+   });
+}
+
+function collisionRefusal(tileName: string, given: string): SpliceFailure {
+   return {
+      ok: false,
+      reason:
+         `\`${tileName}\` already filters on \`$${given}\` in a \`where:\` ` +
+         `the builder does not manage, so binding it again would filter on ` +
+         `it twice. Edit that \`where:\` in the file instead.`,
+   };
+}
+
 function planInlineFilters(
    ctx: SpliceContext,
    tile: DashboardTile,
@@ -1146,6 +1166,8 @@ function planInlineFilters(
       for (let i = clean.length - 1; i >= 0; i--)
          kept = kept.slice(0, clean[i].start) + kept.slice(clean[i].end);
       kept = kept.replace(/\s*,\s*,\s*/g, ", ").replace(/^[\s,]+|[\s,]+$/g, "");
+      const clash = givenCollision(tile.filters, kept);
+      if (clash) return collisionRefusal(tile.name, clash.given);
       const bindings = (tile.filters ?? []).map(bindingText);
       const rebuilt = [...(kept ? [kept] : []), ...bindings].join(", ");
       const raw = lines[declLine];
@@ -1171,13 +1193,9 @@ function planInlineFilters(
    // exactly as written -- but a given it mentions cannot also be bound as a
    // managed clause, because the two would filter on the same control while
    // only one of them is the builder's to remove again.
-   const unmanaged: string[] = [];
    for (const wl of stage.whereLines) {
       const clean = wl.continued ? undefined : isBindingOnly(wl.code);
-      if (!clean) {
-         unmanaged.push(wl.code);
-         continue; // not ours: a compound predicate or the like
-      }
+      if (!clean) continue; // not ours: a compound predicate or the like
       existing.push({
          line: wl.line,
          startCol: wl.startCol,
@@ -1186,19 +1204,26 @@ function planInlineFilters(
       });
    }
 
-   const collision = (tile.filters ?? []).find((f) =>
-      unmanaged.some((text) => new RegExp(`\\$${f.given}\\b`).test(text)),
-   );
-   if (collision) {
-      return {
-         ok: false,
-         reason:
-            `\`${tile.name}\` already filters on \`$${collision.given}\` in a ` +
-            `\`where:\` the builder does not manage, so binding it again ` +
-            `would filter on it twice. Edit that \`where:\` in the file ` +
-            `instead.`,
-      };
-   }
+   // Scanned over the whole first stage with the managed clauses blanked out,
+   // rather than over the `where:` LINES this scan recognized: a statement
+   // running onto a second line is exactly the shape that is only half-visible
+   // here, so collecting per-line would miss the half that matters.
+   const remainder = lines
+      .slice(declLine, stage.end + 1)
+      .map((line, offset) => {
+         const at = declLine + offset;
+         let out = line;
+         for (const ex of existing)
+            if (ex.line === at)
+               out =
+                  out.slice(0, ex.startCol) +
+                  " ".repeat(ex.endCol - ex.startCol) +
+                  out.slice(ex.endCol);
+         return out;
+      })
+      .join("\n");
+   const clash = givenCollision(tile.filters, remainder);
+   if (clash) return collisionRefusal(tile.name, clash.given);
 
    const seenGivens = new Set<string>();
    let lastBindingLine = -1;
@@ -1425,8 +1450,8 @@ export async function spliceDashboardDocument(
    // what this replaced: the parser's messages quote the tokens around the
    // error, so inserting an unrelated line rewrites the message of a fault
    // that was already there and it reads as one we just caused.
-   if (syntaxErrors(sourceText).length === 0) {
-      const broke = syntaxErrors(spliced);
+   if ((await syntaxErrors(sourceText)).length === 0) {
+      const broke = await syntaxErrors(spliced);
       if (broke.length > 0) {
          return {
             ok: false,

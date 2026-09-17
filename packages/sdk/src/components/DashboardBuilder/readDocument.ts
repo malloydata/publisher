@@ -14,6 +14,7 @@ import {
    declarationExtent,
    declarationsUnder,
    givenDeclarations,
+   maskNested,
    splitTrailingComment,
    tileSteps,
    viewBodyStage1,
@@ -178,7 +179,11 @@ export const BINDING_CLAUSE =
  */
 function filtersOf(refinement: string | undefined) {
    if (!refinement) return undefined;
-   const clean = cleanBindingClauses(refinement);
+   // The reader captures the refinement WITH its `+ { … }` wrapper while the
+   // writer strips it. Strip it here too: the isolation test has to see the
+   // same text on both sides, or the pair disagrees about what a clause is.
+   const inner = /\+\s*\{([\s\S]*)\}\s*$/.exec(refinement)?.[1];
+   const clean = cleanBindingClauses(inner ?? refinement);
    if (clean.length === 0) return undefined;
    return clean.map((c) => ({
       field: c.field,
@@ -191,9 +196,7 @@ function filtersOf(refinement: string | undefined) {
  * The `where:` binding clauses in `content` that are ISOLATED — the text
  * between one clause's end and whatever follows is nothing but a separator
  * (a comma, or nothing at all) before the next binding clause, a top-level
- * statement keyword, a closing brace, or the end of `content`. The brace
- * counts because a refinement arrives here still wrapped in its own `{ … }`,
- * and a clause that ends the block is as isolated as one that ends the text. `end` reaches through that
+ * statement keyword, or the end of `content`. `end` reaches through that
  * separator only — never into a following statement's own text — so a caller
  * stripping a clean clause out never leaves a dangling comma behind, and
  * never deletes the statement beside it.
@@ -214,7 +217,11 @@ export function cleanBindingClauses(content: string): Array<{
    given: string;
    op?: string;
 }> {
-   const matches = [...content.matchAll(BINDING_CLAUSE)];
+   // Matched against the MASKED text, so a `where:` belonging to an inner
+   // block is never a candidate. Offsets line up with `content`, which is what
+   // the spans reported here index into.
+   const masked = maskNested(content);
+   const matches = [...masked.matchAll(BINDING_CLAUSE)];
    const out: Array<{
       start: number;
       end: number;
@@ -230,15 +237,10 @@ export function cleanBindingClauses(content: string): Array<{
          i + 1 < matches.length
             ? (matches[i + 1].index as number)
             : content.length;
-      const gap = content.slice(clauseEnd, boundary);
+      const gap = masked.slice(clauseEnd, boundary);
       const separator = /^[\s,]*/.exec(gap)?.[0] ?? "";
       const rest = gap.slice(separator.length);
-      if (
-         rest !== "" &&
-         !rest.startsWith("}") &&
-         !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(rest)
-      )
-         continue;
+      if (rest !== "" && !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(rest)) continue;
       out.push({
          start,
          end: clauseEnd + separator.length,

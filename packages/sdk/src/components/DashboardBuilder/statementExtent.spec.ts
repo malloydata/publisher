@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { openDocument, refused, spliced } from "./testing/fixtures";
+import { syntaxErrors } from "./spliceDocument";
 
 /**
  * Malloy's unit is the statement; every scan in this directory works a line at
@@ -130,5 +131,120 @@ source: a is one extend {
          d.tiles[0].filters = [{ field: "b", given: "B" }];
       });
       expect(out).toContain("vx + { where: a ~ $A and c = 1 where: b ~ $B }");
+   });
+});
+
+/**
+ * A binding is a statement of the view the builder owns. A `where:` inside a
+ * `nest:`, or inside a filtered measure's own `count() { … }`, belongs to that
+ * inner block -- reading it as the tile's filter means a later edit deletes or
+ * relocates someone else's predicate. Both gates are blind to it: the result
+ * still parses, and the projection still matches.
+ */
+describe("a where: inside an inner block is not the tile's binding", () => {
+   const doc = (declaration: string) => `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+${declaration}
+}`;
+
+   const MEASURE = doc(
+      "  view: kpis is { aggregate: big is count() { where: amt > $MIN } }",
+   );
+   const NESTED = doc("  view: kpis is vx + { nest: y is { where: b ~ $B } }");
+
+   it("does not read a filtered measure's predicate as a tile filter", async () => {
+      const d = await openDocument(MEASURE);
+      expect(d.tiles[0].filters).toBeUndefined();
+   });
+
+   it("does not delete that predicate when the tile is edited", async () => {
+      const out = await spliced(MEASURE, (d) => {
+         delete d.tiles[0].filters;
+         d.tiles[0].colspan = 4;
+      });
+      expect(out).toContain("aggregate: big is count() { where: amt > $MIN }");
+   });
+
+   it("does not read a nest's own where: as a tile filter", async () => {
+      const d = await openDocument(NESTED);
+      expect(d.tiles[0].filters).toBeUndefined();
+   });
+
+   // This one used to LIFT the nest's filter out to tile level on an edit that
+   // had nothing to do with filters at all.
+   it("leaves a nest's where: inside the nest on an unrelated change", async () => {
+      const out = await spliced(NESTED, (d) => {
+         d.tiles[0].colspan = 4;
+      });
+      expect(out).toContain("vx + { nest: y is { where: b ~ $B } }");
+   });
+});
+
+describe("the duplicate-given guard sees text it does not own", () => {
+   const CONTINUED = `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    where: a ~ $A,
+      b ~ $B
+    aggregate: n is count()
+  }
+}`;
+
+   // $B is on the CONTINUATION line. A guard that collected the `where:` lines
+   // it recognized saw only the first, and let a second $B clause be written.
+   it("refuses a given used only on a continuation line", async () => {
+      const reason = await refused(CONTINUED, (d) => {
+         d.tiles[0].filters = [{ field: "b2", given: "B" }];
+      });
+      expect(reason).toContain("already filters on `$B`");
+   });
+
+   // And it does not fire on a given's name sitting inside a string literal.
+   it("does not mistake a given named in a literal for a use of it", async () => {
+      const out = await spliced(
+         `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is vx + { where: label = 'costs $B' }
+}`,
+         (d) => {
+            d.tiles[0].filters = [{ field: "b", given: "B" }];
+         },
+      );
+      expect(out).toContain("where: label = 'costs $B'");
+      expect(out).toContain("where: b ~ $B");
+   });
+});
+
+describe("syntaxErrors", () => {
+   it("is quiet on a document whose imports are unresolved", async () => {
+      expect(
+         await syntaxErrors(`##! experimental.givens
+import "../m.malloy"
+
+source: a is one extend {
+  view: v is { where: c ~ $C
+    aggregate: n is count()
+  }
+}`),
+      ).toEqual([]);
+   });
+
+   it("reports a statement Malloy cannot parse", async () => {
+      const errs = await syntaxErrors(`source: a is one extend {
+  view: v is {
+      b ~ $B
+    aggregate: n is count()
+  }
+}`);
+      expect(errs.length).toBeGreaterThan(0);
    });
 });
