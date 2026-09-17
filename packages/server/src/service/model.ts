@@ -65,6 +65,7 @@ import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
    buildServeShapeModelForBindings,
+   type ServeShapeGiven,
    buildVirtualMap,
    extractJoins,
    extractRefinements,
@@ -4598,6 +4599,34 @@ export class Model {
       return servable;
    }
 
+   /**
+    * This model's given surface, in the shape the serve-shape model declares.
+    *
+    * `Model.givens` has already collapsed inheritance from imports, so this is
+    * the same surface a live query binds against — which is the point: the
+    * transient shape should accept exactly the givens the author's model
+    * accepts, no more and no less.
+    *
+    * A given whose type cannot be rendered is DROPPED rather than guessed. The
+    * cost is bounded and safe: a re-emitted `where:` that reads it then fails to
+    * compile, the binding is withheld, and the query serves live. Guessing a
+    * type would instead compile a filter that silently coerces.
+    */
+   private serveShapeGivens(): ServeShapeGiven[] {
+      const out: ServeShapeGiven[] = [];
+      for (const given of this.givens ?? []) {
+         if (typeof given.name !== "string" || given.name.length === 0) continue;
+         if (typeof given.type !== "string" || given.type.length === 0) continue;
+         out.push({
+            name: given.name,
+            type: given.type,
+            defaultText:
+               typeof given.default === "string" ? given.default : undefined,
+         });
+      }
+      return out;
+   }
+
    /** Build the transient serve-shape materializer for a set of bindings. */
    private buildServeShapeMaterializer(
       bindings: ServeBinding[],
@@ -4606,6 +4635,7 @@ export class Model {
       const { modelText } = buildServeShapeModelForBindings(
          bindings,
          rollupGroups,
+         this.serveShapeGivens(),
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -5441,18 +5471,25 @@ export class Model {
       let executionTime = 0;
       let queryResults;
       let appliedQueryMetadata: QueryMetadata | undefined;
-      // Same reason as effectiveBuildManifest: the serve shape is built from
-      // given-FREE sources, so it surfaces no `given:` and Malloy rejects any
-      // supplied name with "unknown given" — a spurious 400, past the routing
-      // fallback, on a query that should just serve from storage. Nothing in the
-      // shape can read them; the authorize gate above already saw the full set.
-      // Safe for `#(partition)` too, and for the identical reason: the
-      // materialization eligibility gate refuses a partition-referencing
-      // source the same way it refuses a given-referencing one (see
-      // `materialization_eligibility.ts`'s `referencesPartition`), and
-      // `routingBlockedByRowLevelGate` above vetoes routing outright whenever
-      // the QUERY's own entry point carries either annotation.
-      const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
+      // Passed through whether or not the query routes. The serve shape declares
+      // this model's whole given surface (see `serveShapeGivens`), so a supplied
+      // name resolves there exactly as it does live — and it MUST be passed,
+      // because a materialized source's re-emitted `where:` may read one. That
+      // term was left out of the build on the promise that the read puts it
+      // back; dropping the value here would read the artifact unfiltered, which
+      // is every caller's rows.
+      //
+      // Withholding them was right while the shape was built from given-free
+      // sources: it surfaced no `given:`, so any supplied name met Malloy's
+      // "unknown given" as a spurious 400 past the routing fallback. Declaring
+      // the surface is what removes that, and it removes it in both directions —
+      // a name this model does not declare is still rejected, as it is live.
+      //
+      // `#(partition)` needs no special case: `routingBlockedByRowLevelGate`
+      // above vetoes routing outright whenever the QUERY's own entry point
+      // carries that annotation or an authorize gate, so a grafted row filter
+      // never reaches the shape at all.
+      const effectiveGivens = querySurfaceGivens;
       try {
          // The prepared result is also where the executing connection's name
          // comes from, which is what makes the connection's default metadata
