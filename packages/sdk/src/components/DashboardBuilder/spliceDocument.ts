@@ -951,36 +951,21 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       if (was === undefined) continue;
       if (canonical(was) === canonical(tile)) continue;
 
-      // An inherited tile is declared in the model, not here, so there is
-      // nothing in this file to patch. Saying so beats writing a tag that would
-      // land on the wrong object. A view this file DOES declare, in a shape
-      // the builder cannot rewrite, reads back the same way -- and gets its
-      // own reason, because "declared elsewhere" would simply be untrue.
+      // Declared in the model, not here, so there is nothing in this file to
+      // patch -- saying so beats writing a tag that would land on the wrong
+      // object.
       if (tile.declaration.kind === "inherited") {
-         const here = viewOf(ctx, tile);
-         if (!here) {
-            return {
-               ok: false,
-               reason:
-                  `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
-                  `not in this dashboard, so its presentation cannot be changed here.`,
-            };
-         }
-         // Declared here, in a body shape the builder does not rewrite. Its
-         // TAGS are still ordinary `#` lines in this file, so a label or a
-         // colspan change is safe; only a filter would have to go into the
-         // body, and there is no one block it belongs in.
-         if (canonical(was.filters) !== canonical(tile.filters)) {
-            return {
-               ok: false,
-               reason: `\`${tile.name}\`'s body is ${
-                  here.body.kind === "unsupported"
-                     ? here.body.why
-                     : "not one the builder writes"
-               }, so there is no single place to put its filter. Edit it in the file instead.`,
-            };
-         }
+         return {
+            ok: false,
+            reason:
+               `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
+               `not in this dashboard, so its presentation cannot be changed here.`,
+         };
       }
+
+      // An `opaque` tile falls through on purpose: its TAGS are ordinary `#`
+      // lines in this file, so a label or colspan change is safe. Only a filter
+      // has nowhere to go, and the filter pass refuses that on its own.
 
       const declLine = viewDeclarationLine(parsed, tile.source, tile.name);
       if (declLine < 0) {

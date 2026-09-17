@@ -164,6 +164,23 @@ function FieldPicker({
    );
 }
 
+/**
+ * Why a tile cannot take a binding. A tile declared on its source and one
+ * declared HERE in a body with no single block for a `where:` are different
+ * situations, and saying "from the model" about the second one is untrue.
+ */
+const unbindable = (tile: DashboardTile | undefined) =>
+   tile?.declaration.kind === "opaque"
+      ? {
+           label: "Not bindable",
+           reason: `Its body is ${tile.declaration.why}, so a filter has no single place to go.`,
+        }
+      : {
+           label: "From the model",
+           reason:
+              "Declared on its source, which this dashboard does not write.",
+        };
+
 export function FilterDialog({
    open,
    document,
@@ -500,12 +517,16 @@ export function FilterDialog({
                               {title}
                            </Typography>
                            {!bindable[index] ? (
-                              <Tooltip title="Declared on its source, which this dashboard does not write.">
+                              <Tooltip
+                                 title={
+                                    unbindable(document.tiles[index]).reason
+                                 }
+                              >
                                  <Typography
                                     variant="caption"
                                     sx={{ color: theme.tileTitle }}
                                  >
-                                    From the model
+                                    {unbindable(document.tiles[index]).label}
                                  </Typography>
                               </Tooltip>
                            ) : (

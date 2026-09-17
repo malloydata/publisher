@@ -312,13 +312,11 @@ export interface MappingRow {
  * viewBodyStage1 in the splice/read modules). Both forms are declarations this
  * file owns and the reader reads back. An `inherited` tile is declared on the
  * model's source, which the builder never writes, so it is the one kind this
- * excludes. A tile whose body shape the writer cannot locate a single first
- * stage in — a multi-stage `->` pipeline, a `{ … } + { … }` compound body —
- * still shows as bindable here; the splice writer is what refuses that write,
- * with a reason naming the shape, once a save is attempted.
+ * excludes, and so is an `opaque` one: its body has no single block a binding
+ * belongs in, which the reader can see before a save is ever attempted.
  */
 export const canBind = (tile: DashboardTile) =>
-   tile.declaration.kind !== "inherited";
+   tile.declaration.kind !== "inherited" && tile.declaration.kind !== "opaque";
 
 /** The mapping a control has NOW, one row per tile, for the dialog to open on. */
 export function mappingOf(

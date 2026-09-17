@@ -350,6 +350,20 @@ source: a is one extend {
       expect(d.tiles[0].filters).toBeUndefined();
    });
 
+   // Declared HERE, in a body with no one block a binding belongs in. Saying
+   // "declared on its source" about it -- which is what the menu used to say --
+   // is simply untrue, and it hid the fact that its tags ARE editable.
+   it("reads as declared here, with a reason, and keeps its tags", async () => {
+      const d = await openDocument(
+         CHAINED.replace("  view: kpis", "  # colspan=6\n  view: kpis"),
+      );
+      expect(d.tiles[0].declaration).toEqual({
+         kind: "opaque",
+         why: "a chained refinement",
+      });
+      expect(d.tiles[0].colspan).toBe(6);
+   });
+
    it("survives an unrelated change untouched", async () => {
       const out = await spliced(CHAINED, (d) => {
          d.tiles[0].colspan = 4;
@@ -364,5 +378,8 @@ source: a is one extend {
          d.tiles[0].filters = [{ field: "n", given: "N" }];
       });
       expect(reason).toContain("chained refinement");
+      // The view is declared right here; blaming the model would send whoever
+      // reads this to the wrong file.
+      expect(reason).not.toContain("declared on its source");
    });
 });

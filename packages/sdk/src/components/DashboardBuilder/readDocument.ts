@@ -359,15 +359,19 @@ export async function readDashboardDocument(
               ? { kind: "inline" as const }
               : undefined;
       if (declaration === undefined) {
-         // A body this cannot represent — a `->` pipeline from a named view, a
-         // chained refinement. Reported as inherited, so nothing the builder
-         // writes can reach a body it did not understand, but WITH its tags:
-         // those are `#` lines in this file and an edit to one of them is
-         // still safe to make.
+         // Declared here, in a body the builder does not rewrite. Its tags are
+         // still `#` lines in this file, so they come with it: only a filter
+         // has nowhere to go.
          tiles.push({
             name: viewName,
             source: sourceName,
-            declaration: { kind: "inherited" },
+            declaration: {
+               kind: "opaque",
+               why:
+                  view.body.kind === "unsupported"
+                     ? view.body.why
+                     : "unreadable",
+            },
             ...(t?.text("label") ? { label: t.text("label") as string } : {}),
             ...(t?.text("subtitle")
                ? { subtitle: t.text("subtitle") as string }

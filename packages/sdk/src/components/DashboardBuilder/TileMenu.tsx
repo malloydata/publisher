@@ -155,6 +155,12 @@ export function TileMenu({
                      the model. It can still be moved.
                   </Typography>
                )}
+               {draft?.declaration.kind === "opaque" && (
+                  <Typography variant="body2" sx={{ color: theme.tileTitle }}>
+                     Its body is {draft.declaration.why}, so a filter has no
+                     single place to go. Everything else here is editable.
+                  </Typography>
+               )}
                <Divider />
                <Stack direction="row" sx={{ justifyContent: "space-between" }}>
                   {editable ? (
