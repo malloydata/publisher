@@ -604,14 +604,23 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
          edits.push({ ...wholeLine(tag.line), text: "" });
          removedLines.add(tag.line);
       }
+      // A declaration can run past its first line -- `NAME :: string is` with
+      // its default below it is ordinary Malloy -- so the lines to take come
+      // from the span, not from the line the name sits on. Taking only the
+      // first left the continuation behind as a statement of its own.
+      const lastLine = lineOf(parsed, at.span.end - 1);
       if (want === undefined) {
-         edits.push({ ...wholeLine(at.line), text: "" });
-         removedLines.add(at.line);
+         edits.push({
+            start: wholeLine(at.line).start,
+            end: wholeLine(lastLine).end,
+            text: "",
+         });
+         for (let l = at.line; l <= lastLine; l++) removedLines.add(l);
          // A declaration set off by blank lines takes one of them with it, or
          // the two separators meet and the file gains an empty line per edit.
          const first = Math.min(at.line, ...tags.map((tag) => tag.line));
          const above = at.blockHeader ?? first;
-         const belowIsBlank = (lines[at.line + 1] ?? "x").trim() === "";
+         const belowIsBlank = (lines[lastLine + 1] ?? "x").trim() === "";
          const aboveIsBlank = above === 0 || lines[above - 1].trim() === "";
          const lastInBlock =
             at.blockHeader === undefined ||
@@ -629,10 +638,10 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
             belowIsBlank &&
             aboveIsBlank &&
             lastInBlock &&
-            !removedLines.has(at.line + 1)
+            !removedLines.has(lastLine + 1)
          ) {
-            edits.push({ ...wholeLine(at.line + 1), text: "" });
-            removedLines.add(at.line + 1);
+            edits.push({ ...wholeLine(lastLine + 1), text: "" });
+            removedLines.add(lastLine + 1);
          }
          continue;
       }
@@ -647,9 +656,13 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
          ? at.blockHeader === undefined
             ? givenDeclaration(want)
             : `${want.name} :: ${want.type} is ${want.default}`
-         : lines[at.line].trim();
+         : lines
+              .slice(at.line, lastLine + 1)
+              .join("\n")
+              .trim();
       edits.push({
-         ...wholeLine(at.line),
+         start: wholeLine(at.line).start,
+         end: wholeLine(lastLine).end,
          text:
             (tagLine ? `${indent}${tagLine}\n` : "") +
             `${indent}${declaration}\n`,
@@ -800,6 +813,24 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
       // author put it rather than assumed to belong to the tile.
       const first = lineOf(parsed, view.statement.start);
       const endLine = lineOf(parsed, view.statement.end - 1);
+      // Taking whole lines is right only when this statement is the only thing
+      // on them. Malloy lets a second declaration share a line, and one that is
+      // not a tile of this dashboard is invisible to the readback gate -- so
+      // widening to the line would delete it and report success.
+      const trailing = parsed.trailingComment(endLine);
+      const tail =
+         trailing && trailing.start >= view.statement.end
+            ? trailing.end
+            : view.statement.end;
+      const sharesLine =
+         parsed.text
+            .slice(parsed.lineStarts[first], view.statement.start)
+            .trim() !== "" ||
+         parsed.text.slice(tail, wholeLine(endLine).end).trim() !== "";
+      if (sharesLine) {
+         edits.push({ ...statementCut(parsed, view.statement), text: "" });
+         continue;
+      }
       edits.push({
          start: parsed.lineStarts[first],
          end: wholeLine(endLine).end,
@@ -1182,7 +1213,22 @@ function planStageFilters(
          const { clause, index } = managed[i];
          const want = wanted.get(clause.binding!.given);
          if (!want) {
-            edits.push({ ...clauseCut(where.clauses, index), text: "" });
+            const cut = clauseCut(where.clauses, index);
+            // The separator between two clauses is the builder's to take; a
+            // comment written in that gap is not, and nothing downstream can
+            // see it go.
+            const comment = parsed.commentIn(cut);
+            if (comment)
+               return {
+                  ok: false,
+                  reason:
+                     `Removing a filter from \`${tile.name}\` would also ` +
+                     `remove the comment written beside it (\`${parsed.text
+                        .slice(comment.start, comment.end)
+                        .trim()}\`), so nothing was written. Delete it in the ` +
+                     `file first.`,
+               };
+            edits.push({ ...cut, text: "" });
             continue;
          }
          // The clause text without its `where:` keyword, which the statement
@@ -1198,15 +1244,29 @@ function planStageFilters(
 
    // After the last statement already inside the block, so a new binding
    // follows what was there; inside the opening brace when there is none.
-   const anchor =
+   let anchor =
       lastManaged?.end ??
       (stage.statements.length > 0
          ? stage.statements[stage.statements.length - 1].span.end
          : stage.openEnd);
+   // A `//` comment is trivia, so it sits outside every span and the anchor
+   // lands BEFORE one written after the statement it explains. Inserting a
+   // line there would slide that comment onto the new `where:`, where it says
+   // something the author never wrote -- and nothing downstream can tell,
+   // because the comment is still in the file.
+   if (!stage.oneLine) {
+      const trailing = parsed.trailingComment(lineOf(parsed, anchor));
+      if (trailing && trailing.start >= anchor) anchor = trailing.end;
+   }
    // A comma only ever follows another `where:`. Malloy rejects one after a
    // `limit:` -- the writer used to emit `{ limit: 5, where: … }` and that is
-   // a parse error -- while a space parses after every statement form.
-   const lead = lastManaged !== undefined ? ", " : " ";
+   // a parse error -- while a space parses after every statement form. A
+   // one-line `where:` whose own span already ends at the separator needs none
+   // added, or the file gains a `,,`.
+   const lead =
+      lastManaged !== undefined && !/,\s*$/.test(parsed.text.slice(0, anchor))
+         ? ", "
+         : " ";
    const text = stage.oneLine
       ? `${lead}${added.map(bindingText).join(", ")}`
       : added.map((f) => `\n${stage.indent}${bindingText(f)}`).join("");
@@ -1249,7 +1309,23 @@ function planReferenceFilters(
       (st) => !refinement.wheres.some((w) => w.span.start === st.span.start),
    );
    if (filters.length === 0 && !unmanaged && !otherStatements) {
-      edits.push({ start: fromSpan.end, end: refinement.span.end, text: "" });
+      const cut = { start: fromSpan.end, end: refinement.span.end };
+      // The `+` and the block are the builder's; a comment written between or
+      // inside them is not, and it is trivia to the parser, so deleting it
+      // leaves a file that parses and reads back exactly as asked for.
+      const comment = ctx.parsed.commentIn(cut);
+      if (comment) {
+         return {
+            ok: false,
+            reason:
+               `Removing the last filter from \`${tile.name}\` would also ` +
+               `remove the comment beside its refinement (\`${ctx.parsed.text
+                  .slice(comment.start, comment.end)
+                  .trim()}\`), so nothing was written. Delete it in the file ` +
+               `first, or edit the refinement there.`,
+         };
+      }
+      edits.push({ ...cut, text: "" });
       return undefined;
    }
    return planStageFilters(ctx, tile, refinement);

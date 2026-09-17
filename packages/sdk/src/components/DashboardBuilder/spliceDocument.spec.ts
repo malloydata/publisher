@@ -12,6 +12,7 @@ import {
    syntaxErrors,
 } from "./spliceDocument";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
+import { parseMalloy, parseRefused } from "./malloyTree";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -1273,6 +1274,54 @@ const MODELLED_TAG =
    /^#\s*(colspan|break|borderless|label|subtitle|description|control|suggest|range_min|range_max|drill)\b/;
 
 /**
+ * Every `//` comment with the code it is attached to: what precedes it on its
+ * own line, and the next line of code below it. Comparing this before and
+ * after an edit is what a comment COUNT cannot do -- it sees a trailing
+ * comment at all (a count of lines starting with `//` does not), and it sees
+ * one that survived but slid onto a different statement, which changes what
+ * the file says while leaving the count identical. Three of the corruptions
+ * this sweep now guards against passed a count.
+ *
+ * Taken from the lexer's own tokens, so a `//` inside a string literal is not
+ * mistaken for one.
+ */
+async function commentAnchors(text: string): Promise<string[]> {
+   const parse = await parseMalloy(text);
+   if (parseRefused(parse)) throw new Error(parse.reason);
+   const { parsed } = parse;
+   const lineOf = (offset: number) => {
+      let line = 0;
+      while (
+         line + 1 < parsed.lineStarts.length &&
+         parsed.lineStarts[line + 1] <= offset
+      )
+         line++;
+      return line;
+   };
+   const lines = text.split("\n");
+   return parsed.comments.map((at) => {
+      const line = lineOf(at.start);
+      const before = text.slice(parsed.lineStarts[line], at.start).trim();
+      // The next DECLARATION, skipping `#` tag lines: a tag's value is exactly
+      // what these edits change on purpose, so anchoring to one would report
+      // every colspan change as a comment that moved.
+      let below = "";
+      for (let l = line + 1; l < lines.length; l++) {
+         const candidate = lines[l].trim();
+         if (
+            candidate === "" ||
+            candidate.startsWith("//") ||
+            candidate.startsWith("#")
+         )
+            continue;
+         below = candidate;
+         break;
+      }
+      return `${text.slice(at.start, at.end).trim()} | after: ${before} | above: ${below}`;
+   });
+}
+
+/**
  * Every `#` line the document does not model, keyed by the declaration it sits
  * above. Comparing this before and after an edit catches what a file-wide
  * count cannot: a tag that survived but moved onto a different declaration,
@@ -1360,11 +1409,10 @@ describe("every composite dashboard survives an edit", () => {
          const reread = await readDashboardDocument(result.source);
          if (readFailed(reread)) throw new Error(reread.reason);
          expect(reread.document.tiles[target].colspan).toBe(3);
-         // Everything the file said that the builder does not model is still
-         // there: the comment count is the cheapest proof.
-         const comments = (text: string) =>
-            text.split("\n").filter((l) => l.trim().startsWith("//")).length;
-         expect(comments(result.source)).toBe(comments(source));
+         // Every comment is still there, still attached to the same code.
+         expect(await commentAnchors(result.source)).toEqual(
+            await commentAnchors(source),
+         );
          // And every `#` tag the builder does not model is still there, on the
          // same declaration. A file-wide count cannot see a tag that moved to
          // the declaration below, which is how one silently changes meaning.
@@ -1408,9 +1456,9 @@ describe("every composite dashboard survives an edit", () => {
          const reread = await readDashboardDocument(result.source);
          if (readFailed(reread)) throw new Error(reread.reason);
          expect(reread.document.tiles[target].filters).toContainEqual(binding);
-         const comments = (text: string) =>
-            text.split("\n").filter((l) => l.trim().startsWith("//")).length;
-         expect(comments(result.source)).toBe(comments(source));
+         expect(await commentAnchors(result.source)).toEqual(
+            await commentAnchors(source),
+         );
          expect(unmodelledTagsByDeclaration(result.source)).toEqual(
             unmodelledTagsByDeclaration(source),
          );

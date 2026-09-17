@@ -383,3 +383,122 @@ source: a is one extend {
       expect(reason).not.toContain("declared on its source");
    });
 });
+
+/**
+ * A `//` comment is trivia: it sits outside every parse-tree span, so a writer
+ * that deletes a range wider than one node's own text takes it without either
+ * gate noticing -- the file still parses, and the projection the readback
+ * compares has no comments in it. Each case here asserts the SURVIVING TEXT.
+ */
+describe("a comment is nobody's to delete", () => {
+   const head = `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+`;
+
+   it("refuses to remove a clause whose separator carries a comment", async () => {
+      const reason = await refused(
+         `${head}
+source: a is one extend {
+  view: kpis is {
+    where: a ~ $A,
+      // keep
+      b ~ $B
+  }
+}`,
+         (d) => {
+            d.tiles[0].filters = [{ field: "b", given: "B" }];
+         },
+      );
+      expect(reason).toContain("// keep");
+   });
+
+   it("refuses to collapse a refinement over a comment beside it", async () => {
+      const reason = await refused(
+         `${head}
+source: a is one extend {
+  view: vx is { aggregate: n is count() }
+  view: kpis is vx // note
+    + { where: a ~ $A }
+}`,
+         (d) => {
+            delete d.tiles[0].filters;
+         },
+      );
+      expect(reason).toContain("// note");
+   });
+
+   // The anchor is the statement's end, and a trailing comment is past it. The
+   // new line used to land BETWEEN them, so the comment ended up explaining a
+   // `where:` its author never wrote -- and it was still in the file, so
+   // nothing downstream could tell.
+   it("inserts a new filter after a trailing comment, not before it", async () => {
+      const out = await spliced(
+         `${head}
+source: a is one extend {
+  view: kpis is {
+    aggregate: n is count() // keep with measure
+  }
+}`,
+         (d) => {
+            d.tiles[0].filters = [{ field: "b", given: "B" }];
+         },
+      );
+      expect(out).toContain(
+         "    aggregate: n is count() // keep with measure\n    where: b ~ $B\n",
+      );
+   });
+});
+
+/**
+ * Malloy lets a second declaration share a line. One that is not a tile of this
+ * dashboard is invisible to the readback gate, so widening a removal to whole
+ * lines deleted it and reported success.
+ */
+describe("removing a tile that shares its line", () => {
+   it("leaves the declaration beside it alone", async () => {
+      const out = await spliced(
+         `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis", "a -> keeper"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: vx is { aggregate: n is count() }
+  view: vh is { aggregate: m is count() }
+  view: keeper is vh
+  view: kpis is vx  view: helper is vh
+}`,
+         (d) => {
+            d.tiles = d.tiles.filter((tile) => tile.name !== "kpis");
+         },
+      );
+      expect(out).toContain("view: helper is vh");
+      expect(out).not.toContain("kpis");
+   });
+});
+
+/**
+ * `NAME :: string is` with its default on the line below is ordinary Malloy the
+ * reader accepts. The writer planned from the line the name sits on, so removal
+ * left the continuation behind as a statement of its own.
+ */
+describe("a given declared across two lines", () => {
+   const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+given: SPARE :: string is
+  'x'
+
+source: a is one extend {
+  view: kpis is { aggregate: n is count() }
+}`;
+
+   it("is removed whole, continuation and all", async () => {
+      const out = await spliced(source, (d) => {
+         d.localGivens = [];
+      });
+      expect(out).not.toContain("SPARE");
+      expect(out).not.toContain("'x'");
+   });
+});

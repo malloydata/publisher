@@ -154,6 +154,15 @@ export interface ParsedMalloy {
    /** The `//` comment token on `line`, if the line ends with one. */
    trailingComment(line: number): Span | undefined;
    /**
+    * The first `//` comment that starts inside `span`. A writer deleting a
+    * range wider than one node's own text asks this before it does, because a
+    * comment is trivia to the parser: it sits outside every span, so neither
+    * gate can see it go.
+    */
+   commentIn(span: Span): Span | undefined;
+   /** Every `//` comment in the file, in order. */
+   comments: Span[];
+   /**
     * The `#`/`//` block immediately above `line`, stopping at a blank line —
     * the unit that travels with a declaration when it moves.
     */
@@ -765,6 +774,11 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
          sources,
          givens: readGivens(r, root),
          trailingComment: (line) => comments.trailing.get(line),
+         comments: comments.all,
+         commentIn: (span) =>
+            comments.all.find(
+               (at) => at.start >= span.start && at.start < span.end,
+            ),
          blockStart: (line) => blockStart(r, comments.lines, line),
       },
    };
@@ -782,9 +796,10 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
 function commentIndex(
    r: Reader,
    tokenStream: TokenStream,
-): { trailing: Map<number, Span>; lines: Set<number> } {
+): { trailing: Map<number, Span>; lines: Set<number>; all: Span[] } {
    const trailing = new Map<number, Span>();
    const lines = new Set<number>();
+   const all: Span[] = [];
    const vocabulary = tokenStream.tokenSource?.vocabulary;
    for (const token of tokenStream.getTokens?.() ?? []) {
       if (vocabulary?.getSymbolicName(token.type) !== "COMMENT_TO_EOL")
@@ -799,12 +814,13 @@ function commentIndex(
          (r.text[end - 1] === "\n" || r.text[end - 1] === "\r")
       )
          end--;
+      all.push({ start, end });
       const line = r.line(start);
       if (r.text.slice(r.lineStarts[line], start).trim() === "")
          lines.add(line);
       else trailing.set(line, { start, end });
    }
-   return { trailing, lines };
+   return { trailing, lines, all };
 }
 
 /**
