@@ -76,7 +76,18 @@ const updateModelSource = mock(
          },
       }),
 );
-const executeQueryModel = mock(() => pending());
+// Typed with the client's own signature, so a spec can read the request body
+// off `mock.calls`. Inferred from `() => …` the call tuple is empty, and
+// indexing it is a type error the spec typecheck catches but `bun test` does
+// not.
+const executeQueryModel = mock(
+   (
+      _env: string,
+      _pkg: string,
+      _path: string,
+      _body: { query?: string; givens?: unknown; versionId?: string },
+   ) => pending(),
+);
 
 // Mutated between tests: a `mutable` server is what puts Save into the
 // package, which is the branch `versionId` has to gate.
@@ -236,8 +247,10 @@ describe("versionId", () => {
       // `updateModelSource` accepts one as a fifth, and Publisher answers 501
       // to it on this route, so threading it through here would make every
       // save from this component fail outright.
+      // Length alone: the mock is typed at four arguments, so naming a fifth
+      // is a type error rather than an assertion, and a fifth passed at
+      // runtime still shows up here.
       expect(updateModelSource.mock.calls[0]).toHaveLength(4);
-      expect(updateModelSource.mock.calls[0][4]).toBeUndefined();
    });
 
    it("does not stop a package save from invalidating the read it moved", async () => {
