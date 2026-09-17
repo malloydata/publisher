@@ -1,6 +1,6 @@
 ---
 name: malloy-analysis-pitfalls
-description: Common data analysis pitfalls to watch for during query construction and result interpretation. Reference this checklist when verifying queries and results to catch errors before presenting an answer.
+description: Read BEFORE presenting any result, to check the query and the numbers it returned. The common data-analysis pitfalls - wrong grain, fan-out, invented names, mismatched filters, count vs distinct.
 ---
 <!--
 Copyright (c) Credible Data Inc.
