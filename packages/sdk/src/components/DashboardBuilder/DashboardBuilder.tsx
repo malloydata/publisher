@@ -147,11 +147,23 @@ export interface DashboardBuilderProps {
    /** Saves and refusals, for the host to log; see `DashboardEvent`. */
    onEvent?: DashboardEventHandler;
    /**
-    * Where `onSave` puts the file, for the event it reports. The builder
-    * cannot tell — it is handed a function — and a save into the package and a
-    * save into this browser are not the same event.
+    * Whether the document differs from what was last saved, on every change
+    * and on mount.
+    *
+    * For a host that has to decide whether it may replace what is open — a
+    * newer version arriving from its store, a navigation away. `onChange`
+    * cannot answer that: the saved baseline lives in this hook, so a parent
+    * comparing the document it is handed against the one it passed in reads
+    * dirty immediately after a successful save.
     */
-   savesTo?: "package" | "browser";
+   onDirtyChange?: (dirty: boolean) => void;
+   /**
+    * Where `onSave` puts the file, for the event it reports. The builder
+    * cannot tell — it is handed a function — and a save into the package, into
+    * this browser, and into a host store that holds the record are not the
+    * same event.
+    */
+   savesTo?: "package" | "browser" | "host";
    /**
     * The host's own actions for the edit bar — Done — rendered beside
     * undo, redo and save. The builder owns the edits; where the file goes
@@ -165,6 +177,7 @@ export function DashboardBuilder({
    document,
    onSave,
    onChange,
+   onDirtyChange,
    renderTile,
    controls,
    givens,
@@ -225,6 +238,11 @@ export function DashboardBuilder({
    useEffect(() => {
       onChange?.(editor.document);
    }, [editor.document, onChange]);
+   // Also on mount, so a host that remounted the builder on new text is told
+   // the slate is clean rather than carrying the previous mount's answer.
+   useEffect(() => {
+      onDirtyChange?.(editor.dirty);
+   }, [editor.dirty, onDirtyChange]);
    // One object per document, or the popover's draft would reset on every
    // render of the builder while it is open.
    const settings = useMemo(
