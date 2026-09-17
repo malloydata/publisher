@@ -123,6 +123,19 @@ jobs:
           TZ=America/Los_Angeles bun run --cwd packages/sdk test
         shell: bash
 
+      # Every `bun test` in this repo passes a path filter, and a filter is a
+      # substring unless it is anchored with "./". The guard runs here, not only
+      # under lint_format in build.yml, because it shells out to bun to check
+      # that the anchor actually holds: a platform that did not honour it would
+      # fall back to a substring and match anyway, so the anchoring would
+      # quietly stop applying while every other suite stayed green. Windows is
+      # the platform that matters, because the integration step below retries
+      # and its first attempt creates the `publisher_data/` copies the anchor
+      # exists to exclude.
+      - name: Run test-path-filter guard
+        run: bun run test:scripts
+        shell: bash
+
       # The skills package copies a directory tree and resolves it back by
       # path, so it is exactly the kind of code that breaks on Windows only.
       - name: Run skills package tests

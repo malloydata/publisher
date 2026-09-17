@@ -20,6 +20,11 @@ import {
    buildChainedStorageBuildModel,
    buildServeShapeModel,
    buildServeShapeModelForBindings,
+   extractSourceFilters,
+   buildServeShapeTiers,
+   NEVER_THINNED,
+   type RollupShapeGroup,
+   UNREPRODUCIBLE_FILTER,
    buildVirtualMap,
    deriveServeBindings,
    duckdbTypeToMalloy,
@@ -1316,5 +1321,183 @@ describe("serveShapeDiagnostics", () => {
          shapeSources: [],
          staleSources: ["a", "b"],
       });
+   });
+});
+
+describe("a source's own filters on the serve shape", () => {
+   const base = {
+      sourceName: "deals",
+      destinationName: "lake",
+      virtualHandle: "h",
+      tablePath: "lake.deals",
+      schema: [
+         { name: "amount", type: "BIGINT" },
+         { name: "is_deleted", type: "BOOLEAN" },
+         { name: "is_open", type: "BOOLEAN" },
+      ],
+   };
+
+   it("emits each filterList entry as its own where:, never combined with and", () => {
+      // Combining would reassociate: `(a or b) and c` is not `a or b and c`.
+      const { modelText } = buildServeShapeModelForBindings([
+         {
+            ...base,
+            refinements: [
+               { kind: "filter", code: "is_open or is_deleted" },
+               { kind: "filter", code: "amount > 10" },
+            ],
+         },
+      ]);
+      expect(modelText).toContain("where: is_open or is_deleted");
+      expect(modelText).toContain("where: amount > 10");
+      expect(modelText).not.toContain("and amount > 10");
+   });
+
+   it("emits filters after joins and fields, which a where: may reference", () => {
+      const { modelText } = buildServeShapeModelForBindings([
+         {
+            ...base,
+            refinements: [
+               {
+                  kind: "filter",
+                  code: "big and regions.region_name = 'North'",
+               },
+               { kind: "dimension", name: "big", code: "amount > 100" },
+               {
+                  kind: "join",
+                  name: "regions",
+                  keyword: "join_one",
+                  text: "regions on region_id = regions.region_id",
+                  dependsOn: "regions",
+               },
+            ],
+         },
+      ]);
+      const joinAt = modelText.indexOf("join_one: regions");
+      const dimAt = modelText.indexOf("dimension: big");
+      const whereAt = modelText.indexOf("where: big and");
+      for (const at of [joinAt, dimAt, whereAt]) expect(at).toBeGreaterThan(-1);
+      expect(joinAt).toBeLessThan(dimAt);
+      expect(dimAt).toBeLessThan(whereAt);
+   });
+
+   it("emits filters before views, which are emitted last", () => {
+      const { modelText } = buildServeShapeModelForBindings([
+         {
+            ...base,
+            refinements: [
+               {
+                  kind: "view",
+                  name: "by_month",
+                  text: "by_month is { group_by: m }",
+               },
+               { kind: "filter", code: "not is_deleted" },
+            ],
+         },
+      ]);
+      const whereAt = modelText.indexOf("where: not is_deleted");
+      const viewAt = modelText.indexOf("view: by_month");
+      // Assert presence before order: indexOf returns -1 for an absent filter,
+      // which would satisfy a bare `toBeLessThan` and let this pass with the
+      // filter dropped entirely.
+      expect(whereAt).toBeGreaterThan(-1);
+      expect(viewAt).toBeGreaterThan(-1);
+      expect(whereAt).toBeLessThan(viewAt);
+   });
+
+   it("declares no extend block when a source has no filters and no refinements", () => {
+      // The no-filter shape must stay byte-identical to what it was, so a package
+      // that declares none reads exactly as before.
+      const { modelText } = buildServeShapeModelForBindings([base]);
+      expect(modelText).not.toContain("extend {");
+      expect(modelText).not.toContain("where:");
+   });
+});
+
+describe("extractSourceFilters", () => {
+   it("carries one refinement per entry, in order, with the author's text", () => {
+      expect(
+         extractSourceFilters([
+            { code: "not is_deleted" },
+            { code: "is_open" },
+         ]),
+      ).toEqual([
+         { kind: "filter", code: "not is_deleted" },
+         { kind: "filter", code: "is_open" },
+      ]);
+   });
+
+   it("treats an absent filterList as no filters", () => {
+      expect(extractSourceFilters(undefined)).toEqual([]);
+      expect(extractSourceFilters([])).toEqual([]);
+   });
+
+   it("fails closed on an entry whose code is unreadable", () => {
+      // Dropping the entry would serve the unfiltered relation. Emitting
+      // something that cannot compile withholds the binding instead, and the
+      // query serves live.
+      const out = extractSourceFilters([{ code: 42 }, {}, null]);
+      expect(out).toHaveLength(3);
+      expect(out.every((f) => f.code === UNREPRODUCIBLE_FILTER)).toBe(true);
+      const { modelText } = buildServeShapeModelForBindings([
+         {
+            sourceName: "deals",
+            destinationName: "lake",
+            virtualHandle: "h",
+            tablePath: "lake.deals",
+            schema: [{ name: "amount", type: "BIGINT" }],
+            refinements: out,
+         },
+      ]);
+      expect(modelText).toContain(UNREPRODUCIBLE_FILTER);
+   });
+});
+
+describe("buildServeShapeTiers", () => {
+   // The invariant the whole filter fix rests on. A tier that thins `filter`
+   // answers with rows the source excludes — and the floor tier, which is
+   // assembled separately from the thinning ladder, is exactly where that
+   // reappears when someone adds a rung.
+   const oneGroup: RollupShapeGroup[] = [
+      { baseSourceName: "orders", members: [] },
+   ];
+   for (const [label, groups] of [
+      ["no rollup groups", [] as RollupShapeGroup[]],
+      ["with a rollup group", oneGroup],
+   ] as const) {
+      it(`keeps every never-thinned kind at every tier (${label})`, () => {
+         const tiers = buildServeShapeTiers([...groups]);
+         expect(tiers.length).toBeGreaterThan(0);
+         for (const [i, tier] of tiers.entries()) {
+            for (const kind of NEVER_THINNED) {
+               expect(`tier ${i} keeps ${kind}: ${tier.keep.has(kind)}`).toBe(
+                  `tier ${i} keeps ${kind}: true`,
+               );
+            }
+         }
+      });
+   }
+
+   it("adds the group-dropping rungs only when there is a group", () => {
+      const without = buildServeShapeTiers([]);
+      const with_ = buildServeShapeTiers([
+         { baseSourceName: "orders", members: [] },
+      ]);
+      expect(with_.length).toBe(without.length + 2);
+      // The floor drops the groups AND keeps the never-thinned kinds.
+      const floor = with_[with_.length - 1];
+      expect(floor.groups).toEqual([]);
+      for (const kind of NEVER_THINNED) expect(floor.keep.has(kind)).toBe(true);
+   });
+
+   it("thins the optional kinds monotonically", () => {
+      const tiers = buildServeShapeTiers([]);
+      const optional = tiers.map(
+         (t) => [...t.keep].filter((k) => !NEVER_THINNED.includes(k)).length,
+      );
+      for (let i = 1; i < optional.length; i++) {
+         expect(optional[i]).toBeLessThanOrEqual(optional[i - 1]);
+      }
+      expect(optional[optional.length - 1]).toBe(0);
    });
 });

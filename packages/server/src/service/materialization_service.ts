@@ -679,22 +679,6 @@ export class MaterializationService {
    }
 
    /**
-    * Every materialization across all packages in an environment, newest first.
-    * Each record carries its `packageName`, so an env-scoped view can group or
-    * label by package without a per-package fan-out.
-    */
-   async listEnvironmentMaterializations(
-      environmentName: string,
-      options?: { limit?: number; offset?: number },
-   ): Promise<Materialization[]> {
-      const environmentId = await this.resolveEnvironmentId(environmentName);
-      return this.repository.listMaterializationsByEnvironment(
-         environmentId,
-         options,
-      );
-   }
-
-   /**
     * `created_at` of the newest scheduler-fired materialization for a package,
     * or null if none. The standalone scheduler uses this on its first arm to
     * recover a fire missed during downtime (see MaterializationScheduler.arm).

@@ -13,7 +13,7 @@ The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates 
 
 For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `gh-release` appends every `[Unreleased]` section to the release page alongside the generated PR list, then pushes a `release-notes-stamp-<version>` branch restamping those headings with the version that shipped them. Nothing to paste, and nothing to remember while writing.
 
-One step is a human's, and it is the one that bites when it is skipped: someone has to open that branch as a PR and merge it. `main` requires a pull request, so the release cannot land the stamp itself, and the job summary prints the link. Until it merges the headings still read `[Unreleased]`, which is exactly what the *next* release matches — so the narrative here lands on that release's page too, and on every one after it. Whoever cuts the release owns that click; the `publisher-release` skill makes it a step.
+One step is a human's, and it is the one that bites when it is skipped: someone has to open that branch as a PR and merge it. `main` requires a pull request, so the release cannot land the stamp itself, and the job summary prints the link. Until it merges the headings still read `[Unreleased]`, which is exactly what the _next_ release matches — so the narrative here lands on that release's page too, and on every one after it. Whoever cuts the release owns that click; the `publisher-release` skill makes it a step.
 
 Both steps handle several sections, which matters because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives. That is precisely what the old manual process got wrong. It also simply stopped happening — 0.0.243 through 0.0.247 each shipped with none of their narrative, and the pages were backfilled by hand afterwards.
 
@@ -30,6 +30,39 @@ To ship one of them, bump its `package.json` on `main` and run an ordinary relea
 One behaviour change to know about: `skills-npm.yml` now publishes only from `main`, matching the guard `create-malloy-package-npm.yml` already had. Dispatching it from a branch still runs `check_pack`, but the publish job is skipped, and a skipped job reports success, so check the job list rather than the run's green tick if you expected a publish. See [.github/workflows/CONTEXT.md](.github/workflows/CONTEXT.md) for the publishing rules that are easy to get wrong.
 
 ---
+
+## [Unreleased] — the dashboard editor is not the only writer, and the browser is not the only store
+`DocumentStorage` exists so the host decides where an authored document goes, but the
+editor was written when the browser was the only implementation and the editor was the
+only writer. Both assumptions were baked into its state machine, where they stayed
+invisible while storage really was one person's browser and nothing else wrote the
+package. Given a real backend, or a second writer, they became four ways to lose work.
+**Two of them bite the Console today, on the package-write path shipped in 0.4.0.**
+The hash a save hands back as `expectedHash` was taken from the latest fetch of the
+file rather than from the file the builder opened against, so a save could present a
+hash that matched a version the author had never seen, be accepted, and overwrite it.
+And saving a resumed draft into the package remounted the builder onto the pre-save
+package text, silently discarding the save that had just succeeded. Both are fixed.
+**New in the interface.** A `Workspace` may now declare itself `authoritative`: its copy
+IS the document, and the package file is a deploy of it. The editor then opens that copy,
+writes back to it, and drops the "you have edits the package does not have" prompt, which
+means nothing when the copy is the record. Omitting the flag leaves every existing host
+exactly as it was. Absence now rejects with a `DocumentNotFoundError` rather than a bare
+`Error`, so a read that failed is no longer indistinguishable from a document that is not
+there; the editor refuses to arm Save on a read it could not complete, instead of
+treating silence as permission to overwrite.
+**Also.** A new version of the file arriving while there are unsaved edits is offered
+rather than applied, so a background refetch no longer discards an author's work, and
+saving through storage no longer throws away the undo history. `DashboardEditor` takes an
+`onDirtyChange` callback for hosts that own the way out of the page. The toolbar caption
+and the package page's draft list now say where a document is kept in the backend's own
+words, taken from `Workspace.description`, instead of asserting "this browser".
+`dashboard.saved` gains `where: "host"` and an optional `workspace`; `dashboard.opened`
+gains `from: "record"`.
+What this does not add is contention control on the record itself. `saveDocument` has
+no expected-version slot, so two people editing one authoritative workspace are still
+last writer wins, and the editor cannot detect it. Only the package path is
+compare-and-swap protected.
 
 ## [Unreleased] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
 
@@ -76,44 +109,320 @@ draws on the same pool a query does, so a deployment that sits near its cap may
 start seeing 503s on compile and sqlSource that it did not see before. The cap
 defaults to 32 and `0` still disables it entirely.
 
-## [Unreleased] — 500 and 502 responses no longer echo the internal error
+## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
-A 500 or a 502 returned `error.message` verbatim. That message is not always
-something a caller should see: an unrecognised internal failure carries a stack
-fragment or a filesystem path, and a connection failure wraps the driver's own
-text, which can name an internal host and port, echo the SQL the caller sent, or
-distinguish "refused" from "timed out" from "auth failed" -- a reachability
-oracle for anything the server can reach.
+A materialization is a run of one package's persist sources: `package_name` is NOT NULL on the row, every create takes a package, and the scheduler arms per package. The environment page nonetheless carried a second materializations surface on top of that — a cross-package list, plus a dialog that ticked packages and fired one ordinary per-package create for each — which read like a level of its own while offering strictly less than the package's own page. It is gone, and so is the one endpoint behind it, an aggregate that was the per-package query with the package predicate dropped.
 
-Both now answer with a fixed message (`Internal server error.`,
-`Upstream connection error.`) and the real error is logged server-side instead.
-The status codes are unchanged.
+**Removed:** `GET /api/v0/environments/{env}/packages/materializations`. Its per-package sibling, `GET /api/v0/environments/{env}/packages/{pkg}/materializations`, is unchanged, so a caller that wants the environment-wide view asks each package and concatenates. `malloy-pub list materialization` now requires `--package`; omitting it used to list the whole environment and now fails with `--environment and --package are required`. `EnvironmentMaterializations` is no longer exported from `@malloy-publisher/sdk`. All five package-scoped endpoints, the scheduler, and the table and its indexes are untouched.
 
-The MCP endpoint gets the same treatment for the same reason. An unclassified
-tool error is answered by `getInternalError`, and a connection failure matches
-none of the classifier's branches, so the driver text withheld over HTTP would
-otherwise have stayed readable over `/mcp`. It is now withheld there too. Only
-that class is withheld: an operational failure keeps its message, because a tool
-error that says nothing is what the classifier exists to avoid.
+**One thing comes back.** That aggregate had to be matched ahead of `…/packages/{packageName}`, which reserved `materializations` as a package name nobody could use. The reservation is lifted.
 
-Two things are deliberately *not* generalised, because the point is to drop what
-a caller cannot use rather than everything:
+## [0.4.0] — the Console writes a dashboard into the package: a save endpoint, create, and drafts
 
-- Every 4xx keeps its message. A 400 compile error, a 404 naming the package it
-  could not find, and the 424 that quotes an offending annotation are all
-  actionable, and a caller needs them to fix the request.
-- A 502 the server wrote itself keeps its message too. A message the server
-  composed names nothing internal, so it is marked caller-safe at the point it is
-  raised; only the driver passthrough is generalised. A new throw site that does
-  not mark itself is generalised by default. (The table-not-found case that used
-  to rely on this is a 404 in 0.2.6, so it no longer reaches the 502 branch at
-  all.)
+The dashboard builder shipped in 0.3.1 with an Export button: it handed back a copy of the file for someone to put in the package by hand. The Console now closes the loop instead.
 
-If you parse the body of a 5xx rather than reading its status, that text is now
-fixed. The detail moved to the logs, which is where it was always meant to be:
-before this change it reached them only incidentally, via response-body logging.
+**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled *as the file* and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
+
+The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means *create*, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
+
+**Like every write on this server it is unauthenticated** and belongs behind the gateway; `frozenConfig` turns it off. It opens no door that was shut — a caller who can reach it can already register a package — and it is recorded in [docs/security-posture.md](docs/security-posture.md).
+
+**In the Console:** Save writes into the package when the server takes writes, superseding a browser draft of the same file; a read-only server keeps the browser-draft flow. The package page gains an **Add dashboard** control (model, a source it declares, the first tile's view, a title) and a **Drafts** section listing this browser's saved dashboards, to open or delete. **Export is gone**, because Save is what it stood in for.
+
+## [0.4.0] — the bundled examples no longer ship a notebook
+
+`examples/storefront/storefront.malloynb` and `examples/governed-analytics/orders.malloynb` are removed. The `.malloynb` format is deprecated: read-only support stays, and a package that ships one still renders it, but a new narrative surface should be a dashboard until the authored notebook format lands. [docs/choosing-a-surface.md](docs/choosing-a-surface.md) says which surface to reach for.
+
+## [0.4.0] — a failed connection test no longer returns the password
+
+`POST /api/v0/connections/test` put the driver's error verbatim into `errorMessage`, and a DuckDB attach failure echoes the whole connection string — so testing a Postgres, DuckLake, or DuckDB-with-attachments connection that could not connect sent its cleartext password back to the caller, and wrote it to the server log. Both now go through the redaction the service already applied to its own copy, on the attach path as well as the controller's catch.
+
+**If you were affected:** wherever a failed connection test's response or the server's log was captured — a browser network panel, a support bundle, a log shipper — that password is in the clear. Rotate it if any of those left the machine.
+
+**Also fixed: duckdb and ducklake connection tests work again.** Since 0.0.193 the throwaway config behind a test was built with an empty environment path, so DuckDB rejected the empty working directory before any attach ran and every test of those two types failed with a validation error. The config is now rooted in a fresh temp directory, removed afterwards — which also means a connection test never reads, writes, or deletes an operator's own `<name>.duckdb`, and two tests of the same name cannot clobber each other.
+
+**One new refusal.** A duckdb or ducklake connection name becomes a `<name>.duckdb` filename, so an unsafe one is now a 400 rather than a test that runs and fails. Names on every other connection type are unaffected.
+
+## [0.4.0] — a materialized source's `where:` reaches the serve shape
+
+A source's filter is part of what the source means, and the `storage=` tier was dropping it. The build SQL is the persisted relation alone, and the serve shape re-declared only dimensions, measures, joins and views — so the tier answered with **every row the source excludes**, silently, because a dropped filter still compiles. The colocated tier was never affected: substitution swaps only the `FROM` and leaves the reading query's own `WHERE` in place.
+
+**Now:** the shape carries the source's `where:` clauses, one per `filterList` entry, and filters accumulate through `extend` the way they do in the model. They are kept at every tier of the shape ladder, so a source whose view cannot be reproduced loses the view and keeps the filter.
+
+**A filter is the one exception to the per-query fallback rule**, deliberately. If a `where:` cannot be reproduced on the shape — one reaching through a join whose target is not materialized, or one over a column the source hides with `except:` — that source serves live rather than serving from storage without its filter. Its siblings keep the tier. Serving fewer queries from the tier is a cost; serving the wrong rows is not a trade worth making.
+
+**If you were affected:** only a server running `PERSIST_STORAGE_MODE=on` served from the tier at all, and only a source carrying a `where:` answered wrongly — but every query against one of those, aggregates included, has been counting rows the filter excludes. The filter is applied when the artifact is read, not when it is built, so upgrading is enough: no rebuild, and nothing in the package changes. To confirm, compare a count against the same query served live.
+
+## [0.4.0] — a storage build reaches a proxied Postgres source through its tunnel
+
+A `storage=` build of a source on a Postgres connection that carries a `proxy` (an SSH tunnel to the tenant's bastion) failed on every attempt with `Unable to connect to Postgres at "host=<the database's own host> …": Connection timed out`, after a full TCP timeout per source. The query path opens the tunnel and connects through it; the build path handed DuckDB's `postgres` extension the connection's own host and port, which the bastion exists to keep unreachable. A proxied connection had never been built into a storage destination before — the passthrough was proven on BigQuery and Snowflake, whose federation has no network hop.
+
+**Now:** the build federates a proxied Postgres source the way the query path connects to it. It opens the connection's SSH tunnel for the duration of the build, attaches DuckDB at the tunnel's local endpoint, and closes the tunnel when the build session is disposed — a failed attach closes it too. TLS is mapped from the connection's `sslmode` in libpq's vocabulary: unset or `no-verify` encrypt without verifying (`require`), `verify-ca` verifies the chain against `NODE_EXTRA_CA_CERTS` (passed as `sslrootcert`), and `verify-full` verifies the chain against the runtime's bundled roots plus `NODE_EXTRA_CA_CERTS` — the trust set the query path uses, so no bundle is required — and the hostname against the database's own name, because libpq dials the tunnel as `hostaddr` while `host` keeps the real name. Values are quoted for libpq, so a password carrying a space or a quote connects as it does on the query path. Unproxied Postgres, BigQuery and Snowflake sources are unchanged.
+
+**If you were affected:** rebuild. The refusal never reached the source's definition, so nothing in the package changes.
+
+## [0.3.1] — a dashboard builder, and the storage seam a host has to supply
+
+Publisher now ships a WYSIWYG editor for a package dashboard: tiles arranged by drag, a filter strip
+whose controls are written into the file as `given:` declarations, per-tile drill targets, and a
+splice-writer that rewrites only the bytes it owns so comments, ordering and everything it does not
+manage survive the round trip. `/<environment>/<package>/dashboards/<slug>/edit` opens it in the
+bundled app.
+
+**It is a separate entry point, and that is deliberate.** Import it from
+`@malloy-publisher/sdk/builder`, not from the package root, and load it lazily —
+`React.lazy(() => import("@malloy-publisher/sdk/builder"))` is what the bundled app does. The builder
+reads Malloy with the Malloy parser, which is 440 KB gzipped, and nothing reachable from the main
+entry imports it. A single static import anywhere on your main path hoists all of it into every page
+load. That entry also installs a `globalThis.process.env` shim the parser's dependencies need in a
+browser, and it has to evaluate before the parser's chunk does, which is the other reason not to
+reach past it into the component file.
+
+**Saving is yours, not ours.** The editor writes through a `DocumentStorage` the host supplies
+through `DocumentStorageProvider` — `listWorkspaces`, `getDocument`, `saveDocument`,
+`deleteDocument`, `moveDocument`, over a `{workspace, type, path}` locator. `BrowserDocumentStorage`
+is exported and keeps documents in `localStorage`, which is what the bundled app uses and is enough
+to try the builder, not enough to share one. A host with no provider still gets the editor, without
+Save. Two things to know before writing an implementation: `saveDocument` carries no version or etag,
+so a backend that needs a precondition has to hold one itself and reject a stale write, and the
+editor opens on the first workspace `listWorkspaces(true)` returns, so return the one you mean to
+save into.
+
+**The package dashboard is a read-only origin.** Editing works on a copy, the copy goes wherever the
+host keeps documents, and "Export" hands the file back so it can be put in the package. There is no
+server write path and this release does not add one. The cost is stated in the toolbar rather than
+hidden: a control added in the builder is live in the editor, because its value is written into each
+tile's query, but it reaches the package only when the exported file does.
+
+**One thing a dashboard author should know.** The file the builder writes is package text, and
+Publisher reads an `#(authorize)` gate from a declaration in the package. A `given:` the builder
+writes is presentation — it does not bound what a viewer can reach, and it is not a tenant boundary.
+Treat a dashboard as model text for review purposes, because that is what it is.
+
+## [0.3.0] — a dashboard's description is its narrative header, and it renders as markdown
+
+A dashboard could already carry a block of prose and was throwing it away at the last step. Malloy
+delivers a doc comment with its newlines and blank lines intact — measured, `'## Why this page
+exists\nRevenue is up but margin is flat.\n\nThe tile below says where it went.'` reaches the manifest
+exactly like that — and Publisher rendered it as a plain `Typography`, which collapsed the lot onto
+one unstyled line with the asterisks showing.
+
+It renders as markdown now: paragraphs, emphasis, lists, links and inline code. Headings stay at body
+weight, because a heading in a description is a section label inside the page rather than a
+competitor to the page's own title. The bundled `storefront` overview has a real one to copy from.
+
+Two things worth knowing when writing one. On a composite the lines are model-level (`##"`), because
+a doc comment attaches to an object and at model level there is none — a `#"` there fails the package
+load with "Object annotation not connected to any object"; the single-query form is the other way
+round, with `#"` attached to its `query:`. And this is the whole prose surface a dashboard has: per
+page, plus a one-line `# subtitle` per tile. Prose BETWEEN tiles needs a tile kind the format cannot
+express yet.
+
+## [0.3.0] — a property on a tile entry is reported instead of dropped
+
+`tiles=[intro { kind=text }]` compiled, loaded clean, and silently became the tile `intro` — a run
+expression that does not resolve, reported as a query error with no hint that the tag was the
+problem. The shape parses today, so an author who has read about tile kinds anywhere can write one
+and be told nothing about why it did not work. The package lint now names the property and says where
+per-tile presentation actually goes.
+
+## [0.3.0] — a composite dashboard's tiles are cards again
+
+A tile on a `## artifact { tiles=[…] }` dashboard painted MUI's white instead of the instance theme's
+`tile` colour, which the theme itself describes as "a faint tint so tiles read as recessed cards on
+the page". The single-query `# dashboard` form has always painted it. On a theme whose page is also
+white, that was the difference between tiles that read as cards and tiles that read as nothing, and
+it is the visible half of #1069's "they render differently".
+
+Measured on the `grid`/`tiled` fixture pair, which is the same layout authored both ways: radius
+(4px), padding (20px), border, shadow and grid gap already agreed, and the background was the last
+piece that did not. Both forms are now pinned against one sentinel colour in the browser suite, so
+neither can drift from the other unnoticed.
+
+Height stays deliberately different: a composite tile is capped so a grid of independent queries
+keeps even rows, where the single-query form sizes to its content.
+
+## [0.3.0] — a result panel is sized by what the renderer says it is, not by its DOM
+
+A panel decided its height by walking three levels into `@malloydata/render`'s output and reading
+whichever node it landed on, plus a class-name check on `.malloy-dashboard` for the one shape that
+needed a fourth. The renderer publishes no size API, so something has to be measured — but WHICH
+rule applies is now read from the renderer's own metadata rather than from its markup, and every
+height decision lives in one module with tests instead of four unreconciled constants across as
+many files.
+
+Two visible fixes come out of it:
+
+- **A KPI row no longer sits in a band of empty space.** A `# big_value` tile measured once, lost
+  the race with the renderer's layout, and recorded the box it had been handed. Measured: a tile
+  whose content is 136px tall kept the full 400px cap. Roots that have a height of their own —
+  tables, `# dashboard` grids, big values, lists, maps — are now re-measured until they settle.
+- **A chart is no longer measured at all.** A chart fills the box it is given and reports back an
+  inset of it (measured: 392 in a 400px tile, 692 in a 700px cell), so measuring one only ever fed
+  its own height back to it. The single-query dashboard form used to ask for a 20000px "no cap"
+  height, which a bare `# bar_chart` painted at and then kept — 1992px for a two-row chart. "No
+  cap" is now the absence of a cap rather than a number standing in for one, and a chart takes the
+  caller's height.
+
+Which rule a result follows comes from the root's render plugin where there is one:
+`sizingStrategy: "fill" | "fixed"` is the renderer answering this exact question, and a host's own
+plugin is placed by its own declaration rather than by a name this SDK has to recognise. A table and
+a `# dashboard` grid have no plugin, so `renderAs()` still carries those.
+
+The bundled `storefront` dashboard also gives its map row six and six columns instead of eight and
+four. A root `# shape_map` is drawn at a fixed 588px wide — the renderer builds its spec from a
+hardcoded 500x350 and no tag reads those numbers — so a narrower tile clips it rather than shrinking
+it, and at four of twelve the east coast and the whole legend were cut off. This is the example
+fitting the renderer's constant, not a fix for it: below a grid of about 1220px it clips again.
+
+For SDK consumers: `ResultContainer`'s `maxHeight` is optional now, and leaving it out means no cap.
+`RenderedResult` gains an `onSizing` callback reporting which rule a result follows, and its
+`onSizeChange` fires only for results that have a height of their own. Each rendered result also
+carries `data-malloy-render-as` and `data-malloy-sizing` on its stage, so a panel at an unexpected
+height says which rule it took.
+
+## [0.3.0] — a dashboard imports its givens file whole
+
+The bundled examples, the dashboards doc and the `malloy-dashboards` skill all named the givens a
+dashboard uses (`import { CATEGORY, BRAND, … } from '../givens.malloy'`). They import the file whole
+now. A control renders for a given the tiles actually *reference*, not for every one in scope, so
+the whole-file form brings no controls you did not ask for, and a named list only gives an author
+something to forget — with a missing control, not an error, as the result. It is also what Malloyyo
+documents for the same format, so a repo written for either side reads the same. Sources are
+unchanged and still named individually, which is the right form where a file wants a few specific
+things.
+
+Nothing about where a given is *declared* changes: that is the model, and `givens.malloy` is where a
+package keeps it, because the MCP surface, row-level access and `#(authorize)` all read it. The doc
+now also records that declaring one in a dashboard file works — the control renders and the tile
+filters — for a page that owns its own knob. That is the exception, not the convention.
+
+## [0.3.0] — dropdowns over a gated source load their options
+
+A `control=select` whose `suggest` read a source gated by `#(authorize)` (or scoped by a
+source-level `where:` on a given) resolved to "Options unavailable": the option query carried no
+givens, so the gate denied it. The server now names, per suggest, the givens its source is gated or
+scoped by (`GivenSuggest.givenNames`, also on a named `suggest { query=… }`'s own references), and
+the SDK sends the current values of exactly those with the option query and keys its cache on them.
+No other applied filter is sent, so the option list still does not depend on the rest of the page.
+`useSuggestOptions` takes the applied values as a new trailing optional argument; a caller that
+omits it, or a server too old to name the givens, behaves as before.
+
+## [0.3.0] — a control with a starting value can be cleared
+
+A given seeded by `# artifact { givens { … } }` (or a notebook's `## givens { … }`) could not be
+cleared: the × dropped it from the URL, the host fed that URL back in, and the control snapped
+back to the starting value. The hook now recognises its own report arriving back through the host
+and keeps the reader's edits across it, while a URL it did not write (a drill landing, the Back
+button, a pasted link) still resets the controls as before. The limitation was documented as
+unreachable when no server populated starting values; both dashboards and notebooks have since.
+
+## [0.3.0] — `ApiErrorDisplay` is exported; two internal names are not
+
+`@malloy-publisher/sdk` now exports `ApiErrorDisplay` and its props type. `Dashboard`,
+`DashboardTile` and `Notebook` all present request failures through it, and the SDK README has
+shown it in examples for some time, but a host could not import it to match. Two names that leaked
+through the barrels without being documented are no longer exported: `SourceExplorerComponent`
+(the inner half of `SourcesExplorer`, which is the component to use) and `makeDimensionKey` (an
+internal of `useDimensionalFilterRangeData`; `getDimensionKey` stays).
+
+## [0.3.0] — the `pages/` URL alias is gone
+
+Data apps were renamed from `pages/<file>` to `data-apps/<file>` in 0.0.242, and that release
+promised the old spelling would stop redirecting one release later. It kept redirecting for
+twenty-five. It stops now: the Console no longer rewrites `/<env>/<pkg>/pages/<file>` to the new URL,
+and the server no longer treats `pages` as an app route. A bookmark on the old spelling 404s, and
+a package that ships its own `public/pages/` directory has those files back at
+`/<env>/<pkg>/pages/<file>`, which the alias had been shadowing.
+
+## [0.3.0] — the Workbook editor is gone; storage is now `DocumentStorage`
+
+**Removed: the Workbook editor.** `Workbook`, `WorkbookList`, `WorkbookManager`, and
+`AnalyzePackageButton` are no longer exported from `@malloy-publisher/sdk`, and the Console's
+`/<env>/<pkg>/workbook/<workspace>/<path>` route is gone. The editor saved its own JSON to browser
+storage, could not write a `.malloynb`, and had no link to it anywhere in the Console since August
+2025: a notebook click has opened the read-only `Notebook` view all along. Authoring returns with
+the dashboard builder, which will cover the notebook case with text tiles in a one-column layout.
+The `@uiw/react-md-editor` dependency and the `@malloy-publisher/sdk/markdown-editor.css` export
+went with it; `styles.css` no longer imports that stylesheet.
+
+**Renamed: `WorkbookStorage` is `DocumentStorage`.** The storage seam the editor used stays, as the
+interface a host hands the SDK for whatever it authors: `DocumentStorage`, `DocumentStorageProvider`,
+`useDocumentStorage`, `BrowserDocumentStorage`, `DocumentLocator`, and `Workspace`, with methods
+named `listDocuments`, `getDocument`, `saveDocument`, `deleteDocument`, `moveDocument`. A locator now
+carries a `type` (`"dashboard"` or `"notebook"`), and `listDocuments` can filter on it. The browser
+implementation namespaces its keys under `publisher:document:`, so it lists only its own documents
+rather than everything the page keeps in localStorage.
+
+**Breaking for hosts of `@malloy-publisher/app`:** `createMalloyRouter`'s second argument and
+`MalloyPublisherApp`'s `workbookStorage` prop are now `documentStorage`, and both are optional,
+defaulting to `BrowserDocumentStorage`. A host that passed a `WorkbookStorage` implementation renames
+its methods and adds `type` to its locators. No known host did.
+
+## [0.3.0] — dashboards written for Malloyyo look the same here
+
+Three behaviors that differed on identical Malloy between Publisher and
+[Malloyyo](https://github.com/malloydata/malloyyo), found by checking Publisher's port against
+Malloyyo 0.2.44:
+
+- **A composite tile that is one row of measures renders as KPI cards**, the way Malloyyo splices the
+  same tile into its grid, rather than as a one-row table. `# big_value` on the view still says so
+  explicitly; any render tag on the view, `# table` included, is respected as written.
+- **A `filter<date>` or `filter<timestamp>` given gets a time-range control**: Today, the last 7, 30
+  or 90 days, the last 12 months, or a custom range of days. The presets are spelled in Malloy's
+  filter grammar (`7 days`, `12 months`), the same values Malloyyo writes, so a URL from either host
+  reads on the other. A custom range is inclusive on both ends as picked; a single day keeps the date
+  picker, and any other filter keeps the text box, as written.
+- **The `range_min`/`range_max` slider has two handles** and writes an inclusive range, `[10 to 20]`.
+  With the upper handle at the ceiling it writes the lower bound alone, `>= 10`, which is what the
+  one-handled slider wrote, so existing links and starting values still place the handles.
+
+And one thing that was silent now speaks: an `# artifact` tag on a source **view**, which Malloyyo
+serves and Publisher never read, made the file a shared include with nothing reported. It is now a
+package warning that names the two forms Publisher does read. The dated comparison lives in
+[docs/malloyyo-dashboards-design.md](docs/malloyyo-dashboards-design.md#where-publisher-diverges).
+
+## [0.2.7] — bound how far the Snowflake driver reads ahead of a slow consumer
+
+The Docker image now installs a small shim in front of the ADBC Snowflake driver
+that can set `adbc.rpc.result_queue_size` on every Snowflake statement. It is
+**opt-in**: with `ADBC_RESULT_QUEUE_SIZE` unset — the default — the shim is a
+pass-through and the driver behaves exactly as upstream ships it. The image itself
+is different (the extension now loads the shim, which loads the upstream driver
+beside it), but with the variable unset the shim sets nothing and forwards every
+call. Set `ADBC_RESULT_QUEUE_SIZE=1` on the deployment to turn the bound on. Non-Docker installs are unaffected either way, because the
+`snowflake` extension has no way to set this option and the server process does
+not touch it.
+
+Why: the driver prefetches result chunks ahead of the consumer with no bound tied
+to consumption — a chunk's goroutine releases its concurrency slot as soon as its
+download finishes, while the decoded records stay queued. Whenever a
+`snowflake_query()` stream is consumed more slowly than the network delivers it,
+which is what a `CREATE TABLE AS` into DuckLake on object storage does, the
+_remaining result set_ accumulates in memory outside DuckDB's buffer manager,
+where `PUBLISHER_DUCKDB_MEMORY_LIMIT` neither sees nor bounds it. On a ~140M-row
+materialization that was an 8 GiB worker OOM-killed on every attempt; the two
+DuckLake write bounds shipped in 0.2.3 and 0.2.4 raise the consumer's throughput
+and are still load-bearing, but could never close a gap whose other side is
+unbounded.
+
+Measured on `TPCH_SF100.ORDERS LIMIT 20M` with a deliberately slow writer, peak
+cgroup `anon`: 3325 MiB at the driver default — the whole result resident with
+1% consumed — against 286 MiB flat at `1`, byte-identical output. On a fast
+100M-row aggregate the bound cost nothing measurable and removed the 400–1000 MiB
+the default buffered there too. `adbc.snowflake.rpc.prefetch_concurrency`
+(`ADBC_PREFETCH_CONCURRENCY`) is exposed alongside but left at its default, since
+it is the throughput knob rather than the memory one.
+
+This is an interim, and `packages/server/adbc-shim/README.md` says exactly when
+it comes out: when the extension exposes the options
+([iqea-ai/duckdb-snowflake#66](https://github.com/iqea-ai/duckdb-snowflake/issues/66))
+or the driver bounds its read-ahead by consumption as its documentation already
+implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/issues/197)).
 
 ---
+
+## [0.2.7] — 500 and 502 responses no longer echo the internal error
 
 ## [0.2.6] — a bad table reference answers 404 or 400, not 502
 
@@ -141,12 +450,12 @@ value as absent.
 
 **Only two dialects are classified, and the rest deliberately still answer 502.**
 
-| Dialect | A missing table now | Why |
-|---|---|---|
-| BigQuery | `404`, or `400` for a path with no dot | The driver returns `error.message` as a string instead of throwing, discarding the structured 404 the Google client handed it, so the text is the only surviving signal. `Not found: Table\|Dataset` maps to 404; `Improper table path` to 400, which is every prefix typed before the first dot |
-| DuckDB, and the Azure and DuckLake connections built on it | `404` | Three thrown shapes, matched where they actually arrive — in the catch. `DuckDBCommon.fetchTableSchema` either returns a structDef or throws, so it never resolves an empty schema |
-| Postgres | still `502` | A missing table answers with a generic `Unable to read schema.`, indistinguishable from any other failure |
-| Snowflake | still `502` | `DESCRIBE TABLE` says `does not exist or not authorized`, conflating absence with denial by design |
+| Dialect                                                    | A missing table now                    | Why                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| BigQuery                                                   | `404`, or `400` for a path with no dot | The driver returns `error.message` as a string instead of throwing, discarding the structured 404 the Google client handed it, so the text is the only surviving signal. `Not found: Table\|Dataset` maps to 404; `Improper table path` to 400, which is every prefix typed before the first dot |
+| DuckDB, and the Azure and DuckLake connections built on it | `404`                                  | Three thrown shapes, matched where they actually arrive — in the catch. `DuckDBCommon.fetchTableSchema` either returns a structDef or throws, so it never resolves an empty schema                                                                                                               |
+| Postgres                                                   | still `502`                            | A missing table answers with a generic `Unable to read schema.`, indistinguishable from any other failure                                                                                                                                                                                        |
+| Snowflake                                                  | still `502`                            | `DESCRIBE TABLE` says `does not exist or not authorized`, conflating absence with denial by design                                                                                                                                                                                               |
 
 Guessing on either of the bottom two would be worse than a 502, and anything
 unrecognized stays `ConnectionError`/502 so that a real outage stays loud. A
@@ -223,7 +532,7 @@ loudly; a marker on one of its members was silent, which is why both are now ref
 
 `#@ persist name=` accepts the table name a source materializes into, and that
 value is pasted into the `CREATE OR REPLACE TABLE` and `DROP TABLE IF EXISTS`
-statements the builder runs. It was only ever checked for being *quoted*, never
+statements the builder runs. It was only ever checked for being _quoted_, never
 for what the quotes contained, so a name carrying its own quote character closed
 the identifier early and the rest of the value continued as SQL.
 
@@ -253,15 +562,15 @@ wild was doing this.
 snake_case. There is no alias and no deprecation window: the old names are removed,
 so an agent or client that calls them gets an unknown-tool error until it is updated.
 
-| Before | Now |
-|---|---|
-| `malloy_getContext` | `get_context` |
-| `malloy_executeQuery` | `execute_query` |
-| `malloy_compile` | `compile_model` |
-| `malloy_reloadPackage` | `reload_package` |
-| `malloy_getStatus` | `get_status` |
+| Before                        | Now                      |
+| ----------------------------- | ------------------------ |
+| `malloy_getContext`           | `get_context`            |
+| `malloy_executeQuery`         | `execute_query`          |
+| `malloy_compile`              | `compile_model`          |
+| `malloy_reloadPackage`        | `reload_package`         |
+| `malloy_getStatus`            | `get_status`             |
 | `malloy_searchDatabaseSchema` | `search_database_schema` |
-| `malloy_searchDocs` | `search_malloy_docs` |
+| `malloy_searchDocs`           | `search_malloy_docs`     |
 
 **What to do.** Hosts that discover tools at connect time (Claude Code, Cursor, Codex)
 pick the new names up on reconnect with no config change — the names appear in the
@@ -310,7 +619,7 @@ before rotating to the next one. Unset, nothing changes: no option is set and th
 issues exactly the SQL it issued before.
 
 This is a **second, separate** term from the row group bound in 0.2.3 below, not a
-replacement. The row group bounds the per-column buffer *within* a file; this bounds how much
+replacement. The row group bounds the per-column buffer _within_ a file; this bounds how much
 of the file is resident. Writing to object storage, DuckDB copies each multipart part into a
 buffer it allocates itself and holds it until the file completes, so a file's bytes stay
 resident however they are grouped inside it. Peak memory therefore tracks the FILE size —
@@ -324,14 +633,14 @@ Measured on a 72-column, 20,000,000-row DuckLake write to GCS, sampling cgroup
 `memory.stat` `anon` — all six cells in one batch, since this number moves with link speed
 and with catalog state left by earlier runs:
 
-| `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` | files | peak anon |
-|---|---|---|
-| unset — DuckLake's own default, ~512MB files | 6 | 650 MiB |
-| `1024MB` | 3 | 892 MiB |
-| `512MB` | 6 | 550 MiB |
-| `256MB` | 12 | 373 MiB |
-| `128MB` | 23 | 262 MiB |
-| `64MB` | 45 | 255 MiB |
+| `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES`  | files | peak anon |
+| -------------------------------------------- | ----- | --------- |
+| unset — DuckLake's own default, ~512MB files | 6     | 650 MiB   |
+| `1024MB`                                     | 3     | 892 MiB   |
+| `512MB`                                      | 6     | 550 MiB   |
+| `256MB`                                      | 12    | 373 MiB   |
+| `128MB`                                      | 23    | 262 MiB   |
+| `64MB`                                       | 45    | 255 MiB   |
 
 So the realistic gain is **650 → 373 MiB, about 1.74×** — DuckLake already rotates files, and
 this option moves where it rotates. The underlying effect is much larger than that ratio
@@ -432,7 +741,6 @@ is offered whether or not it has been built yet, so adding a coarse grain to a p
 that already has a built finer rollup costs acceleration until the new one builds —
 answers are unaffected, and it lasts one build.
 
-
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
 `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers
@@ -452,12 +760,12 @@ throughout. If that is familiar, the source that killed it is almost certainly y
 Measured on a 72-column, 5,000,000-row `CREATE TABLE AS` into DuckLake, sampling cgroup
 `memory.stat` `anon`:
 
-| `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` | peak anon | rows per row group |
-|---|---|---|
-| unset (DuckLake's default of 122,880 rows) | 2772 MiB | ~122,880 |
-| `64MB` | 1530 MiB | ~42,300 |
-| `32MB` | 1360 MiB | ~21,900 |
-| `16MB` | 1006 MiB | ~11,700 |
+| `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES`  | peak anon | rows per row group |
+| ------------------------------------------ | --------- | ------------------ |
+| unset (DuckLake's default of 122,880 rows) | 2772 MiB  | ~122,880           |
+| `64MB`                                     | 1530 MiB  | ~42,300            |
+| `32MB`                                     | 1360 MiB  | ~21,900            |
+| `16MB`                                     | 1006 MiB  | ~11,700            |
 
 If you measure this yourself, read `anon` and not `memory.current`: the latter includes the
 page cache of the Parquet being written, which scales with output size, roughly doubles the
@@ -509,12 +817,11 @@ rows it overwrote.
 
 ### New metrics
 
-| Counter | Meaning |
-|---|---|
-| `publisher_materialization_duplicate_target_skipped_total` | A source whose table this run already wrote. Ordinary for a package that extends a persisted source — a volume signal, not a fault. |
-| `publisher_materialization_shared_address_instructions_total` | One content address instructed to build more than one table. Wasteful, not wrong: the content is the same either way. |
-| `publisher_materialization_table_collision_total` | Two definitions materializing into one table — serve-time wrong data. **This is the one to alert on.** Its rate is also what enabling `PERSIST_COLLISION_ENFORCE` would begin refusing, so a rollout can be measured before it is turned on. |
-
+| Counter                                                       | Meaning                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `publisher_materialization_duplicate_target_skipped_total`    | A source whose table this run already wrote. Ordinary for a package that extends a persisted source — a volume signal, not a fault.                                                                                                          |
+| `publisher_materialization_shared_address_instructions_total` | One content address instructed to build more than one table. Wasteful, not wrong: the content is the same either way.                                                                                                                        |
+| `publisher_materialization_table_collision_total`             | Two definitions materializing into one table — serve-time wrong data. **This is the one to alert on.** Its rate is also what enabling `PERSIST_COLLISION_ENFORCE` would begin refusing, so a rollout can be measured before it is turned on. |
 
 ## [0.2.2] — a boolean query param you misspell now fails instead of doing nothing
 
@@ -564,7 +871,7 @@ the right place and then moved to the wrong one. Two ways it showed up:
 - **Silently.** The build reported success and the manifest recorded
   `analytics.orders`, while the table sat in the default container. Anything
   serving that source then resolved a path holding no table.
-- **As a nonsense error.** ``Object '"orders"' already exists`` when something of
+- **As a nonsense error.** `Object '"orders"' already exists` when something of
   that name was already in the default container — while `analytics` was empty.
 
 The rename target is now qualified on the dialects that resolve a bare one against
@@ -743,7 +1050,7 @@ ungated. The load succeeds, and a warning names the entry point whose gate is no
 so you find out before a caller does.
 
 One narrower hole replaces it, and is worth knowing while you migrate: drop the gated column and then
-`rename:` a *different* column onto that exact name. That grafts successfully and binds the gate to
+`rename:` a _different_ column onto that exact name. That grafts successfully and binds the gate to
 the **wrong** column. It takes a drop, plus a rename onto the exact gated name, plus colliding data,
 and it fails closed unless the data collides — but do not recycle a gated column's name.
 
@@ -751,7 +1058,7 @@ and it fails closed unless the data collides — but do not recycle a gated colu
 
 1. Find every `#(authorize) "<expr>"` and `##(authorize)` in your packages. Load the package — every
    `.malloy` file in the tree compiles and any failure aborts the load, so the refusal will name
-   each declaring source. The one case that escapes it is a declaring file *outside* the package
+   each declaring source. The one case that escapes it is a declaring file _outside_ the package
    tree: nothing compiles it, so it loads and then denies every request — and it increments no
    metric, since the request-time lift failure carries no `cause` at all. That gate is invisible
    except in a debug log naming the graft target, so grep your packages rather than waiting for a
@@ -773,8 +1080,8 @@ constant-`false` lock does not hold there and `includeSql` returns the ungrafted
   Malloy's own failure named the one that could not bind — "Given 'ROLE' has no value and no default.
   To fix: supply it via `.run({givens: {ROLE: ...}})`" — reaching the caller as a 400. That is exactly
   what `docs/authorize.md` promises never happens. It now maps back to the opaque `Access denied for
-  source "…"` 403.
-- **A membership test checks given reachability on both operands.** The membership *candidate*
+source "…"` 403.
+- **A membership test checks given reachability on both operands.** The membership _candidate_
   position skipped the check every other operand position makes, so a gate naming a given two import
   hops away bound that given's declaration **default** at request time instead of the caller's value.
   It is now refused (`unreachable_given`) like every other unreachable reference.
@@ -782,8 +1089,8 @@ constant-`false` lock does not hold there and `includeSql` returns the ungrafted
   compile — a list literal is not valid in that position. Write the disjunction out
   (`$ROLE = 'analyst' or $ROLE = 'admin'`), or compare a row field to an array-typed given with `in`.
 - **`/compile` no longer denies a gated source unconditionally.** Denying it made a gated source
-  un-authorable while protecting nothing, since the query path answers a gated source with *filtered
-  rows* rather than a 403. `/compile` never runs the query, so it now admits a gate it can decide
+  un-authorable while protecting nothing, since the query path answers a gated source with _filtered
+  rows_ rather than a 403. `/compile` never runs the query, so it now admits a gate it can decide
   without running one. **"Decidable" is presence, not truth:** a gate referencing no given is
   admitted whichever way it resolves — a constant `false` included — as is one whose every given the
   caller supplied, right or wrong. Only an unsupplied given denies. `includeSql` then returns the
@@ -1321,7 +1628,7 @@ This is a **breaking release for SDK consumers**: five removals and one narrowed
 ### What changed
 
 - **A notebook's parameters live in its URL.** `Notebook` takes `givens` and `onGivensChange`, and the Console wires them to the query string. Opening a notebook at `?REGION=West` runs every cell with that value on the first pass rather than running bare and running again. The host is handed the names the notebook manages alongside the values, so it can update its own query string without disturbing parameters that are not its business.
-- **`# drill { to=self }` works in a notebook cell.** A cell that groups by a dimension carrying the tag becomes clickable and filters the notebook in place with the clicked value, provided the notebook declares the given the tag names: one that names a given the document does not declare stays plain rather than offering a click that cannot be honoured. Drillable cells read as links on hover, via a new mode-keyed `drillLink` theme colour. Two cases are deliberately left unmarked: a blank cell, whose click is refused anyway (a blank value is far likelier a misclick than a request for the rows that are blank), and every cell of a `# transpose` table, because the renderer lays that layout out without the per-cell `grid-column` the marking matches on. A transposed table's drill still WORKS when clicked; it is undiscoverable, which is the one place on this surface where the affordance and the behaviour disagree. A drill naming a *dashboard* destination is honoured too, now that the dashboard route exists: the cell is marked, and clicking it opens that dashboard with the value seeded. On a host that has not wired the navigation the destination stays unmarked and inert rather than painting a cell as a link to a page that answers "Nothing to open at this path".
+- **`# drill { to=self }` works in a notebook cell.** A cell that groups by a dimension carrying the tag becomes clickable and filters the notebook in place with the clicked value, provided the notebook declares the given the tag names: one that names a given the document does not declare stays plain rather than offering a click that cannot be honoured. Drillable cells read as links on hover, via a new mode-keyed `drillLink` theme colour. Two cases are deliberately left unmarked: a blank cell, whose click is refused anyway (a blank value is far likelier a misclick than a request for the rows that are blank), and every cell of a `# transpose` table, because the renderer lays that layout out without the per-cell `grid-column` the marking matches on. A transposed table's drill still WORKS when clicked; it is undiscoverable, which is the one place on this surface where the affordance and the behaviour disagree. A drill naming a _dashboard_ destination is honoured too, now that the dashboard route exists: the cell is marked, and clicking it opens that dashboard with the value seeded. On a host that has not wired the navigation the destination stays unmarked and inert rather than painting a cell as a link to a page that answers "Nothing to open at this path".
 - **`select` / `multiselect` controls backed by `suggest`.** The option list comes from an ordinary query on the governed query endpoint, so row caps and `#(authorize)` gates apply to a dropdown exactly as they do to the surface's own queries. A suggest query that fails now says so on the control instead of rendering as a dimension with no values, and the generated query carries an explicit `limit:` and ordering rather than relying on the server's default row cap to truncate it in whatever order the warehouse returned.
 - **Filter values are escaped by Malloy's own filter package.** A `filter<…>` value picked in a control is now printed with `@malloydata/malloy-filter`'s `StringFilterExpression.unparse`, and read back with its parser. The previous scheme wrapped values in double quotes, which Malloy's string-filter grammar has no notion of: backslash is its only escape, so the quoting escaped nothing and several ordinary values silently meant something else. Measured against the `storefront` model, filtering its `category` dimension: a picked `-Outerwear` ran as a negation and returned 22,821 of 25,356 rows instead of the 2,535 that category holds; `%` bypassed the filter and returned all 25,356; `null` hit the null operator and returned 0; and `Ben & Jerry, Inc` was read as two brands. All of these now match themselves, pinned by a round-trip test against the real parser.
 - **The notebook's controls are `given:` only.** The Filters panel that rendered `#(filter)` and `##(filters)` annotations is gone, and the notebook no longer sends `filterParams`. **This is a behaviour change for a model that uses `#(filter)`, and the deprecation note under 0.0.201 said otherwise.** Concretely: a cell fails when its run target is a source that declares a `required` filter, because the server still refuses one with no value and there is no longer a UI that can supply it. That is narrower than "every cell" in two ways worth knowing before you audit a model: enforcement is per run-target source, so cells querying a source with no filters are unaffected, and a **block-form** `#(filter) … required` is not collected at all, so it never raised the error in the first place (`source_extraction.ts` documents that gap deliberately). A model with only optional `#(filter)` annotations still runs, but is no longer filterable from the notebook. The REST parameters, the `Deprecation` header, and the server-side enforcement are all unchanged: this is the UI half of the migration landing ahead of the server half. Migrate to `given:`: [docs/givens.md](docs/givens.md) has a **"Coming from `#(filter)`"** section with a worked conversion and the three things that do not map across.

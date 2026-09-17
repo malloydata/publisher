@@ -279,24 +279,6 @@ export class PublisherClient {
     }
   }
 
-  async listEnvironmentMaterializations(
-    environmentName: string,
-    limit?: number,
-    offset?: number,
-  ): Promise<any[]> {
-    try {
-      const response =
-        await this.materializationsApi.listEnvironmentMaterializations(
-          environmentName,
-          limit,
-          offset,
-        );
-      return response.data;
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
   async getMaterialization(
     environmentName: string,
     packageName: string,

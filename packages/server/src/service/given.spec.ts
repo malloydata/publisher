@@ -3,7 +3,12 @@
 
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 import { describe, expect, it } from "bun:test";
-import { readGivenControlSpec } from "./given";
+import {
+   readGivenControlSpec,
+   attachSuggestGivenNames,
+   suggestGivenLookup,
+   type MalloyGivenApi,
+} from "./given";
 import {
    motlyTag,
    quoteFilterLiterals,
@@ -750,5 +755,81 @@ describe("readStartingGivens", () => {
             () => "filter<string>",
          ),
       ).toBeUndefined();
+   });
+});
+
+describe("suggestGivenLookup", () => {
+   // A minimal ModelDef: one gated source scoped by a given, one query over it.
+   const modelDef = {
+      name: "m",
+      exports: [],
+      contents: {
+         orders: {
+            type: "table",
+            name: "orders",
+            dialect: "duckdb",
+            connection: "c",
+            tablePath: "orders",
+            fields: [],
+            filterList: [{ node: "given", refName: "REGION" }],
+         },
+         brand_suggest: {
+            type: "query",
+            name: "brand_suggest",
+            structRef: "orders",
+            pipeline: [],
+            givenUsage: [{ id: "g-brand" }],
+         },
+      },
+      givens: {
+         "g-brand": { name: "BRAND" },
+         "g-region": { name: "REGION" },
+         "g-tenant": { name: "TENANT" },
+      },
+   } as unknown as import("@malloydata/malloy").ModelDef;
+   const gates = (name: string) =>
+      name === "orders" ? ["$TENANT = 'acme'"] : undefined;
+
+   it("joins a source's where-clause givens with its gate's", () => {
+      const lookup = suggestGivenLookup(modelDef, gates);
+      expect(lookup.forSource("orders")).toEqual(["REGION", "TENANT"]);
+      expect(lookup.forSource("ghost")).toBeUndefined();
+   });
+
+   it("gives a named query its own givens plus its source's", () => {
+      const lookup = suggestGivenLookup(modelDef, gates);
+      expect(lookup.forQuery("brand_suggest")).toEqual([
+         "BRAND",
+         "REGION",
+         "TENANT",
+      ]);
+   });
+
+   it("narrows to the names the entry can bind", () => {
+      const lookup = suggestGivenLookup(modelDef, gates, new Set(["TENANT"]));
+      expect(lookup.forSource("orders")).toEqual(["TENANT"]);
+   });
+
+   it("attaches names to every suggest, and only where there are some", () => {
+      const givens: MalloyGivenApi[] = [
+         {
+            name: "BRAND",
+            type: "filter<string>",
+            control: "select",
+            suggest: { source: "orders", dimension: "brand" },
+         },
+         {
+            name: "OTHER",
+            type: "filter<string>",
+            control: "select",
+            suggest: { source: "ungated", dimension: "x" },
+         },
+      ];
+      attachSuggestGivenNames(
+         givens,
+         suggestGivenLookup(modelDef, () => undefined),
+      );
+      expect(givens[0].suggest?.givenNames).toEqual(["REGION"]);
+      expect(givens[1].suggest?.givenNames).toBeUndefined();
    });
 });

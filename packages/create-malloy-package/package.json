@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/create-malloy-package",
    "description": "Scaffold a Malloy Publisher package and a local agent workspace, so one command takes you from nothing to an agent that can query your data.",
-   "version": "0.0.12",
+   "version": "0.0.15",
    "license": "MIT",
    "type": "module",
    "engines": {
@@ -40,9 +40,9 @@
       "lint": "bunx eslint ./src ./scripts --fix",
       "format": "bunx prettier --write --parser typescript '{src,scripts,tests}/**/*.ts'",
       "pretest": "cd ../skills && bun run build",
-      "test": "bun test src",
+      "test": "bun test ./src",
       "pretest:e2e": "cd ../skills && bun run build",
-      "test:e2e": "bun test --timeout 180000 tests/e2e"
+      "test:e2e": "bun test --timeout 180000 ./tests/e2e"
    },
    "dependencies": {
       "@malloy-publisher/skills": "workspace:*",

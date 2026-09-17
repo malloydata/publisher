@@ -3,18 +3,17 @@
 
 import "@malloydata/malloy-explorer/styles.css";
 import { Stack, Typography } from "@mui/material";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { planRun } from "./runPlan";
 import { RawNotebook } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
-import { useGivensState } from "../../hooks/useGivensState";
+import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useModelGivens } from "../../hooks/useModelGivens";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
-import { encodeDrillValue, type DrillNavigation } from "../drill";
+import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
@@ -157,157 +156,38 @@ export default function Notebook({
    const lastDocumentRef = useRef<string | undefined>(undefined);
    const [executionError, setExecutionError] = useState<Error | null>(null);
 
-   // Model-level `given:` declarations, and the state behind their controls.
-   // The same hook the dashboard viewer uses, so both surfaces get URL-
-   // addressable parameters, Apply batching, and `to=self` drill from one
-   // implementation rather than two that drift.
+   // Model-level `given:` declarations, and the state behind their controls:
+   // the same hook the dashboard uses, so both surfaces get URL-addressable
+   // parameters, Apply batching and `to=self` drill from one implementation.
    const declaredGivens = useModelGivens(notebook);
-   const declaredTypes = useMemo(
-      () =>
-         new Map(
-            declaredGivens
-               .filter((given) => given.name !== undefined)
-               .map((given) => [given.name as string, given.type]),
-         ),
-      [declaredGivens],
-   );
-
-   // Silent until the notebook has actually loaded. Which givens exist is not
-   // known before then: `useModelGivens(undefined)` is empty, so a report in
-   // that window says "no values, and I manage nothing", which a host reasonably
-   // reads as "clear what you wrote". During an in-app navigation from one
-   // notebook to another that window sits between the two, and the parameters it
-   // would clear can belong to the notebook now ARRIVING. A notebook that
-   // genuinely declares no givens still reports, because by then the empty set
-   // is the answer rather than the absence of one.
-   const reportGivens = useCallback(
-      (next: Record<string, string>) => {
-         if (!isSuccess) return;
-         onGivensChange?.(next, Array.from(declaredTypes.keys()));
-      },
-      [isSuccess, onGivensChange, declaredTypes],
-   );
-
-   // Read off the notebook now that the server derives it: a file-level
-   // `## autorun=false` arrives as `RawNotebook.autorun`, the same field with
-   // the same default that a dashboard's `# artifact { autorun=false }`
-   // produces. This was hardcoded true while nothing populated the field, on
-   // the grounds that a spec declaring one nothing produces is a spec that
-   // lies; the reader has landed, so this is the follow-up that comment named.
-   //
-   // Absent means autorun, so only an explicit `false` batches. Batching
-   // matters more here than on a dashboard: one control change re-runs every
-   // cell in the document.
+   // A file-level `## autorun=false` arrives as `RawNotebook.autorun`, the same
+   // field with the same default a dashboard's `# artifact { autorun=false }`
+   // produces. Batching matters more here than on a dashboard: one control
+   // change re-runs every cell in the document.
    const autorun = notebook?.autorun !== false;
-   const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
-      declaredTypes,
-      // Where the controls start, from a file-level `## givens { … }`. A URL
-      // beats them, so a shared link still shows what the sender saw.
+   const controls = useDocumentControls({
+      specs: declaredGivens,
+      loaded: isSuccess,
+      // Where the controls start, from a file-level `## givens { … }`.
       startingValues: notebook?.startingGivens,
       params: givens,
-      // Withheld until the notebook has loaded, rather than accepted and
-      // dropped. `useGivensState` records what it last reported BEFORE calling
-      // out, so a report the callback throws away is remembered as delivered
-      // and never retried, leaving a parameter stranded in the host's URL.
-      // Passing undefined makes the hook skip the report entirely, which leaves
-      // its record untouched and the next real change still reportable.
-      onParamsChange: isSuccess ? reportGivens : undefined,
-      // Which notebook these edits belong to. Navigating between notebooks
-      // reuses this component, so without it one notebook's applied values
-      // carried into the next whenever both started from the same values.
+      onGivensChange,
       documentKey: resourceUri,
       autorun,
-   });
-
-   // A notebook's model path is the notebook itself: `suggest` queries run
-   // against the same model the cells do.
-   const {
-      options: givenOptions,
-      isLoading: givenOptionsLoading,
-      failed: givenOptionsFailed,
-   } = useSuggestOptions(
       environmentName,
       packageName,
-      notebookPath,
-      declaredGivens,
+      // A notebook's model path is the notebook itself: `suggest` queries run
+      // against the same model the cells do.
+      modelPath: notebookPath,
       versionId,
-   );
-
-   // The declared names, indexed case-insensitively, so a drill tag resolves
-   // whichever way the two were spelled.
-   //
-   // Neither convention can be assumed. `# drill` defaults the given name to
-   // the DIMENSION's name, which is conventionally lower_snake, while givens
-   // are conventionally SHOUTED (both in-repo examples declare `REGION` and
-   // `MIN_AMOUNT`). An exact match therefore failed for the common case, and
-   // upper-casing the dimension name, which is what this did first, only moved
-   // the failure onto models that spell their givens in lower case. Folding
-   // case resolves both instead of picking a side.
-   const givenNamesByFold = useMemo(() => {
-      const byFold = new Map<string, string>();
-      for (const name of declaredTypes.keys()) {
-         // First declaration wins, so a model with `REGION` and `region` keeps
-         // the one it declared first rather than silently flipping.
-         if (!byFold.has(name.toLowerCase()))
-            byFold.set(name.toLowerCase(), name);
-      }
-      return byFold;
-   }, [declaredTypes]);
-
-   /** The declared given a drill tag's name refers to, or undefined. */
-   const resolveGiven = useCallback(
-      (given: string) =>
-         declaredTypes.has(given)
-            ? given
-            : givenNamesByFold.get(given.toLowerCase()),
-      [declaredTypes, givenNamesByFold],
-   );
-
-   // `to=self` filters in place, which only works for a given this notebook
-   // actually declares: sending one it cannot bind would fail every cell. The
-   // mismatch is reported to the author rather than issued: same rule, same
-   // wording, as the dashboard viewer.
-   // Asked before a cell is painted as drillable, so the affordance matches what
-   // a click can actually do. The refusal below still stands as a backstop for a
-   // caller that does not ask.
-   const canDrillSelf = useCallback(
-      (given: string) => resolveGiven(given) !== undefined,
-      [resolveGiven],
-   );
-
-   const onDrillSelf = useCallback(
-      (given: string, rawValue: unknown) => {
-         const declared = resolveGiven(given);
-         if (declared === undefined) {
-            console.warn(
-               `# drill { to=self } tried to set '${given}', which ` +
-                  `'${notebookPath}' does not declare as a given. Name the ` +
-                  `given with 'given=' on the drill tag.`,
-            );
-            return;
-         }
-         // Encoded against the declared type of the given being set, which is
-         // knowable here and is not knowable at the click. Set under the name
-         // the MODEL declares, not the one the tag spelled, so the value goes
-         // into the URL and the request under the one name the server knows.
-         const declaredType = declaredTypes.get(declared);
-         const value = encodeDrillValue(rawValue, declaredType);
-         if (value === undefined) {
-            // Say so. Returning in silence left a whole column painted as
-            // clickable while every click did nothing, and a `given=` pointing
-            // at a type the clicked value cannot become is an authoring
-            // mistake the author has no other way to see. The sibling refusal
-            // in `resolveDrill` warns for the same reason.
-            console.warn(
-               `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
-                  (declaredType ? ` of type ${declaredType}` : ""),
-            );
-            return;
-         }
-         setGiven(declared, value);
-      },
-      [declaredTypes, notebookPath, resolveGiven, setGiven],
-   );
+      documentName: notebookPath,
+   });
+   const {
+      applied,
+      declaredTypes,
+      canSelf: canDrillSelf,
+      onSelf: onDrillSelf,
+   } = controls;
 
    /**
     * The `givens` query param for the notebook-cell GET: the same map the
@@ -624,16 +504,7 @@ export default function Notebook({
          <CleanNotebookSection>
             <Stack spacing={3} component="section">
                {/* Parameters panel: the controls for `given:` declarations */}
-               <GivensPanel
-                  givens={declaredGivens}
-                  values={draft}
-                  onChange={setGiven}
-                  onReset={reset}
-                  options={givenOptions}
-                  optionsLoading={givenOptionsLoading}
-                  optionsFailed={givenOptionsFailed}
-                  apply={autorun ? undefined : { onApply: apply, pending }}
-               />
+               <GivensPanel {...controls.panel} />
 
                {/* Loading State */}
                {!isSuccess && !isError && (

@@ -26,7 +26,6 @@ export {
 export {
    useDimensionalFilterRangeData,
    getDimensionKey,
-   makeDimensionKey,
    type DimensionalFilterRangeDataResult,
    type DimensionSpec,
    type DimensionValue,
@@ -44,3 +43,16 @@ export {
    type UseGivensStateResult,
 } from "./useGivensState";
 export { useSuggestOptions } from "./useSuggestOptions";
+
+// One query, and one control row, as every surface asks for them
+export {
+   queryResultKey,
+   useQueryResult,
+   type QueryRequestSpec,
+   type QueryResultState,
+} from "./useQueryResult";
+export {
+   useDocumentControls,
+   type DocumentControls,
+   type UseDocumentControlsOptions,
+} from "./useDocumentControls";

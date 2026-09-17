@@ -388,15 +388,22 @@ jobs:
           #    status is its last command's. The explicit zero-match guard matters
           #    for the same reason: `find | while read` succeeds vacuously when the
           #    loop body never runs.
+          #    ADBC-SHIM: libadbc_driver_snowflake.so is currently the shim from
+          #    packages/server/adbc-shim/ and the upstream driver sits beside it as
+          #    libadbc_driver_snowflake.real.so, so BOTH are asserted per directory —
+          #    the shim alone loads and then fails every query when its driver is
+          #    missing, which is the exact failure this step exists to catch. When the
+          #    shim is removed, drop the .real.so line and this note.
           docker run --rm --entrypoint sh malloy-publisher:smoke-test -c '
             n=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
             [ "$n" -gt 0 ] || { echo "no snowflake.duckdb_extension in the image"; exit 1; }
             find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
               | while read -r d; do
                   [ -f "$d/libadbc_driver_snowflake.so" ] || { echo "no driver beside $d"; exit 1; }
+                  [ -f "$d/libadbc_driver_snowflake.real.so" ] || { echo "no real driver beside $d (ADBC-SHIM)"; exit 1; }
                 done' \
-            || { echo "✗ ADBC Snowflake driver not co-located with the extension"; exit 1; }
-          echo "✓ ADBC driver sits beside every snowflake.duckdb_extension"
+            || { echo "✗ ADBC Snowflake driver (shim + real) not co-located with the extension"; exit 1; }
+          echo "✓ ADBC driver shim and real driver sit beside every snowflake.duckdb_extension"
 
           #    4b. Functional: the driver actually LOADS. Presence cannot show that
           #    -- a truncated or wrong-architecture .so sits there and fails to

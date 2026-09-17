@@ -6,9 +6,7 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import StopIcon from "@mui/icons-material/Stop";
 import {
    Box,
-   Chip,
    IconButton,
-   Link,
    ListItemIcon,
    ListItemText,
    Menu,
@@ -24,7 +22,7 @@ import {
 import { useState } from "react";
 import { Materialization } from "../../client";
 import DeleteMaterializationDialog from "./DeleteMaterializationDialog";
-import TriggerChip from "./TriggerChip";
+import TriggerLabel from "./TriggerLabel";
 import {
    formatDuration,
    formatRelativeTime,
@@ -39,10 +37,6 @@ type MaterializationRunsListProps = {
    materializations: Materialization[];
    mutable: boolean;
    isMutating: boolean;
-   /** Show a Package column — for the environment-scoped view spanning packages. */
-   showPackage?: boolean;
-   /** Navigate to a package (used by the Package column links). */
-   onClickPackage?: (packageName: string) => void;
    onStop: (materialization: Materialization) => void;
    onDelete: (materialization: Materialization, dropTables: boolean) => void;
    onViewDetails: (materialization: Materialization) => void;
@@ -52,8 +46,6 @@ export default function MaterializationRunsList({
    materializations,
    mutable,
    isMutating,
-   showPackage = false,
-   onClickPackage,
    onStop,
    onDelete,
    onViewDetails,
@@ -71,10 +63,20 @@ export default function MaterializationRunsList({
    }
 
    return (
-      <Table size="small">
+      <Table
+         size="small"
+         // The section's rows start at its left edge and end at its right, so
+         // the table does too: MUI's own 16px on the outer cells put this one
+         // table a thumb's width inside every list above it.
+         sx={{
+            "& td, & th": { borderColor: "divider" },
+            "& td:first-of-type, & th:first-of-type": { pl: 0 },
+            "& td:last-of-type, & th:last-of-type": { pr: 0 },
+            "& th": { color: "text.secondary", fontWeight: 600 },
+         }}
+      >
          <TableHead>
             <TableRow>
-               {showPackage && <TableCell>Package</TableCell>}
                <TableCell>Status</TableCell>
                <TableCell>Trigger</TableCell>
                <TableCell>Started</TableCell>
@@ -90,8 +92,6 @@ export default function MaterializationRunsList({
                   materialization={materialization}
                   mutable={mutable}
                   isMutating={isMutating}
-                  showPackage={showPackage}
-                  onClickPackage={onClickPackage}
                   onStop={onStop}
                   onDelete={onDelete}
                   onViewDetails={onViewDetails}
@@ -106,8 +106,6 @@ function MaterializationRow({
    materialization,
    mutable,
    isMutating,
-   showPackage,
-   onClickPackage,
    onStop,
    onDelete,
    onViewDetails,
@@ -115,8 +113,6 @@ function MaterializationRow({
    materialization: Materialization;
    mutable: boolean;
    isMutating: boolean;
-   showPackage?: boolean;
-   onClickPackage?: (packageName: string) => void;
    onStop: (materialization: Materialization) => void;
    onDelete: (materialization: Materialization, dropTables: boolean) => void;
    onViewDetails: (materialization: Materialization) => void;
@@ -157,32 +153,23 @@ function MaterializationRow({
          tabIndex={0}
          aria-label={`View materialization ${materialization.id ?? ""} details`.trim()}
       >
-         {showPackage && (
-            <TableCell onClick={(event) => event.stopPropagation()}>
-               {onClickPackage ? (
-                  <Link
-                     component="button"
-                     underline="hover"
-                     onClick={() =>
-                        onClickPackage(materialization.packageName ?? "")
-                     }
-                     sx={{ fontWeight: 500 }}
-                  >
-                     {materialization.packageName}
-                  </Link>
-               ) : (
-                  materialization.packageName
-               )}
-            </TableCell>
-         )}
          <TableCell>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-               <Chip
-                  size="small"
-                  label={statusLabel(materialization.status)}
-                  color={statusColor(materialization.status)}
-                  variant={active ? "filled" : "outlined"}
-               />
+               {/* The word, in the colour the state already carries. A pill
+                   around one word of a six-word row was the only chip on the
+                   page, and it read as a control rather than as a value. */}
+               <Typography
+                  variant="body2"
+                  sx={{
+                     fontWeight: 500,
+                     color:
+                        statusColor(materialization.status) === "default"
+                           ? "text.primary"
+                           : `${statusColor(materialization.status)}.main`,
+                  }}
+               >
+                  {statusLabel(materialization.status)}
+               </Typography>
                {error && (
                   <Tooltip title={error}>
                      <InfoOutlinedIcon fontSize="small" color="error" />
@@ -191,7 +178,7 @@ function MaterializationRow({
             </Box>
          </TableCell>
          <TableCell>
-            <TriggerChip meta={meta} />
+            <TriggerLabel meta={meta} />
          </TableCell>
          <TableCell>
             {formatRelativeTime(
