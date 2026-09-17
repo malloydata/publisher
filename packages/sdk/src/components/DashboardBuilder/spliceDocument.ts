@@ -15,6 +15,7 @@ import {
    declarationsUnder,
    givenDeclarations,
    maskQuoted,
+   refinementSpan,
    splitTrailingComment,
    viewBodyStage1,
 } from "./malloyText";
@@ -1042,7 +1043,8 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          // refinement goes at the END of the code and a comment there would
          // swallow it.
          const { code, comment } = splitTrailingComment(lines[declLine]);
-         const existing = /\+\s*\{([\s\S]*)\}\s*$/.exec(code)?.[1] ?? "";
+         const span = refinementSpan(code);
+         const existing = span ? code.slice(span.start, span.end) : "";
          // Removed by SPAN, never by a global regex over the free text: the
          // regex matches the `where: a ~ $A` prefix of `where: a ~ $A and c
          // = 1` too, and cutting that out strands `and c = 1` as a statement
@@ -1069,7 +1071,9 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
             ...(kept ? [kept] : []),
             ...(bindings.length > 0 ? [bindings.join(", ")] : []),
          ];
-         const withoutRefinement = code.replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "");
+         const withoutRefinement = span
+            ? code.slice(0, span.plus).trimEnd()
+            : code;
          const body =
             clauses.length === 0
                ? withoutRefinement

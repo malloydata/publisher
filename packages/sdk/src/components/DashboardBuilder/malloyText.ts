@@ -338,6 +338,29 @@ export function maskNested(text: string): string {
    return out.join("");
 }
 
+/**
+ * The positions of a declaration's trailing `+ { … }` refinement in `text`:
+ * the `+`, and the span between its braces. `undefined` when there is none.
+ *
+ * Index scanning rather than a regex. The obvious pattern for this
+ * (`/\+\s*\{([\s\S]*)\}\s*$/`) backtracks polynomially on input like
+ * `+{{a+{{a…`, and the text it runs on comes from a file the editor was
+ * handed. It also had to be written identically in the reader and the writer,
+ * which is how the two last drifted apart.
+ */
+export function refinementSpan(
+   text: string,
+): { plus: number; start: number; end: number } | undefined {
+   const close = text.lastIndexOf("}");
+   // Anything after the closing brace means this is not a trailing refinement.
+   if (close < 0 || text.slice(close + 1).trim() !== "") return undefined;
+   const open = text.indexOf("{");
+   if (open < 0 || open > close) return undefined;
+   const before = text.slice(0, open).trimEnd();
+   if (!before.endsWith("+")) return undefined;
+   return { plus: before.length - 1, start: open + 1, end: close };
+}
+
 export interface ViewBodyStage1 {
    end: number;
    whereLines: Array<{

@@ -15,6 +15,7 @@ import {
    declarationsUnder,
    givenDeclarations,
    maskNested,
+   refinementSpan,
    splitTrailingComment,
    tileSteps,
    viewBodyStage1,
@@ -182,8 +183,10 @@ function filtersOf(refinement: string | undefined) {
    // The reader captures the refinement WITH its `+ { … }` wrapper while the
    // writer strips it. Strip it here too: the isolation test has to see the
    // same text on both sides, or the pair disagrees about what a clause is.
-   const inner = /\+\s*\{([\s\S]*)\}\s*$/.exec(refinement)?.[1];
-   const clean = cleanBindingClauses(inner ?? refinement);
+   const span = refinementSpan(refinement);
+   const clean = cleanBindingClauses(
+      span ? refinement.slice(span.start, span.end) : refinement,
+   );
    if (clean.length === 0) return undefined;
    return clean.map((c) => ({
       field: c.field,
