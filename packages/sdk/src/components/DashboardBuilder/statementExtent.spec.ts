@@ -32,9 +32,15 @@ ${stage}
    const CONTINUED_LIST = body("    where: a ~ $A,\n      b ~ $B");
    const CONTINUED_PREDICATE = body("    where: a ~ $A\n      and c = 1");
 
-   it("does not read a continued clause list as a binding", async () => {
+   // A clause list carried onto a second line: the parser gives both clauses
+   // their exact spans, so both are ordinary bindings rather than a shape the
+   // builder has to declare off limits.
+   it("reads every clause of a continued list", async () => {
       const d = await openDocument(CONTINUED_LIST);
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(d.tiles[0].filters).toEqual([
+         { field: "a", given: "A" },
+         { field: "b", given: "B" },
+      ]);
    });
 
    it("does not read a continued predicate as a binding", async () => {
@@ -42,15 +48,28 @@ ${stage}
       expect(d.tiles[0].filters).toBeUndefined();
    });
 
-   // Unticking the control the first line appears to carry used to delete that
-   // line and leave `b ~ $B` behind as a statement Malloy cannot parse.
-   it("leaves a continued clause list whole when the tile changes", async () => {
+   // Unticking used to delete the first line and leave `b ~ $B` behind as a
+   // statement Malloy cannot parse. Now the whole statement goes, and the
+   // aggregate beside it does not.
+   it("removes a continued clause list whole when the tile is unbound", async () => {
       const out = await spliced(CONTINUED_LIST, (d) => {
          delete d.tiles[0].filters;
          d.tiles[0].colspan = 4;
       });
-      expect(out).toContain("    where: a ~ $A,\n      b ~ $B");
+      expect(out).not.toContain("where:");
+      expect(out).not.toContain("b ~ $B");
+      expect(out).toContain("    aggregate: n is count()");
       expect(out).toContain("# colspan=4");
+   });
+
+   // Dropping ONE clause of the pair leaves the other exactly, separator and
+   // all -- the half-read that stranded text on `main`.
+   it("drops one clause of a continued list and keeps the other", async () => {
+      const out = await spliced(CONTINUED_LIST, (d) => {
+         d.tiles[0].filters = [{ field: "a", given: "A" }];
+      });
+      expect(out).toContain("    where: a ~ $A\n    aggregate: n is count()");
+      expect(out).not.toContain("b ~ $B");
    });
 
    // The mirror risk, and the one that fails quietly: Malloy takes a comma as a
@@ -196,13 +215,17 @@ source: a is one extend {
   }
 }`;
 
-   // $B is on the CONTINUATION line. A guard that collected the `where:` lines
-   // it recognized saw only the first, and let a second $B clause be written.
-   it("refuses a given used only on a continuation line", async () => {
-      const reason = await refused(CONTINUED, (d) => {
+   // $B is on the CONTINUATION line, which a line-at-a-time guard never saw --
+   // so a second $B clause was written and the tile filtered on one control
+   // twice. Both clauses are the builder's now, so rebinding $B REPLACES it
+   // rather than doubling it, which is the outcome the refusal stood in for.
+   it("rebinds a given used only on a continuation line, without doubling it", async () => {
+      const out = await spliced(CONTINUED, (d) => {
          d.tiles[0].filters = [{ field: "b2", given: "B" }];
       });
-      expect(reason).toContain("already filters on `$B`");
+      expect(out.match(/\$B\b/g)).toHaveLength(1);
+      expect(out).toContain("    where: b2 ~ $B");
+      expect(out).toContain("    aggregate: n is count()");
    });
 
    // And it does not fire on a given's name sitting inside a string literal.
@@ -334,10 +357,12 @@ source: a is one extend {
       expect(out).toContain("vx + { where: a ~ $A } + { limit: 5 }");
    });
 
+   // Two refinement blocks: no one of them is where a binding belongs, and a
+   // given already filtered on in the other would be bound a second time.
    it("refuses a filter change rather than writing into one block", async () => {
       const reason = await refused(CHAINED, (d) => {
          d.tiles[0].filters = [{ field: "n", given: "N" }];
       });
-      expect(reason).toContain("did not read back");
+      expect(reason).toContain("chained refinement");
    });
 });

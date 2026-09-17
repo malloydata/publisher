@@ -263,8 +263,8 @@ import "../m.malloy"
 source: a is one extend {
   view: x is {
     group_by: category
-    nest: by_month is {
-      where: month ~ $MONTH
+    nest: by_period is {
+      where: period ~ $PERIOD
       aggregate: n is count()
     }
   }
@@ -295,7 +295,10 @@ source: a is one extend {
    // goes unnoticed. The whole-line check has to reject this shape: read as
    // binding-only, a splice that owns the line would drop `aggregate:` along
    // with the bindings.
-   it("does not read two bindings as binding-only with a statement between them", async () => {
+   // Two `where:` statements with a measure between them. Each clause has its
+   // own span, so both are ordinary bindings -- the writer removes one without
+   // touching the measure, which is what the old "not ours" rule stood in for.
+   it("reads two bindings with a statement between them", async () => {
       const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
 import "../m.malloy"
 
@@ -304,7 +307,10 @@ source: a is one extend {
     where: a ~ $A, aggregate: n is count(), where: b ~ $B
   }
 }`);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "a", given: "A" },
+         { field: "b", given: "B" },
+      ]);
    });
 
    // Two bindings alone on one line, comma-joined, are still binding-only —
@@ -580,7 +586,7 @@ describe("every composite dashboard in the repository opens", () => {
 describe("the compiler stays lazy", () => {
    it("is never imported statically", () => {
       const source = fs.readFileSync(
-         path.join(import.meta.dir, "readDocument.ts"),
+         path.join(import.meta.dir, "malloyTree.ts"),
          "utf8",
       );
       expect(source).not.toMatch(/^\s*import\s[^(]*@malloydata\/malloy/m);

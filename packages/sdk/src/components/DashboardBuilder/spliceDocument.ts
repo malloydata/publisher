@@ -8,24 +8,17 @@ import type {
    DashboardTile,
 } from "./document";
 import type { LocalGiven } from "./document";
+import { artifactLine } from "./malloyText";
 import {
-   artifactLine,
-   declarationExtent,
-   declarationLine,
-   declarationsUnder,
-   givenDeclarations,
-   maskQuoted,
-   refinementSpan,
-   splitTrailingComment,
-   viewBodyStage1,
-} from "./malloyText";
-import {
-   blockAbove,
-   cleanBindingClauses,
-   isBindingOnly,
-   readDashboardDocument,
-   readFailed,
-} from "./readDocument";
+   parseMalloy,
+   parseRefused,
+   type ParsedMalloy,
+   type Span,
+   type TreeGiven,
+   type TreeStage,
+   type TreeView,
+} from "./malloyTree";
+import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 
 /**
  * The syntax errors Malloy's own parser reports for `text`, as a multiset of
@@ -240,11 +233,6 @@ function givenTagLine(given: LocalGiven): string | undefined {
 const givenDeclaration = (given: LocalGiven) =>
    `given: ${given.name} :: ${given.type} is ${given.default}`;
 
-/** A name as a regex literal: view and source names are identifiers, but the
- * pattern is built from document data and should not be able to mean anything
- * else. */
-const literal = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 /**
  * The line where `<source>` declares `view: <view>`, or -1.
  *
@@ -259,22 +247,14 @@ const literal = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * this far.
  */
 function viewDeclarationLine(
-   lines: string[],
+   parsed: ParsedMalloy,
    sourceName: string,
    viewName: string,
 ): number {
-   const sourceLine = lines.findIndex((line) =>
-      new RegExp(`\\bsource:\\s*${literal(sourceName)}\\s+is\\b`).test(line),
-   );
-   if (sourceLine < 0) return -1;
-   const extent = declarationExtent(lines, sourceLine);
-   // A source whose own extent cannot be trusted has nothing here to search;
-   // the caller already produces a specific refusal for "not found".
-   if ("unreadable" in extent) return -1;
-   const wanted = new RegExp(`\\bview:\\s*${literal(viewName)}\\s+is\\b`);
-   for (let i = sourceLine; i <= extent.end; i++)
-      if (wanted.test(lines[i])) return i;
-   return -1;
+   const view = parsed.sources
+      .find((source) => source.name === sourceName)
+      ?.views.find((v) => v.name === viewName);
+   return view ? view.line : -1;
 }
 
 /** `# drill { to=… given=… }`, one line, as the reader spells it back. */
@@ -321,6 +301,8 @@ interface TileMembership {
 /** Everything a planner reads, and the edits it adds to. */
 interface SpliceContext extends TileMembership {
    sourceText: string;
+   /** Where everything is, from Malloy's own parser. */
+   parsed: ParsedMalloy;
    lines: string[];
    starts: number[];
    wholeLine: (line: number) => { start: number; end: number };
@@ -582,7 +564,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
 }
 
 function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
-   const { lines, wholeLine, indentOf, current, next, edits } = ctx;
+   const { lines, wholeLine, indentOf, current, next, edits, parsed } = ctx;
    // THE DASHBOARD'S OWN GIVENS. Added, removed, or retagged — by name, since
    // a given's name is its identity in every `where:` that reads it.
    const givensBefore = new Map(
@@ -591,7 +573,9 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
    const givensAfter = new Map(
       (next.localGivens ?? []).map((g) => [g.name, g]),
    );
-   const declared = givenDeclarations(lines);
+   const declared = new Map<string, TreeGiven>(
+      parsed.givens.map((g) => [g.name, g]),
+   );
    const removedLines = new Set<number>();
 
    for (const [name, was] of givensBefore) {
@@ -732,7 +716,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
 }
 
 function planDrills(ctx: SpliceContext): SpliceFailure | undefined {
-   const { lines, wholeLine, indentOf, current, next, edits } = ctx;
+   const { lines, wholeLine, indentOf, current, next, edits, parsed } = ctx;
    // DRILLS. A drill is one `# drill` tag on a dimension THIS FILE declares —
    // added above the declaration, rewritten, or taken off. The dimension itself
    // is never written: a dimension no view reads is a dead drill, and the
@@ -755,9 +739,9 @@ function planDrills(ctx: SpliceContext): SpliceFailure | undefined {
             reason: `The drill on \`${key}\` names no destination.`,
          };
       }
-      const at = declarationsUnder(lines, drill.source, "dimension").get(
-         drill.name,
-      );
+      const at = parsed.sources
+         .find((source) => source.name === drill.source)
+         ?.dimensions.find((d) => d.name === drill.name);
       if (at === undefined) {
          return {
             ok: false,
@@ -790,32 +774,34 @@ function planDrills(ctx: SpliceContext): SpliceFailure | undefined {
 }
 
 function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
-   const { lines, wholeLine, removedTiles, edits } = ctx;
+   const { lines, wholeLine, removedTiles, edits, parsed } = ctx;
    // REMOVED TILES: the declaration and its `#` tags. An inline view's body
    // runs to its closing brace; a reference is one line. An inherited tile has
    // nothing here to remove — its entry left the artifact list above.
    for (const tile of removedTiles) {
       if (tile.declaration.kind === "inherited") continue;
-      const declLine = declarationLine(lines, "view", tile.name);
-      if (declLine < 0) {
+      const view = viewOf(ctx, tile);
+      if (!view) {
          return {
             ok: false,
             reason: `Could not find where \`${tile.name}\` is declared.`,
          };
       }
-      const extent = declarationExtent(lines, declLine);
-      if ("unreadable" in extent) {
+      if (view.siblings > 1) {
          return {
             ok: false,
-            reason: `Could not tell where \`${tile.name}\` ends: ${extent.unreadable}.`,
+            reason:
+               `\`${tile.name}\` is one of several views declared by a single ` +
+               `\`view:\` statement, which the builder does not restructure.`,
          };
       }
-      const endLine = extent.end;
-      const { tags } = blockAbove(lines, declLine);
-      const first = Math.min(declLine, ...tags.map((t) => t.line));
-      for (const tag of tags) edits.push({ ...wholeLine(tag.line), text: "" });
+      // The declaration and its `#` tags, which is what the statement's own
+      // span covers. A `//` comment above is NOT taken: it is left where the
+      // author put it rather than assumed to belong to the tile.
+      const first = lineOf(parsed, view.statement.start);
+      const endLine = lineOf(parsed, view.statement.end - 1);
       edits.push({
-         start: wholeLine(declLine).start,
+         start: parsed.lineStarts[first],
          end: wholeLine(endLine).end,
          text: "",
       });
@@ -839,11 +825,11 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
       sourceText,
       lines,
       wholeLine,
-      current,
       addedTiles,
       newSources,
       currentSources,
       edits,
+      parsed,
    } = ctx;
    // ADDED TILES: a `view:` with its tags, inside the extension of the source
    // the tile reads — before that extension's closing brace — or in a new
@@ -867,35 +853,24 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
          `${indent}view: ${tile.name} is ${from}${bindings ? ` + { ${bindings} }` : ""}`,
       ].join("\n");
    };
+   // An anchor for a NEW extension: the last line any source's declaration
+   // reaches, so one added after it cannot land inside another.
    let lastExtensionEnd = -1;
-   for (const source of current.sources) {
-      const open = declarationLine(lines, "source", source.name);
-      if (open < 0) continue;
-      const extent = declarationExtent(lines, open);
-      // An anchor for a NEW extension only; a source this scan cannot read is
-      // simply not counted, rather than failing a splice that never touches it.
-      if ("unreadable" in extent) continue;
-      lastExtensionEnd = Math.max(lastExtensionEnd, extent.end);
-   }
+   for (const source of parsed.sources)
+      lastExtensionEnd = Math.max(
+         lastExtensionEnd,
+         lineOf(parsed, source.span.end - 1),
+      );
    for (const [sourceName, tiles] of byExtension) {
       if (currentSources.has(sourceName)) {
-         const open = declarationLine(lines, "source", sourceName);
-         if (open < 0) {
+         const source = parsed.sources.find((s) => s.name === sourceName);
+         if (!source) {
             return {
                ok: false,
                reason: `Could not find where the source \`${sourceName}\` is declared.`,
             };
          }
-         const extent = declarationExtent(lines, open);
-         if ("unreadable" in extent) {
-            return {
-               ok: false,
-               reason:
-                  `Could not find where \`${sourceName}\`'s extension ends: ` +
-                  `${extent.unreadable}.`,
-            };
-         }
-         if (!extent.opened) {
+         if (!source.properties) {
             return {
                ok: false,
                reason:
@@ -903,7 +878,8 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
                   `new tile cannot be added inside it.`,
             };
          }
-         const close = extent.end;
+         const open = source.line;
+         const close = lineOf(parsed, source.properties.closeStart);
          // The indent the extension already uses for its views, else two spaces.
          let indent = "  ";
          for (let i = open + 1; i < close; i++) {
@@ -961,7 +937,8 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
 }
 
 function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
-   const { lines, starts, wholeLine, indentOf, current, next, edits } = ctx;
+   const { lines, starts, wholeLine, indentOf, current, next, edits, parsed } =
+      ctx;
    // Presentation edits are matched by IDENTITY, not by position: after a
    // reorder `next.tiles[i]` and `current.tiles[i]` are different tiles, and
    // comparing them pairwise would report every moved tile as changed and
@@ -976,17 +953,36 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 
       // An inherited tile is declared in the model, not here, so there is
       // nothing in this file to patch. Saying so beats writing a tag that would
-      // land on the wrong object.
+      // land on the wrong object. A view this file DOES declare, in a shape
+      // the builder cannot rewrite, reads back the same way -- and gets its
+      // own reason, because "declared elsewhere" would simply be untrue.
       if (tile.declaration.kind === "inherited") {
-         return {
-            ok: false,
-            reason:
-               `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
-               `not in this dashboard, so its presentation cannot be changed here.`,
-         };
+         const here = viewOf(ctx, tile);
+         if (!here) {
+            return {
+               ok: false,
+               reason:
+                  `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
+                  `not in this dashboard, so its presentation cannot be changed here.`,
+            };
+         }
+         // Declared here, in a body shape the builder does not rewrite. Its
+         // TAGS are still ordinary `#` lines in this file, so a label or a
+         // colspan change is safe; only a filter would have to go into the
+         // body, and there is no one block it belongs in.
+         if (canonical(was.filters) !== canonical(tile.filters)) {
+            return {
+               ok: false,
+               reason: `\`${tile.name}\`'s body is ${
+                  here.body.kind === "unsupported"
+                     ? here.body.why
+                     : "not one the builder writes"
+               }, so there is no single place to put its filter. Edit it in the file instead.`,
+            };
+         }
       }
 
-      const declLine = viewDeclarationLine(lines, tile.source, tile.name);
+      const declLine = viewDeclarationLine(parsed, tile.source, tile.name);
       if (declLine < 0) {
          return {
             ok: false,
@@ -1033,123 +1029,70 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          });
       }
 
-      // The filter bindings live in the declaration itself either way. Only
-      // the BINDING clauses are ours to rewrite: a `limit:`, an `order_by:`
-      // or a `where:` on a literal someone wrote is unmodeled Malloy and
-      // stays exactly as written, in both shapes below.
-      if (tile.declaration.kind === "reference") {
-         // A `+ { where: … }` refinement on the view reference. A trailing
-         // `//` comment is set aside first and put back after, because the
-         // refinement goes at the END of the code and a comment there would
-         // swallow it.
-         const { code, comment } = splitTrailingComment(lines[declLine]);
-         const span = refinementSpan(code);
-         const existing = span ? code.slice(span.start, span.end) : "";
-         // Removed by SPAN, never by a global regex over the free text: the
-         // regex matches the `where: a ~ $A` prefix of `where: a ~ $A and c
-         // = 1` too, and cutting that out strands `and c = 1` as a statement
-         // of its own. `cleanBindingClauses` reports only clauses it is safe
-         // to excise whole.
-         const cleanExisting = cleanBindingClauses(existing);
-         let kept = existing;
-         for (let i = cleanExisting.length - 1; i >= 0; i--)
-            kept =
-               kept.slice(0, cleanExisting[i].start) +
-               kept.slice(cleanExisting[i].end);
-         kept = kept
-            .replace(/\s*,\s*,\s*/g, ", ")
-            .replace(/^[\s,;]+|[\s,;]+$/g, "");
-         const clash = givenCollision(tile.filters, kept);
-         if (clash) return collisionRefusal(tile.name, clash.given);
-         const bindings = (tile.filters ?? []).map(
-            (f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`,
-         );
-         // Bindings are comma-joined to each other, but only SPACED from
-         // whatever was already there: Malloy rejects a comma after a
-         // `limit:`, while a space parses after every statement form.
-         const clauses = [
-            ...(kept ? [kept] : []),
-            ...(bindings.length > 0 ? [bindings.join(", ")] : []),
-         ];
-         const withoutRefinement = span
-            ? code.slice(0, span.plus).trimEnd()
-            : code;
-         const body =
-            clauses.length === 0
-               ? withoutRefinement
-               : `${withoutRefinement.trimEnd()} + { ${clauses.join(" ")} }`;
-         const rewritten =
-            comment === "" ? body : `${body.trimEnd()} ${comment}`;
-         if (rewritten !== lines[declLine])
-            edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
-      } else if (canonical(was.filters) !== canonical(tile.filters)) {
-         // An inline tile whose filters actually changed — nothing to do
-         // otherwise, and nothing safe to do for a body shape
-         // planInlineFilters refuses (see its doc comment).
-         const failure = planInlineFilters(ctx, tile, declLine);
-         if (failure) return failure;
+      // The filter bindings live in the declaration itself either way, and
+      // only the BINDING clauses are ours: a `limit:`, an `order_by:` or a
+      // `where:` on a literal someone wrote is unmodeled Malloy and stays
+      // exactly as written, in both shapes.
+      if (canonical(was.filters) === canonical(tile.filters)) continue;
+      const view = viewOf(ctx, tile);
+      if (!view) {
+         return {
+            ok: false,
+            reason: `Could not find \`${tile.name}\`'s declaration to filter it.`,
+         };
       }
+      if (view.body.kind === "reference") {
+         const failure = planReferenceFilters(ctx, tile, view);
+         if (failure) return failure;
+         continue;
+      }
+      if (view.body.kind !== "inline") {
+         return {
+            ok: false,
+            reason:
+               `\`${tile.name}\`'s body is ${view.body.why}, so there is no ` +
+               `single first stage to write its filter into.`,
+         };
+      }
+      const clash = givenCollision(tile.filters, view.body.stage);
+      if (clash) return collisionRefusal(tile.name, clash.given);
+      const failure = planStageFilters(ctx, tile, view.body.stage);
+      if (failure) return failure;
    }
    return undefined;
 }
 
-/**
- * Rewrite an inline tile's `where:` bindings: depth-1 statements in the
- * body's own first stage (see {@link viewBodyStage1}), one per line for a
- * multi-line body or comma-joined inside the braces for a one-line one.
- * Existing binding lines are patched by GIVEN NAME, the same way
- * {@link planTilePresentation}'s tags are: rewritten in place if changed,
- * dropped if no longer bound, and a survivor carrying anything unmodeled (a
- * compound predicate, say) is left untouched because it was never a binding
- * to begin with. New bindings go after the last existing binding line, or
- * before the first stage's closing brace when there is none.
- *
- * Refuses a body whose first stage this scan cannot pin down — a `->` second
- * stage, or a `{ … } + { … }` compound refinement — because there would be no
- * single place to put the binding. The reader still opens such a file; this
- * only blocks WRITING a filter change onto it.
- */
-/**
- * The requested binding whose given already appears in `text`, if any. `text`
- * is whatever the builder does NOT own, with the managed clauses removed, and
- * quoted literals are masked so a given's name inside a string is not mistaken
- * for a use of it.
- */
-/**
- * Just the `where:`-led statements of `text`, concatenated, with quoted
- * literals masked.
- *
- * Only a `where:` filters. A given driving a `group_by:` or an `aggregate:`
- * expression is an ordinary shape -- one control both filtering a tile and
- * appearing in a derived column -- and scanning all of `text` for `$NAME`
- * refused those edits with a message asserting a `where:` that does not
- * exist. A statement runs to the next statement keyword, which is the same
- * boundary the isolation test uses.
- */
-function whereStatements(text: string): string {
-   const masked = maskQuoted(text);
-   const starts: Array<{ at: number; keyword: string }> = [];
-   const keyword = /(^|[^A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\s*:/g;
-   for (let m = keyword.exec(masked); m; m = keyword.exec(masked))
-      starts.push({ at: m.index + m[1].length, keyword: m[2] });
-   let out = "";
-   for (let i = 0; i < starts.length; i++) {
-      if (starts[i].keyword !== "where") continue;
-      const end = i + 1 < starts.length ? starts[i + 1].at : masked.length;
-      out += `${masked.slice(starts[i].at, end)}\n`;
-   }
-   return out;
+/** The 0-based line an offset falls on. */
+const lineOf = (parsed: ParsedMalloy, offset: number): number =>
+   parsed.lineStarts.findLastIndex((at) => at <= offset);
+
+/** The parsed declaration a tile names, if this file declares it. */
+function viewOf(ctx: SpliceContext, tile: DashboardTile): TreeView | undefined {
+   return ctx.parsed.sources
+      .find((source) => source.name === tile.source)
+      ?.views.find((view) => view.name === tile.name);
 }
 
+/**
+ * The requested binding whose given is ALREADY filtered on by a clause the
+ * builder does not own.
+ *
+ * Binding it again would filter the tile on one control twice while only one
+ * of the two could ever be unbound, so the edit is refused instead. The test
+ * is structural: a clause the tree says is not a `field <op> $GIVEN` binding,
+ * which nonetheless references that given. The scan this replaces looked for
+ * `$NAME` in text and could be disarmed by an apostrophe in a comment.
+ */
 function givenCollision(
    filters: Array<{ field: string; given: string; op?: string }> | undefined,
-   text: string,
+   stage: TreeStage | undefined,
 ): { given: string } | undefined {
-   const scanned = whereStatements(text);
-   return (filters ?? []).find((f) => {
-      const name = f.given.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`\\$${name}(?![A-Za-z0-9_])`).test(scanned);
-   });
+   if (!stage) return undefined;
+   const unmanaged = new Set<string>();
+   for (const where of stage.wheres)
+      for (const clause of where.clauses)
+         if (!clause.binding) for (const g of clause.givens) unmanaged.add(g);
+   return (filters ?? []).find((f) => unmanaged.has(f.given));
 }
 
 function collisionRefusal(tileName: string, given: string): SpliceFailure {
@@ -1162,214 +1105,169 @@ function collisionRefusal(tileName: string, given: string): SpliceFailure {
    };
 }
 
-function planInlineFilters(
+const bindingText = (f: { field: string; given: string; op?: string }) =>
+   `where: ${f.field} ${f.op ?? "~"} $${f.given}`;
+
+/**
+ * The span to delete to remove ONE clause of a `where:` list, separator and
+ * all: up to the next clause when there is one, back to the previous when it
+ * is the last. Taking only the clause's own span would leave the comma beside
+ * it, which is a syntax error.
+ */
+function clauseCut(clauses: Array<{ span: Span }>, index: number): Span {
+   const self = clauses[index].span;
+   if (index + 1 < clauses.length)
+      return { start: self.start, end: clauses[index + 1].span.start };
+   if (index > 0) return { start: clauses[index - 1].span.end, end: self.end };
+   return self;
+}
+
+/**
+ * The span to delete to remove a whole statement. A statement alone on its
+ * line takes the line with it, so no blank one is left behind; one sharing a
+ * line with a brace or another statement gives up only its own span and the
+ * space before it, so the brace survives.
+ */
+function statementCut(parsed: ParsedMalloy, span: Span): Span {
+   const line =
+      parsed.lineStarts[
+         parsed.lineStarts.findLastIndex((at) => at <= span.start)
+      ];
+   const before = parsed.text.slice(line, span.start);
+   const lineEnd = parsed.text.indexOf("\n", span.end);
+   const after = parsed.text.slice(span.end, lineEnd < 0 ? undefined : lineEnd);
+   if (before.trim() === "" && after.trim() === "")
+      return {
+         start: line,
+         end: lineEnd < 0 ? parsed.text.length : lineEnd + 1,
+      };
+   if (before.trim() === "") {
+      // Only indentation before it, and something after -- a closing brace,
+      // say. The indent stays and belongs to whatever follows, so the space
+      // between goes instead.
+      const gap = /^\s*/.exec(after)?.[0].length ?? 0;
+      return { start: span.start, end: span.end + gap };
+   }
+   // A separator belonging to the statement BEFORE this one goes with it:
+   // leaving the comma behind turns the previous statement into a list whose
+   // last entry has just been deleted.
+   const trimmed = before.replace(/[\s,]*$/, "");
+   return { start: line + trimmed.length, end: span.end };
+}
+
+/**
+ * Rewrite a tile's builder-managed `where:` bindings inside `stage`.
+ *
+ * One implementation for both tile shapes, because a reference tile's
+ * `+ { … }` refinement and an inline tile's own first stage are the same
+ * thing to the parser. Every position comes from the tree, so a clause is
+ * replaced, dropped or appended by SPAN: a `limit:`, a compound predicate, a
+ * brace sharing the line or a trailing comment all sit outside those spans
+ * and are carried over untouched.
+ */
+function planStageFilters(
    ctx: SpliceContext,
    tile: DashboardTile,
-   declLine: number,
+   stage: TreeStage,
 ): SpliceFailure | undefined {
-   const { lines, starts, wholeLine, indentOf, edits } = ctx;
-   const extent = declarationExtent(lines, declLine);
-   if ("unreadable" in extent) {
-      return {
-         ok: false,
-         reason: `Could not tell where \`${tile.name}\`'s body ends: ${extent.unreadable}.`,
-      };
-   }
-   const stage = viewBodyStage1(lines, declLine, extent.end);
-   if (stage.more) {
-      return {
-         ok: false,
-         reason:
-            `\`${tile.name}\`'s body is a multi-stage \`->\` pipeline or a ` +
-            `\`{ … } + { … }\` compound refinement, so there is no single ` +
-            `first stage to write its filter into.`,
-      };
-   }
+   const { parsed, edits } = ctx;
+   const wanted = new Map((tile.filters ?? []).map((f) => [f.given, f]));
+   const seen = new Set<string>();
+   let lastManaged: Span | undefined;
 
-   const bindingText = (f: { field: string; given: string; op?: string }) =>
-      `where: ${f.field} ${f.op ?? "~"} $${f.given}`;
+   for (const where of stage.wheres) {
+      const managed = where.clauses
+         .map((clause, index) => ({ clause, index }))
+         .filter(({ clause }) => clause.binding !== undefined);
+      if (managed.length === 0) continue;
+      const surviving = managed.filter(({ clause }) =>
+         wanted.has(clause.binding!.given),
+      );
+      for (const { clause } of managed) seen.add(clause.binding!.given);
 
-   if (stage.oneLiner !== undefined) {
-      const { openCol, closeCol, content } = stage.oneLiner;
-      const clean = cleanBindingClauses(content);
-      let kept = content;
-      for (let i = clean.length - 1; i >= 0; i--)
-         kept = kept.slice(0, clean[i].start) + kept.slice(clean[i].end);
-      kept = kept.replace(/\s*,\s*,\s*/g, ", ").replace(/^[\s,]+|[\s,]+$/g, "");
-      const clash = givenCollision(tile.filters, kept);
-      if (clash) return collisionRefusal(tile.name, clash.given);
-      const bindings = (tile.filters ?? []).map(bindingText);
-      const rebuilt = [...(kept ? [kept] : []), ...bindings].join(", ");
-      const raw = lines[declLine];
-      const before = raw.slice(0, openCol + 1);
-      const after = raw.slice(closeCol);
-      const rewritten = rebuilt
-         ? `${before} ${rebuilt} ${after}`
-         : `${before} ${after}`;
-      if (rewritten !== raw)
-         edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
-      return undefined;
-   }
-
-   const wantedByGiven = new Map((tile.filters ?? []).map((f) => [f.given, f]));
-   const existing: Array<{
-      line: number;
-      startCol: number;
-      endCol: number;
-      givens: string[];
-   }> = [];
-   // Text in the first stage that this writer does NOT own: a compound
-   // predicate, or a clause list running onto the next line. It is left
-   // exactly as written -- but a given it mentions cannot also be bound as a
-   // managed clause, because the two would filter on the same control while
-   // only one of them is the builder's to remove again.
-   for (const wl of stage.whereLines) {
-      const clean = wl.continued ? undefined : isBindingOnly(wl.code);
-      if (!clean) continue; // not ours: a compound predicate or the like
-      existing.push({
-         line: wl.line,
-         startCol: wl.startCol,
-         endCol: wl.endCol,
-         givens: clean.map((c) => c.given),
-      });
-   }
-
-   // Scanned over the whole first stage with the managed clauses blanked out,
-   // rather than over the `where:` LINES this scan recognized: a statement
-   // running onto a second line is exactly the shape that is only half-visible
-   // here, so collecting per-line would miss the half that matters.
-   const remainder = lines
-      .slice(declLine, stage.end + 1)
-      .map((line, offset) => {
-         // Comment-stripped, exactly as `viewBodyStage1` reads these lines. A
-         // comment is not Malloy, so a given named in one filters nothing --
-         // and an apostrophe in prose ("don't") would otherwise open a quote
-         // that masks the rest of the stage, silently disarming this guard.
-         if (line.trim().startsWith("#")) return "";
-         const code = splitTrailingComment(line).code;
-         const at = declLine + offset;
-         let out = code;
-         for (const ex of existing)
-            if (ex.line === at)
-               out =
-                  out.slice(0, ex.startCol) +
-                  " ".repeat(ex.endCol - ex.startCol) +
-                  out.slice(ex.endCol);
-         return out;
-      })
-      .join("\n");
-   const clash = givenCollision(tile.filters, remainder);
-   if (clash) return collisionRefusal(tile.name, clash.given);
-
-   const seenGivens = new Set<string>();
-   let lastBindingLine = -1;
-   for (const ex of existing) {
-      lastBindingLine = ex.line;
-      for (const given of ex.givens) seenGivens.add(given);
-      const stillWanted = ex.givens
-         .filter((given) => wantedByGiven.has(given))
-         .map(
-            (given) =>
-               wantedByGiven.get(given) as {
-                  field: string;
-                  given: string;
-                  op?: string;
-               },
-         );
-      const raw = lines[ex.line];
-      const lineStart = starts[ex.line];
-      if (stillWanted.length === 0) {
-         // A clause alone on its own line — nothing but indentation before
-         // it, nothing after — is dropped whole line and all, so no blank
-         // line is left behind. One sharing its line with the body's `{` or
-         // `}` (or another statement) has only its own span removed, so that
-         // brace survives; `before` keeps its original indent when there is
-         // nothing structural in it to trim, which is what a bare `}` left
-         // behind reuses as its own.
-         const beforeAll = raw.slice(0, ex.startCol);
-         const afterAll = raw.slice(ex.endCol);
-         const hasBefore = beforeAll.trim() !== "";
-         const hasAfter = afterAll.trim() !== "";
-         if (!hasBefore && !hasAfter) {
-            edits.push({ ...wholeLine(ex.line), text: "" });
-            continue;
-         }
-         const before = hasBefore ? beforeAll.trimEnd() : beforeAll;
-         const after = afterAll.trimStart();
-         const joined =
-            hasBefore && hasAfter ? `${before} ${after}` : `${before}${after}`;
-         edits.push({
-            start: lineStart,
-            end: wholeLine(ex.line).end,
-            text: `${joined}\n`,
-         });
+      // Every clause of this `where:` was ours and none survives: the
+      // statement itself goes, rather than being left as a bare `where:`.
+      if (surviving.length === 0 && managed.length === where.clauses.length) {
+         edits.push({ ...statementCut(parsed, where.span), text: "" });
          continue;
       }
-      const rebuiltLine = stillWanted.map(bindingText).join(", ");
-      // A span replace of just the clause's own columns, not the whole
-      // line — a `{` or `}` sharing the line, or a trailing comment, sits
-      // outside [startCol, endCol) and is carried over untouched.
-      if (rebuiltLine !== raw.slice(ex.startCol, ex.endCol))
-         edits.push({
-            start: lineStart + ex.startCol,
-            end: lineStart + ex.endCol,
-            text: rebuiltLine,
-         });
-   }
-
-   const added = (tile.filters ?? []).filter((f) => !seenGivens.has(f.given));
-   if (added.length > 0) {
-      const bodyIndent =
-         existing.length > 0
-            ? indentOf(existing[0].line)
-            : firstBodyIndent(lines, declLine, stage.end, indentOf);
-      // A surviving binding on the body's own closing line: appending after
-      // the WHOLE line would land past the `}`, so the new binding is
-      // spliced in right after that clause's own span instead — still
-      // inside the body, and still after what was already there, which
-      // whole-line insertion could not be, either way.
-      const closingLineExisting = existing.find((e) => e.line === stage.end);
-      const closingLineSurvives =
-         closingLineExisting !== undefined &&
-         closingLineExisting.givens.some((g) => wantedByGiven.has(g));
-      if (closingLineExisting && closingLineSurvives) {
-         const at =
-            starts[closingLineExisting.line] + closingLineExisting.endCol;
-         const text = added
-            .map((f) => `\n${bodyIndent}${bindingText(f)}`)
-            .join("");
-         edits.push({ start: at, end: at, text });
-      } else {
-         const text = added
-            .map((f) => `${bodyIndent}${bindingText(f)}\n`)
-            .join("");
-         const at =
-            lastBindingLine >= 0 && lastBindingLine !== stage.end
-               ? wholeLine(lastBindingLine).end
-               : wholeLine(stage.end).start;
-         edits.push({ start: at, end: at, text });
+      if (surviving.length > 0) lastManaged = where.span;
+      // Highest index first, so an earlier cut cannot move a later span.
+      for (let i = managed.length - 1; i >= 0; i--) {
+         const { clause, index } = managed[i];
+         const want = wanted.get(clause.binding!.given);
+         if (!want) {
+            edits.push({ ...clauseCut(where.clauses, index), text: "" });
+            continue;
+         }
+         // The clause text without its `where:` keyword, which the statement
+         // already carries.
+         const text = bindingText(want).replace(/^where:\s*/, "");
+         if (text !== parsed.text.slice(clause.span.start, clause.span.end))
+            edits.push({ ...clause.span, text });
       }
    }
+
+   const added = (tile.filters ?? []).filter((f) => !seen.has(f.given));
+   if (added.length === 0) return undefined;
+
+   // After the last statement already inside the block, so a new binding
+   // follows what was there; inside the opening brace when there is none.
+   const anchor =
+      lastManaged?.end ??
+      (stage.statements.length > 0
+         ? stage.statements[stage.statements.length - 1].span.end
+         : stage.openEnd);
+   // A comma only ever follows another `where:`. Malloy rejects one after a
+   // `limit:` -- the writer used to emit `{ limit: 5, where: … }` and that is
+   // a parse error -- while a space parses after every statement form.
+   const lead = lastManaged !== undefined ? ", " : " ";
+   const text = stage.oneLine
+      ? `${lead}${added.map(bindingText).join(", ")}`
+      : added.map((f) => `\n${stage.indent}${bindingText(f)}`).join("");
+   edits.push({ start: anchor, end: anchor, text });
    return undefined;
 }
 
-/** The indent of the first statement inside a body with no binding line yet. */
-function firstBodyIndent(
-   lines: string[],
-   declLine: number,
-   stageEnd: number,
-   indentOf: (line: number) => string,
-): string {
-   for (let i = declLine + 1; i < stageEnd; i++) {
-      const trimmed = lines[i].trim();
-      if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//"))
-         continue;
-      return indentOf(i);
+/**
+ * A reference tile's filters, which live in a `+ { … }` refinement that may
+ * have to be created or removed outright.
+ */
+function planReferenceFilters(
+   ctx: SpliceContext,
+   tile: DashboardTile,
+   view: TreeView,
+): SpliceFailure | undefined {
+   if (view.body.kind !== "reference") return undefined;
+   const { edits } = ctx;
+   const { fromSpan, refinement } = view.body;
+
+   const clash = givenCollision(tile.filters, refinement);
+   if (clash) return collisionRefusal(tile.name, clash.given);
+
+   const filters = tile.filters ?? [];
+   if (!refinement) {
+      if (filters.length === 0) return undefined;
+      // Appended at the END of the base expression, which is before any
+      // trailing `//` comment because the comment is not part of it.
+      const text = ` + { ${filters.map(bindingText).join(", ")} }`;
+      edits.push({ start: fromSpan.end, end: fromSpan.end, text });
+      return undefined;
    }
-   // A body with no statement to copy an indent from. Two spaces past the
-   // declaration's own, which is what the rest of this writer assumes when it
-   // has nothing else to go on.
-   return `${indentOf(declLine)}  `;
+
+   // Everything in the refinement that is not a managed binding. If nothing
+   // is left and nothing is wanted, the whole `+ { … }` goes with it.
+   const unmanaged = refinement.wheres.some((w) =>
+      w.clauses.some((c) => !c.binding),
+   );
+   const otherStatements = refinement.statements.some(
+      (st) => !refinement.wheres.some((w) => w.span.start === st.span.start),
+   );
+   if (filters.length === 0 && !unmanaged && !otherStatements) {
+      edits.push({ start: fromSpan.end, end: refinement.span.end, text: "" });
+      return undefined;
+   }
+   return planStageFilters(ctx, tile, refinement);
 }
 
 export async function spliceDashboardDocument(
@@ -1387,6 +1285,13 @@ export async function spliceDashboardDocument(
    const shape = checkShape(current, next);
    if ("reason" in shape) return shape;
 
+   const parse = await parseMalloy(sourceText);
+   if (parseRefused(parse))
+      return {
+         ok: false,
+         reason: `Cannot edit a file that will not open: ${parse.reason}`,
+      };
+
    const lines = sourceText.split("\n");
    const starts = lineStarts(sourceText);
    const wholeLine = (line: number): { start: number; end: number } => ({
@@ -1399,6 +1304,7 @@ export async function spliceDashboardDocument(
    const ctx: SpliceContext = {
       ...shape,
       sourceText,
+      parsed: parse.parsed,
       lines,
       starts,
       wholeLine,

@@ -10,16 +10,13 @@ import type {
    LocalGiven,
 } from "./document";
 import {
-   type DeclarationAt,
-   declarationExtent,
-   declarationsUnder,
-   givenDeclarations,
-   maskNested,
-   refinementSpan,
-   splitTrailingComment,
-   tileSteps,
-   viewBodyStage1,
-} from "./malloyText";
+   parseMalloy,
+   parseRefused,
+   type ParsedMalloy,
+   type TreeStage,
+   type TreeView,
+} from "./malloyTree";
+import { tileSteps } from "./malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -29,10 +26,10 @@ import {
  * in the browser and in a unit test alike, which is what lets the suite open
  * every dashboard in the repository as a regression gate.
  *
- * Structure comes from the parser's symbol tree, which covers imports (including
- * the items of a named list), sources, views and dimensions, each with a source
- * RANGE. Content comes from the text inside those ranges, and tags from
- * `parseAnnotation` over the block above each declaration.
+ * Structure comes from Malloy's own parse tree, through `malloyTree`: imports,
+ * sources, views, dimensions, givens and every `where:` clause, each with an
+ * exact span. Tags come from `parseAnnotation` over the `#` block above a
+ * declaration, which is `malloy-tag`'s grammar rather than Malloy's.
  *
  * Reading tags from the text rather than from the server, which serves them
  * already attached, is deliberate. The splice writer has to LOCATE a tag in
@@ -133,197 +130,27 @@ function modelLines(lines: string[]): {
    };
 }
 
-/** `source: overview is scoped_orders extend {` -> `scoped_orders`. */
-function sourceBase(text: string, name: string): string | undefined {
-   const m = new RegExp(
-      `source:\\s*${name}\\s+is\\s+([A-Za-z_][A-Za-z0-9_.]*)`,
-   ).exec(text);
-   return m?.[1];
-}
-
 /**
- * `view: revenue_trend is sales_by_month + { where: … }` -> base and filters,
- * or `inline` for `view: order_tile is { aggregate: … }`, which is a query body
- * rather than a reference and is read but never rewritten.
- */
-function viewBody(
-   text: string,
-   name: string,
-):
-   | { kind: "reference"; from: string; refinement?: string }
-   | { kind: "inline" }
-   | undefined {
-   const ref = new RegExp(
-      `view:\\s*${name}\\s+is\\s+([A-Za-z_][A-Za-z0-9_.]*)\\s*(\\+\\s*\\{[\\s\\S]*\\})?`,
-   ).exec(text);
-   if (ref)
-      return { kind: "reference", from: ref[1], refinement: ref[2]?.trim() };
-   if (new RegExp(`view:\\s*${name}\\s+is\\s*\\{`).test(text))
-      return { kind: "inline" };
-   return undefined;
-}
-
-/**
- * One `where: <field> <op> $<GIVEN>` clause. Exported for the writer, which
- * has to find the same clauses in order to replace them and nothing else.
- */
-export const BINDING_CLAUSE =
-   /where:\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(~|>=|<=|!=|=|>|<)\s*\$([A-Za-z_][A-Za-z0-9_]*)/g;
-
-/**
- * `where: products.brand ~ $BRAND`, `where: created_at >= $SINCE` … from a
- * `+ { … }` refinement. Only ISOLATED clauses count: the writer removes what
- * it reads here by span, so a clause it reads out of `where: a ~ $A and c =
- * 1` would take the predicate's other half with it and leave `and c = 1`
- * behind as invalid Malloy. A compound predicate reads as no binding and is
- * left exactly as written.
- */
-function filtersOf(refinement: string | undefined) {
-   if (!refinement) return undefined;
-   // The reader captures the refinement WITH its `+ { … }` wrapper while the
-   // writer strips it. Strip it here too: the isolation test has to see the
-   // same text on both sides, or the pair disagrees about what a clause is.
-   const span = refinementSpan(refinement);
-   const clean = cleanBindingClauses(
-      span ? refinement.slice(span.start, span.end) : refinement,
-   );
-   if (clean.length === 0) return undefined;
-   return clean.map((c) => ({
-      field: c.field,
-      given: c.given,
-      ...(c.op ? { op: c.op } : {}),
-   }));
-}
-
-/**
- * The `where:` binding clauses in `content` that are ISOLATED — the text
- * between one clause's end and whatever follows is nothing but a separator
- * (a comma, or nothing at all) before the next binding clause, a top-level
- * statement keyword, or the end of `content`. `end` reaches through that
- * separator only — never into a following statement's own text — so a caller
- * stripping a clean clause out never leaves a dangling comma behind, and
- * never deletes the statement beside it.
+ * The builder-managed filters of a `{ … }` block: every clause the tree says
+ * is exactly `field <op> $GIVEN`.
  *
- * `where: a ~ $A and c = 1` matches BINDING_CLAUSE once, for `a ~ $A`, and
- * fails this isolation check because ` and c = 1` follows it — a compound
- * predicate, unmodeled Malloy, left exactly as written: `and` has no `:`
- * after it, so it does not read as the next statement. `where: a ~ $A, where:
- * b ~ $B` passes twice: the gap between them is a bare comma. `where: a ~
- * $A, aggregate: n is count()` — a one-line body's binding sharing a line
- * with its query — passes too: `aggregate:` is a statement keyword, not a
- * continuation of the predicate.
+ * A clause that is anything else — a compound predicate, a literal comparison
+ * — is not a binding and is left exactly as written. That is a STRUCTURAL
+ * test now, so the isolation heuristics this used to need are gone along with
+ * the shapes that defeated them.
  */
-export function cleanBindingClauses(content: string): Array<{
-   start: number;
-   end: number;
-   field: string;
-   given: string;
-   op?: string;
-}> {
-   // Matched against the MASKED text, so a `where:` belonging to an inner
-   // block is never a candidate. Offsets line up with `content`, which is what
-   // the spans reported here index into.
-   const masked = maskNested(content);
-   const matches = [...masked.matchAll(BINDING_CLAUSE)];
-   const out: Array<{
-      start: number;
-      end: number;
-      field: string;
-      given: string;
-      op?: string;
-   }> = [];
-   for (let i = 0; i < matches.length; i++) {
-      const m = matches[i];
-      const start = m.index as number;
-      const clauseEnd = start + m[0].length;
-      const boundary =
-         i + 1 < matches.length
-            ? (matches[i + 1].index as number)
-            : content.length;
-      const gap = masked.slice(clauseEnd, boundary);
-      const separator = /^[\s,]*/.exec(gap)?.[0] ?? "";
-      const rest = gap.slice(separator.length);
-      if (rest !== "" && !/^[A-Za-z_][A-Za-z0-9_]*\s*:/.test(rest)) continue;
-      out.push({
-         start,
-         end: clauseEnd + separator.length,
-         field: m[1],
-         given: m[3],
-         ...(m[2] === "~" ? {} : { op: m[2] }),
-      });
-   }
-   return out;
-}
-
-/**
- * Whether `code`'s entire text (once trimmed) is TILED by binding clauses —
- * the rule a depth-1 `where:` line inside an inline body's first stage must
- * meet to be a builder-managed binding. Nothing before the first clause,
- * nothing after the last, and nothing but a separator BETWEEN clauses:
- * `cleanBindingClauses` accepts a following statement keyword as a clause's
- * own boundary (that is what lets a one-liner's binding share a line with its
- * query), so two clauses each passing in isolation can still leave a whole
- * statement sitting unnoticed in the gap between them — a `where:` either
- * side of an `aggregate:` reads as two clean clauses this way, and skipping
- * the gap check would call the line binding-only anyway, dropping the
- * aggregate along with the bindings on a splice. `undefined` for anything
- * that fails any of the three checks — a compound predicate is one such case,
- * an untiled statement between two clauses is another.
- */
-export function isBindingOnly(
-   code: string,
-): ReturnType<typeof cleanBindingClauses> | undefined {
-   const trimmed = code.trim();
-   const clean = cleanBindingClauses(trimmed);
-   if (clean.length === 0) return undefined;
-   if (clean[0].start !== 0) return undefined;
-   if (clean[clean.length - 1].end !== trimmed.length) return undefined;
-   for (let i = 1; i < clean.length; i++)
-      if (!/^[\s,]*$/.test(trimmed.slice(clean[i - 1].end, clean[i].start)))
-         return undefined;
-   return clean;
-}
-
-/**
- * An inline body's filters from its multi-line first stage: one depth-1
- * `where:` LINE per binding, or several clauses on one line, each checked
- * whole via {@link isBindingOnly}. A line that fails — a compound predicate,
- * say — is skipped, not reported: it is unmodeled Malloy, not a binding.
- */
-function lineFilters(
-   whereLines: Array<{ line: number; code: string; continued: boolean }>,
+function filtersOf(
+   stage: TreeStage | undefined,
 ): Array<{ field: string; given: string; op?: string }> | undefined {
+   if (!stage) return undefined;
    const out: Array<{ field: string; given: string; op?: string }> = [];
-   for (const { code, continued } of whereLines) {
-      if (continued) continue; // only half of it was read; not a binding
-      const clean = isBindingOnly(code);
-      if (!clean) continue;
-      for (const c of clean)
-         out.push({
-            field: c.field,
-            given: c.given,
-            ...(c.op ? { op: c.op } : {}),
-         });
-   }
+   for (const where of stage.wheres)
+      for (const clause of where.clauses) {
+         if (!clause.binding) continue;
+         const { field, op, given } = clause.binding;
+         out.push({ field, given, ...(op === "~" ? {} : { op }) });
+      }
    return out.length > 0 ? out : undefined;
-}
-
-/**
- * A one-line body's filters: every ISOLATED binding clause anywhere in its
- * braces, ignoring whatever query content sits alongside it — unlike
- * {@link lineFilters}, the whole content is not required to be binding-only,
- * because a one-liner's query and its bindings necessarily share the line.
- */
-function oneLinerFilters(
-   content: string,
-): Array<{ field: string; given: string; op?: string }> | undefined {
-   const clean = cleanBindingClauses(content);
-   if (clean.length === 0) return undefined;
-   return clean.map((c) => ({
-      field: c.field,
-      given: c.given,
-      ...(c.op ? { op: c.op } : {}),
-   }));
 }
 
 /**
@@ -337,10 +164,7 @@ type TagLike = {
 type ParseTags = (lines: string[]) => { tag?: TagLike | null };
 
 /**
- * `given:` declarations, which the parser's symbol tree does not cover at all —
- * its types are query, unnamed_query, explore, field, join, import and
- * import_item. So these are read as text, in BOTH spellings Malloy accepts and
- * this repository uses:
+ * `given:` declarations, in BOTH spellings Malloy accepts:
  *
  *     given: CATEGORY :: filter<string> is f''      // one per line
  *
@@ -348,18 +172,17 @@ type ParseTags = (lines: string[]) => { tag?: TagLike | null };
  *       CATEGORY :: filter<string> is f''
  *       SINCE :: date is @2023-01-01
  *
- * The one-line form is what `givens.malloy` and the docs write and what the
- * builder emits; the block form is read so a file written the other way still
- * opens. Either way the tags above a declaration are its control contract.
+ * Either way the `#` tags above a declaration are its control contract.
  */
 export function localGivens(
+   parsed: ParsedMalloy,
    lines: string[],
    parse: ParseTags,
 ): LocalGiven[] | undefined {
    const out: LocalGiven[] = [];
-   for (const at of givenDeclarations(lines).values()) {
-      const m = /^([A-Z_][A-Z0-9_]*)\s*::\s*(\S+)\s+is\s+(.+)$/.exec(
-         at.declaration,
+   for (const given of parsed.givens) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*::\s*(\S+)\s+is\s+([\s\S]+)$/.exec(
+         given.declaration,
       );
       if (!m) continue;
       out.push({
@@ -367,7 +190,7 @@ export function localGivens(
          type: m[2],
          default: m[3].trim(),
          ...readControlTags(
-            parse(tagText(blockAbove(lines, at.line).tags)).tag,
+            parse(tagText(blockAbove(lines, given.line).tags)).tag,
          ),
       });
    }
@@ -421,16 +244,17 @@ function tileEntries(artifactLine: string): string[] {
 export async function readDashboardDocument(
    sourceText: string,
 ): Promise<ReadResult> {
-   const { Malloy } = await import("@malloydata/malloy");
    const { parseAnnotation } = await import("@malloydata/malloy-tag");
    const lines = sourceText.split("\n");
 
-   let symbols;
-   try {
-      symbols = Malloy.parse({ source: sourceText }).symbols;
-   } catch (error) {
-      return { ok: false, reason: `This file is not valid Malloy: ${error}` };
-   }
+   const parse = await parseMalloy(sourceText);
+   if (parseRefused(parse))
+      return {
+         ok: false,
+         reason: parse.reason,
+         ...(parse.line ? { line: parse.line } : {}),
+      };
+   const parsed = parse.parsed;
 
    const { description, artifact } = modelLines(lines);
    const artifactLine = artifact.find((l) => l.includes("artifact"));
@@ -453,75 +277,47 @@ export async function readDashboardDocument(
       };
    }
 
-   const imports: DashboardImport[] = [];
+   const imports: DashboardImport[] = parsed.imports.map((i) =>
+      i.names
+         ? { kind: "names", names: i.names, from: i.from }
+         : { kind: "all", from: i.from },
+   );
    const sources: DashboardSource[] = [];
    const drills: DashboardDrill[] = [];
-   const viewsBySource = new Map<string, Map<string, DeclarationAt>>();
+   const viewsBySource = new Map<string, Map<string, TreeView>>();
 
-   for (const symbol of symbols) {
-      if (symbol.type === "import") {
-         const names = (symbol.children ?? [])
-            .filter((c) => c.type === "import_item")
-            .map((c) => String(c.name));
-         imports.push(
-            names.length > 0
-               ? { kind: "names", names, from: String(symbol.name) }
-               : { kind: "all", from: String(symbol.name) },
-         );
-         continue;
-      }
-      if (symbol.type !== "explore") continue;
+   for (const source of parsed.sources) {
+      const entry: DashboardSource = { name: source.name, base: source.base };
+      if (source.dimensions.length > 0)
+         entry.dimensions = source.dimensions.map((d) => ({
+            name: d.name,
+            expression: d.expression,
+         }));
+      sources.push(entry);
 
-      const name = String(symbol.name);
-      const head = lines[symbol.range.start.line] ?? "";
-      const base = sourceBase(head, name);
-      if (base === undefined) {
-         return {
-            ok: false,
-            reason: `Could not read what source \`${name}\` extends.`,
-            line: symbol.range.start.line + 1,
-         };
-      }
-      sources.push({ name, base });
-
-      // The VIEWS are found in the TEXT, attributed to the nearest `source:`
-      // above them, and not taken from the symbol tree. The tree is reliable
-      // about which sources and imports exist and unreliable about what is
-      // inside a source: measured, a refinement spelled `+ { limit: 5, where: … }`
-      // — which compiles — makes it report the refined view's BASE as a child
-      // view, end the source early, and drop the next declaration altogether,
-      // so the tile that named it read back as "inherited" and lost its tags.
-      // A `view: <name> is` line under a `source: <name> is` line is
-      // unambiguous, and Malloy has no nested sources to confuse it.
-      const views = declarationsUnder(lines, name, "view");
-      // Dimensions the same way, and drills off THEIR tag blocks: a `# drill`
-      // is a tag on a dimension's declaration, so the dimensions this file
-      // declares are exactly where one can be authored.
-      const dimensions = declarationsUnder(lines, name, "dimension");
-      if (dimensions.size > 0) {
-         sources[sources.length - 1].dimensions = [...dimensions].map(
-            ([dimensionName, at]) => ({
-               name: dimensionName,
-               expression: at.rest,
-            }),
-         );
-      }
-      for (const [dimensionName, at] of dimensions) {
-         const { tags } = blockAbove(lines, at.line);
-         const drillTag = parseAnnotation(tagText(tags)).tag?.tag("drill");
+      // A `# drill` is a tag on a dimension's declaration, so the dimensions
+      // this file declares are exactly where one can be authored.
+      for (const dimension of source.dimensions) {
+         const drillTag = parseAnnotation(
+            tagText(blockAbove(lines, dimension.line).tags),
+         ).tag?.tag("drill");
          if (!drillTag) continue;
          const to = drillTag.textArray("to") ?? [drillTag.text("to") ?? ""];
          drills.push({
-            source: name,
-            name: dimensionName,
-            expression: at.rest,
+            source: source.name,
+            name: dimension.name,
+            expression: dimension.expression,
             to: to.filter(Boolean),
             ...(drillTag.text("given")
                ? { given: drillTag.text("given") as string }
                : {}),
          });
       }
-      viewsBySource.set(name, views);
+
+      viewsBySource.set(
+         source.name,
+         new Map(source.views.map((v) => [v.name, v])),
+      );
    }
 
    const tiles: DashboardTile[] = [];
@@ -536,14 +332,14 @@ export async function readDashboardDocument(
          };
       }
       const { source: sourceName, view: viewName } = steps;
-      const declLine = viewsBySource.get(sourceName)?.get(viewName)?.line;
+      const view = viewsBySource.get(sourceName)?.get(viewName);
 
       // Not declared here: the view belongs to an imported source, which is a
       // complete dashboard in itself — `tiles=["orders -> by_brand"]` over an
       // imported `orders` needs nothing else in the file. Shown, not editable:
       // its tags live on the model's view, and the builder does not write model
       // files.
-      if (declLine === undefined) {
+      if (view === undefined) {
          tiles.push({
             name: viewName,
             source: sourceName,
@@ -552,52 +348,51 @@ export async function readDashboardDocument(
          continue;
       }
 
-      // Without the comment split, a greedy read of
-      // `view: x is y + { limit: 5 } // note + { where: c ~ $C }` finds the
-      // binding inside the comment and reports a filter Malloy never applies.
-      const body = viewBody(
-         splitTrailingComment(lines[declLine]).code,
-         viewName,
+      const t = parseAnnotation(tagText(view.tags)).tag;
+      const declaration:
+         | { kind: "reference"; from: string }
+         | { kind: "inline" }
+         | undefined =
+         view.body.kind === "reference"
+            ? { kind: "reference" as const, from: view.body.from }
+            : view.body.kind === "inline"
+              ? { kind: "inline" as const }
+              : undefined;
+      if (declaration === undefined) {
+         // A body this cannot represent — a `->` pipeline from a named view, a
+         // chained refinement. Reported as inherited, so nothing the builder
+         // writes can reach a body it did not understand, but WITH its tags:
+         // those are `#` lines in this file and an edit to one of them is
+         // still safe to make.
+         tiles.push({
+            name: viewName,
+            source: sourceName,
+            declaration: { kind: "inherited" },
+            ...(t?.text("label") ? { label: t.text("label") as string } : {}),
+            ...(t?.text("subtitle")
+               ? { subtitle: t.text("subtitle") as string }
+               : {}),
+            ...(t?.numeric("colspan") !== undefined
+               ? { colspan: t.numeric("colspan") as number }
+               : {}),
+            ...(t?.has("break") ? { break: true } : {}),
+            ...(t?.has("borderless") ? { borderless: true } : {}),
+         });
+         continue;
+      }
+      // A refinement's filters, or an inline body's own — the same clauses
+      // either way, located by the tree rather than by depth in the text.
+      const filters = filtersOf(
+         view.body.kind === "reference"
+            ? view.body.refinement
+            : view.body.kind === "inline"
+              ? view.body.stage
+              : undefined,
       );
-      if (body === undefined) {
-         return {
-            ok: false,
-            reason: `Could not read what view \`${viewName}\` is declared from.`,
-            line: declLine + 1,
-         };
-      }
-      const { tags } = blockAbove(lines, declLine);
-      const t = parseAnnotation(tagText(tags)).tag;
-      let filters:
-         | Array<{ field: string; given: string; op?: string }>
-         | undefined;
-      if (body.kind === "reference") {
-         filters = filtersOf(body.refinement);
-      } else {
-         // Filters live as depth-1 `where:` statements in the body's own
-         // first stage rather than a `+ { … }` refinement — see
-         // BINDING_CLAUSE and viewBodyStage1 for the shape this scan trusts.
-         const extent = declarationExtent(lines, declLine);
-         if ("unreadable" in extent) {
-            return {
-               ok: false,
-               reason: `Could not read \`${viewName}\`'s body: ${extent.unreadable}.`,
-               line: declLine + 1,
-            };
-         }
-         const stage = viewBodyStage1(lines, declLine, extent.end);
-         filters =
-            stage.oneLiner !== undefined
-               ? oneLinerFilters(stage.oneLiner.content)
-               : lineFilters(stage.whereLines);
-      }
       tiles.push({
          name: viewName,
          source: sourceName,
-         declaration:
-            body.kind === "reference"
-               ? { kind: "reference", from: body.from }
-               : { kind: "inline" },
+         declaration,
          ...(filters ? { filters } : {}),
          ...(t?.text("label") ? { label: t.text("label") as string } : {}),
          ...(t?.text("subtitle")
@@ -611,7 +406,7 @@ export async function readDashboardDocument(
       });
    }
 
-   const givens = localGivens(lines, parseAnnotation as ParseTags);
+   const givens = localGivens(parsed, lines, parseAnnotation as ParseTags);
 
    const startingGivens: Record<string, string> = {};
    const givensTag = artifactTag?.tag("givens");

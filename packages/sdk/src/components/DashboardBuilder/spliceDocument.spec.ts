@@ -5,9 +5,12 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import type { DashboardDocument } from "./document";
-import { givenDeclarations } from "./malloyText";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
-import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
+import {
+   spliceDashboardDocument,
+   spliceFailed,
+   syntaxErrors,
+} from "./spliceDocument";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
@@ -444,21 +447,27 @@ source: a is one extend {
    // filter from text the builder cannot rewrite, so writing a managed
    // `where:` for either would filter on that control twice, and only one of
    // the two could ever be unticked again. Refused, and named.
-   it("refuses to bind a given the unmanaged line already filters on", async () => {
-      const reason = await refused(TWO_BINDINGS_ONE_STATEMENT, (d) => {
+   // Both `where:`s are ordinary statements to the parser, so each clause is
+   // removed or rewritten by its own SPAN and the measure between them is not
+   // in any of those spans. What used to need a refusal is now just an edit.
+   it("drops one binding and leaves the measure between them", async () => {
+      const out = await spliced(TWO_BINDINGS_ONE_STATEMENT, (d) => {
          d.tiles[0].filters = [{ field: "a", given: "A" }];
       });
-      expect(reason).toContain("already filters on `$A`");
+      expect(out).toContain("    where: a ~ $A, aggregate: n is count()");
+      expect(out).not.toContain("$B");
    });
 
-   it("refuses the same way when the binding is changed rather than added", async () => {
-      const reason = await refused(TWO_BINDINGS_ONE_STATEMENT, (d) => {
+   it("rewrites each binding in place, measure untouched", async () => {
+      const out = await spliced(TWO_BINDINGS_ONE_STATEMENT, (d) => {
          d.tiles[0].filters = [
             { field: "a2", given: "A" },
             { field: "b", given: "B" },
          ];
       });
-      expect(reason).toContain("already filters on");
+      expect(out).toContain(
+         "    where: a2 ~ $A, aggregate: n is count(), where: b ~ $B",
+      );
    });
 
    // And an edit that touches neither given leaves the line exactly as written.
@@ -488,7 +497,7 @@ source: a is one extend {
          d.tiles[0].filters = [{ field: "c", given: "C2" }];
       });
       expect(out).toContain(
-         "view: kpis is { aggregate: n is count(), where: c ~ $C2 }",
+         "view: kpis is { aggregate: n is count() where: c ~ $C2 }",
       );
    });
 
@@ -503,7 +512,7 @@ source: a is one extend {
          d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
       });
       expect(out).toContain(
-         "view: kpis is { aggregate: n is count(), where: category ~ $CATEGORY }",
+         "view: kpis is { aggregate: n is count() where: category ~ $CATEGORY }",
       );
       // And unbinding restores the file exactly as it was.
       const restored = await spliced(out, (d) => {
@@ -514,7 +523,9 @@ source: a is one extend {
 
    // A multi-stage `->` pipeline has no single first stage to write the
    // binding into, and the reason names the shape, not the tile's kind.
-   it("refuses a filter change on a multi-stage body", async () => {
+   // The first stage IS the tile's own, so a filter goes there. Only a later
+   // stage is out of reach, and nothing is written into one.
+   it("writes a filter into the first stage of a multi-stage body", async () => {
       const source = `## artifact { title="T" tiles=["a -> kpis"] }
 import "../m.malloy"
 
@@ -527,11 +538,13 @@ source: a is one extend {
     select: category, n
   }
 }`;
-      expect(
-         await refused(source, (d) => {
-            d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
-         }),
-      ).toContain("multi-stage");
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "    aggregate: n is count()\n    where: category ~ $CATEGORY\n  } -> {",
+      );
+      expect(out).toContain("    where: n > 10");
    });
 
    it("refuses a filter change on a compound { … } + { … } body", async () => {
@@ -565,7 +578,7 @@ source: a is one extend {
       });
       expect(out).toContain("  where: brand_name ~ $BRAND\n");
       expect(out).toContain(
-         "view: kpis is { aggregate: n is count(), where: category ~ $CATEGORY }",
+         "view: kpis is { aggregate: n is count() where: category ~ $CATEGORY }",
       );
    });
 
@@ -1288,8 +1301,12 @@ function unmodelledTagsByDeclaration(text: string): Record<string, string[]> {
       if (m[1] === "source") scope = m[2];
       record(`${scope}/${m[1]}:${m[2]}`, i);
    });
-   for (const [name, at] of givenDeclarations(lines))
-      record(`given:${name}`, at.line);
+   // Scanned here rather than taken from the reader: a differential check
+   // that shares code with what it checks cannot see that code being wrong.
+   lines.forEach((line, i) => {
+      const m = /^\s*(?:given:\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*::/.exec(line);
+      if (m) record(`given:${m[1]}`, i);
+   });
    return out;
 }
 
@@ -1352,6 +1369,49 @@ describe("every composite dashboard survives an edit", () => {
          // And every `#` tag the builder does not model is still there, on the
          // same declaration. A file-wide count cannot see a tag that moved to
          // the declaration below, which is how one silently changes meaning.
+         expect(unmodelledTagsByDeclaration(result.source)).toEqual(
+            unmodelledTagsByDeclaration(source),
+         );
+      });
+
+      // The filter planner is the one this file's history says is hardest to
+      // get right, so it gets the corpus treatment too: bind a control onto a
+      // tile, and nothing the builder does not model may move.
+      it(`round-trips a filter change in ${name}`, async () => {
+         const source = fs.readFileSync(file, "utf8");
+         const doc = await readDashboardDocument(source);
+         if (readFailed(doc)) throw new Error(doc.reason);
+         const target = doc.document.tiles.findIndex(
+            (t) => t.declaration.kind !== "inherited",
+         );
+         // No tile declared here: a real shape, not a gap in the sweep.
+         if (target < 0) return;
+         // A name of its own where the file has one, else a synthetic one --
+         // what is under test is where the clause LANDS, and most fixtures
+         // declare no control, which would skip almost the whole corpus.
+         const given = doc.document.localGivens?.[0]?.name ?? "PROBE_GIVEN";
+
+         const next = structuredClone(doc.document);
+         const binding = { field: "_probe", given };
+         next.tiles[target].filters = [
+            ...(next.tiles[target].filters ?? []),
+            binding,
+         ];
+         const result = await spliceDashboardDocument(source, next);
+         // A refusal is a legitimate answer -- a given the tile already
+         // filters on in text the builder does not manage, say -- but it has
+         // to be a refusal, never a silent partial write.
+         if (spliceFailed(result)) {
+            expect(result.reason.length).toBeGreaterThan(0);
+            return;
+         }
+         expect(await syntaxErrors(result.source)).toEqual([]);
+         const reread = await readDashboardDocument(result.source);
+         if (readFailed(reread)) throw new Error(reread.reason);
+         expect(reread.document.tiles[target].filters).toContainEqual(binding);
+         const comments = (text: string) =>
+            text.split("\n").filter((l) => l.trim().startsWith("//")).length;
+         expect(comments(result.source)).toBe(comments(source));
          expect(unmodelledTagsByDeclaration(result.source)).toEqual(
             unmodelledTagsByDeclaration(source),
          );
@@ -1816,24 +1876,23 @@ source: regional is duckdb.sql("""
    // A brace inside the `"""` span is the one case the round-trip gate cannot
    // catch: a spliced-in `view:` would read back as belonging to the source
    // above it either way. Refused outright rather than risked.
-   it("refuses to add a tile when the SQL literal itself holds a brace", async () => {
+   // A brace inside the literal used to be unresolvable by a text scan, so
+   // this refused. The lexer knows where the literal ends, so the tile lands
+   // inside the extension instead.
+   it("adds a tile past a brace inside the SQL literal", async () => {
       const source = MULTILINE.replace(
          "select region, sum(amount) as total from orders group by 1",
          "select {'region': 'West'} as region",
       );
-      const r = await splice(source, (d) => {
+      const out = await spliced(source, (d) => {
          d.tiles.push({
             name: "by_year",
             source: "regional",
             declaration: { kind: "reference", from: "year_view" },
          });
       });
-      expect(r.ok).toBe(false);
-      if (spliceFailed(r)) {
-         expect(r.reason).toContain("regional");
-         expect(r.reason).toContain('brace inside a """ string');
-         expect(r.reason).not.toContain("undefined");
-      }
+      expect(out).toContain("select {'region': 'West'} as region");
+      expect(out).toContain("view: by_year is year_view");
    });
 });
 

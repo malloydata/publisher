@@ -65,10 +65,18 @@ plain `date` or `number` given binds with `>=` (`~` does not compile against a
 **Two other measured facts the builder rests on.** The renderer's own
 `sizingStrategy` says whether a result fills its box, and a chart is redrawn by
 the renderer's own size observer only if its box actually shrinks, which a CSS
-grid item with the default `min-width: auto` does not do. And the parser's symbol
-tree misreads a refinement spelled `+ { limit: 5, where: … }` (it compiles) by
-dropping the next view declaration, so the reader finds views, dimensions and
-givens textually under their `source:` line rather than trusting the tree.
+grid item with the default `min-width: auto` does not do. And every edit is
+LOCATED by Malloy's own parser, through `malloyTree`: the reader and the writer
+take spans from one parse tree, so they cannot disagree about where a
+declaration or a `where:` clause begins and ends.
+
+An earlier version of this section claimed the symbol tree misreads a refinement
+spelled `+ { limit: 5, where: … }` "(it compiles)", and built a layer of text
+scanners around that. The parenthetical was wrong: that spelling is a syntax
+error — a comma is not legal after `limit:` — and the builder was emitting it.
+With the valid spelling the tree reports every declaration. A file with any
+syntax error is not edited through the tree at all, because ANTLR recovers from
+one by inventing structure it does not report.
 
 ## 2. Where the builder stands
 
