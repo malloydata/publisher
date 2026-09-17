@@ -691,7 +691,12 @@ async function main(): Promise<void> {
                   ? await pg.query(r.sourceDb, sql)
                   : (await pg.sql(r.sourceDb, sql), []);
             }
-            await runLakeSql(
+            // Provisioning and asserting are one path here, as they are for the
+            // warehouse arm above: an operator that can create a schema on a
+            // destination is the one that can read back what the tier wrote to
+            // it. `## Connection <lake>_probe` remains the way to ask the same
+            // question THROUGH the publisher, which is a different question.
+            return await runLakeSql(
                {
                   host: pg.host,
                   port: pg.hostPort,
@@ -702,9 +707,6 @@ async function main(): Promise<void> {
                },
                sql,
             );
-            // The lake arm provisions; asserting on a destination's contents is
-            // what `## Connection <lake>_probe` is for.
-            return [];
          };
 
       // A worker's port block. Publisher NAMES stride by 100 within a cluster, so
