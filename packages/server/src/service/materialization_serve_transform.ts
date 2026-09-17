@@ -108,6 +108,31 @@ export interface FilterRefinement {
 }
 
 /**
+ * A `given:` to declare on the serve-shape model, copied from the author's.
+ *
+ * The other half of {@link FilterRefinement}. A re-emitted `where:` carries the
+ * author's verbatim text, so a term over a given arrives as `where: org_id =
+ * $ORG_ID` — which compiles only if the shape declares `ORG_ID`. Declaring it is
+ * what turns a stripped term back into the filter it was: Malloy substitutes the
+ * value the request bound as an inline literal, so the artifact is read with the
+ * caller's own predicate, and an equality on a partition column prunes the
+ * files it does not name.
+ *
+ * `defaultText` is the author's default as a source literal, carried so a caller
+ * who supplies nothing gets the answer the live path would give them. Without
+ * it, such a request fails the shape compile ("no value and no default") and
+ * falls back to live — safe, but a silent loss of the tier for every unbound
+ * request.
+ */
+export interface ServeShapeGiven {
+   name: string;
+   /** The declared type as Malloy renders it, e.g. `number`, `filter<string>`. */
+   type: string;
+   /** The default as a source literal (`'acme'`, `2003`, `f'WN'`), if any. */
+   defaultText?: string;
+}
+
+/**
  * A refinement to re-declare on the serve shape's virtual base: a dimension or
  * measure ({@link FieldRefinement}), a join ({@link JoinRefinement}), a view
  * ({@link ViewRefinement}), or a source-level filter ({@link FilterRefinement}).
@@ -451,6 +476,19 @@ source: ${sourceName} is ${binding.destinationName}.virtual('${binding.virtualHa
 }
 
 /**
+ * One `given:` declaration line, with the author's default when it has one.
+ *
+ * The default is emitted as its already-rendered source literal rather than
+ * re-printed from the parsed AST, so a string keeps its quoting and a filter
+ * keeps its `f''` form without this having to know one type from another.
+ */
+function serveShapeGivenLine(given: ServeShapeGiven): string {
+   const suffix =
+      given.defaultText !== undefined ? ` is ${given.defaultText}` : "";
+   return `  ${given.name} :: ${given.type}${suffix}`;
+}
+
+/**
  * The `type:` + `source:` fragment that rebinds ONE materialized source to its
  * virtual form (no flag line — callers emit `##! experimental.virtual_source`
  * once for the whole model).
@@ -546,6 +584,21 @@ export function buildServeShapeModelForBindings(
     * its group.
     */
    rollupGroups: RollupShapeGroup[] = [],
+   /**
+    * The author model's given surface, declared verbatim on the shape.
+    *
+    * The WHOLE surface, not the subset the re-emitted filters reference. Two
+    * reasons, and the second is the one that matters. A given the shape declares
+    * and nothing references is inert — Malloy substitutes only where a name is
+    * read — so carrying extras costs nothing. And the routed QUERY is compiled
+    * against this model too: a query whose own text reads a given the model
+    * declares would otherwise fail to compile here and fall back to live, even
+    * though the live answer it falls back to is the same query over the same
+    * rows. Declaring the surface makes the shape accept exactly what the author's
+    * model accepts, which is the property that lets a caller-scoped term live in
+    * a non-persisted extension over materialized sources.
+    */
+   givens: ServeShapeGiven[] = [],
 ): {
    modelText: string;
 } {
@@ -561,17 +614,25 @@ export function buildServeShapeModelForBindings(
    // author's join means. A query using such a join does not compile against this
    // shape and is served live, which is the right answer.
    const groups = rollupGroups.map(rollupServeShapeFragment).join("\n");
-   // `composite_sources` only when a composite is actually emitted, so a package
-   // with no rollups produces byte-identical text to before this existed — an
-   // unused experimental flag should not be a difference anyone has to reason
-   // about when reading a shape that has no composites in it.
-   const flags = rollupGroups.length
-      ? "##! experimental { virtual_source composite_sources }"
-      : "##! experimental.virtual_source";
+   // Each flag only when the thing it enables is actually emitted, so a package
+   // with no rollups and no givens produces byte-identical text to before either
+   // existed — an unused experimental flag should not be a difference anyone has
+   // to reason about when reading a shape that has none of it in it.
+   const enabled = ["virtual_source"];
+   if (rollupGroups.length) enabled.push("composite_sources");
+   if (givens.length) enabled.push("givens");
+   const flags =
+      enabled.length === 1
+         ? "##! experimental.virtual_source"
+         : `##! experimental { ${enabled.join(" ")} }`;
+   // Before the sources, because a source's re-emitted `where:` reads them.
+   const givenBlock = givens.length
+      ? `given:\n${givens.map(serveShapeGivenLine).join("\n")}\n`
+      : "";
    return {
       modelText: groups
-         ? `${flags}\n${fragments}\n${groups}\n`
-         : `${flags}\n${fragments}\n`,
+         ? `${flags}\n${givenBlock}${fragments}\n${groups}\n`
+         : `${flags}\n${givenBlock}${fragments}\n`,
    };
 }
 
