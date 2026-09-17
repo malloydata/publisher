@@ -121,7 +121,13 @@ export interface DocumentStorage {
     */
    getDocument(locator: DocumentLocator): Promise<string>;
 
-   /** Write the content, creating the document or replacing it. */
+   /**
+    * Write the content, creating the document or replacing it.
+    *
+    * There is no expected-version slot, so this is last writer wins and a
+    * caller cannot tell that it overwrote someone. A backend that has to stop
+    * two authors clobbering each other enforces that itself, in the backend.
+    */
    saveDocument(locator: DocumentLocator, content: string): Promise<void>;
 
    /**
