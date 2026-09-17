@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import AddIcon from "@mui/icons-material/Add";
-import CheckIcon from "@mui/icons-material/Check";
 import TuneIcon from "@mui/icons-material/Tune";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
@@ -136,13 +135,13 @@ export function BuilderToolbar({
                         variant={dirty ? "contained" : "outlined"}
                         disabled={!dirty || saving}
                         onClick={onSave}
-                        startIcon={
-                           !dirty && !saving ? <CheckIcon /> : undefined
-                        }
+                        // Wide enough for the longest of the three labels, so
+                        // the bar does not reflow as the state cycles.
                         sx={{ minWidth: 124 }}
                      >
                         {/* Says what will happen, then that it is happening,
-                            then what did. */}
+                            then what did. One tick in the bar, on "Done
+                            editing"; here the word carries the state. */}
                         {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
                      </Button>
                   </span>

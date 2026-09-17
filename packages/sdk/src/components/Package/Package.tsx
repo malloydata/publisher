@@ -64,21 +64,26 @@ export default function Package({
    const [schemaDatabase, setSchemaDatabase] = useState<Database | null>(null);
    const [creating, setCreating] = useState(false);
 
-   // Dashboards saved in this browser and not (yet) in the package: the
-   // builder's drafts, listed so they are found rather than stumbled on.
+   // Dashboards the host keeps for this package and the package does not have:
+   // the builder's drafts, listed so they are found rather than stumbled on.
+   // Each carries the workspace's own description, because where a document is
+   // kept is the backend's to say and only one host's answer is "this browser".
    const storage = useOptionalDocumentStorage()?.documentStorage;
-   const [drafts, setDrafts] = useState<DocumentLocator[]>([]);
+   const [drafts, setDrafts] = useState<
+      { locator: DocumentLocator; where: string }[]
+   >([]);
    const draftPrefix = `${environmentName}/${packageName}/dashboards/`;
    const refreshDrafts = useCallback(async () => {
       if (!storage) return;
       const workspaces = await storage.listWorkspaces(true);
-      const found: DocumentLocator[] = [];
+      const found: { locator: DocumentLocator; where: string }[] = [];
       for (const workspace of workspaces)
          for (const locator of await storage.listDocuments(
             workspace,
             "dashboard",
          ))
-            if (locator.path.startsWith(draftPrefix)) found.push(locator);
+            if (locator.path.startsWith(draftPrefix))
+               found.push({ locator, where: workspace.description });
       setDrafts(found);
    }, [storage, draftPrefix]);
    useEffect(() => {
@@ -391,12 +396,12 @@ export default function Package({
                )}
                {drafts.length > 0 && (
                   <PackageSection title="Drafts" count={drafts.length}>
-                     {drafts.map((locator) => (
+                     {drafts.map(({ locator, where }) => (
                         <PackageItemRow
                            key={locator.path}
                            type="dashboard"
                            label={draftSlug(locator)}
-                           rightLabel="saved in this browser"
+                           rightLabel={where}
                            onClick={(event) =>
                               onClick(
                                  `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(draftSlug(locator))}/edit`,
