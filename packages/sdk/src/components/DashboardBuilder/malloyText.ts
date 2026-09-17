@@ -123,6 +123,47 @@ export function givenDeclarations(lines: string[]): Map<string, GivenAt> {
    return found;
 }
 
+/**
+ * A line split at the `//` that starts its trailing comment, quotes respected.
+ *
+ * The writer appends to a declaration line, and a line ending in a comment is
+ * how people annotate a tile. Appended blind, the refinement lands INSIDE the
+ * comment: with nothing to append to it the save is refused, and with a
+ * refinement already there the greedy read finds the clause anyway and the gate
+ * passes a file where Malloy sees no filter at all.
+ */
+export function splitTrailingComment(line: string): {
+   /** Everything before the comment, including the gap that separated them. */
+   code: string;
+   /** The comment from its `//`, or "". */
+   comment: string;
+} {
+   let quote: '"' | "'" | '"""' | undefined;
+   for (let i = 0; i < line.length; i++) {
+      if (quote === '"""') {
+         if (line.startsWith('"""', i)) {
+            quote = undefined;
+            i += 2;
+         }
+         continue;
+      }
+      if (quote !== undefined) {
+         if (line[i] === "\\") i++;
+         else if (line[i] === quote) quote = undefined;
+         continue;
+      }
+      if (line.startsWith('"""', i)) {
+         quote = '"""';
+         i += 2;
+      } else if (line[i] === '"' || line[i] === "'") {
+         quote = line[i] as '"' | "'";
+      } else if (line.startsWith("//", i)) {
+         return { code: line.slice(0, i), comment: line.slice(i) };
+      }
+   }
+   return { code: line, comment: "" };
+}
+
 /** A tile expression's steps: `orders -> by_brand + { limit: 2 }`. */
 export interface TileSteps {
    source: string;

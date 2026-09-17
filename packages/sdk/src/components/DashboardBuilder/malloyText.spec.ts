@@ -7,6 +7,7 @@ import {
    declarationLine,
    declarationsUnder,
    givenDeclarations,
+   splitTrailingComment,
    tileSteps,
 } from "./malloyText";
 
@@ -80,5 +81,45 @@ describe("the text a dashboard file is read as", () => {
       });
       expect(tileSteps("{ group_by: x } -> y -> z")).toBeUndefined();
       expect(tileSteps(undefined)).toBeUndefined();
+   });
+});
+
+describe("splitTrailingComment", () => {
+   it("finds no comment in a plain line", () => {
+      expect(splitTrailingComment("  view: x is y")).toEqual({
+         code: "  view: x is y",
+         comment: "",
+      });
+   });
+
+   it("keeps the gap with the code so an unchanged line stays unchanged", () => {
+      const { code, comment } = splitTrailingComment("  view: x is y  // note");
+      expect(code).toBe("  view: x is y  ");
+      expect(comment).toBe("// note");
+      expect(code + comment).toBe("  view: x is y  // note");
+   });
+
+   // Both spellings a dashboard reaches for: a filter literal is single-quoted,
+   // and a SQL block is triple-double-quoted and spans lines.
+   it("does not split inside a quoted literal", () => {
+      expect(splitTrailingComment("where: path ~ 'a//b'").comment).toBe("");
+      expect(splitTrailingComment('label="http://x"').comment).toBe("");
+      expect(splitTrailingComment('sql("""select // not a comment')).toEqual({
+         code: 'sql("""select // not a comment',
+         comment: "",
+      });
+   });
+
+   it("splits after a literal has closed", () => {
+      expect(splitTrailingComment("where: path ~ 'a//b' // why")).toEqual({
+         code: "where: path ~ 'a//b' ",
+         comment: "// why",
+      });
+   });
+
+   it("reads an escaped quote as text rather than a close", () => {
+      expect(splitTrailingComment('label="a\\"b" // why').comment).toBe(
+         "// why",
+      );
    });
 });

@@ -13,6 +13,7 @@ import {
    type DeclarationAt,
    declarationsUnder,
    givenDeclarations,
+   splitTrailingComment,
    tileSteps,
 } from "./malloyText";
 
@@ -404,7 +405,13 @@ export async function readDashboardDocument(
          continue;
       }
 
-      const body = viewBody(lines[declLine], viewName);
+      // Without the comment split, a greedy read of
+      // `view: x is y + { limit: 5 } // note + { where: c ~ $C }` finds the
+      // binding inside the comment and reports a filter Malloy never applies.
+      const body = viewBody(
+         splitTrailingComment(lines[declLine]).code,
+         viewName,
+      );
       if (body === undefined) {
          return {
             ok: false,

@@ -84,6 +84,101 @@ describe("spliceDashboardDocument: what it preserves", () => {
    });
 });
 
+/**
+ * Two edits that share a start offset: a tag line inserted above a declaration,
+ * and a rewrite of that declaration. Applied in the wrong order the insertion
+ * moves the text out from under the rewrite's end offset and the rewrite lands
+ * inside what was just inserted, so the save is refused with nothing to tell
+ * the person which of the two changes it could not make. In the browser this is
+ * what "add a filter" hit: the width change was the tile's FIRST modelled tag.
+ */
+describe("spliceDashboardDocument: a new tag over a rewritten declaration", () => {
+   const UNTAGGED = `##! experimental.givens
+## artifact { title="Probe" tiles=["a -> by_cat"] }
+import "../data_app.malloy"
+
+source: a is scoped_orders extend {
+  view: by_cat is by_category
+}`;
+
+   it("writes both when the tile had no tags at all", async () => {
+      const out = await spliced(UNTAGGED, (d) => {
+         d.tiles[0].colspan = 4;
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         "  # colspan=4\n  view: by_cat is by_category + { where: category ~ $CATEGORY }",
+      );
+   });
+});
+
+/**
+ * A trailing `// …` on the declaration line. The refinement goes at the END of
+ * that line, so appended blind it lands inside the comment. Driven in a browser
+ * against a real draft package, that is what made "add a filter" refuse on a
+ * tile the builder could plainly write: the file was rewritten, Malloy saw no
+ * binding, and the readback gate refused the save with no way to tell why.
+ *
+ * With a refinement already on the line it is worse than a refusal: the reader's
+ * greedy match finds the binding inside the comment, so the gate passes a file
+ * whose filter Malloy never applies.
+ */
+describe("spliceDashboardDocument: a comment at the end of the declaration", () => {
+   const commented = (declaration: string) => `##! experimental.givens
+## artifact { title="Probe" tiles=["a -> by_cat"] }
+import "../data_app.malloy"
+
+source: a is scoped_orders extend {
+${declaration}
+}`;
+
+   const bind = (d: DashboardDocument) => {
+      d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+   };
+
+   it("puts the binding before the comment, not inside it", async () => {
+      const out = await spliced(
+         commented("  view: by_cat is by_category // the lead tile"),
+         bind,
+      );
+      expect(out).toContain(
+         "  view: by_cat is by_category + { where: category ~ $CATEGORY } // the lead tile",
+      );
+   });
+
+   it("keeps an existing refinement ahead of the binding", async () => {
+      const out = await spliced(
+         commented("  view: by_cat is by_category + { limit: 5 } // top five"),
+         bind,
+      );
+      expect(out).toContain(
+         "  view: by_cat is by_category + { limit: 5, where: category ~ $CATEGORY } // top five",
+      );
+   });
+
+   it("takes the binding off without disturbing the comment", async () => {
+      const source = commented(
+         "  view: by_cat is by_category + { where: category ~ $CATEGORY } // the lead tile",
+      );
+      const out = await spliced(source, (d) => {
+         delete d.tiles[0].filters;
+         d.tiles[0].colspan = 4;
+      });
+      expect(out).toContain("  view: by_cat is by_category // the lead tile");
+   });
+
+   // `//` inside a filter literal is text, not the start of a comment.
+   it("does not mistake a slash pair inside a literal for a comment", async () => {
+      const out = await spliced(
+         commented("  view: by_cat is by_category + { where: path ~ 'a//b' }"),
+         bind,
+      );
+      expect(out).toContain(
+         "  view: by_cat is by_category + { where: path ~ 'a//b', where: category ~ $CATEGORY }",
+      );
+   });
+});
+
 describe("spliceDashboardDocument: what it writes", () => {
    it("adds a tag that was not there", async () => {
       const out = await spliced(SOURCE, (d) => {
@@ -962,9 +1057,17 @@ given: SINCE :: date is @2023-01-01`);
    });
 });
 
+/**
+ * Two ways a save can fail with nothing written, and they want different
+ * answers: nothing was recognized at all, or something was written and it read
+ * back as a different dashboard. Reported identically, the person who hits one
+ * cannot say which -- which is how an add-filter refusal went a round trip
+ * before anyone knew whether a planner had even run.
+ */
 describe("spliceDashboardDocument: an ask no planner could place", () => {
-   it("refuses rather than reporting a write that never happened", async () => {
-      const source = `##! experimental.givens
+   // A `drill` sharing a line with a `label` is not the `# drill` line
+   // `planDrills` looks for, so taking the drill off plans no edit at all.
+   const UNPLACEABLE = `##! experimental.givens
 ## artifact { title="T" tiles=["a -> x"] }
 import "../m.malloy"
 
@@ -974,12 +1077,22 @@ source: a is one extend {
 
   view: x is vx
 }`;
-      const reason = await refused(source, (d) => {
+
+   it("says nothing was recognized when no planner placed an edit", async () => {
+      const reason = await refused(UNPLACEABLE, (d) => {
          delete d.drills;
       });
-      expect(reason).toContain(
-         "did not produce the dashboard that was asked for",
-      );
+      expect(reason).toContain("No part of this edit was recognized");
+   });
+
+   // The same unplaceable ask, stacked on a title change that does plan an
+   // edit: now something IS written, and it is the readback that refuses.
+   it("says the readback differed when an edit was written", async () => {
+      const reason = await refused(UNPLACEABLE, (d) => {
+         d.title = "Renamed";
+         delete d.drills;
+      });
+      expect(reason).toContain("did not read back as what was asked for");
    });
 });
 

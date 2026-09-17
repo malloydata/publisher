@@ -13,6 +13,7 @@ import {
    declarationLine,
    declarationsUnder,
    givenDeclarations,
+   splitTrailingComment,
 } from "./malloyText";
 import {
    BINDING_CLAUSE,
@@ -106,7 +107,14 @@ function lineStarts(source: string): number[] {
 
 function applyEdits(source: string, edits: Edit[]): string {
    let out = source;
-   for (const edit of [...edits].sort((a, b) => b.start - a.start))
+   // Back to front, so an earlier edit's offsets still address the text it was
+   // planned against. Where two share a start — an inserted tag line and a
+   // rewrite of the declaration it sits above — the replacement has to go
+   // first, or the insertion shifts the text out from under its end offset and
+   // the rewrite lands in the middle of what was just inserted.
+   for (const edit of [...edits].sort(
+      (a, b) => b.start - a.start || b.end - a.end,
+   ))
       out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
    return out;
 }
@@ -990,8 +998,11 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // Only the BINDING clauses are ours to rewrite: a `limit:`, an `order_by:`
       // or a `where:` on a literal that someone put in the same refinement is
       // unmodelled Malloy and stays, ahead of the bindings, exactly as written.
-      const existing =
-         /\+\s*\{([\s\S]*)\}\s*$/.exec(lines[declLine])?.[1] ?? "";
+      // A trailing `//` comment is set aside first and put back after, because
+      // the refinement goes at the END of the code and a comment there would
+      // swallow it.
+      const { code, comment } = splitTrailingComment(lines[declLine]);
+      const existing = /\+\s*\{([\s\S]*)\}\s*$/.exec(code)?.[1] ?? "";
       const kept = existing
          .replace(BINDING_CLAUSE, "")
          .replace(/\s*,\s*,\s*/g, ", ")
@@ -1000,14 +1011,12 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          (f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`,
       );
       const clauses = [...(kept ? [kept] : []), ...bindings];
-      const withoutRefinement = lines[declLine].replace(
-         /\s*\+\s*\{[\s\S]*\}\s*$/,
-         "",
-      );
-      const rewritten =
+      const withoutRefinement = code.replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "");
+      const body =
          clauses.length === 0
             ? withoutRefinement
-            : `${withoutRefinement} + { ${clauses.join(", ")} }`;
+            : `${withoutRefinement.trimEnd()} + { ${clauses.join(", ")} }`;
+      const rewritten = comment === "" ? body : `${body.trimEnd()} ${comment}`;
       if (rewritten !== lines[declLine])
          edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
    }
@@ -1103,8 +1112,8 @@ export async function spliceDashboardDocument(
          return {
             ok: false,
             reason:
-               "The edit did not produce the dashboard that was asked for, so it " +
-               "was not written. Your changes are still here.",
+               "No part of this edit was recognized, so nothing was written. " +
+               "Your changes are still here.",
          };
       }
       return { ok: true, source: sourceText };
@@ -1126,7 +1135,7 @@ export async function spliceDashboardDocument(
       return {
          ok: false,
          reason:
-            "The edit did not produce the dashboard that was asked for, so it " +
+            "What was written did not read back as what was asked for, so it " +
             "was not written. Your changes are still here.",
       };
    }
