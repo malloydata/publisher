@@ -61,3 +61,69 @@ export function redactPgSecrets(s: string): string {
       )
       .replace(/password=('(?:\\.|[^'\\])*'|"[^"]*"|\S+)/gi, "password=***");
 }
+
+// The secret-bearing field names across every connection type the API accepts,
+// as they appear when a driver or a serializer echoes the config it was handed.
+// `password` is covered by redactPgSecrets' keyword pass and is not repeated.
+//
+// Matched case-insensitively and in either casing convention, because the same
+// field arrives as `privateKey` from the API schema and `private_key` from a
+// driver that snake-cases its config before reporting it.
+const SECRET_FIELD_NAMES = [
+   "privateKey",
+   "privateKeyPass",
+   "serviceAccountKeyJson",
+   "accessToken",
+   "oauthClientSecret",
+   "clientSecret",
+   "secretAccessKey",
+   "sessionToken",
+   "peakaKey",
+   "sasUrl",
+   "connectionString",
+   "token",
+   "secret",
+];
+
+// `name: value`, `name=value` or `"name": "value"`, for each name above. The
+// value class stops at the separators that end a field in JSON, in libpq
+// keyword form and in ordinary prose, so a match cannot run past the field it
+// started in and swallow the rest of the message.
+const SECRET_FIELD_PATTERN = new RegExp(
+   String.raw`(["']?(?:${SECRET_FIELD_NAMES.map((n) =>
+      // Accept camelCase and snake_case for the same field.
+      n.replace(/([A-Z])/g, "[_-]?$1"),
+   ).join("|")})["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;&\s}]+)`,
+   "gi",
+);
+
+// A PEM block is the one secret shape with no field name in front of it: a
+// driver reporting "could not parse key: -----BEGIN RSA PRIVATE KEY----- ..."
+// carries the whole key as prose. Matched by its own delimiters instead.
+const PEM_BLOCK_PATTERN =
+   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+
+/**
+ * Redact every connection credential this server can be handed, from a string
+ * that is about to reach a caller or a log.
+ *
+ * A connection test is given the caller's own configuration and reports why it
+ * did not work, and drivers build those messages by quoting the configuration
+ * back. {@link redactPgSecrets} covers the Postgres shapes -- URI userinfo and
+ * `password=` -- which leaves the credential of every other connection type
+ * (SSH keys and their passphrases, service-account JSON, bearer tokens, storage
+ * secret keys) in the message verbatim. This covers those, then defers to
+ * {@link redactPgSecrets} for the shapes it already handles.
+ *
+ * Shape-based for the same reason that function is: the input is arbitrary
+ * error prose that may embed a serialized config, so there is nothing to parse.
+ * Over-redaction is the safe direction and is preferred to a leak -- a field
+ * merely named `token` is masked whether or not it held a credential.
+ */
+export function redactConnectionSecrets(s: string): string {
+   return redactPgSecrets(
+      s
+         .replace(PEM_BLOCK_PATTERN, "***")
+         .replace(SECRET_FIELD_PATTERN, "$1***"),
+   );
+}

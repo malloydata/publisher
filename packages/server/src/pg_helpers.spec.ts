@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { redactPgSecrets } from "./pg_helpers";
+import { redactConnectionSecrets, redactPgSecrets } from "./pg_helpers";
 
 describe("redactPgSecrets", () => {
    it("redacts a quoted password carrying a space and an escaped quote", () => {
@@ -237,5 +237,85 @@ describe("redactPgSecrets", () => {
       const redacted = redactPgSecrets(msg);
       expect(redacted).toContain("postgres://alice:***@127.0.0.1:5432/mydb");
       expect(redacted).not.toContain("supersecretpw");
+   });
+});
+
+describe("redactConnectionSecrets", () => {
+   // A connection test is handed the caller's own configuration, and drivers
+   // build their failure text by quoting that configuration back. Every case
+   // below is a credential the API accepts for some connection type, in the
+   // shape a driver or a serializer reports it.
+   const SECRET = "s3cret-value-not-a-real-credential";
+
+   it("redacts an SSH private key reported as a PEM block", () => {
+      const msg = `tunnel setup failed for -----BEGIN RSA PRIVATE KEY-----\n${SECRET}\n-----END RSA PRIVATE KEY----- while dialing bastion`;
+      const redacted = redactConnectionSecrets(msg);
+      expect(redacted).not.toContain(SECRET);
+      // The surrounding prose is what makes the failure diagnosable.
+      expect(redacted).toContain("tunnel setup failed");
+      expect(redacted).toContain("while dialing bastion");
+   });
+
+   it("redacts an OPENSSH private key block", () => {
+      const msg = `-----BEGIN OPENSSH PRIVATE KEY-----\n${SECRET}\n-----END OPENSSH PRIVATE KEY-----`;
+      expect(redactConnectionSecrets(msg)).not.toContain(SECRET);
+   });
+
+   it.each([
+      ["privateKey", `privateKey=${SECRET}`],
+      ["privateKeyPass", `privateKeyPass=${SECRET}`],
+      ["serviceAccountKeyJson", `serviceAccountKeyJson=${SECRET}`],
+      ["accessToken", `accessToken=${SECRET}`],
+      ["oauthClientSecret", `oauthClientSecret=${SECRET}`],
+      ["clientSecret", `clientSecret=${SECRET}`],
+      ["secretAccessKey", `secretAccessKey=${SECRET}`],
+      ["sessionToken", `sessionToken=${SECRET}`],
+      ["peakaKey", `peakaKey=${SECRET}`],
+      ["sasUrl", `sasUrl=${SECRET}`],
+      ["connectionString", `connectionString=${SECRET}`],
+      ["token", `token=${SECRET}`],
+   ])("redacts %s in keyword form", (_name, fragment) => {
+      const redacted = redactConnectionSecrets(`auth failed: ${fragment} rc=7`);
+      expect(redacted).not.toContain(SECRET);
+      // The match must stop at the field it started in.
+      expect(redacted).toContain("rc=7");
+   });
+
+   it("redacts a secret quoted as JSON, keeping the rest of the object", () => {
+      const msg = `invalid config: {"account":"acme","privateKey":"${SECRET}","role":"reader"}`;
+      const redacted = redactConnectionSecrets(msg);
+      expect(redacted).not.toContain(SECRET);
+      expect(redacted).toContain('"account":"acme"');
+      expect(redacted).toContain('"role":"reader"');
+   });
+
+   it("redacts a snake_cased spelling of the same field", () => {
+      // The API schema says privateKey; a driver that snake-cases its config
+      // before reporting it says private_key for the same value.
+      expect(
+         redactConnectionSecrets(`bad key: private_key=${SECRET}`),
+      ).not.toContain(SECRET);
+   });
+
+   it("still redacts the Postgres shapes it delegates", () => {
+      expect(
+         redactConnectionSecrets(`postgres://u:${SECRET}@h:5432/db`),
+      ).not.toContain(SECRET);
+      expect(
+         redactConnectionSecrets(`host=h password=${SECRET} dbname=d`),
+      ).not.toContain(SECRET);
+   });
+
+   it("leaves non-secret content alone", () => {
+      const msg =
+         'Connection test failed: no such host "warehouse.internal" (port 5432), user analytics_ro';
+      expect(redactConnectionSecrets(msg)).toBe(msg);
+   });
+
+   it("is idempotent", () => {
+      const input = `privateKey=${SECRET} and password=${SECRET}`;
+      const once = redactConnectionSecrets(input);
+      expect(redactConnectionSecrets(once)).toBe(once);
+      expect(once).not.toContain(SECRET);
    });
 });
