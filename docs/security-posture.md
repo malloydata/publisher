@@ -43,12 +43,12 @@ Concretely:
   registration; it has no authentication of its own, so on a reachable server it sits behind the
   same gateway or is closed by the same setting. An attacker who can reach it can already register
   a package, so it opens no door that was shut.
-- **Governance is mostly a modeling concern.** `#(authorize)`, given-scoped
+- **Governance is mostly a modeling concern.** `#(row_authorize)`, given-scoped
   row-level access, `explores`, and `queryableSources` constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
   a given is whatever the caller sends.
   One request-level exception, and it is load-bearing: `x-publisher-bypass-authorize: true` on a
-  query request skips `#(authorize)` evaluation outright, for trusted data-management callers
+  query request skips `#(row_authorize)` evaluation outright, for trusted data-management callers
   (indexers). Publisher bounds nobody, so a deployment reaching untrusted callers **must** strip
   that header at its edge — see
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md). It is the one place where a
@@ -62,7 +62,7 @@ is why the custom JSX dashboard sandbox was cut after it was built and working �
 
 ## Row-level authorize: rows are protected, the schema is not
 
-**Every** `#(authorize)` gate is a row filter (see
+**Every** `#(row_authorize)` gate is a row filter (see
 [authorize.md § Row-level gates](authorize.md#row-level-gates)) — there is no longer a whole-source
 class that admits or rejects a source outright. The gate's expression is grafted onto the source and
 evaluated with the query, so a caller it admits nowhere reads zero rows rather than being refused.

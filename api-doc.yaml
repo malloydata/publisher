@@ -3141,7 +3141,7 @@ components:
             FAN-OUT join (`join_many` or `join_cross`), which can multiply rows,
             while a `join_one` is permitted and a measure aggregating through one
             is served normally; a base source that already fails persist eligibility (unbound
-            parameters, `given` references, `#(authorize)` gates); `sharing=` or
+            parameters, `given` references, authorize gates); `sharing=` or
             `schedule=` at the resource level; and a synthesized rollup name that
             collides with an existing model object.
 
@@ -3263,8 +3263,8 @@ components:
             directly queryable (denied with 404).
             The `/compile` endpoint is exempt (compile is the authoring loop;
             the boundary is discovery curation, not access control — for
-            confidentiality use `#(authorize)`, which gates compile too). A
-            source that is both hidden and `#(authorize)`-gated still answers
+            confidentiality use `#(row_authorize)`, which gates compile too).
+            A source that is both hidden and authorize-gated still answers
             `/compile` with the generic 404, so the exemption cannot be used to
             enumerate gated names.
             `"all"` decouples the axes: `explores`/`export {}` gate discovery
@@ -3272,7 +3272,7 @@ components:
             `explores` is absent there is no curated surface, so both modes are
             equivalent (everything queryable). Invalid values fall back to
             `"declared"`. Identity-based access is a separate concern — see
-            `#(authorize)`.
+            `#(row_authorize)`.
         manifestLocation:
           type: ["string", "null"]
           description: |
@@ -4185,7 +4185,7 @@ components:
           description: |
             The givens the suggest query needs in its request to run: the ones
             the source it reads is scoped by (a source-level `where: … ~ $X`)
-            or gated by (an `#(authorize)` reading `$X`), plus, for the `query`
+            or gated by (an authorize gate reading `$X`), plus, for the `query`
             form, the named query's own. A client sends the current values of
             exactly these, so a gated source's options load while the option
             list still does not depend on the page's other filters. Absent
@@ -4260,10 +4260,14 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expression gating this source: normally the
-            author's `#(authorize)` expression as written, whether declared on
-            this source itself or carried in from elsewhere (the source it
-            extends, a query-source base, a composite member). Enforced at
+            Effective row-level authorize expression gating this source:
+            normally the author's `#(row_authorize)` expression as written,
+            whether declared on this source itself or carried in from
+            elsewhere (the source it extends, a query-source base, a composite
+            member). The deprecated `#(authorize)` spelling is the SAME route
+            and reports here too — there is deliberately no third field, since
+            a consumer that forgot to union one would read a gated source as
+            ungated. Enforced at
             query time as a row filter grafted onto the source the query
             enters through. An empty or absent list means unrestricted. Where
             the gate registry cannot attribute an expression to a declaring
@@ -4309,13 +4313,14 @@ components:
         sourceAuthorize:
           type: array
           description: >-
-            Effective `#(source-authorize)` expression gating this source: a
+            Effective `#(source_authorize)` expression gating this source: a
             rule about the CALLER (e.g. `'literal' in $GROUPS`) rather than
             the row, ANDed with any `authorize` gate above rather than
-            bypassing it. Reports the `source-authorize` route's own
-            expressions ONLY — a convenience-form `#(authorize)` body (a pure
-            source-level predicate written on the `authorize` route) is
-            reported under `authorize`, not here. An empty or absent list
+            bypassing it. Reports the `source_authorize` route's own
+            expressions ONLY — a convenience-form source-level predicate
+            written on the row route (`#(row_authorize)`, or its deprecated
+            `#(authorize)` spelling) is reported under `authorize`, not
+            here. An empty or absent list
             means nothing on this route gates the source, even if `authorize`
             is present.
 
@@ -5904,7 +5909,7 @@ components:
         One `#@ persist` source refused at compile time, and why. Computed
         from the SAME tier-appropriate eligibility assert the build path
         itself enforces (the colocated tier's post-relaxation admission for a
-        proven row-level, fully-attributed `#(authorize)` gate applies here
+        proven row-level, fully-attributed authorize gate applies here
         too), so a source this reports as refused is refused for the tier it
         would actually build under — never the unconditional
         `storage=`-destination check applied to a source that declares no
@@ -5933,12 +5938,12 @@ components:
             Which build path this source was evaluated against: `storage` for
             a source declaring `#@ persist storage=<ref>` (evaluated against
             the full storage-destination eligibility gate, which never
-            admits an `#(authorize)`-gated source); `colocated` for a plain
+            admits an authorize-gated source); `colocated` for a plain
             `#@ persist` (evaluated against the colocated gate, which admits
             a proven row-level, fully-attributed gate); `preaggregate` for a
             `#@ preaggregate` rollup (evaluated against the pre-aggregation
             gate, which refuses unconditionally when the rollup's base is
-            `#(authorize)`-gated — rollups group away the gate column, so
+            authorize-gated — rollups group away the gate column, so
             there is no row-level admission the way colocated has).
         reason:
           type: string

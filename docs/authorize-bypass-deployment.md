@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Deploying with the authorize bypass
 
-Publisher accepts a request header that **skips `#(authorize)` gate evaluation**:
+Publisher accepts a request header that **skips `#(row_authorize)` gate evaluation**:
 
 ```
 x-publisher-bypass-authorize: true
@@ -89,7 +89,7 @@ bypass, and one that fires at load — but are worth knowing apart from
 `publisher_authorize_row_level_total` (labelled `decision`: `denied_by_gate` |
 `empty_after_filter`) and `publisher_authorize_row_level_rejected_total` (labelled `cause`) cover
 row-level gates; `publisher_authorize_guard_rejected_total` (labelled `field`) counts 400s for a
-caller-declared `#(authorize)` annotation; and `publisher_authorize_admit_all_total` (labelled
+caller-declared `#(row_authorize)` annotation; and `publisher_authorize_admit_all_total` (labelled
 `route`) counts the sources that declare an unconditional `true` admit-all, at package load. That
 last one is the other side of this page's concern — the bypass header turns every gate off for one
 request, an admit-all turns one gate off for every request — so read the two together. See
@@ -108,6 +108,6 @@ ever set it.
 The bypass is an interim answer. The shape that keeps the decision with the model author is
 identity-bound givens ([docs/authorize.md § Security
 model](authorize.md#security-model)) — a reserved system given the caller cannot set, so an author
-writes `#(authorize) $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a source they never opted
+writes `#(row_authorize) $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a source they never opted
 in stays gated. This header instead removes gating globally for callers you trust wholesale.
 When identity-bound givens land, expect this to narrow or be withdrawn.

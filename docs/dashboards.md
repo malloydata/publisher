@@ -313,7 +313,7 @@ tiles reach. The two do not mix on one given.
 removes filters by writing `given:` declarations and tile bindings into the dashboard file, and it
 never edits imports or model files, so a control that lives in `givens.malloy` is one it can bind but
 not add, change or remove. Keep declarations in the model when several surfaces really share a
-control, and when row-level access or `#(authorize)` reads the given, since those are model concerns.
+control, and when row-level access or `#(row_authorize)` reads the given, since those are model concerns.
 A `filter<…>` given binds with `~`; a plain `date` or `number` given is a value, not a filter
 expression, and binds with `>=`, `<=` or `=`.
 

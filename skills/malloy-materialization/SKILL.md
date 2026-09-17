@@ -94,7 +94,7 @@ source: persist_smoke is smoke_raw -> { aggregate: n is count() }
 
 Delete the smoke file and drop its table afterward.
 
-## Persisting an `#(authorize)`-gated source
+## Persisting a `#(row_authorize)`-gated source
 
 A gated source **can** be persisted, but only on one tier and only in one shape, and the thing to be
 careful about is not refused by anything - you have to decide it.
@@ -172,4 +172,4 @@ bound on how long a revoked row keeps being served.
 - **Quote the name** - a bare `name=` always hard-stops the build.
 - **Republishing unchanged persist logic reuses the table** - reuse is keyed on the content-addressed `sourceEntityId`, not the `name=`.
 - **Removing a persist source (or a smoke test) does not drop its table** - physical-table cleanup is the caller's responsibility; drop it yourself.
-- **An `#(authorize)`-gated source freezes its gating column when persisted** - the gate still runs live, but a revoked row keeps being served under its old access decision until the next rebuild. `storage=` and `#@ preaggregate` refuse a gated source outright. See **Persisting an `#(authorize)`-gated source**.
+- **A `#(row_authorize)`-gated source freezes its gating column when persisted** - the gate still runs live, but a revoked row keeps being served under its old access decision until the next rebuild. `storage=` and `#@ preaggregate` refuse a gated source outright. See **Persisting a `#(row_authorize)`-gated source**.

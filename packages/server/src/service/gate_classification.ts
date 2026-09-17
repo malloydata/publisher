@@ -1304,7 +1304,7 @@ export function assertNoFanoutFieldPath(
            `this source — refused rather than assumed safe.`;
    throw new AuthorizeGrammarError(
       "fanout_path",
-      `Source "${sourceName}" declares \`#(authorize)\` on \`${fieldPath}\`, ${detail}`,
+      `Source "${sourceName}" declares an authorize gate on \`${fieldPath}\`, ${detail}`,
    );
 }
 

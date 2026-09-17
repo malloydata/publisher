@@ -3012,7 +3012,7 @@ describe("get_context authorize deny-all drop", () => {
       expect(sources).toEqual([]);
    });
 
-   it("drops neither a query entity nor a source card for a query over an `#(source_authorize) false` source", async () => {
+   it("drops neither a query entity nor a source card for a query over a `#(source_authorize) false` source", async () => {
       const sources = await viewSourcesFor(
          { name: "locked", sourceAuthorize: ["false"] },
          { name: "q", sourceName: "locked" },

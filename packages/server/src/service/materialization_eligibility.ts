@@ -125,7 +125,7 @@ export function assertMaterializationEligible(
          reason: "authorize",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: it is protected by an #(authorize) gate (its own or a ` +
+            `destination: it is protected by an authorize gate (its own or a ` +
             `joined source's). An authorize expression is evaluated per request; ` +
             `a materialized-once table served frozen carries no gate, so it would ` +
             `be served to everyone, bypassing authorization. This is refused for ` +
@@ -225,9 +225,9 @@ export function assertColocatedPersistNotAuthorizeGated(
    const gated =
       origin === "preaggregate"
          ? `the source '${sourceName}' rolls up is protected by an ` +
-           `#(authorize) gate (its own, a joined source's, or inherited ` +
+           `authorize gate (its own, a joined source's, or inherited ` +
            `from a source it derives from)`
-         : `it is protected by an #(authorize) gate (its own, a joined ` +
+         : `it is protected by an authorize gate (its own, a joined ` +
            `source's, or inherited from a source it derives from)`;
    // The relaxation's common refusal is now the join/inherited case: the gate
    // is ALREADY on a source that is not materialized (a joined-in or

@@ -21,7 +21,7 @@ every doc below points back to one of them, and each example's README points bac
 | Example                                              | What it shows                                                                                                                     |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | [storefront](../examples/storefront)                 | A complete ecommerce model — joins, measures, `# dashboard` views, and a no-build HTML app. The flagship first-open package.      |
-| [governed-analytics](../examples/governed-analytics) | Givens, `#(authorize)`, row-level access, and discovery curation in one small package.                                            |
+| [governed-analytics](../examples/governed-analytics) | Givens, `#(row_authorize)`, row-level access, and discovery curation in one small package.                                            |
 | [html-data-app](../examples/html-data-app)           | A no-build SaaS-subscriptions dashboard served from a package's `public/` directory.                                              |
 | [data-app](../examples/data-app)                     | _Advanced/internal:_ a standalone React app built on the SDK, reading from `storefront`. Not a served package — run it with Vite. |
 
@@ -55,8 +55,8 @@ there for the primitive, then follow the application you need.
 | Doc                                                | Read it when you want to…                                                                              |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | [givens.md](givens.md)                             | Learn the base mechanism — declare runtime parameters, drive filter widgets, and reach access control. |
-| [row-level-access.md](row-level-access.md)         | Restrict _which rows_ a caller sees (given-scoped `where:` + `#(authorize)`).                          |
-| [authorize.md](authorize.md)                       | Gate _who_ can query a source, and _which rows_ they get, with `#(authorize)`.                         |
+| [row-level-access.md](row-level-access.md)         | Restrict _which rows_ a caller sees (given-scoped `where:` + `#(row_authorize)`).                          |
+| [authorize.md](authorize.md)                       | Gate _who_ can query a source, and _which rows_ they get, with `#(row_authorize)`.                         |
 | [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`explores` / `queryableSources`) — the visibility axis.  |
 | [security-posture.md](security-posture.md)         | Understand what Publisher does and does not defend against, before deploying it or adding a feature.   |
 

@@ -219,7 +219,7 @@ function splitFieldPathSegments(fieldPath: string): string[] {
  *  own text ({@link reject}) or across more than one note's terms
  *  ({@link rejectCoherence}). */
 const GRAMMAR_SUMMARY =
-   "#(authorize) only accepts one or more `and`-joined terms, each " +
+   "An authorize gate only accepts one or more `and`-joined terms, each " +
    "either `<column> <op> $GIVEN` (a single field or a dotted join " +
    "path on the left) or `'<literal>' in $GIVEN` (a literal on the " +
    "left), where <op> is fixed by the given's own arity: `in` for a " +
@@ -231,7 +231,7 @@ function rejectionMessage(
    detail: string,
 ): string {
    return (
-      `Source "${sourceName}" declares \`#(authorize) ${body}\`: ${detail} ` +
+      `Source "${sourceName}" declares an authorize gate \`${body}\`: ${detail} ` +
       GRAMMAR_SUMMARY
    );
 }
@@ -258,7 +258,7 @@ function rejectCoherence(
 ): never {
    throw new AuthorizeGrammarError(
       cause,
-      `Source "${sourceName}" declares #(authorize) notes whose terms ` +
+      `Source "${sourceName}" declares authorize notes whose terms ` +
          `conflict: ${detail} ${GRAMMAR_SUMMARY}`,
    );
 }
@@ -585,7 +585,7 @@ export function assertAuthorizeGrammarTermsCoherent(
          sourceName,
          "deny_all_with_sibling",
          "an unconditional `false` deny-all cannot be combined with any " +
-            "other `#(authorize)` note — a deny-all admits nothing, so a " +
+            "other authorize note — a deny-all admits nothing, so a " +
             "sibling note can never change what is served and its " +
             "presence is very likely a mistake.",
       );
@@ -747,7 +747,7 @@ export function parseAuthorizeGrammarBody(
             trimmedBody,
             "row_level_term_in_source_authorize",
             "a row-level term (field on the left) is not allowed in " +
-               "`#(source_authorize)` — move the term to `#(authorize)`.",
+               "`#(source_authorize)` — move the term to `#(row_authorize)`.",
          );
       }
    }
