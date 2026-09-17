@@ -36,12 +36,12 @@ export const DEFAULT_THEME: Required<Theme> = {
    allowUserToggle: true,
    palette: {
       series: DEFAULT_SERIES,
+      // The chart canvas. One ground for the whole dashboard in both modes —
+      // canvas, card and the panel between cards are all this value, and the
+      // borders do the separating. See `tile`.
       background: {
          light: "#ffffff",
-         // Slate to match the Publisher app's sidebar surface so
-         // rendered charts sit on the same elevation as the chrome
-         // around them.
-         dark: "#1e293b",
+         dark: "#0f172a",
       },
       tableHeader: {
          light: "#475569",
@@ -58,16 +58,20 @@ export const DEFAULT_THEME: Required<Theme> = {
          light: "#475569",
          dark: "#e2e8f0",
       },
-      // The padded container that wraps each chart / table in a
-      // dashboard. Light mode: a faint recess off white; dark mode:
-      // page-outer slate.
+      // The padded container that wraps each chart / table in a dashboard.
       //
-      // Neutral slate, not a tint. This was `#f5fafc`, a cyan-cast
-      // near-white left from the logo palette, and it was the most visible
-      // survivor of it: every dashboard on the server painted a pale blue
-      // panel behind its tiles, under charts that were no longer blue-green.
+      // The SAME value as the canvas it holds and the panel it sits on, in
+      // both modes: a card is separated by its border and its radius, not by
+      // a wash. A tinted card reads as a recess — something switched off —
+      // and stacking card, canvas and panel as three values put three greys
+      // on one tile.
+      //
+      // Both modes are built the same way on purpose. They used to differ in
+      // structure, not just in value — light separated by border, dark by
+      // elevation — so a change to how a card reads had to be reasoned about
+      // twice and could land correct in one mode and wrong in the other.
       tile: {
-         light: "#f8fafc",
+         light: "#ffffff",
          dark: "#0f172a",
       },
       tileTitle: {
