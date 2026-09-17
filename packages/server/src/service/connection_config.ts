@@ -353,8 +353,9 @@ function validateConnectionShape(connection: ApiConnection): void {
       // authorized by whoever configures the connection — deliberately NOT gated
       // by an env flag, and kept separate from the `publisher` HTTP multi-hop
       // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
-      // publisher-to-publisher proxying, a distinct operator decision). Optional
-      // host-key pinning is fail-closed at connect time when configured (see
+      // publisher-to-publisher proxying, a distinct operator decision). Host-key
+      // pinning is required and fail-closed at connect time, unless the deployment
+      // sets PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see
       // openProxy); the proxy-specific fields are validated up front below so a
       // permanent misconfig fails at config load, not by repeatedly dialing the
       // tenant's bastion at query time.

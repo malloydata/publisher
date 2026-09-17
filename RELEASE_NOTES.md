@@ -31,39 +31,6 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — the dashboard editor is not the only writer, and the browser is not the only store
-`DocumentStorage` exists so the host decides where an authored document goes, but the
-editor was written when the browser was the only implementation and the editor was the
-only writer. Both assumptions were baked into its state machine, where they stayed
-invisible while storage really was one person's browser and nothing else wrote the
-package. Given a real backend, or a second writer, they became four ways to lose work.
-**Two of them bite the Console today, on the package-write path shipped in 0.4.0.**
-The hash a save hands back as `expectedHash` was taken from the latest fetch of the
-file rather than from the file the builder opened against, so a save could present a
-hash that matched a version the author had never seen, be accepted, and overwrite it.
-And saving a resumed draft into the package remounted the builder onto the pre-save
-package text, silently discarding the save that had just succeeded. Both are fixed.
-**New in the interface.** A `Workspace` may now declare itself `authoritative`: its copy
-IS the document, and the package file is a deploy of it. The editor then opens that copy,
-writes back to it, and drops the "you have edits the package does not have" prompt, which
-means nothing when the copy is the record. Omitting the flag leaves every existing host
-exactly as it was. Absence now rejects with a `DocumentNotFoundError` rather than a bare
-`Error`, so a read that failed is no longer indistinguishable from a document that is not
-there; the editor refuses to arm Save on a read it could not complete, instead of
-treating silence as permission to overwrite.
-**Also.** A new version of the file arriving while there are unsaved edits is offered
-rather than applied, so a background refetch no longer discards an author's work, and
-saving through storage no longer throws away the undo history. `DashboardEditor` takes an
-`onDirtyChange` callback for hosts that own the way out of the page. The toolbar caption
-and the package page's draft list now say where a document is kept in the backend's own
-words, taken from `Workspace.description`, instead of asserting "this browser".
-`dashboard.saved` gains `where: "host"` and an optional `workspace`; `dashboard.opened`
-gains `from: "record"`.
-What this does not add is contention control on the record itself. `saveDocument` has
-no expected-version slot, so two people editing one authoritative workspace are still
-last writer wins, and the editor cannot detect it. Only the package path is
-compare-and-swap protected.
-
 ## [Unreleased] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
 
 `proxy.ssh.hostKey` pins the bastion's host key. When it was omitted the tunnel
@@ -75,6 +42,10 @@ told it to.
 It now fails closed: a connection whose `ssh.hostKey` is unset is refused when a
 query first uses it. **If you run an SSH-proxy connection without a pinned host
 key, queries through it will start failing after this upgrade.**
+
+Do one of the two below **before** the new image rolls, not after. The refusal
+fires on the first query through an unpinned tunnel, so a deployment that waits
+to react has already failed those queries.
 
 Two ways forward, and the first is the one to prefer:
 
@@ -91,6 +62,44 @@ To find the affected connections before upgrading, look for a connection with a
 for a failing query either: the tunnel is dialed lazily, and on config load this
 release logs a warning naming each SSH connection that pins no host key while the
 opt-in is off, so the list is in the startup log before anyone runs a query.
+
+## [Unreleased] — the dashboard editor is not the only writer, and the browser is not the only store
+
+`DocumentStorage` exists so the host decides where an authored document goes, but the
+editor was written when the browser was the only implementation and the editor was the
+only writer. Both assumptions were baked into its state machine, where they stayed
+invisible while storage really was one person's browser and nothing else wrote the
+package. Given a real backend, or a second writer, they became four ways to lose work.
+
+**Two of them bite the Console today, on the package-write path shipped in 0.4.0.**
+The hash a save hands back as `expectedHash` was taken from the latest fetch of the
+file rather than from the file the builder opened against, so a save could present a
+hash that matched a version the author had never seen, be accepted, and overwrite it.
+And saving a resumed draft into the package remounted the builder onto the pre-save
+package text, silently discarding the save that had just succeeded. Both are fixed.
+
+**New in the interface.** A `Workspace` may now declare itself `authoritative`: its copy
+IS the document, and the package file is a deploy of it. The editor then opens that copy,
+writes back to it, and drops the "you have edits the package does not have" prompt, which
+means nothing when the copy is the record. Omitting the flag leaves every existing host
+exactly as it was. Absence now rejects with a `DocumentNotFoundError` rather than a bare
+`Error`, so a read that failed is no longer indistinguishable from a document that is not
+there; the editor refuses to arm Save on a read it could not complete, instead of
+treating silence as permission to overwrite.
+
+**Also.** A new version of the file arriving while there are unsaved edits is offered
+rather than applied, so a background refetch no longer discards an author's work, and
+saving through storage no longer throws away the undo history. `DashboardEditor` takes an
+`onDirtyChange` callback for hosts that own the way out of the page. The toolbar caption
+and the package page's draft list now say where a document is kept in the backend's own
+words, taken from `Workspace.description`, instead of asserting "this browser".
+`dashboard.saved` gains `where: "host"` and an optional `workspace`; `dashboard.opened`
+gains `from: "record"`.
+
+What this does not add is contention control on the record itself. `saveDocument` has
+no expected-version slot, so two people editing one authoritative workspace are still
+last writer wins, and the editor cannot detect it. Only the package path is
+compare-and-swap protected.
 
 ## [Unreleased] — compile and sqlSource now count against the concurrency cap
 
