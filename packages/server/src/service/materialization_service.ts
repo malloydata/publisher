@@ -1162,7 +1162,7 @@ export class MaterializationService {
                // branch was never entered.
                if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
                   try {
-                     assertMaterializationEligible(persistSource);
+                     assertMaterializationEligible(persistSource, deriveAnnotationFields(persistSource));
                   } catch (err) {
                      if (!(err instanceof MaterializationEligibilityError))
                         throw err;
@@ -1176,7 +1176,7 @@ export class MaterializationService {
                      continue;
                   }
                } else {
-                  assertMaterializationEligible(persistSource);
+                  assertMaterializationEligible(persistSource, deriveAnnotationFields(persistSource));
                }
             } else {
                // No storage destination: this is the colocated `#@ persist`
@@ -2031,7 +2031,7 @@ export class MaterializationService {
                   orchestratedInstruction?.destination &&
                   getPersistStorageMode() !== "off"
                ) {
-                  assertMaterializationEligible(persistSource);
+                  assertMaterializationEligible(persistSource, deriveAnnotationFields(persistSource));
                } else {
                   // The gate refusal above only fires for a STORAGE-targeted
                   // build, so on its own it leaves every other instruction —
@@ -2094,7 +2094,7 @@ export class MaterializationService {
                   instruction.destination &&
                   getPersistStorageMode() !== "off"
                ) {
-                  assertMaterializationEligible(persistSource);
+                  assertMaterializationEligible(persistSource, deriveAnnotationFields(persistSource));
                }
 
                // One physical table, written once. Several sources routinely map
