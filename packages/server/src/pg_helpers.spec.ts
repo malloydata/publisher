@@ -306,6 +306,25 @@ describe("redactConnectionSecrets", () => {
       ).not.toContain(SECRET);
    });
 
+
+   it("redacts a password quoted as JSON, which the libpq pass does not reach", () => {
+      // redactPgSecrets' keyword pass matches `password=`; a serialized config
+      // reports `"password":"..."`, which goes straight through it.
+      const redacted = redactConnectionSecrets(
+         `connect refused; config={"password":"${SECRET}","host":"h"}`,
+      );
+      expect(redacted).not.toContain(SECRET);
+      expect(redacted).toContain('"host":"h"');
+   });
+
+   it("keeps a driver's prose when a field name is followed by an explanation", () => {
+      // Observed from the SSH layer: `Cannot parse privateKey: Unsupported key
+      // format`. The text after the colon is the diagnosis, not the key, and
+      // redacting it would leave the caller with no reason for the failure.
+      const msg = "Cannot parse privateKey: Unsupported key format";
+      expect(redactConnectionSecrets(msg)).toBe(msg);
+   });
+
    it("leaves non-secret content alone", () => {
       const msg =
          'Connection test failed: no such host "warehouse.internal" (port 5432), user analytics_ro';

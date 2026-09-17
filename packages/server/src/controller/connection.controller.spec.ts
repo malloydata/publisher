@@ -881,6 +881,78 @@ describe("ConnectionController.testConnectionConfiguration name validation", () 
 });
 
 /**
+ * A connection test is handed the caller's own configuration, and the driver
+ * builds its failure text by quoting that configuration back. The status the
+ * caller receives therefore has to be checked for the credentials it was given,
+ * not only for the reason it failed.
+ *
+ * Driven through a real failure rather than a mocked one: the host is under the
+ * RFC 2606 reserved `.invalid` TLD, so it can never resolve and the attempt
+ * fails without authenticating against anything. That reaches the same
+ * `errorMessage` path a production failure takes.
+ *
+ * This asserts the contract at the boundary the caller actually sees. It is not
+ * the load-bearing test for the redaction itself -- which shape of driver text
+ * reaches this path depends on how far the driver gets, and the SSH layer
+ * rejects a malformed key before it ever embeds one. The redactor is pinned
+ * directly, over every credential shape, in pg_helpers.spec.ts.
+ *
+ * The values below are generated fixtures. This asserts they do not appear, so
+ * it must never be given a credential whose disclosure would matter.
+ */
+describe("ConnectionController.testConnectionConfiguration secret redaction", () => {
+   afterEach(() => sinon.restore());
+
+   const PG_PASSWORD = "pg-password-sentinel-5pu5q1";
+   const SSH_PRIVATE_KEY = "ssh-private-key-sentinel-6qv6r2";
+   const SSH_PRIVATE_KEY_PASS = "ssh-passphrase-sentinel-7rw7s3";
+   const UNREACHABLE_HOST = "connection-redaction-probe.invalid";
+
+   it("reports a failure without echoing the credentials it was given", async () => {
+      const controller = new ConnectionController(
+         {} as unknown as EnvironmentStore,
+      );
+
+      const status = await controller.testConnectionConfiguration({
+         name: "redaction_probe",
+         type: "postgres",
+         postgresConnection: {
+            host: UNREACHABLE_HOST,
+            port: 5432,
+            databaseName: "analytics",
+            userName: "analytics_ro",
+            password: PG_PASSWORD,
+         },
+         proxy: {
+            type: "ssh",
+            ssh: {
+               host: UNREACHABLE_HOST,
+               port: 22,
+               username: "tunnel",
+               privateKey: SSH_PRIVATE_KEY,
+               privateKeyPass: SSH_PRIVATE_KEY_PASS,
+            },
+         },
+      } as never);
+
+      // The attempt cannot succeed against an unresolvable host. If it somehow
+      // did, this is no longer exercising the error path and must not pass on
+      // the strength of an empty message.
+      expect(status.status).toBe("failed");
+      const message = status.errorMessage ?? "";
+      expect(message.length).toBeGreaterThan(0);
+
+      for (const secret of [
+         PG_PASSWORD,
+         SSH_PRIVATE_KEY,
+         SSH_PRIVATE_KEY_PASS,
+      ]) {
+         expect(message).not.toContain(secret);
+      }
+   }, 30_000);
+});
+
+/**
  * A table that is not in the database must answer 404, not 502.
  *
  * The router counts 5xx against its server-error budget and pages on-call, so

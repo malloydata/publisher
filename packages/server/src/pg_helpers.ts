@@ -64,12 +64,16 @@ export function redactPgSecrets(s: string): string {
 
 // The secret-bearing field names across every connection type the API accepts,
 // as they appear when a driver or a serializer echoes the config it was handed.
-// `password` is covered by redactPgSecrets' keyword pass and is not repeated.
+//
+// `password` is included even though redactPgSecrets has a `password=` pass:
+// that pass only matches the libpq `=` form, so a serialized config reporting
+// `"password":"..."` in JSON goes straight through it.
 //
 // Matched case-insensitively and in either casing convention, because the same
 // field arrives as `privateKey` from the API schema and `private_key` from a
 // driver that snake-cases its config before reporting it.
 const SECRET_FIELD_NAMES = [
+   "password",
    "privateKey",
    "privateKeyPass",
    "serviceAccountKeyJson",
@@ -85,15 +89,32 @@ const SECRET_FIELD_NAMES = [
    "secret",
 ];
 
-// `name: value`, `name=value` or `"name": "value"`, for each name above. The
-// value class stops at the separators that end a field in JSON, in libpq
-// keyword form and in ordinary prose, so a match cannot run past the field it
-// started in and swallow the rest of the message.
-const SECRET_FIELD_PATTERN = new RegExp(
-   String.raw`(["']?(?:${SECRET_FIELD_NAMES.map((n) =>
-      // Accept camelCase and snake_case for the same field.
-      n.replace(/([A-Z])/g, "[_-]?$1"),
-   ).join("|")})["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;&\s}]+)`,
+// A field assignment carrying one of the names above, in the three forms a
+// driver or a serializer produces: `"name": "value"` (JSON), `name=value`
+// (libpq keyword and query-string), and `name: value` where the value is
+// quoted.
+//
+// A BARE `name: value` is deliberately NOT matched. Drivers write prose like
+// `Cannot parse privateKey: Unsupported key format`, where the text after the
+// colon is the explanation rather than the key -- matching it would redact the
+// diagnosis and leave the caller with `Cannot parse privateKey: *** key
+// format`. Quoting, or an `=`, is what distinguishes a value from a sentence.
+const NAME_ALTERNATION = SECRET_FIELD_NAMES.map((n) =>
+   // Accept camelCase and snake_case for the same field.
+   n.replace(/([A-Z])/g, "[_-]?$1"),
+).join("|");
+
+// Quoted value after `:` or `=`, e.g. "privateKey": "..." or privateKey='...'.
+const SECRET_QUOTED_PATTERN = new RegExp(
+   String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*')`,
+   "gi",
+);
+
+// Bare value after `=` only. The value class stops at the separators that end a
+// field in libpq keyword form, in a query string and in ordinary prose, so a
+// match cannot run past the field it started in.
+const SECRET_BARE_PATTERN = new RegExp(
+   String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*=\s*)(?:[^,;&\s}"']+)`,
    "gi",
 );
 
@@ -124,6 +145,7 @@ export function redactConnectionSecrets(s: string): string {
    return redactPgSecrets(
       s
          .replace(PEM_BLOCK_PATTERN, "***")
-         .replace(SECRET_FIELD_PATTERN, "$1***"),
+         .replace(SECRET_QUOTED_PATTERN, "$1***")
+         .replace(SECRET_BARE_PATTERN, "$1***"),
    );
 }
