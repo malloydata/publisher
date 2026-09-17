@@ -160,3 +160,40 @@ describe("storage= serving of a given-scoped source", () => {
       expect(await sumFor(model, { ORG_ID: 1 })).toBe(0);
    });
 });
+
+describe("a term the shape cannot reproduce withholds the binding", () => {
+   // The wholeness precondition, pinned rather than assumed.
+   //
+   // A source is admitted to the tier on the promise that every term stripped
+   // from its build is re-applied at read. Nothing enforces that promise by
+   // checking it; what enforces it is that the serve shape emits EVERY filter,
+   // so a term it cannot reproduce fails the shape compile and the binding is
+   // withheld. That is a property of the shape-compile ladder, not a rule
+   // anything states — which is exactly why it needs a test of its own: a
+   // refactor making shape compilation more forgiving would delete the
+   // guarantee, and without this, nothing would go red.
+   //
+   // The unreproducible term here reads a given the model does not declare, so
+   // the re-emitted `where:` cannot compile against the shape. The required
+   // outcome is a LIVE answer, never an unfiltered one.
+   it("serves live rather than serving the artifact unfiltered", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+
+      // Baseline: with the term reproducible, the tier answers 30.
+      expect(await sumFor(model, { ORG_ID: 1 })).toBe(30);
+
+      // Now break reproduction the way a narrowed column would: the binding's
+      // declared shape loses `org_id`, so `where: org_id = $ORG_ID` names a
+      // column the shape does not have.
+      model.setServeBindings([
+         { ...BINDING, schema: [{ name: "amount", type: "BIGINT" }] },
+      ]);
+
+      // Live, and therefore empty — NOT 37, which is the whole artifact and
+      // what dropping the unreproducible term would have returned.
+      const answer = await sumFor(model, { ORG_ID: 1 });
+      expect(answer).not.toBe(37);
+      expect(answer).toBe(0);
+   });
+});
