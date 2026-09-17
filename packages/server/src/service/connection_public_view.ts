@@ -171,6 +171,11 @@ const PUBLIC_CONNECTION: PublicShape = {
    name: "scalar",
    type: "scalar",
    fingerprint: "scalar",
+   // Opaque and writer-owned, like fingerprint beside it, but it must be
+   // RETURNED rather than withheld: a writer compares the tag each server
+   // reports against the one it would send now, so a tag this response drops is
+   // a tag that reads as divergence on every poll.
+   configEtag: "scalar",
    // Free-form property bags the contract documents as non-secret and
    // round-tripped verbatim, so they cannot be enumerated field by field.
    queryMetadata: "any",

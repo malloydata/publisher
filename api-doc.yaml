@@ -4807,6 +4807,36 @@ components:
             environments on the same project with different
             impersonateServiceAccount values but the same fingerprint would
             share persisted-table ids.
+        configEtag:
+          type: string
+          description: >
+            Optional, opaque entity tag for this connection's configuration,
+            owned by whoever wrote the connection. The server stores it
+            verbatim, returns it verbatim, and never derives, validates or
+            interprets it; it has no meaning to Publisher itself.
+
+            It exists so that a writer distributing this connection to several
+            Publishers can tell which of them are still holding the
+            configuration it last sent. The writer computes a tag over the
+            configuration it is about to send, sends the two together, and
+            compares the tag each server reports against the one it would send
+            now — the same equality-only comparison an HTTP ETag supports, and
+            no other operation is defined on it. A server that reports a
+            different tag, or none, has not been given that configuration.
+
+            Distinct from `fingerprint`, which identifies the DATA a connection
+            reaches and deliberately excludes credentials so it survives
+            rotation. This identifies the CONFIGURATION, credentials included,
+            which is what makes it able to distinguish a server holding a
+            rotated-away password from one holding the current one — a
+            distinction no read can otherwise make, since credentials are never
+            returned. The two change independently and neither substitutes for
+            the other.
+
+            Unlike a credential, it is returned on reads: it names no secret,
+            and withholding it would defeat its only purpose. A connection
+            written without one keeps whatever tag it already had, so a writer
+            that does not use this field never has to think about it.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-

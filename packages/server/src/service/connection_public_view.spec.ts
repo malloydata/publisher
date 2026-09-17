@@ -597,6 +597,69 @@ describe("withheldFields", () => {
    });
 });
 
+describe("configEtag", () => {
+   const tagged = {
+      name: "pg",
+      type: "postgres",
+      configEtag: "sha256:abc",
+      postgresConnection: { host: "db.internal", password: SENTINEL },
+   } as ApiConnection;
+
+   it("is returned rather than withheld", () => {
+      // The whole point of the field is that a writer can compare the tag a
+      // server reports against the one it would send now. A view that dropped
+      // it would report every server as diverged forever, so this has to fail
+      // if someone ever reclassifies it as a credential.
+      const view = toPublicConnection(tagged);
+      expect(view.configEtag).toBe("sha256:abc");
+      expect(view.withheldFields ?? []).not.toContain("configEtag");
+   });
+
+   it("still withholds the credentials beside it", () => {
+      const view = toPublicConnection(tagged);
+      expect(allStrings(view)).not.toContain(SENTINEL);
+      expect(view.withheldFields).toEqual(["postgresConnection.password"]);
+   });
+
+   it("is absent from the view when the connection carries none", () => {
+      const view = toPublicConnection({
+         name: "pg",
+         type: "postgres",
+         postgresConnection: { host: "db.internal" },
+      } as ApiConnection);
+      expect("configEtag" in view).toBe(false);
+   });
+
+   it("is replaced by an update that carries one", () => {
+      const merged = mergeConnectionUpdate(tagged, {
+         configEtag: "sha256:def",
+         postgresConnection: { host: "db.new" },
+      } as Partial<ApiConnection>);
+      expect(merged.configEtag).toBe("sha256:def");
+   });
+
+   it("survives an update that does not mention it", () => {
+      // A writer that does not use the field never has to think about it, which
+      // is only true if omitting it is not the same as clearing it.
+      const merged = mergeConnectionUpdate(tagged, {
+         postgresConnection: { host: "db.new" },
+      } as Partial<ApiConnection>);
+      expect(merged.configEtag).toBe("sha256:abc");
+   });
+
+   it("is stored verbatim rather than interpreted", () => {
+      // Opaque means opaque: the server does not parse, normalize or validate
+      // the value, so a tag in a shape no hash produces round-trips unchanged.
+      const opaque = "  not/a*hash  ";
+      const view = toPublicConnection({
+         name: "pg",
+         type: "postgres",
+         configEtag: opaque,
+      } as ApiConnection);
+      expect(view.configEtag).toBe(opaque);
+   });
+});
+
 describe("mergeConnectionUpdate", () => {
    const stored = {
       name: "pg",

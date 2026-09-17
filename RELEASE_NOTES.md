@@ -126,6 +126,24 @@ have moved the REST port to localhost too. Precedence is `MCP_HOST`, then an
 explicit `PUBLISHER_HOST` so `--host` still moves both together, then
 `127.0.0.1`. The REST default is unchanged.
 
+## [Unreleased] — `configEtag`, so a writer can tell which Publishers still hold the config it sent
+
+Credentials are never returned on a read, so a system distributing the same connection to several
+Publishers could not confirm any of them was still holding the credential it last sent: a read tells
+a Publisher holding *some* password from one holding *none*, not one holding last month's from one
+holding the current one.
+
+`Connection.configEtag` is a new optional string the writer owns. Publisher stores it with the
+connection, returns it on reads, and never derives, validates or interprets it — compute a tag over
+the config you are about to send, send the two together, and compare what each Publisher reports
+against what you would send now. A different tag, or none, means that Publisher was not given that
+configuration. A write that does not mention the field keeps the tag already stored, so a client
+that ignores it is unaffected.
+
+It is deliberately not `fingerprint`, which identifies the *data* a connection reaches and excludes
+credentials so rotation does not re-address artifacts: two configs differing only by password share
+a fingerprint, which is the case this exists to catch. [docs/connections.md](docs/connections.md)
+has the comparison and the limits.
 ## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the
