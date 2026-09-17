@@ -135,14 +135,13 @@ export function BuilderToolbar({
                         variant={dirty ? "contained" : "outlined"}
                         disabled={!dirty || saving}
                         onClick={onSave}
+                        // Wide enough for the longest of the three labels, so
+                        // the bar does not reflow as the state cycles.
                         sx={{ minWidth: 124 }}
                      >
                         {/* Says what will happen, then that it is happening,
-                            then what did. No tick on "Saved": the button two
-                            along is "Done editing", which has one, and two
-                            ticks a thumb apart read as one control repeated
-                            rather than as two states of different things. The
-                            word already says it. */}
+                            then what did. One tick in the bar, on "Done
+                            editing"; here the word carries the state. */}
                         {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
                      </Button>
                   </span>
