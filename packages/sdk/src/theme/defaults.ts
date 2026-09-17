@@ -36,12 +36,12 @@ export const DEFAULT_THEME: Required<Theme> = {
    allowUserToggle: true,
    palette: {
       series: DEFAULT_SERIES,
+      // The chart canvas. One ground for the whole dashboard in both modes —
+      // canvas, card and the panel between cards are all this value, and the
+      // borders do the separating. See `tile`.
       background: {
          light: "#ffffff",
-         // Slate to match the Publisher app's sidebar surface so
-         // rendered charts sit on the same elevation as the chrome
-         // around them.
-         dark: "#1e293b",
+         dark: "#0f172a",
       },
       tableHeader: {
          light: "#475569",
@@ -60,12 +60,16 @@ export const DEFAULT_THEME: Required<Theme> = {
       },
       // The padded container that wraps each chart / table in a dashboard.
       //
-      // White in light mode: the card is separated from the page by its
-      // border and its radius, and it does not need a wash as well. A tinted
-      // card reads as a recess — something switched off — under charts whose
-      // own surface is white, which put two greys and a white on one tile.
-      // Dark mode keeps the page-outer slate, where a card DOES need a value
-      // difference to read as a card at all.
+      // The SAME value as the canvas it holds and the panel it sits on, in
+      // both modes: a card is separated by its border and its radius, not by
+      // a wash. A tinted card reads as a recess — something switched off —
+      // and stacking card, canvas and panel as three values put three greys
+      // on one tile.
+      //
+      // Both modes are built the same way on purpose. They used to differ in
+      // structure, not just in value — light separated by border, dark by
+      // elevation — so a change to how a card reads had to be reasoned about
+      // twice and could land correct in one mode and wrong in the other.
       tile: {
          light: "#ffffff",
          dark: "#0f172a",
