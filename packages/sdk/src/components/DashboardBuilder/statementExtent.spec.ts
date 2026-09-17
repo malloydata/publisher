@@ -413,6 +413,64 @@ source: a is one extend {
       expect(reason).toContain("// keep");
    });
 
+   // The sibling of the case above, and the one that got missed: when EVERY
+   // clause of a `where:` is the builder's, the statement goes whole and the
+   // comment inside its span went with it, silently and successfully.
+   it("refuses to remove a whole where: whose span holds a comment", async () => {
+      const reason = await refused(
+         `${head}
+source: a is one extend {
+  view: kpis is {
+    where: a ~ $A,
+      // why both
+      b ~ $B
+    aggregate: n is count()
+  }
+}`,
+         (d) => {
+            delete d.tiles[0].filters;
+         },
+      );
+      expect(reason).toContain("// why both");
+   });
+
+   // Same statement, comment trailing it rather than inside it. The cut spared
+   // the comment and stranded it above the closing brace, explaining nothing.
+   it("refuses to remove a where: that a comment trails", async () => {
+      const reason = await refused(
+         `${head}
+source: a is one extend {
+  view: kpis is {
+    where: a ~ $A // only this quarter
+    aggregate: n is count()
+  }
+}`,
+         (d) => {
+            delete d.tiles[0].filters;
+         },
+      );
+      expect(reason).toContain("// only this quarter");
+   });
+
+   // `/* … */` is a comment to Malloy's lexer under a token of its own, so a
+   // guard that knew only `COMMENT_TO_EOL` deleted one without seeing it.
+   it("refuses to remove a clause whose separator carries a block comment", async () => {
+      const reason = await refused(
+         `${head}
+source: a is one extend {
+  view: kpis is {
+    where: a ~ $A,
+      /* keep both */
+      b ~ $B
+  }
+}`,
+         (d) => {
+            d.tiles[0].filters = [{ field: "b", given: "B" }];
+         },
+      );
+      expect(reason).toContain("/* keep both */");
+   });
+
    it("refuses to collapse a refinement over a comment beside it", async () => {
       const reason = await refused(
          `${head}

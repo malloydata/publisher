@@ -6,6 +6,7 @@ import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import { parseMalloy, parseRefused } from "./malloyTree";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -27,39 +28,109 @@ source: a is scoped_orders extend {
 }`;
 
 describe("blockAbove", () => {
+   // Real sources, parsed: where the block STARTS comes from the lexer's own
+   // comments now, and a synthetic array of lines could not exercise that.
+   const block = async (source: string, declLine: number) => {
+      const parse = await parseMalloy(source);
+      if (parseRefused(parse)) throw new Error(parse.reason);
+      return blockAbove(parse.parsed, source.split("\n"), declLine);
+   };
+
    // The boundary is a blank line, because that is the author's own separator.
    // Validated against the bundled dashboard, where the block above
    // `revenue_trend` is fourteen lines of comment plus three tags.
-   it("collects tags and comments up to the blank line", () => {
-      const lines = [
-         "  }",
-         "",
-         "  // why this row is six and six",
-         "  # colspan=6",
-         '  # label="Revenue"',
-         "  view: revenue is sales",
-      ];
-      const block = blockAbove(lines, 5);
-      expect(block.start).toBe(2);
-      expect(block.tags.map((t) => t.text)).toEqual([
+   it("collects tags and comments up to the blank line", async () => {
+      const at = await block(
+         [
+            "source: s is a extend {",
+            "",
+            "  // why this row is six and six",
+            "  # colspan=6",
+            '  # label="Revenue"',
+            "  view: revenue is sales",
+            "}",
+         ].join("\n"),
+         5,
+      );
+      expect(at.start).toBe(2);
+      expect(at.tags.map((t) => t.text)).toEqual([
          "# colspan=6",
          '# label="Revenue"',
       ]);
       // The writer patches a tag in place, so the line number is load-bearing.
-      expect(block.tags.map((t) => t.line)).toEqual([3, 4]);
+      expect(at.tags.map((t) => t.line)).toEqual([3, 4]);
    });
 
-   it("stops at the blank line rather than running into the tile above", () => {
-      const lines = ["  # colspan=12", "  view: a is x", "", "  view: b is y"];
-      expect(blockAbove(lines, 3).start).toBe(3);
-      expect(blockAbove(lines, 3).tags).toEqual([]);
+   it("stops at the blank line rather than running into the tile above", async () => {
+      const at = await block(
+         [
+            "source: s is a extend {",
+            "  # colspan=12",
+            "  view: a is x",
+            "",
+            "  view: b is y",
+            "}",
+         ].join("\n"),
+         4,
+      );
+      expect(at.start).toBe(4);
+      expect(at.tags).toEqual([]);
    });
 
    // `##` is a MODEL annotation and never belongs to a declaration below it.
-   it("ignores model-level annotations", () => {
-      const lines = ['## artifact { title="T" }', "source: a is b extend {"];
-      expect(blockAbove(lines, 1).tags).toEqual([]);
+   it("ignores model-level annotations", async () => {
+      const at = await block(
+         '## artifact { title="T" }\nsource: a is b extend {\n  view: v is x\n}',
+         1,
+      );
+      expect(at.tags).toEqual([]);
    });
+
+   it("does not collect a `#` line written inside a block comment", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  /* Notes:",
+         "     # colspan is chosen below",
+         "  */",
+         "  # colspan=6",
+         "  view: revenue is sales",
+         "}",
+      ].join("\n");
+      const at = await block(source, 6);
+      expect(at.start).toBe(2);
+      expect(at.tags.map((t) => t.text)).toEqual(["# colspan=6"]);
+   });
+
+   // Malloy spells a comment three ways. Each of the two this used to read as
+   // code stopped the walk early and hid every tag above it from the WRITER,
+   // while the reader took its tags from the parser and saw them -- so a retag
+   // wrote a second copy below the comment and the read-back gate passed.
+   for (const [kind, comment] of [
+      ["a `--` line", "  -- six across, to sit beside the trend"],
+      ["a `/* ... */` line", "  /* six across, to sit beside the trend */"],
+      [
+         "a block comment over several lines",
+         "  /* six across,\n     to sit beside the trend */",
+      ],
+   ] as const) {
+      it(`reads ${kind} as part of the block, not the end of it`, async () => {
+         const source = [
+            "source: s is a extend {",
+            "",
+            "  # colspan=6",
+            comment,
+            "  view: revenue is sales",
+            "}",
+         ].join("\n");
+         const declLine = source
+            .split("\n")
+            .indexOf("  view: revenue is sales");
+         const at = await block(source, declLine);
+         expect(at.start).toBe(2);
+         expect(at.tags.map((t) => t.text)).toEqual(["# colspan=6"]);
+      });
+   }
 });
 
 describe("readDashboardDocument", () => {

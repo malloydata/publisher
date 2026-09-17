@@ -151,19 +151,24 @@ export interface ParsedMalloy {
    imports: TreeImport[];
    sources: TreeSource[];
    givens: TreeGiven[];
-   /** The `//` comment token on `line`, if the line ends with one. */
+   /** The comment token on `line`, if the line ends with one. */
    trailingComment(line: number): Span | undefined;
    /**
-    * The first `//` comment that starts inside `span`. A writer deleting a
-    * range wider than one node's own text asks this before it does, because a
-    * comment is trivia to the parser: it sits outside every span, so neither
-    * gate can see it go.
+    * The first comment that starts inside `span`, of either token kind. A
+    * writer deleting a range wider than one node's own text asks this before
+    * it does, because a comment is trivia to the parser: it sits outside every
+    * span, so neither gate can see it go.
     */
    commentIn(span: Span): Span | undefined;
-   /** Every `//` comment in the file, in order. */
+   /** Every comment in the file, in order, `//` and `--` and `/* … *\/`. */
    comments: Span[];
    /**
-    * The `#`/`//` block immediately above `line`, stopping at a blank line —
+    * Whether `line` is comment rather than code — including a line in the
+    * middle of a `/* … *\/`, whose text is prose however it begins.
+    */
+   commentLine(line: number): boolean;
+   /**
+    * The `#`/comment block immediately above `line`, stopping at a blank line —
     * the unit that travels with a declaration when it moves.
     */
    blockStart(line: number): number;
@@ -272,6 +277,13 @@ function lineStartsOf(text: string): number[] {
 class Reader {
    private readonly map: Int32Array;
    readonly lineStarts: number[];
+   /**
+    * Lines that are comment rather than code, filled in from the lexer before
+    * anything is read. A block comment's own text is prose: a line inside one
+    * that happens to start with `#` is not an annotation, and reading it as one
+    * makes the writer rewrite a line inside a comment.
+    */
+   commentLines: ReadonlySet<number> = new Set();
 
    constructor(readonly text: string) {
       this.map = codePointMap(text);
@@ -453,6 +465,7 @@ function readTags(
    const first = r.line(statement.start);
    const last = r.line(declStart);
    for (let i = first; i < last; i++) {
+      if (r.commentLines.has(i)) continue;
       const text: string = r.text
          .slice(r.lineStarts[i], r.lineStarts[i + 1] ?? r.text.length)
          .trim();
@@ -751,6 +764,10 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
       };
 
    const r = new Reader(text);
+   // Before anything is read: `readTags` has to know which lines are comment,
+   // and a source is read through it.
+   const comments = commentIndex(r, (parse?.tokenStream ?? {}) as TokenStream);
+   r.commentLines = comments.lines;
    const sources = readSources(r, root);
 
    // The shape assertion, on real content rather than on the API's presence:
@@ -764,7 +781,6 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
             `tree (malloy ${parse?.malloyVersion ?? "unknown"}), so editing is off.`,
       };
 
-   const comments = commentIndex(r, (parse?.tokenStream ?? {}) as TokenStream);
    return {
       ok: true,
       parsed: {
@@ -775,6 +791,7 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
          givens: readGivens(r, root),
          trailingComment: (line) => comments.trailing.get(line),
          comments: comments.all,
+         commentLine: (line) => comments.lines.has(line),
          commentIn: (span) =>
             comments.all.find(
                (at) => at.start >= span.start && at.start < span.end,
@@ -785,9 +802,15 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
 }
 
 /**
- * The `//` comments, taken from the LEXER's own tokens rather than from a scan
- * for `//`: a `//` inside a string literal is not a comment, and every scan
- * here that had to know that got it wrong at least once.
+ * The comments, taken from the LEXER's own tokens rather than from a scan for
+ * `//`: a `//` inside a string literal is not a comment, and every scan here
+ * that had to know that got it wrong at least once.
+ *
+ * BOTH token kinds, because Malloy has two and spells a comment three ways:
+ * `//` and `--` lex as `COMMENT_TO_EOL`, `/* … *\/` as `BLOCK_COMMENT`. A
+ * filter on the first name alone left every block comment out of this index,
+ * so it was invisible to `commentIn` -- and a writer asking that before it
+ * deleted a range was told there was nothing there to lose.
  *
  * A comment alone on its line belongs to the block above a declaration; one
  * that follows code is a trailing comment, and anything appended to that line
@@ -802,8 +825,8 @@ function commentIndex(
    const all: Span[] = [];
    const vocabulary = tokenStream.tokenSource?.vocabulary;
    for (const token of tokenStream.getTokens?.() ?? []) {
-      if (vocabulary?.getSymbolicName(token.type) !== "COMMENT_TO_EOL")
-         continue;
+      const kind = vocabulary?.getSymbolicName(token.type);
+      if (kind !== "COMMENT_TO_EOL" && kind !== "BLOCK_COMMENT") continue;
       const start = r.utf16(token.startIndex);
       let end = r.utf16(token.stopIndex + 1);
       if (start === undefined || end === undefined || end < start) continue;
@@ -819,12 +842,15 @@ function commentIndex(
       if (r.text.slice(r.lineStarts[line], start).trim() === "")
          lines.add(line);
       else trailing.set(line, { start, end });
+      // A `/* ... */` can run over several lines, and every line after its
+      // first is comment through and through whatever the first one held.
+      for (let l = line + 1; l <= r.line(end - 1); l++) lines.add(l);
    }
    return { trailing, lines, all };
 }
 
 /**
- * The first line of the `#`/`//` block above `line`, stopping at a blank line.
+ * The first line of the `#`/comment block above `line`, stopping at a blank line.
  * A blank line is the author's own separator, which is why it is the boundary
  * rather than a count or a guess about what a comment says.
  */
@@ -838,7 +864,9 @@ function blockStart(
       const text = r.text
          .slice(r.lineStarts[i], r.lineStarts[i + 1] ?? r.text.length)
          .trim();
-      if (text === "") break;
+      // A blank line is the boundary -- unless it is inside a block comment,
+      // where it is the author's paragraph break rather than their separator.
+      if (text === "" && !commentLines.has(i)) break;
       if (text.startsWith("#") || commentLines.has(i)) start = i;
       else break;
    }

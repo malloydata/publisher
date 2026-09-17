@@ -66,7 +66,7 @@ export type ReadResult =
 export const readFailed = (result: ReadResult): result is ReadFailure =>
    result.ok === false;
 
-/** A `#`/`//` block above a declaration, and where it sits. */
+/** A `#`/comment block above a declaration, and where it sits. */
 export interface Block {
    /** 0-based line of the first line in the block. */
    start: number;
@@ -78,27 +78,32 @@ export interface Block {
 }
 
 /**
- * The comment-and-tag block immediately above `declLine`.
+ * The comment-and-tag block immediately above `declLine`, up to the blank line
+ * that is the author's own separator. Validated against the bundled dashboard,
+ * where it collects `revenue_trend`'s three tags and the fourteen-line comment
+ * explaining its colspan, then stops at the blank line above — which is the
+ * right unit to carry when that tile moves.
  *
- * Scans upward while lines are `#` tags or `//` comments and STOPS AT A BLANK
- * LINE. Validated against the bundled dashboard, where it collects
- * `revenue_trend`'s three tags and the fourteen-line comment explaining its
- * colspan, then stops at the blank line above — which is the right unit to carry
- * when that tile moves.
- *
- * A blank line is the author's own separator, which is why it is the boundary
- * rather than a count or a heuristic about comment content.
+ * WHERE the block starts comes from `parsed`, which takes its comments from the
+ * lexer, and not from a scan for `//` here. Malloy spells a comment three ways
+ * — `//`, `--` and `/* … *\/` — and this walked upward looking only for the
+ * first. The other two stopped it early while the parser read straight past
+ * them, so a `#` tag above one was visible to the reader and invisible to the
+ * writer, which then wrote a SECOND copy of the tag below the comment. The
+ * reader picks the lower one up and the read-back gate is satisfied, so the
+ * file quietly ends up carrying two.
  */
-export function blockAbove(lines: string[], declLine: number): Block {
-   let start = declLine;
-   for (let i = declLine - 1; i >= 0; i--) {
-      const text = lines[i].trim();
-      if (text === "") break;
-      if (text.startsWith("#") || text.startsWith("//")) start = i;
-      else break;
-   }
+export function blockAbove(
+   parsed: ParsedMalloy,
+   lines: string[],
+   declLine: number,
+): Block {
+   const start = parsed.blockStart(declLine);
    const tags: Array<{ line: number; text: string }> = [];
    for (let i = start; i < declLine; i++) {
+      // Inside a `/* … */`, where a line beginning `#` is prose. Rewriting one
+      // would put an edit inside a comment.
+      if (parsed.commentLine(i)) continue;
       const text = lines[i].trim();
       // `##` at this indent level is a MODEL annotation and never belongs to a
       // declaration; only single-`#` object tags do.
@@ -190,7 +195,7 @@ export function localGivens(
          type: m[2],
          default: m[3].trim(),
          ...readControlTags(
-            parse(tagText(blockAbove(lines, given.line).tags)).tag,
+            parse(tagText(blockAbove(parsed, lines, given.line).tags)).tag,
          ),
       });
    }
@@ -299,7 +304,7 @@ export async function readDashboardDocument(
       // this file declares are exactly where one can be authored.
       for (const dimension of source.dimensions) {
          const drillTag = parseAnnotation(
-            tagText(blockAbove(lines, dimension.line).tags),
+            tagText(blockAbove(parsed, lines, dimension.line).tags),
          ).tag?.tag("drill");
          if (!drillTag) continue;
          const to = drillTag.textArray("to") ?? [drillTag.text("to") ?? ""];

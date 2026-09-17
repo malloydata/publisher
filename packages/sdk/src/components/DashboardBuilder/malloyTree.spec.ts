@@ -207,6 +207,53 @@ describe("comments", () => {
       const p = await parsed(source);
       expect(p.blockStart(4)).toBe(2);
    });
+
+   // Malloy's lexer spells a comment three ways under two token names. A guard
+   // that knew only `COMMENT_TO_EOL` never saw a `/* … */` at all, so the
+   // writer could delete one and report success.
+   it("indexes every comment the lexer recognizes, both token kinds", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  // slash\n  -- dash\n  /* block */\n  view: v is x\n}\n",
+      );
+      expect(p.comments.map((at) => text(p, at))).toEqual([
+         "// slash",
+         "-- dash",
+         "/* block */",
+      ]);
+   });
+
+   it("sees a block comment inside a span a writer is about to delete", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  view: v is x + { where: a ~ $A, /* keep */ b ~ $B }\n}\n",
+      );
+      const where = p.sources[0].views[0].body;
+      if (where.kind !== "reference" || !where.refinement)
+         throw new Error("expected a refinement");
+      const clauses = where.refinement.wheres[0].clauses;
+      const gap = { start: clauses[0].span.end, end: clauses[1].span.start };
+      expect(text(p, p.commentIn(gap)!)).toBe("/* keep */");
+   });
+
+   // A block comment's own text is not code, so a line inside one that happens
+   // to start with `#` is prose, not an annotation. Reading it as a tag makes
+   // the writer rewrite a line inside a comment.
+   it("does not read a `#` line inside a block comment as a tag", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  # big_value\n  /* Notes:\n     # colspan is chosen below\n  */\n  # colspan=6\n  view: v is x\n}\n",
+      );
+      expect(p.sources[0].views[0].tags.map((t) => t.text)).toEqual([
+         "# big_value",
+         "# colspan=6",
+      ]);
+   });
+
+   // `--` starts a comment in Malloy exactly as `//` does.
+   it("reads a dash comment as the block above a declaration", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n\n  -- why this tile leads\n  # colspan=6\n  view: v is x\n}\n",
+      );
+      expect(p.blockStart(4)).toBe(2);
+   });
 });
 
 describe("refusing rather than guessing", () => {

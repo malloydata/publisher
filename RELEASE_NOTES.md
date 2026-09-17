@@ -432,6 +432,26 @@ the file is saved, that `where:` is regenerated from the control's bindings rath
 preserved verbatim — the same contract a reference tile's refinement already had, now
 extended to the more common inline shape.
 
+**Comments, in all three spellings Malloy accepts.** `//`, `--` and `/* … */` are all comments
+to Malloy's lexer, and the builder knew only about `//`. Two consequences are fixed. A
+`/* … */` was absent from the comment index, so it was invisible to every guard that asks
+whether a range about to be deleted holds one: removing a filter across a block comment deleted
+it and reported success. And a `--` or `/* … */` line written between a `#` tag and the
+declaration it annotates stopped the walk that finds a tile's tags, while the parser read
+straight past it — so a retag wrote a **second** `# colspan` below the comment, the reader read
+the lower one back, and the read-back gate was satisfied by a file now carrying two. That
+hand-written walk is gone; where a tag block begins now comes from the lexer, which also
+means a line inside a `/* … */` that happens to begin `#` is read as the prose it is rather
+than as a tag to report or rewrite.
+
+**One rule for the three removal paths.** Removing every clause of a `where:` used to delete a
+comment written inside it, or leave one trailing it stranded above the closing brace, while
+collapsing a refinement over a comment refused. All three now answer the same question the same
+way: a comment goes only with a declaration you asked to delete outright — removing a **tile**
+still takes its own comments with it, and the builder shows that diff before a structural save
+— while a filter edit, which rewrites a declaration that stays, refuses rather than destroying
+or stranding a comment it was not asked about, and names the comment in the reason.
+
 ---
 
 ## [Unreleased] — `DashboardEditor` takes a `resourceUri`, and can now open a pinned version

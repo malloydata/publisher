@@ -592,7 +592,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
       // removed declaration is the exception and takes every tag with it: a
       // `#` line left behind does not lapse, it attaches to whatever is
       // declared next, so an orphaned `#(secure)` would silently move.
-      const { tags } = blockAbove(lines, at.line);
+      const { tags } = blockAbove(parsed, lines, at.line);
       const owned =
          want === undefined
             ? tags
@@ -763,7 +763,7 @@ function planDrills(ctx: SpliceContext): SpliceFailure | undefined {
                `in this file, so a drill cannot be put on it here.`,
          };
       }
-      const { tags } = blockAbove(lines, at.line);
+      const { tags } = blockAbove(parsed, lines, at.line);
       const existing = tags.find((tag) => /^#\s*drill\b/.test(tag.text));
       const indent = indentOf(at.line);
       if (want === undefined) {
@@ -1008,7 +1008,7 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          };
       }
 
-      const { tags } = blockAbove(lines, declLine);
+      const { tags } = blockAbove(parsed, lines, declLine);
       const indent = indentOf(declLine);
       const wanted = tagsFor(tile);
       const wantedByKey = new Map(
@@ -1125,6 +1125,57 @@ const bindingText = (f: { field: string; given: string; op?: string }) =>
    `where: ${f.field} ${f.op ?? "~"} $${f.given}`;
 
 /**
+ * THE RULE the three removal paths obey: a comment goes only with a
+ * declaration the author asked to delete outright. A filter edit is a REWRITE
+ * of a declaration that stays, so a comment in the range it would clear is
+ * nobody's to destroy — and one it would leave standing over the closing brace
+ * is nobody's to strand either. Both refuse, and say which comment.
+ *
+ * Removing a TILE is the other case, and the one exception: the declaration
+ * itself is what was asked for, so its own comments go with it, and the builder
+ * shows that diff before a structural save.
+ */
+function commentRefusal(
+   tileName: string,
+   parsed: ParsedMalloy,
+   comment: Span,
+): SpliceFailure {
+   return {
+      ok: false,
+      reason:
+         `Removing a filter from \`${tileName}\` would also remove the comment ` +
+         `written beside it (\`${parsed.text
+            .slice(comment.start, comment.end)
+            .trim()}\`), so nothing was written. Delete it in the file first.`,
+   };
+}
+
+/**
+ * The comment a whole-statement cut would take with it, or strand behind.
+ *
+ * `commentIn` covers what the cut spans. The second half covers what it does
+ * not: a comment TRAILING the statement's last line survives the cut and is
+ * left explaining the closing brace, which says something its author never
+ * wrote. Only a comment that directly follows the statement counts — a second
+ * statement sharing the line owns its own trailing comment, and that one the
+ * cut never reaches.
+ */
+function commentLostBy(
+   parsed: ParsedMalloy,
+   statement: Span,
+   cut: Span,
+): Span | undefined {
+   const inside = parsed.commentIn(cut);
+   if (inside) return inside;
+   const trailing = parsed.trailingComment(lineOf(parsed, statement.end - 1));
+   return trailing &&
+      trailing.start >= statement.end &&
+      parsed.text.slice(statement.end, trailing.start).trim() === ""
+      ? trailing
+      : undefined;
+}
+
+/**
  * The span to delete to remove ONE clause of a `where:` list, separator and
  * all: up to the next clause when there is one, back to the previous when it
  * is the last. Taking only the clause's own span would leave the comma beside
@@ -1204,7 +1255,10 @@ function planStageFilters(
       // Every clause of this `where:` was ours and none survives: the
       // statement itself goes, rather than being left as a bare `where:`.
       if (surviving.length === 0 && managed.length === where.clauses.length) {
-         edits.push({ ...statementCut(parsed, where.span), text: "" });
+         const cut = statementCut(parsed, where.span);
+         const lost = commentLostBy(parsed, where.span, cut);
+         if (lost) return commentRefusal(tile.name, parsed, lost);
+         edits.push({ ...cut, text: "" });
          continue;
       }
       if (surviving.length > 0) lastManaged = where.span;
@@ -1218,16 +1272,7 @@ function planStageFilters(
             // comment written in that gap is not, and nothing downstream can
             // see it go.
             const comment = parsed.commentIn(cut);
-            if (comment)
-               return {
-                  ok: false,
-                  reason:
-                     `Removing a filter from \`${tile.name}\` would also ` +
-                     `remove the comment written beside it (\`${parsed.text
-                        .slice(comment.start, comment.end)
-                        .trim()}\`), so nothing was written. Delete it in the ` +
-                     `file first.`,
-               };
+            if (comment) return commentRefusal(tile.name, parsed, comment);
             edits.push({ ...cut, text: "" });
             continue;
          }

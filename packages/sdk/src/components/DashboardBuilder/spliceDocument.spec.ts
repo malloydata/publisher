@@ -5,14 +5,14 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import type { DashboardDocument } from "./document";
-import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import { readDashboardDocument, readFailed } from "./readDocument";
 import {
    spliceDashboardDocument,
    spliceFailed,
    syntaxErrors,
 } from "./spliceDocument";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
-import { parseMalloy, parseRefused } from "./malloyTree";
+import { whatMoved } from "./__test__/inventory";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -1274,66 +1274,33 @@ const MODELLED_TAG =
    /^#\s*(colspan|break|borderless|label|subtitle|description|control|suggest|range_min|range_max|drill)\b/;
 
 /**
- * Every `//` comment with the code it is attached to: what precedes it on its
- * own line, and the next line of code below it. Comparing this before and
- * after an edit is what a comment COUNT cannot do -- it sees a trailing
- * comment at all (a count of lines starting with `//` does not), and it sees
- * one that survived but slid onto a different statement, which changes what
- * the file says while leaving the count identical. Three of the corruptions
- * this sweep now guards against passed a count.
- *
- * Taken from the lexer's own tokens, so a `//` inside a string literal is not
- * mistaken for one.
- */
-async function commentAnchors(text: string): Promise<string[]> {
-   const parse = await parseMalloy(text);
-   if (parseRefused(parse)) throw new Error(parse.reason);
-   const { parsed } = parse;
-   const lineOf = (offset: number) => {
-      let line = 0;
-      while (
-         line + 1 < parsed.lineStarts.length &&
-         parsed.lineStarts[line + 1] <= offset
-      )
-         line++;
-      return line;
-   };
-   const lines = text.split("\n");
-   return parsed.comments.map((at) => {
-      const line = lineOf(at.start);
-      const before = text.slice(parsed.lineStarts[line], at.start).trim();
-      // The next DECLARATION, skipping `#` tag lines: a tag's value is exactly
-      // what these edits change on purpose, so anchoring to one would report
-      // every colspan change as a comment that moved.
-      let below = "";
-      for (let l = line + 1; l < lines.length; l++) {
-         const candidate = lines[l].trim();
-         if (
-            candidate === "" ||
-            candidate.startsWith("//") ||
-            candidate.startsWith("#")
-         )
-            continue;
-         below = candidate;
-         break;
-      }
-      return `${text.slice(at.start, at.end).trim()} | after: ${before} | above: ${below}`;
-   });
-}
-
-/**
  * Every `#` line the document does not model, keyed by the declaration it sits
  * above. Comparing this before and after an edit catches what a file-wide
  * count cannot: a tag that survived but moved onto a different declaration,
  * which in Malloy is a change of meaning rather than a change of layout.
+ *
+ * The walk upward is written out here rather than taken from `blockAbove`, for
+ * the same reason the scan below does not ask the reader where a declaration
+ * is: a differential check that shares code with what it checks cannot see that
+ * code being wrong.
  */
 function unmodelledTagsByDeclaration(text: string): Record<string, string[]> {
    const lines = text.split("\n");
    const out: Record<string, string[]> = {};
    const record = (key: string, line: number) => {
-      const tags = blockAbove(lines, line)
-         .tags.map((t) => t.text)
-         .filter((t) => !MODELLED_TAG.test(t));
+      const tags: string[] = [];
+      for (let i = line - 1; i >= 0; i--) {
+         const at = lines[i].trim();
+         if (at === "") break;
+         if (at.startsWith("##")) continue;
+         if (at.startsWith("#")) {
+            if (!MODELLED_TAG.test(at)) tags.unshift(at);
+            continue;
+         }
+         if (at.startsWith("//") || at.startsWith("--") || at.startsWith("/*"))
+            continue;
+         break;
+      }
       if (tags.length > 0) out[key] = tags;
    };
    // Keyed by the enclosing source as well as the name: `view:x` repeats
@@ -1410,9 +1377,9 @@ describe("every composite dashboard survives an edit", () => {
          if (readFailed(reread)) throw new Error(reread.reason);
          expect(reread.document.tiles[target].colspan).toBe(3);
          // Every comment is still there, still attached to the same code.
-         expect(await commentAnchors(result.source)).toEqual(
-            await commentAnchors(source),
-         );
+         const moved = await whatMoved(source, result.source);
+         expect(moved.comments).toEqual([]);
+         expect(moved.attached).toEqual([]);
          // And every `#` tag the builder does not model is still there, on the
          // same declaration. A file-wide count cannot see a tag that moved to
          // the declaration below, which is how one silently changes meaning.
@@ -1456,12 +1423,107 @@ describe("every composite dashboard survives an edit", () => {
          const reread = await readDashboardDocument(result.source);
          if (readFailed(reread)) throw new Error(reread.reason);
          expect(reread.document.tiles[target].filters).toContainEqual(binding);
-         expect(await commentAnchors(result.source)).toEqual(
-            await commentAnchors(source),
-         );
+         const moved = await whatMoved(source, result.source);
+         expect(moved.comments).toEqual([]);
+         expect(moved.attached).toEqual([]);
          expect(unmodelledTagsByDeclaration(result.source)).toEqual(
             unmodelledTagsByDeclaration(source),
          );
+      });
+
+      /**
+       * The REMOVAL kinds. Every case above adds or rewrites; removal is the
+       * half that deletes a range wider than one node's own text, which is
+       * where a comment or a declaration beside it goes without either gate
+       * noticing. Measured: three of these five files declare every tile on
+       * their source, so tile removal never reaches the deletion path in them
+       * -- which is a real shape rather than a gap, and why the fixture sweep
+       * in `invariants.spec.ts` carries the guarantee and this stays a
+       * tripwire.
+       */
+      const survives = async (
+         before: string,
+         after: string,
+         gone: string[],
+      ) => {
+         expect(await syntaxErrors(after)).toEqual([]);
+         const moved = await whatMoved(before, after);
+         expect(moved.declarations).toEqual(gone);
+         expect(moved.tags).toEqual([]);
+         expect(moved.block).toEqual([]);
+         expect(moved.indent).toEqual([]);
+         // A comment may leave with the declaration that was removed; none may
+         // appear, and none may land on a statement that had none.
+         expect(moved.attached.filter((e) => !e.startsWith("-"))).toEqual([]);
+         expect(moved.comments.filter((e) => !e.startsWith("-"))).toEqual([]);
+         expect(moved.residue).toEqual([]);
+      };
+
+      it(`removes a tile from ${name} and disturbs nothing beside it`, async () => {
+         const source = fs.readFileSync(file, "utf8");
+         const doc = await readDashboardDocument(source);
+         if (readFailed(doc)) throw new Error(doc.reason);
+         const target = doc.document.tiles.findIndex(
+            (t) => t.declaration.kind !== "inherited",
+         );
+         // One tile left, or every tile declared on its source: nothing here
+         // reaches the declaration-deletion path.
+         if (target < 0 || doc.document.tiles.length < 2) return;
+
+         const next = structuredClone(doc.document);
+         const [gone] = next.tiles.splice(target, 1);
+         const result = await spliceDashboardDocument(source, next);
+         if (spliceFailed(result)) {
+            expect(result.reason.length).toBeGreaterThan(0);
+            return;
+         }
+         const reread = await readDashboardDocument(result.source);
+         if (readFailed(reread)) throw new Error(reread.reason);
+         expect(reread.document.tiles.map((t) => t.name)).not.toContain(
+            gone.name,
+         );
+         await survives(source, result.source, [
+            `-view:${gone.source}.${gone.name}`,
+         ]);
+      });
+
+      it(`unbinds a filter in ${name} and disturbs nothing beside it`, async () => {
+         const source = fs.readFileSync(file, "utf8");
+         const doc = await readDashboardDocument(source);
+         if (readFailed(doc)) throw new Error(doc.reason);
+         const target = doc.document.tiles.findIndex((t) => t.filters?.length);
+         // No tile binds a control here: a real shape, not a gap.
+         if (target < 0) return;
+
+         const next = structuredClone(doc.document);
+         next.tiles[target].filters = next.tiles[target].filters!.slice(0, -1);
+         const result = await spliceDashboardDocument(source, next);
+         if (spliceFailed(result)) {
+            expect(result.reason.length).toBeGreaterThan(0);
+            return;
+         }
+         const tile = next.tiles[target];
+         await survives(source, result.source, [
+            `~view:${tile.source}.${tile.name}`,
+         ]);
+      });
+
+      it(`removes a control from ${name} and disturbs nothing beside it`, async () => {
+         const source = fs.readFileSync(file, "utf8");
+         const doc = await readDashboardDocument(source);
+         if (readFailed(doc)) throw new Error(doc.reason);
+         const givens = doc.document.localGivens;
+         // Most dashboards declare no controls of their own.
+         if (!givens?.length) return;
+
+         const next = structuredClone(doc.document);
+         const gone = next.localGivens!.pop()!;
+         const result = await spliceDashboardDocument(source, next);
+         if (spliceFailed(result)) {
+            expect(result.reason.length).toBeGreaterThan(0);
+            return;
+         }
+         await survives(source, result.source, [`-given:${gone.name}`]);
       });
 
       it(`retags a control in ${name} and leaves every other tag where it was`, async () => {
@@ -1623,6 +1685,61 @@ given: SINCE :: date is @2023-01-01`);
  * cannot say which -- which is how an add-filter refusal went a round trip
  * before anyone knew whether a planner had even run.
  */
+/**
+ * Malloy spells a comment three ways and the reader takes a tile's tags from
+ * the parser, which knows all three. The writer walked the same block as text
+ * and stopped at anything that was not `//`, so every tag above it was
+ * invisible to it: a retag wrote a SECOND `# colspan` below the comment, the
+ * reader read the lower one, and the read-back gate passed on a file now
+ * carrying two.
+ */
+describe("spliceDashboardDocument: a comment inside a tag block", () => {
+   const dashed = (comment: string) => `##! experimental.givens
+## artifact { title="T" tiles=["a -> revenue"] }
+import "../m.malloy"
+
+source: a is one extend {
+  # colspan=6
+${comment}
+  view: revenue is sales
+}`;
+
+   for (const [kind, comment] of [
+      ["a `--` line", "  -- six across, to sit beside the trend"],
+      ["a `/* ... */` line", "  /* six across, to sit beside the trend */"],
+      [
+         "a block comment over several lines",
+         "  /* six across,\n     to sit beside the trend */",
+      ],
+      // The comment's own text is prose. Walking up past it to reach the real
+      // tag must not turn a line inside it into a tag to rewrite.
+      [
+         "a block comment holding a line that looks like a tag",
+         "  /* it was\n     # colspan=12\n     until the map stopped fitting */",
+      ],
+   ] as const) {
+      it(`patches the tag above ${kind} rather than writing a second one`, async () => {
+         const out = await spliced(dashed(comment), (d) => {
+            d.tiles[0].colspan = 3;
+         });
+         // The comment survives to the byte, the one real tag is rewritten in
+         // place, and no second one appears under the comment.
+         expect(out).toContain(
+            `  # colspan=3\n${comment}\n  view: revenue is sales`,
+         );
+         expect(out).not.toContain("# colspan=6");
+      });
+
+      it(`takes the tag off above ${kind} rather than leaving it there`, async () => {
+         const out = await spliced(dashed(comment), (d) => {
+            delete d.tiles[0].colspan;
+         });
+         expect(out).toContain(`${comment}\n  view: revenue is sales`);
+         expect(out).not.toContain("# colspan=6");
+      });
+   }
+});
+
 describe("spliceDashboardDocument: an ask no planner could place", () => {
    // A `drill` sharing a line with a `label` is not the `# drill` line
    // `planDrills` looks for, so taking the drill off plans no edit at all.
