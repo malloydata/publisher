@@ -112,8 +112,13 @@ describe("createTableAndDescribe: against a real DuckLake", () => {
       const files = await conn.runSQL(
          `SELECT data_file FROM ducklake_list_files('lake', 't') ORDER BY data_file`,
       );
-      const paths = (files.rows as { data_file: string }[]).map(
-         (r) => r.data_file,
+      // Separators normalized because DuckLake reports the platform's own —
+      // `…\t\org_id=1\…` on Windows. The assertions below still read as paths
+      // rather than as bare substrings, which is the point: `org_id=1` has to be
+      // a DIRECTORY under the table, not merely a run of characters somewhere in
+      // the name.
+      const paths = (files.rows as { data_file: string }[]).map((r) =>
+         r.data_file.replaceAll("\\", "/"),
       );
       expect(paths).toHaveLength(2);
       expect(paths[0]).toContain("/t/org_id=1/");
