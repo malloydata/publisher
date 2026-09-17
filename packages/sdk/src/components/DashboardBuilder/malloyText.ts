@@ -311,9 +311,13 @@ export function maskQuoted(text: string): string {
  * A binding is a statement of the view the builder owns. A `where:` inside a
  * `nest:`, or inside a filtered measure's own `count() { … }`, belongs to that
  * inner block and is not the tile's filter, so a scan looking for bindings
- * must not see it at all. Braces survive the masking because the scan still
- * has to notice that a block is THERE: a clause followed by `{` is a clause
- * with a block after it, not an isolated one.
+ * must not see it at all. The OUTERMOST braces survive the masking because
+ * the scan still has to notice that a block is THERE: a clause followed by
+ * `{` is a clause with a block after it, not an isolated one. Braces nested
+ * inside one are masked along with the rest of their block.
+ *
+ * An unmatched `}` clamps at depth 0 rather than going negative, so it cannot
+ * make a block that follows it look top-level.
  *
  * NUL rather than a space because the isolation test treats whitespace as a
  * separator it may reach through; masked text has to fail that test, not pass
@@ -327,7 +331,7 @@ export function maskNested(text: string): string {
          out[i] = "\0";
          return;
       }
-      if (ch === "}") depth--;
+      if (ch === "}") depth = Math.max(0, depth - 1);
       if (depth > 0) out[i] = "\0";
       if (ch === "{") depth++;
    });

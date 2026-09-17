@@ -1111,11 +1111,37 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
  * quoted literals are masked so a given's name inside a string is not mistaken
  * for a use of it.
  */
+/**
+ * Just the `where:`-led statements of `text`, concatenated, with quoted
+ * literals masked.
+ *
+ * Only a `where:` filters. A given driving a `group_by:` or an `aggregate:`
+ * expression is an ordinary shape -- one control both filtering a tile and
+ * appearing in a derived column -- and scanning all of `text` for `$NAME`
+ * refused those edits with a message asserting a `where:` that does not
+ * exist. A statement runs to the next statement keyword, which is the same
+ * boundary the isolation test uses.
+ */
+function whereStatements(text: string): string {
+   const masked = maskQuoted(text);
+   const starts: Array<{ at: number; keyword: string }> = [];
+   const keyword = /(^|[^A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\s*:/g;
+   for (let m = keyword.exec(masked); m; m = keyword.exec(masked))
+      starts.push({ at: m.index + m[1].length, keyword: m[2] });
+   let out = "";
+   for (let i = 0; i < starts.length; i++) {
+      if (starts[i].keyword !== "where") continue;
+      const end = i + 1 < starts.length ? starts[i + 1].at : masked.length;
+      out += `${masked.slice(starts[i].at, end)}\n`;
+   }
+   return out;
+}
+
 function givenCollision(
    filters: Array<{ field: string; given: string; op?: string }> | undefined,
    text: string,
 ): { given: string } | undefined {
-   const scanned = maskQuoted(text);
+   const scanned = whereStatements(text);
    return (filters ?? []).find((f) => {
       const name = f.given.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`\\$${name}(?![A-Za-z0-9_])`).test(scanned);
@@ -1211,8 +1237,14 @@ function planInlineFilters(
    const remainder = lines
       .slice(declLine, stage.end + 1)
       .map((line, offset) => {
+         // Comment-stripped, exactly as `viewBodyStage1` reads these lines. A
+         // comment is not Malloy, so a given named in one filters nothing --
+         // and an apostrophe in prose ("don't") would otherwise open a quote
+         // that masks the rest of the stage, silently disarming this guard.
+         if (line.trim().startsWith("#")) return "";
+         const code = splitTrailingComment(line).code;
          const at = declLine + offset;
-         let out = line;
+         let out = code;
          for (const ex of existing)
             if (ex.line === at)
                out =

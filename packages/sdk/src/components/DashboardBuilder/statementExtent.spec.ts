@@ -248,3 +248,96 @@ source: a is one extend {
       expect(errs.length).toBeGreaterThan(0);
    });
 });
+
+/**
+ * The duplicate-given guard decides by reading text the builder does not own,
+ * so what counts as "text" and what counts as "a filter" both matter. It used
+ * to scan the raw first stage for `$NAME` anywhere, which broke in both
+ * directions at once.
+ */
+describe("the duplicate-given guard reads only what actually filters", () => {
+   const body = (stage: string) => `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+${stage}
+    aggregate: n is count()
+  }
+}`;
+
+   // FAIL-OPEN, the worst of the three: an apostrophe in prose opened a quote
+   // that masked the rest of the stage, so the guard saw nothing and wrote a
+   // second $B clause under the compound one it was meant to protect.
+   it("is not disarmed by an apostrophe in a comment", async () => {
+      const reason = await refused(
+         body("    // don't remove\n    where: b ~ $B and c = 1"),
+         (d) => {
+            d.tiles[0].filters = [{ field: "b2", given: "B" }];
+         },
+      );
+      expect(reason).toContain("already filters on `$B`");
+   });
+
+   it("does not treat a given named in a comment as a filter", async () => {
+      const out = await spliced(
+         body("    // TODO: maybe filter on $B later\n    group_by: c"),
+         (d) => {
+            d.tiles[0].filters = [{ field: "b", given: "B" }];
+         },
+      );
+      expect(out).toContain("where: b ~ $B");
+      expect(out).toContain("// TODO: maybe filter on $B later");
+   });
+
+   // One control both filtering a tile and feeding a derived column is an
+   // ordinary shape. Refusing it made a file the builder itself wrote
+   // uneditable through the builder.
+   it("does not treat a given in a group_by expression as a filter", async () => {
+      const out = await spliced(
+         body("    where: amt > $MIN\n    group_by: big is amt > $MIN"),
+         (d) => {
+            d.tiles[0].filters = [{ field: "amt", given: "MIN", op: ">=" }];
+         },
+      );
+      expect(out).toContain("where: amt >= $MIN");
+      expect(out).toContain("group_by: big is amt > $MIN");
+   });
+});
+
+/**
+ * A chained `+ { … } + { … }` refinement is valid Malloy the builder cannot
+ * manage: one greedy unwrap spans both blocks. An unmatched `}` mid-text used
+ * to drive the mask below depth 0, which made the second block look top-level
+ * -- so the reader reported only that block's binding and dropped the first
+ * from the projection entirely.
+ */
+describe("a chained refinement is left alone rather than half-read", () => {
+   const CHAINED = `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is vx + { where: a ~ $A } + { limit: 5 }
+}`;
+
+   it("does not report a partial filter set", async () => {
+      const d = await openDocument(CHAINED);
+      expect(d.tiles[0].filters).toBeUndefined();
+   });
+
+   it("survives an unrelated change untouched", async () => {
+      const out = await spliced(CHAINED, (d) => {
+         d.tiles[0].colspan = 4;
+      });
+      expect(out).toContain("vx + { where: a ~ $A } + { limit: 5 }");
+   });
+
+   it("refuses a filter change rather than writing into one block", async () => {
+      const reason = await refused(CHAINED, (d) => {
+         d.tiles[0].filters = [{ field: "n", given: "N" }];
+      });
+      expect(reason).toContain("did not read back");
+   });
+});
