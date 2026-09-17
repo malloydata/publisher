@@ -307,10 +307,10 @@ export interface MappingRow {
  * Which tiles can take a binding, and why the others cannot.
  *
  * A binding is a `where:` the splice writer can locate and own: a `+ {
- * where: … }` refinement on a `reference` tile, or a depth-1 `where:`
- * statement in an `inline` tile's own first stage (see BINDING_CLAUSE and
- * viewBodyStage1 in the splice/read modules). Both forms are declarations this
- * file owns and the reader reads back. An `inherited` tile is declared on the
+ * where: … }` refinement on a `reference` tile, or a `where:` statement in an
+ * `inline` tile's own first stage — `TreeStage.wheres` in `malloyTree`, which
+ * is the parse tree's answer rather than a depth count. Both forms are
+ * declarations this file owns and the reader reads back. An `inherited` tile is declared on the
  * model's source, which the builder never writes, so it is the one kind this
  * excludes, and so is an `opaque` one: its body has no single block a binding
  * belongs in, which the reader can see before a save is ever attempted.

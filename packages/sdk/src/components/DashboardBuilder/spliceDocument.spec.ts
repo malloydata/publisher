@@ -1834,11 +1834,9 @@ source: b is scoped_orders extend {
 
 /**
  * A source whose block opens on a LATER line than its `source:` line, because
- * the base is a multi-line `duckdb.sql("""…""")` literal. Before
- * `declarationExtent` replaced the line-bound `declarationEnd`, every one of
- * these four call sites read this source's extent as the `source:` line
- * itself — a search that never leaves that one line, an anchor inside the SQL
- * text, and an insertion point BEFORE the source rather than after its close.
+ * the base is a multi-line `duckdb.sql("""…""")` literal. Any reader that
+ * takes a declaration's extent to be its first line places all four of these
+ * edits inside the SQL text, or before the source rather than after its close.
  */
 describe("spliceDashboardDocument: a source whose block opens after multi-line SQL", () => {
    const MULTILINE = `## artifact { title="T" tiles=["regional -> by_region", "regional -> by_month"] }
