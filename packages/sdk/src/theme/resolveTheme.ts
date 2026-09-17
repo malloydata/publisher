@@ -94,13 +94,15 @@ export function resolveTheme(
       valueColor: isDark ? "#f1f5f9" : "#0f172a",
       foreground: isDark ? "#e2e8f0" : "#0f172a",
       axisFaint: isDark ? "#475569" : "#cbd5e1",
-      // Dashboard panel background (area BETWEEN tiles). Light keeps
-      // white so the page stays visually unchanged. Dark uses slate so
-      // the panel doesn't read as a bright box against the dark page
-      // chrome. Intentionally NOT tied to `palette.background`: the
-      // panel stays neutral so a bold accent on the chart canvas
-      // doesn't bleed into the surrounding chrome.
-      dashboardRoot: isDark ? "#1e293b" : "#ffffff",
+      // Dashboard panel background (the area BETWEEN tiles). The page's own
+      // ground in both modes, so the panel, the cards on it and the canvases
+      // inside them are one surface that borders divide up — see
+      // `palette.tile`.
+      //
+      // Still NOT tied to `palette.background`, which an operator may set to
+      // a bold accent for the chart canvas. The panel stays the neutral it is
+      // here so that accent cannot bleed into the surrounding chrome.
+      dashboardRoot: isDark ? "#0f172a" : "#ffffff",
       // Drill link hover: the palette's anchor blue, so a drill reads as the
       // same affordance as every other primary action; dark lightens it for
       // contrast on the slate panel.

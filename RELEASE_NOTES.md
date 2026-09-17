@@ -48,7 +48,7 @@ draws on the same pool a query does, so a deployment that sits near its cap may
 start seeing 503s on compile and sqlSource that it did not see before. The cap
 defaults to 32 and `0` still disables it entirely.
 
-## [Unreleased] — the dashboard editor is not the only writer, and the browser is not the only store
+## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the
 editor was written when the browser was the only implementation and the editor was the
