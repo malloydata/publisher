@@ -82,6 +82,7 @@ import {
 import type { components } from "../api";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
+import { resolvePartitionColumns } from "./persist_partition";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
@@ -307,6 +308,36 @@ export function manifestExcludingStorage(
  */
 function declaredStorage(persistSource: PersistSource): string | undefined {
    return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
+}
+
+/**
+ * The columns this source's table is laid out by, for a build that is about to
+ * run.
+ *
+ * Re-resolved here rather than carried from the eligibility gate because the
+ * gate and the build are far apart in this flow, and a value threaded through
+ * that distance is one that can go stale. The resolution is pure over the source
+ * and its annotation, so the two cannot disagree — but that is a contract, not a
+ * coincidence, so a refusal reaching here THROWS. The gate has already refused
+ * every shape this can refuse; arriving at a build means it did not, and
+ * quietly building unpartitioned would turn a broken `partition=` into a table
+ * whose layout silently differs from what the author declared.
+ */
+function partitionColumnsForBuild(persistSource: PersistSource): string[] {
+   const resolved = resolvePartitionColumns(
+      persistSource,
+      deriveAnnotationFields(persistSource),
+   );
+   if (!resolved.ok) {
+      throw new MaterializationEligibilityError({
+         reason: resolved.reason,
+         message:
+            `Source '${persistSource.name}' reached a build with an ` +
+            `unusable 'partition=': ${resolved.detail}. The eligibility gate ` +
+            `should have refused this before any warehouse work ran.`,
+      });
+   }
+   return resolved.columns;
 }
 
 /**
@@ -1199,6 +1230,7 @@ export class MaterializationService {
                      ? "preaggregate"
                      : "persist",
                   compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                  deriveAnnotationFields(persistSource),
                );
             }
 
@@ -2055,6 +2087,7 @@ export class MaterializationService {
                         ? "preaggregate"
                         : "persist",
                      compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                     deriveAnnotationFields(persistSource),
                   );
                }
 
@@ -3145,6 +3178,7 @@ export class MaterializationService {
                sourceConnection,
                buildSQL: params.publicBuildSQL,
                physicalTableName,
+               partitionColumns: partitionColumnsForBuild(persistSource),
                environmentPath: environment.getEnvironmentPath(),
                queryMetadata,
                incremental: refresh,
@@ -3482,6 +3516,7 @@ export class MaterializationService {
          downstreamName: persistSource.name,
          virtualMap: buildVirtualMap(upstreams),
          physicalTableName,
+         partitionColumns: partitionColumnsForBuild(persistSource),
          environmentPath: environment.getEnvironmentPath(),
       });
    }

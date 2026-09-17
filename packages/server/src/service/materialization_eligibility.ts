@@ -284,7 +284,29 @@ export function assertColocatedPersistNotAuthorizeGated(
    sourceName: string = persistSource.name,
    origin: "persist" | "preaggregate" = "persist",
    gateOutcome?: PersistSourceGateOutcome,
+   annotationFields: Record<string, string> = {},
 ): void {
+   // `partition=` is meaningless without `storage=`, and this is the only gate
+   // that sees a source declaring one — `assertMaterializationEligible` runs
+   // only once a storage destination has resolved, so a colocated source
+   // carrying the key would otherwise reach a build that silently ignores it.
+   // A colocated build CTASes into the customer's own warehouse, where the
+   // table layout is that warehouse's DDL.
+   const partition = resolvePartitionColumns(persistSource, annotationFields);
+   if (!partition.ok) {
+      recordEligibilityRefused(partition.reason);
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}'`
+            : `Source '${sourceName}'`;
+      throw new MaterializationEligibilityError({
+         reason: partition.reason,
+         message:
+            `${what} cannot be materialized (colocated '#@ persist'): ` +
+            `${partition.detail}.`,
+      });
+   }
+
    // Unconditional, unlike the authorize check below: authorize's colocated
    // relaxation is available only once `isAuthorizeAttributedToEntryPoint`
    // PROVES the entry point's own gate is the row filter and nothing else
