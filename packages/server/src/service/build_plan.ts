@@ -1036,6 +1036,7 @@ export function deriveBuildPlan(
                      source.name,
                      "persist",
                      options?.sourceGateOutcomes?.[sourceID],
+                     annotationFields,
                   );
                }
             } catch (err) {
@@ -1083,6 +1084,7 @@ export function deriveBuildPlan(
                   source.name,
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
+                  annotationFields,
                );
                if (declaresStorage) {
                   storageRefused = true;
@@ -1352,6 +1354,7 @@ function collectColocatedSourceEligibility(
             source.name,
             origin,
             compiled.sourceGateOutcomes?.[sourceID],
+            deriveAnnotationFields(source),
          );
       } catch (err) {
          // Gate BEFORE computeSourceEntityId, matching the build path's own
