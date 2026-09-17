@@ -25,12 +25,17 @@ import {
    NotQueryableError,
    PackageNotFoundError,
    ServiceUnavailableError,
+   WriteRolledBackError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
+import {
+   mergeConnectionUpdate,
+   toPublicConnections,
+} from "./connection_public_view";
 import { recordManifestBind } from "../materialization_metrics";
 import {
    assertSafeEnvironmentPath,
@@ -415,9 +420,26 @@ export class Environment {
             logger.info(
                `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
             );
+            // This list replaces the stored one wholesale, and responses no
+            // longer carry credentials, so an entry echoed back from a read
+            // arrives without one. Merge each entry against what is stored, the
+            // same "an entry that names a stored one and carries no config
+            // keeps it" rule storageDestinations already documents. Without
+            // this, adding or deleting ANY connection through the app strips
+            // the credentials of every other connection in the environment,
+            // because the app sends the whole list back. An entry with no
+            // stored counterpart is new and passes through as sent.
+            const mergedConnections = payloadConnections.map((incoming) => {
+               const stored = this.apiConnections.find(
+                  (existing) => existing.name === incoming.name,
+               );
+               return stored
+                  ? mergeConnectionUpdate(stored, incoming)
+                  : incoming;
+            });
             const isUpdateConnectionRequest = true;
             const nextMalloyConfig = buildEnvironmentMalloyConfig(
-               payloadConnections,
+               mergedConnections,
                this.environmentPath,
                isUpdateConnectionRequest,
             );
@@ -1446,6 +1468,107 @@ export class Environment {
    ): Promise<T> {
       assertSafePackageName(packageName);
       return this.getOrCreatePackageMutex(packageName).runExclusive(fn);
+   }
+
+   /**
+    * Read a model file's text, or undefined when there is none. The caller
+    * holds the package lock.
+    */
+   private async _readModelFileLocked(
+      target: string,
+   ): Promise<string | undefined> {
+      try {
+         return await fs.promises.readFile(target, "utf8");
+      } catch (error) {
+         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+         return undefined;
+      }
+   }
+
+   /**
+    * Put text at a model path, atomically: a sibling temporary file is renamed
+    * over the target, so a reader never sees a half-written file and a crash
+    * leaves either the old text or the new. The caller holds the package lock.
+    */
+   private async _writeModelFileLocked(
+      target: string,
+      source: string,
+   ): Promise<void> {
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+      await fs.promises.writeFile(temporary, source, "utf8");
+      await fs.promises.rename(temporary, target);
+   }
+
+   /**
+    * Write one model file and reload the package behind it, as one step that
+    * either happens or does not.
+    *
+    * Everything here — the precondition, the write, the reload, the caller's
+    * check on the reloaded package, and the restore when that check fails —
+    * runs inside a single hold of the package lock. That is the point of the
+    * method. Doing it as separate locked calls leaves two windows open: a
+    * second writer can land between the write and the reload, so the reload
+    * serves their text under this caller's success; and it can land between a
+    * failed reload and the restore, so the restore reverts THEIR write instead
+    * of this one. Both end with the package serving something nobody asked
+    * for, and neither is visible to the caller that lost.
+    *
+    * `check` refuses by throwing, and runs against the file's current text
+    * (undefined when there is none) — so two saves racing on one file cannot
+    * both pass their precondition. `verify` runs against the reloaded package
+    * and likewise refuses by throwing; a refusal puts the previous text back
+    * (or removes the file, when it is new), reloads again, and raises
+    * {@link WriteRolledBackError}.
+    *
+    * Anything that must NOT be under the lock — compiling above all — belongs
+    * before this call: the lock is not reentrant, and compiling the proposed
+    * text does not depend on what is on disk.
+    */
+   public async writeModelFileTransactional<T>(
+      packageName: string,
+      modelPath: string,
+      source: string,
+      check: (current: string | undefined) => void,
+      verify: (reloaded: Package) => Promise<T>,
+   ): Promise<{ previous: string | undefined; verified: T }> {
+      assertSafePackageName(packageName);
+      assertSafeRelativeModelPath(modelPath);
+      return this.withPackageLock(packageName, async () => {
+         const target = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+            modelPath,
+         );
+         const previous = await this._readModelFileLocked(target);
+         check(previous);
+         await this._writeModelFileLocked(target, source);
+         try {
+            // The locked form, because this whole callback already holds the
+            // mutex that `getPackage` would take.
+            const reloaded = await this._loadOrGetPackageLocked(
+               packageName,
+               true,
+            );
+            return { previous, verified: await verify(reloaded) };
+         } catch (error) {
+            if (previous !== undefined)
+               await this._writeModelFileLocked(target, previous);
+            else await fs.promises.rm(target, { force: true });
+            await this._loadOrGetPackageLocked(packageName, true).catch(
+               () => undefined,
+            );
+            logger.warn("Dashboard write rolled back", {
+               packageName,
+               modelPath,
+               error,
+            });
+            throw new WriteRolledBackError(
+               `The package did not reload with the new \`${modelPath}\`, so ` +
+                  `the previous text was put back and nothing changed.`,
+            );
+         }
+      });
    }
 
    private allocateStagingPath(packageName: string): string {
@@ -2965,7 +3088,10 @@ export class Environment {
    public async serialize(): Promise<ApiEnvironment> {
       return {
          ...this.metadata,
-         connections: this.listApiConnections(),
+         // Credentials stay server-side, the same rule storageDestinations
+         // below already followed. listApiConnections() is the internal view
+         // and still carries them, because compiling and connecting need them.
+         connections: toPublicConnections(this.listApiConnections()),
          // Name and type only. This is what the status endpoint reports, so it
          // is how an operator or orchestrator confirms which destinations a
          // worker picked up; the configs behind them stay server-side.

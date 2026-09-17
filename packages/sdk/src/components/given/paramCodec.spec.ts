@@ -510,7 +510,7 @@ describe("a naive timestamp is read as UTC, in any timezone", () => {
    // these assertions only bite when the suite runs outside UTC, and a UTC CI
    // cannot catch a regression here. Verified by hand across UTC,
    // America/New_York, Asia/Kolkata and Pacific/Auckland; to exercise it:
-   //     TZ=America/New_York bun test src/components/given/paramCodec.spec.ts
+   //     TZ=America/New_York bun test ./src/components/given/paramCodec.spec.ts
    // Running one suite under a non-UTC zone in CI would close that gap.
    //
    // Each assertion below names its expected value outright rather than

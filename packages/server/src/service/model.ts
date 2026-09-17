@@ -68,6 +68,8 @@ import {
    buildVirtualMap,
    extractJoins,
    extractRefinements,
+   extractSourceFilters,
+   buildServeShapeTiers,
    extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
@@ -329,9 +331,23 @@ function isGivenBindingFailure(err: unknown): boolean {
 }
 
 /**
- * Name budget for {@link Model.requestChainProvesUngated}'s walk over a
- * request's own derivation declarations. Exceeding it fails the proof (and so
- * denies), which is why it only has to be larger than any real chain.
+ * Budget for a walk over a request's own derivation declarations. Exceeding it
+ * fails the proof (and so denies), which is why it only has to be larger than
+ * any real chain.
+ *
+ * Read by two walks that spend it differently, so it bounds two different
+ * things: {@link Model.requestChainProvesUngated} counts TOTAL NAMES visited
+ * (`seen.size`), while {@link Model.derivesFromCurated} counts STACK DEPTH
+ * (`inProgress.size`), since its every-base proof recurses. A wide, shallow
+ * derivation graph can therefore exhaust one and not the other. Both directions
+ * deny on exhaustion, so the divergence costs an over-denial rather than an
+ * admission, and only past a depth no hand-written query reaches.
+ *
+ * Note the two budgets bound different quantities: the authorize walk's bounds
+ * TOTAL WORK, while bounding depth leaves the boundary's total work at
+ * O(edges x depth). That is not a denial-of-service lever -- `every` short
+ * circuits on the first base that fails and positive results are memoized, so a
+ * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
 
@@ -368,6 +384,11 @@ export function bindingsAllowDegradeToLive(
       )
    );
 }
+
+/** The one empty result {@link Model.preaggregateViolations} hands back, so its
+ *  identity contract holds on the branch that never reaches the memo. */
+const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
+   Object.freeze([]);
 
 export class Model {
    private packageName: string;
@@ -457,6 +478,10 @@ export class Model {
    /** Memo for {@link getDeclaredSourceQueryMetadata}. */
    private declaredSourceQueryMetadataMemo:
       | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
+   /** Memo for {@link preaggregateViolations}. */
+   private preaggregateViolationsMemo:
+      | readonly Readonly<PreaggregateViolation>[]
       | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- every top-level source's own gate, and every
@@ -2853,12 +2878,35 @@ export class Model {
     * derived name. The declared filter belongs to the source, not to the name
     * it is read under. Returns undefined when the run target does not derive
     * from a protected source.
+    *
+    * Scans {@link stripMalloyCommentsAndLiterals} text rather than the caller's
+    * raw text. Both reads here decide whether a filter is INJECTED, and there is
+    * no post-compile backstop on this path, so a name this walk fails to reach
+    * is served unfiltered and silently. Raw text let a caller arrange that four
+    * ways, each of which resolved to undefined on a query that really does read
+    * a protected source:
+    *
+    *  - a comment between `is` and the base (`source: a is -- c\n protected`)
+    *    ERASES the derivation edge, which the compiler still reads around;
+    *  - a declaration forged inside a string literal injects an edge, and
+    *    {@link buildSourceAliasMap} is last-declaration-wins, so it REPLACES the
+    *    real base for that name;
+    *  - a forged `run:` inside a literal or a comment re-points
+    *    {@link extractRunTargetSourceName} at a name that was never the target.
+    *
+    * Stripping first closes all four, because none of that text is syntax any
+    * more. It does not close a derivation that composes through a named
+    * `query:`, which this walk still cannot follow: it resolves a SINGLE source
+    * name, and a set-valued walk would have to decide which protected source's
+    * filters apply to a name with several bases. That needs its own change.
     */
    private resolveFilterSource(query?: string): string | undefined {
-      const target = extractRunTargetSourceName(query);
-      if (!target || !query) return undefined;
+      if (!query) return undefined;
+      const scanned = stripMalloyCommentsAndLiterals(query);
+      const target = extractRunTargetSourceName(scanned);
+      if (!target) return undefined;
 
-      const aliasOf = buildSourceAliasMap(query);
+      const aliasOf = buildSourceAliasMap(scanned);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;
@@ -3491,6 +3539,16 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
+         // The EFFECTIVE gate per source, inheritance already resolved by the
+         // extraction, so a suggest over a gated source learns which givens its
+         // gate reads.
+         new Map(
+            (this.sources ?? []).flatMap((source) =>
+               source.name
+                  ? [[source.name, source.authorize ?? []] as const]
+                  : [],
+            ),
+         ),
       );
    }
 
@@ -3750,27 +3808,78 @@ export class Model {
       );
    }
 
-   /** True if `name` reaches a curated source by walking the ad-hoc text's
-    *  `source: NAME is BASE` derivation declarations — composition over a
-    *  queryable source is itself queryable. */
+   /**
+    * True if `name` is PROVABLY a composition over the curated surface, by
+    * walking the ad-hoc text's own derivation declarations — composition over
+    * a queryable source is itself queryable.
+    *
+    * Reads {@link buildDerivationBaseMap} over
+    * {@link stripMalloyCommentsAndLiterals} text, the same hardened pair the
+    * authorize gate's {@link requestChainProvesUngated} uses, rather than the
+    * narrow {@link buildSourceAliasMap}. That map was `source:`-only,
+    * last-declaration-wins, and read RAW text, which cost correctness at both
+    * ends:
+    *
+    *  - **It missed `query:` hops.** The pre-aggregate idiom composes through
+    *    one — `query: agg is <curated> -> { … }`, `source: blended is agg
+    *    extend { … }`, `run: blended` — so the walk dead-ended on `agg`, a
+    *    name that is neither curated nor a `source:` alias, and denied a query
+    *    that only ever reads a source the caller may plainly read. Because
+    *    `/compile` is exempt from this boundary by design, the same text
+    *    compiled clean first, so the 404 explained nothing.
+    *  - **Raw text and last-wins were an admission hazard.** A declaration
+    *    forged inside a string literal (`where: note = 'source: x is
+    *    <curated>'`) or hidden behind a comment could inject an alias edge,
+    *    and last-wins let a second declaration REPLACE a name's real base.
+    *    Stripping closes the forging; the base map's set-per-name closes the
+    *    replacing.
+    *
+    * The quantifier is the part that has to be inverted from the authorize
+    * gate, and it is why the wider map is safe HERE. There, an extra edge
+    * widens DENIAL, so a name is denied if ANY branch reaches a gated source.
+    * Here an extra edge would widen ADMISSION, so a name is admitted only if
+    * EVERY declared base for it proves out: a shadowing or forged edge can
+    * then only add another obligation, never discharge one. For the ordinary
+    * one-base-per-name chain — everything that compiles — this is exactly the
+    * old walk's answer.
+    *
+    * Fails closed on anything it cannot ground: a name with no declared base,
+    * a chain longer than {@link REQUEST_CHAIN_MAX_NAMES}, and a cycle (a
+    * back-edge proves nothing, so `a is b` / `b is a` is not admitted).
+    */
    private derivesFromCurated(name: string, query: string): boolean {
       // Hoisted out of the walk: the own-closure set is the same for every link
       // in the derivation chain, and only the identity check varies by name.
       const own = this.ownCuratedSourceNames();
       const packageCurated = this.queryBoundary.packageCuratedSources;
-      const aliasOf = buildSourceAliasMap(query);
-      let current: string | undefined = name;
-      const seen = new Set<string>();
-      while (current && !seen.has(current)) {
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      // Only positive results are memoized: a name proven curated is proven
+      // wherever it appears, while a `false` may be the local verdict of the
+      // in-progress cycle guard rather than a property of the name.
+      const proven = new Set<string>();
+      const inProgress = new Set<string>();
+      const proves = (current: string): boolean => {
          if (
             own.has(current) ||
             this.admittedByPackage(current, packageCurated)
          )
             return true;
-         seen.add(current);
-         current = aliasOf.get(current);
-      }
-      return false;
+         if (proven.has(current)) return true;
+         // A back-edge grounds nothing, and neither does a chain this long —
+         // it is not a real derivation, so stop on the deny side.
+         if (inProgress.has(current)) return false;
+         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return false;
+         const bases = basesOf.get(current);
+         if (!bases || bases.size === 0) return false;
+         inProgress.add(current);
+         const ok = Array.from(bases).every((base) => proves(base));
+         inProgress.delete(current);
+         if (ok) proven.add(current);
+         return ok;
+      };
+      return proves(name);
    }
 
    /**
@@ -3783,12 +3892,30 @@ export class Model {
     * Returned rather than thrown: the owning Package joins these across its
     * models into one rejection, so an author fixing a package sees every bad
     * declaration at once instead of one per publish.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}, and it
+    * matters more here: `preaggregateAccessWarnings` puts this on
+    * `getPackageMetadata()`, which `/status` reaches for every package on every
+    * poll, and the walk below re-parses the annotations on every field of every
+    * source. A compiled model's annotations never change — a reload replaces the
+    * `Model` object outright — so the memo needs no invalidation.
+    *
+    * `readonly` down to the element because callers now share one array rather
+    * than each getting a fresh walk: a caller that sorted the array, or edited a
+    * violation's message, would be editing every later caller's copy. Enforced by
+    * the type rather than `Object.freeze` — the sharing is what makes this cheap,
+    * and a deep freeze would put back a per-element cost.
     */
-   public preaggregateViolations(): PreaggregateViolation[] {
-      if (!this.modelDef) return [];
-      return validateModelPreaggregation(
-         this.modelDef.contents as Record<string, unknown>,
-      );
+   public preaggregateViolations(): readonly Readonly<PreaggregateViolation>[] {
+      // Shared rather than a fresh `[]`, so the identity contract above holds on
+      // this branch too (a model that failed to compile has no `modelDef`).
+      if (!this.modelDef) return NO_PREAGGREGATE_VIOLATIONS;
+      if (this.preaggregateViolationsMemo === undefined) {
+         this.preaggregateViolationsMemo = validateModelPreaggregation(
+            this.modelDef.contents as Record<string, unknown>,
+         );
+      }
+      return this.preaggregateViolationsMemo;
    }
 
    /**
@@ -4261,8 +4388,11 @@ export class Model {
     * disable storage serving for every source in the package. So the shape is
     * validated once (per binding set — the result is cached) and, on failure,
     * the riskiest refinement category is dropped and it retries: full → drop
-    * views → drop views + joins → base-only. Base-only is pure virtual sources
-    * and always compiles, so it is the guaranteed floor. Each surviving tier
+    * views → drop views + joins → base-only. Base-only carries the virtual
+    * sources and their filters, so it compiles for every source whose filters
+    * can be reproduced — it is the floor, but no longer a guaranteed one: a
+    * filter that cannot be reproduced fails every tier, and the caller then
+    * serves live rather than serving unfiltered. Each surviving tier
     * still serves everything it can; the per-query eager compile in
     * {@link loadServeShapeQuery} remains the final net for query-specific
     * ineligibility.
@@ -4278,54 +4408,21 @@ export class Model {
        * nothing.
        */
       rollupGroups: RollupShapeGroup[] = [],
+      /**
+       * Set on the one re-entry this method makes after withholding bindings
+       * whose filters cannot be reproduced. It bounds the recursion to a single
+       * extra pass: a floor failure on the retry is answered by serving live
+       * rather than by isolating again.
+       */
+      isRetry = false,
    ): Promise<ModelMaterializer> {
-      // Richest first; each predicate keeps fewer refinement kinds than the last.
-      const keepKinds: Array<ReadonlySet<string>> = [
-         new Set(["join", "dimension", "measure", "view"]),
-         new Set(["join", "dimension", "measure"]),
-         new Set(["dimension", "measure"]),
-         new Set(),
-      ];
-      // A pre-aggregation group is dropped WHOLE, in one final tier, and never
-      // thinned by the tiers above it.
-      //
-      // Thinning does nothing for a group: its measures are generated from its own
-      // plan and are the only reason its member exists, so a tier that removes
-      // them leaves a member that compiles and answers nothing. What CAN rescue
-      // the shape is removing the group, and until this tier existed nothing did
-      // — which mattered because a group that will not compile takes the whole
-      // package's storage serving with it. Base-only was documented as the
-      // guaranteed floor, and a group breached it: a composite whose members
-      // disagree about a grain column's captured type fails at every tier,
-      // including the one that carries no refinements at all.
-      const tiers: Array<{
-         keep: ReadonlySet<string>;
-         groups: RollupShapeGroup[];
-      }> = [
-         // Richest, with groups.
-         { keep: keepKinds[0], groups: rollupGroups },
-         // Then groups DROPPED while every authored refinement is kept. This tier
-         // exists because the two failure sources are independent and the ladder
-         // otherwise conflates them: a single uncompilable group failed all four
-         // thinning tiers, and the tier that finally dropped it had already
-         // stripped every join, view, dimension and measure — so one bad rollup
-         // degraded every authored `storage=` source in the package to base-only,
-         // where before this feature it served at the richest tier. Trying this
-         // second means a group-caused failure costs the rollups and nothing else.
-         ...(rollupGroups.length > 0
-            ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
-            : []),
-         // Then the ordinary thinning ladder, still WITH groups: reaching here
-         // means dropping the groups alone did not fix it, so an authored
-         // refinement is implicated and the groups may be fine.
-         ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
-         // The floor: no refinements and no groups. Pure virtual bases, so it
-         // always compiles. Appended only when there is a group to drop, since
-         // without one the last thinning tier is already this shape.
-         ...(rollupGroups.length > 0
-            ? [{ keep: new Set<string>(), groups: [] as RollupShapeGroup[] }]
-            : []),
-      ];
+      // The ladder, richest first. Built by {@link buildServeShapeTiers} rather
+      // than here so the invariant it must hold — every tier keeps the
+      // never-thinned kinds — is assertable in one place. `filter` is one of
+      // those: the other kinds are optimizations, while a source's `where:` is
+      // part of what the source MEANS, so a tier that dropped it would answer
+      // with rows the source excludes.
+      const tiers = buildServeShapeTiers(rollupGroups);
       // Skip escalation entirely when nothing beyond the base is carried — but a
       // GROUP is something beyond the base. Reading this off `enriched` alone left
       // the pure-rollup case (no ordinary bindings at all) returning tier 0
@@ -4352,10 +4449,66 @@ export class Model {
                        : b,
                  );
          const materializer = this.buildServeShapeMaterializer(shaped, groups);
-         // The last tier is pure virtual bases with no composite, so it always
-         // compiles; trust it without a probe. And when there is nothing to
-         // escalate, tier 0 IS that shape — skip too.
-         if (tier === lastTier || (tier === 0 && nothingToEscalate)) {
+         // The last tier is virtual bases plus their filters. Unlike the tiers
+         // above it, it can fail: a filter that cannot be reproduced (one
+         // reaching through a join whose target is not materialized, or over a
+         // column the source hides) fails every tier including this one. It is
+         // therefore PROBED, and a failure is answered by withholding the
+         // offending bindings — never by thinning their filters, which is the
+         // unfiltered serve this ladder exists to prevent.
+         if (tier === lastTier) {
+            try {
+               await materializer.getModel();
+               return materializer;
+            } catch (err) {
+               if (isRetry) return materializer;
+               const servable = await this.bindingsWhoseFiltersCompile(
+                  enriched,
+                  keep,
+               );
+               const withheld = enriched
+                  .filter((b) => !servable.includes(b))
+                  .map((b) => b.sourceName);
+               if (servable.length === 0 || withheld.length === 0) {
+                  // Nothing left to serve, or every binding compiles alone so the
+                  // failure is in their COMBINATION — a duplicate source name is
+                  // the reachable one, since the floor carries no joins and so
+                  // cannot have an ordering cycle. Either way the model is served
+                  // live.
+                  logger.warn(
+                     "Storage serve shape failed at its floor and no binding could be isolated; serving live",
+                     {
+                        model: this.modelPath,
+                        error: err instanceof Error ? err.message : String(err),
+                     },
+                  );
+                  return materializer;
+               }
+               logger.warn(
+                  "Withheld storage serve bindings whose filters cannot be reproduced; those sources serve live",
+                  {
+                     model: this.modelPath,
+                     withheld,
+                     stillServed: servable.map((b) => b.sourceName),
+                     error: err instanceof Error ? err.message : String(err),
+                  },
+               );
+               // Re-enter the LADDER rather than returning this floor shape: the
+               // survivors did nothing wrong, and rebuilding them here would cost
+               // every one of them its joins, views and rollups because a
+               // sibling's filter was unservable. Same rationale as the
+               // group-dropping rung — a failure should cost its own cause and
+               // nothing else.
+               return await this.compileServeShape(
+                  servable,
+                  rollupGroups,
+                  true,
+               );
+            }
+         }
+         // Nothing to escalate means tier 0 IS the floor's shape, and the loop
+         // would otherwise probe a shape it cannot improve on.
+         if (tier === 0 && nothingToEscalate) {
             return materializer;
          }
          try {
@@ -4374,11 +4527,65 @@ export class Model {
          }
       }
       // Unreachable: the last tier returns above. Satisfy the type checker.
-      // Groups dropped, matching what that last tier is.
+      // Groups dropped and the never-thinned kinds kept, matching what that last
+      // tier is — stripping every refinement here would reintroduce the
+      // unfiltered serve this ladder exists to prevent.
+      const floor = tiers[tiers.length - 1].keep;
       return this.buildServeShapeMaterializer(
-         enriched.map((b) => ({ ...b, refinements: [] })),
+         enriched.map((b) => ({
+            ...b,
+            refinements: (b.refinements ?? []).filter((r) => floor.has(r.kind)),
+         })),
          [],
       );
+   }
+
+   /**
+    * The bindings whose own filters the serve shape can reproduce, found by
+    * compiling each alone at the floor — base plus filters, the smallest shape a
+    * binding can be served from. One compile per binding, on a failure path whose
+    * result is cached.
+    *
+    * Probed at the FLOOR on purpose: a binding whose view cannot be reproduced
+    * still compiles here and is kept, because thinning is the right answer for a
+    * view and the ladder above already does it. Only filters survive to this
+    * tier, so a failure here is a filter failure.
+    *
+    * Known limit, and the reason that reasoning does not fully generalise: the
+    * floor carries no joins, so a filter reaching through a join whose target IS
+    * materialized fails this solo probe even though it compiles at the richer
+    * tiers. Such a binding is over-withheld and serves live. Fails safe, and no
+    * worse than before filters were carried at all, but it is why a source can
+    * lose the tier to a sibling it has nothing to do with. Fixing it means
+    * probing a binding together with its join-dependency closure rather than
+    * alone — `orderBindingsByJoinDeps` already computes that ordering — which is
+    * more machinery than the case has so far warranted.
+    *
+    * Withholding, never thinning: a binding that does not compile is absent from
+    * the shape, so queries on it fail to resolve and serve live. Thinning its
+    * filters instead would serve it unfiltered, which is the defect this whole
+    * mechanism exists to prevent.
+    */
+   private async bindingsWhoseFiltersCompile(
+      enriched: ServeBinding[],
+      floorKeep: ReadonlySet<string>,
+   ): Promise<ServeBinding[]> {
+      const servable: ServeBinding[] = [];
+      for (const binding of enriched) {
+         const floored = {
+            ...binding,
+            refinements: (binding.refinements ?? []).filter((r) =>
+               floorKeep.has(r.kind),
+            ),
+         };
+         try {
+            await this.buildServeShapeMaterializer([floored], []).getModel();
+            servable.push(binding);
+         } catch {
+            // Withheld: its filters do not reproduce, so it cannot be served.
+         }
+      }
+      return servable;
    }
 
    /** Build the transient serve-shape materializer for a set of bindings. */
@@ -4447,7 +4654,11 @@ export class Model {
             | {
                  contents?: Record<
                     string,
-                    { sourceID?: unknown; fields?: unknown[] }
+                    {
+                       sourceID?: unknown;
+                       fields?: unknown[];
+                       filterList?: unknown[];
+                    }
                  >;
               }
             | undefined
@@ -4498,6 +4709,11 @@ export class Model {
                      liftText,
                   }),
                   ...extractRefinements(fields),
+                  // The source's own `where:` clauses. Not part of the
+                  // materialized relation (the build SQL is the persisted
+                  // relation alone), so without these the shape serves rows the
+                  // source excludes.
+                  ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
                   ...extractViews(fields, liftText),
                ];
                return { ...b, schema, refinements };

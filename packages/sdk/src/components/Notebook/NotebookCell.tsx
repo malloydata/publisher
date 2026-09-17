@@ -19,26 +19,21 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
+import { FloatingIconButton } from "../FloatingIconButton";
+import { Prose } from "../Prose";
 import type { NavigationClick } from "../click_helper";
 import { useDrill, type DrillNavigation } from "../drill";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
 import ResultContainer from "../RenderedResult/ResultContainer";
+import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
-import { CleanMetricCard, CleanNotebookCell } from "../styles";
+import { CleanMetricCard } from "../styles";
 import { EnhancedNotebookCell } from "./types";
-
-/**
- * Cap for a cell result that lays itself out: a table, mostly. Tall enough for
- * a screenful of rows, after which the cell scrolls rather than the page
- * turning into one long table.
- */
-const CELL_MAX_HEIGHT = 700;
 
 interface NotebookCellProps {
    cell: EnhancedNotebookCell;
@@ -89,82 +84,6 @@ interface NotebookCellProps {
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
 }
 
-interface NotebookMarkdownLinkProps {
-   href?: string;
-   title?: string;
-   children?: React.ReactNode;
-   envName: string;
-   pkgName: string;
-   sourceDir: string;
-   onNavigate?: (to: string, event?: NavigationClick) => void;
-}
-
-// Links inside a rendered notebook/README are authored relative to the source
-// file (e.g. `spielberg.malloynb`). A plain browser anchor resolves them
-// against the current page URL, which drops the package segment for a README
-// shown at the package route. Resolve relative links against the source file's
-// own directory instead and route them through the SPA. External, hash, and
-// absolute links stay as normal anchors.
-function NotebookMarkdownLink({
-   href,
-   title,
-   children,
-   envName,
-   pkgName,
-   sourceDir,
-   onNavigate,
-}: NotebookMarkdownLinkProps) {
-   const hasScheme = !!href && /^[a-z][a-z0-9+.-]*:/i.test(href);
-   const isInternalRelative =
-      !!href && !hasScheme && !href.startsWith("/") && !href.startsWith("#");
-
-   if (!isInternalRelative || !href) {
-      // External, absolute, or hash link: render a normal anchor. Only allow
-      // safe schemes so a crafted `javascript:`/`data:` href in a package
-      // README (packages can come from untrusted git/S3 sources) cannot run.
-      const isUnsafeScheme =
-         hasScheme && !/^(https?|mailto|tel):/i.test(href ?? "");
-      return (
-         <a
-            href={isUnsafeScheme ? undefined : href}
-            title={title}
-            {...(hasScheme
-               ? { target: "_blank", rel: "noopener noreferrer" }
-               : {})}
-         >
-            {children}
-         </a>
-      );
-   }
-
-   // Resolve the relative href against the source file's directory (empty for a
-   // package-root README) via a dummy origin, which normalizes any `./`/`../`
-   // and clamps escapes at the package root, then prefix the package path.
-   const resolved = new URL(href, `https://malloy.invalid/${sourceDir}`);
-   const packageRelative =
-      resolved.pathname.slice(1) + resolved.search + resolved.hash;
-   const to = `/${envName}/${pkgName}/${packageRelative}`;
-   // With a host router (onNavigate) intercept and route through the SPA.
-   // Without one (router-free SDK embedding) the absolute href navigates on
-   // its own, so rendering a notebook needs no react-router context.
-   return (
-      <a
-         href={to}
-         title={title}
-         onClick={
-            onNavigate
-               ? (event) => {
-                    event.preventDefault();
-                    onNavigate(to, event);
-                 }
-               : undefined
-         }
-      >
-         {children}
-      </a>
-   );
-}
-
 export function NotebookCell({
    cell,
    hideCodeCellIcon,
@@ -195,6 +114,14 @@ export function NotebookCell({
 
    const { environmentName, packageName, modelPath } =
       parseResourceUri(resourceUri);
+   // Links in a markdown cell are authored relative to the notebook file, and
+   // route through the host when it gave us a way to.
+   const links = {
+      environmentName,
+      packageName,
+      sourcePath: modelPath,
+      onNavigate,
+   };
 
    // `# drill` is declared on a model dimension, so a notebook cell that groups
    // by that dimension is clickable for free: the same resolution, and the
@@ -225,26 +152,6 @@ export function NotebookCell({
       // a shared model dimension and cannot know which document it fired in.
       selfLabel: "Filter this notebook",
    });
-   // Directory of the source file within the package (empty for a package-root
-   // README), used to resolve relative links the author wrote against it.
-   const sourceDir =
-      modelPath && modelPath.includes("/")
-         ? modelPath.slice(0, modelPath.lastIndexOf("/") + 1)
-         : "";
-   const markdownOptions = {
-      overrides: {
-         a: {
-            component: NotebookMarkdownLink,
-            props: {
-               envName: environmentName,
-               pkgName: packageName,
-               sourceDir,
-               onNavigate,
-            },
-         },
-      },
-   };
-
    // Regex to extract imported names from import statements
    const IMPORT_NAMES_REGEX = /import\s*\{([^}]+)\}\s*from\s*['"`][^'"`]+['"`]/;
 
@@ -339,42 +246,17 @@ export function NotebookCell({
 
    return (
       (cell.type === "markdown" && (
-         <CleanNotebookCell>
-            <Box
-               sx={(theme) => ({
-                  "& h1, & h2, & h3, & h4, & h5, & h6": {
-                     fontWeight: "600",
-                     color: theme.palette.text.primary,
-                     marginBottom: "8px",
-                     marginTop: "16px",
-                  },
-                  "& h1": { fontSize: "28px" },
-                  "& h2": { fontSize: "24px" },
-                  "& h3": { fontSize: "20px" },
-                  "& p": {
-                     color: theme.palette.text.primary,
-                     lineHeight: "1.7",
-                     marginBottom: "8px",
-                     fontSize: "16px",
-                  },
-                  "& ul, & ol": {
-                     color: theme.palette.text.primary,
-                     lineHeight: "1.7",
-                     marginBottom: "8px",
-                     fontSize: "16px",
-                  },
-                  "& li": {
-                     marginBottom: "4px",
-                  },
-               })}
-            >
+         <Box>
+            <Box>
                {index === 0 ? (
                   <Stack
                      direction="row"
                      alignItems="flex-start"
                      justifyContent="space-between"
                   >
-                     <Markdown options={markdownOptions}>{cell.text}</Markdown>
+                     <Prose variant="document" links={links}>
+                        {cell.text}
+                     </Prose>
                      <Tooltip title="Click to copy link">
                         <LinkOutlinedIcon
                            sx={{
@@ -388,7 +270,9 @@ export function NotebookCell({
                      </Tooltip>
                   </Stack>
                ) : (
-                  <Markdown options={markdownOptions}>{cell.text}</Markdown>
+                  <Prose variant="document" links={links}>
+                     {cell.text}
+                  </Prose>
                )}
                <Snackbar
                   open={copyMessage !== ""}
@@ -397,10 +281,10 @@ export function NotebookCell({
                   message={copyMessage}
                />
             </Box>
-         </CleanNotebookCell>
+         </Box>
       )) ||
       (cell.type === "code" && (
-         <CleanNotebookCell>
+         <Box>
             {(!hideCodeCellIcon ||
                (!hideEmbeddingIcon && cell.result) ||
                (cell.newSources && cell.newSources.length > 0)) && (
@@ -442,33 +326,13 @@ export function NotebookCell({
                               />
                            )}
                            {hasValidImport && (
-                              <IconButton
-                                 sx={{
-                                    backgroundColor: "rgba(255, 255, 255, 0.9)",
-                                    "&:hover": {
-                                       backgroundColor:
-                                          "rgba(255, 255, 255, 1)",
-                                    },
-                                    width: "32px",
-                                    height: "32px",
-                                    flexShrink: 0,
-                                 }}
+                              <FloatingIconButton
+                                 aria-label="Data sources"
+                                 sx={{ flexShrink: 0 }}
                                  onClick={() => setSourcesDialogOpen(true)}
                               >
-                                 <SearchIcon
-                                    sx={{
-                                       fontSize: "18px",
-                                       // grey.700 is a dark warm grey
-                                       // that stays legible on the
-                                       // white-ish IconButton in both
-                                       // light and dark mode. The
-                                       // button background is
-                                       // hardcoded white, so the icon
-                                       // must be hardcoded dark.
-                                       color: "grey.700",
-                                    }}
-                                 />
-                              </IconButton>
+                                 <SearchIcon />
+                              </FloatingIconButton>
                            )}
                         </Box>
                      </CleanMetricCard>
@@ -670,7 +534,7 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        maxHeight={CELL_MAX_HEIGHT}
+                        maxHeight={NOTEBOOK_CELL_MAX_HEIGHT}
                         maxResultSize={maxResultSize}
                         drill={drill}
                      />
@@ -698,44 +562,26 @@ export function NotebookCell({
                      }}
                   >
                      {!hideCodeCellIcon && (
-                        <IconButton
-                           sx={{
-                              backgroundColor: "rgba(255, 255, 255, 0.9)",
-                              "&:hover": {
-                                 backgroundColor: "rgba(255, 255, 255, 1)",
-                              },
-                              width: "32px",
-                              height: "32px",
-                           }}
+                        <FloatingIconButton
+                           aria-label="Malloy code"
                            onClick={(e) => {
                               e.stopPropagation();
                               setCodeDialogOpen(true);
                            }}
                         >
-                           <CodeIcon
-                              sx={{ fontSize: "18px", color: "grey.700" }}
-                           />
-                        </IconButton>
+                           <CodeIcon />
+                        </FloatingIconButton>
                      )}
-                     <IconButton
-                        sx={{
-                           backgroundColor: "rgba(255, 255, 255, 0.9)",
-                           "&:hover": {
-                              backgroundColor: "rgba(255, 255, 255, 1)",
-                           },
-                           width: "32px",
-                           height: "32px",
-                        }}
+                     <FloatingIconButton
+                        aria-label="Expand results"
                         onClick={() => setResultsDialogOpen(true)}
                      >
-                        <SearchIcon
-                           sx={{ fontSize: "18px", color: "grey.700" }}
-                        />
-                     </IconButton>
+                        <SearchIcon />
+                     </FloatingIconButton>
                   </Stack>
                </CleanMetricCard>
             )}
-         </CleanNotebookCell>
+         </Box>
       ))
    );
 }

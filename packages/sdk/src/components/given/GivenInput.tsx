@@ -12,6 +12,7 @@ import {
    FormHelperText,
    IconButton,
    InputAdornment,
+   MenuItem,
    Slider,
    Stack,
    TextField,
@@ -22,17 +23,25 @@ import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
+import { type ReactNode, useEffect, useState } from "react";
 import { Given } from "../../client";
 import { paramToGiven, pickedDayToUtc } from "./paramCodec";
 import { GivenValue } from "../../hooks/givenValue";
 import {
    decodeAtLeast,
+   decodeBetween,
+   decodeDayRange,
    decodeFilterList,
+   decodeTimePreset,
    encodeAtLeast,
+   encodeBetween,
+   encodeDayRange,
    encodeFilterList,
+   encodeTimePreset,
    filterInnerType,
    isFilterType,
    isPlainFilterList,
+   TIME_PRESETS,
 } from "./filterValue";
 import { renderGivenDefault } from "./utils";
 
@@ -383,33 +392,48 @@ export function GivenInput({
       );
    }
 
-   // A slider, when the declaration bounded the range. Only a lower bound is
-   // expressible as a filter here (see `encodeAtLeast`), so this reads as
-   // "at least", which is what a threshold control is for.
+   // A slider, when the declaration bounded the range. For a `filter<number>`
+   // it has two handles and means "between", `[lo to hi]`, the same control and
+   // the same spelling Malloyyo gives the same tags; with the upper handle at
+   // the ceiling it collapses to the lower bound alone, `>= lo`, so a threshold
+   // is still one drag. A plain `number` given is a single value and keeps one
+   // handle.
    const numericFilter =
       isFilterType(type) && filterInnerType(type) === "number";
    const { rangeMin, rangeMax } = given;
-   // A slider can only represent `>= N`, so a `filter<number>` carrying anything
-   // else (a range, an upper bound, a negation) falls through to the text box.
-   // Otherwise `decodeAtLeast` returns undefined, the slider claims "Any" while a
-   // filter is in force, and the first drag silently replaces the author's filter
-   // with a threshold. Same principle as the picker and the date guards above.
+   // The handles can show a closed range or a lower bound and nothing else, so
+   // a `filter<number>` carrying anything else (a half-open range, an upper
+   // bound alone, a negation) falls through to the text box. Otherwise the
+   // decoders return undefined, the slider claims "Any" while a filter is in
+   // force, and the first drag silently replaces the author's filter. Same
+   // principle as the picker and the date guards above.
+   const atLeast =
+      numericFilter && typeof value === "string"
+         ? decodeAtLeast(value)
+         : undefined;
+   const between =
+      numericFilter && typeof value === "string"
+         ? decodeBetween(value)
+         : undefined;
    const sliderIsRepresentable =
       !numericFilter ||
       value === undefined ||
       value === null ||
       value === "" ||
-      (typeof value === "string" && decodeAtLeast(value) !== undefined);
+      atLeast !== undefined ||
+      between !== undefined;
    if (
       (numericFilter || type === "number") &&
       rangeMin !== undefined &&
       rangeMax !== undefined &&
       sliderIsRepresentable
    ) {
+      // The filter's handles: a range as written, or a lower bound with the
+      // upper handle resting at the ceiling. Undefined when nothing is set.
+      const handles: [number, number] | undefined =
+         between ?? (atLeast !== undefined ? [atLeast, rangeMax] : undefined);
       const current = numericFilter
-         ? typeof value === "string"
-            ? decodeAtLeast(value)
-            : undefined
+         ? handles?.[0]
          : typeof value === "number"
            ? value
            : undefined;
@@ -427,6 +451,14 @@ export function GivenInput({
       }
       // An unset control rests at the low end, which is the no-op threshold.
       const position = current ?? rangeMin;
+      // And an unset range spans the whole track, which selects everything.
+      const thumbs: [number, number] = handles ?? [rangeMin, rangeMax];
+      // A range reads as `lo to hi`, and as `≥ lo` once the upper handle is at
+      // the ceiling, which is also what the value on the wire says.
+      const rangeReadout =
+         thumbs[1] >= rangeMax
+            ? `≥ ${thumbs[0]}`
+            : `${thumbs[0]} to ${thumbs[1]}`;
       // `""` on a filter given is an explicit "no threshold" OVERRIDE, not an
       // absence: `paramToGiven` keeps it because the empty string is a value a
       // filter can mean, and `givensToRequest` sends it. Counting it as unset
@@ -484,7 +516,7 @@ export function GivenInput({
                         : emptyFilterOverride
                           ? "Any"
                           : numericFilter
-                            ? `≥ ${position}`
+                            ? rangeReadout
                             : String(position)}
                   </Typography>
                   {isOverridden && (
@@ -508,27 +540,51 @@ export function GivenInput({
                   size="small"
                   min={rangeMin}
                   max={rangeMax}
-                  value={position}
+                  value={numericFilter ? thumbs : position}
+                  // Two handles must not cross: a swapped pair would encode a
+                  // range the decoder refuses, and the control would fall
+                  // through to the text box mid-drag.
+                  disableSwap={numericFilter}
                   valueLabelDisplay="auto"
-                  aria-label={label}
+                  // One name per handle, so a test or a screen reader can tell
+                  // them apart; a single handle keeps the plain label.
+                  aria-label={numericFilter ? undefined : label}
+                  getAriaLabel={
+                     numericFilter
+                        ? (index) =>
+                             index === 0 ? `${label} from` : `${label} to`
+                        : undefined
+                  }
                   // MUI pads a slider vertically for a touch target, which is
                   // 26px this control cannot spare; the row above already
                   // gives the thumb somewhere to be.
                   sx={{ py: 0, mt: 0.5 }}
                   onChange={(_event, next) => {
-                     const picked = Array.isArray(next) ? next[0] : next;
-                     // Back at the floor is no threshold at all for a FILTER,
-                     // not `>= min`, so dragging left the whole way clears
-                     // rather than leaving a filter that reads as a constraint.
-                     //
+                     if (numericFilter) {
+                        const [lo, hi] = Array.isArray(next)
+                           ? [next[0], next[1]]
+                           : [next, next];
+                        // Both handles at the ends is no filter at all, not
+                        // `[min to max]`, so dragging the whole way out clears
+                        // rather than leaving a filter that reads as a
+                        // constraint. The upper handle at the ceiling alone is
+                        // a threshold, `>= lo`, which is what it was before
+                        // the range existed and what a URL from then holds.
+                        if (lo <= rangeMin && hi >= rangeMax) {
+                           onChange(null);
+                           return;
+                        }
+                        onChange(
+                           hi >= rangeMax
+                              ? encodeAtLeast(lo)
+                              : encodeBetween(lo, hi),
+                        );
+                        return;
+                     }
                      // A plain `number` given is not a threshold, so its floor
                      // is an ordinary value and clearing there made the minimum
                      // the one number on the scale the reader could not pick.
-                     if (numericFilter && picked <= rangeMin) {
-                        onChange(null);
-                        return;
-                     }
-                     onChange(numericFilter ? encodeAtLeast(picked) : picked);
+                     onChange(Array.isArray(next) ? next[0] : next);
                   }}
                />
             </Box>
@@ -566,6 +622,28 @@ export function GivenInput({
    const bareDate =
       typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
    const dateIsPickable = value === undefined || value === null || bareDate;
+   // A time-range control for a date-typed filter that is unset, the empty
+   // filter, one of the preset windows, or a range of whole days. The presets
+   // are Malloyyo's, so a `filter<timestamp>` given draws the same control on
+   // either host and a value set on one reads on the other. A bare day keeps
+   // the single date picker below (it is what `# drill { to=self }` hands over,
+   // and one day is a day, not a range); anything else the grammar can say
+   // falls through to the text box, as written and editable.
+   if (isDateFilter && !bareDate) {
+      const state = readTimeRange(value);
+      if (state !== undefined) {
+         return (
+            <TimeRangeControl
+               label={label}
+               state={state}
+               onChange={onChange}
+               helperNode={helperNode}
+               defaultDisplay={defaultDisplay}
+            />
+         );
+      }
+   }
+
    // An unrepresentable date filter falls through to the text box below, for the
    // same reason a non-list string filter does: a range like
    // `2024-01-01 to 2024-02-01` handed whole to `dayjs.utc` parses as its
@@ -797,5 +875,202 @@ function ClearAdornment({ onClear }: { onClear: () => void }) {
             <ClearIcon fontSize="small" />
          </IconButton>
       </InputAdornment>
+   );
+}
+
+/** What a time-range control is showing; undefined means it cannot show it. */
+type TimeRangeState =
+   | { kind: "unset" }
+   /** An explicit `""`: the empty filter, matching every row, as an override. */
+   | { kind: "any" }
+   | { kind: "preset"; key: string }
+   | { kind: "days"; firstDay: string; lastDay: string };
+
+function readTimeRange(
+   value: GivenValue | undefined,
+): TimeRangeState | undefined {
+   if (value === undefined || value === null) return { kind: "unset" };
+   if (typeof value !== "string") return undefined;
+   if (value === "") return { kind: "any" };
+   const key = decodeTimePreset(value);
+   if (key !== undefined) return { kind: "preset", key };
+   const days = decodeDayRange(value);
+   if (days !== undefined) return { kind: "days", ...days };
+   return undefined;
+}
+
+const CUSTOM_RANGE = "__custom__";
+const ANY_TIME = "__any__";
+
+/**
+ * Preset windows in a dropdown, with "Custom range" opening two day pickers.
+ *
+ * The pickers are inclusive on both ends, which is how a reader thinks about
+ * "January 1st to January 31st"; `encodeDayRange` handles the half-open grammar
+ * underneath. A custom range commits only once both days are picked and in
+ * order: a half-filled pair sends nothing rather than a range with one
+ * invented end, and the value in force meanwhile is whatever it was.
+ *
+ * Custom mode is local state, because choosing "Custom range" changes what is
+ * on screen before it changes the value. It follows the value when the value
+ * moves under it (a preset arriving from the URL, a revert), keyed on the
+ * value's shape rather than on the object, so it does not re-run every render.
+ */
+function TimeRangeControl({
+   label,
+   state,
+   onChange,
+   helperNode,
+   defaultDisplay,
+}: {
+   label: string;
+   state: TimeRangeState;
+   onChange: (next: GivenValue) => void;
+   helperNode: ReactNode;
+   defaultDisplay: string | undefined;
+}) {
+   const stateKey =
+      state.kind === "days"
+         ? `days:${state.firstDay}/${state.lastDay}`
+         : state.kind === "preset"
+           ? `preset:${state.key}`
+           : state.kind;
+   const [custom, setCustom] = useState(state.kind === "days");
+   const [draft, setDraft] = useState<{ from?: string; to?: string }>(
+      state.kind === "days" ? { from: state.firstDay, to: state.lastDay } : {},
+   );
+   useEffect(() => {
+      if (state.kind === "days") {
+         setCustom(true);
+         setDraft({ from: state.firstDay, to: state.lastDay });
+      } else if (state.kind !== "unset") {
+         // A preset or the empty filter arrived: it is what is showing now.
+         setCustom(false);
+      }
+      // `stateKey` stands in for `state`, whose object identity is per render.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [stateKey]);
+
+   const isOverridden = state.kind !== "unset";
+   const selected = custom
+      ? CUSTOM_RANGE
+      : state.kind === "preset"
+        ? state.key
+        : state.kind === "any"
+          ? ANY_TIME
+          : "";
+
+   const commitDays = (next: { from?: string; to?: string }) => {
+      setDraft(next);
+      if (
+         next.from &&
+         next.to &&
+         !dayjs.utc(next.to).isBefore(dayjs.utc(next.from))
+      ) {
+         onChange(encodeDayRange(next.from, next.to));
+      }
+   };
+
+   const day = (text: string | undefined) => {
+      const parsed = text ? dayjs.utc(text) : null;
+      return parsed?.isValid() ? parsed : null;
+   };
+
+   return (
+      <Stack direction="row" spacing={1} data-testid="time-range">
+         <TextField
+            select
+            label={label}
+            value={selected}
+            size="small"
+            fullWidth
+            // Unset shows the model's own default as the helper line, the way
+            // every other control does; the dropdown itself stays blank so it
+            // does not assert a window nobody chose.
+            helperText={helperNode}
+            slotProps={{
+               select: {
+                  displayEmpty: true,
+                  renderValue: (v) => {
+                     if (v === CUSTOM_RANGE) return "Custom range";
+                     if (v === ANY_TIME) return "Any time";
+                     const preset = TIME_PRESETS.find((p) => p.key === v);
+                     return preset
+                        ? preset.label
+                        : (defaultDisplay ?? "Any time");
+                  },
+               },
+               input: {
+                  endAdornment: isOverridden ? (
+                     // Before the dropdown arrow, which MUI positions on its
+                     // own; the × reverts, like every × in this file.
+                     <IconButton
+                        size="small"
+                        aria-label="clear value"
+                        onClick={() => {
+                           setCustom(false);
+                           setDraft({});
+                           onChange(null);
+                        }}
+                        sx={{ mr: 2 }}
+                     >
+                        <ClearIcon fontSize="small" />
+                     </IconButton>
+                  ) : undefined,
+               },
+            }}
+            onChange={(e) => {
+               const key = e.target.value;
+               if (key === CUSTOM_RANGE) {
+                  // Nothing committed yet: the pickers decide.
+                  setCustom(true);
+                  return;
+               }
+               setCustom(false);
+               const encoded = encodeTimePreset(key);
+               if (encoded !== undefined) onChange(encoded);
+            }}
+         >
+            {/* The empty filter is showable, since a URL can carry it, but not
+                offered: the gesture for "no filter" is the ×, which reverts to
+                the model default rather than overriding it with everything. */}
+            {state.kind === "any" && (
+               <MenuItem value={ANY_TIME}>Any time</MenuItem>
+            )}
+            {TIME_PRESETS.map((preset) => (
+               <MenuItem key={preset.key} value={preset.key}>
+                  {preset.label}
+               </MenuItem>
+            ))}
+            <MenuItem value={CUSTOM_RANGE}>Custom range</MenuItem>
+         </TextField>
+         {custom && (
+            <LocalizationProvider dateAdapter={AdapterDayjs}>
+               <DatePicker
+                  label="From"
+                  value={day(draft.from)}
+                  onChange={(next) =>
+                     commitDays({
+                        ...draft,
+                        from: next ? next.format("YYYY-MM-DD") : undefined,
+                     })
+                  }
+                  slotProps={{ textField: { size: "small" } }}
+               />
+               <DatePicker
+                  label="To"
+                  value={day(draft.to)}
+                  minDate={day(draft.from) ?? undefined}
+                  onChange={(next) =>
+                     commitDays({
+                        ...draft,
+                        to: next ? next.format("YYYY-MM-DD") : undefined,
+                     })
+                  }
+                  slotProps={{ textField: { size: "small" } }}
+               />
+            </LocalizationProvider>
+         )}
+      </Stack>
    );
 }

@@ -28,6 +28,67 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
+# ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
+# compiler never reaches the runtime image and so a broken driver/shim pair
+# fails the BUILD. Removal: see packages/server/adbc-shim/README.md.
+#
+# Downloaded directly rather than through the upstream installer's `curl … | sh`,
+# and checked against the digest GitHub publishes: this is a 16MB native library
+# dlopen'd into the server process, and a version tag is mutable — an asset can
+# be re-uploaded under it. Pin the bytes, not the name.
+#
+# No `|| echo` fallback, unlike the extension install in base-deps: a failed
+# fetch FAILS THE BUILD. That tolerance is exactly what let this ship broken
+# once. An image without the driver cannot answer a single Snowflake query and
+# must not leave the builder reporting success.
+#
+# The shim (packages/server/adbc-shim/) is compiled here and installed under the
+# driver's own file name, with the real driver renamed beside it; selftest.c
+# dlopens the pair the way the driver manager will and fails the build if the
+# chain does not come up. No network, no credentials.
+#
+# When bumping DUCKDB_VERSION, re-check this: the community extension moves with
+# DuckDB and the driver ABI may move with it, and a mismatch surfaces only at
+# query time.
+# Same base as `final` ON PURPOSE: `-ldl` binds the shim's dlopen to this
+# glibc (dlopen@GLIBC_2.34), and the selftest below runs against THIS libc. A
+# final stage on a different base would pass the selftest here and fail to load
+# the shim at runtime, where only smoke-test 4b would notice. Change both or
+# neither.
+FROM oven/bun:1.3.13-slim AS adbc-driver
+ARG ADBC_SNOWFLAKE_VERSION=1.12.0
+ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
+ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gcc libc6-dev && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /out && ADBC_ARCH="$(dpkg --print-architecture)" && \
+    if [ "${ADBC_ARCH}" = "amd64" ]; then ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_AMD64}"; \
+    else ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_ARM64}"; fi && \
+    curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
+      -o /tmp/adbc-snowflake.tar.gz \
+      "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_${ADBC_ARCH}_v${ADBC_SNOWFLAKE_VERSION}.tar.gz" && \
+    echo "${ADBC_SHA}  /tmp/adbc-snowflake.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/adbc-snowflake.tar.gz -C /tmp libadbc_driver_snowflake.so && \
+    mv /tmp/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so && \
+    rm -f /tmp/adbc-snowflake.tar.gz
+# ADBC-SHIM: compile + self-test. Without the shim this stage ends at the mv
+# above, with the driver kept under its real name.
+#
+# adbc.h is the ABI the shim wraps, vendored byte-for-byte from
+# apache/arrow-adbc@7f35429e (c/include/arrow-adbc/adbc.h). The digest makes a
+# re-vendor deliberate: update it and the provenance line in the shim's README
+# together, and re-read the AdbcDriver struct layout when you do.
+ARG ADBC_HEADER_SHA256=b6ce3eb8394d4877af1693654d34bc11648a2dfb1f0eacc0c47d062ca69feb71
+COPY packages/server/adbc-shim/ /src/adbc-shim/
+RUN echo "${ADBC_HEADER_SHA256}  /src/adbc-shim/adbc.h" | sha256sum -c - && \
+    gcc -O2 -Wall -Wextra -shared -fPIC -o /out/libadbc_driver_snowflake.so /src/adbc-shim/shim.c -ldl && \
+    gcc -O2 -Wall -Wextra -o /tmp/selftest /src/adbc-shim/selftest.c -ldl && \
+    /tmp/selftest /out/libadbc_driver_snowflake.so && \
+    mkdir -p /tmp/stub && \
+    gcc -O2 -Wall -Wextra -I/src/adbc-shim -shared -fPIC -o /tmp/stub/libadbc_driver_snowflake.real.so /src/adbc-shim/stub_driver.c && \
+    ADBC_REAL_DRIVER=/tmp/stub/libadbc_driver_snowflake.real.so /tmp/selftest /out/libadbc_driver_snowflake.so
+
 # Builder stage
 FROM oven/bun:1.3.13-slim AS builder
 COPY --from=java-base /usr/lib/jvm /usr/lib/jvm
@@ -116,42 +177,56 @@ COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
 # snowflake_query() fails at run time with "ADBC Snowflake driver
 # (libadbc_driver_snowflake.so) not found".
 #
-# Placed HERE, after the COPY above, rather than earlier: the extension resolves
-# the driver by calling dladdr on ITSELF and looking beside the loaded object, so
-# the driver has to sit next to whichever snowflake.duckdb_extension the runtime
-# actually loads. That directory is discovered rather than reconstructed from a
-# platform string — the CLI (base-deps) and the bake (@duckdb/node-api, in the
-# builder) each write their own, and this is the layer that ships.
+# The driver is downloaded, verified and wrapped in the `adbc-driver` stage
+# above; what arrives here is two files (ADBC-SHIM — without the shim it is the
+# one upstream file under its own name):
 #
-# Downloaded directly rather than through the upstream installer's `curl … | sh`,
-# and checked against the digest GitHub publishes: this is a 16MB native library
-# dlopen'd into the server process, and a version tag is mutable — an asset can
-# be re-uploaded under it. Pin the bytes, not the name.
+#   libadbc_driver_snowflake.so       the shim (packages/server/adbc-shim/), which
+#                                     forwards every call to the real driver and
+#                                     sets the two statement options that bound
+#                                     the driver's read-ahead — see its README
+#   libadbc_driver_snowflake.real.so  the upstream driver, unmodified
 #
-# No `|| echo` fallback, unlike the extension install above: a failed fetch FAILS
-# THE BUILD. That tolerance is exactly what let this ship broken. An image without
-# the driver cannot answer a single Snowflake query and must not leave the builder
-# reporting success. The closing `test` is the verification — snowflake_version()
-# cannot serve as one, being a scalar that never touches the driver.
+# The shim finds the real driver beside itself, so both go wherever the
+# extension is. Placed HERE, after the extensions COPY above, rather than
+# earlier: the extension resolves the driver by calling dladdr on ITSELF and
+# looking beside the loaded object, so the driver has to sit next to whichever
+# snowflake.duckdb_extension the runtime actually loads. That directory is
+# discovered rather than reconstructed from a platform string — the CLI
+# (base-deps) and the bake (@duckdb/node-api, in the builder) each write their
+# own, and this is the layer that ships.
 #
-# When bumping DUCKDB_VERSION, re-check this: the community extension moves with
-# DuckDB and the driver ABI may move with it, and a mismatch surfaces only at
-# query time.
-ARG ADBC_SNOWFLAKE_VERSION=1.12.0
-ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
-ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
-RUN ADBC_ARCH="$(dpkg --print-architecture)" && \
-    if [ "${ADBC_ARCH}" = "amd64" ]; then ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_AMD64}"; \
-    else ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_ARM64}"; fi && \
-    curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
-      -o /tmp/adbc-snowflake.tar.gz \
-      "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_${ADBC_ARCH}_v${ADBC_SNOWFLAKE_VERSION}.tar.gz" && \
-    echo "${ADBC_SHA}  /tmp/adbc-snowflake.tar.gz" | sha256sum -c - && \
-    tar -xzf /tmp/adbc-snowflake.tar.gz -C /tmp libadbc_driver_snowflake.so && \
-    find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
-      | while read -r d; do cp /tmp/libadbc_driver_snowflake.so "$d/"; done && \
-    rm -f /tmp/adbc-snowflake.tar.gz /tmp/libadbc_driver_snowflake.so && \
-    test -n "$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so -print -quit)"
+# The closing count-match is the verification — one shim and one real driver
+# for EVERY extension directory, not "at least one somewhere": a pipeline's
+# status is its last command's, so a copy that failed in a non-final loop
+# iteration would otherwise pass. snowflake_version() cannot serve as a check,
+# being a scalar that never touches the driver.
+COPY --from=adbc-driver /out/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so /tmp/adbc/
+RUN find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
+      | while read -r d; do cp /tmp/adbc/libadbc_driver_snowflake.so /tmp/adbc/libadbc_driver_snowflake.real.so "$d/"; done && \
+    rm -rf /tmp/adbc && \
+    ext=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
+    shim=$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
+    real=$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \
+    test "$ext" -gt 0 && test "$shim" -eq "$ext" && test "$real" -eq "$ext"
+
+# ADBC-SHIM operator note. The shim is opt-in: with neither variable set it is a pure pass-through and
+# the driver behaves exactly as upstream ships it. To bound how far the driver
+# reads ahead of the consumer, set at deploy time:
+#
+#   ADBC_RESULT_QUEUE_SIZE=1        Arrow record batches buffered per result
+#                                   stream (driver default 100). 1 keeps a slow
+#                                   consumer — a CTAS into DuckLake on object
+#                                   storage — from having the whole remaining
+#                                   result resident: measured 3325 MiB → 286 MiB
+#                                   on a 20M-row read, no measured cost to a
+#                                   fast one.
+#   ADBC_PREFETCH_CONCURRENCY       streams downloaded in parallel (driver
+#                                   default 5). The throughput knob, not the
+#                                   memory one — lowering it costs wall time.
+#
+# Deliberately not defaulted here, like PUBLISHER_DUCKLAKE_*: an image upgrade
+# must not change what the driver does until an operator asks it to.
 
 # Runtime config
 ARG DUCKDB_VERSION=1.5.5

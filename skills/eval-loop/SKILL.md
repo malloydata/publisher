@@ -38,6 +38,7 @@ all of them for every run is how a skill stops being read.
 |---|---|
 | about to run one | `reference/running-a-run.md` |
 | a golden is wrong, doubted, or out of step with the model | `reference/golden-side-door.md` |
+| auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
 | deciding whether an edit stays | `reference/acceptance-check.md` |
 | about to quote a number, or set the noise band | `reference/measurement.md` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
@@ -64,7 +65,10 @@ them in one breath.
 
 Importing an existing corpus IS the scrape step: copy the set from its home
 (for example a benchmarks checkout) into `evals/<set>/` and convert to the
-ledger shapes. While importing:
+ledger shapes. **`skill:eval-import` is that job in full** -- how to classify
+what arrived with each question, why nothing imports as a verified value, and
+the seal that makes a later edit to a question detectable. Read it whenever the
+questions came from outside, which is most of the time. While importing:
 
 - Freeze each case's `split`: `dev` or `holdout`. Diagnose and improve read
   dev cases only; the acceptance check runs both. A set that is all dev cannot defend an
@@ -75,7 +79,9 @@ ledger shapes. While importing:
 Scraping from production logs (chat transcripts, retrieval traces) is the
 other supported source, and usually the better one: real traffic asks what
 people actually ask. Where your logs physically live is a host concern; look
-for a host-specific log-fetching skill.
+for a host-specific log-fetching skill. `skill:eval-import` takes over once
+you have the text, and its `reference/case-format.md` covers what a log pull
+needs that a question list does not.
 
 Prefer variety over volume when you sample, from either source. Cases that
 differ in grain, source, filter shape, and phrasing are what move a
@@ -134,6 +140,43 @@ those are two separate axes:
 The middle row is the one worth knowing about: it decouples the two axes, so you
 can evaluate a model you are still editing against the customer's real data. It
 is a connection configuration, not a feature.
+
+### Three ways to reach the tools
+
+That table is about which MODEL answers. A second, independent choice is where
+the answerer's MCP tools come from, and `--mcp-url` is the whole of it:
+
+| | `--target` | `--mcp-url` | Auth |
+|---|---|---|---|
+| **1. Local Publisher** | `local` | `http://localhost:4040/mcp` (default) | none |
+| **2. Hosted, through an editor extension's local bridge** | `platform` | the localhost URL the extension prints | none: the extension holds the credential |
+| **3. Hosted, directly** | `platform` | the host's `https` endpoint, scoped if it offers one | a cached OAuth login, once, interactively |
+
+```bash
+# 1. local
+--target local            # --mcp-url defaults to the local Publisher
+
+# 2. hosted via the extension's bridge -- no OAuth, but check what it exposes:
+#    the same proxy may front a local Publisher instead
+--target platform --mcp-url http://localhost:<port-the-extension-prints>/mcp \
+  --hosted-mcp-server <name> --target-version <v> --scope <env>/<pkg>@<v>
+
+# 3. hosted directly -- authenticate first, under the SAME server name
+claude mcp add --transport http <name> <scoped-url>
+claude   # /mcp -> <name> -> Authenticate
+--target platform --mcp-url <scoped-url> \
+  --hosted-mcp-server <name> --target-version <v> --scope <env>/<pkg>@<v>
+```
+
+All three hand the answerer the same three capabilities (`get_context`,
+`execute_query`, and the docs search), so a comparison between them is between
+agents that could do the same things; `test_the_two_arms_hold_the_same_capabilities`
+pins it. Modes 2 and 3 take those names from `--hosted-tools`, which defaults to
+the bare trio; pass it only if this host names them differently.
+
+A platform run left on the local default `--mcp-url` is refused rather than
+probed, because pointing every answerer at a local Publisher measures a
+different model over different data than the run claims.
 
 Two rules follow, and both are the kind of mistake that produces confident
 nonsense rather than an error:
@@ -216,6 +259,17 @@ the run measure something other than what it names:
   the token is cached per name, and a spawned headless answerer cannot complete
   an OAuth flow.
 
+- **Pin the VERSION in the scope, not just the package.** Write
+  `--scope <env>/<package>@<version>`. Both hosted tools take a version and both
+  document the same default for an omitted one: the PINNED version, which is
+  whatever the workspace serves at the moment of the call. So an unversioned run
+  records `targetVersion` in `run.json` and then answers from whatever is
+  current, and the two part company the moment anyone publishes -- including
+  mid-run, which measures two builds under one label. `--target-version` fills
+  the version in when the scope omits it, so a platform run is pinned without
+  opting in; a scope naming a different version is refused rather than taken as
+  an override.
+
 ## Before you start
 
 1. The model package under evaluation must live in a git repository, with
@@ -253,9 +307,18 @@ the run measure something other than what it names:
    is the single source of truth, versioned by `datasetVersion` in
    `set.json`.
 
-5. Review goldens before you score. A verified golden with no local artifact
-   stays verified by provenance and is not scorable until you have rows or a
-   scalar to compare (the judge needs both sides). If diagnosis later marks
+5. Review goldens before you score. **Check how many cases can take a verdict
+   at all**, not just how many cases there are: a golden the set stamps
+   `provisional`, `invalid` or `ambiguous`, or a case with no golden, scores
+   `verdict: null` and stays out of the pass rate. An imported set is
+   `provisional` throughout by design (`skill:eval-import`), and the only thing
+   that changes that is `verify_goldens.py --promote` after a re-derivation
+   through the truth package. A run whose every key is underived is refused
+   rather than spent; a set of bare questions runs, because its answers are
+   what keys get derived from. A verified golden that holds a value but
+   no local artifact stays verified by provenance and is not scorable until you
+   have rows or a scalar to compare (the judge needs both sides). A `criteria`
+   golden is the exception: it holds no value, so its clauses are both sides. If diagnosis later marks
    `BAD-REFERENCE` or `AMBIGUOUS-REFERENCE`, follow
    `reference/golden-side-door.md`. Both are expected in the wild; both
    are the golden side door below, not improve, and not a sixth step.
@@ -320,9 +383,12 @@ conductor. Do not:
 
 - publish the model to a hosted platform as a "true" checkpoint or learning
   curve
-- start a Python orchestrator (`loop.py`, `improve_batch.py`) that runs the
-  five steps end to end unattended. You conduct; the scripts are the steps,
-  not the sequencing
+- start a Python orchestrator (`loop.py`, `run_all.py`, `improve_batch.py`)
+  that runs the five steps end to end unattended. You conduct; the scripts are
+  the steps, not the sequencing. There are more than twenty of them and they
+  are not the exception to this: each does one step you invoke and hands back a
+  result you read. What is forbidden is a script that decides what to do next,
+  because every judgement this loop protects lives in that decision
 - score by string-diffing rows instead of judging them, or reintroduce a
   scripted row oracle: one that can pass a wrong answer is worse than none
 - wait for a bigger gold set before the loop can run; dev/holdout on what

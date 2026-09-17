@@ -2,25 +2,30 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   BackLink,
    DataAppViewer,
    encodeResourceUri,
    Model,
    packageFileUrl,
+   useRouterClickHandler,
    useServer,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
 import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
-import { Navigate, useLocation, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import DashboardPage from "../DashboardPage/DashboardPage";
+import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import NotebookPage from "../NotebookPage/NotebookPage";
 
 function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
-   const { search, hash } = useLocation();
    const { server } = useServer();
+   // Every branch below has the same parent, the package, so the way up is
+   // built once here.
+   const navigate = useRouterClickHandler();
    if (!params.environmentName) {
       return (
          <div>
@@ -33,46 +38,6 @@ function ModelPage() {
          <div>
             <h2>Missing package name</h2>
          </div>
-      );
-   }
-
-   // A data app used to be addressed as `pages/<file>`, which this release
-   // renames to `data-apps/<file>`. Redirect instead of letting the old form
-   // fail, so a bookmark or a shared link self-corrects in the address bar, and
-   // `replace` so the dead URL does not stay in history. The query string and
-   // fragment come along so a rewrite never silently discards state the caller
-   // supplied, matching the server's asset redirect, which rebuilds them through
-   // `withRequestQuery` (server.ts) rather than in the classifier. Note this does
-   // NOT deliver an `embed_token`: that belongs on the standalone URL,
-   // which <DataAppViewer> builds itself via packageFileUrl and which carries no
-   // query string, so an embedded page reads its token from that URL rather than
-   // from this one.
-   //
-   // A model or notebook that legitimately lives in a `pages/` directory is
-   // excluded on the same test the data-apps branch below uses, since the old
-   // data-app URL never named one.
-   //
-   // DEPRECATED. Remove one release after the release that ships this rename,
-   // together with `pages` in SPA_OWNED_SEGMENTS (packages/server/src/
-   // spa_fallback.ts), which is what lets this URL reach the app at all. The
-   // newest tag when this was written was v0.0.240.
-   if (
-      modelPath?.startsWith("pages/") &&
-      !modelPath.endsWith(".malloy") &&
-      !modelPath.endsWith(".malloynb")
-   ) {
-      // Both names are encoded, matching the "Back to" link below. Today it can
-      // only be a no-op, because a name that reaches a loaded package has passed
-      // assertSafePackageName and holds nothing worth encoding. But these two come
-      // from the URL rather than from anything validated, so a typed name need not
-      // be safe, and the encoding keeps a stray character in one segment from
-      // reading as structure in the path. The rest is NOT encoded: it carries the
-      // remaining slashes, which have to stay separators.
-      const renamed = `data-apps/${modelPath.slice("pages/".length)}`;
-      const env = encodeURIComponent(params.environmentName);
-      const pkg = encodeURIComponent(params.packageName);
-      return (
-         <Navigate to={`/${env}/${pkg}/${renamed}${search}${hash}`} replace />
       );
    }
 
@@ -101,11 +66,24 @@ function ModelPage() {
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
+      const slug = modelPath.slice("dashboards/".length);
+      // `dashboards/<slug>/edit` opens the same dashboard in the builder. A
+      // slug never contains a slash (nested dashboard directories are not
+      // discovered), so the one segment can only be this.
+      if (slug.endsWith("/edit")) {
+         return (
+            <DashboardEditPage
+               environmentName={params.environmentName}
+               packageName={params.packageName}
+               dashboardName={slug.slice(0, -"/edit".length)}
+            />
+         );
+      }
       return (
          <DashboardPage
             environmentName={params.environmentName}
             packageName={params.packageName}
-            dashboardName={modelPath.slice("dashboards/".length)}
+            dashboardName={slug}
          />
       );
    }
@@ -127,7 +105,21 @@ function ModelPage() {
          packageName: params.packageName,
          modelPath: dataAppPath,
       });
-      return <DataAppViewer resourceUri={dataAppResourceUri} />;
+      return (
+         <Box sx={wrapperSx}>
+            <BackLink
+               label={params.packageName}
+               href={`/${params.environmentName}/${params.packageName}`}
+               onClick={(event) =>
+                  navigate(
+                     `/${params.environmentName}/${params.packageName}`,
+                     event,
+                  )
+               }
+            />
+            <DataAppViewer resourceUri={dataAppResourceUri} />
+         </Box>
+      );
    }
 
    const resourceUri = encodeResourceUri({
@@ -139,6 +131,16 @@ function ModelPage() {
    if (modelPath?.endsWith(".malloy")) {
       return (
          <Box sx={wrapperSx}>
+            <BackLink
+               label={params.packageName}
+               href={`/${params.environmentName}/${params.packageName}`}
+               onClick={(event) =>
+                  navigate(
+                     `/${params.environmentName}/${params.packageName}`,
+                     event,
+                  )
+               }
+            />
             <Model
                resourceUri={resourceUri}
                runOnDemand={true}
@@ -173,6 +175,16 @@ function ModelPage() {
    });
    return (
       <Box sx={wrapperSx}>
+         <BackLink
+            label={params.packageName}
+            href={`/${params.environmentName}/${params.packageName}`}
+            onClick={(event) =>
+               navigate(
+                  `/${params.environmentName}/${params.packageName}`,
+                  event,
+               )
+            }
+         />
          <Typography variant="h6" sx={{ fontWeight: 600 }}>
             Nothing to open at this path
          </Typography>
@@ -212,14 +224,7 @@ function ModelPage() {
             </Typography>
          )}
          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            <Link
-               href={`/${encodeURIComponent(params.environmentName)}/${encodeURIComponent(
-                  params.packageName,
-               )}`}
-            >
-               Back to {params.packageName}
-            </Link>{" "}
-            lists this package&apos;s models, notebooks, and data apps.
+            The package lists its models, notebooks, and data apps.
          </Typography>
       </Box>
    );

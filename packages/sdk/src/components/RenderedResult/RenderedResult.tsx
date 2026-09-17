@@ -17,6 +17,14 @@ import {
    type DashboardCardGeometry,
 } from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
+import {
+   contentNode,
+   contentNodeDepth,
+   measureContentHeight,
+   remeasuresAfterReady,
+   resultSizing,
+   type ResultSizing,
+} from "./resultSizing";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
@@ -41,11 +49,17 @@ type MalloyRenderElement = HTMLElement & Record<string, unknown>;
  */
 interface MalloyVizHandle extends DrillMetadataSource {
    // Narrowed from `DrillMetadataSource`, which only declares the part the
-   // drill affordance reads. `getRootField().renderAs()` is what decides
-   // whether one measurement is enough; see `sizesToContent`.
+   // drill affordance reads. `getRootField().renderAs()` is what every sizing
+   // decision keys off; see `./resultSizing`.
    getMetadata: () =>
       | (NonNullable<ReturnType<DrillMetadataSource["getMetadata"]>> & {
-           getRootField: () => { renderAs: () => string };
+           getRootField: () => { renderAs: () => string; key: string };
+           // The root's render plugin, whose `sizingStrategy` is the renderer's
+           // own answer to whether the result fills its box; see
+           // `./resultSizing`. A table or a `# dashboard` grid has none.
+           getPluginsForField: (
+              key: string,
+           ) => Array<{ sizingStrategy?: string }> | undefined;
         })
       | null
       | undefined;
@@ -74,7 +88,18 @@ interface RenderedResultProps {
    result: string;
    height?: number;
    isFillElement?: (boolean) => void;
+   /**
+    * The measured content height. Fires only for a content-sized root; a
+    * container-sized one has no height of its own to report. See
+    * {@link resultSizing}.
+    */
    onSizeChange?: (height: number) => void;
+   /**
+    * Which sizing rule the rendered root follows, as soon as the renderer's
+    * metadata says. Lets a caller stop treating its cap as a height for a
+    * result that will never report one.
+    */
+   onSizing?: (sizing: ResultSizing) => void;
    /**
     * Makes `# drill` cells clickable, and makes them look it. From `useDrill`
     * on the host surface, which decides where a click may go; omitted where
@@ -328,48 +353,12 @@ function injectRendererOverrides(): void {
    document.head.appendChild(style);
 }
 
-/**
- * Whether the renderer's top-level output sizes itself to its CONTENT rather
- * than to the box it was handed, which decides whether measuring it once is
- * enough.
- *
- * It is not, for a table. The renderer signals `onReady` as soon as it knows it
- * can paint, and for a table that is immediately — a chart waits for a non-zero
- * parent size, a table does not — so the single measurement taken there lands
- * before the table's virtualized grid has laid out, and reads a height the
- * table never keeps.
- *
- * Re-measuring a table TERMINATES: `.malloy-table.root` is
- * `height: fit-content; max-height: 100%` in the renderer's own CSS and the
- * wrappers between it and the container add no padding, so shrinking the
- * container to the table's content height is the exact point at which the cap
- * stops binding and the next measurement reports the same number.
- *
- * A root that FILLS its container stays on the one-shot path deliberately: a
- * chart draws itself inset from the box it is given, so feeding its height back
- * as the new container height would ratchet the container down by that inset
- * every pass and never converge.
- *
- * A table is the only root that needs this, and the reason is the virtualized
- * grid rather than the sizing strategy it shares with a `# size=` chart: that
- * chart takes its dimensions from a lookup synchronously, so its first
- * measurement is already right. Measured, for every size value and spelling.
- */
-function sizesToContent(viz: MalloyVizHandle): boolean {
-   try {
-      return viz.getMetadata()?.getRootField().renderAs() === "table";
-   } catch {
-      // Metadata unavailable: measure once, which is the behavior every
-      // non-table root gets anyway.
-      return false;
-   }
-}
-
 function RenderedResultInner({
    result,
    height: inputHeight,
    drill,
    onSizeChange,
+   onSizing,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
    // The renderer binds its click handler at construction, so a changing
@@ -429,10 +418,20 @@ function RenderedResultInner({
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
    // render effect's cleanup: a re-run must keep the old chart until the new
    // one has painted, and the new render disposes it during the swap.
+   //
+   // The NODE goes with the viz, not just the viz. React destroys and
+   // re-creates a component's effects without discarding its DOM in several
+   // ordinary cases — a Suspense boundary revealing, development's
+   // double-invoked mount — and there the container this stage sits in is
+   // still on screen afterwards. Disposing the viz alone left an empty stage
+   // in it, which the next render then appended BELOW: the chart, pushed out
+   // of a clipped box, read as a tile that had lost its content.
    useEffect(() => {
       return () => {
          renderGenRef.current += 1;
-         liveRef.current?.viz.remove();
+         const live = liveRef.current;
+         live?.viz.remove();
+         live?.node.remove();
          liveRef.current = null;
       };
    }, []);
@@ -469,38 +468,29 @@ function RenderedResultInner({
 
       hasMeasuredRef.current = false;
 
-      // Measure the rendered chart's natural height off `root` (the stage that
-      // wraps the renderer output) and report it up. Same grandchild/dashboard
-      // HACK as before, just anchored on the stage wrapper.
+      // What the renderer says it is rendering, read once from its metadata
+      // after `setResult`. Every height decision below keys off this rather
+      // than off the DOM the renderer went on to build; see `./resultSizing`.
+      let renderAs: string | undefined;
+      let strategy: string | undefined;
+
+      // Measure the rendered result's content height off `root` (the stage
+      // that wraps the renderer output) and report it up.
       const measureRenderedSize = (root: HTMLElement) => {
          if (cancelled || !root.firstElementChild) return;
-         const child = root.firstElementChild as HTMLElement;
-         const grandchild = child.firstElementChild as HTMLElement;
-         if (!grandchild) return;
-         // A table reports a height of its own, so it keeps being measured
-         // even after the first one lands. Everything else measures once.
-         const contentSized = viz !== undefined && sizesToContent(viz);
-         if (hasMeasuredRef.current && !contentSized) return;
-         const greatgrandchild = grandchild.firstElementChild as HTMLElement;
-         // `scrollHeight` is the CONTENT height, so this assumes the box adds
-         // no chrome of its own. True today: `.malloy-table.root` has no
-         // border, and a horizontal scrollbar costs no layout where scrollbars
-         // overlay. A wide table clipped by a few pixels on a platform that
-         // draws classic scrollbars would be this assumption breaking, and the
-         // fix is `+ (offsetHeight - clientHeight)`.
-         let renderedHeight =
-            grandchild.scrollHeight || grandchild.offsetHeight || 0;
+         // A chart fills the box it is handed, so measuring one reports back
+         // the height we just gave it. Nothing to learn, and reporting it is
+         // what used to ratchet an uncapped chart to its first-paint height.
+         if (resultSizing(renderAs, strategy) === "container") return;
+         // A content-sized root keeps being measured after the first height
+         // lands, because the first one races the renderer's layout.
+         const remeasures = remeasuresAfterReady(renderAs, strategy);
+         if (hasMeasuredRef.current && !remeasures) return;
 
-         // HACK - malloy dashboards height are determined by the greatgrandchild.
-         if (
-            greatgrandchild &&
-            grandchild.classList.contains("malloy-dashboard")
-         ) {
-            renderedHeight =
-               greatgrandchild.scrollHeight ||
-               greatgrandchild.offsetHeight ||
-               0;
-         }
+         const renderedHeight = measureContentHeight(
+            root,
+            contentNodeDepth(renderAs),
+         );
 
          if (renderedHeight > 0) {
             hasMeasuredRef.current = true;
@@ -509,14 +499,16 @@ function RenderedResultInner({
                onSizeChange(renderedHeight);
             }
          }
-         // Watch the table from here on. Attached after the first measurement
-         // rather than at render time because the node does not exist until
-         // the renderer builds it, and this is the callback that first sees it.
-         if (contentSized && observedNode !== grandchild) {
-            observedNode = grandchild;
+         // Watch that same node from here on. Attached after the first
+         // measurement rather than at render time because the node does not
+         // exist until the renderer builds it, and this is the callback that
+         // first sees it.
+         const measured = contentNode(root, contentNodeDepth(renderAs));
+         if (remeasures && measured && observedNode !== measured) {
+            observedNode = measured;
             sizeObserver?.disconnect();
             sizeObserver = new ResizeObserver(() => measureRenderedSize(root));
-            sizeObserver.observe(grandchild);
+            sizeObserver.observe(measured);
          }
       };
 
@@ -563,7 +555,11 @@ function RenderedResultInner({
          // would repaint the old chart's chrome to the new theme before it is
          // swapped out. Scoping the vars to this stage keeps each chart stable.
          applyTableCssVars(stage, effectiveTheme, cardGeometry);
-         if (previous) {
+         // Overlaid whenever the container is not empty, which is the
+         // outgoing chart and, defensively, anything an earlier render left
+         // behind. A stage appended as a SIBLING in the flow sits below what
+         // is already there and falls outside the container's clip.
+         if (element.childElementCount > 0) {
             element.style.position = "relative";
             stage.style.position = "absolute";
             stage.style.inset = "0";
@@ -607,12 +603,12 @@ function RenderedResultInner({
                clearTimeout(readyFallback);
                readyFallback = null;
             }
-            // The new chart has painted; drop the outgoing one now.
-            if (previous) {
-               previous.viz.remove();
-               if (previous.node.parentNode === element) {
-                  element.removeChild(previous.node);
-               }
+            // The new chart has painted; drop the outgoing one now, and with
+            // it anything else still in the container, so the promoted stage
+            // is the only thing in it.
+            previous?.viz.remove();
+            for (const node of Array.from(element.children)) {
+               if (node !== stageNode) element.removeChild(node);
             }
             stageNode.style.position = "";
             stageNode.style.inset = "";
@@ -626,6 +622,33 @@ function RenderedResultInner({
             // The renderer accepts a Malloy Result; we don't import that type
             // in the SDK to avoid pinning to the malloy core types here.
             viz.setResult(parsed);
+            // Read the root's render type before painting, so the first
+            // measurement already knows whether it is worth taking. Metadata is
+            // complete as soon as the result is set; the DOM is not.
+            try {
+               const metadata = viz.getMetadata();
+               const root = metadata?.getRootField();
+               renderAs = root?.renderAs();
+               // The plugin's own `sizingStrategy`, which decides this outright
+               // where there is one. Read from the PLUGIN; the field entry's
+               // `renderProperties.sizingStrategy` reads "fit" for every root.
+               strategy = root
+                  ? metadata?.getPluginsForField(root.key)?.[0]?.sizingStrategy
+                  : undefined;
+            } catch {
+               // Metadata unavailable: fall through to the content-sized
+               // default, which is what every root got before this existed.
+               renderAs = undefined;
+               strategy = undefined;
+            }
+            onSizing?.(resultSizing(renderAs, strategy));
+            // Published on the stage because every sizing decision keys off it
+            // and nothing else in the DOM says what it was. A panel at an
+            // unexpected height is otherwise a guessing game about which rule
+            // applied, and the rule is chosen from a vocabulary — plugin names
+            // — that the rendered markup does not spell out anywhere.
+            stage.dataset.malloyRenderAs = renderAs ?? "unknown";
+            stage.dataset.malloySizing = resultSizing(renderAs, strategy);
             viz.render(stage);
 
             // Mark the cells a `# drill` makes clickable, so they read as
@@ -876,6 +899,7 @@ function RenderedResultInner({
       handleDrillClick,
       drillable,
       onSizeChange,
+      onSizing,
       baseTheme,
       layers,
       mode,

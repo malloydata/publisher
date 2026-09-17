@@ -2,6 +2,7 @@
 name: malloy-dashboards
 description: "Build or modify a Malloy Publisher dashboard, a tagged .malloy file in a package's dashboards/ directory, with auto-rendered filter controls, a grid layout, and # drill click-through. Use when the user asks for a dashboard, a filterable operational view, or drill-through between views, and no code is wanted."
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -33,14 +34,21 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 2. **PICK THE VIEWS TO SHOW.** A dashboard is `## artifact { tiles=[…] }` naming existing views, so
    this is the design step: which views, how wide each sits, what each is called. There is one form,
    so there is no form to choose.
-3. **DECLARE THE GIVENS** the dashboard will filter by, in the model (usually `givens.malloy`), with
-   their control tags: see "Filter controls" below for the syntax and what each tag renders as. Skip
-   if they already exist, since a given is a model concern and dashboards share them.
+3. **DECLARE THE GIVENS** the dashboard will filter by, in the dashboard file itself, with their
+   control tags: see "Filter controls" below for the syntax and what each tag renders as. That is
+   the convention because the dashboard builder edits the dashboard file and nothing else, so a
+   filter it can add, change or remove is a declaration in that file. Bind them on the tiles (step
+   4). Reuse the package's `givens.malloy` only for a control several surfaces genuinely share, and
+   then import it whole, knowing the builder can bind those givens but not edit them.
 4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
-   Import every given it filters by, and every source or query any of those givens names in a
-   `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
-   looks like a picker but has no options, and says so underneath, "Could not load the options for
-   this control". The package warnings name it too. **A `suggest` naming a `query=` needs that
+   Name the sources you need: `import { order_items, products } from '../storefront.malloy'`.
+   Each tile binds its controls with a refinement, `view: t is v + { where: category ~ $CATEGORY }`,
+   one clause per given it answers to; a `filter<...>` binds with `~`, a plain `date` or `number`
+   given is a value and binds with `>=`, `<=` or `=`. Only the givens some tile references become
+   controls, so a declaration nothing binds shows nothing. Then import every
+   source or query any referenced given names in a `suggest`. Both are per-file, and getting the
+   suggest wrong does not error: the control still looks like a picker but has no options, and says
+   so underneath, "Could not load the options for this control". The package warnings name it too. **A `suggest` naming a `query=` needs that
    query's own source imported as well**, because an import is not transitive: the query resolves by
    name, so the file compiles and the package loads, but running the picker fails with
    `Undefined source '<name>'`. The package warnings name this one too, saying which source to
@@ -72,33 +80,31 @@ out by Publisher into the grid `# dashboard { columns=N }` names.
 ```malloy
 ##! experimental.givens
 ## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state"] } dashboard { columns=12 }
-import { scoped_sales } from './_shared.malloy'
-import { products } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import { order_items, products } from '../storefront.malloy'
+
+// The controls, declared here: the tags are each one's control contract.
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
+# label="Ordered since"
+given: SINCE :: date is @2023-01-01
 
 // Layout goes on the VIEW, and a thin re-declaration is the place to put it: the
-// modelled view keeps its chart tag, and this decides how wide it sits here.
-source: overview is scoped_sales extend {
+// modelled view keeps its chart tag, this decides how wide it sits here, and the
+// `+ { where: ... }` says which controls the tile answers to.
+source: overview is order_items extend {
   # colspan=12
   # label="Key figures"
   # big_value
-  view: kpis is {
-    aggregate:
-      # label="Revenue"
-      # currency
-      total_sales
-      # label="Orders"
-      order_count
-  }
+  view: kpis is key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
   # colspan=8
   # break
   # label="Revenue by month"
-  view: revenue_trend is sales_by_month
+  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
   # colspan=4
   # label="Revenue by state"
-  view: revenue_by_state is sales_by_state
+  view: revenue_by_state is sales_by_state + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 }
 ```
 
@@ -111,8 +117,8 @@ Three things the form costs, so you are not surprised by them:
 - **A tile expression is a string in an annotation, so the compiler never checks it.** Rename a view
   and the file still compiles; the tile fails at package load. Read the lint (step 6).
 - **No per-parent-row grouping.** There is no parent query to repeat a grid over.
-- **Filtering lives in what the tiles name**, not on the page. That is the shared include's job,
-  below.
+- **Filtering lives on the tiles**, not on the page: each view's `+ { where: ... }` names the
+  controls it answers to. Below is why, and the one thing that does not work.
 
 ### Also served: `# artifact` on a `query:`
 
@@ -125,7 +131,7 @@ this way.
 ```malloy
 ##! experimental.givens
 import { order_items, products } from '../storefront.malloy'
-import { CATEGORY, MIN_SALE } from '../givens.malloy'
+import '../givens.malloy'
 
 #" Revenue and margin at a glance, and where they come from.
 # artifact { title="Business Overview" } dashboard { columns=12 }
@@ -172,23 +178,24 @@ object", so a dashboard has no description as a result.
 
 ### Where the filtering goes
 
-A dashboard has no query, so the filtering it applies must live in what it composes: a source that
-already has the givens applied. Put it in an untagged `dashboards/_shared.malloy`, which discovery
-treats as a shared include rather than a dashboard. **It has to apply every given the dashboard
-imports**: a given the dashboard imports but nothing references gets no control, silently, at reload
-200 with no warning. Note `SINCE` is a `date` rather than a `filter<>`, so it compares with `>=`
-rather than `~`. Save the include before you compile the dashboard that imports it, since an importer
-compiled against a sibling that is not on disk fails with an `import-error`.
+A dashboard has no query, so its filtering lives on the views it names: a `+ { where: field ~ $GIVEN }`
+refinement on each tile, one clause per control the tile answers to. A tile without the clause does
+not move when the control does, which is how a page keeps one tile fixed while the rest filter. The
+givens those clauses read are declared in the same file (step 3).
 
-```malloy
-##! experimental.givens
-import { order_items } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+**Binding is per declaration, not per name.** Measured: a dashboard declaring its own `CATEGORY`
+over a source whose model-level `where:` reads the model's `CATEGORY` compiles, shows the control,
+and filters nothing when it moves, because the two declarations only share a name. So do not mix
+the two designs on one given. The other design still works on its own: a source with the givens
+already applied in an untagged `dashboards/_shared.malloy`, reading `import '../givens.malloy'`,
+which discovery treats as a shared include rather than a dashboard. Then the dashboard imports both
+and the controls render for the givens its tiles reach. A given the dashboard imports but nothing
+references gets no control, silently, at reload 200 with no warning. Save the include before you
+compile the dashboard that imports it, since an importer compiled against a sibling that is not on
+disk fails with an `import-error`. The builder can bind such a control but not add, change or
+remove it, since it never edits imports or model files.
 
-source: scoped_sales is order_items extend {
-  where: products.category ~ $CATEGORY and created_at >= $SINCE
-}
-```
+Note `SINCE` is a `date` rather than a `filter<>`, so it compares with `>=` rather than `~`.
 
 **`# dashboard { columns=N }` is the one spelling of the grid width**, on both forms, beside the
 artifact tag. Anything else inside the artifact tag is a package warning naming it, which is what you
@@ -238,8 +245,10 @@ Then the traps:
 - **A KPI row is authored differently on the two forms.** On a `# dashboard` query a top-level
   `aggregate:` measure IS the card, and nesting a `# big_value` view to get one renders it embedded,
   as full-width bars in a single tile. A dashboard has no top-level aggregates, since a tile is one
-  whole result, so there a `# big_value` view IS the KPI row and renders as one. This is the only
-  place the two forms need different Malloy for the same picture.
+  whole result, so there a view of only measures IS the KPI row: a tile that comes back as one row
+  of measures renders as big-value cards on its own (`# big_value` on the view says so explicitly;
+  `# table` opts out). This is the only place the two forms need different Malloy for the same
+  picture.
 - **No `# size=fill` on a dashboard tile.** Inside a dashboard it measures against the container the
   whole grid was handed, not the tile, so it yields a chart thousands of pixels tall. Tiles already
   size to their colspan.
@@ -268,9 +277,10 @@ rows.
 - **The filename is the dashboard's name:** its URL slug, its listing name, and its `# drill`
   target. The query inside can be called anything, and sometimes must be (a query named `regions`
   collides with an imported `regions` source).
-- **Importing a given is what makes it bindable.** Malloy's given namespace is per-file. A given the
-  dashboard file does not import gets no control and cannot be sent to it, even when the `where:`
-  that references it lives up an import chain. A dashboard must import the givens its tiles use.
+- **A given has to be in the dashboard file's scope to be bindable**: declared there (the
+  convention) or imported. Malloy's given namespace is per-file. A given the file cannot see gets
+  no control and cannot be sent to it, even when a `where:` that references it lives up an import
+  chain. And a given declared here does not drive a `where:` in the model: bind on the tiles.
 - **A suggest's source or query has to resolve in the dashboard file too.** `suggest { source=products … }`
   means the dashboard imports `products`.
 - **A model-level `##` tag must be on one line.** Wrapping one always breaks it, but how you find
@@ -289,9 +299,10 @@ choosing them.
 
 ## Filter controls
 
-Controls come from the `given:` declarations the query references, and the tags on the declaration
-are the control contract, declared once and identical on every dashboard and in every notebook that
-uses them:
+Controls come from the `given:` declarations the tiles reference. Declare them in the dashboard
+file, which is what the builder edits; a package `givens.malloy` is for controls the data app and
+notebooks share, and a dashboard importing it whole gets the same controls but cannot edit them.
+The tags on the declaration are the control contract:
 
 ```malloy
 ##! experimental.givens
@@ -317,8 +328,10 @@ complaint is a **compile** diagnostic on a compile that still succeeds, not a pa
 step 6 will not show it. Pick by which reader you care about.
 
 `control=select`/`multiselect` with a `suggest` renders a picker filled from the data;
-`range_min`/`range_max` on a `filter<number>` renders a slider; a `date` or `timestamp` renders a
-date picker. Which controls appear is per-dashboard, decided by which givens the query references.
+`range_min`/`range_max` on a `filter<number>` renders a two-handled range slider; a `filter<date>` or
+`filter<timestamp>` renders a time-range control with preset windows and a custom day range; a bare
+`date` or `timestamp` renders a date picker. Which controls appear is per-dashboard, decided by which
+givens the query references.
 `skill:malloy-modeling` and `docs/givens.md` cover givens themselves.
 
 Two per-dashboard options on the artifact tag:
@@ -397,10 +410,10 @@ To tell them apart, run the dashboard's own query, `{"queryName": "<the manifest
 `renderLogs` on the response. Like `warnings`, the key is absent when there is nothing to say.
 Single-query dashboards have no `tiles` in their manifest, so there is no tile query to run:
 
-| render log | what it means |
-|---|---|
-| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
-| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count |
+| render log                                         | what it means                                                                                       |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `Unknown render tag 'colspan'`                     | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
+| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count                                                                |
 
 Neither reaches the package warnings, so step 6 will not show either. A **wrapped `##` tag** is the
 one failure in this family that does: the file is absent from the listing and the package warnings
@@ -447,8 +460,8 @@ is `declared` by default; a package with no `explores` list withholds nothing. W
 `suggest` source has to be queryable as well as resolvable, so it needs to be on the list too.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
-separate warning for a tag that does not *parse* is syntax only: it carries no
-position and says nothing about a name that does not resolve. It catches *a* malformed tag; its
+separate warning for a tag that does not _parse_ is syntax only: it carries no
+position and says nothing about a name that does not resolve. It catches _a_ malformed tag; its
 absence is not evidence there are none. That is why the last step is opening the page, not reading
 the warning list.
 

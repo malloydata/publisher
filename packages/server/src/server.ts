@@ -1566,31 +1566,6 @@ app.post(
    },
 );
 
-// Environment-scoped aggregate: every materialization across all packages in
-// the env, newest first. Nested under `/packages` as the collection-level
-// sibling of the per-package `/packages/:packageName/materializations` list.
-// MUST stay registered ahead of `/packages/:packageName` below so the literal
-// `materializations` segment wins the match; consequently `materializations` is
-// a reserved package name at this position (a package can never be named that).
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/materializations`,
-   async (req, res) => {
-      try {
-         const limit = parseNonNegativeIntParam(req.query.limit);
-         const offset = parseNonNegativeIntParam(req.query.offset);
-         const builds =
-            await materializationController.listEnvironmentMaterializations(
-               req.params.environmentName,
-               { limit, offset },
-            );
-         res.status(200).json(builds);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
@@ -1700,6 +1675,45 @@ app.get(
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+      try {
+         // Express stores wildcard matches in params['0'].
+         const result = await dashboardController.putDashboardSource(
+            req.params.environmentName,
+            req.params.packageName,
+            (req.params as Record<string, string>)["0"],
+            req.body,
+         );
+         // 201 for a file that did not exist, the way a created materialization
+         // answers; 200 for one that was replaced.
+         res.status(result.created ? 201 : 200).json(result);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         // A refused write is the endpoint working: a stale hash, a dashboard
+         // that does not compile, a path that is not a dashboard. Logging all
+         // of those at `error` made the level meaningless on this route and
+         // buried the one case that is genuinely wrong — a write that compiled,
+         // landed, and could not be reloaded.
+         const detail = {
+            environmentName: req.params.environmentName,
+            packageName: req.params.packageName,
+            modelPath: (req.params as Record<string, string>)["0"],
+            status,
+            error,
+         };
+         if (status >= 500) logger.error("Dashboard write failed", detail);
+         else logger.warn("Dashboard write refused", detail);
          res.status(status).json(json);
       }
    },
@@ -1982,10 +1996,8 @@ app.post(
 );
 
 // ==================== MATERIALIZATION ROUTES ====================
-// The environment-scoped aggregate list (every materialization across all
-// packages) is registered up in the package routes as
-// `/packages/materializations`, ahead of `/packages/:packageName`, so the
-// literal wins the match — see that route for the ordering contract.
+// Every one of them is package-scoped, because a materialization is a run of
+// one package's persist sources and cannot exist without a package.
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,

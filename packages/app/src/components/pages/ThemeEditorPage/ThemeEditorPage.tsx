@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { useServer, type Theme, type ThemeMode } from "@malloy-publisher/sdk";
+import {
+   AppDialog,
+   BackLink,
+   SecondaryButton,
+   useServer,
+   type Theme,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
@@ -12,11 +19,6 @@ import {
    Card,
    CardContent,
    CardHeader,
-   Dialog,
-   DialogActions,
-   DialogContent,
-   DialogContentText,
-   DialogTitle,
    Snackbar,
    Stack,
    ToggleButton,
@@ -25,6 +27,7 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { MapsSection } from "./sections/MapsSection";
 import { SeriesColorsSection } from "./sections/SeriesColorsSection";
 import { TablesSection } from "./sections/TablesSection";
@@ -43,6 +46,7 @@ export default function ThemeEditorPage() {
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
 
+   const navigate = useNavigate();
    const themeQuery = useQuery({
       queryKey: ["theme"],
       queryFn: async () => {
@@ -253,6 +257,7 @@ export default function ThemeEditorPage() {
 
    return (
       <Box sx={{ p: 4, maxWidth: 980, mx: "auto" }}>
+         <BackLink label="Publisher" href="/" onClick={() => navigate("/")} />
          <Stack
             direction="row"
             justifyContent="space-between"
@@ -260,7 +265,11 @@ export default function ThemeEditorPage() {
             sx={{ mb: 3 }}
          >
             <Box>
-               <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+               <Typography
+                  variant="h4"
+                  component="h1"
+                  sx={{ fontWeight: 600, mb: 1 }}
+               >
                   Visualization theme
                </Typography>
                <Typography variant="body2" color="text.secondary">
@@ -269,15 +278,12 @@ export default function ThemeEditorPage() {
                   automatically and apply to every viewer on next page load.
                </Typography>
             </Box>
-            <Button
-               variant="outlined"
-               size="small"
-               startIcon={<RestartAltIcon />}
+            <SecondaryButton
+               label="Reset to defaults"
+               icon={<RestartAltIcon />}
                disabled={frozen || resetMutation.isPending}
                onClick={() => setConfirmResetOpen(true)}
-            >
-               Reset to defaults
-            </Button>
+            />
          </Stack>
 
          {frozen && (
@@ -359,41 +365,34 @@ export default function ThemeEditorPage() {
             anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
          />
 
-         <Dialog
+         <AppDialog
             open={confirmResetOpen}
             onClose={() => setConfirmResetOpen(false)}
-            aria-labelledby="reset-confirm-title"
+            title="Reset to defaults?"
+            actions={
+               <>
+                  <Button onClick={() => setConfirmResetOpen(false)}>
+                     Cancel
+                  </Button>
+                  <Button
+                     variant="contained"
+                     color="error"
+                     onClick={() => {
+                        setConfirmResetOpen(false);
+                        resetMutation.mutate();
+                     }}
+                     autoFocus
+                  >
+                     Reset theme
+                  </Button>
+               </>
+            }
          >
-            <DialogTitle id="reset-confirm-title">
-               Reset to defaults?
-            </DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Every customized color and font for the visualization theme
-                  will be cleared, restoring the publisher.config.json boot seed
-                  (or the built-in defaults). This applies immediately to every
-                  viewer.
-               </DialogContentText>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  onClick={() => setConfirmResetOpen(false)}
-                  sx={{ color: "text.primary" }}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  color="error"
-                  onClick={() => {
-                     resetMutation.mutate();
-                     setConfirmResetOpen(false);
-                  }}
-                  autoFocus
-               >
-                  Reset
-               </Button>
-            </DialogActions>
-         </Dialog>
+            <Typography variant="body2">
+               Every colour and font on this page goes back to the Publisher
+               defaults, for every viewer.
+            </Typography>
+         </AppDialog>
       </Box>
    );
 }
