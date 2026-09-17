@@ -60,10 +60,9 @@ export async function runLakeSql(
          .map((s) => s.trim())
          .filter(Boolean)) {
          const result = await conn.runSQL(stmt);
-         rows = (Array.isArray(result) ? result : (result?.rows ?? [])) as Record<
-            string,
-            string
-         >[];
+         rows = (
+            Array.isArray(result) ? result : (result?.rows ?? [])
+         ) as Record<string, string>[];
       }
       return rows;
    } finally {

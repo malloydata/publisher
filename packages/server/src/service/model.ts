@@ -4615,8 +4615,10 @@ export class Model {
    private serveShapeGivens(): ServeShapeGiven[] {
       const out: ServeShapeGiven[] = [];
       for (const given of this.givens ?? []) {
-         if (typeof given.name !== "string" || given.name.length === 0) continue;
-         if (typeof given.type !== "string" || given.type.length === 0) continue;
+         if (typeof given.name !== "string" || given.name.length === 0)
+            continue;
+         if (typeof given.type !== "string" || given.type.length === 0)
+            continue;
          out.push({
             name: given.name,
             type: given.type,

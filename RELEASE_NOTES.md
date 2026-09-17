@@ -198,11 +198,27 @@ source: admitted is raw -> { select: * } extend { where: org_id = $ORG_ID }
 
 **On upgrade**, such a package keeps loading and its source keeps serving — live, correctly, per caller. What changes is that its materialization run now 422s with the refusal, and an artifact built before the upgrade is unbound on the next reload rather than served. Moving the given out of the persisted query restores materialization; the refusal message names the placement.
 
-The `storage=` tier still refuses a given reference in any position, so what it accepts is unchanged. One reported value shifts: a `#@ preaggregate` rollup that also declares `storage=` runs the colocated check first, so a refusal that read `given` now reads `given_in_persisted_query`. Same refusal, different label.
+The `storage=` tier applies the same rule, and only that rule — see the storage-tier note below, which ships in this release and replaces its blanket refusal of any given reference. `given_in_persisted_query` is therefore raised by both gates, for the one condition both share: the build would substitute a value.
 
 **A new `reason` value.** Refusals are reported on the build plan, and this adds `given_in_persisted_query` to that enum. A consumer generating a strict client from an older copy of the spec can fail to parse a package whose plan carries it — which happens only for a package that actually has the refused shape. Regenerate against this release's `api-doc.yaml`, or expect the value.
 
 ---
+
+## [Unreleased] — a tenant-scoped source can be materialized into a storage destination
+
+A source scoped to the caller — `where: org_id = $ORG_ID` — was refused for `storage=` outright, because any given reference was a refusal. That took the tier away from every multi-tenant model, which is most of the models worth materializing. Such a source now builds **once**, holding every tenant's rows, and is served per caller.
+
+The refusal was aimed at the right danger and drawn in the wrong place. A persist source's build SQL is the persisted relation alone: an extend-block `where:` is not in it, so the given was never frozen into the artifact. What the build DOES substitute is a given the persisted query reads, and only the declaration's default is available then — so those rows are one caller's, and every later caller gets them. That shape is still refused, now as `given_in_persisted_query`, with a message naming the move that fixes it. It fires however the given reaches the query, including through the source the query reads.
+
+**Four positions are refused although the build leaves them out too**: a declared `dimension:`/`measure:` (`dynamic_projection`), a join's `on:` (`dynamic_join`), and a given-scoped source reached through a join (`dynamic_joined_where`). None is in the artifact; each is refused because whether the serve shape reproduces it is a separate question, not yet answered.
+
+**New: `#@ persist partition="org_id"`** lays the stored table out as one directory per value, so an equality term on that column reads only the files it names; `partition="org_id,day"` nests in the order given. It is a layout and carries no isolation — every stripped term is re-applied at read whether or not its column is partitioned, so a list that omits the scoping column costs a scan, never a leak. Each name must be a public column of the source, and `partition=` without `storage=` is refused rather than ignored.
+
+**Serving change:** the transient serve-shape model now declares the author model's givens (defaults included), and a routed query no longer has its given values withheld. That withholding was correct only while the shape was built from given-free sources; a re-emitted `where:` that reads a given needs the value to reach it.
+
+**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely *reached* a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
+
+Refusal reasons added to the eligibility enum: `given_in_persisted_query`, `dynamic_projection`, `dynamic_join`, `dynamic_joined_where`, `partition_without_storage`, `partition_column_unknown`, `partition_column_not_public`. A source previously refused as `given` now reports one of these.
 
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 

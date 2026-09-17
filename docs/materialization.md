@@ -61,7 +61,9 @@ source — is refused for `storage=` and for pre-aggregation, unconditionally. A
 point's own row filter, and refused otherwise.
 
 - **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
-  reference in ANY position (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
+  the build would substitute (see
+  [§ Tenant-scoped sources](#tenant-scoped-sources-where-a-given-may-sit) below and
+  [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
   a materialized-once table is served frozen to every caller, and the served shape carries no gate
   to re-evaluate. This refusal is unaffected by anything below.
 - **A colocated `#@ persist` and givens.** Distinct from the gate question, and decided by WHERE the
@@ -93,6 +95,68 @@ point's own row filter, and refused otherwise.
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
 everyone.
+
+### Tenant-scoped sources: where a given may sit
+
+A source scoped to the caller — `where: org_id = $ORG_ID` — can be materialized into a `storage=`
+destination and served per caller. It is built **once**, holding every tenant's rows, and each
+caller's term is applied when they read it.
+
+That works because of how Malloy builds a persist source: the build SQL is the persisted relation
+**alone**. The source's own extend-block `where:` is not in it — it refines the relation when the
+relation is read. So the given was never frozen into the artifact, and the serve path re-applies the
+term with the value that caller supplied.
+
+What is refused is a given the **build substitutes**, because then the predicate is inside the frozen
+rows with one caller's value already in it and nothing downstream can undo it. The only value
+available at build time is the declaration's default, so that is whose rows everyone gets.
+
+```malloy
+given:
+  ORG_ID :: number is 1
+
+// Served per caller: the term is outside the persisted query.
+#@ persist name="orders" storage=lake
+source: orders is raw -> { select: * } extend {
+  where: org_id = $ORG_ID
+}
+
+// Refused: the persisted query reads the given, so `org_id = 1` is in the build SQL.
+#@ persist name="orders_baked" storage=lake
+source: orders_baked is raw -> { where: org_id = $ORG_ID; select: * }
+```
+
+The second form is refused as `given_in_persisted_query`, and the refusal names the move that fixes
+it. It fires however the given reaches the query — including through the source the query reads, so
+`source: scoped is raw extend { where: org_id = $ORG_ID }` followed by
+`#@ persist source: r is scoped -> { … }` is refused too: the query reads `scoped`'s filter, so the
+value is substituted just the same.
+
+Four positions carry a given that this version does not admit even though the build leaves them out:
+a declared `dimension:` or `measure:` (`dynamic_projection`), a join's `on:` condition
+(`dynamic_join`), and a given-scoped source reached through a join (`dynamic_joined_where`). None is
+in the artifact, so none is a leak; they are refused because whether the serve shape reproduces them
+is a separate question from whether the build strips them. To scope by a joined source's own filter,
+enter through a non-persisted extension that declares the join, so the term is part of the query
+rather than of the artifact.
+
+### `partition=`: laying the artifact out
+
+`#@ persist partition="org_id"` writes the stored table as one directory per distinct value, so an
+equality term on that column reads only the files it names. `partition="org_id,day"` nests them in
+the order given.
+
+It is a **layout** and carries no isolation. Every stripped term is re-applied at read whether or not
+its column is partitioned, so a partition list that omits the column a caller is scoped by costs a
+full scan, never a leak — which is why the list is the author's free choice rather than something
+derived from the source's filters. Partitioning by a high-cardinality column, or by several columns
+at once, buys pruning at the cost of many small files.
+
+Each name must be a column of the source's **public** projection: the stored table is narrowed to
+that surface, so a hidden or `except:`-ed column is not there to partition by
+(`partition_column_not_public`, `partition_column_unknown`). `partition=` requires `storage=` — a
+colocated build writes into the source's own warehouse, where the layout is that warehouse's DDL —
+and is refused rather than ignored without it (`partition_without_storage`).
 
 ### The freshness contract for a gated colocated persist source
 

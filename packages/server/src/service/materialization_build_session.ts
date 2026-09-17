@@ -1435,9 +1435,7 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
       );
-      await session.runSQL(
-         `INSERT INTO ${quotedTablePath} (${selectSQL})`,
-      );
+      await session.runSQL(`INSERT INTO ${quotedTablePath} (${selectSQL})`);
    } catch (layoutErr) {
       // The empty table is already committed, and unlike the CTAS path there is
       // no single statement whose failure leaves nothing behind. Drop it for the
