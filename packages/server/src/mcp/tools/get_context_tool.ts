@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readFileSync } from "fs";
+import path from "path";
 import { fileURLToPath } from "url";
 import { z } from "zod";
 import lunr from "lunr";
@@ -22,6 +22,7 @@ import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
    entityRowKey,
+   KEY_SEPARATOR,
    getEmbeddingIndexStatus,
    trySemanticSearch,
    type EmbeddingIndexStatus,
@@ -935,6 +936,32 @@ function matchesScope(
 }
 
 /**
+ * The distinct vector-cache row keys the request's scope admits, as the
+ * triples that cache is keyed on.
+ *
+ * A row is one (kind, source, name); several live entities can share it, one
+ * per model path. A row is in scope when ANY of them is, so a model_path scope
+ * keeps the row and the fan-out then keeps only that path's entity — dropping
+ * the row here would take the pinned card with it.
+ */
+function scopeKeysFor(
+   entities: Iterable<Entity>,
+   request: ResolvedRequest,
+): Array<{ kind: string; source: string; name: string }> {
+   const seen = new Set<string>();
+   const keys: Array<{ kind: string; source: string; name: string }> = [];
+   for (const e of entities) {
+      if (!matchesScope(e, request)) continue;
+      const source = e.source ?? "";
+      const key = entityRowKey(e.kind, source, e.name);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      keys.push({ kind: e.kind, source, name: e.name });
+   }
+   return keys;
+}
+
+/**
  * Pull #(doc) text from annotation lines, falling back to the raw lines.
  * SourceInfo sources/fields carry Annotation objects ({ value }); named queries
  * carry raw strings, so accept both.
@@ -1052,24 +1079,54 @@ export function sliceRange(
 }
 
 /**
- * Reads a model file once and remembers it, for the life of one index build.
+ * The text each compiled model was built FROM, looked up by the file URL its
+ * IR reports, and remembered for the life of one index build.
  *
- * A view's definition is not in the IR (see readFieldProvenance), so it has to
- * come off disk. The index is built once per Package and cached, so this is
- * one read per model file per package load -- not per request.
+ * A view's definition is not in the IR (see readFieldProvenance), so it is
+ * sliced out of the model file at the range the IR gives. Those two have to
+ * come from one revision of the file, which is why this reads the snapshot the
+ * compile kept (`Model.getCompiledSourceText`) and deliberately does NOT fall
+ * back to reading the file now.
+ *
+ * Reading it now is wrong whenever disk is ahead of the compiled model, and
+ * that is a state Publisher serves on purpose: a package whose most recent
+ * reload failed to compile keeps answering from the model compiled before that
+ * save (`get_status` reports it as `stale: true`), and the index is cached per
+ * Package object, so a failed reload leaves the cache intact and a first
+ * `get_context` inside that window would cut post-edit bytes at pre-edit
+ * coordinates. The result is not a missing field, it is confident text that is
+ * not the view -- mid-token, or another field's definition -- beside an
+ * `execute_query` that still runs the old one. An edit that is never reloaded
+ * at all produces the same disagreement without ever being marked stale.
+ *
+ * A model with no snapshot (a notebook, a compile failure, a Model built
+ * in-process) yields no view code. Nothing else on the card changes.
  */
-function makeSourceTextReader(): (url: string) => string | undefined {
+function makeSourceTextReader(
+   pkg: Package,
+): (url: string) => string | undefined {
    const cache = new Map<string, string | undefined>();
+   // Optional-chained like the model accessors in collectEntities: a spec's
+   // package stand-in implements only what it needs.
+   const packagePath = pkg.getPackagePath?.();
    return (url: string) => {
       if (cache.has(url)) return cache.get(url);
       let text: string | undefined;
       try {
-         text = url.startsWith("file:")
-            ? readFileSync(fileURLToPath(url), "utf8")
-            : undefined;
+         if (url.startsWith("file:") && packagePath) {
+            // The IR's URL was built as packagePath + modelPath by the loader,
+            // so the same join inverts it. A path outside the package is not a
+            // model this package compiled and has no snapshot.
+            const relative = path
+               .relative(packagePath, fileURLToPath(url))
+               .split(path.sep)
+               .join("/");
+            text =
+               relative && !relative.startsWith("..")
+                  ? pkg.getModel?.(relative)?.getCompiledSourceText?.()
+                  : undefined;
+         }
       } catch {
-         // A model served from a store with no local file, or one moved since
-         // it compiled. Views lose their code; nothing else changes.
          text = undefined;
       }
       cache.set(url, text);
@@ -1291,7 +1348,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
    // One reader for the whole walk: several sources share a model file.
-   const sourceTextFor = makeSourceTextReader();
+   const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
    for (const apiModel of models) {
       // path is optional in the generated API types; skip models without one.
@@ -1478,7 +1535,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // model path is part of the key.
    const seen = new Set<string>();
    const deduped = entities.filter((e) => {
-      const key = `${e.modelPath}|${entityRowKey(e.kind, e.source ?? "", e.name)}`;
+      const key = entityCardKey(e);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -1603,8 +1660,7 @@ function collapseAliases(entities: Entity[]): Entity[] {
 
    // Model-path scoped for the same reason `key` is: the row being removed is
    // one card's row, not the name everywhere it appears.
-   const droppedKey = (e: Entity) =>
-      `${e.modelPath}|${entityRowKey(e.kind, e.source ?? "", e.name)}`;
+   const droppedKey = (e: Entity) => entityCardKey(e);
    const dropped = new Map<string, Entity>();
    for (const [root, refs] of groups) {
       const members = [root, ...refs];
@@ -1663,9 +1719,31 @@ interface PackageIndex {
  * every file that imports it, so the same name legitimately carries different
  * paths, and each pairing is its own card. Keying on the name alone collapsed
  * them to whichever model was walked first.
+ *
+ * Joined on KEY_SEPARATOR, not `|`, for the reason its own docblock gives: a
+ * Malloy identifier may be backtick-quoted and a `|` is legal inside one, so
+ * joining on it is not injective — ("a|b", "c") and ("a", "b|c") produce one
+ * key. A control character cannot appear in an identifier, nor in a path.
  */
 function sourceContextKey(modelPath: string, source: string): string {
-   return `${modelPath}|${source}`;
+   return [modelPath, source].join(KEY_SEPARATOR);
+}
+
+/**
+ * The key of one CARD: an entity under one of the model paths it resolves in.
+ * `entityRowKey` identifies the entity, and the model path is what makes two
+ * cards for one entity distinct. Same separator, same injectivity argument as
+ * {@link sourceContextKey}.
+ */
+function entityCardKey(e: {
+   modelPath: string;
+   kind: string;
+   source?: string;
+   name: string;
+}): string {
+   return (
+      e.modelPath + KEY_SEPARATOR + entityRowKey(e.kind, e.source ?? "", e.name)
+   );
 }
 
 /** Longest a one-line summary may be, matching the hosted API's own cap. */
@@ -2209,6 +2287,21 @@ async function runContextQuery(
                   // "" means no drill-down, matching the lexical
                   // path's truthiness filter.
                   sourceName: sourceName || undefined,
+                  // The rest of the scope, as rows the scan can join on. The
+                  // cache has no model_path column and an entity_name scope
+                  // exempts source rows, so neither is expressible as a
+                  // predicate -- but both have to be applied INSIDE the scan
+                  // anyway, because that is where belowCutoffCount and
+                  // totalEntities are counted. Filtering only the returned
+                  // rows left those two describing the unpinned set: an
+                  // entity_name that matched nothing answered with no sources
+                  // beside a belowCutoffCount of 0, which the tool
+                  // description tells the agent means "nothing cleared the
+                  // floor", so it had no reason to retry with another name.
+                  scopeKeys:
+                     request.modelPath || request.entityName
+                        ? scopeKeysFor(byId.values(), request)
+                        : undefined,
                });
                if ("hits" in semantic) {
                   // One row per (kind, source, name) is EMBEDDED — the
@@ -2263,11 +2356,7 @@ async function runContextQuery(
                      // model_path where the lexical path answers with every
                      // resolving one. lunr has no such problem because its
                      // ref IS the per-path entity id.
-                     const key = `${row.modelPath}|${entityRowKey(
-                        row.kind,
-                        row.source ?? "",
-                        row.name,
-                     )}`;
+                     const key = entityCardKey(row);
                      merged.set(key, {
                         ...row,
                         bestTarget: bestTargetOf(row.targetScores ?? new Map()),
@@ -2295,8 +2384,9 @@ async function runContextQuery(
                // limit into it and report a crowded-out entity -- one that
                // cleared the floor and simply did not fit -- as rejected,
                // which is the opposite of what this number tells a caller.
-               // Nothing is filtered between the scan and here, so the count
-               // and the rows describe the same set.
+               // The whole scope goes into the scan (sourceName as a column
+               // predicate, the rest as scopeKeys), so the count and the rows
+               // still describe the same set.
                belowCutoffCount = unionBelowCutoff ?? 0;
             } else {
                retrievalReason = searchFailure;

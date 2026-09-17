@@ -2427,6 +2427,104 @@ describe("get_context semantic retrieval", () => {
       expect(payload.below_cutoff_count).toBe(0);
    });
 
+   describe("a scope narrows the counts as well as the rows", () => {
+      // The counts come from the scan, the rows from the scan filtered by the
+      // caller's scope -- so a scope the scan does not know about leaves the
+      // two describing different sets. `model_path` is not a column in the
+      // vector cache and an `entity_name` scope exempts source rows, so
+      // neither can be a predicate; both go in as the rows the scan may
+      // consider.
+      const scopedPackage = () =>
+         semanticStoreFor({
+            listModels: async () => [{ path: "w.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "orders",
+                     annotations: ["#(doc) Every order."],
+                     schema: {
+                        fields: [
+                           {
+                              kind: "dimension",
+                              name: "dim_a",
+                              annotations: [],
+                           },
+                           {
+                              kind: "dimension",
+                              name: "dim_b",
+                              annotations: [],
+                           },
+                           {
+                              kind: "measure",
+                              name: "revenue",
+                              annotations: [],
+                           },
+                        ],
+                     },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         });
+      const scopedVectors = {
+         orders: [0, 1],
+         "orders: Every order.": [0, 1],
+         "dim a": [1, 0],
+         "dim b": [1, 0],
+         revenue: [0, 1],
+         "total revenue": [0, 1],
+      };
+
+      it("counts the scoped set when the pinned entity matches nothing", async () => {
+         // A pin nothing answers returns the source cards and no entities
+         // under them. The counts have to describe THAT set: read against an
+         // unpinned total_entities of 4, a below_cutoff_count of 0 beside no
+         // entities says every entity cleared the floor and none came back,
+         // which is not a state the contract allows and not what happened.
+         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
+         const handler = captureHandler(scopedPackage());
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total revenue"),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "scope-counts-miss",
+                  entity_name: "no_such_field",
+               },
+            ],
+         });
+         expect(rankedEntities(payload)).toEqual([]);
+         // Only the source row is in scope: an entity_name scope exempts it,
+         // because it is the card a named entity nests in. The package's
+         // three fields are not weighed and so are in neither count.
+         expect(payload.total_entities).toBe(1);
+         expect(payload.below_cutoff_count).toBe(0);
+      });
+
+      it("counts only what the pin admits when it does match", async () => {
+         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
+         const handler = captureHandler(scopedPackage());
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total revenue"),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "scope-counts-hit",
+                  entity_name: "revenue",
+               },
+            ],
+         });
+         expect(rankedEntities(payload).map((e) => e.name)).toEqual([
+            "revenue",
+         ]);
+         // The source row survives an entity_name scope -- it is the card the
+         // entity nests in -- so the scoped set is `orders` and `revenue`,
+         // not the package's four entities.
+         expect(payload.total_entities).toBe(2);
+         expect(payload.below_cutoff_count).toBe(0);
+      });
+   });
+
    it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
       // The contract this replaces said "0 with no results means nothing is
       // related". That state is unreachable: every entity in scope is either

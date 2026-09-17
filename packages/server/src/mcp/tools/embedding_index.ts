@@ -362,7 +362,7 @@ function sourceColumn(source: string | undefined): string {
  * collision in the sync diff silently skips a delete or a re-embed. A control
  * character cannot appear in an identifier, so it cannot collide.
  */
-const KEY_SEPARATOR = "\u0000";
+export const KEY_SEPARATOR = "\u0000";
 
 /**
  * The stable key for one entity. Shared by the index dedup, the WeakMap-free
@@ -868,6 +868,24 @@ export async function trySemanticSearch(args: {
    queries: Array<{ targetIndex: number; text: string; kinds: string[] }>;
    limit: number;
    sourceName?: string;
+   /**
+    * The (kind, source, name) triples the caller's scope admits, when it
+    * narrows by something this cache cannot express -- a `model_path`, which
+    * is not a column here, or an `entity_name`, whose rule exempts source rows.
+    * Omit when the scope is a source drill-down or nothing at all.
+    *
+    * Applied INSIDE the scan, with the kind filter and for the same reason:
+    * `belowCutoffCount` and `totalEntities` are computed there, and they are
+    * only interpretable when they describe the same set as `hits`. Filtered
+    * afterwards, a pin that matched nothing returned no sources beside a
+    * `belowCutoffCount` of 0 -- the combination this result's own docblock
+    * says cannot occur, read by an agent as "nothing cleared the floor" when
+    * the truth is "your pin matched nothing".
+    *
+    * An EMPTY array is a scope that admits nothing, and answers 0 of 0 rather
+    * than falling through to the unscoped set.
+    */
+   scopeKeys?: Array<{ kind: string; source: string; name: string }>;
 }): Promise<SemanticSearchResult> {
    const {
       db,
@@ -878,6 +896,7 @@ export async function trySemanticSearch(args: {
       queries,
       limit,
       sourceName,
+      scopeKeys,
    } = args;
    // Unique by the key the rows themselves use, before anything counts or
    // embeds them. See uniqueByEntityKey.
@@ -898,6 +917,13 @@ export async function trySemanticSearch(args: {
          );
       }
       return { unavailable: "too-many-entities" };
+   }
+
+   // A scope that admits nothing answers 0 of 0, and answers it here: with no
+   // candidate row there is nothing to rank, and embedding the query text
+   // would be a provider call whose result cannot be used.
+   if (scopeKeys !== undefined && scopeKeys.length === 0) {
+      return { hits: [], belowCutoffCount: 0, totalEntities: 0 };
    }
 
    const providerKey = `${provider.model}\x00${provider.dimensions ?? ""}`;
@@ -1039,6 +1065,9 @@ export async function trySemanticSearch(args: {
       const targetKinds = queries.flatMap((q, k) =>
          q.kinds.map((kind) => ({ k, kind })),
       );
+      // Empty string when the caller sent no scope, which drops the CTE and
+      // its join from the statement entirely.
+      const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
       const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
       const scan = await db.all<{
          total: number;
@@ -1051,7 +1080,16 @@ export async function trySemanticSearch(args: {
          score: number | null;
       }>(
          `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
-         qk(target_idx, kind) AS (VALUES ${kindValues}),
+         qk(target_idx, kind) AS (VALUES ${kindValues}),${
+            scopeValues
+               ? `
+         -- The caller's scope, as rows: model_path is not a column here and
+         -- an entity_name scope exempts source rows, so neither can be
+         -- written as a predicate. Joined in scored so the counts below
+         -- describe the same set as the hits.
+         scope(kind, source, name) AS (VALUES ${scopeValues}),`
+               : ""
+         }
          -- An entity is scored against a target only if that target may
          -- claim its kind. This is where the claim lives, not downstream:
          -- ranked_per_target cuts each target's window from these rows, so a
@@ -1068,6 +1106,14 @@ export async function trySemanticSearch(args: {
               AND environment_name = ? AND package_name = ?
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
+              ${
+                 scopeValues
+                    ? `AND EXISTS (SELECT 1 FROM scope sc
+                                   WHERE sc.kind = entity_kind
+                                     AND sc.source = entity_source
+                                     AND sc.name = entity_name)`
+                    : ""
+              }
             GROUP BY entity_kind, entity_source, entity_name, q.target_idx
          ),
          per_entity AS (
@@ -1120,6 +1166,9 @@ export async function trySemanticSearch(args: {
          [
             ...queryVectors.map((v) => JSON.stringify(v)),
             ...targetKinds.map(({ kind }) => kind),
+            // Positional, so these sit where the `scope` CTE does: after the
+            // kinds and before the package predicates.
+            ...(scopeKeys ?? []).flatMap((k) => [k.kind, k.source, k.name]),
             environmentName,
             packageName,
             provider.model,

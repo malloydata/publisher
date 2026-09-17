@@ -637,11 +637,45 @@ function extractQueries(modelDef: ModelDef): {
    };
 }
 
+/**
+ * Wrap a URLReader so the text it hands the compiler is kept, keyed by URL.
+ *
+ * This is the only place the bytes a compile actually consumed exist. Reading
+ * the same file again later can disagree with the IR built from it -- see
+ * `SerializedModel.modelSourceText`, which is what this feeds -- so the text
+ * has to be taken here rather than recovered afterwards.
+ *
+ * First read wins: the compiler reads a file once per compile, and if it ever
+ * read twice the first is the one the coordinates came from.
+ */
+function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
+   reader: { readURL: (url: URL) => Promise<string> };
+   textFor: (url: URL) => string | undefined;
+} {
+   const texts = new Map<string, string>();
+   return {
+      reader: {
+         readURL: async (url: URL): Promise<string> => {
+            const contents = await inner.readURL(url);
+            const key = url.toString();
+            if (!texts.has(key)) texts.set(key, contents);
+            return contents;
+         },
+      },
+      textFor: (url: URL) => texts.get(url.toString()),
+   };
+}
+
 function buildRuntimeForModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-): { runtime: Runtime; urlReader: HackyDataStylesAccumulator } {
-   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(job));
+): {
+   runtime: Runtime;
+   urlReader: HackyDataStylesAccumulator;
+   textFor: (url: URL) => string | undefined;
+} {
+   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
+   const urlReader = new HackyDataStylesAccumulator(reader);
    const runtime = new Runtime({
       urlReader,
       config: malloyConfig,
@@ -656,7 +690,7 @@ function buildRuntimeForModel(
               }
             : undefined,
    });
-   return { runtime, urlReader };
+   return { runtime, urlReader, textFor };
 }
 
 async function compileMalloyModel(
@@ -671,7 +705,10 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
+   const { runtime, urlReader, textFor } = buildRuntimeForModel(
+      job,
+      malloyConfig,
+   );
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
@@ -785,6 +822,10 @@ async function compileMalloyModel(
       queries,
       filterMap: Array.from(filterMap.entries()),
       givens,
+      // The bytes this compile read, so a consumer slicing a
+      // DocumentLocation out of them is cutting the same snapshot the
+      // coordinates were computed against. See SerializedModel.
+      modelSourceText: textFor(modelURL),
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
       problems: job.collectProblems ? compiled.problems : undefined,

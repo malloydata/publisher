@@ -15,7 +15,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
-import { sliceRange } from "./get_context_tool";
+import { registerGetContextTool, sliceRange } from "./get_context_tool";
 
 const MODEL = `source: orders is duckdb.sql("select 'CA' as state, 1 as amt") extend {
   dimension: shouty is upper(state)
@@ -125,5 +125,163 @@ describe("a view's definition (compiler contract)", () => {
       // Unchanged behaviour, pinned so the view path cannot displace it.
       expect(fieldNamed("shouty").code).toBe("upper(state)");
       expect(fieldNamed("total").code).toBe("amt.sum()");
+   });
+});
+
+/**
+ * The same view, but reaching a response card.
+ *
+ * The block above pins the two pieces -- the compiler's contract and the
+ * slice. Neither pins the wiring between them: the turtle branch in
+ * `readFieldProvenance`, the `sourceTextFor` reader, and the `include_code`
+ * gate could each break with both of those still green.
+ *
+ * The package here is a stand-in for the accessors `collectEntities` reads,
+ * over a REAL compiled model, so the IR and its coordinates are malloy's own.
+ */
+describe("a view's definition on the card", () => {
+   let duckdb: DuckDBConnection;
+   let dir: string;
+   let modelPath: string;
+   let def: ModelDef;
+   let sourceInfos: unknown[];
+
+   beforeAll(async () => {
+      duckdb = new DuckDBConnection("duckdb", ":memory:");
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "viewcard-"));
+      modelPath = path.join(dir, "m.malloy");
+      fs.writeFileSync(modelPath, MODEL);
+      const runtime = new Runtime({
+         urlReader: {
+            readURL: async (url: URL) =>
+               fs.readFileSync(fileURLToPath(url), "utf8"),
+         },
+         connections: new FixedConnectionMap(
+            new Map([["duckdb", duckdb]]),
+            "duckdb",
+         ),
+      });
+      const url = pathToFileURL(modelPath);
+      const model = await runtime
+         .loadModel(url, { importBaseURL: new URL(".", url) })
+         .getModel();
+      /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+      def = (model as any)._modelDef as ModelDef;
+      sourceInfos = [
+         {
+            name: "orders",
+            annotations: [],
+            schema: {
+               fields: [
+                  { kind: "dimension", name: "shouty", annotations: [] },
+                  { kind: "measure", name: "total", annotations: [] },
+                  { kind: "view", name: "by_state", annotations: [] },
+               ],
+            },
+         },
+      ];
+   });
+   afterAll(async () => {
+      await duckdb.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+   });
+
+   /**
+    * `compiledSourceText` is what the loader captured for this compile. The
+    * default is the text that was compiled; a test passes something else to
+    * stand for a package whose file has moved on since.
+    */
+   const askFor = async (compiledSourceText: string | undefined) => {
+      const pkg = {
+         getPackagePath: () => dir,
+         listModels: async () => [{ path: "m.malloy" }],
+         getModel: (p: string) =>
+            p === "m.malloy"
+               ? {
+                    getSourceInfos: () => sourceInfos,
+                    getQueries: () => [],
+                    getModelDef: () => def,
+                    getCompiledSourceText: () => compiledSourceText,
+                 }
+               : undefined,
+      };
+      let handler:
+         | ((params: Record<string, unknown>) => Promise<{
+              content: Array<{ resource?: { text: string } }>;
+           }>)
+         | undefined;
+      registerGetContextTool(
+         {
+            tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => {
+               handler = h;
+            },
+         } as never,
+         {
+            getEnvironment: async () =>
+               ({
+                  getPackage: async () => pkg,
+                  getStaleCompileErrors: () => new Map(),
+               }) as never,
+         } as never,
+      );
+      if (!handler) throw new Error("handler was not registered");
+      const payload = JSON.parse(
+         (
+            await handler({
+               environmentName: "e",
+               packageName: "p",
+               search_targets: [{ target_type: "view" }],
+               scopes: [{ environment: "e", package: "p" }],
+               include_code: true,
+            })
+         ).content[0].resource!.text,
+      );
+      const entities = (payload.sources ?? []).flatMap(
+         (s: { entities?: Array<{ name: string; code?: string }> }) =>
+            s.entities ?? [],
+      );
+      return entities.find((e: { name: string }) => e.name === "by_state");
+   };
+
+   it("returns the view's own definition", async () => {
+      const view = await askFor(MODEL);
+      expect(view?.code).toContain("group_by: state");
+      expect(view?.code).toContain("aggregate: total");
+      // The definition, not the source around it or the #(doc) above it --
+      // the same boundary the slice test pins, now through the response.
+      expect(view?.code).not.toContain("source: orders");
+      expect(view?.code).not.toContain("#(doc)");
+   });
+
+   it("slices the text the model compiled, never the file as it is now", async () => {
+      // A package whose reload failed keeps serving the model it compiled
+      // BEFORE the save, while the file on disk has moved on (get_status
+      // reports it as stale: true). Reading the file at index time would cut
+      // post-edit bytes at pre-edit coordinates and hand back text that is not
+      // the view. Here the file is edited so that the old range lands
+      // mid-token, and the compiled snapshot is what the card must use.
+      const edited = "// a line added at the top\n" + MODEL;
+      fs.writeFileSync(modelPath, edited);
+      const view = await askFor(MODEL);
+      expect(view?.code).toContain("group_by: state");
+      // What reading the file now would have produced, so this fails loudly
+      // if the reader ever falls back to disk.
+      const fromDisk = sliceRange(
+         edited,
+         /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+         ((def.contents["orders"] as any).fields as any[]).find(
+            (f) => (f.as || f.name) === "by_state",
+         ).location.range,
+      );
+      expect(view?.code).not.toBe(fromDisk);
+      fs.writeFileSync(modelPath, MODEL);
+   });
+
+   it("omits code when the loader captured no snapshot", async () => {
+      // A notebook, a compile failure, or a Model built in process. The card
+      // still comes back; only the definition is missing.
+      const view = await askFor(undefined);
+      expect(view).toBeDefined();
+      expect(view?.code).toBeUndefined();
    });
 });
