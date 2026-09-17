@@ -756,6 +756,34 @@ source: reads_measure is offers_measure -> {
       );
    });
 
+   it("refuses a given bound as a source ARGUMENT, and admits a constant one", async () => {
+      // The channel the marker cannot see: an argument binds while the source
+      // the query reads is constructed, so nothing summarises it onto the query
+      // and `givenUsage` reads empty — while the build SQL is byte-identical to
+      // writing the given inside the query.
+      //
+      // The constant is the control that keeps this from being a blanket
+      // refusal of parameterized reads: it bakes too, but a concrete
+      // instantiation has no per-caller binding to lose.
+      const sources =
+         await persistSources(`##! experimental { persistence givens parameters }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
+source: pp(x::number) is raw extend { where: org_id = x }
+
+#@ persist name="arg_given"
+source: arg_given is pp(x is $ORG_ID) -> { select: * }
+
+#@ persist name="arg_constant"
+source: arg_constant is pp(x is 1) -> { select: * }`);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.arg_given),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.arg_constant),
+      ).not.toThrow();
+   });
+
    it("admits a persisted query that references no given", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>

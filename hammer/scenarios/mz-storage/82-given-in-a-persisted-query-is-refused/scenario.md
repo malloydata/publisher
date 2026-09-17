@@ -22,8 +22,9 @@ The first shape has no safe reading, so it is refused at build. The second is th
 documented form (`docs/row-level-access.md`) and must keep working — including
 FROM the artifact, which is the half a refusal alone would not prove.
 
-Two packages, because the refusal fails its build: `gpq` carries the refused
-shape, `gpqb` the honoured one.
+Three packages, because a refusal fails its build: `gpq` carries the refused
+shape written directly, `gpqa` the same substitution reached through a source
+argument, and `gpqb` the honoured one.
 
 Without a default the first shape cannot build at all (`Given 'ORG_ID' has no
 value and no default`), so this needs the default to exist.
@@ -54,6 +55,23 @@ source: raw is orders_pg.sql('SELECT org_id, amount FROM public.gpq_rows')
 source: inside is raw -> { where: org_id = $ORG_ID; select: * }
 ```
 
+## Model gpqa/gpqa.malloy
+
+The same substitution reached a different way: the given is bound as a source
+ARGUMENT, so it never appears as a reference in the query and the build bakes it
+anyway. Refused for the same reason.
+
+```malloy
+##! experimental { persistence givens parameters }
+given: ORG_ID :: number is 1
+
+source: raw is orders_pg.sql('SELECT org_id, amount FROM public.gpq_rows')
+source: scoped(x::number) is raw extend { where: org_id = x }
+
+#@ persist name="gpqa_arg"
+source: arg_bound is scoped(x is $ORG_ID) -> { select: * }
+```
+
 ## Model gpqb/gpqb.malloy
 
 The same given, moved to the extend block.
@@ -72,6 +90,10 @@ source: outside is raw -> { select: * } extend { where: org_id = $ORG_ID }
 
 Refused rather than built, and the message names the placement that fixes it —
 the safe shape is one move away from the refused one.
+
+cites: persisted query references a given
+
+## Build refused gpqa
 
 cites: persisted query references a given
 

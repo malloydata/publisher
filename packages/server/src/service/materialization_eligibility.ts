@@ -440,8 +440,12 @@ function referencesGiven(persistSource: PersistSource): boolean {
  * when the source is READ, with the caller's own value, which is the documented
  * form (docs/row-level-access.md).
  *
- * Checked against `getSQL()` across twelve shapes; `givenUsage` agreed with
- * whether the build SQL carried the predicate in every one:
+ * What the marker provably covers, checked against `getSQL()`: a segment's own
+ * references, a join's `on:` and filters, an atomic field's references, and
+ * turtles. It does NOT cover a given bound as a source argument, which
+ * {@link argumentBindsAGiven} handles separately — and that gap was found by
+ * probing, so treat this list as what has been shown rather than as exhaustive.
+ * The shapes it was checked on:
  *
  *   baked        `where:` in the query · a given in a `group_by` · the input
  *                source's own `where:` · a dimension, measure or join declared
@@ -463,6 +467,44 @@ function referencesGiven(persistSource: PersistSource): boolean {
  * keys that are read-time by construction, `filterList` and the source's own
  * `fields`. Unreadable IR refuses, as {@link referencesGiven} does.
  */
+/**
+ * Whether a given is bound into the relation as a source ARGUMENT.
+ *
+ * `pp(x is $ORG_ID) -> { … }` substitutes the given while constructing the
+ * source the query reads, so the predicate lands in the build SQL — byte
+ * identical to writing the given inside the query. It reaches none of the
+ * places {@link buildSubstitutesAGiven}'s marker is collected from (a segment's
+ * `refSummary`, a join's `on:`/`filterList`, an atomic field's `refSummary`),
+ * because it binds at `structRef` construction rather than by being referenced,
+ * so the marker reads empty while the build bakes the default.
+ *
+ * Any `arguments` holder anywhere under the query is searched, not just the
+ * outermost: a chain of parameterized sources nests one inside the next.
+ *
+ * A CONSTANT argument — `pp(x is 1)` — bakes too and is left alone: it is a
+ * concrete instantiation with no per-caller binding, which is exactly the shape
+ * `parameter-eligibility` admits. Only a given is a refusal.
+ */
+function argumentBindsAGiven(node: unknown, depth = 0): boolean {
+   if (depth > MAX_GIVEN_WALK_DEPTH) {
+      throw new Error("argument walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (Array.isArray(node)) {
+      return node.some((item) => argumentBindsAGiven(item, depth + 1));
+   }
+   for (const [key, value] of Object.entries(node)) {
+      if (
+         (key === "arguments" || key === "sourceArguments") &&
+         walkForGiven(value, new WeakSet(), 0)
+      ) {
+         return true;
+      }
+      if (argumentBindsAGiven(value, depth + 1)) return true;
+   }
+   return false;
+}
+
 function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
    try {
       const def = persistSource._sourceDef as unknown;
@@ -472,9 +514,14 @@ function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
       const query = (def as { query?: unknown }).query;
       if (query !== null && typeof query === "object") {
          const usage = (query as { givenUsage?: unknown }).givenUsage;
-         // Authoritative when present: it is transitive where a single field's
-         // own `refSummary` is not, which is the whole reason it is read here.
-         if (Array.isArray(usage)) return usage.length > 0;
+         // Transitive where a single field's own `refSummary` is not, which is
+         // the whole reason it is read here — but it summarises what the
+         // pipeline REFERENCES, and a source argument binds without being
+         // referenced. So an empty marker is only trusted once the argument
+         // holders are clear; see {@link argumentBindsAGiven}.
+         if (Array.isArray(usage) && usage.length > 0) return true;
+         if (argumentBindsAGiven(query)) return true;
+         if (Array.isArray(usage)) return false;
       }
       const {
          filterList: _sourceFilters,

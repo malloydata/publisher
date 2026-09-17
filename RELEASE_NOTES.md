@@ -85,7 +85,7 @@ source: admitted is raw -> { select: * } extend { where: org_id = $ORG_ID }
 
 **On upgrade**, such a package keeps loading and its source keeps serving — live, correctly, per caller. What changes is that its materialization run now 422s with the refusal, and an artifact built before the upgrade is unbound on the next reload rather than served. Moving the given out of the persisted query restores materialization; the refusal message names the placement.
 
-The `storage=` tier is unchanged: it already refused a given reference in any position.
+The `storage=` tier still refuses a given reference in any position, so what it accepts is unchanged. One reported value shifts: a `#@ preaggregate` rollup that also declares `storage=` runs the colocated check first, so a refusal that read `given` now reads `given_in_persisted_query`. Same refusal, different label.
 
 **A new `reason` value.** Refusals are reported on the build plan, and this adds `given_in_persisted_query` to that enum. A consumer generating a strict client from an older copy of the spec can fail to parse a package whose plan carries it — which happens only for a package that actually has the refused shape. Regenerate against this release's `api-doc.yaml`, or expect the value.
 
