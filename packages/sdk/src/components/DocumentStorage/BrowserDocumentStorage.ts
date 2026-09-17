@@ -1,11 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type {
-   DocumentLocator,
-   DocumentStorage,
-   DocumentType,
-   Workspace,
+import {
+   DocumentNotFoundError,
+   type DocumentLocator,
+   type DocumentStorage,
+   type DocumentType,
+   type Workspace,
 } from "./DocumentStorage";
 
 const LOCAL_WORKSPACE: Workspace = {
@@ -99,7 +100,7 @@ function locatorOf(key: string): DocumentLocator | undefined {
 }
 
 function missing(locator: DocumentLocator): Error {
-   return new Error(
+   return new DocumentNotFoundError(
       `No ${locator.type} at ${locator.workspace}/${locator.path}`,
    );
 }

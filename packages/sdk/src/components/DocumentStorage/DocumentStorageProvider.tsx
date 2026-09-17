@@ -44,3 +44,15 @@ export function useDocumentStorage(): DocumentStorageContextValue {
    }
    return context;
 }
+
+/**
+ * The host's storage, or undefined outside a provider. For a component that
+ * can do without one — the dashboard editor still edits and exports with no
+ * place to save — rather than the throwing form, which is for components that
+ * cannot.
+ */
+export function useOptionalDocumentStorage():
+   | DocumentStorageContextValue
+   | undefined {
+   return useContext(DocumentStorageContext);
+}

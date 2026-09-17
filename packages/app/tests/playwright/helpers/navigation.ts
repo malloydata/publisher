@@ -15,11 +15,16 @@ export async function openEnvironment(
    page: Page,
    name: string = DEFAULT_ENV,
 ): Promise<void> {
-   // Redesigned env cards on Home are themselves the click target — no
-   // separate "Open Environment" button. Click the env's heading.
-   const heading = page.getByRole("heading", { name, level: 6 });
-   await expect(heading).toBeVisible();
-   await heading.click();
+   // An environment is a row on Home, and the row itself is the click target
+   // — no separate "Open Environment" button. Its accessible name is the
+   // environment's name alone.
+   // Scoped to the Environments region, because the sidebar lists every
+   // environment by the same name.
+   const row = page
+      .getByRole("region", { name: "Environments" })
+      .getByRole("button", { name, exact: true });
+   await expect(row).toBeVisible();
+   await row.click();
    await expect(page).toHaveURL(new RegExp(`/${name}/?$`));
 }
 
@@ -28,8 +33,9 @@ export async function openPackage(
    env: string,
    pkg: string,
 ): Promise<void> {
-   // Redesigned env page renders the env name as h4 and the section header
-   // as h6 "Packages" (separate, not concatenated).
+   // The environment page renders its own name as h4 and each section header
+   // as an h6, so "Packages" is its own heading rather than part of a longer
+   // string.
    await expect(
       page.getByRole("heading", { name: "Packages", level: 6 }),
    ).toBeVisible();
@@ -37,7 +43,13 @@ export async function openPackage(
    await expect(page).toHaveURL(new RegExp(`/${env}/${pkg}/?$`));
 }
 
-export async function openMaterializations(
+/**
+ * Open the package page and wait for its Materializations section.
+ *
+ * Named `goto…` rather than `open…`: there is no materializations screen to
+ * open, and the previous name outlived the page it referred to.
+ */
+export async function gotoMaterializations(
    page: Page,
    env: string,
    pkg: string,
@@ -45,16 +57,10 @@ export async function openMaterializations(
    await gotoHome(page);
    await openEnvironment(page, env);
    await openPackage(page, env, pkg);
-   // The package page lists a "Materializations" entry row (role=button) that
-   // links to the dedicated screen. Git-cloned packages can take a while to
-   // appear, so allow a generous timeout before clicking.
-   const entry = page.getByRole("button", { name: "Materializations" });
-   await expect(entry).toBeVisible({ timeout: 60_000 });
-   await entry.click();
-   await expect(page).toHaveURL(
-      new RegExp(`/${env}/${pkg}/materializations/?$`),
-   );
+   // Materializations are a section of the package's own page: the runs are
+   // that package's history, so there is no separate screen to open. A
+   // git-cloned package can take a while to appear.
    await expect(
-      page.getByRole("heading", { name: "Materializations", level: 1 }),
-   ).toBeVisible();
+      page.getByRole("heading", { name: "Materializations", level: 6 }),
+   ).toBeVisible({ timeout: 60_000 });
 }

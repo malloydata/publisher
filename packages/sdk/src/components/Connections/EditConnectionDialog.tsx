@@ -5,14 +5,10 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
@@ -35,6 +31,8 @@ import {
    s3AttachedDatabaseFields,
    uiCreatableConnectionTypes,
 } from "./common";
+import { AppDialog } from "../AppDialog";
+import { SecondaryButton } from "../buttons";
 
 /**
  * Credential fields the API deliberately never returns, so an edit form can
@@ -520,42 +518,53 @@ export default function EditConnectionDialog({
             </ListItemIcon>
             <ListItemText>Edit</ListItemText>
          </MenuItem>
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle
-               onClick={(event) => {
-                  event.stopPropagation();
-               }}
-            >
-               Edit Connection
-            </DialogTitle>
-            <DialogContent
-               onClick={(event) => {
-                  event.stopPropagation();
-               }}
-            >
-               <DialogContentText>
-                  Edit a connection to query your data database using Malloy.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="connection-form">
+         {/* The `Menu` this is rendered inside already stops its own clicks
+             reaching the row behind it, so the dialog needs no per-section
+             stopPropagation of its own — it had one on each of the title,
+             the body and the actions. */}
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="Edit connection"
+            description="Change how packages in this environment reach your database."
+            actions={
+               <>
+                  <Button disabled={isSubmitting} onClick={handleClose}>
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="connection-form"
+                     variant="contained"
+                     loading={isSubmitting}
+                  >
+                     Save changes
+                  </Button>
+               </>
+            }
+         >
+            <form onSubmit={handleSubmit} id="connection-form">
+               {/* One column, one gap. The fields carry no margin of
+                   their own, so without this they sit flush and their
+                   borders overlap. */}
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Connection Name"
+                     label="Name"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      defaultValue={connection.name}
                   />
                   <TextField
-                     margin="dense"
                      id="type"
                      name="type"
                      label="Connection Type"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      value={type}
                      select
                      onChange={(event) =>
@@ -587,11 +596,10 @@ export default function EditConnectionDialog({
                               Catalog
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_catalogType"
                               label="Catalog Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeCatalogType}
                               select
                               onChange={(event) =>
@@ -606,13 +614,12 @@ export default function EditConnectionDialog({
                                     (field) => (
                                        <TextField
                                           key={`pg_${field.name}`}
-                                          margin="dense"
                                           id={`ducklake_pg_${field.name}`}
                                           name={`ducklake_pg_${field.name}`}
                                           label={field.label}
                                           type={field.type}
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           defaultValue={getDucklakeDefault(
                                              `pg_${field.name}`,
                                           )}
@@ -639,11 +646,10 @@ export default function EditConnectionDialog({
                               Storage
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_storageType"
                               label="Storage Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeStorageType}
                               select
                               onChange={(event) =>
@@ -654,7 +660,6 @@ export default function EditConnectionDialog({
                               <MenuItem value="gcs">GCS</MenuItem>
                            </TextField>
                            <TextField
-                              margin="dense"
                               required
                               id="ducklake_bucketUrl"
                               name="ducklake_bucketUrl"
@@ -665,7 +670,7 @@ export default function EditConnectionDialog({
                               }
                               type="text"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               defaultValue={getDucklakeDefault("bucketUrl")}
                            />
                            {ducklakeStorageType === "s3" && (
@@ -687,7 +692,6 @@ export default function EditConnectionDialog({
                                     .map((field) => (
                                        <TextField
                                           key={`s3_${field.name}`}
-                                          margin="dense"
                                           id={`ducklake_s3_${field.name}`}
                                           name={`ducklake_s3_${field.name}`}
                                           label={field.label}
@@ -697,7 +701,7 @@ export default function EditConnectionDialog({
                                                 : field.type
                                           }
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           required={
                                              field.required &&
                                              field.name !== "secretAccessKey"
@@ -756,13 +760,12 @@ export default function EditConnectionDialog({
                                  {gcsAttachedDatabaseFields.map((field) => (
                                     <TextField
                                        key={`gcs_${field.name}`}
-                                       margin="dense"
                                        id={`ducklake_gcs_${field.name}`}
                                        name={`ducklake_gcs_${field.name}`}
                                        label={field.label}
                                        type={field.type}
                                        fullWidth
-                                       variant="standard"
+                                       size="small"
                                        required={
                                           field.required &&
                                           field.name !== "secret"
@@ -797,14 +800,12 @@ export default function EditConnectionDialog({
                            <Typography variant="subtitle1" fontWeight={500}>
                               Attached Databases
                            </Typography>
-                           <Button
-                              startIcon={<AddIcon />}
+                           <SecondaryButton
+                              label="Database"
+                              icon={<AddIcon />}
                               onClick={addAttachedDatabase}
-                              size="small"
-                              variant="outlined"
-                           >
-                              Add Database
-                           </Button>
+                              ariaLabel="Add database"
+                           />
                         </Box>
                         {attachedDatabases.length === 0 && (
                            <Typography
@@ -855,23 +856,21 @@ export default function EditConnectionDialog({
                                     </IconButton>
                                  </Box>
                                  <TextField
-                                    margin="dense"
                                     required
                                     id={`attachedDb_${index}_name`}
                                     name={`attachedDb_${index}_name`}
                                     label="Database Name"
                                     type="text"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     defaultValue={db.name}
                                  />
                                  <TextField
-                                    margin="dense"
                                     id={`attachedDb_${index}_type`}
                                     name={`attachedDb_${index}_type`}
                                     label="Database Type"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     value={db.dbType}
                                     select
                                     onChange={(event) =>
@@ -912,7 +911,6 @@ export default function EditConnectionDialog({
                                     .map((field) => (
                                        <TextField
                                           key={field.name}
-                                          margin="dense"
                                           id={`attachedDb_${index}_${field.name}`}
                                           name={`attachedDb_${index}_${field.name}`}
                                           label={field.label}
@@ -922,7 +920,7 @@ export default function EditConnectionDialog({
                                                 : field.type
                                           }
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           required={field.required}
                                           select={!!field.selectOptions}
                                           defaultValue={
@@ -992,13 +990,12 @@ export default function EditConnectionDialog({
                         return (
                            <TextField
                               key={field.name}
-                              margin="dense"
                               id={field.name}
                               name={field.name}
                               label={field.label}
                               type={field.type}
                               fullWidth
-                              variant="standard"
+                              size="small"
                               required={
                                  field.required &&
                                  !isPasswordField &&
@@ -1021,25 +1018,9 @@ export default function EditConnectionDialog({
                         );
                      })
                   )}
-               </form>
-            </DialogContent>
-            <DialogActions
-               onClick={(event) => {
-                  event.stopPropagation();
-               }}
-            >
-               <Button disabled={isSubmitting} onClick={handleClose}>
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="connection-form"
-                  loading={isSubmitting}
-               >
-                  Edit Connection
-               </Button>
-            </DialogActions>
-         </Dialog>
+               </Stack>
+            </form>
+         </AppDialog>
       </React.Fragment>
    );
 }

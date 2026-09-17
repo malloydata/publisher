@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
-import { MALLOY_ACCENT, MALLOY_BRAND } from "../styles";
+import { PALETTE } from "../styles";
 
 export type ContentType =
    | "report"
@@ -17,23 +17,21 @@ export type ContentType =
  * a page that lists all six, a shared color reads as a shared kind, and the
  * glyphs are small enough that color does most of the telling apart.
  *
- * The logo's three go to the three artifacts a reader opens to look at data,
- * dashboards and notebooks and the models under them, and the accents to the
- * rest, so the brand leads on the things the page is mostly for. Not a
- * seniority ranking: dashboards are the newest thing a package can hold, and
- * Package Data is among the oldest and takes an accent.
+ * Six hues from `PALETTE`, spaced far enough apart to survive being 18px of
+ * white on a 32px plate, and disjoint from the three `SURFACE_TINT` uses so a
+ * colour means one kind of thing everywhere in the Console.
  *
  * Exhaustive by type rather than by a default, so adding a `ContentType` is a
  * compile error here instead of a row that silently paints itself the same as
  * its neighbour.
  */
 export const CONTENT_TINT: Record<ContentType, string> = {
-   dashboard: MALLOY_BRAND.orange,
-   report: MALLOY_BRAND.teal,
-   model: MALLOY_BRAND.darkBlue,
-   dataApp: MALLOY_ACCENT.violet,
-   data: MALLOY_ACCENT.moss,
-   materialization: MALLOY_ACCENT.magenta,
+   dashboard: PALETTE.blue,
+   report: PALETTE.violet,
+   model: PALETTE.cyan,
+   dataApp: PALETTE.pink,
+   data: PALETTE.lime,
+   materialization: PALETTE.amber,
 };
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {

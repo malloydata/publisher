@@ -1,0 +1,225 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import type { CompiledModel } from "../../client";
+
+/**
+ * What a package offers a dashboard: the sources, the views on them, and the
+ * fields a drill can be declared on.
+ *
+ * This is what makes a tile expression correct BY CONSTRUCTION. The builder only
+ * ever offers `source -> view` pairs that came from here, so it cannot emit a
+ * tile that does not resolve — which is the reason validation needs nothing more
+ * than the existing compile endpoint.
+ *
+ * Shaped from the models endpoint as it is, rather than from a new one. The cost
+ * is that annotations arrive RAW — `'# bar_chart\n'`, `'#(doc) Revenue by
+ * category\n'` — so the small amount of reading below happens here instead of on
+ * the server.
+ */
+
+export interface CatalogField {
+   name: string;
+   kind: "dimension" | "measure";
+   type?: string;
+}
+
+export interface CatalogView {
+   name: string;
+   /** From a `#(doc)` annotation, which is what a picker should show. */
+   description?: string;
+   /** `bar_chart`, `line_chart`, `shape_map`, … if the view declares one. */
+   chart?: string;
+}
+
+export interface CatalogSource {
+   name: string;
+   /** The model that declares it, which is what a preview runs against. */
+   modelPath: string;
+   description?: string;
+   views: CatalogView[];
+   /**
+    * The givens this source is scoped by, which is also the control row a tile
+    * reading it will show — measured equal to the manifest's per-tile
+    * `givenNames` for the `source -> view` form.
+    */
+   givens: string[];
+   /** For declaring a `# drill` dimension. */
+   fields: CatalogField[];
+}
+
+export interface PackageCatalog {
+   sources: CatalogSource[];
+}
+
+/** The renderer's chart tags, as they are spelled in a model. */
+const CHART_TAGS = [
+   "bar_chart",
+   "line_chart",
+   "scatter_chart",
+   "shape_map",
+   "segment_map",
+   "big_value",
+   "sparkline",
+];
+
+/** `#(doc) Revenue by product category\n` -> `Revenue by product category`. */
+export function docOf(annotations: string[] | undefined): string | undefined {
+   for (const raw of annotations ?? []) {
+      const m = /^#\(doc\)\s*(.*)$/s.exec(raw.trim());
+      if (m) return m[1].trim();
+   }
+   return undefined;
+}
+
+/** `# bar_chart\n` -> `bar_chart`. Only the renderer's own chart tags count. */
+export function chartOf(annotations: string[] | undefined): string | undefined {
+   for (const raw of annotations ?? []) {
+      const name = /^#\s*([a-z_]+)/.exec(raw.trim())?.[1];
+      if (name && CHART_TAGS.includes(name)) return name;
+   }
+   return undefined;
+}
+
+/**
+ * How far into a source's joins the field list reaches. One level:
+ * `products.category` is a field people filter on; `products.supplier.region`
+ * is where a list stops being a list.
+ */
+const JOIN_DEPTH = 1;
+
+/**
+ * The fields of one schema, with a JOIN's fields under it as `join.field`
+ * paths — the spelling a `where:` uses for them, and the fields a filter most
+ * often wants. A view is not a field and is left out.
+ */
+function schemaFields(
+   fields: Array<Record<string, unknown>> | undefined,
+   prefix: string,
+   depth: number,
+): CatalogField[] {
+   const out: CatalogField[] = [];
+   for (const field of fields ?? []) {
+      const name = field["name"];
+      const kind = field["kind"];
+      if (typeof name !== "string") continue;
+      if (kind === "dimension" || kind === "measure") {
+         const type = (field["type"] as { kind?: string } | undefined)?.kind;
+         out.push({ name: prefix + name, kind, ...(type ? { type } : {}) });
+      } else if (kind === "join" && depth > 0) {
+         const nested = (field["schema"] as { fields?: unknown } | undefined)
+            ?.fields as Array<Record<string, unknown>> | undefined;
+         out.push(...schemaFields(nested, `${prefix}${name}.`, depth - 1));
+      }
+   }
+   return out;
+}
+
+/**
+ * Per-source fields, from `sourceInfos`, which the endpoint returns as an array
+ * of JSON STRINGS rather than objects. A malformed entry is skipped rather than
+ * failing the catalog: a picker missing one source's fields is a smaller problem
+ * than a builder that will not open.
+ */
+function fieldsOf(model: CompiledModel): Map<string, CatalogField[]> {
+   const byName = new Map<string, CatalogField[]>();
+   for (const entry of model.sourceInfos ?? []) {
+      let parsed: unknown;
+      try {
+         parsed = typeof entry === "string" ? JSON.parse(entry) : entry;
+      } catch {
+         continue;
+      }
+      const info = parsed as {
+         name?: string;
+         schema?: { fields?: Array<Record<string, unknown>> };
+      };
+      if (!info?.name) continue;
+      byName.set(info.name, schemaFields(info.schema?.fields, "", JOIN_DEPTH));
+   }
+   return byName;
+}
+
+/**
+ * The fields a filter on `source` may name: its dimensions, joins included as
+ * paths. Measures are not filterable with `where:` and are left out. Undefined
+ * when the catalog has no such source, which a picker reads as "no list".
+ */
+export function filterableFields(
+   catalog: PackageCatalog | undefined,
+   source: string | undefined,
+): CatalogField[] | undefined {
+   if (!catalog || source === undefined) return undefined;
+   const found = catalog.sources.find((s) => s.name === source);
+   return found?.fields.filter((field) => field.kind === "dimension");
+}
+
+/**
+ * A dashboard file is itself a model, so the endpoint lists it alongside the
+ * real ones. Offering a dashboard's own tile views as things to put on a
+ * dashboard would be circular, so they are left out.
+ */
+export const isDashboardModel = (path: string | undefined) =>
+   (path ?? "").startsWith("dashboards/");
+
+/**
+ * The model's own path.
+ *
+ * Two spellings, and the generated client only knows one: the models LIST
+ * returns `path`, while a single model returns `modelPath`. Reading `path`
+ * alone yields an empty string against the real server, which silently disables
+ * the dashboard exclusion below and leaves a preview with nothing to run
+ * against. Measured, not deduced from the type.
+ */
+const pathOf = (model: CompiledModel): string =>
+   (model as { modelPath?: string }).modelPath ?? model.path ?? "";
+
+export function buildCatalog(models: CompiledModel[]): PackageCatalog {
+   const sources: CatalogSource[] = [];
+   const seen = new Set<string>();
+
+   for (const model of models) {
+      const modelPath = pathOf(model);
+      if (isDashboardModel(modelPath)) continue;
+      const fields = fieldsOf(model);
+
+      for (const source of model.sources ?? []) {
+         const name = source.name;
+         if (!name) continue;
+         // A source reached through an import appears in every model that
+         // imports it. The first model to declare it wins, so a preview runs
+         // against the file that actually defines it.
+         if (seen.has(name)) continue;
+         seen.add(name);
+
+         const givens = (
+            (source as { givens?: Array<{ name?: string }> }).givens ?? []
+         )
+            .map((g) => g.name)
+            .filter((n): n is string => typeof n === "string");
+
+         sources.push({
+            name,
+            modelPath,
+            ...(docOf(source.annotations)
+               ? { description: docOf(source.annotations) as string }
+               : {}),
+            views: (source.views ?? [])
+               .filter((view) => typeof view.name === "string")
+               .map((view) => ({
+                  name: view.name as string,
+                  ...(docOf(view.annotations)
+                     ? { description: docOf(view.annotations) as string }
+                     : {}),
+                  ...(chartOf(view.annotations)
+                     ? { chart: chartOf(view.annotations) as string }
+                     : {}),
+               })),
+            givens,
+            fields: fields.get(name) ?? [],
+         });
+      }
+   }
+
+   return { sources };
+}

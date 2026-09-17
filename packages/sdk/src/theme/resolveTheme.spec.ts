@@ -82,14 +82,19 @@ describe("resolveTheme cascade", () => {
    it("exposes derived mode values (border, foreground, axisFaint)", () => {
       const light = resolveTheme([], "light");
       const dark = resolveTheme([], "dark");
-      expect(light.border).toBe("1px solid #e5e7eb");
+      // All on one slate ramp, in both modes: these are the chrome around
+      // the data, and a neutral with a colour cast in it reads as a failed
+      // attempt at whatever the data is painted in.
+      expect(light.border).toBe("1px solid #e2e8f0");
       expect(dark.border).toBe("1px solid #334155");
-      expect(light.foreground).toBe("#1f2937");
+      expect(light.foreground).toBe("#0f172a");
       expect(dark.foreground).toBe("#e2e8f0");
-      expect(light.axisFaint).toBe("#d1d5db");
+      expect(light.axisFaint).toBe("#cbd5e1");
       expect(dark.axisFaint).toBe("#475569");
-      expect(light.valueColor).toBe("#1f2937");
+      expect(light.valueColor).toBe("#0f172a");
       expect(dark.valueColor).toBe("#f1f5f9");
+      expect(light.pinnedBorder).toBe("1px solid #cbd5e1");
+      expect(dark.pinnedBorder).toBe("1px solid #475569");
    });
 
    it("drillLink is a link colour per mode, not a series colour", () => {
@@ -106,10 +111,10 @@ describe("resolveTheme cascade", () => {
    });
 
    it("dashboardRoot is mode-keyed and immune to operator background overrides", () => {
-      // Light keeps white (no regression on existing installs).
+      // The page's own ground in each mode: the panel, the cards on it and
+      // the canvases inside them are one surface that borders divide up.
       expect(resolveTheme([], "light").dashboardRoot).toBe("#ffffff");
-      // Dark paints slate so the panel doesn't read as a bright box.
-      expect(resolveTheme([], "dark").dashboardRoot).toBe("#1e293b");
+      expect(resolveTheme([], "dark").dashboardRoot).toBe("#0f172a");
       // An operator picking a bold accent for `background` (the chart
       // canvas) must NOT bleed into the surrounding panel.
       const t = resolveTheme(
@@ -117,14 +122,14 @@ describe("resolveTheme cascade", () => {
          "dark",
       );
       expect(t.background).toBe("#ff8800");
-      expect(t.dashboardRoot).toBe("#1e293b");
+      expect(t.dashboardRoot).toBe("#0f172a");
    });
 
    it("tableBackground follows the operator's palette.background", () => {
-      // Defaults track the per-mode background (white in light, slate
-      // in dark) so existing installs see no change.
+      // Defaults track the per-mode background, which is the page's ground
+      // in both modes.
       expect(resolveTheme([], "light").tableBackground).toBe("#ffffff");
-      expect(resolveTheme([], "dark").tableBackground).toBe("#1e293b");
+      expect(resolveTheme([], "dark").tableBackground).toBe("#0f172a");
       // An operator accent on palette.background bleeds into the table
       // interior so charts and tables share a single viz surface
       // colour. The dashboard panel between tiles stays neutral —

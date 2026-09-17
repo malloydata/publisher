@@ -7,9 +7,11 @@ export type {
    DocumentType,
    Workspace,
 } from "./DocumentStorage";
+export { DocumentNotFoundError, isDocumentNotFound } from "./DocumentStorage";
 export {
    DocumentStorageProvider,
    useDocumentStorage,
+   useOptionalDocumentStorage,
    type DocumentStorageProviderProps,
 } from "./DocumentStorageProvider";
 export { BrowserDocumentStorage } from "./BrowserDocumentStorage";

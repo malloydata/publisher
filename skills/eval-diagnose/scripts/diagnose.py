@@ -50,13 +50,15 @@ import pathlib
 import re
 import sys
 import time
+from collections.abc import Iterable
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-loop" / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
-from agent_harness import default_manifest, manifest_skills, skills_roots, spawn_agent  # noqa: E402
+from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
+                           manifest_skills, skills_roots, spawn_agent)
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
@@ -74,7 +76,10 @@ HOSTED_DIAGNOSE_TOOLS = ("get_context", "execute_query", "search_malloy_docs")
 def hosted_diagnose_tools(server: str) -> tuple[str, ...]:
     return tuple(f"mcp__{server}__{t}" for t in HOSTED_DIAGNOSE_TOOLS) + (
         "Read", "Grep", "Glob")
-NO_EDITS = ("Edit", "Write", "NotebookEdit")
+# `NO_EDITS` and `NO_SHELL` come from agent_harness; neither agent here
+# writes or runs anything, and blocking the edit tools while leaving
+# `Bash` granted only looks like a fence.
+READ_ONLY = (*NO_EDITS, *NO_SHELL)
 
 # Codes are written in the skill's tables as a backticked SHOUTY-KEBAB token in
 # the first column. Parsed, never copied: a hardcoded list silently stops
@@ -85,6 +90,28 @@ COMPONENTS = ("dataset", "agent-call", "get_context/model",
               "get_context/retrieval", "construction", "model-definition")
 OWNERS = ("model", "retrieval", "agent-skill", "dataset")
 SUFFICIENCY = ("sufficient", "insufficient", "unknown")
+SEVERITY = ("low", "medium", "high")
+
+
+def worst(values: Iterable[str | None], vocab: tuple[str, ...],
+          fallback: str) -> str:
+    """The last-listed value present, with anything off-vocabulary read as
+    `fallback`.
+
+    `validate()` says outright that these fields can come back wrong -- it
+    appends them to `bad` -- but `bad` only sets `_invalid`, and the clustering
+    input is filtered on `error`, so an off-vocabulary value reaches the
+    aggregate. A bare `[...].index` then raises, after every per-case call AND
+    the clustering call have been paid for and before a single event is
+    written, so one agent typing "partial" costs the whole diagnose run.
+
+    The fallback is per field rather than "treat it as the worst". An
+    unreadable `sufficiency` must not read as probed, and `unknown` is that.
+    An unreadable `severity` is not evidence of a high one, so it takes the
+    same `low` the missing-value default already takes.
+    """
+    ranked = [v if v in vocab else fallback for v in values]
+    return max(ranked, key=vocab.index) if ranked else fallback
 
 
 
@@ -168,9 +195,15 @@ EVIDENCE FROM THE RUN
 In `getContextCalls`, `targets` is what the agent searched for and
 `returnedInRankOrder` is what came back, in rank order.
 
-Emit the object defined in `reference/output-contract.md` of the
-eval-diagnose skill as the LAST thing in your reply. Read that file; it
+Emit the object defined under `## Per case` in `reference/output-contract.md`
+of the eval-diagnose skill as the LAST thing in your reply. Read that file; it
 is the contract a script parses, and a shape invented here is dropped.
+
+That file defines TWO objects. Yours is the per-case one, with `probes`,
+`component`, `owner`, `sufficiency` and `primary_code` at the top level. The
+clustering object under `## Per run` has a `clusters` array and belongs to a
+different job and a different agent; emitting it here is dropped, however good
+the analysis inside it is.
 """
 
 
@@ -185,11 +218,20 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
     scope_line = ""
     if platform and a.scope:
         env, pkg = a.scope.split("/", 1)
+        ver = getattr(a, "scope_version", None)
+        vscope = f', "version": "{ver}"' if ver else ""
+        vquery = f' and version="{ver}"' if ver else ""
         scope_line = (f"\nThe run under diagnosis was scoped to environment "
-                      f'"{env}", package "{pkg}". Pass scopes=[{{"environment": '
-                      f'"{env}", "package": "{pkg}"}}] on get_context and '
-                      f'environment="{env}", package="{pkg}" on execute_query, '
+                      f'"{env}", package "{pkg}"'
+                      + (f", version \"{ver}\"" if ver else "")
+                      + f'. Pass scopes=[{{"environment": '
+                      f'"{env}", "package": "{pkg}"{vscope}}}] on get_context and '
+                      f'environment="{env}", package="{pkg}"{vquery} on execute_query, '
                       f"so your probes hit the same model the answerer did.")
+        if ver:
+            scope_line += (f" Do not omit the version: without it you probe "
+                           f"whatever is latest, and a finding about a model "
+                           f"the run never measured is not a finding.")
     r = spawn_agent(
         DIAGNOSE_PROMPT.format(
             environment=a.environment, package=a.package,
@@ -202,7 +244,7 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
         mcp_url=a.mcp_url,
         tools=hosted_diagnose_tools(a.hosted_mcp_server) if platform
         else DIAGNOSE_TOOLS,
-        blocked=NO_EDITS,
+        blocked=READ_ONLY,
         cwd=a.model_dir, turns=a.max_turns, timeout=a.timeout,
         retries=a.retries, save_transcript=d / "diagnosis.jsonl",
         mcp_server=a.hosted_mcp_server if platform else "publisher")
@@ -212,10 +254,75 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
     if r.json is None:
         return {"qid": qid, "error": r.error or "unparseable",
                 "cost_usd": r.cost_usd}
-    obj = {**r.json, "qid": qid, "cost_usd": r.cost_usd,
+    body = r.json
+    lifted = salvage_cluster_shape(body)
+    if lifted is not None:
+        body = {**body, **lifted}
+    obj = {**body, "qid": qid, "cost_usd": r.cost_usd,
            "wall_seconds": r.wall_seconds, "attempts": r.attempts}
     out.write_text(json.dumps(obj, indent=2))
     return obj
+
+
+def salvage_cluster_shape(obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Lift a per-case diagnosis out of a reply written in the CLUSTER shape.
+
+    The two prompts used to end with the same sentence pointing at the same
+    reference file, and that file defines two objects. 11 of 28 per-case
+    replies in one run came back as the clustering object: real analysis, with
+    owner, component, codes and a root cause, in the wrong envelope. `validate`
+    looks for the per-case keys, finds none, and the whole reply is discarded.
+    At roughly $0.70 a case that was about $12 of the run's $20 thrown away.
+
+    So when the violation is systematic rather than random, salvage beats
+    discard. Only the fields ACTUALLY PRESENT are lifted; nothing is invented
+    to satisfy the validator, because a fabricated field turns a shape error
+    into a false claim. `probes` is the field that must never be fabricated:
+    it is the record that something was checked, and the clustering shape has
+    no structured probe records. So it stays empty, `sufficiency` reads
+    `unknown`, and `validate` still reports "no probes recorded".
+
+    Be precise about what that buys, because it is easy to overstate.
+    `sufficiency: unknown` is a WARNING carried forward, not a gate: nothing
+    refuses to act on it. `good` in main() filters on `error`, not on
+    `_invalid`, so a salvaged diagnosis still reaches clustering -- which is
+    the point, since without salvage it reached clustering with no owner, no
+    component and no code, and grouped on nothing. From there the cluster's
+    `sufficiency` is aggregated worst-case and travels to the improve step,
+    whose prompt tells the agent to probe a claim itself before editing on it.
+    Enforcement lives there, in an instruction, not in this function.
+
+    Returns None when the reply is not cluster-shaped, so a genuinely
+    unparseable or empty reply is left exactly as it was.
+    """
+    clusters = obj.get("clusters")
+    if not isinstance(clusters, list) or not clusters:
+        return None
+    first = next((c for c in clusters if isinstance(c, dict)), None)
+    if first is None:
+        return None
+    codes = [c for c in (first.get("codes") or []) if isinstance(c, str)]
+    out: dict[str, Any] = {
+        "probes": [],
+        "sufficiency": "unknown",
+        "reasoning": obj.get("reasoning") or first.get("evidence") or "",
+        "diagnosis": first.get("rootCause") or "",
+        "_salvaged": "reply used the clustering shape; per-case fields lifted, "
+                     "probes not synthesised",
+    }
+    for src, dst in (("owner", "owner"), ("component", "component"),
+                     ("confidence", "confidence"), ("severity", "severity")):
+        if first.get(src) is not None:
+            out[dst] = first[src]
+    if codes:
+        out["primary_code"] = codes[0]
+        out["contributing_codes"] = codes[1:]
+    # More than one cluster means the agent answered about the whole run from
+    # one case's evidence. Keep the count so that is visible rather than
+    # reading as a clean single-cause diagnosis.
+    if len(clusters) > 1:
+        out["_salvagedFrom"] = f"{len(clusters)} clusters; first used"
+    return out
 
 
 def validate(obj: dict[str, Any], codes: set[str]) -> list[str]:
@@ -241,9 +348,21 @@ These are the per-case diagnoses from one run. Cluster them.
 DIAGNOSED ISSUES
 {issues}
 
-Emit the object defined in `reference/output-contract.md` of the
-eval-diagnose skill as the LAST thing in your reply. Read that file; it
-is the contract a script parses, and a shape invented here is dropped.
+Emit the object defined under `## Per run, clustering` in
+`reference/output-contract.md` of the eval-diagnose skill as the LAST thing in
+your reply. Read that file; it is the contract a script parses, and a shape
+invented here is dropped.
+
+That file defines TWO objects. Yours is the clustering one, a `clusters` array
+with a `reasoning` string beside it. The per-case object under `## Per case`
+belongs to the agent that diagnosed each case individually; that work is
+already done and is your input, not your output.
+
+Each `cluster_id` names the DEFECT, never a remedy. `index-values-not-whole`
+names what is wrong; `index-measures-missing-rounding` names a fix, and picks
+it before anyone has weighed the alternatives. An id containing `missing`,
+`should`, `add`, `fix` or `use` is a prescription, and choosing the remedy is
+the improve step's job, not yours.
 """
 
 
@@ -262,7 +381,7 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
         # output contract now." -- text, so no retry fired, and the run
         # recorded zero clusters. A turn budget tuned for a pasted prompt is
         # too tight the moment the prompt stops carrying everything.
-        mcp_url=None, blocked=NO_EDITS, turns=14, timeout=a.timeout,
+        mcp_url=None, blocked=READ_ONLY, turns=14, timeout=a.timeout,
         retries=a.retries, save_transcript=out / "clustering.jsonl")
     (out / "clustering.md").write_text(r.text)
     res = r.json or {"clusters": [], "reasoning": r.error or "unparseable"}
@@ -276,6 +395,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
     ap.add_argument("--model-dir", type=pathlib.Path, default=None,
                     help="the Malloy package under test; the agent's cwd")
+    # The split is cheap-on-per-case, expensive-on-clustering, and one measured
+    # run says it is the wrong way round: every failure in it came from per-case
+    # work (wrong output shape, a probe at the wrong grain) while the clustering
+    # output was sound even when downgraded to the cheaper model. Left as it is
+    # on purpose. Three of the four causes were wording, now fixed, so the
+    # controlled test is to re-run the same cases with the same models and see
+    # what remains; only a probe that still goes wrong with the rule in front of
+    # it justifies paying more on every future run.
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--cluster-model", default="opus")
     ap.add_argument("--environment", default="samples")
@@ -286,6 +413,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--only", default=None, help="comma-separated qids")
+    ap.add_argument("--verdicts", default="no_match",
+                    help="comma-separated verdicts to diagnose. A near_match "
+                         "that is STABLE across two arms is a coverage "
+                         "finding, not judge noise, and repairing the rubric "
+                         "will not close it -- take the stable list from "
+                         "flip_table.py and pass --verdicts near_match. Never "
+                         "diagnose a one-armed near_match; that is noise.")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--no-cluster", action="store_true")
     ap.add_argument("--target", choices=("local", "platform"), default="local",
@@ -295,9 +429,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="platform only: the MCP server name. Must match the "
                          "one the run's answerer used -- it is the OAuth cache "
                          "key and the `mcp__<server>__<tool>` prefix")
-    ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE",
+    ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE[@VERSION]",
                     help="platform only: the package the run was scoped to, "
-                         "so probes hit the same model")
+                         "so probes hit the same model. Append @VERSION to pin "
+                         "the published version too; without one, probes hit "
+                         "whatever is latest, which is not what the run "
+                         "measured. Defaults to the run's own scope.")
+    ap.add_argument("--target-version", default=None, metavar="VERSION",
+                    help="platform only: the published version to probe. An "
+                         "alternative to @VERSION on --scope, and it wins if "
+                         "both are given. Defaults to the run's targetVersion.")
     ap.add_argument("--force", action="store_true",
                     help="re-diagnose cases that already have a diagnosis")
     ap.add_argument("--manifest", default=None,
@@ -324,15 +465,45 @@ def main(argv: list[str] | None = None) -> int:
     a.role_skills = ([] if a.no_role_skills
                      else manifest_skills(a.manifest, repo))
 
+    # A diagnosis of version X whose probes hit latest describes a model no one
+    # measured. Take the scope and version from the run unless told otherwise,
+    # so the default is "probe what was measured" rather than "probe latest".
+    run_meta: dict[str, Any] = {}
+    rj = a.run / "run.json"
+    if rj.exists():
+        try:
+            run_meta = json.loads(rj.read_text())
+        except json.JSONDecodeError:
+            run_meta = {}
+    if not a.scope and run_meta.get("scope"):
+        a.scope = run_meta["scope"]
+    a.scope_version = None
+    if a.scope and "@" in a.scope:
+        a.scope, a.scope_version = a.scope.rsplit("@", 1)
+    if a.target_version:
+        a.scope_version = a.target_version
+    elif not a.scope_version and run_meta.get("targetVersion"):
+        a.scope_version = run_meta["targetVersion"]
+    if a.target == "platform" and a.scope and not a.scope_version:
+        print("  ! no published version pinned: probes will hit latest, which "
+              "may not be the version this run measured. Pass --target-version "
+              "or --scope ENV/PACKAGE@VERSION.")
+
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
     codes = skill_codes()
 
     # Dev failures only. A holdout case the improve step never saw is the only
     # thing that makes the acceptance check mean anything, and a diagnosis describes the fix.
+    want_verdicts = {v.strip() for v in a.verdicts.split(",") if v.strip()}
+    unknown = want_verdicts - {"no_match", "near_match", "needs_human"}
+    if unknown:
+        raise SystemExit(f"--verdicts: {', '.join(sorted(unknown))} is not a "
+                         f"diagnosable verdict (no_match, near_match, "
+                         f"needs_human)")
     failed = []
     for e in events:
-        if e.get("kind") != "score" or e.get("verdict") != "no_match":
+        if e.get("kind") != "score" or e.get("verdict") not in want_verdicts:
             continue
         case = cases.get(e["qid"])
         if case is None or case.get("split") == "holdout":
@@ -409,10 +580,16 @@ def main(argv: list[str] | None = None) -> int:
                  for x in (m.get("contributing_codes") or [])}
                 | set(codes_seen)),
             component=c.get("component"), owner=c.get("owner"),
-            severity=max((m.get("severity") or "low" for m in members),
-                         key=["low", "medium", "high"].index),
+            severity=worst((m.get("severity") for m in members),
+                           SEVERITY, "low"),
             confidence=c.get("confidence") or "medium",
-            sufficiency=members[0].get("sufficiency") or "unknown",
+            # Worst case across the members, the way `severity` above already
+            # aggregates, not `members[0]`. This value now travels to the
+            # improve step, so a cluster whose first member happened to be
+            # probed must not read as probed when a later one was not: a
+            # cluster is `sufficient` only when every member is.
+            sufficiency=worst((m.get("sufficiency") for m in members),
+                              SUFFICIENCY, "unknown"),
             traceIds=[], diagnosis=c.get("rootCause"),
             evidence=c.get("evidence"),
             diagnosedBy=a.model, clusteredBy=a.cluster_model,

@@ -15,6 +15,7 @@ import { components } from "../api";
 import {
    getProcessedPublisherConfig,
    getPublisherConfigDir,
+   getUnresolvedPublisherConfigPath,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
    ProcessedPublisherConfig,
@@ -619,6 +620,11 @@ export class EnvironmentStore {
 
          const repository = this.storageManager.getRepository();
 
+         // What was ASKED FOR, which is not what loaded: an environment can be
+         // declared and still be absent from `this.environments` afterwards.
+         // Counted here because only this scope sees both sources.
+         let declaredEnvironments = environmentManifest.environments.length;
+
          if (reInit) {
             // Load environments from config file
             await Promise.all(
@@ -629,6 +635,7 @@ export class EnvironmentStore {
          } else {
             // Load existing environments from database
             const existingEnvironments = await repository.listEnvironments();
+            declaredEnvironments += existingEnvironments.length;
 
             if (existingEnvironments.length > 0) {
                // Load environments from database
@@ -816,6 +823,7 @@ export class EnvironmentStore {
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
+         this.logUnconfiguredNotice(declaredEnvironments);
          this.emitReadinessLine();
       } catch (error) {
          markNotReady();
@@ -837,6 +845,49 @@ export class EnvironmentStore {
             // A failed stderr write must not mask the logged error above.
          }
       }
+   }
+
+   /**
+    * Say why an empty server is empty, once, beside the readiness line.
+    *
+    * A server that loaded nothing reports `serving` with `environments=0
+    * packages=0 load_errors=0`, and every one of those numbers is accurate:
+    * nothing failed, because nothing was asked for. Without this line there is
+    * no output at all naming the config path that was checked, so an operator
+    * who forgot to mount one sees a healthy server and an empty catalog.
+    *
+    * `info`, not `warn`, because booting unconfigured is a supported mode
+    * rather than a fault: a deployment can mount no config and create its
+    * environments over the API afterwards, which is what Credible's workers do.
+    * Levelling this at `warn` would alarm on every one of those boots. The
+    * sibling case (falling back to the bundled default) logs at `info` too.
+    *
+    * Gated on how many environments were DECLARED, not on how many loaded.
+    * Those differ, and the gap is where this line goes wrong: an environment
+    * the database holds whose directory has gone is skipped at the
+    * `not found in config and files missing` branch with a logged error and no
+    * `failedEnvironments` entry, so a loaded-count gate sees zero and blames a
+    * config file that was never the problem, immediately after the one line
+    * that named the real cause. That boot is reachable the way this very
+    * message invites: start unconfigured, create an environment over the API,
+    * restart onto a root where `publisher_data/<env>` is gone.
+    *
+    * Runtime creation is unconditionally available in this branch: with no
+    * config file, `frozenConfig` takes its default of false.
+    */
+   private logUnconfiguredNotice(declaredEnvironments: number): void {
+      if (declaredEnvironments > 0) {
+         return;
+      }
+      const checkedPath = getUnresolvedPublisherConfigPath(this.serverRootPath);
+      if (!checkedPath) {
+         return;
+      }
+      logger.info(
+         `Serving with no environments: no ${PUBLISHER_CONFIG_NAME} was found at ${checkedPath}. ` +
+            `Create one there (in Docker, mount it at that path) or pass --config <path>. ` +
+            `Environments can also be created at runtime through the API.`,
+      );
    }
 
    /**

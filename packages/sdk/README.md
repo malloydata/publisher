@@ -40,6 +40,14 @@ yarn add @malloy-publisher/sdk
 
 ---
 
+### Peer dependencies
+
+The SDK expects the host to provide React and the Malloy packages it renders
+with, including `@malloydata/malloy`. The Malloy parser is only loaded when the
+dashboard builder opens (it is imported lazily, about 440 KB gzipped), so an
+app that never opens the builder never downloads it — but the package still has
+to be installed, or that one dynamic import fails at open time.
+
 ## Quick Start
 
 ### Basic Setup
@@ -998,7 +1006,16 @@ type DocumentType = "dashboard" | "notebook";
 interface Workspace {
    name: string;
    writeable: boolean;
+   /** What this place is, in the backend's own words. The editor shows it. */
    description: string;
+   /**
+    * This workspace holds the package's system of record: the editor opens
+    * what it keeps and writes back to it, and treats the package file as a
+    * deploy of it. Left out, the package file is the record and this is a
+    * place a copy is kept beside it, which is what every host got before the
+    * flag existed. At most one workspace per storage sets it.
+    */
+   authoritative?: boolean;
 }
 
 interface DocumentLocator {
@@ -1019,6 +1036,14 @@ interface DocumentStorage {
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
 }
 ```
+
+`getDocument`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
+when the document is not there, and with anything else when the backend could not be
+asked. The distinction is load-bearing rather than cosmetic: a failed read reported as
+"there is no document" reads as "the package is the only copy", and saving on that
+belief overwrites the copy that was actually there. Use `isDocumentNotFound(error)`
+rather than `instanceof`, since the `es` and `cjs` builds carry their own copy of the
+class.
 
 A document is a string; the `type` on its locator says what kind so a backend can keep kinds apart
 and a listing can ask for one. Every method rejects when the document is not there, so a caller can
@@ -1175,20 +1200,25 @@ function App() {
 
 ### Styled Components
 
-The SDK exports several pre-styled components for consistent UI:
+The SDK exports the pieces the Publisher Console is built from, so a host can
+build screens that match it:
 
 ```tsx
 import {
-   StyledCard,
-   StyledCardContent,
-   StyledCardMedia,
-   PackageCard,
-   PackageCardContent,
-   PackageSectionTitle,
-   CleanNotebookContainer,
-   CleanNotebookSection,
+   AddButton, // the filled pill that adds one thing to a section
+   SecondaryButton, // the outlined control beside it
+   AppDialog, // every dialog, in one shape
+   BackLink, // the way up, at the top of a page
+   DashboardBar, // the bar above a dashboard, in both modes
+   PALETTE, // the twelve hues everything meaningful is drawn from
+   SURFACE_TINT, // which hue an environment, package or connection gets
 } from "@malloy-publisher/sdk";
 ```
+
+`ItemRow` and `PackageSection`, the row and section those screens are built
+out of, are deliberately internal for now; so are the `styled` helpers in
+`components/styles.ts`, which earlier versions of this README showed being
+imported, which never worked.
 
 ---
 
@@ -1458,6 +1488,8 @@ function EnvironmentList() {
 | `createEmbeddedQueryResult` | Serialize query config              |
 | `BrowserDocumentStorage`    | localStorage-based document storage |
 | `globalQueryClient`         | Shared React Query client           |
+| `DocumentNotFoundError`     | Absence, not a failed read          |
+| `isDocumentNotFound`        | Absence check across es/cjs builds  |
 
 ### Exported Types
 

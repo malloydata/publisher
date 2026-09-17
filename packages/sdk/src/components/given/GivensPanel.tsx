@@ -129,7 +129,10 @@ export function GivensPanel({
                border: 1,
                borderColor: "divider",
                borderRadius: 1,
-               backgroundColor: "background.paper",
+               // Border only, no raised fill — the same construction the
+               // dashboard's cards use, so the control row reads as part of
+               // the page rather than as a panel floating above it.
+               backgroundColor: "transparent",
             }}
          >
             <Stack
@@ -166,7 +169,7 @@ export function GivensPanel({
          >
             <Typography
                variant="subtitle2"
-               sx={{ fontWeight: 600, color: "#333" }}
+               sx={{ fontWeight: 600, color: "text.primary" }}
             >
                {title ?? "Parameters"}
             </Typography>

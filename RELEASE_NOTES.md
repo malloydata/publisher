@@ -31,7 +31,135 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a dashboard's description is its narrative header, and it renders as markdown
+## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
+
+`DocumentStorage` exists so the host decides where an authored document goes, but the
+editor was written when the browser was the only implementation and the editor was the
+only writer. Both assumptions were baked into its state machine, where they stayed
+invisible while storage really was one person's browser and nothing else wrote the
+package. Given a real backend, or a second writer, they became four ways to lose work.
+
+**Two of them bite the Console today, on the package-write path shipped in 0.4.0.**
+The hash a save hands back as `expectedHash` was taken from the latest fetch of the
+file rather than from the file the builder opened against, so a save could present a
+hash that matched a version the author had never seen, be accepted, and overwrite it.
+And saving a resumed draft into the package remounted the builder onto the pre-save
+package text, silently discarding the save that had just succeeded. Both are fixed.
+
+**New in the interface.** A `Workspace` may now declare itself `authoritative`: its copy
+IS the document, and the package file is a deploy of it. The editor then opens that copy,
+writes back to it, and drops the "you have edits the package does not have" prompt, which
+means nothing when the copy is the record. Omitting the flag leaves every existing host
+exactly as it was. Absence now rejects with a `DocumentNotFoundError` rather than a bare
+`Error`, so a read that failed is no longer indistinguishable from a document that is not
+there; the editor refuses to arm Save on a read it could not complete, instead of
+treating silence as permission to overwrite.
+
+**Also.** A new version of the file arriving while there are unsaved edits is offered
+rather than applied, so a background refetch no longer discards an author's work, and
+saving through storage no longer throws away the undo history. `DashboardEditor` takes an
+`onDirtyChange` callback for hosts that own the way out of the page. The toolbar caption
+and the package page's draft list now say where a document is kept in the backend's own
+words, taken from `Workspace.description`, instead of asserting "this browser".
+`dashboard.saved` gains `where: "host"` and an optional `workspace`; `dashboard.opened`
+gains `from: "record"`.
+
+What this does not add is contention control on the record itself. `saveDocument` has
+no expected-version slot, so two people editing one authoritative workspace are still
+last writer wins, and the editor cannot detect it. Only the package path is
+compare-and-swap protected.
+
+## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
+
+A materialization is a run of one package's persist sources: `package_name` is NOT NULL on the row, every create takes a package, and the scheduler arms per package. The environment page nonetheless carried a second materializations surface on top of that — a cross-package list, plus a dialog that ticked packages and fired one ordinary per-package create for each — which read like a level of its own while offering strictly less than the package's own page. It is gone, and so is the one endpoint behind it, an aggregate that was the per-package query with the package predicate dropped.
+
+**Removed:** `GET /api/v0/environments/{env}/packages/materializations`. Its per-package sibling, `GET /api/v0/environments/{env}/packages/{pkg}/materializations`, is unchanged, so a caller that wants the environment-wide view asks each package and concatenates. `malloy-pub list materialization` now requires `--package`; omitting it used to list the whole environment and now fails with `--environment and --package are required`. `EnvironmentMaterializations` is no longer exported from `@malloy-publisher/sdk`. All five package-scoped endpoints, the scheduler, and the table and its indexes are untouched.
+
+**One thing comes back.** That aggregate had to be matched ahead of `…/packages/{packageName}`, which reserved `materializations` as a package name nobody could use. The reservation is lifted.
+
+## [0.4.0] — the Console writes a dashboard into the package: a save endpoint, create, and drafts
+
+The dashboard builder shipped in 0.3.1 with an Export button: it handed back a copy of the file for someone to put in the package by hand. The Console now closes the loop instead.
+
+**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled *as the file* and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
+
+The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means *create*, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
+
+**Like every write on this server it is unauthenticated** and belongs behind the gateway; `frozenConfig` turns it off. It opens no door that was shut — a caller who can reach it can already register a package — and it is recorded in [docs/security-posture.md](docs/security-posture.md).
+
+**In the Console:** Save writes into the package when the server takes writes, superseding a browser draft of the same file; a read-only server keeps the browser-draft flow. The package page gains an **Add dashboard** control (model, a source it declares, the first tile's view, a title) and a **Drafts** section listing this browser's saved dashboards, to open or delete. **Export is gone**, because Save is what it stood in for.
+
+## [0.4.0] — the bundled examples no longer ship a notebook
+
+`examples/storefront/storefront.malloynb` and `examples/governed-analytics/orders.malloynb` are removed. The `.malloynb` format is deprecated: read-only support stays, and a package that ships one still renders it, but a new narrative surface should be a dashboard until the authored notebook format lands. [docs/choosing-a-surface.md](docs/choosing-a-surface.md) says which surface to reach for.
+
+## [0.4.0] — a failed connection test no longer returns the password
+
+`POST /api/v0/connections/test` put the driver's error verbatim into `errorMessage`, and a DuckDB attach failure echoes the whole connection string — so testing a Postgres, DuckLake, or DuckDB-with-attachments connection that could not connect sent its cleartext password back to the caller, and wrote it to the server log. Both now go through the redaction the service already applied to its own copy, on the attach path as well as the controller's catch.
+
+**If you were affected:** wherever a failed connection test's response or the server's log was captured — a browser network panel, a support bundle, a log shipper — that password is in the clear. Rotate it if any of those left the machine.
+
+**Also fixed: duckdb and ducklake connection tests work again.** Since 0.0.193 the throwaway config behind a test was built with an empty environment path, so DuckDB rejected the empty working directory before any attach ran and every test of those two types failed with a validation error. The config is now rooted in a fresh temp directory, removed afterwards — which also means a connection test never reads, writes, or deletes an operator's own `<name>.duckdb`, and two tests of the same name cannot clobber each other.
+
+**One new refusal.** A duckdb or ducklake connection name becomes a `<name>.duckdb` filename, so an unsafe one is now a 400 rather than a test that runs and fails. Names on every other connection type are unaffected.
+
+## [0.4.0] — a materialized source's `where:` reaches the serve shape
+
+A source's filter is part of what the source means, and the `storage=` tier was dropping it. The build SQL is the persisted relation alone, and the serve shape re-declared only dimensions, measures, joins and views — so the tier answered with **every row the source excludes**, silently, because a dropped filter still compiles. The colocated tier was never affected: substitution swaps only the `FROM` and leaves the reading query's own `WHERE` in place.
+
+**Now:** the shape carries the source's `where:` clauses, one per `filterList` entry, and filters accumulate through `extend` the way they do in the model. They are kept at every tier of the shape ladder, so a source whose view cannot be reproduced loses the view and keeps the filter.
+
+**A filter is the one exception to the per-query fallback rule**, deliberately. If a `where:` cannot be reproduced on the shape — one reaching through a join whose target is not materialized, or one over a column the source hides with `except:` — that source serves live rather than serving from storage without its filter. Its siblings keep the tier. Serving fewer queries from the tier is a cost; serving the wrong rows is not a trade worth making.
+
+**If you were affected:** only a server running `PERSIST_STORAGE_MODE=on` served from the tier at all, and only a source carrying a `where:` answered wrongly — but every query against one of those, aggregates included, has been counting rows the filter excludes. The filter is applied when the artifact is read, not when it is built, so upgrading is enough: no rebuild, and nothing in the package changes. To confirm, compare a count against the same query served live.
+
+## [0.4.0] — a storage build reaches a proxied Postgres source through its tunnel
+
+A `storage=` build of a source on a Postgres connection that carries a `proxy` (an SSH tunnel to the tenant's bastion) failed on every attempt with `Unable to connect to Postgres at "host=<the database's own host> …": Connection timed out`, after a full TCP timeout per source. The query path opens the tunnel and connects through it; the build path handed DuckDB's `postgres` extension the connection's own host and port, which the bastion exists to keep unreachable. A proxied connection had never been built into a storage destination before — the passthrough was proven on BigQuery and Snowflake, whose federation has no network hop.
+
+**Now:** the build federates a proxied Postgres source the way the query path connects to it. It opens the connection's SSH tunnel for the duration of the build, attaches DuckDB at the tunnel's local endpoint, and closes the tunnel when the build session is disposed — a failed attach closes it too. TLS is mapped from the connection's `sslmode` in libpq's vocabulary: unset or `no-verify` encrypt without verifying (`require`), `verify-ca` verifies the chain against `NODE_EXTRA_CA_CERTS` (passed as `sslrootcert`), and `verify-full` verifies the chain against the runtime's bundled roots plus `NODE_EXTRA_CA_CERTS` — the trust set the query path uses, so no bundle is required — and the hostname against the database's own name, because libpq dials the tunnel as `hostaddr` while `host` keeps the real name. Values are quoted for libpq, so a password carrying a space or a quote connects as it does on the query path. Unproxied Postgres, BigQuery and Snowflake sources are unchanged.
+
+**If you were affected:** rebuild. The refusal never reached the source's definition, so nothing in the package changes.
+
+## [0.3.1] — a dashboard builder, and the storage seam a host has to supply
+
+Publisher now ships a WYSIWYG editor for a package dashboard: tiles arranged by drag, a filter strip
+whose controls are written into the file as `given:` declarations, per-tile drill targets, and a
+splice-writer that rewrites only the bytes it owns so comments, ordering and everything it does not
+manage survive the round trip. `/<environment>/<package>/dashboards/<slug>/edit` opens it in the
+bundled app.
+
+**It is a separate entry point, and that is deliberate.** Import it from
+`@malloy-publisher/sdk/builder`, not from the package root, and load it lazily —
+`React.lazy(() => import("@malloy-publisher/sdk/builder"))` is what the bundled app does. The builder
+reads Malloy with the Malloy parser, which is 440 KB gzipped, and nothing reachable from the main
+entry imports it. A single static import anywhere on your main path hoists all of it into every page
+load. That entry also installs a `globalThis.process.env` shim the parser's dependencies need in a
+browser, and it has to evaluate before the parser's chunk does, which is the other reason not to
+reach past it into the component file.
+
+**Saving is yours, not ours.** The editor writes through a `DocumentStorage` the host supplies
+through `DocumentStorageProvider` — `listWorkspaces`, `getDocument`, `saveDocument`,
+`deleteDocument`, `moveDocument`, over a `{workspace, type, path}` locator. `BrowserDocumentStorage`
+is exported and keeps documents in `localStorage`, which is what the bundled app uses and is enough
+to try the builder, not enough to share one. A host with no provider still gets the editor, without
+Save. Two things to know before writing an implementation: `saveDocument` carries no version or etag,
+so a backend that needs a precondition has to hold one itself and reject a stale write, and the
+editor opens on the first workspace `listWorkspaces(true)` returns, so return the one you mean to
+save into.
+
+**The package dashboard is a read-only origin.** Editing works on a copy, the copy goes wherever the
+host keeps documents, and "Export" hands the file back so it can be put in the package. There is no
+server write path and this release does not add one. The cost is stated in the toolbar rather than
+hidden: a control added in the builder is live in the editor, because its value is written into each
+tile's query, but it reaches the package only when the exported file does.
+
+**One thing a dashboard author should know.** The file the builder writes is package text, and
+Publisher reads an `#(authorize)` gate from a declaration in the package. A `given:` the builder
+writes is presentation — it does not bound what a viewer can reach, and it is not a tenant boundary.
+Treat a dashboard as model text for review purposes, because that is what it is.
+
+## [0.3.0] — a dashboard's description is its narrative header, and it renders as markdown
 
 A dashboard could already carry a block of prose and was throwing it away at the last step. Malloy
 delivers a doc comment with its newlines and blank lines intact — measured, `'## Why this page
@@ -50,7 +178,7 @@ round, with `#"` attached to its `query:`. And this is the whole prose surface a
 page, plus a one-line `# subtitle` per tile. Prose BETWEEN tiles needs a tile kind the format cannot
 express yet.
 
-## [Unreleased] — a property on a tile entry is reported instead of dropped
+## [0.3.0] — a property on a tile entry is reported instead of dropped
 
 `tiles=[intro { kind=text }]` compiled, loaded clean, and silently became the tile `intro` — a run
 expression that does not resolve, reported as a query error with no hint that the tag was the
@@ -58,7 +186,7 @@ problem. The shape parses today, so an author who has read about tile kinds anyw
 and be told nothing about why it did not work. The package lint now names the property and says where
 per-tile presentation actually goes.
 
-## [Unreleased] — a composite dashboard's tiles are cards again
+## [0.3.0] — a composite dashboard's tiles are cards again
 
 A tile on a `## artifact { tiles=[…] }` dashboard painted MUI's white instead of the instance theme's
 `tile` colour, which the theme itself describes as "a faint tint so tiles read as recessed cards on
@@ -74,7 +202,7 @@ neither can drift from the other unnoticed.
 Height stays deliberately different: a composite tile is capped so a grid of independent queries
 keeps even rows, where the single-query form sizes to its content.
 
-## [Unreleased] — a result panel is sized by what the renderer says it is, not by its DOM
+## [0.3.0] — a result panel is sized by what the renderer says it is, not by its DOM
 
 A panel decided its height by walking three levels into `@malloydata/render`'s output and reading
 whichever node it landed on, plus a class-name check on `.malloy-dashboard` for the one shape that
@@ -113,7 +241,7 @@ For SDK consumers: `ResultContainer`'s `maxHeight` is optional now, and leaving 
 carries `data-malloy-render-as` and `data-malloy-sizing` on its stage, so a panel at an unexpected
 height says which rule it took.
 
-## [Unreleased] — a dashboard imports its givens file whole
+## [0.3.0] — a dashboard imports its givens file whole
 
 The bundled examples, the dashboards doc and the `malloy-dashboards` skill all named the givens a
 dashboard uses (`import { CATEGORY, BRAND, … } from '../givens.malloy'`). They import the file whole
@@ -129,7 +257,7 @@ package keeps it, because the MCP surface, row-level access and `#(authorize)` a
 now also records that declaring one in a dashboard file works — the control renders and the tile
 filters — for a page that owns its own knob. That is the exception, not the convention.
 
-## [Unreleased] — dropdowns over a gated source load their options
+## [0.3.0] — dropdowns over a gated source load their options
 
 A `control=select` whose `suggest` read a source gated by `#(authorize)` (or scoped by a
 source-level `where:` on a given) resolved to "Options unavailable": the option query carried no
@@ -140,7 +268,7 @@ No other applied filter is sent, so the option list still does not depend on the
 `useSuggestOptions` takes the applied values as a new trailing optional argument; a caller that
 omits it, or a server too old to name the givens, behaves as before.
 
-## [Unreleased] — a control with a starting value can be cleared
+## [0.3.0] — a control with a starting value can be cleared
 
 A given seeded by `# artifact { givens { … } }` (or a notebook's `## givens { … }`) could not be
 cleared: the × dropped it from the URL, the host fed that URL back in, and the control snapped
@@ -149,7 +277,7 @@ and keeps the reader's edits across it, while a URL it did not write (a drill la
 button, a pasted link) still resets the controls as before. The limitation was documented as
 unreachable when no server populated starting values; both dashboards and notebooks have since.
 
-## [Unreleased] — `ApiErrorDisplay` is exported; two internal names are not
+## [0.3.0] — `ApiErrorDisplay` is exported; two internal names are not
 
 `@malloy-publisher/sdk` now exports `ApiErrorDisplay` and its props type. `Dashboard`,
 `DashboardTile` and `Notebook` all present request failures through it, and the SDK README has
@@ -158,7 +286,7 @@ through the barrels without being documented are no longer exported: `SourceExpl
 (the inner half of `SourcesExplorer`, which is the component to use) and `makeDimensionKey` (an
 internal of `useDimensionalFilterRangeData`; `getDimensionKey` stays).
 
-## [Unreleased] — the `pages/` URL alias is gone
+## [0.3.0] — the `pages/` URL alias is gone
 
 Data apps were renamed from `pages/<file>` to `data-apps/<file>` in 0.0.242, and that release
 promised the old spelling would stop redirecting one release later. It kept redirecting for
@@ -167,7 +295,7 @@ and the server no longer treats `pages` as an app route. A bookmark on the old s
 a package that ships its own `public/pages/` directory has those files back at
 `/<env>/<pkg>/pages/<file>`, which the alias had been shadowing.
 
-## [Unreleased] — the Workbook editor is gone; storage is now `DocumentStorage`
+## [0.3.0] — the Workbook editor is gone; storage is now `DocumentStorage`
 
 **Removed: the Workbook editor.** `Workbook`, `WorkbookList`, `WorkbookManager`, and
 `AnalyzePackageButton` are no longer exported from `@malloy-publisher/sdk`, and the Console's
@@ -191,7 +319,7 @@ rather than everything the page keeps in localStorage.
 defaulting to `BrowserDocumentStorage`. A host that passed a `WorkbookStorage` implementation renames
 its methods and adds `type` to its locators. No known host did.
 
-## [Unreleased] — dashboards written for Malloyyo look the same here
+## [0.3.0] — dashboards written for Malloyyo look the same here
 
 Three behaviors that differed on identical Malloy between Publisher and
 [Malloyyo](https://github.com/malloydata/malloyyo), found by checking Publisher's port against
