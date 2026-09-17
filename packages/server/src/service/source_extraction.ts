@@ -37,6 +37,7 @@ import {
 import {
    assertNoAuthorizeNearMisses,
    authorizeAnnotationRoute,
+   authorizeAnnotationSpellingAsWritten,
    collectAuthorizeExprsForRoute,
    collectAuthorizeNearMissesAllRoutes,
    containsAuthorizeAnnotationTag,
@@ -46,8 +47,8 @@ import {
    type MisplacedAuthorizeAnnotation,
 } from "./authorize";
 import {
-   AUTHORIZE_ROUTE,
-   AUTHORIZE_ROUTES,
+   CANONICAL_AUTHORIZE_ROUTES,
+   ROW_AUTHORIZE_ROUTE,
    SOURCE_AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 import { parseFilters, type FilterDefinition } from "./filter";
@@ -94,15 +95,15 @@ export interface ExtractedSource {
     * any stray annotation.
     *
     * Scoped to the `authorize` ROUTE only — a source gated solely by
-    * `#(source-authorize)` reports `undefined` here even though it is
+    * `#(source_authorize)` reports `undefined` here even though it is
     * enforced (via the internal `authorizeMap`, which carries both routes).
-    * The `source-authorize` route's own effective texts are reported
+    * The `source_authorize` route's own effective texts are reported
     * separately, in `sourceAuthorize` below.
     */
    authorize: string[] | undefined;
    /**
-    * Effective `#(source-authorize)` expressions gating this source, mirroring
-    * `authorize` above but for the `source-authorize` route ONLY — a
+    * Effective `#(source_authorize)` expressions gating this source, mirroring
+    * `authorize` above but for the `source_authorize` route ONLY — a
     * convenience-form `#(authorize)` body (a pure source-level predicate
     * written on the `authorize` route) reports under `authorize`, not here.
     * Undefined when nothing on this route gates the source, even if
@@ -361,7 +362,7 @@ export function extractSourcesFromModelDef(
     * `source_line_authorize_integration.spec.ts`). Keyed per route so
     * `gate_classification.ts`'s `assertAuthorizeGrammarValid` can decide
     * own-vs-inherited PER ROUTE — a source may own `#(authorize)` but only
-    * inherit `#(source-authorize)`, or vice versa.
+    * inherit `#(source_authorize)`, or vice versa.
     */
    authorizeOwnNotes: AuthorizeOwnNotesMap;
    /**
@@ -541,8 +542,9 @@ export function extractSourcesFromModelDef(
             kind: "file",
             route:
                fileNoteTexts
-                  .map((text) => authorizeAnnotationRoute(text))
-                  .find((r): r is string => r !== undefined) ?? AUTHORIZE_ROUTE,
+                  .map((text) => authorizeAnnotationSpellingAsWritten(text))
+                  .find((r): r is string => r !== undefined) ??
+               ROW_AUTHORIZE_ROUTE,
          });
       }
    }
@@ -595,9 +597,9 @@ export function extractSourcesFromModelDef(
          // enough). A malformed annotation propagates (model fails to load)
          // rather than silently dropping the gate.
          //
-         // Computed PER ROUTE (`AUTHORIZE_ROUTES`: `authorize`,
-         // `source-authorize`) and independently own-wins-or-inherits per
-         // route — an own `#(source-authorize)` note never sheds an
+         // Computed PER ROUTE (`CANONICAL_AUTHORIZE_ROUTES`: `authorize`,
+         // `source_authorize`) and independently own-wins-or-inherits per
+         // route — an own `#(source_authorize)` note never sheds an
          // inherited `#(authorize)` gate, or vice versa, because each route's
          // own-notes read and ancestor walk run as their own separate call.
          const ownNotes = ownLevelNoteTexts(struct.annotations);
@@ -610,7 +612,7 @@ export function extractSourcesFromModelDef(
          );
          const ownNotesByRoute = new Map<string, AnnotationNote[]>();
          const attributedOwnNotesByRoute = new Map<string, AnnotationNote[]>();
-         for (const route of AUTHORIZE_ROUTES) {
+         for (const route of CANONICAL_AUTHORIZE_ROUTES) {
             const notesForRoute = ownAuthorizeNotes.filter(
                (note) => authorizeAnnotationRoute(note.text) === route,
             );
@@ -657,7 +659,7 @@ export function extractSourcesFromModelDef(
          // own route's effective texts, even though `authorizeMap` (internal)
          // carries both.
          const routeGroupsByRoute = new Map<string, string[][]>();
-         for (const route of AUTHORIZE_ROUTES) {
+         for (const route of CANONICAL_AUTHORIZE_ROUTES) {
             const ownExprsForRoute = collectAuthorizeExprsForRoute(
                ownNotes,
                route,
@@ -682,7 +684,7 @@ export function extractSourcesFromModelDef(
          // introspection. `suggestGivenLookup`'s consumers
          // (`package_load_worker.ts`, `model.ts`'s `getDashboardModelFacts`)
          // read only `authorize`, so a given referenced solely by a
-         // `#(source-authorize)` term is still not suggested; a known,
+         // `#(source_authorize)` term is still not suggested; a known,
          // accepted gap, not a fail-open — the gate itself still enforces via
          // `authorizeMap`.
          const routeGroupsToFlatWire = (
@@ -690,7 +692,7 @@ export function extractSourcesFromModelDef(
          ): string[] | undefined =>
             groups && groups.length > 0 ? groups.flat() : undefined;
          const authorize = routeGroupsToFlatWire(
-            routeGroupsByRoute.get(AUTHORIZE_ROUTE),
+            routeGroupsByRoute.get(ROW_AUTHORIZE_ROUTE),
          );
          const sourceAuthorize = routeGroupsToFlatWire(
             routeGroupsByRoute.get(SOURCE_AUTHORIZE_ROUTE),
@@ -800,9 +802,11 @@ export function extractSourcesFromModelDef(
                   fieldName,
                   route:
                      fieldAuthorizeNotes
-                        .map((note) => authorizeAnnotationRoute(note.text))
+                        .map((note) =>
+                           authorizeAnnotationSpellingAsWritten(note.text),
+                        )
                         .find((r): r is string => r !== undefined) ??
-                     AUTHORIZE_ROUTE,
+                     ROW_AUTHORIZE_ROUTE,
                });
                continue;
             }
@@ -819,9 +823,11 @@ export function extractSourcesFromModelDef(
                fieldName,
                route:
                   fieldAuthorizeNotes
-                     .map((note) => authorizeAnnotationRoute(note.text))
+                     .map((note) =>
+                        authorizeAnnotationSpellingAsWritten(note.text),
+                     )
                      .find((r): r is string => r !== undefined) ??
-                  AUTHORIZE_ROUTE,
+                  ROW_AUTHORIZE_ROUTE,
             });
          }
 
@@ -870,8 +876,9 @@ export function extractQueriesFromModelDef(modelDef: ModelDef): {
          name: queryObj.as || queryObj.name,
          route:
             ownLevelNoteTexts(queryObj.annotations)
-               .map((text) => authorizeAnnotationRoute(text))
-               .find((r): r is string => r !== undefined) ?? AUTHORIZE_ROUTE,
+               .map((text) => authorizeAnnotationSpellingAsWritten(text))
+               .find((r): r is string => r !== undefined) ??
+            ROW_AUTHORIZE_ROUTE,
       }));
    const queries: ExtractedQuery[] = namedQueries.map((queryObj) => ({
       name: queryObj.as || queryObj.name,

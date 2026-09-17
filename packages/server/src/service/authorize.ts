@@ -28,7 +28,7 @@
  * **What counts as the tag is Malloy's answer, not a regex of ours.** A note is
  * a gate iff Malloy routes it to `authorize` or, for the source-level route
  * this module also defines ({@link SOURCE_AUTHORIZE_ROUTE}), to
- * `source-authorize` ({@link noteRoute}), which admits the block form
+ * `source_authorize` ({@link noteRoute}), which admits the block form
  * `#|(authorize)` and the other bracket pairs
  * (`#[authorize]`, `#<authorize>`, `#{authorize}`) and excludes near misses like
  * `# (authorize)` (route `''`, Malloy's reserved MOTLY namespace) and
@@ -53,8 +53,10 @@ import { payloadOf, routeOf } from "@malloydata/malloy";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { type AnnotationNote } from "./annotations";
 import {
-   AUTHORIZE_ROUTE,
-   AUTHORIZE_ROUTES,
+   canonicalAuthorizeRoute,
+   DEPRECATED_AUTHORIZE_ROUTE,
+   RECOGNIZED_AUTHORIZE_SPELLINGS,
+   ROW_AUTHORIZE_ROUTE,
    SOURCE_AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 
@@ -111,49 +113,82 @@ function notePayload(text: string): string {
  * on the whole `#(authorize-v2)` / `#(authorize.audit)` family, which are other
  * apps' deliberate routes, 400-ing a caller query that merely mentions one.
  *
- * The optional `(?:source-)?` prefix covers `#(source-authorize)` — a
- * caller-minted one would replace the base's own source-authorize gate under
- * per-route own-wins (`gate_classification.ts`'s `gateExprsForOwnAnnotations`)
- * exactly as a forged `#(authorize)` would today. Without it,
- * `AUTHORIZE_ANNOTATION_ANYWHERE` — the superset this rejecter tests against —
- * would miss `#(source-authorize)` entirely, admitting a caller-submitted gate
- * this file's own `noteRoute`-based classification treats as real.
+ * The optional `(?:(?:row|source)[-_]?)?` prefix covers `#(row_authorize)` and
+ * `#(source_authorize)` — a caller-minted one would replace the base's own gate
+ * on that route under per-route own-wins (`gate_classification.ts`'s
+ * `gateExprsForOwnAnnotations`) exactly as a forged `#(authorize)` would.
+ * Both separators, because the prefix is the stem this scan has to cover, not
+ * the exact spelling: the tests below pin the invariant that this pattern is a
+ * superset of everything {@link authorizeAnnotationRoute} treats as a gate, and
+ * a stem that tracked only the current hyphenation would fail open the moment
+ * one moved. This is why the whole rename lands in one commit with the pattern.
  */
-const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*[([{<]?[ \t]*(?:source-)?authorize(?=[)\]}>]|[ \t]|$)`;
+const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*[([{<]?[ \t]*(?:(?:row|source)[-_]?)?authorize(?=[)\]}>]|[ \t]|$)`;
 const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "iu");
 
 /**
  * Every spelling that reads as an author reaching for `route`, case-insensitive
  * — the exact route word, its ordinary hyphen/underscore/no-separator variants,
- * and (for the one compound route name today, `source-authorize`) the same set
- * with its two words transposed. `#(authorize-source)` is a real, distinct
- * Malloy route (confirmed by running the routing regexes), so it does not
- * itself qualify as a near miss — but it reads exactly like `source-authorize`
- * with the words swapped, and a transposed spelling has to fail the load
- * rather than load inert as somebody else's route. A single, non-compound
- * route word (`authorize`) has nothing to transpose, so it returns just
- * itself.
+ * and (for a compound route name) the same set with its two words transposed.
+ * `#(authorize-source)` is a real, distinct Malloy route (confirmed by running
+ * the routing regexes), so it does not itself qualify as a near miss — but it
+ * reads exactly like `source_authorize` with the words swapped, and a
+ * transposed spelling has to fail the load rather than load inert as somebody
+ * else's route.
+ *
+ * The deprecated alias maps to ITSELF, never to an empty list, and the
+ * emptiness is asserted below rather than left to a reader's care. Two separate
+ * things break on `[]`. {@link nearMissWordAlternation} joins with `|`, so an
+ * empty list makes {@link malformedAuthorizeAttemptPattern} an empty
+ * alternation that matches EVERY route-`undefined` note — `#percent`,
+ * `#currency` and `#drill` all route to `undefined`, so any package carrying
+ * one would fail the load naming a gate its author never wrote. And separately,
+ * `#(AUTHORIZE)` / `#(Authorize)` are distinct routes refused today ONLY
+ * because this list contains the bare word and the set is matched
+ * case-insensitively; neither canonical name's variants contain it, so an empty
+ * alias entry would silently re-open that fail-open too.
  */
 function nearMissRouteNames(route: string): readonly string[] {
-   if (route !== SOURCE_AUTHORIZE_ROUTE) return [route];
-   return [
-      "source-authorize",
-      "source_authorize",
-      "sourceauthorize",
-      "authorize-source",
-      "authorize_source",
-      "authorizesource",
-   ];
+   switch (route) {
+      case SOURCE_AUTHORIZE_ROUTE:
+         return [
+            "source_authorize",
+            "source-authorize",
+            "sourceauthorize",
+            "authorize_source",
+            "authorize-source",
+            "authorizesource",
+         ];
+      case ROW_AUTHORIZE_ROUTE:
+         return [
+            "row_authorize",
+            "row-authorize",
+            "rowauthorize",
+            "authorize_row",
+            "authorize-row",
+            "authorizerow",
+         ];
+      default:
+         return [route];
+   }
 }
 
 const REGEXP_SPECIAL = /[.*+?^${}()|[\]\\]/g;
 
 /** `nearMissRouteNames(route)`, escaped and alternated for use inside a
- *  non-capturing group in a near-miss pattern. */
+ *  non-capturing group in a near-miss pattern. Throws on an empty list rather
+ *  than building the matches-everything regex an empty alternation would be —
+ *  see {@link nearMissRouteNames} for what that costs. */
 function nearMissWordAlternation(route: string): string {
-   return nearMissRouteNames(route)
-      .map((name) => name.replace(REGEXP_SPECIAL, "\\$&"))
-      .join("|");
+   const names = nearMissRouteNames(route);
+   if (names.length === 0) {
+      throw new Error(
+         `No near-miss spellings for authorize route \`${route}\` — an empty ` +
+            "alternation matches every malformed-prefix note, which would " +
+            "fail package loads over annotations nobody wrote.",
+      );
+   }
+   return names.map((name) => name.replace(REGEXP_SPECIAL, "\\$&")).join("|");
 }
 
 /**
@@ -188,36 +223,62 @@ function malformedAuthorizeAttemptPattern(route: string): RegExp {
 
 /**
  * The gate payload on ONE annotation note, or `undefined` if the note is not
- * routed to `authorize` OR `source-authorize`. Malloy's own routing decides —
+ * routed to `authorize` OR `source_authorize`. Malloy's own routing decides —
  * see {@link noteRoute}. A malformed prefix routes to `undefined`, so it is
  * never a gate here.
  *
- * Widened to accept EITHER route so `containsAuthorizeAnnotationTag` /
- * `parseAuthorizeAnnotation` (and everything built on them —
+ * Widened to accept EVERY recognized route so `containsAuthorizeAnnotationTag`
+ * / `parseAuthorizeAnnotation` (and everything built on them —
  * `collectAuthorizeExprs`, the misplaced-annotation sweep, the
- * materialization-eligibility walk) see a `#(source-authorize)` note exactly
- * as they see a `#(authorize)` one, in ONE place, rather than each caller
+ * materialization-eligibility walk) see a `#(source_authorize)` note exactly
+ * as they see a `#(row_authorize)` one, in ONE place, rather than each caller
  * re-deriving its own route test. The route itself is still reported, so a
- * caller that needs to tell the two apart (`parseAuthorizeAnnotation`,
+ * caller that needs to tell them apart (`parseAuthorizeAnnotation`,
  * `collectAuthorizeExprs`) can.
+ *
+ * This is also the ONE choke point where the deprecated `#(authorize)`
+ * spelling becomes {@link ROW_AUTHORIZE_ROUTE}. Canonicalizing here rather
+ * than adding the alias to {@link CANONICAL_AUTHORIZE_ROUTES} is what makes it
+ * an alias instead of a third route — see that constant's doc for the silent
+ * breakage a third route causes. Every downstream consumer (own-wins, the
+ * ancestor walk, per-route grouping, coherence bucketing, the wire split,
+ * `authorizeOwnNotes` keying) inherits the right answer with no change of its
+ * own, and two spellings on one source behave exactly as two notes of one
+ * spelling do.
  */
 function authorizeNoteContent(
    text: string,
 ): { route: string; content: string } | undefined {
-   const route = noteRoute(text);
-   if (route !== AUTHORIZE_ROUTE && route !== SOURCE_AUTHORIZE_ROUTE) {
-      return undefined;
-   }
+   const route = canonicalAuthorizeRoute(noteRoute(text));
+   if (route === undefined) return undefined;
    return { route, content: notePayload(text) };
 }
 
-/** The route ONE annotation note is tagged with (`authorize` /
- *  `source-authorize`), or `undefined` if it is not an authorize gate at
+/** The CANONICAL route ONE annotation note is tagged with (`row_authorize` /
+ *  `source_authorize`), or `undefined` if it is not an authorize gate at
  *  all. A throw-free way to ask "which route" for a note already known to
  *  pass {@link containsAuthorizeAnnotationTag} — unlike
- *  {@link parseAuthorizeAnnotation}, this never throws on an empty body. */
+ *  {@link parseAuthorizeAnnotation}, this never throws on an empty body.
+ *  A `#(authorize)` note reports `row_authorize`; for the spelling as the
+ *  author wrote it, see {@link authorizeAnnotationSpellingAsWritten}. */
 export function authorizeAnnotationRoute(text: string): string | undefined {
    return authorizeNoteContent(text)?.route;
+}
+
+/**
+ * The route spelling as the author WROTE it, PRE-canonicalization — so
+ * `#(authorize)` reports `authorize`, not `row_authorize`.
+ *
+ * Named loudly because it must never back a decision: everything that groups,
+ * walks, keys or enforces goes through {@link authorizeAnnotationRoute}. Its
+ * one job is telling an author which spelling THEY used, for the deprecation
+ * notice `package_load_worker.ts` emits.
+ */
+export function authorizeAnnotationSpellingAsWritten(
+   text: string,
+): string | undefined {
+   const written = noteRoute(text);
+   return canonicalAuthorizeRoute(written) === undefined ? undefined : written;
 }
 
 /**
@@ -331,7 +392,7 @@ export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
  *    refusing them failed the whole model load with advice aimed at someone
  *    else. The ONE exception is a spelling {@link nearMissRouteNames} names as
  *    an attempt at `route` — a case-variant of our own name (`#(AUTHORIZE)`,
- *    `#(Authorize)`), or, for the compound `source-authorize` route, a
+ *    `#(Authorize)`), or, for the compound `source_authorize` route, a
  *    hyphenation or word-order variant (`source_authorize`,
  *    `sourceauthorize`, `authorize-source`): Malloy routes those elsewhere, so
  *    honouring them is not an option, but leaving them silent is the exact
@@ -339,16 +400,18 @@ export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
  *    locked and every row serves. So they are refused too, which blesses
  *    nothing.
  *
- * Generalized to take `route` rather than hardcoding `authorize` — a second
- * route (`source-authorize`) needs the identical three-branch treatment
- * against its own spelling, and its compound name multiplies the near-miss
- * surface (hyphen vs underscore vs none, plus a transposed word order) beyond
- * what a single check could special-case per caller. Defaults to the
- * `authorize` route so every existing call keeps its exact prior behavior.
+ * Takes `route` rather than hardcoding one, because each recognized spelling
+ * needs the identical three-branch treatment against its own name, and a
+ * compound name multiplies the near-miss surface (hyphen vs underscore vs
+ * none, plus a transposed word order) beyond what a single check could
+ * special-case per caller. `route` is deliberately REQUIRED — a default made
+ * it possible to sweep one spelling and believe the whole set had been swept,
+ * and the caller that wants the whole set is
+ * {@link collectAuthorizeNearMissesAllRoutes}.
  */
 export function collectAuthorizeNearMisses(
    texts: Iterable<string>,
-   route: string = AUTHORIZE_ROUTE,
+   route: string,
 ): string[] {
    const motlyPattern = motlyAuthorizePayloadPattern(route);
    const malformedPattern = malformedAuthorizeAttemptPattern(route);
@@ -376,35 +439,42 @@ export function collectAuthorizeNearMisses(
 }
 
 /**
- * {@link collectAuthorizeNearMisses}, run for every route this module
- * recognizes ({@link AUTHORIZE_ROUTES}) and combined — the sweep every load-time
- * caller actually wants, so a `#(source-authorize)` typo is caught alongside
- * an `#(authorize)` one rather than requiring every call site to remember to
- * ask twice.
+ * {@link collectAuthorizeNearMisses}, run for every spelling this module
+ * recognizes ({@link RECOGNIZED_AUTHORIZE_SPELLINGS}) and combined — the sweep
+ * every load-time caller actually wants, so a `#(source_authorize)` typo is
+ * caught alongside a `#(row_authorize)` one rather than requiring every call
+ * site to remember to ask three times.
+ *
+ * Iterates the WRITTEN spellings, not {@link CANONICAL_AUTHORIZE_ROUTES}: the
+ * deprecated `authorize` spelling still has near misses of its own
+ * (`# (authorize)`, `#( authorize )`, `#(AUTHORIZE)`) that are refused today,
+ * and sweeping only the canonical two would silently stop refusing them.
  */
 export function collectAuthorizeNearMissesAllRoutes(
    texts: Iterable<string>,
 ): string[] {
    const materialized = [...texts];
-   return AUTHORIZE_ROUTES.flatMap((route) =>
+   return RECOGNIZED_AUTHORIZE_SPELLINGS.flatMap((route) =>
       collectAuthorizeNearMisses(materialized, route),
    );
 }
 
 /**
- * Which route a near-miss spelling was reaching for, by matching it against
- * {@link nearMissRouteNames}'s compound `source-authorize` variants before
- * falling back to plain `authorize` — so the remedy names the tag the author
- * was actually typing (`#(sourceauthorize)` should not be told to write
- * `#(authorize)`, a different route with different body rules).
+ * Which tag a near-miss spelling was reaching for, so the remedy names the tag
+ * the author was actually typing (`#(sourceauthorize)` should not be told to
+ * write `#(row_authorize)`, a different route with different body rules).
+ *
+ * Fixed order — source variants, then row variants, then the row route as the
+ * fallback. Never the deprecated alias: a near miss is text nobody has written
+ * before, so there is nothing to keep working and no reason to teach the
+ * spelling on its way out.
  */
 function guessedNearMissRoute(text: string): string {
    const lower = text.toLowerCase();
-   return nearMissRouteNames(SOURCE_AUTHORIZE_ROUTE).some((name) =>
-      lower.includes(name),
-   )
-      ? SOURCE_AUTHORIZE_ROUTE
-      : AUTHORIZE_ROUTE;
+   const reaches = (route: string) =>
+      nearMissRouteNames(route).some((name) => lower.includes(name));
+   if (reaches(SOURCE_AUTHORIZE_ROUTE)) return SOURCE_AUTHORIZE_ROUTE;
+   return ROW_AUTHORIZE_ROUTE;
 }
 
 /**
@@ -424,13 +494,15 @@ export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
             )
             .join("\n")}\n` +
          `Malloy routes an annotation by its prefix, and only ` +
-         `\`#(authorize)\`/\`#(source-authorize)\` (or their \`##\` or block-form ` +
-         `\`#|(...)\` spellings) reach an authorize route — a space after the ` +
-         `\`#\`, spaces inside the brackets, a mis-hyphenated or transposed word, ` +
-         `or anything trailing the closing bracket makes it a plain tag Malloy ` +
-         `hands to something else. Write the tag named above, unquoted, on its ` +
-         `own line directly above the \`source:\` statement you mean to protect ` +
-         `(the quoted string form is retired). This is refused rather than ` +
+         `\`#(row_authorize)\`/\`#(source_authorize)\` — or the deprecated ` +
+         `\`#(authorize)\`, which still loads and still behaves as ` +
+         `\`#(row_authorize)\` — reach an authorize route (in their \`##\` and ` +
+         `block-form \`#|(...)\` spellings too). A space after the \`#\`, spaces ` +
+         `inside the brackets, a mis-hyphenated or transposed word, or anything ` +
+         `trailing the closing bracket makes it a plain tag Malloy hands to ` +
+         `something else. Write the tag named above, unquoted, on its own line ` +
+         `directly above the \`source:\` statement you mean to protect (the ` +
+         `quoted string form is retired). This is refused rather than ` +
          `interpreted: guessing at the intent would let publisher start ` +
          `enforcing a filter on a package that has been serving every row.`,
    });
@@ -475,10 +547,12 @@ export type MisplacedAuthorizeAnnotation =
 
 /** Human-readable position for a {@link MisplacedAuthorizeAnnotation}, as
  *  {@link assertNoMisplacedAuthorizeAnnotations} names it in its refusal.
- *  Names the route actually involved — `#(authorize)` or
- *  `#(source-authorize)` — rather than assuming the former, so an author who
- *  misplaced the source-level route is told to move THAT tag, not a
- *  different one with different body rules. */
+ *  Names the route actually involved rather than assuming the row-level one, so
+ *  an author who misplaced the source-level route is told to move THAT tag, not
+ *  a different one with different body rules. The route here is the spelling as
+ *  AUTHORED (`authorize` stays `authorize`): this line quotes the author's own
+ *  text back at them, and quoting a tag they did not write reads as a second,
+ *  phantom annotation. */
 function describeMisplacedAuthorizeAnnotation(
    f: MisplacedAuthorizeAnnotation,
 ): string {
@@ -512,7 +586,7 @@ export function assertNoMisplacedAuthorizeAnnotations(
          `A gate only applies where model load looks for one — a \`source:\`'s ` +
          `own annotation, or one it inherits from an \`extend\`/query-source ` +
          `base. A file-level annotation (\`##(authorize)\` / ` +
-         `\`##(source-authorize)\`) is deprecated and no longer enforced ` +
+         `\`##(source_authorize)\`) is deprecated and no longer enforced ` +
          `anywhere, so it always lands here: declare the same tag on each ` +
          `\`source:\` it was meant to protect instead. Every other ` +
          `position above should move — with the same tag named beside it — ` +
@@ -552,14 +626,14 @@ export function assertNoMisplacedAuthorizeAnnotations(
  *
  * Each group carries the ANNOTATION ROUTE it was collected under
  * (`AUTHORIZE_ROUTES`) — `"authorize"` (a row-level gate) or
- * `"source-authorize"` (a rule about the caller that ANDs with the row-level
+ * `"source_authorize"` (a rule about the caller that ANDs with the row-level
  * gate). Grafting and probing treat every group identically regardless of
  * route — both compile through the same `where:` probe — so `route` is read
  * only by the collection/own-wins logic upstream ({@link
  * ../service/gate_classification}'s `gateExprsForOwnAnnotations`,
  * `collectEntryPointGates`) and by grammar validation ({@link
  * ../service/gate_classification}'s `assertAuthorizeGrammarValid`), which must
- * enforce the source-authorize body restriction and keep own-wins-over-ancestor
+ * enforce the source_authorize body restriction and keep own-wins-over-ancestor
  * scoped per route rather than letting one route's own declaration shed the
  * other's inherited gate.
  */
@@ -574,10 +648,51 @@ export type AuthorizeMap = Map<string, AuthorizeMapGroup[]>;
  * `attributedAuthorizeOwnNotes` (feeds {@link validateAuthorizeProbes}'s
  * own-vs-inherited decision) — see that module's doc for the difference.
  * Keyed per route so a source that owns an `#(authorize)` note but only
- * INHERITS `#(source-authorize)` (or vice versa) is correctly "own" for one
+ * INHERITS `#(source_authorize)` (or vice versa) is correctly "own" for one
  * route's group and "inherited" for the other's.
  */
 export type AuthorizeOwnNotesMap = Map<string, Map<string, AnnotationNote[]>>;
+
+/**
+ * The sources that declare an OWN note written in the deprecated
+ * `#(authorize)` spelling, in map order — one entry per source however many
+ * such notes it carries, since the notice is per source and a second bullet for
+ * the same source tells the author nothing new.
+ *
+ * Own-level notes, deliberately, NOT `annotationTexts`: that walks the whole
+ * `inherits` chain, so every `extend` of a base using `#(authorize)` would warn
+ * too — including a model that has already migrated, named by ITS
+ * `packageName`/`modelPath`. Blaming someone who cannot fix it is the same
+ * defect that ruled out an HTTP `Deprecation` header for this, one level down.
+ */
+export function sourcesWithDeprecatedAuthorizeSpelling(
+   authorizeOwnNotes: AuthorizeOwnNotesMap,
+): string[] {
+   const found: string[] = [];
+   for (const [sourceName, notesByRoute] of authorizeOwnNotes) {
+      const deprecated = [...notesByRoute.values()]
+         .flat()
+         .some(
+            (note) =>
+               authorizeAnnotationSpellingAsWritten(note.text) ===
+               DEPRECATED_AUTHORIZE_ROUTE,
+         );
+      if (deprecated) found.push(sourceName);
+   }
+   return found;
+}
+
+/** The deprecation notice for one source, as it rides
+ *  `SerializedModel.authorizeWarnings` to the main thread — which logs it once
+ *  per model hydration with the `packageName`/`modelPath` context the worker
+ *  has no logger to add itself. */
+export function deprecatedAuthorizeSpellingWarning(sourceName: string): string {
+   return (
+      `Source "${sourceName}": \`#(${DEPRECATED_AUTHORIZE_ROUTE})\` is ` +
+      `deprecated; rename to \`#(${ROW_AUTHORIZE_ROUTE})\` — same behavior, ` +
+      `no other change.`
+   );
+}
 
 const GIVEN_REF_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
 // A `$NAME` inside a string literal is literal text, not a given reference, so
@@ -900,8 +1015,8 @@ export async function validateAuthorizeProbes(
        * `query_source`, which has no `annotations` by construction), or
        * when it owns the OTHER route but not this one. This is what "own vs
        * inherited" is decided on below, per group's own `route` — a source
-       * that owns `#(authorize)` but only inherits `#(source-authorize)`
-       * must not have an unexpressible source-authorize group blamed on it.
+       * that owns `#(authorize)` but only inherits `#(source_authorize)`
+       * must not have an unexpressible source_authorize group blamed on it.
        */
       authorizeOwnNotes?: AuthorizeOwnNotesMap;
       onRowLevelGateRejected?: (cause: RowLevelGateRejectionCause) => void;
@@ -973,7 +1088,7 @@ export async function validateAuthorizeProbes(
          } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             // Own-vs-inherited is decided PER ROUTE: a source that owns
-            // `#(authorize)` but only inherits `#(source-authorize)` (or
+            // `#(authorize)` but only inherits `#(source_authorize)` (or
             // vice versa) must not have the inherited route's unexpressible
             // group blamed on it.
             const ownNotes = ownNotesOf.get(sourceName)?.get(route) ?? [];
@@ -1159,7 +1274,7 @@ export function collectAuthorizeExprs(
  * Deliberately parses ALL of `annotations` (every route) before filtering,
  * rather than pre-filtering by route first: a malformed note of EITHER route
  * must still fail this call the same way it always failed a single-route
- * read, so a broken `#(authorize)` note can't leave a `#(source-authorize)`
+ * read, so a broken `#(authorize)` note can't leave a `#(source_authorize)`
  * read looking clean (or vice versa) just because the caller asked for the
  * other route. Both routes' own-annotation reads on the SAME struct already
  * fail closed independently when this throws (see `gate_classification.ts`'s
@@ -1175,16 +1290,20 @@ export function collectAuthorizeExprsForRoute(
       .map((e) => e.expr);
 }
 
-/** A source found carrying the legacy STRING form of `#(authorize)` — a
+/** A source found carrying the legacy STRING form of an authorize gate — a
  *  Malloy-quoted expression annotated on the `source:` line itself, now
  *  refused in favor of the source-line form (the same position, without the
- *  quotes). `exprs` is the parsed body of each such annotation the source
+ *  quotes). `gates` is the parsed body of each such annotation the source
  *  declares OWN (not inherited), in declaration order — quotes and all, as
  *  authored, which is what {@link assertNoLegacyStringGate} names as the
- *  offending text before emitting its unquoted rewrite. */
+ *  offending text before emitting its unquoted rewrite. Each gate carries two
+ *  routes: `writtenRoute` is the tag as it appears in the author's file, which
+ *  is what the quoted-back offending line must use, and `route` is the
+ *  canonical one the rewrite should be written in — so a `#(authorize)` author
+ *  is shown their own line and moved to `#(row_authorize)` in one step. */
 export interface LegacyStringGateFinding {
    sourceName: string;
-   exprs: string[];
+   gates: { route: string; writtenRoute: string; expr: string }[];
 }
 
 /**
@@ -1204,7 +1323,7 @@ export interface LegacyStringGateFinding {
  *
  * Reads across BOTH routes for a source (flattening `authorizeOwnNotes`'s
  * per-route map): the legacy string form is refused identically regardless of
- * which route carries it — `#(source-authorize) "x"` draws the same refusal
+ * which route carries it — `#(source_authorize) "x"` draws the same refusal
  * as `#(authorize) "x"` — and this refusal has no notion of scope to key on.
  */
 export function findLegacyStringGates(
@@ -1221,11 +1340,20 @@ export function findLegacyStringGates(
          return content !== undefined && isLegacyQuotedPayload(content.content);
       });
       if (legacyNotes.length === 0) continue;
-      const exprs = collectAuthorizeExprs(
-         legacyNotes.map((note) => note.text),
-      ).map((e) => e.expr);
-      if (exprs.length > 0) {
-         found.push({ sourceName, exprs });
+      // Per note, so each gate keeps the spelling its own note was written in
+      // alongside the canonical route — a bulk call would only report the
+      // canonical one, and the offending line quoted back to the author has to
+      // be the line that is actually in their file.
+      const gates = legacyNotes.flatMap((note) =>
+         collectAuthorizeExprs([note.text]).map(({ route, expr }) => ({
+            route,
+            writtenRoute:
+               authorizeAnnotationSpellingAsWritten(note.text) ?? route,
+            expr,
+         })),
+      );
+      if (gates.length > 0) {
+         found.push({ sourceName, gates });
       }
    }
    return found;
@@ -1234,13 +1362,16 @@ export function findLegacyStringGates(
 /**
  * Refuse a model load carrying any {@link findLegacyStringGates} finding.
  *
- * The string form (`#(authorize) "<expr>"` on the `source:` line) is no
+ * The string form (`#(row_authorize) "<expr>"` on the `source:` line) is no
  * longer accepted — every gate must be the SOURCE-LINE form, an unquoted
- * Malloy expression carried by an `#(authorize)` annotation on its own line
- * directly above the `source:` line it gates. The message writes the
- * rewrite back to the author rather than pointing at docs: this function
- * already holds the exact expression text, so it emits the exact
- * replacement annotation the author can paste in, one per finding.
+ * Malloy expression carried by its annotation on its own line directly above
+ * the `source:` line it gates. The message writes the rewrite back to the
+ * author rather than pointing at docs: this function already holds the exact
+ * expression text, so it emits the exact replacement annotation the author can
+ * paste in, one per finding. The tag in that rewrite is the finding's OWN
+ * route, never a hardcoded one — a `#(source_authorize) "x"` author told to
+ * write `#(row_authorize)` is being sent to a different route with different
+ * body rules.
  *
  * Named `legacy_string_gate` on {@link RowLevelGateRejectionCause} / the
  * `recordRowLevelGateRejected` metric channel — callers record that cause
@@ -1264,20 +1395,20 @@ export function assertNoLegacyStringGate(
 ): void {
    if (found.length === 0) return;
    const rewrites = found
-      .flatMap(({ sourceName, exprs }) =>
-         exprs.map(
-            (expr) =>
-               `  - source "${sourceName}": replace \`#(authorize) ${expr}\`` +
-               ` with\n      #(authorize) ${unquoteLegacyGatePayload(expr)}`,
+      .flatMap(({ sourceName, gates }) =>
+         gates.map(
+            ({ route, writtenRoute, expr }) =>
+               `  - source "${sourceName}": replace \`#(${writtenRoute}) ${expr}\`` +
+               ` with\n      #(${route}) ${unquoteLegacyGatePayload(expr)}`,
          ),
       )
       .join("\n");
    throw new ModelCompilationError({
       message:
-         `The string form of \`#(authorize)\` (a Malloy-quoted expression on ` +
+         `The string form of an authorize gate (a Malloy-quoted expression on ` +
          `the \`source:\` line) is no longer accepted. Replace it with the ` +
-         `unquoted expression, carried by an \`#(authorize)\` annotation on ` +
-         `its own line directly above the \`source:\` line:\n${rewrites}\n` +
+         `unquoted expression, carried by the same annotation on its own line ` +
+         `directly above the \`source:\` line:\n${rewrites}\n` +
          `Test that the rewrite gates the same rows and check the row count ` +
          `matches what the string form served.`,
    });

@@ -218,7 +218,7 @@ interface SourceContextEntry {
     */
    authorize?: SourceContextAuthorize[];
    /**
-    * The `#(source-authorize)` route's own gates, reported separately from
+    * The `#(source_authorize)` route's own gates, reported separately from
     * `authorize` above — a rule about the CALLER rather than the row, ANDed
     * with any `authorize` gate rather than bypassing it. Same report-only
     * caveats apply. A source gated ONLY by an unconditional deny on either
@@ -339,7 +339,7 @@ interface SourceCardInfo {
    docs?: string;
    givens?: SourceContextGiven[];
    authorize?: SourceContextAuthorize[];
-   /** The `#(source-authorize)` route's own gates — see `SourceContextEntry.sourceAuthorize`. */
+   /** The `#(source_authorize)` route's own gates — see `SourceContextEntry.sourceAuthorize`. */
    sourceAuthorize?: SourceContextAuthorize[];
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
@@ -1181,10 +1181,10 @@ function collectJoinedFields(args: {
 
 /**
  * Whether `apiSource` is gated by an unconditional `#(authorize) false` / or
- * `#(source-authorize) false` — on EITHER route, since the two routes AND
+ * `#(source_authorize) false` — on EITHER route, since the two routes AND
  * together and one bare-`false` conjunct denies every caller regardless of
  * the other route or any given supplied. Keys on the deny, not the route, so
- * `#(authorize) false` and `#(source-authorize) false` are treated
+ * `#(authorize) false` and `#(source_authorize) false` are treated
  * identically. Case- and whitespace-insensitive: the grammar parser
  * lowercases `FALSE` only for its own comparison, so the wire payload can
  * still carry it uppercase (`authorize_grammar.ts`).
@@ -1266,7 +1266,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
          const apiSource = apiSources.find((c) => c.name === sourceName);
-         // An unconditional `#(authorize) false` / `#(source-authorize) false`
+         // An unconditional `#(authorize) false` / `#(source_authorize) false`
          // (either route, any case/whitespace — see isUnconditionalDenyAuthorize)
          // denies every caller with no given able to change that, so there is
          // nothing this card can offer an agent that queries it. Drop the

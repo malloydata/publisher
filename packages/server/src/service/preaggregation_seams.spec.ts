@@ -689,7 +689,7 @@ source: orders is duckdb.sql("""
 });
 
 // ---------------------------------------------------------------------------
-// A `#(source-authorize)`-only gate must block routing exactly like
+// A `#(source_authorize)`-only gate must block routing exactly like
 // `#(authorize)` does — `hasAnyAuthorizeNote`'s sweep is widened to recognize
 // either route (see `authorize.ts`'s `authorizeNoteContent`), so a model
 // carrying ONLY the caller-identity route must not fall through to the
@@ -697,13 +697,13 @@ source: orders is duckdb.sql("""
 // annotation bytes at all and so could never enforce it downstream.
 // ---------------------------------------------------------------------------
 
-describe("pre-aggregation and a source-authorize gate", () => {
+describe("pre-aggregation and a source_authorize gate", () => {
    const SOURCE_AUTHORIZE_GATED = `##! experimental { persistence composite_sources givens }
 
 given:
   ROLE :: string[]
 
-#(source-authorize) 'finance' in $ROLE
+#(source_authorize) 'finance' in $ROLE
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),
@@ -747,7 +747,7 @@ source: orders is duckdb.sql("""
    );
 
    it(
-      "meters blocked_by_row_level_gate for a source-authorize-only entry point",
+      "meters blocked_by_row_level_gate for a source_authorize-only entry point",
       async () => {
          const harness = await startMetricsHarness();
          resetMaterializationTelemetryForTesting();

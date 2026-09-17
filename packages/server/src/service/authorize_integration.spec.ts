@@ -174,15 +174,15 @@ source: plain is duckdb.table('customers')
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toMatch(/file level/i);
       // Names the actual tag written, not a hardcoded assumption — see the
-      // ##(source-authorize) sibling test below, which pins the opposite case.
+      // ##(source_authorize) sibling test below, which pins the opposite case.
       expect(err?.message).toMatch(/at the file level \(`##\(authorize\)`\)/);
       expect(err?.message).toMatch(/source:/);
       expect(model.getSources()).toBeUndefined();
    });
 
-   it("refuses a file-level ##(source-authorize) annotation, naming THAT route rather than ##(authorize)", async () => {
+   it("refuses a file-level ##(source_authorize) annotation, naming THAT route rather than ##(authorize)", async () => {
       // Regression for a route hardcoded into the misplacement message: an
-      // author who misplaced ##(source-authorize) at the file level must be
+      // author who misplaced ##(source_authorize) at the file level must be
       // told to move that tag, not a different route with different body
       // rules.
       await writeModel(
@@ -192,7 +192,7 @@ source: plain is duckdb.table('customers')
 given:
   ROLE :: string
 
-##(source-authorize) 'admin' = $ROLE
+##(source_authorize) 'admin' = $ROLE
 
 source: plain is duckdb.table('customers')
 `,
@@ -211,7 +211,7 @@ source: plain is duckdb.table('customers')
       // hardcoded ##(authorize) — the message's shared explanatory prose
       // mentions both tags generically, so this pins the specific bullet line.
       expect(err?.message).toMatch(
-         /at the file level \(`##\(source-authorize\)`\)/,
+         /at the file level \(`##\(source_authorize\)`\)/,
       );
       expect(err?.message).not.toMatch(
          /at the file level \(`##\(authorize\)`\)/,
@@ -325,8 +325,8 @@ source: broken is duckdb.table('customers')
    });
 });
 
-describe("the sourceAuthorize wire field mirrors #(source-authorize)", () => {
-   it("reports #(source-authorize)'s own text under sourceAuthorize, not authorize", async () => {
+describe("the sourceAuthorize wire field mirrors #(source_authorize)", () => {
+   it("reports #(source_authorize)'s own text under sourceAuthorize, not authorize", async () => {
       await writeModel(
          "route_split.malloy",
          `##! experimental.givens
@@ -334,7 +334,7 @@ describe("the sourceAuthorize wire field mirrors #(source-authorize)", () => {
 given:
   ROLE :: string[]
 
-#(source-authorize) 'finance' in $ROLE
+#(source_authorize) 'finance' in $ROLE
 source: fin is duckdb.table('customers') extend {}
 `,
       );
@@ -355,7 +355,7 @@ source: fin is duckdb.table('customers') extend {}
 
    it("a convenience-form #(authorize) body reports under authorize, never sourceAuthorize", async () => {
       // A pure source-level predicate is legal written on the `authorize`
-      // route itself (not just `source-authorize`) — see this route's own
+      // route itself (not just `source_authorize`) — see this route's own
       // module doc. That convenience form must stay under `authorize`.
       await writeModel(
          "convenience.malloy",
@@ -395,7 +395,7 @@ given:
   ROLE :: string[]
 
 #(authorize) id in $DENY
-#(source-authorize) 'finance' in $ROLE
+#(source_authorize) 'finance' in $ROLE
 source: base is duckdb.table('customers') extend {}
 
 source: derived is base -> { select: id, region }
@@ -411,7 +411,7 @@ source: derived is base -> { select: id, region }
       // The constructor-side and extraction-side answers are the same
       // object on `Model.create`'s path (the constructor mutates in place),
       // so this is really pinning that BOTH fields were split by route —
-      // a single un-split `exprs.flat()` would have let source-authorize
+      // a single un-split `exprs.flat()` would have let source_authorize
       // text leak into `authorize` or vice versa.
       expect(model.getAuthorize("derived")).toEqual(["id in $DENY"]);
       expect(model.getSourceAuthorize("derived")).toEqual([
@@ -715,7 +715,7 @@ source: locked is duckdb.table('customers') extend { measure: c is count() }
       // verbatim once emitted `#(authorize) "org_id = 999"` as the remedy for
       // `#(authorize) "org_id = 999"` — byte-identical to what it refused —
       // and `toContain('"org_id = 999"')` was satisfied by that too.
-      expect(err?.message).toContain("#(authorize) org_id = 999");
+      expect(err?.message).toContain("#(row_authorize) org_id = 999");
       // Still names the offending annotation as authored, quotes and all, so
       // the author can find the line.
       expect(err?.message).toContain('replace `#(authorize) "org_id = 999"`');
@@ -743,7 +743,7 @@ source: locked_sq is duckdb.table('customers') extend { measure: c is count() }
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toContain("no longer accepted");
       // The rewrite line, not a substring a broken message would also carry.
-      expect(err?.message).toContain("#(authorize) org_id = 999");
+      expect(err?.message).toContain("#(row_authorize) org_id = 999");
       // Names the annotation as authored, single quotes included.
       expect(err?.message).toContain("replace `#(authorize) 'org_id = 999'`");
    });
@@ -768,7 +768,7 @@ source: locked is duckdb.table('customers') extend { measure: c is count() }
       );
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
-      expect(err?.message).toContain('#(authorize) region = "east"');
+      expect(err?.message).toContain('#(row_authorize) region = "east"');
    });
 
    it("'\"admin\" = $ROLE' is a LEGAL current-form gate, not the legacy form — loads and filters", async () => {
@@ -2983,7 +2983,7 @@ source: near_locked is duckdb.table('customers') extend { measure: c is count() 
          expect(err).toBeInstanceOf(ModelCompilationError);
          // Names the spelling, and what to write instead.
          expect(err?.message).toContain(tag);
-         expect(err?.message).toContain("(meant `#(authorize)`?)");
+         expect(err?.message).toContain("(meant `#(row_authorize)`?)");
          // Refused, never silently enforced as if it had been spelled right.
          expect(model.getSources()).toBeUndefined();
       });
@@ -3038,7 +3038,7 @@ source: near_qs is near_base_gated -> { select: * }
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toContain("# (authorize)");
-      expect(err?.message).toContain("(meant `#(authorize)`?)");
+      expect(err?.message).toContain("(meant `#(row_authorize)`?)");
    });
 
    // The other side of the near-miss detector: it is anchored at each note's own

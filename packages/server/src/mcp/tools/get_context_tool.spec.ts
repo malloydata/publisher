@@ -2758,7 +2758,7 @@ describe("get_context source governance and field types", () => {
       expect("one_line_summary" in customers.source_info).toBe(false);
    });
 
-   it("reports a source's source-authorize gates alongside authorize", async () => {
+   it("reports a source's source_authorize gates alongside authorize", async () => {
       const model = {
          getSourceInfos: () => [
             {
@@ -2801,7 +2801,7 @@ describe("get_context source governance and field types", () => {
 });
 
 /**
- * A source gated by an unconditional `#(authorize) false` / `#(source-authorize)
+ * A source gated by an unconditional `#(authorize) false` / `#(source_authorize)
  * false` needs no caller-supplied given to know nobody is admitted — that is
  * decidable without trusting anything the caller sent, unlike a real rule
  * (execute_query_tool.ts's `givens` are untrusted MCP-path input). So this
@@ -2853,7 +2853,7 @@ describe("get_context authorize deny-all drop", () => {
       expect(sources).toEqual([]);
    });
 
-   it("drops a source gated by an unconditional `#(source-authorize) false`", async () => {
+   it("drops a source gated by an unconditional `#(source_authorize) false`", async () => {
       const sources = await sourcesFor({
          name: "locked",
          sourceAuthorize: ["false"],
@@ -3012,7 +3012,7 @@ describe("get_context authorize deny-all drop", () => {
       expect(sources).toEqual([]);
    });
 
-   it("drops neither a query entity nor a source card for a query over an `#(source-authorize) false` source", async () => {
+   it("drops neither a query entity nor a source card for a query over an `#(source_authorize) false` source", async () => {
       const sources = await viewSourcesFor(
          { name: "locked", sourceAuthorize: ["false"] },
          { name: "q", sourceName: "locked" },

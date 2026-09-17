@@ -4238,12 +4238,12 @@ source: reopened is base extend {}
       }
    });
 
-   it("an extension's own `#(authorize) true` sheds only the ROW-LEVEL inherited gate — an inherited `#(source-authorize)` still ANDs in", async () => {
+   it("an extension's own `#(authorize) true` sheds only the ROW-LEVEL inherited gate — an inherited `#(source_authorize)` still ANDs in", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   ROLE :: string[]
 
-#(source-authorize) 'finance' in $ROLE
+#(source_authorize) 'finance' in $ROLE
 source: base is duckdb.table('parent') extend {}
 
 #(authorize) true
@@ -4252,7 +4252,7 @@ source: reopened is base extend {}
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          // The row-level gate is shed (own `true`), but the INHERITED
-         // source-authorize gate still denies a caller it excludes.
+         // source_authorize gate still denies a caller it excludes.
          expect(await ids(model, "reopened", { ROLE: ["sales"] })).toEqual([]);
          expect(await ids(model, "reopened", { ROLE: ["finance"] })).toEqual([
             1, 2, 3, 4,
@@ -4263,7 +4263,7 @@ source: reopened is base extend {}
       }
    });
 
-   it("an extension's own `#(source-authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(authorize)` still filters rows", async () => {
+   it("an extension's own `#(source_authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(authorize)` still filters rows", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: number[]
@@ -4271,7 +4271,7 @@ given:
 #(authorize) org_id in $GROUPS
 source: base is duckdb.table('parent') extend {}
 
-#(source-authorize) true
+#(source_authorize) true
 source: reopened is base extend {}
 `);
       try {
@@ -4286,15 +4286,15 @@ source: reopened is base extend {}
       }
    });
 
-   it("an inherited `#(source-authorize) true` alongside the SAME source's own row-level `#(authorize)` — rows are still filtered", async () => {
-      // `#(source-authorize) true` here is inherited from `base`, not owned
+   it("an inherited `#(source_authorize) true` alongside the SAME source's own row-level `#(authorize)` — rows are still filtered", async () => {
+      // `#(source_authorize) true` here is inherited from `base`, not owned
       // by `X`, while `X` owns its row-level `#(authorize)`. Own-wins-over-
       // ancestor is decided PER ROUTE, so the two coexist.
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: number[]
 
-#(source-authorize) true
+#(source_authorize) true
 source: base is duckdb.table('parent') extend {}
 
 #(authorize) org_id in $GROUPS
@@ -4310,7 +4310,7 @@ source: X is base extend {}
       }
    });
 
-   it("a source's OWN `#(authorize) true` alongside its OWN `#(source-authorize)` term — the row lock is lifted, the caller check still decides", async () => {
+   it("a source's OWN `#(authorize) true` alongside its OWN `#(source_authorize)` term — the row lock is lifted, the caller check still decides", async () => {
       // The admit-all guard is ROUTE-scoped: `true` sheds only the
       // `authorize` route's inherited gate, so the caller rule on the other
       // route is live and both notes are legal on one source.
@@ -4322,7 +4322,7 @@ given:
 source: base is duckdb.table('parent') extend {}
 
 #(authorize) true
-#(source-authorize) 'finance' in $ROLE
+#(source_authorize) 'finance' in $ROLE
 source: reopened is base extend {}
 `);
       try {
@@ -4441,9 +4441,12 @@ source: leaf is mid extend {}
          expect(
             (model as unknown as { compilationError?: Error }).compilationError,
          ).toBeUndefined();
+         // `row_authorize`, not `authorize`: the deprecated spelling
+         // canonicalizes before anything keys on it, so the counter never
+         // splits one gate across two label values.
          expect(
             await harness.collectCounter(COUNTER, {
-               route: "authorize",
+               route: "row_authorize",
             }),
          ).toBe(1);
       } finally {

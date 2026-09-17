@@ -547,8 +547,8 @@ source:
 // still enforces.
 // ---------------------------------------------------------------------------
 
-describe("source-line #(authorize)/#(source-authorize) — own-wins is per route", () => {
-   it("a child's own #(authorize) replaces only the row-level gate — the inherited #(source-authorize) still ANDs in", async () => {
+describe("source-line #(authorize)/#(source_authorize) — own-wins is per route", () => {
+   it("a child's own #(authorize) replaces only the row-level gate — the inherited #(source_authorize) still ANDs in", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -557,7 +557,7 @@ given:
   ROLE :: string[]
 
 #(authorize) org_id in $GROUPS
-#(source-authorize) 'finance' in $ROLE
+#(source_authorize) 'finance' in $ROLE
 source: dual_gated_parent is duckdb.table('orgtable') extend {
    measure: n is count()
 }
@@ -569,7 +569,7 @@ source: child_own_authorize is dual_gated_parent extend {}
          expect(compilationErrorOf(model)).toBeUndefined();
 
          // Own row-level gate is active (NEVER=[1] admits org_id=1 rows) AND
-         // the caller satisfies the INHERITED source-authorize — 2 rows.
+         // the caller satisfies the INHERITED source_authorize — 2 rows.
          const admitted = await model.getQueryResults(
             undefined,
             undefined,
@@ -583,7 +583,7 @@ source: child_own_authorize is dual_gated_parent extend {}
          ).toBe(2);
 
          // Same row-level condition satisfiable, but the caller fails the
-         // INHERITED source-authorize gate — proves it is still being read
+         // INHERITED source_authorize gate — proves it is still being read
          // off `child_own_authorize`'s `annotations.inherits`, not dropped
          // when the child's own #(authorize) note demoted it there.
          const roleDenied = await model.getQueryResults(
@@ -619,7 +619,7 @@ source: child_own_authorize is dual_gated_parent extend {}
       }
    });
 
-   it("a child's own #(source-authorize) replaces only the caller gate — the inherited #(authorize) row filter still applies", async () => {
+   it("a child's own #(source_authorize) replaces only the caller gate — the inherited #(authorize) row filter still applies", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -631,7 +631,7 @@ source: gated_parent2 is duckdb.table('orgtable') extend {
    measure: n is count()
 }
 
-#(source-authorize) 'finance' in $ROLE
+#(source_authorize) 'finance' in $ROLE
 source: child_own_source_authorize is gated_parent2 extend {}
 `);
       try {

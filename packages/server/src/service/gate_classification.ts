@@ -65,7 +65,7 @@ import {
    RETIRED_ROUTES,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
-import { AUTHORIZE_ROUTES } from "./authorize_routes";
+import { CANONICAL_AUTHORIZE_ROUTES } from "./authorize_routes";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
@@ -88,8 +88,8 @@ export type GateEntry = {
     */
    selfContained: boolean;
    /**
-    * The annotation route this gate was collected under (`AUTHORIZE_ROUTES`)
-    * — `"authorize"` (row-level) or `"source-authorize"` (a rule about the
+    * The annotation route this gate was collected under (`CANONICAL_AUTHORIZE_ROUTES`)
+    * — `"authorize"` (row-level) or `"source_authorize"` (a rule about the
     * caller that ANDs with the row-level gate). Enforcement treats every
     * entry identically regardless of route (both graft/probe the same way);
     * `route` exists so the collection walk can keep own-wins-over-ancestor
@@ -234,16 +234,16 @@ export function createGateClassificationDeps(
  * than from `struct`'s own notes — see {@link GateEntry}'s `selfContained`.
  *
  * `route` scopes both the own-notes read and the ancestor walk to ONE
- * annotation route (`AUTHORIZE_ROUTES`) — this is what makes
+ * annotation route (`CANONICAL_AUTHORIZE_ROUTES`) — this is what makes
  * own-wins-over-ancestor PER ROUTE rather than shared: an own
- * `#(source-authorize)` note does not satisfy (and does not shed) an
+ * `#(source_authorize)` note does not satisfy (and does not shed) an
  * ancestor's `#(authorize)` gate, because the caller invokes this function
  * once per route and each call only ever sees that route's own notes. The
  * `["false"]` fail-closed sentinel in the `catch` below is synthesized on
- * EITHER route, not only `AUTHORIZE_ROUTE`: because own-wins-over-ancestor is
+ * EITHER route, not only `ROW_AUTHORIZE_ROUTE`: because own-wins-over-ancestor is
  * decided per route, the two routes' calls over the same struct can diverge
  * before either reaches the unreadable branch (e.g. `struct` owns a real
- * `#(authorize)` note and returns early, while its `#(source-authorize)` call
+ * `#(authorize)` note and returns early, while its `#(source_authorize)` call
  * falls through to an ancestor whose IR is unreadable) — one route's success
  * is never a guarantee the other took the same path, so a route cannot rely
  * on its sibling to have already denied. See `gate_registry_walk.ts`'s
@@ -344,19 +344,19 @@ function gateExprsForOwnAnnotations(
  * represent the entry point ITSELF, and is what makes those entries' own
  * annotations NOT self-contained.
  *
- * Returns entries for BOTH annotation routes (`AUTHORIZE_ROUTES`) — no caller
+ * Returns entries for BOTH annotation routes (`CANONICAL_AUTHORIZE_ROUTES`) — no caller
  * change required, and none should be made: seven consumers call this walk
  * directly (the query path, `/compile`'s early gate and its backstop,
  * notebook cells, `Model`'s `entryPointGatesBySource`,
  * `queryEntryPointHasRowLevelGate`, `build_plan.ts`'s
  * `classifyPersistSourceGate`, `probeEntryPointGates`), and a sibling
  * collector any ONE of them forgot to also call would fail open for
- * `source-authorize` alone. The route enters by running the ENTIRE walk once
+ * `source_authorize` alone. The route enters by running the ENTIRE walk once
  * per route ({@link collectEntryPointGatesForRoute}), each with its own fresh
  * `seen` set (struct-identity cycle guards must not be shared across routes —
  * a struct legitimately visited under `authorize` must still be visited under
- * `source-authorize`) and its own independent own-wins-over-ancestor decision
- * (`gateExprsForOwnAnnotations`) — an own `#(source-authorize)` note on
+ * `source_authorize`) and its own independent own-wins-over-ancestor decision
+ * (`gateExprsForOwnAnnotations`) — an own `#(source_authorize)` note on
  * `struct` never sheds an ancestor's `#(authorize)` gate, or vice versa,
  * because the two routes' walks never share state.
  */
@@ -369,7 +369,7 @@ export function collectEntryPointGates(
    excludeNotes: readonly AnnotationNote[] = [],
 ): GateEntry[] {
    const results: GateEntry[] = [];
-   for (const route of AUTHORIZE_ROUTES) {
+   for (const route of CANONICAL_AUTHORIZE_ROUTES) {
       results.push(
          ...collectEntryPointGatesForRoute(
             struct,
@@ -387,7 +387,7 @@ export function collectEntryPointGates(
 
 /**
  * The single-route walk {@link collectEntryPointGates} runs once per
- * {@link AUTHORIZE_ROUTES} entry — see that function's doc for why routing
+ * {@link CANONICAL_AUTHORIZE_ROUTES} entry — see that function's doc for why routing
  * enters here rather than by threading a route through every caller.
  */
 function collectEntryPointGatesForRoute(
@@ -1153,9 +1153,9 @@ export type RowLevelGraftEntry = {
  * the coherence check would refuse a legal model the instant the two sources
  * happened to share a given name or mix row/source scope. But when `struct`
  * itself owns groups on BOTH routes (its own `#(authorize)` and its own
- * `#(source-authorize)`), they are the SAME declaring source and must be
+ * `#(source_authorize)`), they are the SAME declaring source and must be
  * checked together — that is the only way `deny_all_with_sibling` can catch
- * `#(source-authorize) false` alongside this source's own
+ * `#(source_authorize) false` alongside this source's own
  * `#(authorize) org_id in $GROUPS`, since each is otherwise a single-route
  * group with nothing else in it to conflict with.
  */

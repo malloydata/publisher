@@ -163,10 +163,10 @@ source: mz_admit_all is base -> { aggregate: c is count() }`);
       );
    });
 
-   it("refuses a source protected ONLY by its own #(source-authorize) gate", async () => {
-      // A source carrying no #(authorize) at all, only #(source-authorize) —
+   it("refuses a source protected ONLY by its own #(source_authorize) gate", async () => {
+      // A source carrying no #(authorize) at all, only #(source_authorize) —
       // this must draw the same materialization refusal as an ordinary
-      // row-level gate, otherwise a source-authorize-only source freezes
+      // row-level gate, otherwise a source_authorize-only source freezes
       // into a materialized artifact served to everyone. `isAuthorizeAnnotation`
       // (via `parseAuthorizeAnnotation`) is widened to recognize both routes,
       // so this is automatic rather than a special case.
@@ -174,7 +174,7 @@ source: mz_admit_all is base -> { aggregate: c is count() }`);
 ##! experimental.givens
 given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(source-authorize) 'finance' = $role
+#(source_authorize) 'finance' = $role
 #@ persist name="mz_source_authz"
 source: mz_source_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_source_authz).toBeDefined();

@@ -4,17 +4,24 @@
 import { describe, expect, it } from "bun:test";
 import {
    assertNoCallerAuthorizeAnnotation,
+   authorizeAnnotationRoute,
    collectAuthorizeExprs,
    collectAuthorizeNearMisses,
+   collectAuthorizeNearMissesAllRoutes,
    containsAuthorizeAnnotationTag,
    parseAuthorizeAnnotation,
    referencedGivenNames,
 } from "./authorize";
-import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
+import {
+   DEPRECATED_AUTHORIZE_ROUTE,
+   RECOGNIZED_AUTHORIZE_SPELLINGS,
+   ROW_AUTHORIZE_ROUTE,
+   SOURCE_AUTHORIZE_ROUTE,
+} from "./authorize_routes";
 
 /** A parsed row-level route result, for `.toEqual` against
  *  `parseAuthorizeAnnotation`'s `{route, expr}` shape. */
-const authorized = (expr: string) => ({ route: AUTHORIZE_ROUTE, expr });
+const authorized = (expr: string) => ({ route: ROW_AUTHORIZE_ROUTE, expr });
 
 describe("referencedGivenNames", () => {
    it("returns the $NAME tokens deduped in first-seen order", () => {
@@ -261,18 +268,71 @@ describe("assertNoCallerAuthorizeAnnotation — widened for source-authorize", (
       ).toThrow(/not permitted in caller-submitted/);
    });
 
-   it("still rejects the block form and every bracket pair for source-authorize", () => {
-      for (const spelling of [
-         "#(source-authorize)",
-         "#[source-authorize]",
-         "#<source-authorize>",
-         "#{source-authorize}",
-         "##(source-authorize)",
-         "#|(source-authorize)",
+   // Generated from the exported constant rather than a literal list, so a
+   // fourth route name later fails THIS test instead of slipping past the
+   // forgery rejecter — which is the failure mode that matters: a spelling the
+   // classifier enforces but this rejecter has never heard of is a
+   // caller-minted gate.
+   it.each([...RECOGNIZED_AUTHORIZE_SPELLINGS])(
+      "rejects %s in every sigil, block, bracket and case spelling",
+      (route) => {
+         for (const sigil of ["#", "##"]) {
+            for (const block of ["", "|"]) {
+               for (const [open, close] of [
+                  ["(", ")"],
+                  ["[", "]"],
+                  ["<", ">"],
+                  ["{", "}"],
+               ]) {
+                  for (const name of [
+                     route,
+                     route.toUpperCase(),
+                     route[0].toUpperCase() + route.slice(1),
+                  ]) {
+                     expect(() =>
+                        assertNoCallerAuthorizeAnnotation(
+                           `${sigil}${block}${open}${name}${close} 'x' in $G`,
+                        ),
+                     ).toThrow(/not permitted in caller-submitted/);
+                  }
+               }
+            }
+         }
+      },
+   );
+
+   // The invariant, as code, checked against the LIVE classifier rather than a
+   // second hand-maintained list: anything `authorizeAnnotationRoute` treats as
+   // a gate must also be something this rejecter refuses. A superset is a 400
+   // on odd caller input; a subset is a forged-gate bypass.
+   it("refuses every spelling the classifier reads as a gate", () => {
+      for (const route of RECOGNIZED_AUTHORIZE_SPELLINGS) {
+         for (const text of [
+            `#(${route}) org_id in $GROUPS`,
+            `##(${route}) org_id in $GROUPS`,
+            `#|(${route}) org_id in $GROUPS`,
+            `#[${route}] org_id in $GROUPS`,
+            `#<${route}> org_id in $GROUPS`,
+            `#{${route}} org_id in $GROUPS`,
+         ]) {
+            if (authorizeAnnotationRoute(text) === undefined) continue;
+            expect(() => assertNoCallerAuthorizeAnnotation(text)).toThrow(
+               /not permitted in caller-submitted/,
+            );
+         }
+      }
+   });
+
+   it("does not fire on neighbouring routes or on prose", () => {
+      for (const text of [
+         `#(authorize-v2) x = 1`,
+         `#(authorize.audit) x = 1`,
+         `#(authorized) x = 1`,
+         `#(row_authorized) x = 1`,
+         `# bar_chart`,
+         `-- the row_authorize gate is declared on the base source`,
       ]) {
-         expect(() =>
-            assertNoCallerAuthorizeAnnotation(`${spelling} 'x' in $G`),
-         ).toThrow(/not permitted in caller-submitted/);
+         expect(() => assertNoCallerAuthorizeAnnotation(text)).not.toThrow();
       }
    });
 
@@ -294,21 +354,24 @@ describe("assertNoCallerAuthorizeAnnotation — widened for source-authorize", (
    });
 });
 
-describe("collectAuthorizeNearMisses — generalized to take a route", () => {
-   // Every hyphenation/word-order variant of `source-authorize` must be
+describe("collectAuthorizeNearMisses — per route", () => {
+   // Every hyphenation/word-order variant of `source_authorize` must be
    // caught as a near miss for that route, whichever of the three branches
    // (malformed prefix, MOTLY payload, or a real-but-distinct route name) it
-   // lands in — none of these load as an inert, unenforced annotation.
-   const TYPO_SPELLINGS = [
-      `#(source_authorize) 'fin' in $GROUPS`,
+   // lands in — none of these load as an inert, unenforced annotation. The
+   // hyphenated spelling is in this list deliberately: it is the one #1163
+   // carried before the rename, and it is REFUSED rather than aliased, so
+   // exactly one spelling ever reaches a customer model.
+   const SOURCE_TYPO_SPELLINGS = [
+      `#(source-authorize) 'fin' in $GROUPS`,
       `#(sourceauthorize) 'fin' in $GROUPS`,
       `#(authorize-source) 'fin' in $GROUPS`,
-      `#(SOURCE-AUTHORIZE) 'fin' in $GROUPS`,
-      `# (source-authorize) 'fin' in $GROUPS`,
+      `#(SOURCE_AUTHORIZE) 'fin' in $GROUPS`,
+      `# (source_authorize) 'fin' in $GROUPS`,
    ];
 
-   it.each(TYPO_SPELLINGS)(
-      "flags %s as a source-authorize near miss",
+   it.each(SOURCE_TYPO_SPELLINGS)(
+      "flags %s as a source_authorize near miss",
       (text) => {
          expect(
             collectAuthorizeNearMisses([text], SOURCE_AUTHORIZE_ROUTE),
@@ -316,31 +379,104 @@ describe("collectAuthorizeNearMisses — generalized to take a route", () => {
       },
    );
 
-   it("does not flag the real spelling as a near miss for its own route", () => {
-      expect(
-         collectAuthorizeNearMisses(
-            [`#(source-authorize) 'fin' in $GROUPS`],
-            SOURCE_AUTHORIZE_ROUTE,
-         ),
-      ).toEqual([]);
-   });
+   const ROW_TYPO_SPELLINGS = [
+      `#(row-authorize) org_id in $GROUPS`,
+      `#(rowauthorize) org_id in $GROUPS`,
+      `#(authorize-row) org_id in $GROUPS`,
+      `#(ROW_AUTHORIZE) org_id in $GROUPS`,
+      `# (row_authorize) org_id in $GROUPS`,
+   ];
 
-   it("does not flag a source-authorize typo against the authorize route (each route's sweep is its own)", () => {
-      // `collectAuthorizeNearMissesAllRoutes` is what combines both sweeps;
-      // this pins that a single-route call stays scoped to ITS OWN route's
-      // spellings rather than accidentally matching the other route's typos.
+   it.each(ROW_TYPO_SPELLINGS)(
+      "flags %s as a row_authorize near miss",
+      (text) => {
+         expect(
+            collectAuthorizeNearMisses([text], ROW_AUTHORIZE_ROUTE),
+         ).toEqual([text]);
+      },
+   );
+
+   it("does not flag either real spelling as a near miss for its own route", () => {
       expect(
          collectAuthorizeNearMisses(
             [`#(source_authorize) 'fin' in $GROUPS`],
-            AUTHORIZE_ROUTE,
+            SOURCE_AUTHORIZE_ROUTE,
+         ),
+      ).toEqual([]);
+      expect(
+         collectAuthorizeNearMisses(
+            [`#(row_authorize) org_id in $GROUPS`],
+            ROW_AUTHORIZE_ROUTE,
          ),
       ).toEqual([]);
    });
 
-   it("defaults to the authorize route, unchanged from before generalization", () => {
-      expect(collectAuthorizeNearMisses([`# (authorize) x = 1`])).toEqual([
-         `# (authorize) x = 1`,
-      ]);
-      expect(collectAuthorizeNearMisses([`#(authorize-v2) x = 1`])).toEqual([]);
+   it("does not flag a source_authorize typo against the row route (each route's sweep is its own)", () => {
+      // `collectAuthorizeNearMissesAllRoutes` is what combines the sweeps;
+      // this pins that a single-route call stays scoped to ITS OWN route's
+      // spellings rather than accidentally matching another route's typos.
+      expect(
+         collectAuthorizeNearMisses(
+            [`#(sourceauthorize) 'fin' in $GROUPS`],
+            ROW_AUTHORIZE_ROUTE,
+         ),
+      ).toEqual([]);
+   });
+
+   it("still refuses the deprecated alias's own near misses", () => {
+      // The whole reason the all-routes sweep iterates the WRITTEN spellings
+      // rather than the canonical two: `# (authorize)` and `#(AUTHORIZE)` are
+      // refused today, and the rename must not quietly stop refusing them.
+      expect(
+         collectAuthorizeNearMisses(
+            [`# (authorize) x = 1`],
+            DEPRECATED_AUTHORIZE_ROUTE,
+         ),
+      ).toEqual([`# (authorize) x = 1`]);
+      expect(
+         collectAuthorizeNearMisses(
+            [`#(AUTHORIZE) x = 1`],
+            DEPRECATED_AUTHORIZE_ROUTE,
+         ),
+      ).toEqual([`#(AUTHORIZE) x = 1`]);
+      expect(
+         collectAuthorizeNearMisses(
+            [`#(authorize-v2) x = 1`],
+            DEPRECATED_AUTHORIZE_ROUTE,
+         ),
+      ).toEqual([]);
+   });
+
+   it("leaves ordinary malformed-prefix tags alone on every recognized spelling", () => {
+      // `#percent`, `#currency` and `#drill` route to `undefined` — the
+      // malformed-prefix branch — so they are what an empty near-miss word
+      // list would fail a package load over. This is the branch every
+      // `# bar_chart` fixture in these suites misses: that one is route `""`.
+      for (const route of RECOGNIZED_AUTHORIZE_SPELLINGS) {
+         expect(
+            collectAuthorizeNearMisses(
+               [`#percent`, `#drill`, `#currency`, `#(size)X`],
+               route,
+            ),
+         ).toEqual([]);
+      }
+   });
+
+   it("the all-routes sweep catches a near miss for any recognized spelling", () => {
+      expect(
+         collectAuthorizeNearMissesAllRoutes([
+            `# (authorize) x = 1`,
+            `#(source-authorize) 'fin' in $GROUPS`,
+            `#(row-authorize) org_id in $GROUPS`,
+            `# bar_chart`,
+            `#percent`,
+         ]).sort(),
+      ).toEqual(
+         [
+            `# (authorize) x = 1`,
+            `#(source-authorize) 'fin' in $GROUPS`,
+            `#(row-authorize) org_id in $GROUPS`,
+         ].sort(),
+      );
    });
 });

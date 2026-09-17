@@ -107,7 +107,10 @@ import {
    type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
-import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
+import {
+   ROW_AUTHORIZE_ROUTE,
+   SOURCE_AUTHORIZE_ROUTE,
+} from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
    validateSourceLineGateGivenUsage,
@@ -718,7 +721,7 @@ export class Model {
       // the two possible errors. Mutating in place (rather than at the API
       // boundary) keeps getSources()/getAuthorize()/the early gate on one
       // answer instead of three. Split BY ROUTE — `authorize` gets only
-      // `AUTHORIZE_ROUTE` entries and `sourceAuthorize` only
+      // `ROW_AUTHORIZE_ROUTE` entries and `sourceAuthorize` only
       // `SOURCE_AUTHORIZE_ROUTE` ones — so the two wire fields cannot
       // disagree with each other the way a single flattened list would.
       for (const source of this.sources ?? []) {
@@ -730,7 +733,7 @@ export class Model {
                .flatMap((g) => g.exprs);
             return exprs && exprs.length > 0 ? exprs : undefined;
          };
-         const authorizeExprs = exprsForRoute(AUTHORIZE_ROUTE);
+         const authorizeExprs = exprsForRoute(ROW_AUTHORIZE_ROUTE);
          if (authorizeExprs) source.authorize = authorizeExprs;
          const sourceAuthorizeExprs = exprsForRoute(SOURCE_AUTHORIZE_ROUTE);
          if (sourceAuthorizeExprs)
@@ -970,8 +973,8 @@ export class Model {
    }
 
    /**
-    * Effective `#(source-authorize)` expressions gating a source — the mirror
-    * of {@link getAuthorize} for the `source-authorize` route ONLY. Same
+    * Effective `#(source_authorize)` expressions gating a source — the mirror
+    * of {@link getAuthorize} for the `source_authorize` route ONLY. Same
     * introspection-only caveats apply.
     */
    public getSourceAuthorize(sourceName: string): string[] {
@@ -3495,7 +3498,7 @@ export class Model {
          // extraction, so a suggest over a gated source learns which givens its
          // gate reads. `source.authorize` is scoped to the `authorize` route
          // only (see `ExtractedSource.authorize`'s doc), so a given
-         // referenced only by a `#(source-authorize)` term is not suggested
+         // referenced only by a `#(source_authorize)` term is not suggested
          // — a known, accepted gap.
          new Map(
             (this.sources ?? []).flatMap((source) =>

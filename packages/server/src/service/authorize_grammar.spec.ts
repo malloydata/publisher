@@ -22,7 +22,10 @@ import {
    parseAuthorizeGrammarBody,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
-import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
+import {
+   ROW_AUTHORIZE_ROUTE,
+   SOURCE_AUTHORIZE_ROUTE,
+} from "./authorize_routes";
 import {
    assertNoFanoutFieldPath,
    assertNoRetiredRouteMarkers,
@@ -180,7 +183,7 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
    });
 });
 
-describe("parseAuthorizeGrammarBody — #(source-authorize) route", () => {
+describe("parseAuthorizeGrammarBody — #(source_authorize) route", () => {
    it("row_level_term_in_source_authorize — a field-on-the-left term is refused", () => {
       try {
          parseAuthorizeGrammarBody(
@@ -219,7 +222,7 @@ describe("parseAuthorizeGrammarBody — #(source-authorize) route", () => {
          "X",
          "false",
          new Map(),
-         AUTHORIZE_ROUTE,
+         ROW_AUTHORIZE_ROUTE,
       );
       const [onSourceAuthorize] = parseAuthorizeGrammarBody(
          "X",
@@ -260,7 +263,7 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
    function routed(
       terms: readonly AuthorizeGrammarRoutedTerm["term"][],
    ): AuthorizeGrammarRoutedTerm[] {
-      return terms.map((term) => ({ term, route: AUTHORIZE_ROUTE }));
+      return terms.map((term) => ({ term, route: ROW_AUTHORIZE_ROUTE }));
    }
 
    function expectCoherenceCause(
@@ -336,7 +339,7 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
       // under one route and a term declared under a different route are
       // meant to AND, not agree on given or scope — see
       // `assertAuthorizeGrammarTermsCoherent`'s doc. Exercises the actual
-      // second route this module implements, `#(source-authorize)`.
+      // second route this module implements, `#(source_authorize)`.
       const [a] = parseAuthorizeGrammarBody("X", "org_id in $G", LIST_GIVENS);
       const [b] = parseAuthorizeGrammarBody(
          "X",
@@ -345,7 +348,7 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
       );
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: a, route: AUTHORIZE_ROUTE },
+            { term: a, route: ROW_AUTHORIZE_ROUTE },
             { term: b, route: SOURCE_AUTHORIZE_ROUTE },
          ]),
       ).not.toThrow();
@@ -355,7 +358,7 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
 describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
    it("`true`, `TRUE`, and a padded ` true ` all parse to the admit_all sentinel, on both routes", () => {
       for (const spelling of ["true", "TRUE", "  true  "]) {
-         for (const route of [AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE]) {
+         for (const route of [ROW_AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE]) {
             expect(
                parseAuthorizeGrammarBody("X", spelling, new Map(), route),
             ).toEqual([{ scope: "admit_all" }]);
@@ -392,8 +395,8 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
       );
       try {
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: AUTHORIZE_ROUTE },
-            { term: sibling, route: AUTHORIZE_ROUTE },
+            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
+            { term: sibling, route: ROW_AUTHORIZE_ROUTE },
          ]);
          throw new Error("expected a throw");
       } catch (err) {
@@ -404,7 +407,7 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
       }
    });
 
-   it("an own `#(source-authorize) true` plus a term on that same route is refused as admit_all_with_sibling", () => {
+   it("an own `#(source_authorize) true` plus a term on that same route is refused as admit_all_with_sibling", () => {
       const [admitAll] = parseAuthorizeGrammarBody(
          "X",
          "true",
@@ -435,7 +438,7 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
          "X",
          "true",
          new Map(),
-         AUTHORIZE_ROUTE,
+         ROW_AUTHORIZE_ROUTE,
       );
       const [callerTerm] = parseAuthorizeGrammarBody(
          "X",
@@ -445,12 +448,12 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
       );
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: AUTHORIZE_ROUTE },
+            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
             { term: callerTerm, route: SOURCE_AUTHORIZE_ROUTE },
          ]),
       ).not.toThrow();
 
-      // The mirror: an own `#(source-authorize) true` beside an own row-level
+      // The mirror: an own `#(source_authorize) true` beside an own row-level
       // `#(authorize)` opens the caller route while the row filter still runs.
       const [rowTerm] = parseAuthorizeGrammarBody(
          "X",
@@ -465,7 +468,7 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
       );
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: rowTerm, route: AUTHORIZE_ROUTE },
+            { term: rowTerm, route: ROW_AUTHORIZE_ROUTE },
             { term: callerAdmitAll, route: SOURCE_AUTHORIZE_ROUTE },
          ]),
       ).not.toThrow();
@@ -476,8 +479,8 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
       const [denyAll] = parseAuthorizeGrammarBody("X", "false", new Map());
       try {
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: AUTHORIZE_ROUTE },
-            { term: denyAll, route: AUTHORIZE_ROUTE },
+            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
+            { term: denyAll, route: ROW_AUTHORIZE_ROUTE },
          ]);
          throw new Error("expected a throw");
       } catch (err) {
@@ -492,7 +495,7 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
          "X",
          "true",
          new Map(),
-         AUTHORIZE_ROUTE,
+         ROW_AUTHORIZE_ROUTE,
       );
       const [denyAll] = parseAuthorizeGrammarBody(
          "X",
@@ -502,7 +505,7 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
       );
       try {
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: AUTHORIZE_ROUTE },
+            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
             { term: denyAll, route: SOURCE_AUTHORIZE_ROUTE },
          ]);
          throw new Error("expected a throw");
@@ -615,7 +618,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
       }
    });
 
-   it("a reversed `in` is refused the same way on #(source-authorize)", () => {
+   it("a reversed `in` is refused the same way on #(source_authorize)", () => {
       try {
          parseAuthorizeGrammarBody(
             "X",

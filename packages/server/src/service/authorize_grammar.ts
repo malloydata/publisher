@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(authorize)` / `#(source-authorize)` body grammar.
+ * `#(authorize)` / `#(source_authorize)` body grammar.
  *
  * `#(authorize)` no longer accepts an arbitrary Malloy boolean handed
  * verbatim to the compiler. Its body is a narrow grammar publisher parses
@@ -15,7 +15,7 @@
  * `like`, `is not null`, no function calls, no literal on the right of a
  * row-level term.
  *
- * `#(source-authorize)` is a second annotation route ({@link
+ * `#(source_authorize)` is a second annotation route ({@link
  * SOURCE_AUTHORIZE_ROUTE}) declared on a `source:` line exactly like
  * `#(authorize)`, and parsed by this same grammar — but every term its body
  * declares must be SOURCE-LEVEL (the whole-body `false`/`true` sentinels
@@ -74,7 +74,10 @@
 
 import { routeOf } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
-import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
+import {
+   ROW_AUTHORIZE_ROUTE,
+   SOURCE_AUTHORIZE_ROUTE,
+} from "./authorize_routes";
 
 /** Malloy's own routing for ONE note — see `authorize.ts`'s identical helper. */
 function noteRoute(text: string): string | undefined {
@@ -110,11 +113,11 @@ export type AuthorizeGrammarRejectionCause =
    | "admit_all_with_sibling"
    | "operator_arity_mismatch"
    | "fanout_path"
-   // A row-level term (field on the left) inside a `#(source-authorize)`
+   // A row-level term (field on the left) inside a `#(source_authorize)`
    // body — that route is a rule about the CALLER, not the row, so every
    // term must be `source_level` (the `deny_all` sentinel is the one carved
    // out, since it names no row at all). Raised by
-   // `parseAuthorizeGrammarBody` when `route` is the source-authorize route.
+   // `parseAuthorizeGrammarBody` when `route` is the source_authorize route.
    | "row_level_term_in_source_authorize"
    // `$GIVEN in 'literal'`: unlike `=`, `in` is not reversible — the graft
    // compiles the author's ORIGINAL text unchanged, and Malloy rejects array-
@@ -536,12 +539,12 @@ export type AuthorizeGrammarRoutedTerm = {
  *
  * `duplicate_given`, `duplicate_field_path`, and `mixed_scope_body` are
  * scoped PER ROUTE (`route` on each entry), never across routes: a term
- * declared under `#(authorize)` and one declared under `#(source-authorize)`
+ * declared under `#(authorize)` and one declared under `#(source_authorize)`
  * on the SAME source are meant to AND, not agree on scope or given — e.g.
  * `#(authorize) org_id in $GROUPS` alongside
- * `#(source-authorize) 'finance' in $GROUPS` is the intended design, and
+ * `#(source_authorize) 'finance' in $GROUPS` is the intended design, and
  * must stay legal even though it reuses `$GROUPS` and mixes scope. Two
- * routes exist today (`AUTHORIZE_ROUTE`, `SOURCE_AUTHORIZE_ROUTE`); a further
+ * routes exist today (`ROW_AUTHORIZE_ROUTE`, `SOURCE_AUTHORIZE_ROUTE`); a further
  * route would slot in the same way, by tagging its own terms with its own
  * route string and calling this same function — nothing here needs to
  * change.
@@ -555,7 +558,7 @@ export type AuthorizeGrammarRoutedTerm = {
  *
  * `admit_all_with_sibling` is route-scoped, and the asymmetry is the point.
  * `true` sheds only its OWN route's inherited gate, so `#(authorize) true`
- * beside `#(source-authorize) 'finance' in $GROUPS` is a live combination —
+ * beside `#(source_authorize) 'finance' in $GROUPS` is a live combination —
  * open every row of a base that locked them, still gate the caller — not
  * dead text. WITHIN one route the notes AND into a single body, where `true
  * and x` really does reduce to `x` and the sentinel is dead, which is what
@@ -683,7 +686,7 @@ export function assertAuthorizeGrammarTermsCoherent(
  * {@link assertAuthorizeGrammarTermsCoherent}, called here on this body's
  * own terms so a single-note source is refused exactly as before.
  *
- * `route` defaults to {@link AUTHORIZE_ROUTE} so every existing caller keeps
+ * `route` defaults to {@link ROW_AUTHORIZE_ROUTE} so every existing caller keeps
  * its exact prior behavior. Passed {@link SOURCE_AUTHORIZE_ROUTE}, every
  * parsed term must be `scope: "source_level"` — the two whole-body
  * sentinels are the carve-outs, since neither `false` nor `true` names a row
@@ -696,7 +699,7 @@ export function parseAuthorizeGrammarBody(
    sourceName: string,
    body: string,
    givenDeclaredTypes: ReadonlyMap<string, string>,
-   route: string = AUTHORIZE_ROUTE,
+   route: string = ROW_AUTHORIZE_ROUTE,
 ): AuthorizeGrammarTerm[] {
    const trimmedBody = body.trim();
    if (trimmedBody.length === 0) {
@@ -744,7 +747,7 @@ export function parseAuthorizeGrammarBody(
             trimmedBody,
             "row_level_term_in_source_authorize",
             "a row-level term (field on the left) is not allowed in " +
-               "`#(source-authorize)` — move the term to `#(authorize)`.",
+               "`#(source_authorize)` — move the term to `#(authorize)`.",
          );
       }
    }

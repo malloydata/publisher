@@ -127,10 +127,10 @@ export function resolveDeclaredSource(
  * be a silent allow on a source whose base may be locked. That sentinel is
  * synthesized on EITHER route, not only the `authorize` route: because
  * own-wins-over-ancestor is decided independently per route (an ancestor with
- * its own `#(authorize)` note but no `#(source-authorize)` one resolves one
+ * its own `#(authorize)` note but no `#(source_authorize)` one resolves one
  * route right there and sends only the other further up the chain), the two
  * routes' walks over the same struct can diverge before either one reaches
- * this same unreadable branch — a `source-authorize` call cannot rely on an
+ * this same unreadable branch — a `source_authorize` call cannot rely on an
  * `authorize` call (over the same struct, same modelDef) having already
  * denied via its own `["false"]`, because it may never have reached this
  * branch at all. Synthesizing on both risks folding two `false` filters into
@@ -140,7 +140,7 @@ export function resolveDeclaredSource(
  *
  * `route` filters every level's own notes to that route ONLY
  * ({@link collectAuthorizeExprsForRoute}) — this is what makes
- * own-wins-over-ancestor PER ROUTE: an ancestor's `#(source-authorize)` note
+ * own-wins-over-ancestor PER ROUTE: an ancestor's `#(source_authorize)` note
  * does not satisfy a caller asking for `route === "authorize"`, so the walk
  * correctly continues past it (or falls through to the fail-closed sentinel)
  * rather than treating an unrelated route's note as "no gate here, stop".
@@ -307,7 +307,7 @@ export function effectiveAncestorGateExprs(
       const duck = struct as unknown as { type: string };
       // The fail-closed sentinel, synthesized on BOTH routes — see
       // `ancestorGateExprs`'s doc for why own-wins-over-ancestor is decided
-      // per route, so a `source-authorize` call cannot rely on the
+      // per route, so a `source_authorize` call cannot rely on the
       // `authorize` call over the same struct having already denied here.
       // Closes a structural gap in the walk rather than a documented live
       // leak: the two routes' walks over the same struct can diverge before
