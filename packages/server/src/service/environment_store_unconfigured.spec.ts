@@ -46,12 +46,19 @@ import { logger } from "../logger";
  * line that immediately precedes the notice.
  */
 
+/**
+ * Environments the mocked database holds. Mutable because the interesting boot
+ * is the one where the database knows an environment the filesystem no longer
+ * has.
+ */
+let storedEnvironments: Array<Record<string, unknown>> = [];
+
 mock.module("../storage/StorageManager", () => ({
    StorageManager: class MockStorageManager {
       async initialize(): Promise<void> {}
       getRepository() {
          return {
-            listEnvironments: async () => [],
+            listEnvironments: async () => storedEnvironments,
             getEnvironmentByName: async () => null,
             createEnvironment: async (data: Record<string, unknown>) => ({
                id: "env-id",
@@ -65,6 +72,10 @@ mock.module("../storage/StorageManager", () => ({
                name: data.name,
             }),
             listConnections: async () => [],
+            // Without this the runtime-creation case logs "Error syncing
+            // storage destinations" on every run and passes anyway, which is
+            // the shape of thing this file exists to catch.
+            listStorageDestinations: async () => [],
          };
       }
    },
@@ -75,6 +86,7 @@ mock.module("../storage/StorageManager", () => ({
 const { EnvironmentStore } = await import("./environment_store");
 
 const serverRootPath = path.join(TEMP_DIR_PATH, "unconfigured-spec-root");
+const missingEnvPath = path.join(serverRootPath, "publisher_data", "gone");
 
 const resetRoot = () => {
    if (existsSync(serverRootPath)) {
@@ -146,6 +158,7 @@ describe("unconfigured boot notice", () => {
    beforeEach(() => {
       resetRoot();
       delete process.env.PUBLISHER_CONFIG_PATH;
+      storedEnvironments = [];
       infoLines = [];
       infoSpy = spyOn(logger, "info").mockImplementation((message: unknown) => {
          infoLines.push(String(message));
@@ -191,6 +204,23 @@ describe("unconfigured boot notice", () => {
       expect(environments.map((environment) => environment.name)).toContain(
          "created-at-runtime",
       );
+   });
+
+   it("stays quiet when the database held an environment that did not load", async () => {
+      // Reachable exactly the way this notice's own last sentence invites:
+      // boot unconfigured, create an environment over the API, then restart
+      // onto a root where publisher_data/<env> is gone. The environment is
+      // skipped with a logged error and no failedEnvironments entry, so
+      // `environments.size === 0` while a config file was never the problem.
+      storedEnvironments = [
+         { id: "env-id", name: "created-at-runtime", path: missingEnvPath },
+      ];
+
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      assertInitialized();
+      expect(noticeLines()).toHaveLength(0);
    });
 
    it("stays quiet when a config resolved, however empty", async () => {

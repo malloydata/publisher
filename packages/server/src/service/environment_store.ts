@@ -620,6 +620,11 @@ export class EnvironmentStore {
 
          const repository = this.storageManager.getRepository();
 
+         // What was ASKED FOR, which is not what loaded: an environment can be
+         // declared and still be absent from `this.environments` afterwards.
+         // Counted here because only this scope sees both sources.
+         let declaredEnvironments = environmentManifest.environments.length;
+
          if (reInit) {
             // Load environments from config file
             await Promise.all(
@@ -630,6 +635,7 @@ export class EnvironmentStore {
          } else {
             // Load existing environments from database
             const existingEnvironments = await repository.listEnvironments();
+            declaredEnvironments += existingEnvironments.length;
 
             if (existingEnvironments.length > 0) {
                // Load environments from database
@@ -817,7 +823,7 @@ export class EnvironmentStore {
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
-         this.logUnconfiguredNotice();
+         this.logUnconfiguredNotice(declaredEnvironments);
          this.emitReadinessLine();
       } catch (error) {
          markNotReady();
@@ -856,15 +862,21 @@ export class EnvironmentStore {
     * Levelling this at `warn` would alarm on every one of those boots. The
     * sibling case (falling back to the bundled default) logs at `info` too.
     *
-    * Gated on having zero environments, so a server that took its environments
-    * from the database rather than a config file stays quiet: it has data, and
-    * the missing file is then not worth remarking on.
+    * Gated on how many environments were DECLARED, not on how many loaded.
+    * Those differ, and the gap is where this line goes wrong: an environment
+    * the database holds whose directory has gone is skipped at the
+    * `not found in config and files missing` branch with a logged error and no
+    * `failedEnvironments` entry, so a loaded-count gate sees zero and blames a
+    * config file that was never the problem, immediately after the one line
+    * that named the real cause. That boot is reachable the way this very
+    * message invites: start unconfigured, create an environment over the API,
+    * restart onto a root where `publisher_data/<env>` is gone.
     *
     * Runtime creation is unconditionally available in this branch: with no
     * config file, `frozenConfig` takes its default of false.
     */
-   private logUnconfiguredNotice(): void {
-      if (this.environments.size > 0) {
+   private logUnconfiguredNotice(declaredEnvironments: number): void {
+      if (declaredEnvironments > 0) {
          return;
       }
       const checkedPath = getUnresolvedPublisherConfigPath(this.serverRootPath);

@@ -472,8 +472,7 @@ jobs:
           # a full one, which is how an image that served nothing stayed green.
           #
           # This job only ever boots the image unconfigured, so it cannot also
-          # show that a configured image SERVES. Nothing here regressed by
-          # saying so: the check this replaces could not show it either.
+          # show that a configured image SERVES.
           set -e
           response=$(curl -s http://localhost:4000/api/v0/environments)
           echo "API Response: $response"
@@ -489,12 +488,17 @@ jobs:
           # nothing said WHY the numbers were zero, so an operator who forgot
           # the config mount saw a healthy server and an empty catalog. Assert
           # the reason is emitted, naming the path that was checked.
+          #
+          # One grep spanning both halves, not two independent ones: the
+          # bundled-default line in config.ts has the shape "No
+          # publisher.config.json found at <root>/publisher.config.json", so
+          # separate greps would pass on a notice naming the WRONG path as long
+          # as any other line carried the right one.
           set -e
           logs=$(docker logs malloy-publisher-smoke 2>&1)
-          echo "$logs" | grep -q "Serving with no environments" \
-            || { echo "✗ empty boot did not say why it is empty"; echo "$logs" | tail -30; exit 1; }
-          echo "$logs" | grep -q "/publisher/publisher.config.json" \
-            || { echo "✗ notice does not name the config path that was checked"; exit 1; }
+          echo "$logs" \
+            | grep -q "Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json" \
+            || { echo "✗ empty boot did not name its missing config"; echo "$logs" | tail -30; exit 1; }
           echo "✓ the empty boot names its missing config"
       - name: Container logs (always)
         if: always()
