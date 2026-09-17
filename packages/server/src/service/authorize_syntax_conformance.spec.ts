@@ -1030,6 +1030,42 @@ source: X is duckdb.table('accounts') extend {}
       }
    });
 
+   // Through the REAL query path, not the rejecter in isolation: a caller who
+   // mints `#(row_authorize) true` over a gated source would otherwise replace
+   // the author's gate under per-route own-wins. The forgery pattern is
+   // stem-based, so it had to move in the same commit as the route names.
+   it.each(["row_authorize", "source_authorize", "authorize"])(
+      "a caller query minting #(%s) is refused before it reaches the compiler",
+      async (route) => {
+         const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: string[]
+
+#(row_authorize) org_id in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`);
+         try {
+            expect(compilationErrorOf(model)).toBeUndefined();
+            await expect(
+               model.getQueryResults(
+                  undefined,
+                  undefined,
+                  `#(${route}) true\nrun: X -> { select: id }`,
+                  {},
+                  true,
+                  { GROUPS: ["org1"] } as never,
+               ),
+            ).rejects.toThrow(/not permitted in caller-submitted/);
+            // And the author's gate is still the one in force.
+            expect(
+               ids(await rowsFor(model, "X", { GROUPS: ["org1"] })),
+            ).toEqual([1, 2, 3]);
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      },
+   );
+
    // Each of these five spellings reads as an attempt at `#(source_authorize)`
    // but Malloy does not route it there — a naive implementation loads clean
    // and serves every row. See `authorize.spec.ts`'s

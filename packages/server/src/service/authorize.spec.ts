@@ -254,13 +254,12 @@ describe("collectAuthorizeExprs", () => {
    });
 });
 
-describe("assertNoCallerAuthorizeAnnotation — widened for source-authorize", () => {
-   it("rejects caller-submitted #(source-authorize) exactly like #(authorize)", () => {
-      // Before the widening, `AUTHORIZE_TAG_LIKE` required `authorize`
-      // immediately after the bracket — `#(source-authorize) 'fin' in
-      // $GROUPS` tested false, so a caller could mint one past the rejecter
-      // even though `noteRoute`-based classification treats it as a real
-      // gate.
+describe("assertNoCallerAuthorizeAnnotation — every route-name stem", () => {
+   it("rejects a caller-submitted hyphenated spelling too — the rejecter is a superset", () => {
+      // The rejecter is deliberately wider than the classifier: `#(source-authorize)`
+      // is refused at load as a near miss rather than enforced, but a caller may
+      // not submit it either. A false positive here is a clear 400; a false
+      // negative is a forged gate.
       expect(() =>
          assertNoCallerAuthorizeAnnotation(
             `#(source-authorize) 'finance' in $GROUPS\nsource: mine is locked extend {}`,
