@@ -306,7 +306,6 @@ describe("redactConnectionSecrets", () => {
       ).not.toContain(SECRET);
    });
 
-
    it("redacts a password quoted as JSON, which the libpq pass does not reach", () => {
       // redactPgSecrets' keyword pass matches `password=`; a serialized config
       // reports `"password":"..."`, which goes straight through it.
