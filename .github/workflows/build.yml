@@ -466,16 +466,40 @@ jobs:
           exit 1
       - name: Test /api/v0/environments
         run: |
+          # This container mounts no config, so an empty list is the CORRECT
+          # answer and the assertion pins that rather than tolerating it: a
+          # `type == "array"` check alone passes for both an empty catalog and
+          # a full one, which is how an image that served nothing stayed green.
+          #
+          # This job only ever boots the image unconfigured, so it cannot also
+          # show that a configured image SERVES.
+          set -e
           response=$(curl -s http://localhost:4000/api/v0/environments)
           echo "API Response: $response"
-          if echo "$response" | jq -e '. | type == "array"' > /dev/null; then
-            echo "✓ /api/v0/environments returned a JSON array"
-          else
-            echo "✗ /api/v0/environments did not return a JSON array"
-            echo "--- container logs ---"
-            docker logs malloy-publisher-smoke || true
-            exit 1
-          fi
+          echo "$response" | jq -e '. | type == "array"' >/dev/null \
+            || { echo "✗ /api/v0/environments did not return a JSON array"; exit 1; }
+          echo "$response" | jq -e '. | length == 0' >/dev/null \
+            || { echo "✗ unmounted image loaded environments it was never given"; exit 1; }
+          echo "✓ /api/v0/environments returned an empty JSON array"
+      - name: Assert the unconfigured boot says why it is empty
+        run: |
+          # The counts already distinguish "serving" from "serving nothing"
+          # (PUBLISHER_READY carries environments=/packages=/load_errors=), but
+          # nothing said WHY the numbers were zero, so an operator who forgot
+          # the config mount saw a healthy server and an empty catalog. Assert
+          # the reason is emitted, naming the path that was checked.
+          #
+          # One grep spanning both halves, not two independent ones: the
+          # bundled-default line in config.ts has the shape "No
+          # publisher.config.json found at <root>/publisher.config.json", so
+          # separate greps would pass on a notice naming the WRONG path as long
+          # as any other line carried the right one.
+          set -e
+          logs=$(docker logs malloy-publisher-smoke 2>&1)
+          echo "$logs" \
+            | grep -q "Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json" \
+            || { echo "✗ empty boot did not name its missing config"; echo "$logs" | tail -30; exit 1; }
+          echo "✓ the empty boot names its missing config"
       - name: Container logs (always)
         if: always()
         run: docker logs malloy-publisher-smoke || true

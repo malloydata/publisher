@@ -79,7 +79,7 @@ must still reference a given, so `#(row_authorize) 1 = 1` is refused; and combin
 
 **A source may now declare more than one row-level note, and repeats AND together instead of
 failing the load.** `assertAtMostOneAuthorizeGate` refused a second note outright in every released
-version from 0.2.0 through 0.3.0, so no model that loads on a released version already has two of a
+version from 0.2.0 through 0.4.1, so no model that loads on a released version already has two of a
 source's own notes to reinterpret; this is new capability, not a reinterpretation of an existing one.
 Separately, and more consequential: **a two-note declaring ancestor two or more `import` hops away
 now ANDs both notes where it previously did not.** That case moves served rows silently, with no
@@ -118,7 +118,7 @@ does not change that — a leftover marker of that shape stays inert rather than
 enforced, so it will not surface as a load failure on upgrade. Search for it explicitly rather than
 relying on the release to find it.
 
-## [Unreleased] — the dashboard editor is not the only writer, and the browser is not the only store
+## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the
 editor was written when the browser was the only implementation and the editor was the
