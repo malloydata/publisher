@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import AddIcon from "@mui/icons-material/Add";
-import CheckIcon from "@mui/icons-material/Check";
 import TuneIcon from "@mui/icons-material/Tune";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
@@ -136,13 +135,14 @@ export function BuilderToolbar({
                         variant={dirty ? "contained" : "outlined"}
                         disabled={!dirty || saving}
                         onClick={onSave}
-                        startIcon={
-                           !dirty && !saving ? <CheckIcon /> : undefined
-                        }
                         sx={{ minWidth: 124 }}
                      >
                         {/* Says what will happen, then that it is happening,
-                            then what did. */}
+                            then what did. No tick on "Saved": the button two
+                            along is "Done editing", which has one, and two
+                            ticks a thumb apart read as one control repeated
+                            rather than as two states of different things. The
+                            word already says it. */}
                         {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
                      </Button>
                   </span>
