@@ -27,6 +27,8 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "fs";
+import { join } from "path";
 import express from "express";
 import request from "supertest";
 
@@ -232,4 +234,82 @@ describe("compile and sqlSource are admission-controlled", () => {
       expect((await first).status).toBe(200);
       expect((await second).status).toBe(200);
    });
+});
+
+/**
+ * The behavioural cases above build their own apps, so they pin the middleware
+ * rather than the routes: reverting `queryConcurrency()` out of `server.ts`
+ * leaves every one of them green. This block closes that gap by reading the
+ * registrations themselves, the way `data_apps_route_parity.spec.ts` pins a
+ * route -- one targeted match per route literal, no window extraction and no
+ * comment stripping, so it cannot be satisfied by a comment or drift into the
+ * maintenance liability the source-scan spec it replaced became.
+ */
+describe("every compile and sqlSource route registers the concurrency gate", () => {
+   const gatedRoutes: Array<{ file: string; literal: string }> = [
+      {
+         file: "server.ts",
+         literal:
+            "${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource",
+      },
+      {
+         file: "server.ts",
+         literal:
+            "${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource",
+      },
+      {
+         file: "server.ts",
+         literal:
+            "${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile",
+      },
+      {
+         file: "server-old.ts",
+         literal:
+            "${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource",
+      },
+      {
+         file: "server-old.ts",
+         literal:
+            "${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource",
+      },
+      {
+         file: "server-old.ts",
+         literal:
+            "${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile",
+      },
+   ];
+
+   it("gates the MCP compile tool", () => {
+      // The MCP surface takes a slot directly rather than through Express
+      // middleware, so it needs its own assertion: the HTTP twin being gated
+      // while malloy_compile is not would leave the same flood open one surface
+      // over, which is the argument this change makes about the legacy routes.
+      const source = readFileSync(
+         join(import.meta.dir, "mcp/tools/compile_tool.ts"),
+         "utf8",
+      );
+      expect(
+         source,
+         "compile_tool.ts acquires no query slot, so MCP compile bypasses the cap",
+      ).toContain('tryAcquireQuerySlot("mcp:compile")');
+   });
+
+   for (const { file, literal } of gatedRoutes) {
+      it(`gates ${literal} in ${file}`, () => {
+         const source = readFileSync(join(import.meta.dir, file), "utf8");
+         const start = source.indexOf(literal);
+         expect(
+            start,
+            `route literal not found in ${file}; if it was renamed, update this list`,
+         ).toBeGreaterThan(-1);
+         // From the literal to the handler that follows it. The gate is an
+         // argument between the two, so a registration that drops it fails here.
+         const handlerAt = source.indexOf("async (req, res)", start);
+         expect(handlerAt).toBeGreaterThan(start);
+         expect(
+            source.slice(start, handlerAt),
+            `${literal} in ${file} registers no queryConcurrency() before its handler`,
+         ).toContain("queryConcurrency()");
+      });
+   }
 });
