@@ -1543,8 +1543,22 @@ export class Model {
       if (!skipOwnSourceGate && ownSourceName) {
          const onDiskGates = this.entryPointGatesBySource.get(ownSourceName);
          if (onDiskGates) {
+            // \x1f (ASCII Unit Separator) rather than a character that can
+            // appear in a label or an expression: the parts are concatenated,
+            // so a separator the data can contain lets `{label: "a b", exprs:
+            // []}` key the same as `{label: "a", exprs: ["b"]}`.
+            //
+            // NOT \0, which has the same property but classifies the whole
+            // FILE as binary for anything that sniffs for one — and a tool
+            // that skips binaries skips all 7000 lines of this one in
+            // silence. ugrep does, scanning the whole file, so `grep -I`
+            // returned nothing here for every pattern, with exit 1 and no
+            // message. (git was NOT affected: it sniffs only the first 8000
+            // bytes, and these sat at ~76k. A separator whose blast radius
+            // depends on where in the file it lands is not one to keep.)
+            const SEP = "\x1f";
             const keyOf = (entry: GateEntry): string =>
-               `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`;
+               `${entry.label}${SEP}${entry.exprs.join(SEP)}${SEP}${entry.selfContained}`;
             const byKey = new Map(
                entryPointGates.map((entry) => [keyOf(entry), entry]),
             );
