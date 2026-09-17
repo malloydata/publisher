@@ -34,7 +34,8 @@ do. Every step here was run against a real server; the outputs shown are real.
 - A **Postgres** database with one table (`orders`) — your "warehouse" source.
   The build pushes the compiled query to the source warehouse via a native
   passthrough; supported source types are `postgres`, `bigquery`, and
-  `snowflake`. Postgres is the easiest to run locally.
+  `snowflake`. Postgres is the easiest to run locally. A Postgres connection
+  that carries a `proxy` (SSH tunnel) is built through that tunnel, as it is queried.
 - A **DuckLake** storage destination — a catalog (a Postgres database)
   plus a local data directory — that you create and materialize into. (A cloud
   deployment would
@@ -492,6 +493,16 @@ materialized** (the join runs in DuckDB over the two stored tables) and its
 **views** built from what's carried, so a query traversing such a join or
 invoking such a view by name is served from storage too.
 
+And it re-declares the source's own **`where:` clauses**. Those are not an
+optimization like the rest: a source's filter is part of what the source means,
+and the build does not apply it — the build SQL is the persisted relation alone,
+and an extend-block `where:` refines that relation when it is read. The
+colocated tier gets this for free, because substitution swaps only the `FROM` and
+leaves the reading query's own `WHERE` in place; the storage tier re-declares the
+source, so it has to carry the filter or answer with rows the source excludes.
+Filters accumulate through `extend`, so a source extending a filtered source
+carries both.
+
 What still **falls back to serving live** (no error; the right answer, computed
 in the warehouse): a query that reaches something the serve shape can't
 reproduce — a join or view that reaches a **non-materialized source**, a
@@ -502,7 +513,23 @@ or a query against a source that isn't materialized. (When a view reaches
 something not carried, only that view falls back; the source's other queries
 still serve from storage.) Note this is per-query, not per-source: a source with
 a nested field still serves its scalar columns from storage, and only the queries
-touching the nested field recompute. You'll see:
+touching the nested field recompute.
+
+A **filter** is the one exception to that per-query rule, deliberately. If a
+source's `where:` cannot be reproduced on the shape — one reaching through a join
+whose target is not materialized, or one over a column the source hides with
+`except:` — that **source** serves live, rather than serving from storage without
+its filter. Serving fewer queries from the tier is a cost; serving the wrong rows
+is not a trade worth making. Normally only that source is affected: its siblings
+keep the tier, and keep it at full strength rather than falling back to bare
+stored columns. Two cases still cost the whole model its tier — when no source in
+it can be served, and when each compiles alone so the failure is in their
+combination rather than in any one of them (a duplicate source name). Both serve
+live, so the rows stay right either way. For the same reason a filter is never dropped when the shape sheds
+its riskier refinements: a source whose view cannot be reproduced loses the view
+and keeps the filter.
+
+You'll see:
 
 ```
 debug: storage serve-shape ineligible for this query; serving live { modelPath: "orders.malloy", ... }

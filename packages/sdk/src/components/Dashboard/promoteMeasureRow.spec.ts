@@ -94,7 +94,77 @@ describe("promoteMeasureRowToKpis", () => {
    });
 });
 
+/**
+ * The row as the SERVER actually sends it. Every output field is a
+ * `dimension`; an aggregate is marked by the `calculation` token in its
+ * internal annotation. Captured from `order_items -> key_figures` on the
+ * storefront package, trimmed to what the promotion reads.
+ */
+const serverMeasureRow = () => ({
+   schema: {
+      fields: [
+         {
+            kind: "dimension",
+            name: "total_sales",
+            type: { kind: "number_type", subtype: "decimal" },
+            annotations: [
+               { value: "#(doc) Total revenue\n" },
+               { value: "# currency\n" },
+               { value: '# label="Revenue"\n' },
+               {
+                  value: '#(malloy) reference_id = "276f77be" calculation drill_expression { kind = field_reference name = total_sales }\n',
+               },
+            ],
+         },
+         {
+            kind: "dimension",
+            name: "order_count",
+            type: { kind: "number_type", subtype: "integer" },
+            annotations: [
+               { value: '# label="Orders"\n' },
+               {
+                  value: '#(malloy) reference_id = "97a73061" calculation drill_expression { kind = field_reference name = order_count }\n',
+               },
+            ],
+         },
+      ],
+   },
+   data: measureRow().data,
+   annotations: [
+      { value: "#(doc) Revenue and orders\n" },
+      { value: "#(malloy) source.name = order_items\n" },
+   ],
+});
+
 describe("isMeasureRow", () => {
+   // The case that matters: real output. Until the aggregate marker was read,
+   // this returned false for every result the server ever produced, and the
+   // KPI strip drew as a one-row table whenever its view did not carry
+   // `# big_value` itself.
+   it("recognises the server's own shape, where aggregates are dimensions marked calculation", () => {
+      const row = serverMeasureRow();
+      expect(isMeasureRow(row)).toBe(true);
+      expect(
+         annotationsOf(promoteMeasureRowToKpis(JSON.stringify(row)))[0],
+      ).toBe("# big_value\n");
+   });
+
+   it("refuses a grouped result in the server's shape", () => {
+      const row = serverMeasureRow();
+      row.schema.fields.unshift({
+         kind: "dimension",
+         name: "category",
+         type: { kind: "string_type", subtype: "text" },
+         annotations: [
+            { value: '# label="Category"\n' },
+            {
+               value: '#(malloy) reference_id = "4d02e53c" drill_expression { kind = field_reference name = category }\n',
+            },
+         ],
+      });
+      expect(isMeasureRow(row)).toBe(false);
+   });
+
    it("accepts a single record cell as well as a one-element array", () => {
       const row = measureRow();
       expect(isMeasureRow(row)).toBe(true);

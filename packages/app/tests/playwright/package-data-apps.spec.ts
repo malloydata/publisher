@@ -34,16 +34,22 @@ test.describe("package-data-apps", () => {
 
       // Anchor on a positive assertion first. toHaveCount(0) is satisfied the
       // instant the page is blank, so a bare absence check here passes before
-      // any section has rendered and pins nothing.
-      await expect(
-         page.getByRole("heading", { name: "Notebooks" }),
-      ).toBeVisible();
+      // any section has rendered and pins nothing. "Data Apps" rather than
+      // "Notebooks": an empty section no longer renders, and this package has
+      // no notebooks.
       await expect(
          page.getByRole("heading", { name: "Data Apps" }),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("heading", { name: "Semantic Models" }),
       ).toBeVisible();
 
       await expect(
          page.getByRole("heading", { name: "Governed Reports" }),
+      ).toHaveCount(0);
+      // The section this package has nothing for is absent rather than empty.
+      await expect(
+         page.getByRole("heading", { name: "Notebooks" }),
       ).toHaveCount(0);
       await expect(page.getByRole("heading", { name: "Pages" })).toHaveCount(0);
    });

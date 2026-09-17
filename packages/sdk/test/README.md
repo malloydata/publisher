@@ -13,7 +13,7 @@ Run them the usual way:
 
 ```bash
 cd packages/sdk && bun test                              # whole package
-cd packages/sdk && bun test src/components/given         # one directory
+cd packages/sdk && bun test ./src/components/given       # one directory
 cd packages/sdk && bun test -t "explicit false"          # one test by name
 ```
 

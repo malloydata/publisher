@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 
 /**
@@ -15,7 +18,33 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  * unit tests rather than here. Do not read a green run here as evidence that
  * the multiselect works end to end.
  */
-const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/orders.malloynb`;
+const FIXTURE_NOTEBOOK = "test_givens_url_notebook.malloynb";
+const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/${FIXTURE_NOTEBOOK}`;
+const PKG_DIR = path.resolve(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "../../../server/publisher_data/examples/governed-analytics",
+);
+// `.malloynb` is deprecated and the examples no longer ship one, so this suite
+// writes the notebook it drives and removes it afterwards.
+const NOTEBOOK_SOURCE = `>>>markdown
+# Governed analytics — interactive controls
+
+>>>malloy
+import "orders.malloy"
+
+>>>malloy
+run: sales -> overview
+
+>>>malloy
+run: sales -> by_region
+`;
+
+async function reloadPackage(baseURL: string): Promise<void> {
+   const res = await fetch(
+      `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.governed}?reload=true`,
+   );
+   if (!res.ok) throw new Error(`Package reload failed: ${res.status}`);
+}
 
 /**
  * A count that has stopped moving, rather than the first count seen.
@@ -63,6 +92,18 @@ async function openNotebook(page: Page, search = "") {
 }
 
 test.describe("notebook givens are URL-addressable", () => {
+   test.beforeAll(async ({ baseURL }) => {
+      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
+      await reloadPackage(baseURL!);
+   });
+
+   test.afterAll(async ({ baseURL }) => {
+      await fs
+         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
+         .catch(() => undefined);
+      await reloadPackage(baseURL!).catch(() => undefined);
+   });
+
    test("renders a control per declared given, with its description", async ({
       page,
    }) => {

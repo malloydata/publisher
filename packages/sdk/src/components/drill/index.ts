@@ -18,6 +18,7 @@ export {
    type DrillField,
    type DrillIntent,
    type DrillNavigation,
+   type DrillRowsRequest,
    type DrillTagReader,
 } from "./resolveDrill";
 export {

@@ -13,6 +13,7 @@ import {
    assertStorageServeShapeCompiles,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
+   type BuildSessionDeps,
    createIsolatedBuildSession,
    createTableAndDescribe,
    dropStorageTable,
@@ -250,6 +251,72 @@ describe("buildSourceIntoStorage gating (no session I/O before the gates)", () =
             environmentPath: "/tmp/env",
          }),
       ).rejects.toThrow(/query-passthrough build supports/i);
+   });
+});
+
+describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
+   // The federation tests prove `federatePostgres` RETURNS a close; this proves
+   // the build session CALLS it, on both outcomes. A stubbed federate hands back
+   // a spy close and a stubbed read supplies the SELECT the CTAS wraps, so the
+   // whole session path runs against a real plain-DuckDB file destination with
+   // no live warehouse.
+   const source = { name: "wh", type: "postgres" } as ApiConnection;
+   function harness(read: BuildSessionDeps["read"]) {
+      let closed = 0;
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {
+               closed += 1;
+            },
+         }),
+         read,
+      };
+      const dir = mkdtempSync(join(tmpdir(), "tunnel-close-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: source,
+         buildSQL: "SELECT 1",
+         physicalTableName: "t",
+         environmentPath: dir,
+         deps,
+      };
+      return { params, dir, closed: () => closed };
+   }
+
+   it("on a clean build, after the session is disposed", async () => {
+      const h = harness(async () => ({
+         selectSQL: "SELECT 1 AS x",
+         jobId: null,
+         cost: null,
+      }));
+      try {
+         const result = await buildSourceIntoStorage(h.params);
+         expect(result.schema.map((c) => c.name)).toEqual(["x"]);
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("when the read throws, and the build's own error is the one raised", async () => {
+      const h = harness(async () => {
+         throw new Error("warehouse boom");
+      });
+      try {
+         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
+            "warehouse boom",
+         );
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
    });
 });
 

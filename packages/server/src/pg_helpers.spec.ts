@@ -5,6 +5,11 @@ import { describe, expect, it } from "bun:test";
 import { redactPgSecrets } from "./pg_helpers";
 
 describe("redactPgSecrets", () => {
+   it("redacts a quoted password carrying a space and an escaped quote", () => {
+      expect(
+         redactPgSecrets("host=h password='p w\\'x\\\\y' sslmode=require"),
+      ).toBe("host=h password=*** sslmode=require");
+   });
    it("redacts bare password values", () => {
       expect(redactPgSecrets("host=h password=hunter2 dbname=d")).toBe(
          "host=h password=*** dbname=d",
@@ -56,6 +61,16 @@ describe("redactPgSecrets", () => {
    it("redacts a raw slash in a pg password via the mop-up pass", () => {
       expect(redactPgSecrets("postgres://u:pa/ss@h/d")).toBe(
          "postgres://u:***@h/d",
+      );
+   });
+
+   // Documents the accepted residual: with BOTH a raw `@` and a later raw `/`
+   // in one password (doubly invalid per RFC 3986), pass 1 redacts through
+   // the first `@` and its inserted `***@` satisfies the mop-up's first-`@`
+   // before the raw `/`, so the password tail after the raw `@` survives.
+   it("keeps the post-@ tail of a password with both a raw @ and a raw /", () => {
+      expect(redactPgSecrets("postgres://u:p@a/b@h/d")).toBe(
+         "postgres://u:***@a/b@h/d",
       );
    });
 

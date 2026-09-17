@@ -37,6 +37,12 @@ Concretely:
   reachable server with the default config it is open — but so is the query API, and an attacker
   who can register a package can already read the data directly. Set `"frozenConfig": true` to
   close registration on a deployment where that matters.
+- **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
+  dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
+  kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
+  registration; it has no authentication of its own, so on a reachable server it sits behind the
+  same gateway or is closed by the same setting. An attacker who can reach it can already register
+  a package, so it opens no door that was shut.
 - **Governance is mostly a modeling concern.** `#(authorize)`, given-scoped
   row-level access, `explores`, and `queryableSources` constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:

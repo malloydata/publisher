@@ -10,10 +10,16 @@
 // unrelated sources. A nest's pipeline starts from its own query's source, so no
 // single Malloy result does.
 //
-// The givens are imported so the control row is bindable. Malloy's given
-// namespace is per-file: a tile's `where: … ~ $CATEGORY` lives over in
-// data_app.malloy, and without these imports this file surfaces no givens and
-// binding one at run time fails.
+// The filter controls are declared HERE, in the dashboard, and each tile says
+// which of them it reads. That is the convention for a dashboard the builder
+// edits: the builder adds and removes filters, and a filter it can add has to be
+// a declaration in the one file it writes. It never edits imports or the model.
+//
+// It is also the only way the binding works, and worth knowing before moving a
+// declaration: binding is per DECLARATION, not per name. A given declared here
+// does not drive a `where:` written in the model, and a `where:` written here
+// cannot read a given from givens.malloy. So the filtering lives on the tiles,
+// below, each naming the controls it answers to.
 //
 // Compare `order_items -> business_overview` in storefront.malloy, which is the
 // same figures as one query with nests. That form is Malloy's own rendering
@@ -44,29 +50,13 @@
 ##" `Category` or `Region` reframes the whole page rather than filtering one
 ##" list in it.
 ## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state", "overview -> revenue_by_category", "overview -> best_sellers"] } dashboard { columns=12 }
-import "../data_app.malloy"
-import "../givens.malloy"
-// The givens arrive as a WHOLE-FILE import, not as a named list, and that is
-// the convention rather than a shortcut. A control renders for a given the
-// tiles actually reference, not for every one in scope, so importing the file
-// costs nothing and a named list only makes the author enumerate — and forget.
-// It is also what Malloyyo documents as best practice for the same format, so
-// a repo written for either side reads the same.
-//
-// They have to arrive somehow: a bare import is not TRANSITIVE, so they do not
-// ride in with `scoped_orders` from data_app.malloy. Without this line the file
-// surfaces no givens at all and binding one at run time fails.
-//
-// The source names below are listed rather than whole-file imported, and that
-// asymmetry is deliberate: this file needs four specific names out of
-// storefront.malloy, and the controls' `suggest { source= }` and
-// `suggest { query= }` point at names this file cannot otherwise see, so the
-// load lint says so rather than serving a picker with no options.
-//
-// `order_items` is here for the same reason and is the half the lint does NOT
-// catch: `brand_suggest` resolves as a name, so the lint passes, but running it
-// needs the source it reads, and without this the Brand picker answers 400
-// "Undefined source 'order_items'" and offers no options.
+// What this page reads from the model, by name. `order_items` is what every
+// tile runs over. `products`, `regions` and `brand_suggest` are what the
+// controls' pickers read their options from, and a `suggest { source= }` or
+// `{ query= }` has to resolve in THIS file: an import is not transitive, so
+// `brand_suggest` needs `order_items` beside it too, or the Brand picker answers
+// 400 "Undefined source 'order_items'" and offers no options. The load lint
+// names a missing suggest source; it cannot name this one.
 import {
    order_items,
    products,
@@ -74,37 +64,60 @@ import {
    brand_suggest
 } from "../storefront.malloy"
 
+// The controls. A given is a typed runtime parameter (docs/givens.md), and the
+// tags on each declaration are its control contract: what the input is
+// labelled, which widget renders it, and where a picker gets its choices.
+// Declaration order is control order.
+//
+// Only a given some tile READS becomes a control, so a declaration nothing
+// binds costs nothing and shows nothing. Which tiles a control drives is on the
+// tiles themselves, below; here is only what each control is.
+# description="Narrow to one product category. Leave empty for all"
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
+
+# description="One or more brands. Leave empty for all"
+# label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }
+given: BRAND :: filter<string> is f''
+
+# description="Narrow to one US sales region. Leave empty for all"
+# label="Region" control=select suggest { source=regions dimension=region }
+given: REGION :: filter<string> is f''
+
+// A plain (non-filter) `date` renders as a date picker and binds with `>=`,
+// not `~`: it is a value, not a filter expression. The storefront data runs
+// 2023-01-01 through 2025-12-31, so this default takes in all of it.
+# description="Only count orders placed on or after this date"
+# label="Ordered since"
+given: SINCE :: date is @2023-01-01
+
+// Numeric bounds turn a `filter<number>` into a slider instead of a text box.
+# description="Ignore line items below this sale price"
+# label="Minimum line total" range_min=0 range_max=250
+given: MIN_SALE :: filter<number> is f''
+
 // Layout lives on the view, which is what lets one view lay out the same way
 // whether it is named as a tile here or nested under a `# dashboard` query. The
 // reusable views keep their own chart tags in storefront.malloy; this extension
-// adds only how wide each one sits and what it is called.
+// adds how wide each one sits, what it is called, and what it is filtered by.
 //
 // `# colspan` and `# break` are @malloydata/render's own per-child dashboard
 // tags, read the same way and clamped to `columns` the same way, so the two
 // forms cannot drift.
-#(doc) The overview dashboard's tiles, over the control row's filtered orders
-source: overview is scoped_orders extend {
+//
+// Each tile's `+ { where: … }` is its bindings: one clause per control it
+// answers to. Every tile here answers to all five, which is what makes a
+// control move the whole page; a tile that left one out would simply not move
+// when that control did. The builder writes these lines; the spelling is its.
+#(doc) The overview dashboard's tiles, each over the order lines its controls select
+source: overview is order_items extend {
   // A full-width KPI strip. `# big_value` renders each aggregate as a figure
-  // rather than a table row.
+  // rather than a table row. The figures are `key_figures` in storefront.malloy;
+  // this names them, sizes the strip and binds the controls.
   # colspan=12
   # label="Key figures"
   # big_value
-  view: kpis is {
-    aggregate:
-      # label="Revenue"
-      # currency
-      total_sales
-      # label="Gross margin"
-      # currency
-      total_margin
-      # label="Orders"
-      order_count
-      # label="Customers"
-      customer_count
-      # label="Avg order value"
-      # currency
-      avg_order_value
-  }
+  view: kpis is key_figures + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 
   // `# break` starts a fresh row, so the trend leads the second row however the
   // strip above it wraps.
@@ -123,18 +136,18 @@ source: overview is scoped_orders extend {
   # colspan=6
   # break
   # label="Revenue by month"
-  view: revenue_trend is sales_by_month
+  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 
   # colspan=6
   # label="Revenue by state"
-  view: revenue_by_state is sales_by_state
+  view: revenue_by_state is sales_by_state + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 
   # colspan=6
   # break
   # label="Revenue by category"
-  view: revenue_by_category is by_category
+  view: revenue_by_category is by_category + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 
   # colspan=6
   # label="Top products"
-  view: best_sellers is top_products
+  view: best_sellers is top_products + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 }

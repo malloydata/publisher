@@ -1,27 +1,44 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { PALETTE } from "@malloy-publisher/sdk";
+
+/**
+ * The Console's neutrals and status colours.
+ *
+ * Both are drawn to sit with the SDK's `PALETTE`, which supplies every colour
+ * that carries meaning — content tints, surface tints, chart series, and the
+ * primary. This file supplies the rest: the greys a page is built out of, and
+ * the four states a message can be in.
+ *
+ * The greys are cool, on the same slate ramp as dark mode. They used to be warm
+ * while dark mode was already slate, so switching modes shifted the temperature
+ * of every border and caption on the page, and a warm grey beside a saturated
+ * blue reads as a slightly dirty one.
+ */
 export const colors = {
    white: "#FFFFFF",
-   offWhite: "#F8F8F6",
+   offWhite: "#F8FAFC",
    grey: {
-      light: "#E6E4E1",
-      mid: "#91908F",
+      light: "#E2E8F0",
+      mid: "#64748B",
    },
-   black: "#30302E",
+   black: "#0F172A",
 
-   accent: {
-      sage: "#7F9862",
-      brown: "#987362",
-      olive: "#988962",
-      steel: "#628698",
-   },
-
+   /**
+    * Status, from the palette rather than beside it: emerald, amber, red and
+    * the anchor blue. `light` is each hue's tint, for an Alert's ground; `dark`
+    * is a step down, for a hover or a border.
+    *
+    * These were muted earth tones — sage, mustard, terracotta — belonging to a
+    * warm identity the rest of the app no longer has. An error has to read as
+    * an error beside a saturated chart, and a desaturated brick does not.
+    */
    semantic: {
-      success: { main: "#7A9461", light: "#E8EDDF", dark: "#5F7A4B" },
-      warning: { main: "#B5943A", light: "#F3ECDA", dark: "#8E7430" },
-      error: { main: "#BF6050", light: "#F2DDD9", dark: "#9C4D40" },
-      info: { main: "#628698", light: "#DDE6EA", dark: "#4D6B79" },
+      success: { main: PALETTE.emerald, light: "#D1FAE5", dark: "#047857" },
+      warning: { main: PALETTE.amber, light: "#FEF3C7", dark: "#92400E" },
+      error: { main: PALETTE.red, light: "#FEE2E2", dark: "#B91C1C" },
+      info: { main: PALETTE.blue, light: "#DBEAFE", dark: "#1D4ED8" },
    },
 } as const;
 
@@ -30,15 +47,16 @@ export const MONO_FONT_FAMILY =
 export const SANS_FONT_FAMILY =
    '"Inter", "Helvetica Neue", "Arial", sans-serif';
 
+/** The slate ramp, which dark mode's surfaces are already points on. */
 export const greyScale = {
    50: colors.offWhite,
-   100: "#F4F3F1",
+   100: "#F1F5F9",
    200: colors.grey.light,
-   300: "#D4D2CF",
-   400: "#B3B1AF",
+   300: "#CBD5E1",
+   400: "#94A3B8",
    500: colors.grey.mid,
-   600: "#73726F",
-   700: "#555450",
-   800: "#424140",
+   600: "#475569",
+   700: "#334155",
+   800: "#1E293B",
    900: colors.black,
 } as const;

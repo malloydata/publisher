@@ -1,12 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import CloseIcon from "@mui/icons-material/Close";
-import { Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
+import { Box } from "@mui/material";
 import { LogMessage } from "../client";
 import type { DrillBinding } from "./drill";
 import ResultContainer from "./RenderedResult/ResultContainer";
 import { RESULTS_DIALOG_MAX_HEIGHT } from "./RenderedResult/resultSizing";
+import { AppDialog } from "./AppDialog";
 
 interface ResultsDialogProps {
    open: boolean;
@@ -27,38 +27,14 @@ export default function ResultsDialog({
    drill,
 }: ResultsDialogProps) {
    return (
-      <Dialog
+      <AppDialog
          open={open}
          onClose={onClose}
+         title={title}
          maxWidth={false}
-         fullWidth
-         sx={{
-            "& .MuiDialog-paper": {
-               width: "95vw",
-               height: "95vh",
-               maxWidth: "none",
-            },
-         }}
+         showClose
       >
-         <DialogTitle
-            sx={{
-               display: "flex",
-               justifyContent: "space-between",
-               alignItems: "center",
-            }}
-         >
-            {title}
-            <IconButton onClick={onClose} sx={{ color: "text.secondary" }}>
-               <CloseIcon />
-            </IconButton>
-         </DialogTitle>
-         <DialogContent
-            sx={{
-               height: "calc(95vh - 120px)",
-               overflow: "auto",
-               padding: "0 16px",
-            }}
-         >
+         <Box sx={{ height: "70vh", overflow: "auto" }}>
             <ResultContainer
                result={result}
                maxHeight={RESULTS_DIALOG_MAX_HEIGHT}
@@ -66,7 +42,7 @@ export default function ResultsDialog({
                renderLogs={renderLogs}
                drill={drill}
             />
-         </DialogContent>
-      </Dialog>
+         </Box>
+      </AppDialog>
    );
 }

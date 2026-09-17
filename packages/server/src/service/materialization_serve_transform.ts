@@ -86,14 +86,37 @@ export interface ViewRefinement {
 }
 
 /**
+ * A `where:` written in the materialized source's extend block, re-declared on
+ * the serve shape's virtual base.
+ *
+ * The filter is NOT part of the materialized relation: Malloy's build SQL for a
+ * persisted source is the persisted relation alone, and an extend-block `where:`
+ * refines that relation when it is read. The colocated tier gets this for free
+ * (substitution swaps only the `FROM`, so the reading query keeps its own
+ * `WHERE`); the storage tier re-declares the source instead, so it has to carry
+ * the filter itself or serve rows the source excludes.
+ *
+ * `code` is the author's verbatim expression text. One refinement per
+ * `filterList` entry, emitted as its own `where:` line: Malloy parenthesises
+ * each entry and ANDs them, so joining two entries' `code` with `and` would
+ * reassociate a top-level `or`.
+ */
+export interface FilterRefinement {
+   kind: "filter";
+   /** Verbatim author expression, e.g. `not is_deleted`. */
+   code: string;
+}
+
+/**
  * A refinement to re-declare on the serve shape's virtual base: a dimension or
- * measure ({@link FieldRefinement}), a join ({@link JoinRefinement}), or a view
- * ({@link ViewRefinement}).
+ * measure ({@link FieldRefinement}), a join ({@link JoinRefinement}), a view
+ * ({@link ViewRefinement}), or a source-level filter ({@link FilterRefinement}).
  */
 export type SourceRefinement =
    | FieldRefinement
    | JoinRefinement
-   | ViewRefinement;
+   | ViewRefinement
+   | FilterRefinement;
 
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
@@ -444,7 +467,8 @@ function serveShapeFragment(binding: ServeBinding): string {
    // them are computed from the stored tables at serve time (the wrapper) rather
    // than falling back to live. Emission order matters for resolution: joins
    // first (a dimension/measure/view may reference a joined field), then
-   // dimensions/measures, then views (a view may reference any of them).
+   // dimensions/measures, then the source's own `where:` clauses (which may
+   // reference either), then views (a view may reference any of them).
    // Everything here references the shape's columns, a sibling virtual source, or
    // an earlier refinement; anything it references that the shape lacks makes the
    // serve shape fail to compile, which safely falls back.
@@ -457,6 +481,13 @@ function serveShapeFragment(binding: ServeBinding): string {
       if (r.kind === "dimension" || r.kind === "measure") {
          lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
       }
+   }
+   // Filters after joins and fields, because a `where:` may reference a joined
+   // alias or a dimension declared above it, and before views for the same
+   // reason a view is emitted last. One line per entry — see
+   // {@link FilterRefinement} for why they are never combined with `and`.
+   for (const r of refinements) {
+      if (r.kind === "filter") lines.push(`   where: ${r.code}`);
    }
    for (const r of refinements) {
       if (r.kind === "view") lines.push(`   view: ${r.text}`);
@@ -545,6 +576,69 @@ export function buildServeShapeModelForBindings(
 }
 
 /** One base source re-exposed over its rollup members. */
+/**
+ * The refinement kind that is SEMANTICS rather than an optimization, and so is
+ * carried by every tier of the serve-shape ladder.
+ *
+ * Dropping a join or a view costs the tier for the queries that use it; dropping
+ * a source's `where:` answers with rows the source excludes. See
+ * {@link buildServeShapeTiers}.
+ */
+export const NEVER_THINNED: readonly string[] = ["filter"];
+
+/**
+ * One rung of the serve-shape escalation ladder: which refinement kinds to keep,
+ * and whether pre-aggregation groups are carried.
+ */
+export interface ServeShapeTier {
+   keep: ReadonlySet<string>;
+   groups: RollupShapeGroup[];
+}
+
+/**
+ * The ladder `Model.compileServeShape` walks, richest first.
+ *
+ * Built here rather than inline so the invariant that matters can be asserted:
+ * EVERY tier keeps {@link NEVER_THINNED}. A tier that did not would answer with
+ * rows the source excludes, which is the defect the filter refinement exists to
+ * close — and a floor tier assembled separately from the thinning ladder is
+ * exactly how that reappears.
+ */
+export function buildServeShapeTiers(
+   rollupGroups: RollupShapeGroup[],
+): ServeShapeTier[] {
+   const always = [...NEVER_THINNED];
+   // Richest first; each keeps fewer optional kinds than the last.
+   const keepKinds: Array<ReadonlySet<string>> = [
+      new Set([...always, "join", "dimension", "measure", "view"]),
+      new Set([...always, "join", "dimension", "measure"]),
+      new Set([...always, "dimension", "measure"]),
+      new Set(always),
+   ];
+   const hasGroups = rollupGroups.length > 0;
+   return [
+      // Richest, with groups.
+      { keep: keepKinds[0], groups: rollupGroups },
+      // Then groups DROPPED while every authored refinement is kept, so a
+      // group-caused failure costs the rollups and nothing else.
+      ...(hasGroups
+         ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
+         : []),
+      // Then the ordinary thinning ladder, still WITH groups: reaching here means
+      // dropping the groups alone did not fix it, so an authored refinement is
+      // implicated and the groups may be fine.
+      ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
+      // The floor: no optional refinements and no groups. Appended only when
+      // there is a group to drop, since without one the last thinning tier is
+      // already this shape. It keeps the never-thinned kinds like every tier
+      // above it — this floor is the one that historically did not, which let a
+      // package carrying any rollup serve a filtered source unfiltered.
+      ...(hasGroups
+         ? [{ keep: new Set(always), groups: [] as RollupShapeGroup[] }]
+         : []),
+   ];
+}
+
 export interface RollupShapeGroup {
    baseSourceName: string;
    members: ServeBinding[];
@@ -812,6 +906,65 @@ export function narrowSchemaToPublic(
    }
    return out;
 }
+
+/**
+ * The source-level filters to re-declare on the serve shape, one per
+ * `filterList` entry of the materialized source's compiled definition.
+ *
+ * EVERY entry is carried, including one that cannot be reproduced on the shape:
+ * a filter reaching through a join whose target is not materialized, or one over
+ * a column the source hides (the declared `::Shape` is narrowed to the source's
+ * PUBLIC columns, so `where: not is_deleted` with `except: is_deleted` names a
+ * column the shape does not declare). Such an entry makes the shape fail to
+ * compile, which is the required outcome — a dropped filter is not a lost
+ * optimization, it is rows the source excludes. See the serve-shape ladder in
+ * `Model.compileServeShape`, which keeps this kind at every tier for that
+ * reason.
+ *
+ * The cost is that source's tier and no one else's. The shape is one model text
+ * covering every binding, so the failure surfaces model-wide; `compileServeShape`
+ * answers it by probing each binding alone, withholding the ones whose filters do
+ * not reproduce, and re-entering the ladder with the rest — so a sibling keeps
+ * its joins and views rather than being frozen at the shape that failed.
+ *
+ * A filter referencing a given cannot reach here: `assertMaterializationEligible`
+ * refuses a given-referencing source outright, as it does `#(partition)` and
+ * `#(authorize)`.
+ *
+ * `filterList` accumulates through `extend`, so a source's own entries already
+ * carry every filter it inherits from the source it extends.
+ *
+ * A pre-aggregation ROLLUP member carries no filter refinement, and that
+ * asymmetry is not an oversight: a rollup is a `-> { }` derived source, so
+ * READING its base applies the base's filter and the rollup's own build SQL bakes
+ * it in. A base binding rebinds the stored relation directly and so must
+ * re-declare the filter; a rollup already has it.
+ *
+ * Fail-closed on a malformed entry: an entry whose `code` is not a string
+ * yields a filter that cannot compile, so the binding is withheld rather than
+ * silently under-filtered.
+ */
+export function extractSourceFilters(
+   filterList: readonly unknown[] | undefined,
+): FilterRefinement[] {
+   const out: FilterRefinement[] = [];
+   for (const entry of filterList ?? []) {
+      const code = (entry as { code?: unknown })?.code;
+      out.push({
+         kind: "filter",
+         code: typeof code === "string" ? code : UNREPRODUCIBLE_FILTER,
+      });
+   }
+   return out;
+}
+
+/**
+ * Emitted in place of a filter whose expression text could not be read. Not
+ * valid Malloy, deliberately: it fails the shape compile, which withholds the
+ * binding and serves live. The alternative — dropping the entry — would serve
+ * the unfiltered relation.
+ */
+export const UNREPRODUCIBLE_FILTER = "__unreproducible_filter__";
 
 export function extractRefinements(
    fields: readonly unknown[] | undefined,

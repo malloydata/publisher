@@ -3,10 +3,11 @@
 
 import { Warning } from "@mui/icons-material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import { Box, Button, IconButton, Tooltip, Typography } from "@mui/material";
+import { Box, Button, Tooltip, Typography } from "@mui/material";
 import { lazy, Suspense, useRef, useState } from "react";
 import { LogMessage } from "../../client";
 import type { DrillBinding } from "../drill/useDrill";
+import { FloatingIconButton } from "../FloatingIconButton";
 import { Loading } from "../Loading";
 import { summarizeRenderLogs } from "./renderLogs";
 import { resolveResultHeight, type ResultSizing } from "./resultSizing";
@@ -134,16 +135,7 @@ export default function ResultContainer({
                   title={renderLogSummary.title}
                   slotProps={{ tooltip: { sx: { whiteSpace: "pre-line" } } }}
                >
-                  <IconButton
-                     size="small"
-                     aria-label="Render tag warnings"
-                     sx={{
-                        backgroundColor: "rgba(255, 255, 255, 0.9)",
-                        "&:hover": {
-                           backgroundColor: "rgba(255, 255, 255, 1)",
-                        },
-                     }}
-                  >
+                  <FloatingIconButton aria-label="Render tag warnings">
                      <InfoOutlinedIcon
                         fontSize="small"
                         color={
@@ -152,7 +144,7 @@ export default function ResultContainer({
                               : "warning"
                         }
                      />
-                  </IconButton>
+                  </FloatingIconButton>
                </Tooltip>
             </Box>
          )}
