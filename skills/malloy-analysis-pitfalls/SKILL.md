@@ -1,6 +1,6 @@
 ---
 name: malloy-analysis-pitfalls
-description: Read BEFORE presenting any result, to check the query and the numbers it returned. The common data-analysis pitfalls - wrong grain, fan-out, invented names, mismatched filters, count vs distinct.
+description: Checks to run on a query and its numbers before a result is presented: wrong grain, fan-out, invented field names, mismatched filters, count vs distinct. The common data-analysis pitfalls.
 ---
 <!--
 Copyright (c) Credible Data Inc.

@@ -1,6 +1,6 @@
 ---
 name: malloy-analysis
-description: Read BEFORE answering any data question over a Malloy semantic model - a metric, a breakdown, a trend, a chart. The workflow from get_context discovery through execute_query to verified delivery.
+description: The workflow for answering a data question over a Malloy semantic model - a metric, breakdown, trend or chart - from get_context discovery through execute_query to verified delivery.
 ---
 
 <!--

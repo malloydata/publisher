@@ -1,6 +1,6 @@
 ---
 name: malloy-charts
-description: Read BEFORE choosing a visualization or adding a chart annotation to a Malloy view. Chart selection guidance plus the renderer reference for bar_chart, line_chart, scatter_chart, maps, and layouts.
+description: Chart selection for a Malloy view, plus the renderer reference for bar_chart, line_chart, scatter_chart, maps and layouts. For choosing a visualization or adding a chart annotation.
 ---
 <!--
 Copyright (c) Credible Data Inc.

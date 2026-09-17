@@ -1,6 +1,6 @@
 ---
 name: malloy-patterns
-description: Read BEFORE searching Malloy docs, to pick a topic worth searching for. An index of what search_malloy_docs covers - language reference, common patterns (YoY, cohorts, percent of total), rendering.
+description: An index of what search_malloy_docs covers - language reference, common patterns (YoY, cohorts, percent of total), rendering - for picking a topic worth searching before querying the docs.
 ---
 <!--
 Copyright (c) Credible Data Inc.

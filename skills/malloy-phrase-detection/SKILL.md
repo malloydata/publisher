@@ -1,6 +1,6 @@
 ---
 name: malloy-phrase-detection
-description: Read BEFORE your first get_context call. How to phrase search_text so retrieval returns the fields you need instead of a truncated catalog. Covers target-type classification and decomposition.
+description: How to phrase search_text on a get_context call so retrieval returns the fields you need instead of a truncated catalog. Covers target-type classification and decomposition patterns.
 ---
 <!--
 Copyright (c) Credible Data Inc.
