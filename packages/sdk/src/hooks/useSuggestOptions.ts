@@ -4,7 +4,9 @@
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { Given } from "../client";
+import { givensToRequest } from "../components/given/paramCodec";
 import { useServer } from "../components/ServerProvider";
+import type { GivenValue } from "./givenValue";
 
 /**
  * How many options a generated `suggest { source=… dimension=… }` asks for.
@@ -69,23 +71,55 @@ export function buildSuggestQuery(source: string, dimension: string): string {
  * flat row form is what the widget needs, and asking for the full Malloy result
  * would mean parsing rendering metadata to get at a list of strings.
  *
- * KNOWN GAP, latent until something populates `suggest`. The request carries no
- * `givens`, and `QueryRequest` has a field for them. That is fine for row caps
- * but not for `#(authorize)`: a gate is evaluated against the request's givens,
- * so a `suggest` over a gated source is denied and every dropdown on it resolves
- * to "Options unavailable": the failure surfaces honestly, but the control is
- * unusable. Deliberately not guessed at here, because *which* givens a suggest
- * should carry is a real decision: the applied ones make the option list depend
- * on the current filters, which this hook's caching deliberately avoids, while
- * only the gate-relevant ones means knowing which those are. Whoever populates
- * `suggest` server-side should settle it, and this hook's signature will need
- * the values passed in.
+ * The request carries the givens the suggest query NEEDS and no others. An
+ * `#(authorize)` gate is evaluated against the request's givens, so a suggest
+ * over a gated source was denied outright and its dropdown read "Options
+ * unavailable". Sending every applied value would have fixed that but made the
+ * option list depend on the page's other filters, which this hook's caching
+ * deliberately avoids. So the server says, per suggest, which givens its source
+ * is gated or scoped by (`suggest.givenNames`), and {@link suggestRequestGivens}
+ * sends the current values of exactly those; the cache is keyed on them too.
+ * A server too old to name them sends none, and the request is as before.
  */
+/**
+ * The current values a suggest query has to carry: the applied values of the
+ * givens the server named on it, encoded for the request. Undefined when the
+ * suggest names none, or when the caller has no applied values to offer.
+ */
+export function suggestRequestGivens(
+   spec: Given,
+   applied: AppliedGivens | undefined,
+): Record<string, unknown> | undefined {
+   const names = spec.suggest?.givenNames;
+   if (!applied || !names || names.length === 0) return undefined;
+   const request = givensToRequest(
+      applied.values,
+      applied.declaredTypes,
+      names,
+   );
+   return Object.keys(request).length > 0 ? request : undefined;
+}
+
+/** The applied control row and the declared types that encode it. */
+export interface AppliedGivens {
+   values: ReadonlyMap<string, GivenValue>;
+   declaredTypes: ReadonlyMap<string, string | undefined>;
+}
+
 export function useSuggestOptions(
    environmentName: string,
    packageName: string,
    modelPath: string | undefined,
    specs: Given[],
+   // Trailing and optional because this hook is exported from the package, so
+   // a slot beside `packageName` where it belongs would break every caller.
+   versionId?: string,
+   /**
+    * The page's applied values, so a suggest can carry the givens its source
+    * is gated or scoped by. Optional for the same reason as `versionId`; a
+    * caller that omits it gets the pre-gating behaviour.
+    */
+   applied?: AppliedGivens,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -117,46 +151,60 @@ export function useSuggestOptions(
    );
 
    const results = useQueries({
-      queries: suggestable.map((spec) => ({
-         queryKey: [
-            "givenSuggest",
-            environmentName,
-            packageName,
-            modelPath,
-            spec.name,
-            spec.suggest?.query,
-            spec.suggest?.source,
-            spec.suggest?.dimension,
-         ],
-         enabled: modelPath !== undefined,
-         // Option lists change with the data, not with the filters, so they are
-         // cached well past a single control interaction.
-         staleTime: 5 * 60 * 1000,
-         refetchOnWindowFocus: false,
-         queryFn: async () => {
-            const suggest = spec.suggest ?? {};
-            const response = await apiClients.models.executeQueryModel(
+      queries: suggestable.map((spec) => {
+         const givens = suggestRequestGivens(spec, applied);
+         return {
+            queryKey: [
+               "givenSuggest",
                environmentName,
                packageName,
-               modelPath as string,
-               suggest.query !== undefined
-                  ? { queryName: suggest.query, compactJson: true }
-                  : {
-                       query: buildSuggestQuery(
-                          suggest.source as string,
-                          suggest.dimension as string,
-                       ),
-                       compactJson: true,
-                    },
-            );
-            return readOptionValues(
-               response.data.result,
-               suggest.dimension === undefined
-                  ? undefined
-                  : outputFieldName(suggest.dimension),
-            );
-         },
-      })),
+               versionId,
+               modelPath,
+               spec.name,
+               spec.suggest?.query,
+               spec.suggest?.source,
+               spec.suggest?.dimension,
+               // Only the givens the suggest carries, so a change to any OTHER
+               // control leaves the cached list alone.
+               givens === undefined ? null : JSON.stringify(givens),
+            ],
+            enabled: modelPath !== undefined,
+            // Option lists change with the data, not with the filters, so they
+            // are cached well past a single control interaction.
+            staleTime: 5 * 60 * 1000,
+            refetchOnWindowFocus: false,
+            queryFn: async () => {
+               const suggest = spec.suggest ?? {};
+               const response = await apiClients.models.executeQueryModel(
+                  environmentName,
+                  packageName,
+                  modelPath as string,
+                  suggest.query !== undefined
+                     ? {
+                          queryName: suggest.query,
+                          compactJson: true,
+                          versionId,
+                          givens,
+                       }
+                     : {
+                          query: buildSuggestQuery(
+                             suggest.source as string,
+                             suggest.dimension as string,
+                          ),
+                          compactJson: true,
+                          versionId,
+                          givens,
+                       },
+               );
+               return readOptionValues(
+                  response.data.result,
+                  suggest.dimension === undefined
+                     ? undefined
+                     : outputFieldName(suggest.dimension),
+               );
+            },
+         };
+      }),
    });
 
    const options = useMemo(() => {

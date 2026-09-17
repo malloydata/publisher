@@ -56,6 +56,11 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { getPersistStorageMode } from "../config";
+import {
+   planModelPreaggregation,
+   type RollupPlan,
+} from "./preaggregation_synthesis";
+import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
@@ -63,11 +68,15 @@ import {
    buildVirtualMap,
    extractJoins,
    extractRefinements,
+   extractSourceFilters,
+   buildServeShapeTiers,
    extractViews,
    narrowSchemaToPublic,
+   type RollupShapeGroup,
    sliceSourceRange,
    type ServeBinding,
    type SourceLocation,
+   serveShapeDiagnostics,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -112,6 +121,7 @@ import {
    type FilterParams,
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
    motlyTag,
@@ -144,6 +154,7 @@ import {
    type PreaggregateViolation,
 } from "./preaggregation_validation";
 import { derivedStructsReachable } from "./gate_registry_walk";
+import { containsPartitionAnnotationTag } from "./partition_annotation";
 // Aliased with an `Impl` suffix: `Model` declares its own private methods of
 // these same names (thin per-instance wrappers, see each one's doc) — an
 // unaliased import would only work today because a method body's unqualified
@@ -152,13 +163,17 @@ import { derivedStructsReachable } from "./gate_registry_walk";
 // than leaving a trap where converting one of those methods to an
 // arrow-function class property would recurse instead of delegating.
 import {
+   assertPartitionAnnotationsValid,
    collectEntryPointGates as collectEntryPointGatesImpl,
    createGateClassificationDeps,
+   resolveEntryPointPartitions,
    resolveGateShape as resolveGateShapeImpl,
    resolveGraftTarget as resolveGraftTargetImpl,
+   resolvePartitionGraftEntries,
    type GateClassificationDeps,
    type GateEntry,
    type GraftScope,
+   type PartitionGraftEntry,
 } from "./gate_classification";
 import {
    extractQueriesFromModelDef,
@@ -283,10 +298,12 @@ function quoteMalloyIdentifier(name: string | undefined): string {
 }
 
 /**
- * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an
- * error-severity issue that affects only how a field renders, never whether the
- * model compiles or a query runs. `subject` is the query or view it sits on
- * (e.g. `by_carrier` or `flights -> by_carrier`).
+ * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an issue
+ * that affects only how a field renders, never whether the model compiles or a
+ * query runs. `subject` is the query or view it sits on (e.g. `by_carrier` or
+ * `flights -> by_carrier`). `severity` is the renderer's own: `error` for a tag
+ * malformed for its field, `warn` for one that is well-formed but inert where it
+ * sits and therefore silently ignored.
  */
 export interface RenderTagWarning {
    subject: string;
@@ -314,11 +331,64 @@ function isGivenBindingFailure(err: unknown): boolean {
 }
 
 /**
- * Name budget for {@link Model.requestChainProvesUngated}'s walk over a
- * request's own derivation declarations. Exceeding it fails the proof (and so
- * denies), which is why it only has to be larger than any real chain.
+ * Budget for a walk over a request's own derivation declarations. Exceeding it
+ * fails the proof (and so denies), which is why it only has to be larger than
+ * any real chain.
+ *
+ * Read by two walks that spend it differently, so it bounds two different
+ * things: {@link Model.requestChainProvesUngated} counts TOTAL NAMES visited
+ * (`seen.size`), while {@link Model.derivesFromCurated} counts STACK DEPTH
+ * (`inProgress.size`), since its every-base proof recurses. A wide, shallow
+ * derivation graph can therefore exhaust one and not the other. Both directions
+ * deny on exhaustion, so the divergence costs an over-denial rather than an
+ * admission, and only past a depth no hand-written query reaches.
+ *
+ * Note the two budgets bound different quantities: the authorize walk's bounds
+ * TOTAL WORK, while bounding depth leaves the boundary's total work at
+ * O(edges x depth). That is not a denial-of-service lever -- `every` short
+ * circuits on the first base that fails and positive results are memoized, so a
+ * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
+
+/**
+ * Whether a run-time store failure may be retried against the live warehouse,
+ * decided from the bindings that produced the serve shape.
+ *
+ * Extracted and exported for tests because it has been wrong in BOTH directions:
+ * first by letting a rollup veto, then by filtering rollups out so a package with
+ * only rollups could never degrade at all.
+ *
+ * The rule is one predicate. An AUTHORED binding votes, and one declaring
+ * anything but `live` vetoes for the whole shape — that is what the `every` was
+ * always for, and it is deliberately coarse (per package, not per query). A
+ * ROLLUP binding is permissive: it never vetoes and never enables on its own.
+ *
+ * A rollup is permissive because pre-aggregation has no correctness dimension,
+ * which is not a preference but published semantics: docs/preaggregation.md says
+ * a stale rollup "drops out of the serving set and queries recompute from the
+ * base. The answer is the same either way, which is what makes a refresh schedule
+ * a cost decision rather than a correctness one." A rollup that ERRORED on a store
+ * failure instead of recomputing would contradict that sentence. No correctness
+ * dimension, therefore no error dimension.
+ *
+ * The empty case stays false: nothing routed, so there is nothing to degrade.
+ */
+export function bindingsAllowDegradeToLive(
+   bindings: readonly ServeBinding[],
+): boolean {
+   return (
+      bindings.length > 0 &&
+      bindings.every(
+         (b) => b.origin === "preaggregate" || b.freshnessFallback === "live",
+      )
+   );
+}
+
+/** The one empty result {@link Model.preaggregateViolations} hands back, so its
+ *  identity contract holds on the branch that never reaches the memo. */
+const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
+   Object.freeze([]);
 
 export class Model {
    private packageName: string;
@@ -365,6 +435,30 @@ export class Model {
     * compiled model serve every query.
     */
    private preaggregateServeMaterializer?: ModelMaterializer;
+   /**
+    * The rollups this model's `#@ preaggregate` declarations describe.
+    *
+    * Held separately from {@link preaggregateServeMaterializer} because the two
+    * fail independently: the companion is a compile that can fail, while these
+    * are a pure function of the compiled contents. A rollup served from the
+    * storage tier needs only the plans — they carry the merged measures its
+    * virtual source declares — so a companion that will not compile must not also
+    * disable lake serving.
+    */
+   private preaggregateRollupPlans: RollupPlan[] = [];
+   /**
+    * Bumped whenever {@link preaggregateRollupPlans} is replaced, and folded into
+    * the serve-shape cache key.
+    *
+    * Clearing the cache when the plans change is not enough on its own, because a
+    * query in flight can outlive the clear: it reads the plans, awaits a compile,
+    * and writes its shape afterwards. A package reload publishes its new models
+    * before this method has run for them, so that in-flight query can be one that
+    * saw NO plans — and its group-less shape would then be cached under a key that
+    * depends only on the bindings, and reused by every later query until the next
+    * bind. Keying on the version means such a write is simply never read again.
+    */
+   private preaggregatePlansVersion = 0;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -384,6 +478,10 @@ export class Model {
    /** Memo for {@link getDeclaredSourceQueryMetadata}. */
    private declaredSourceQueryMetadataMemo:
       | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
+   /** Memo for {@link preaggregateViolations}. */
+   private preaggregateViolationsMemo:
+      | readonly Readonly<PreaggregateViolation>[]
       | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- every top-level source's own gate, and every
@@ -1015,17 +1113,7 @@ export class Model {
          const modelDef = this.modelDef;
          if (!modelDef) return false;
          try {
-            const structs: SourceDef[] = [];
-            for (const obj of Object.values(modelDef.contents)) {
-               if (isSourceDef(obj)) structs.push(obj);
-            }
-            for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
-               const entry = value.entry;
-               if (entry.type === "source_registry_reference") continue;
-               if (isSourceDef(entry)) structs.push(entry);
-            }
-            structs.push(...derivedStructsReachable(structs, modelDef));
-            for (const struct of structs) {
+            for (const struct of this.reachableStructsForNoteSweep(modelDef)) {
                // `annotationTexts` (whole chain), not `ownLevelNoteTexts`: this
                // has to see a gate demoted to `annotations.inherits` by a stray
                // annotation on the deriving statement, which is the shape the
@@ -1053,6 +1141,66 @@ export class Model {
          }
       })();
       return this.anyAuthorizeNote;
+   }
+
+   /**
+    * Every struct {@link hasAnyAuthorizeNote} and {@link hasAnyPartitionNote}
+    * sweep for an annotation tag: every top-level `modelDef.contents` source,
+    * every non-reference `sourceRegistry` entry, plus everything reachable
+    * from those through a derivation hop ({@link derivedStructsReachable}).
+    * Extracted so the two sweeps — otherwise identical except for which tag
+    * they look for — can't drift apart on WHICH structs get walked, only on
+    * what they walk them for. See {@link hasAnyAuthorizeNote}'s doc for why
+    * this has to be a superset of what `collectEntryPointGates` can reach.
+    */
+   private reachableStructsForNoteSweep(modelDef: ModelDef): SourceDef[] {
+      const structs: SourceDef[] = [];
+      for (const obj of Object.values(modelDef.contents)) {
+         if (isSourceDef(obj)) structs.push(obj);
+      }
+      for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
+         const entry = value.entry;
+         if (entry.type === "source_registry_reference") continue;
+         if (isSourceDef(entry)) structs.push(entry);
+      }
+      structs.push(...derivedStructsReachable(structs, modelDef));
+      return structs;
+   }
+
+   /** Memoized {@link hasAnyPartitionNote}; `undefined` until first asked. */
+   private anyPartitionNote: boolean | undefined;
+
+   /**
+    * Whether this model carries a `#(partition)` annotation ANYWHERE — the
+    * `#(partition)` counterpart of {@link hasAnyAuthorizeNote}, sharing its
+    * struct sweep ({@link reachableStructsForNoteSweep}) and its reasoning
+    * for why that sweep must be a superset of what a per-query walk
+    * (`resolveEntryPointPartitions`) can reach. Own annotations only — unlike
+    * the authorize sweep, this does not also check `struct.fields`, since
+    * `#(partition)` is a source-level-only annotation (see
+    * `partition_annotation.ts`'s module doc); a field can never carry one.
+    */
+   private hasAnyPartitionNote(): boolean {
+      if (this.anyPartitionNote !== undefined) return this.anyPartitionNote;
+      this.anyPartitionNote = ((): boolean => {
+         const modelDef = this.modelDef;
+         if (!modelDef) return false;
+         try {
+            for (const struct of this.reachableStructsForNoteSweep(modelDef)) {
+               if (
+                  containsPartitionAnnotationTag(
+                     annotationTexts(struct.annotations) ?? [],
+                  )
+               ) {
+                  return true;
+               }
+            }
+            return false;
+         } catch {
+            return true;
+         }
+      })();
+      return this.anyPartitionNote;
    }
 
    /**
@@ -1278,6 +1426,11 @@ export class Model {
    ): Promise<{
       entryPointGates: GateEntry[];
       modelDef: ModelDef | undefined;
+      /** The run target's own compiled struct — see `resolveRunTargetStruct`.
+       *  Returned alongside the authorize walk's result so a caller
+       *  (`probeEntryPointGates`) can resolve `#(partition)` pairs for the
+       *  SAME entry point without a second `getPreparedQuery()` compile. */
+      struct: SourceDef | undefined;
    }> {
       const ownSourceName =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
@@ -1401,7 +1554,7 @@ export class Model {
             entryPointGates = Array.from(byKey.values());
          }
       }
-      return { entryPointGates, modelDef };
+      return { entryPointGates, modelDef, struct };
    }
 
    /**
@@ -1468,16 +1621,8 @@ export class Model {
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
       skipOwnSourceGate = false,
-   ): Promise<
-      Array<{
-         label: string;
-         graftTarget: string;
-         filterText: string;
-         condition: FilterCondition;
-         givenNames: readonly string[];
-      }>
-   > {
-      const { entryPointGates, modelDef } =
+   ): Promise<PartitionGraftEntry[]> {
+      const { entryPointGates, modelDef, struct } =
          await this.collectAuthorizeEntryPointGates(
             runnable,
             givens,
@@ -1492,13 +1637,11 @@ export class Model {
       // ~microsecond one-row DuckDB queries, so there is nothing worth deduping.
       // (Cycles/repeat structs are already pruned in collectEntryPointGates
       // by struct identity, so the list holds no literal duplicates.)
-      const rowLevel: Array<{
-         label: string;
-         graftTarget: string;
-         filterText: string;
-         condition: FilterCondition;
-         givenNames: readonly string[];
-      }> = [];
+      // Shared with `#(partition)` below — `PartitionGraftEntry` is the same
+      // {label, graftTarget, filterText, condition, givenNames} shape an
+      // authorize row-level classification produces, so both feed the one
+      // graft list `buildGraftedMaterializer` grafts as a unit.
+      const rowLevel: PartitionGraftEntry[] = [];
       for (const entry of entryPointGates) {
          const resolution = modelDef
             ? await this.resolveGateShape(entry, modelDef, graftScope)
@@ -1521,6 +1664,34 @@ export class Model {
          if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
          throw new AccessDeniedError(
             `Access denied for source "${entry.label}".`,
+         );
+      }
+
+      // `#(partition)` composes with `#(authorize)` in the SAME `rowLevel`
+      // list — both graft onto the same target's `filterList`
+      // (`buildGraftedMaterializer`), so a partitioned AND authorize-gated
+      // source is filtered by both conjunctively, never one replacing the
+      // other. A partition pair with nowhere to graft denies (see
+      // `resolvePartitionGraftEntries`'s doc) rather than admitting the query
+      // unfiltered — the same fail-closed posture as a rejected authorize
+      // gate above.
+      try {
+         rowLevel.push(
+            ...(await resolvePartitionGraftEntries(
+               struct,
+               modelDef,
+               graftScope,
+               this.gateClassificationDeps(),
+            )),
+         );
+      } catch (err) {
+         recordRowLevelGateDecision("denied_by_gate");
+         logger.debug("Partition filter could not be resolved; denying", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         throw new AccessDeniedError(
+            `Access denied for source "${(struct as { as?: string } | undefined)?.as ?? struct?.name ?? "unknown"}".`,
          );
       }
       return rowLevel;
@@ -1601,7 +1772,15 @@ export class Model {
                ),
             );
          }
-         return gates.length > 0;
+         // `#(partition)` is the SAME "serve-shape carries no row filter"
+         // hazard as an authorize gate (see `getQueryResults`'s
+         // `routingBlockedByRowLevelGate` doc) — no composite branch to walk
+         // here, since a partitioned composite is refused outright at publish
+         // (`assertPartitionAnnotationsValid`).
+         return (
+            gates.length > 0 ||
+            resolveEntryPointPartitions(struct, modelDef).length > 0
+         );
       } catch {
          // Cannot tell whether the entry point carries a row-level gate — and,
          // once this returns false, nothing downstream can catch a wrong
@@ -2699,12 +2878,35 @@ export class Model {
     * derived name. The declared filter belongs to the source, not to the name
     * it is read under. Returns undefined when the run target does not derive
     * from a protected source.
+    *
+    * Scans {@link stripMalloyCommentsAndLiterals} text rather than the caller's
+    * raw text. Both reads here decide whether a filter is INJECTED, and there is
+    * no post-compile backstop on this path, so a name this walk fails to reach
+    * is served unfiltered and silently. Raw text let a caller arrange that four
+    * ways, each of which resolved to undefined on a query that really does read
+    * a protected source:
+    *
+    *  - a comment between `is` and the base (`source: a is -- c\n protected`)
+    *    ERASES the derivation edge, which the compiler still reads around;
+    *  - a declaration forged inside a string literal injects an edge, and
+    *    {@link buildSourceAliasMap} is last-declaration-wins, so it REPLACES the
+    *    real base for that name;
+    *  - a forged `run:` inside a literal or a comment re-points
+    *    {@link extractRunTargetSourceName} at a name that was never the target.
+    *
+    * Stripping first closes all four, because none of that text is syntax any
+    * more. It does not close a derivation that composes through a named
+    * `query:`, which this walk still cannot follow: it resolves a SINGLE source
+    * name, and a set-valued walk would have to decide which protected source's
+    * filters apply to a name with several bases. That needs its own change.
     */
    private resolveFilterSource(query?: string): string | undefined {
-      const target = extractRunTargetSourceName(query);
-      if (!target || !query) return undefined;
+      if (!query) return undefined;
+      const scanned = stripMalloyCommentsAndLiterals(query);
+      const target = extractRunTargetSourceName(scanned);
+      if (!target) return undefined;
 
-      const aliasOf = buildSourceAliasMap(query);
+      const aliasOf = buildSourceAliasMap(scanned);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;
@@ -2775,6 +2977,13 @@ export class Model {
             filterMap = sourceResult.filterMap;
             const queryResult = Model.getQueries(modelDef);
             queries = queryResult.queries;
+
+            // A composite source that itself declares `#(partition)` cannot
+            // graft — see `assertPartitionAnnotationsValid`'s doc. Checked
+            // first: it is a load-time authoring mistake, not an authorize
+            // shape, so it should not read as a stranger error from the
+            // authorize checks below.
+            assertPartitionAnnotationsValid(modelDef);
 
             // A `#(authorize)` annotation in a position nothing enforces (a
             // top-level `query:` statement, or a field inside a `source:`
@@ -3283,6 +3492,31 @@ export class Model {
    }
 
    /**
+    * The compiled model IR, or undefined when the model failed to compile.
+    *
+    * This is the only place a field's EXPRESSION is available. `sourceInfos`
+    * and `sources` are both expression-free projections -- the stable
+    * `Malloy.DimensionInfo` is `{name, type, annotations}`, and `ApiSource`
+    * carries no field list at all -- so a caller that needs to know whether
+    * one field is a rename of another, or what a measure computes, has
+    * nowhere else to look. Retrieval used to guess the first from the field
+    * NAME, and that guess is what this exists to retire.
+    *
+    * Deliberately NOT curated: `curateForDiscovery` filters the discovery
+    * surface by the package's `explores` list, and this is IR rather than a
+    * discovery surface. Callers that also read `getSourceInfos()` are already
+    * curated by it, and should join onto that -- taking this only as a lookup
+    * for fields the curated list has already admitted.
+    *
+    * Populated on both construction paths, `Model.create` and
+    * `Model.fromSerialized`, so it is present for worker-pool package loads
+    * (the production path) as well as for in-process compiles.
+    */
+   public getModelDef(): ModelDef | undefined {
+      return this.modelDef;
+   }
+
+   /**
     * The facts dashboard discovery reads off this model, or undefined when the
     * model failed to compile.
     *
@@ -3305,6 +3539,16 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
+         // The EFFECTIVE gate per source, inheritance already resolved by the
+         // extraction, so a suggest over a gated source learns which givens its
+         // gate reads.
+         new Map(
+            (this.sources ?? []).flatMap((source) =>
+               source.name
+                  ? [[source.name, source.authorize ?? []] as const]
+                  : [],
+            ),
+         ),
       );
    }
 
@@ -3564,27 +3808,78 @@ export class Model {
       );
    }
 
-   /** True if `name` reaches a curated source by walking the ad-hoc text's
-    *  `source: NAME is BASE` derivation declarations — composition over a
-    *  queryable source is itself queryable. */
+   /**
+    * True if `name` is PROVABLY a composition over the curated surface, by
+    * walking the ad-hoc text's own derivation declarations — composition over
+    * a queryable source is itself queryable.
+    *
+    * Reads {@link buildDerivationBaseMap} over
+    * {@link stripMalloyCommentsAndLiterals} text, the same hardened pair the
+    * authorize gate's {@link requestChainProvesUngated} uses, rather than the
+    * narrow {@link buildSourceAliasMap}. That map was `source:`-only,
+    * last-declaration-wins, and read RAW text, which cost correctness at both
+    * ends:
+    *
+    *  - **It missed `query:` hops.** The pre-aggregate idiom composes through
+    *    one — `query: agg is <curated> -> { … }`, `source: blended is agg
+    *    extend { … }`, `run: blended` — so the walk dead-ended on `agg`, a
+    *    name that is neither curated nor a `source:` alias, and denied a query
+    *    that only ever reads a source the caller may plainly read. Because
+    *    `/compile` is exempt from this boundary by design, the same text
+    *    compiled clean first, so the 404 explained nothing.
+    *  - **Raw text and last-wins were an admission hazard.** A declaration
+    *    forged inside a string literal (`where: note = 'source: x is
+    *    <curated>'`) or hidden behind a comment could inject an alias edge,
+    *    and last-wins let a second declaration REPLACE a name's real base.
+    *    Stripping closes the forging; the base map's set-per-name closes the
+    *    replacing.
+    *
+    * The quantifier is the part that has to be inverted from the authorize
+    * gate, and it is why the wider map is safe HERE. There, an extra edge
+    * widens DENIAL, so a name is denied if ANY branch reaches a gated source.
+    * Here an extra edge would widen ADMISSION, so a name is admitted only if
+    * EVERY declared base for it proves out: a shadowing or forged edge can
+    * then only add another obligation, never discharge one. For the ordinary
+    * one-base-per-name chain — everything that compiles — this is exactly the
+    * old walk's answer.
+    *
+    * Fails closed on anything it cannot ground: a name with no declared base,
+    * a chain longer than {@link REQUEST_CHAIN_MAX_NAMES}, and a cycle (a
+    * back-edge proves nothing, so `a is b` / `b is a` is not admitted).
+    */
    private derivesFromCurated(name: string, query: string): boolean {
       // Hoisted out of the walk: the own-closure set is the same for every link
       // in the derivation chain, and only the identity check varies by name.
       const own = this.ownCuratedSourceNames();
       const packageCurated = this.queryBoundary.packageCuratedSources;
-      const aliasOf = buildSourceAliasMap(query);
-      let current: string | undefined = name;
-      const seen = new Set<string>();
-      while (current && !seen.has(current)) {
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      // Only positive results are memoized: a name proven curated is proven
+      // wherever it appears, while a `false` may be the local verdict of the
+      // in-progress cycle guard rather than a property of the name.
+      const proven = new Set<string>();
+      const inProgress = new Set<string>();
+      const proves = (current: string): boolean => {
          if (
             own.has(current) ||
             this.admittedByPackage(current, packageCurated)
          )
             return true;
-         seen.add(current);
-         current = aliasOf.get(current);
-      }
-      return false;
+         if (proven.has(current)) return true;
+         // A back-edge grounds nothing, and neither does a chain this long —
+         // it is not a real derivation, so stop on the deny side.
+         if (inProgress.has(current)) return false;
+         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return false;
+         const bases = basesOf.get(current);
+         if (!bases || bases.size === 0) return false;
+         inProgress.add(current);
+         const ok = Array.from(bases).every((base) => proves(base));
+         inProgress.delete(current);
+         if (ok) proven.add(current);
+         return ok;
+      };
+      return proves(name);
    }
 
    /**
@@ -3597,12 +3892,30 @@ export class Model {
     * Returned rather than thrown: the owning Package joins these across its
     * models into one rejection, so an author fixing a package sees every bad
     * declaration at once instead of one per publish.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}, and it
+    * matters more here: `preaggregateAccessWarnings` puts this on
+    * `getPackageMetadata()`, which `/status` reaches for every package on every
+    * poll, and the walk below re-parses the annotations on every field of every
+    * source. A compiled model's annotations never change — a reload replaces the
+    * `Model` object outright — so the memo needs no invalidation.
+    *
+    * `readonly` down to the element because callers now share one array rather
+    * than each getting a fresh walk: a caller that sorted the array, or edited a
+    * violation's message, would be editing every later caller's copy. Enforced by
+    * the type rather than `Object.freeze` — the sharing is what makes this cheap,
+    * and a deep freeze would put back a per-element cost.
     */
-   public preaggregateViolations(): PreaggregateViolation[] {
-      if (!this.modelDef) return [];
-      return validateModelPreaggregation(
-         this.modelDef.contents as Record<string, unknown>,
-      );
+   public preaggregateViolations(): readonly Readonly<PreaggregateViolation>[] {
+      // Shared rather than a fresh `[]`, so the identity contract above holds on
+      // this branch too (a model that failed to compile has no `modelDef`).
+      if (!this.modelDef) return NO_PREAGGREGATE_VIOLATIONS;
+      if (this.preaggregateViolationsMemo === undefined) {
+         this.preaggregateViolationsMemo = validateModelPreaggregation(
+            this.modelDef.contents as Record<string, unknown>,
+         );
+      }
+      return this.preaggregateViolationsMemo;
    }
 
    /**
@@ -3622,7 +3935,27 @@ export class Model {
       buildManifest?: BuildManifest["entries"],
    ): Promise<void> {
       this.preaggregateServeMaterializer = undefined;
+      this.preaggregateRollupPlans = [];
+      // The storage serve shape embeds these plans (a rollup member's measures
+      // come from them), and the shape cache is keyed on the BINDING set, which a
+      // model edit need not change. So the plans changing has to drop the shape
+      // explicitly, or an edited grain would keep serving through the shape
+      // compiled for the previous one.
+      this.serveShapeCache = undefined;
       if (!this.modelDef || this.modelType !== "model") return;
+      // Planned directly rather than taken from the compile below, so a companion
+      // that fails to compile still leaves the storage tier able to serve these
+      // rollups: planning is pure, the compile is not.
+      //
+      // Statically imported, unlike the compile helper below. That one needs a
+      // dynamic import to break a real cycle; this module is already in this
+      // file's static graph by way of `preaggregation_serve_bindings`, so a
+      // dynamic import here bought nothing and put an await between the reset
+      // above and the assignment below.
+      this.preaggregateRollupPlans = planModelPreaggregation(
+         this.modelDef.contents as Record<string, unknown>,
+      );
+      this.preaggregatePlansVersion += 1;
       // Dynamic import to break a module cycle: the helper compiles through
       // Model.getModelRuntime, so importing it at the top of this file would make
       // the two modules import each other.
@@ -3652,14 +3985,24 @@ export class Model {
     * annotated source view (`run: <source> -> <view>`) compile-only -- no
     * execution -- to get a stable result schema, then runs the renderer's
     * headless `validateRenderTags`. Targets with no annotations carry no render
-    * tags, so they are skipped without compiling. Any error-severity finding
-    * (e.g. a child-only `# big_value { sparkline=... }` placed on a view with no
-    * activating big_value) is logged as a warning naming the offending target;
-    * it does not fail the package load. Such a tag still renders as
-    * "[object Object]" at query time, so the warning is the operator-facing
-    * signal. Lower-severity findings are left for the query-time `renderLogs`
-    * surface. The findings are returned so the owning Package can surface them
-    * as non-fatal `warnings` on its response.
+    * tags, so they are skipped without compiling. Every finding the renderer
+    * reports is logged as a warning naming the offending target; none of them
+    * fail the package load. The findings are returned so the owning Package can
+    * surface them as non-fatal `warnings` on its response, tagged with the
+    * renderer's own severity:
+    *
+    *   - `error`: the tag is malformed for the field it sits on (e.g. a
+    *     child-only `# big_value { sparkline=... }` on a view with no activating
+    *     big_value, or `# colspan=abc`). It renders as "[object Object]" or an
+    *     inline error at query time.
+    *   - `warn`: the tag is well-formed but inert where it sits, so the renderer
+    *     ignores it (`# colspan` outside `# dashboard { columns=N }`, or a
+    *     colspan wider than the grid, which is clamped). Nothing looks broken at
+    *     query time -- the layout just is not what the author wrote -- which is
+    *     why load time is the only place this becomes visible.
+    *
+    * `warn` and `error` are the only severities the renderer emits, so no
+    * finding is dropped here.
     */
    public async validateRenderTags(): Promise<RenderTagWarning[]> {
       const mm = this.modelMaterializer;
@@ -3723,20 +4066,45 @@ export class Model {
             // compile path; don't mask that with a render-tag error.
             continue;
          }
-         const errors = validateRenderTags(result).filter(
-            (log) => log.severity === "error",
+         // Keep both severities. The renderer reports a tag that is well-formed
+         // but inert as `warn`, not `error` -- `# colspan` outside columns mode
+         // ("Ignored # colspan ... colspan only applies in columns mode"), or a
+         // colspan wider than the grid -- so filtering to error-severity
+         // dropped exactly the findings an author cannot otherwise see: the tag
+         // parses, the package loads, the query runs, and the layout silently
+         // ignores it. `warn` and `error` are the only severities the renderer
+         // emits, so this is everything it reports, and `severity` keeps the two
+         // apart for the operator.
+         //
+         // Publisher-owned tags are dropped first. `# artifact` and `# drill`
+         // share the `#` namespace but mean nothing to the renderer, which
+         // reports each as `Unknown render tag` at WARN severity -- invisible
+         // while this filtered to errors, and a finding on every dashboard file
+         // the moment it stopped. The query-time paths already route through
+         // filterPublisherOwnedRenderLogs for the same reason; this is the
+         // third call site, not a second mechanism.
+         // No severity filter here. `warn` and `error` are the only two the
+         // renderer emits today, but filtering to that pair would make an
+         // unrecognized third vanish -- this same bug again, a finding the
+         // author cannot see any other way, dropped on the way out. The
+         // narrowing below surfaces anything unexpected as `warn` instead.
+         const logs = filterPublisherOwnedRenderLogs(
+            validateRenderTags(result),
+            this.modelPath,
          );
-         if (errors.length > 0) {
+         if (logs.length > 0) {
+            // An inert tag is not an invalid one, so don't call it "Invalid";
+            // the per-finding messages already say which kind each is.
             logger.warn(
-               `Invalid renderer configuration on '${target.label}': ${errors
-                  .map((e) => e.message)
+               `Render tag findings on '${target.label}': ${logs
+                  .map((e) => `[${e.severity}] ${e.message}`)
                   .join("; ")}`,
             );
-            for (const e of errors) {
+            for (const e of logs) {
                findings.push({
                   subject: target.label,
                   message: e.message,
-                  severity: "error",
+                  severity: e.severity === "error" ? "error" : "warn",
                });
             }
          }
@@ -3917,6 +4285,16 @@ export class Model {
        * rather than the package-wide field.
        */
       bindings: ServeBinding[];
+      /**
+       * Whether a pre-aggregation rollup actually ANSWERED this query, rather than
+       * merely being available to. Read from the probe SQL: a rollup's physical
+       * table appears in it only if the composite resolver chose that member.
+       *
+       * Guessing from "the shape contains rollup groups" would over-report every
+       * query that touched an ordinary stored source in the same package, which
+       * would defeat the reason the distinction is recorded at all.
+       */
+      origin: "persist" | "preaggregate";
    }> {
       // Gate by freshness first: only bindings that should serve their table now
       // enter the shape. Keying the cache on the FRESH subset means it recompiles
@@ -3928,19 +4306,60 @@ export class Model {
          // nothing to serve from storage; fall through to live (caller's catch).
          throw new Error("no fresh storage serve bindings for this query");
       }
-      const key = freshBindings
-         .map((b) => `${b.sourceName}@${b.destinationName}/${b.virtualHandle}`)
-         .sort()
-         .join("|");
+      const key =
+         `v${this.preaggregatePlansVersion}|` +
+         freshBindings
+            .map(
+               (b) => `${b.sourceName}@${b.destinationName}/${b.virtualHandle}`,
+            )
+            .sort()
+            .join("|");
+      // Split by origin. A rollup CANNOT go through serveBindingsWithRefinements:
+      // its source name names nothing in the author's model, so the refinement
+      // lift finds no fields and the schema narrowing intersects to nothing — see
+      // preaggregation_serve_bindings.ts for what each half does to a rollup, and
+      // why getting it wrong costs the whole package's storage serving rather than
+      // the rollup's.
+      const ordinary = freshBindings.filter((b) => b.origin !== "preaggregate");
+      const { groups, conflicts } = rollupServeBindings(
+         freshBindings,
+         this.preaggregateRollupPlans,
+      );
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
+         for (const conflict of conflicts) {
+            // info, matching the storage tier's own fallback line: a dropped group
+            // is silent by design — the query succeeds, the rows are correct, only
+            // the acceleration is lost — so at debug an operator has no way to tell
+            // a package whose rollups never serve from one that has none.
+            //
+            // Inside the cache-miss branch, not beside it. A conflict is a property
+            // of the binding set rather than of a query, so logging it per query
+            // would repeat one unchanging line for every request against the
+            // package — noise that buries the fallback lines that ARE per query.
+            logger.info(
+               "Not serving a source's rollups from storage; queries are answered from the base",
+               {
+                  modelPath: this.modelPath,
+                  source: conflict.baseSourceName,
+                  reason: conflict.reason,
+               },
+            );
+         }
          this.serveShapeCache = {
             key,
             materializer: await this.compileServeShape(
-               this.serveBindingsWithRefinements(freshBindings),
+               this.serveBindingsWithRefinements(ordinary),
+               groups,
             ),
          };
       }
-      const virtualMap = buildVirtualMap(freshBindings);
+      // Rollup members are not in `ordinary`, so their handles have to be mapped
+      // explicitly or the composite resolves to nothing at run time.
+      const virtualMap = buildVirtualMap([
+         ...ordinary,
+         ...groups.flatMap((g) => g.members),
+      ]);
+
       const runnable =
          this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
       // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
@@ -3948,8 +4367,17 @@ export class Model {
       // so without this the error would escape at prepare/run instead of at the
       // caller's try, defeating the safe fallback. Cheap relative to the run. The
       // serve shape is pure virtual sources, so no buildManifest is needed.
-      await runnable.getSQL({ virtualMap });
-      return { runnable, virtualMap, bindings: freshBindings };
+      const probeSQL = await runnable.getSQL({ virtualMap });
+      // The rollup members' physical paths, quoted exactly as the virtualMap
+      // substitutes them, so this compares like with like rather than re-deriving
+      // the quoting and drifting from it.
+      const rollupPaths = [
+         ...buildVirtualMap(groups.flatMap((g) => g.members)),
+      ].flatMap(([, byHandle]) => [...byHandle.values()]);
+      const origin = rollupPaths.some((path) => probeSQL.includes(path))
+         ? ("preaggregate" as const)
+         : ("persist" as const);
+      return { runnable, virtualMap, bindings: freshBindings, origin };
    }
 
    /**
@@ -3960,29 +4388,53 @@ export class Model {
     * disable storage serving for every source in the package. So the shape is
     * validated once (per binding set — the result is cached) and, on failure,
     * the riskiest refinement category is dropped and it retries: full → drop
-    * views → drop views + joins → base-only. Base-only is pure virtual sources
-    * and always compiles, so it is the guaranteed floor. Each surviving tier
+    * views → drop views + joins → base-only. Base-only carries the virtual
+    * sources and their filters, so it compiles for every source whose filters
+    * can be reproduced — it is the floor, but no longer a guaranteed one: a
+    * filter that cannot be reproduced fails every tier, and the caller then
+    * serves live rather than serving unfiltered. Each surviving tier
     * still serves everything it can; the per-query eager compile in
     * {@link loadServeShapeQuery} remains the final net for query-specific
     * ineligibility.
     */
    private async compileServeShape(
       enriched: ServeBinding[],
+      /**
+       * Pre-aggregation groups, passed through every escalation tier UNCHANGED.
+       * The escalation exists to salvage a shape when an author's refinement
+       * cannot be reproduced; a rollup's measures are generated from its own plan
+       * and are the only reason its member exists, so dropping them would not
+       * rescue anything — it would leave a member that compiles and answers
+       * nothing.
+       */
+      rollupGroups: RollupShapeGroup[] = [],
+      /**
+       * Set on the one re-entry this method makes after withholding bindings
+       * whose filters cannot be reproduced. It bounds the recursion to a single
+       * extra pass: a floor failure on the retry is answered by serving live
+       * rather than by isolating again.
+       */
+      isRetry = false,
    ): Promise<ModelMaterializer> {
-      // Richest first; each predicate keeps fewer refinement kinds than the last.
-      const keepKinds: Array<ReadonlySet<string>> = [
-         new Set(["join", "dimension", "measure", "view"]),
-         new Set(["join", "dimension", "measure"]),
-         new Set(["dimension", "measure"]),
-         new Set(),
-      ];
-      // Skip escalation entirely when nothing beyond the base is carried.
-      const hasRefinements = enriched.some(
-         (b) => (b.refinements ?? []).length > 0,
-      );
-      const lastTier = keepKinds.length - 1;
+      // The ladder, richest first. Built by {@link buildServeShapeTiers} rather
+      // than here so the invariant it must hold — every tier keeps the
+      // never-thinned kinds — is assertable in one place. `filter` is one of
+      // those: the other kinds are optimizations, while a source's `where:` is
+      // part of what the source MEANS, so a tier that dropped it would answer
+      // with rows the source excludes.
+      const tiers = buildServeShapeTiers(rollupGroups);
+      // Skip escalation entirely when nothing beyond the base is carried — but a
+      // GROUP is something beyond the base. Reading this off `enriched` alone left
+      // the pure-rollup case (no ordinary bindings at all) returning tier 0
+      // unprobed, so a broken group was not detected when the shape was built and
+      // surfaced instead as a per-query live fallback for everything in the
+      // package.
+      const nothingToEscalate =
+         rollupGroups.length === 0 &&
+         !enriched.some((b) => (b.refinements ?? []).length > 0);
+      const lastTier = tiers.length - 1;
       for (let tier = 0; tier <= lastTier; tier++) {
-         const keep = keepKinds[tier];
+         const { keep, groups } = tiers[tier];
          const shaped =
             tier === 0
                ? enriched
@@ -3996,10 +4448,67 @@ export class Model {
                          }
                        : b,
                  );
-         const materializer = this.buildServeShapeMaterializer(shaped);
-         // Base-only (last tier) always compiles; trust it without a probe. And
-         // when there are no refinements at all, tier 0 IS the base — skip too.
-         if (tier === lastTier || (tier === 0 && !hasRefinements)) {
+         const materializer = this.buildServeShapeMaterializer(shaped, groups);
+         // The last tier is virtual bases plus their filters. Unlike the tiers
+         // above it, it can fail: a filter that cannot be reproduced (one
+         // reaching through a join whose target is not materialized, or over a
+         // column the source hides) fails every tier including this one. It is
+         // therefore PROBED, and a failure is answered by withholding the
+         // offending bindings — never by thinning their filters, which is the
+         // unfiltered serve this ladder exists to prevent.
+         if (tier === lastTier) {
+            try {
+               await materializer.getModel();
+               return materializer;
+            } catch (err) {
+               if (isRetry) return materializer;
+               const servable = await this.bindingsWhoseFiltersCompile(
+                  enriched,
+                  keep,
+               );
+               const withheld = enriched
+                  .filter((b) => !servable.includes(b))
+                  .map((b) => b.sourceName);
+               if (servable.length === 0 || withheld.length === 0) {
+                  // Nothing left to serve, or every binding compiles alone so the
+                  // failure is in their COMBINATION — a duplicate source name is
+                  // the reachable one, since the floor carries no joins and so
+                  // cannot have an ordering cycle. Either way the model is served
+                  // live.
+                  logger.warn(
+                     "Storage serve shape failed at its floor and no binding could be isolated; serving live",
+                     {
+                        model: this.modelPath,
+                        error: err instanceof Error ? err.message : String(err),
+                     },
+                  );
+                  return materializer;
+               }
+               logger.warn(
+                  "Withheld storage serve bindings whose filters cannot be reproduced; those sources serve live",
+                  {
+                     model: this.modelPath,
+                     withheld,
+                     stillServed: servable.map((b) => b.sourceName),
+                     error: err instanceof Error ? err.message : String(err),
+                  },
+               );
+               // Re-enter the LADDER rather than returning this floor shape: the
+               // survivors did nothing wrong, and rebuilding them here would cost
+               // every one of them its joins, views and rollups because a
+               // sibling's filter was unservable. Same rationale as the
+               // group-dropping rung — a failure should cost its own cause and
+               // nothing else.
+               return await this.compileServeShape(
+                  servable,
+                  rollupGroups,
+                  true,
+               );
+            }
+         }
+         // Nothing to escalate means tier 0 IS the floor's shape, and the loop
+         // would otherwise probe a shape it cannot improve on.
+         if (tier === 0 && nothingToEscalate) {
             return materializer;
          }
          try {
@@ -4018,27 +4527,97 @@ export class Model {
          }
       }
       // Unreachable: the last tier returns above. Satisfy the type checker.
+      // Groups dropped and the never-thinned kinds kept, matching what that last
+      // tier is — stripping every refinement here would reintroduce the
+      // unfiltered serve this ladder exists to prevent.
+      const floor = tiers[tiers.length - 1].keep;
       return this.buildServeShapeMaterializer(
-         enriched.map((b) => ({ ...b, refinements: [] })),
+         enriched.map((b) => ({
+            ...b,
+            refinements: (b.refinements ?? []).filter((r) => floor.has(r.kind)),
+         })),
+         [],
       );
+   }
+
+   /**
+    * The bindings whose own filters the serve shape can reproduce, found by
+    * compiling each alone at the floor — base plus filters, the smallest shape a
+    * binding can be served from. One compile per binding, on a failure path whose
+    * result is cached.
+    *
+    * Probed at the FLOOR on purpose: a binding whose view cannot be reproduced
+    * still compiles here and is kept, because thinning is the right answer for a
+    * view and the ladder above already does it. Only filters survive to this
+    * tier, so a failure here is a filter failure.
+    *
+    * Known limit, and the reason that reasoning does not fully generalise: the
+    * floor carries no joins, so a filter reaching through a join whose target IS
+    * materialized fails this solo probe even though it compiles at the richer
+    * tiers. Such a binding is over-withheld and serves live. Fails safe, and no
+    * worse than before filters were carried at all, but it is why a source can
+    * lose the tier to a sibling it has nothing to do with. Fixing it means
+    * probing a binding together with its join-dependency closure rather than
+    * alone — `orderBindingsByJoinDeps` already computes that ordering — which is
+    * more machinery than the case has so far warranted.
+    *
+    * Withholding, never thinning: a binding that does not compile is absent from
+    * the shape, so queries on it fail to resolve and serve live. Thinning its
+    * filters instead would serve it unfiltered, which is the defect this whole
+    * mechanism exists to prevent.
+    */
+   private async bindingsWhoseFiltersCompile(
+      enriched: ServeBinding[],
+      floorKeep: ReadonlySet<string>,
+   ): Promise<ServeBinding[]> {
+      const servable: ServeBinding[] = [];
+      for (const binding of enriched) {
+         const floored = {
+            ...binding,
+            refinements: (binding.refinements ?? []).filter((r) =>
+               floorKeep.has(r.kind),
+            ),
+         };
+         try {
+            await this.buildServeShapeMaterializer([floored], []).getModel();
+            servable.push(binding);
+         } catch {
+            // Withheld: its filters do not reproduce, so it cannot be served.
+         }
+      }
+      return servable;
    }
 
    /** Build the transient serve-shape materializer for a set of bindings. */
    private buildServeShapeMaterializer(
       bindings: ServeBinding[],
+      rollupGroups: RollupShapeGroup[] = [],
    ): ModelMaterializer {
-      const { modelText } = buildServeShapeModelForBindings(bindings);
+      const { modelText } = buildServeShapeModelForBindings(
+         bindings,
+         rollupGroups,
+      );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
       const runtime = new Runtime({
          urlReader: new InMemoryURLReader(new Map([[url, modelText]])),
-         // Narrowed to the destinations THESE bindings name. The shape's
-         // generated text references nothing else, so anything else resolving
-         // would only ever be a way to reach a warehouse this query has no
-         // business reaching.
+         // Narrowed to the destinations THIS shape names. The generated text
+         // references nothing else, so anything else resolving would only ever be
+         // a way to reach a warehouse this query has no business reaching.
+         //
+         // Rollup members count. They are not in `bindings` — a rollup reaches the
+         // shape through its group, under a name nothing queries — so narrowing on
+         // `bindings` alone leaves their destination out and the composite fails to
+         // compile with "Cannot determine dialect for connection", which reads as
+         // an ineligible query and falls back to live.
          config: restrictMalloyConfigToConnections(
             this.serveDestinationConfig!(),
-            new Set(bindings.map((binding) => binding.destinationName)),
+            new Set([
+               ...bindings.map((binding) => binding.destinationName),
+               ...rollupGroups.flatMap((group) =>
+                  group.members.map((member) => member.destinationName),
+               ),
+            ]),
          ),
       });
       return runtime.loadModel(new URL(url), {
@@ -4062,14 +4641,24 @@ export class Model {
     * shape-compile escalation in {@link compileServeShape} if they don't hold.
     */
    private serveBindingsWithRefinements(
-      bindings: ServeBinding[] = this.serveBindings,
+      // No default. This function resolves a binding back into the AUTHOR's model
+      // — by name, for its field list — which a rollup cannot survive: its source
+      // name names nothing there, so the fields come back undefined and the
+      // binding is dropped. Defaulting to `this.serveBindings` would hand the
+      // whole set, rollups included, to any future caller that omitted the
+      // argument. Every caller states which set it means.
+      bindings: ServeBinding[],
    ): ServeBinding[] {
       const contents = (
          this.modelDef as
             | {
                  contents?: Record<
                     string,
-                    { sourceID?: unknown; fields?: unknown[] }
+                    {
+                       sourceID?: unknown;
+                       fields?: unknown[];
+                       filterList?: unknown[];
+                    }
                  >;
               }
             | undefined
@@ -4120,6 +4709,11 @@ export class Model {
                      liftText,
                   }),
                   ...extractRefinements(fields),
+                  // The source's own `where:` clauses. Not part of the
+                  // materialized relation (the build SQL is the persisted
+                  // relation alone), so without these the shape serves rows the
+                  // source excludes.
+                  ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
                   ...extractViews(fields, liftText),
                ];
                return { ...b, schema, refinements };
@@ -4511,7 +5105,11 @@ export class Model {
             // cannot hit. This is NOT the `hasAuthorize()` trap warned about
             // further down — see `hasAnyAuthorizeNote`'s doc for why the two
             // predicates differ and why only this one is safe to skip on.
-            this.hasAnyAuthorizeNote() &&
+            // `#(partition)` gets the identical veto — it too grafts a row
+            // filter the serve-shape model carries no bytes for (see
+            // `hasAnyPartitionNote`'s doc) — so both note kinds have to be
+            // checked before the walk can be skipped.
+            (this.hasAnyAuthorizeNote() || this.hasAnyPartitionNote()) &&
             (await this.queryEntryPointHasRowLevelGate(runnable));
          // Recorded HERE, once, rather than in each tier's block below: the
          // pre-aggregation guard runs no compile attempt of its own and calls
@@ -4540,16 +5138,41 @@ export class Model {
                serveVirtualMap = shaped.virtualMap;
                serveShapeBindings = shaped.bindings;
                servedFrom = "storage";
-               recordStorageServeRouting("storage");
+               // `servedFrom` stays "storage" for a rollup: the field names the
+               // TIER an answer came from, and a lake-served rollup is the storage
+               // tier. The origin rides the metric instead, where an added
+               // attribute breaks no consumer — unlike a new enum value, which is
+               // mirrored into clients generated strictly from it.
+               recordStorageServeRouting("storage", shaped.origin);
                logger.info("Serving query from storage tier (virtual-source)", {
                   modelPath: this.modelPath,
+                  origin: shaped.origin,
                   // The sources in the SHAPE, not the package's whole binding set:
                   // a stale binding is dropped before the shape is built.
                   storageSources: shaped.bindings.map((b) => b.sourceName),
                });
             } catch (shapeErr) {
                recordStorageServeRouting("live_fallback");
-               logger.debug(
+               // info, matching the storage-hit line above: the two halves of one
+               // routing decision, and this is the half an operator needs. A
+               // fallback is silent by design — the query succeeds, the rows are
+               // correct, only the tier is lost — so at debug the reason for a
+               // package that never serves from storage is unreadable in any
+               // deployment running at info. Volume is bounded by the same thing
+               // that bounds the hit line: one per routed query, on packages that
+               // declare `storage=` at all.
+               // The compiler names the symbol it could not resolve, which is a
+               // symptom rather than a reason: a source is absent from the shape
+               // either because it carries no `#@ persist` or because the
+               // freshness gate dropped it, and "Reference to undefined object"
+               // reads the same way for both. The two sets that distinguish them
+               // are already known here, so they are reported alongside rather
+               // than left to be reconstructed from the package definition.
+               const { shapeSources, staleSources } = serveShapeDiagnostics(
+                  this.serveBindings,
+                  this.freshServeBindings(Date.now()),
+               );
+               logger.info(
                   "storage serve-shape ineligible for this query; serving live",
                   {
                      modelPath: this.modelPath,
@@ -4557,6 +5180,12 @@ export class Model {
                         shapeErr instanceof Error
                            ? shapeErr.message
                            : String(shapeErr),
+                     // What the shape DID offer. A name the query wants that is
+                     // absent from both this and `staleSources` is not
+                     // materialized at all.
+                     shapeSources,
+                     // Bound, but withheld by the freshness gate for this query.
+                     staleSources,
                   },
                );
             }
@@ -4599,10 +5228,36 @@ export class Model {
          // `effectiveBuildManifest` hands the rollup manifest to the runnable
          // regardless. Blocking the tier for a row-level-gated entry point makes
          // the invariant local to this decision.
+         // Also skipped when every rollup this model declares is bound for a
+         // storage destination, because for those the colocated companion is a
+         // PESSIMIZATION rather than a second chance.
+         //
+         // A storage rollup is NOT a member of the companion's composite —
+         // synthesis leaves it out, because a member there resolves through the
+         // colocated manifest and no storage entry ever reaches one. So for a
+         // model whose every rollup is storage-bound the composite is just
+         // `compose(base_alias)`: it covers everything, and covers it by reading
+         // the base.
+         //
+         // Which is why this gate survives that filter rather than being made
+         // redundant by it. Without the gate the probe SUCCEEDS against that
+         // degenerate composite, sets `preaggRouted`, and the run is then handed
+         // the full build manifest instead of `liveBuildManifest` — a different
+         // manifest for an answer identical to serving live, plus a compile to
+         // reach it. Skipping the rung is both cheaper and the honest description
+         // of what it can do here, which is nothing.
+         //
+         // Scoped to "every rollup is storage-bound" rather than "any": a model
+         // mixing the two still has colocated members that CAN be substituted, and
+         // giving those up would trade a real acceleration for nothing.
+         const everyRollupIsStorageBound =
+            this.preaggregateRollupPlans.length > 0 &&
+            this.preaggregateRollupPlans.every((plan) => !!plan.storage);
          if (
             preaggServeMaterializer &&
             !routingBlockedByRowLevelGate &&
-            !serveVirtualMap
+            !serveVirtualMap &&
+            !everyRollupIsStorageBound
          ) {
             try {
                const candidate =
@@ -4781,6 +5436,12 @@ export class Model {
       // supplied name with "unknown given" — a spurious 400, past the routing
       // fallback, on a query that should just serve from storage. Nothing in the
       // shape can read them; the authorize gate above already saw the full set.
+      // Safe for `#(partition)` too, and for the identical reason: the
+      // materialization eligibility gate refuses a partition-referencing
+      // source the same way it refuses a given-referencing one (see
+      // `materialization_eligibility.ts`'s `referencesPartition`), and
+      // `routingBlockedByRowLevelGate` above vetoes routing outright whenever
+      // the QUERY's own entry point carries either annotation.
       const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
          // The prepared result is also where the executing connection's name
@@ -4863,8 +5524,7 @@ export class Model {
             !String((error as { code?: string })?.code ?? "").startsWith(
                "runtime-given-",
             ) &&
-            serveShapeBindings.length > 0 &&
-            serveShapeBindings.every((b) => b.freshnessFallback === "live");
+            bindingsAllowDegradeToLive(serveShapeBindings);
          // Both the original failure and a failure OF THE RETRY end here: record
          // the error metric, then map the error. A broad outage takes the source
          // warehouse down alongside the store, so the retry failing is ordinary —

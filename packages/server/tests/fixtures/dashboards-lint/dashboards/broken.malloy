@@ -5,9 +5,10 @@
 //   - `ghost -> x` names a source this file does not import.
 //   - `orders -> by_region` filters by REGION, which this file never imports,
 //     so the dashboard can show no control for it and it stays at its default.
-//   - `dashboard_columns="wide"` is not a positive integer.
+//   - `dashboard_columns=…` is not a property of this grammar at all.
+//   - `# dashboard { columns="wide" }` is not a positive integer.
 //
 // `orders -> by_brand + { limit: 2 }` is a refinement: legal, not statically
 // resolvable, and deliberately not warned about.
-## artifact { title="Broken" tiles=["orders -> by_brand + { limit: 2 }", "orders -> missing_view", "ghost -> x", "orders -> by_region"] dashboard_columns="wide" }
+## artifact { title="Broken" tiles=["orders -> by_brand + { limit: 2 }", "orders -> missing_view", "ghost -> x", "orders -> by_region"] dashboard_columns=4 } dashboard { columns="wide" }
 import { orders } from '../orders.malloy'

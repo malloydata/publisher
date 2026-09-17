@@ -31,7 +31,7 @@ material, by naming the account to impersonate:
 ```
 
 Every BigQuery call the connection makes — query execution **and** schema discovery
-(`/schemas`, `/tables`, `malloy_searchDatabaseSchema`) — then runs as that account, using
+(`/schemas`, `/tables`, `search_database_schema`) — then runs as that account, using
 short-lived tokens minted through the IAM Service Account Credentials API. Publisher's own
 credential (ambient ADC) is only the token minter, so in a multi-environment deployment each
 environment can be pinned to an identity that can read only its own data: cross-environment
@@ -188,8 +188,8 @@ Connection names must be unique within a single environment. Duplicate names aft
 ## Publisher proxy connections (`type: "publisher"`)
 
 A `publisher` connection does not talk to a warehouse directly. Instead it
-**proxies SQL to a remote Publisher dataplane** (e.g. a hosted Credible
-environment), which runs the query against its own connection and returns the
+**proxies SQL to a remote Publisher dataplane** (e.g. an environment on
+Credible, the hosted engine built on Publisher), which runs the query against its own connection and returns the
 rows. This is the local-dev authoring loop: run a local Publisher with
 `--watch-env` to serve a package's `public/` app with live-reload, while queries
 proxy to your real remote connection — no need to replicate warehouse
@@ -300,17 +300,73 @@ additional trust control on the tunnel itself.
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
 (the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
 local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
-**hostname** can't be checked. The supported modes:
+**hostname** can't be checked from the tunnel address alone. The supported modes:
 
 - `no-verify` (**default** when a proxy is set) — encrypt without verifying. Chosen as the
   default so a force-SSL target (the common RDS case) isn't rejected for plaintext.
 - `verify-ca` — validate the server cert **chain** against the trusted CA bundle
   (`NODE_EXTRA_CA_CERTS`, e.g. the baked Amazon RDS roots) while skipping the hostname
   check. Fails if no CA bundle is available.
+- `verify-full` — validate the chain **and** the hostname against the real database host
+  (sent as the TLS server name through the tunnel), trusting the runtime's bundled roots
+  plus `NODE_EXTRA_CA_CERTS`. No bundle is required when the target's CA is publicly trusted.
 - `disable` — no TLS.
 
-Full verification (`verify-full`) can't work through the tunnel until per-connection
-`servername` override lands (see malloydata/malloy#2960).
+A `storage=` build of a proxied source reaches it through its own tunnel with libpq rather
+than the query driver, and every mode above keeps its meaning there: libpq dials the tunnel
+endpoint as `hostaddr` while `host` stays the database's own name, so `verify-full` checks the
+certificate against the real host through the tunnel, with the same trust set the query path
+uses.
+
+## Credentials in API responses
+
+A connection's credentials are write-only. `password`, `connectionString`, `serviceAccountKeyJson`,
+`privateKey`, `privateKeyPass`, `token`, `oauthClientSecret`, `accessToken`, `peakaKey`,
+`secretAccessKey`, `sessionToken`, `secret`, `clientSecret` and `sasUrl` are accepted when you create
+or update a connection, and no read returns them. The connection, environment and status endpoints
+return the non-secret fields only: host, port, database, user, region, an object store's key ID, a
+bastion's public host key.
+
+They are omitted rather than masked, so no client can round-trip a placeholder back into stored
+config as if it were the real credential.
+
+Each response lists what it withheld. `withheldFields` carries the dotted paths of the credentials
+this connection has stored, names only and never a value, for example
+`["postgresConnection.connectionString"]`. Without it a client cannot tell a credential that is set
+from one that was never configured, which is the difference between an empty box that keeps
+something and an empty box that leaves the connection with no credential at all. It is read-only and
+ignored on write.
+
+An update therefore does not have to resend a credential it cannot read. A `PATCH` that leaves one
+out keeps the stored value, sending the field replaces it, and sending it empty clears it. The same
+holds for credentials nested inside a DuckLake catalog or a DuckDB attached database, where entries
+are matched by name rather than by position.
+
+In the connection editor the credential boxes are always blank for an existing connection. Leave one
+blank to keep the stored value.
+
+Three things follow from this that are worth knowing before you rely on it:
+
+Supplying a credential for one method drops the stored credential of the other, rather than keeping
+both. Send a Postgres `password` and a stored `connectionString` is dropped; send a Snowflake
+`password` and a stored `privateKey` is dropped, or a `privateKey` and a stored `password` is dropped;
+send a Trino `password` and a stored `peakaKey` is dropped; point a DuckLake `storage` at GCS and a
+stored S3 secret is dropped; send a Databricks `token` and a stored `oauthClientSecret` is dropped.
+Each of those pairs is resolved by which one is present when the connection is opened (`peakaKey`
+short-circuits before `password` is read, and the Databricks driver prefers OAuth over a token), so
+keeping the old one would silently override the credential you just set.
+
+Only a credential you actually send does this, and only a non-empty one. Editing a host, or saving a
+form whose credential boxes you left alone, changes nothing about which method the connection uses.
+
+Renaming a DuckDB attached database needs its credential re-entered. Entries are matched by name, so a
+renamed entry has nothing to carry forward and the old secret is not recoverable through the API.
+
+Write access to a connection is as good as read access to its credential. Anyone who can `PATCH` a
+connection can point it at a host they control and have the stored credential sent there. Publisher
+does not authenticate either operation, so this is not a new boundary on a bare Publisher, but a
+deployment that gates reads and writes separately should gate connection writes as tightly as it
+gates credential reads.
 
 ## Example: mixed connections
 

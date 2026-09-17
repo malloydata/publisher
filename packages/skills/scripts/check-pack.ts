@@ -22,6 +22,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isExcluded } from "./exclusions";
+import { manifestSkillNames } from "./manifest";
 
 const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
@@ -70,8 +71,19 @@ function pack(): Set<string> {
    }
 }
 
+/**
+ * The manifest decides what the tarball must contain, for the same reason the
+ * copy filters on it: an audit that globs `skills/` demands whatever happens to
+ * be on disk, so the first skill the manifest holds back fails the publish
+ * while pointing at the copy rather than at the manifest. `exclusions.ts` names
+ * this hazard directly -- "a filter that only the copy applies makes the audit
+ * demand a file that will never be there."
+ */
+const shipping = new Set(manifestSkillNames());
+const topLevel = (relative: string): string => relative.split("/")[0];
+
 const expected = sourceFiles()
-   .filter((file) => !isExcluded(file))
+   .filter((file) => !isExcluded(file) && shipping.has(topLevel(file)))
    .map((file) => `skills/${file}`);
 
 const packedPaths = pack();
@@ -94,10 +106,13 @@ for (const required of ["dist/index.js", "dist/index.d.ts", "README.md"]) {
    }
 }
 
-// Same predicate as the copy, so the two cannot disagree about a given file.
+// Same predicates as the copy, so the two cannot disagree about a given file:
+// what the manifest holds back must be absent, not merely unrequired.
 const leaked = [...packedPaths]
    .filter((file) => file.startsWith("skills/"))
-   .filter((file) => isExcluded(file.slice("skills/".length)));
+   .map((file) => file.slice("skills/".length))
+   .filter((file) => isExcluded(file) || !shipping.has(topLevel(file)))
+   .map((file) => `skills/${file}`);
 if (leaked.length > 0) {
    failures.push(`the tarball must not contain: ${leaked.join(", ")}`);
 }

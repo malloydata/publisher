@@ -22,11 +22,12 @@
  * alone is small. Giving each query a small table to read is the whole mechanism,
  * and that needs an author to be able to declare more than one grain.
  *
- * What it does NOT do is pick the smallest of several COVERING rollups: members
- * are emitted sorted by generated name and the resolver takes the first that
- * covers, so overlapping grains are resolved by name rather than by size (pinned
- * in preaggregation_synthesis.spec.ts). Grains earn their keep by covering
- * different queries.
+ * Where several rollups COVER one query, the coarsest is offered first: members
+ * are emitted fewest-grain-dimensions first and the resolver takes the first that
+ * covers (`compareRollupBreadth`, pinned in preaggregation_synthesis.spec.ts).
+ * That is a proxy for size rather than a measurement of it — three small
+ * dimensions can product out smaller than one large one — so grains still earn
+ * their keep by covering different queries.
  *
  * ## Why this reads the annotation NOTES and not just the merged tag
  *
@@ -43,9 +44,11 @@
  * `#@ preaggregate` line with a grain adds one; a `#@ -preaggregate` line clears
  * every grain accumulated so far.** Nothing else is interpreted.
  *
- * A `namespace=` binds to the grain on its OWN line and is cleared with it, so
- * negation needs no separate rule and a namespace can never outlive the grain it
- * was written for.
+ * A `namespace=` or `storage=` binds to the grain on its OWN line and is cleared
+ * with it, so negation needs no separate rule and neither can outlive the grain
+ * it was written for. Both are per grain rather than per measure because a grain
+ * IS a table: two grains are two tables, and can genuinely be placed
+ * differently.
  *
  * Two measured facts make that safe rather than a re-implementation:
  *
@@ -105,11 +108,35 @@ export interface PreaggregateGrain {
     * supplies it.
     */
    namespace?: string;
+   /**
+    * The storage destination this rollup's table is built into and served from,
+    * when the author named one — `#@ preaggregate grain="category"
+    * storage=lake`. Undefined means the rollup is colocated: built into the
+    * base's own warehouse, which is the default and the only option before this.
+    *
+    * Per grain for the same reason {@link PreaggregateGrain.namespace} is: a
+    * grain IS a table, so two grains are two tables and can genuinely be placed
+    * differently. A destination that outranged its grain would move a rollup its
+    * author never named.
+    *
+    * Undefined when unspecified on the line, and NOTHING supplies it: a
+    * destination is never inherited from a sibling `#@ persist storage=` on the
+    * base. Unlike {@link PreaggregateGrain.namespace} directly above, which IS
+    * inherited from the base's `#@ persist name=` — the two fields read alike and
+    * genuinely differ. See `basePersistNamespace` for why a destination cannot
+    * usefully inherit.
+    */
+   storage?: string;
 }
 
 /** A `#@ preaggregate` line that is present but unusable. */
 export interface PreaggregateDeclarationError {
-   kind: "missing_grain" | "empty_grain" | "invalid_namespace";
+   kind:
+      | "missing_grain"
+      | "empty_grain"
+      | "invalid_namespace"
+      | "empty_storage"
+      | "invalid_storage";
    /** Names the measure and the fix; becomes the body of a publish-time 400. */
    message: string;
 }
@@ -269,6 +296,41 @@ export function readPreaggregateAnnotation(
          }
          namespace = candidate;
       }
+      // Same nested-then-sibling precedence as `grain` and `namespace`, and bound
+      // to THIS line's grain for the same reason: a grain is a table, and a table
+      // is created in exactly one place.
+      const storageText =
+         tag.text("preaggregate", "storage") ?? tag.text("storage");
+      let storage: string | undefined;
+      if (storageText !== undefined) {
+         const candidate = storageText.trim();
+         // Refused rather than ignored, per this module's strictness rule: an
+         // author who typed the key meant something by it, and dropping it
+         // silently would build the rollup somewhere they did not choose. The
+         // destination NAME itself is not validated here — which destinations
+         // exist is a deployment fact this module cannot see, so an unknown one is
+         // refused downstream by the storage-destination resolver with a message
+         // that can name the configured set.
+         if (candidate === "") {
+            errors.push({
+               kind: "empty_storage",
+               message: `Measure \`${name}\` declares \`#@ preaggregate storage=""\` with no destination. Name the storage destination the rollup should be built into, or remove the key to build it alongside its base.`,
+            });
+            continue;
+         }
+         // A quote or backslash cannot survive being re-emitted into the
+         // synthesized `#@ persist storage="…"`, which is a string literal in an
+         // annotation. Refused rather than mangled, per this module's rule; every
+         // other character is fine because the emit quotes.
+         if (/["\\]/.test(candidate)) {
+            errors.push({
+               kind: "invalid_storage",
+               message: `Measure \`${name}\` declares \`#@ preaggregate storage=\` naming a destination that contains a quote or backslash. Publisher re-declares the destination on the rollup it synthesizes, and such a name cannot be written there. Rename the destination.`,
+            });
+            continue;
+         }
+         storage = candidate;
+      }
       if (grainText === undefined) {
          errors.push({
             kind: "missing_grain",
@@ -288,6 +350,7 @@ export function readPreaggregateAnnotation(
          dimensions,
          text: grainText,
          namespace,
+         storage,
       });
    }
 

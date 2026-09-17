@@ -162,6 +162,138 @@ describe("storage= serve routing (end-to-end)", () => {
       expect(await runTotal(model)).toBe(60);
    });
 
+   it("routes when the captured schema is in the warehouse's identifier case", async () => {
+      // An upper-folding source warehouse (Snowflake, Oracle, Redshift, Teradata)
+      // reports DESCRIBE names in ITS case, not the author's. Before the
+      // case-insensitive narrowing this intersected to nothing, the binding was
+      // dropped as empty-schema, and EVERY query on the source failed the shape
+      // compile with "Reference to undefined object" and served live — silently,
+      // since the rows are still correct. The physical column stays "TOTAL";
+      // DuckDB resolves the author-cased declaration against it.
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel({
+         storageSQL: 'CREATE OR REPLACE TABLE mz_real AS SELECT 60 AS "TOTAL"',
+      });
+      model.setServeBindings([
+         { ...BINDING, schema: [{ name: "TOTAL", type: "BIGINT" }] },
+      ]);
+      expect(await runTotal(model)).toBe(60);
+   });
+
+   it("routes a query that references no field when the case differs", async () => {
+      // The aggregate-only case, kept separate because it is the one that made the
+      // bug unintuitive: `count()` names no column, so nothing about the QUERY is
+      // case-sensitive — yet it fell back too, because the whole SOURCE had left
+      // the shape. A fix that only reconciled field references would pass the test
+      // above and still fail this one.
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel({
+         storageSQL:
+            'CREATE OR REPLACE TABLE mz_real AS SELECT 60 AS "TOTAL" UNION ALL SELECT 7',
+      });
+      model.setServeBindings([
+         { ...BINDING, schema: [{ name: "TOTAL", type: "BIGINT" }] },
+      ]);
+      // 2 rows in storage vs the original source's 1 — so the count proves which
+      // path ran without referencing a column.
+      const res = await model.getQueryResults(
+         undefined,
+         undefined,
+         "run: X -> { aggregate: c is count() }",
+         {},
+         true,
+      );
+      expect((res.compactResult as unknown as { c: number }[])[0].c).toBe(2);
+      expect(res.servedFrom).toBe("storage");
+   });
+
+   it("does not serve an except:-hidden column from storage when the case differs", async () => {
+      // Vector A again, with the captured names upper-folded: the case-insensitive
+      // match must widen which PHYSICAL column can match an author field without
+      // widening the set of author fields. `secret` is except:-ed, so "SECRET" has
+      // nothing public to match and stays out of the shape.
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel({
+         originalText:
+            `source: X is duckdb.sql("SELECT 0 AS total, 'live' AS secret") ` +
+            `extend { except: secret }`,
+         storageSQL:
+            "CREATE OR REPLACE TABLE mz_real AS " +
+            `SELECT 60 AS "TOTAL", 'from_storage' AS "SECRET"`,
+      });
+      model.setServeBindings([
+         {
+            ...BINDING,
+            schema: [
+               { name: "TOTAL", type: "BIGINT" },
+               { name: "SECRET", type: "VARCHAR" },
+            ],
+         },
+      ]);
+      // The public column serves from storage...
+      expect(await runTotal(model)).toBe(60);
+      // ...and the hidden one is still refused, not served as 'from_storage'.
+      await expect(
+         model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { group_by: secret }",
+            {},
+            true,
+         ),
+      ).rejects.toThrow();
+   });
+
+   it("serves a computed dimension, not the column its name folds onto", async () => {
+      // Malloy permits two fields differing only in case. Here `Total` is a
+      // dimension over `other` (2 * 10 = 20) and `total` is a physical column (1).
+      // A fold-first narrowing declared the STORED column under the dimension's
+      // name, the duplicate failed the shape down to base-only, and this query
+      // returned 1 while reporting `servedFrom: storage` — wrong rows, no warning,
+      // which is worse than any fallback. The assertion is the value, because the
+      // shape compiling is not the property that matters.
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel({
+         originalText:
+            `source: X is duckdb.sql("SELECT 1 AS total, 2 AS other") extend {\n` +
+            `  dimension: Total is other * 10\n}`,
+         storageSQL:
+            "CREATE OR REPLACE TABLE mz_real AS SELECT 1 AS total, 2 AS other",
+      });
+      model.setServeBindings([
+         {
+            ...BINDING,
+            schema: [
+               { name: "total", type: "BIGINT" },
+               { name: "other", type: "BIGINT" },
+            ],
+         },
+      ]);
+      const computed = await model.getQueryResults(
+         undefined,
+         undefined,
+         "run: X -> { group_by: Total }",
+         {},
+         true,
+      );
+      expect(
+         (computed.compactResult as unknown as { Total: number }[])[0].Total,
+      ).toBe(20);
+      expect(computed.servedFrom).toBe("storage");
+      // And the physical column it collides with still resolves to itself.
+      const raw = await model.getQueryResults(
+         undefined,
+         undefined,
+         "run: X -> { group_by: total }",
+         {},
+         true,
+      );
+      expect(
+         (raw.compactResult as unknown as { total: number }[])[0].total,
+      ).toBe(1);
+      expect(raw.servedFrom).toBe("storage");
+   });
+
    it("does not serve an except:-hidden column from storage (vector A)", async () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       // X hides `secret` via except:, but the built table still carries it (the

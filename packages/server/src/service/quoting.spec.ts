@@ -7,6 +7,7 @@ import {
    isQuotedIdentifierPath,
    quoteIdentifier,
    quoteManifestTablePath,
+   quoteRenameTarget,
    quoteTablePath,
 } from "./quoting";
 
@@ -134,5 +135,48 @@ describe("quoteManifestTablePath", () => {
       expect(quoteManifestTablePath("`ds`.`events`", "standardsql")).toBe(
          "`ds`.`events`",
       );
+   });
+});
+
+describe("quoteRenameTarget", () => {
+   it("qualifies the target on Snowflake, which resolves a bare one against the session", () => {
+      expect(quoteRenameTarget("MY_SCHEMA.orders_v3", "snowflake")).toBe(
+         '"MY_SCHEMA"."orders_v3"',
+      );
+   });
+
+   it("qualifies every segment of a catalog-qualified Snowflake path", () => {
+      expect(
+         quoteRenameTarget("WAREHOUSE.MY_SCHEMA.orders_v3", "snowflake"),
+      ).toBe('"WAREHOUSE"."MY_SCHEMA"."orders_v3"');
+   });
+
+   it("qualifies the target on MySQL, which also resolves a bare one against the session", () => {
+      expect(quoteRenameTarget("mydb.orders_v3", "mysql")).toBe(
+         "`mydb`.`orders_v3`",
+      );
+   });
+
+   it("qualifies the target on Trino, whose connectors differ on a bare one", () => {
+      expect(quoteRenameTarget("s1.orders_v3", "trino")).toBe(
+         '"s1"."orders_v3"',
+      );
+   });
+
+   it("keeps the target bare on dialects that reject a qualified one", () => {
+      // Postgres, BigQuery and DuckDB all name the table within its existing
+      // container and refuse a qualified rename target.
+      expect(quoteRenameTarget("public.orders_v3", "postgres")).toBe(
+         '"orders_v3"',
+      );
+      expect(quoteRenameTarget("ds.orders_v3", "standardsql")).toBe(
+         "`orders_v3`",
+      );
+      expect(quoteRenameTarget("main.orders_v3", "duckdb")).toBe('"orders_v3"');
+   });
+
+   it("is a no-op on an already-unqualified name", () => {
+      expect(quoteRenameTarget("orders_v3", "snowflake")).toBe('"orders_v3"');
+      expect(quoteRenameTarget("orders_v3", "postgres")).toBe('"orders_v3"');
    });
 });

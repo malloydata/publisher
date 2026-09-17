@@ -2,6 +2,7 @@
 name: malloy-materialization-tuning
 description: Optimize a package's Malloy Persistence materializations for cost and performance using the malloy-pub CLI and the materialization history. Recommend what to persist, what to stop persisting, and how to schedule/scope it. Use when the user asks to make a package cheaper or faster, tune persistence, decide what to materialize, or review persist/schedule choices.
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -19,7 +20,7 @@ Assumes the `malloy-pub` CLI is on PATH and points at the server (`--url` or `MA
 
 Establish what the package persists today and how it is governed.
 
-- **Persist sources:** the sources annotated `#@ persist name="…"` in the package's `.malloy` files. Read the models (or `malloy_getContext` the package) to list them.
+- **Persist sources:** the sources annotated `#@ persist name="…"` in the package's `.malloy` files. Read the models (or `get_context` the package) to list them.
 - **Schedule + scope:**
 
   ```bash
@@ -32,19 +33,13 @@ Establish what the package persists today and how it is governed.
 
 The history is where cost lives. Each run records its trigger, timing, and how many sources were built vs reused.
 
-- **Across the whole environment** (all packages, newest first; the rows are interleaved and labeled by package, not grouped into contiguous per-package blocks):
-
-  ```bash
-  malloy-pub list materialization --environment <env>
-  ```
-
-  Columns: Package, ID, Status, **Trigger** (`SCHEDULER` vs `ON_DEMAND`), Started, Completed, Error.
-
-- **For one package:**
+- **For one package** (newest first). A materialization is a run of one package's persist sources, so this is the listing; to review a whole environment, read each package in turn (`malloy-pub list package --environment <env>` names them):
 
   ```bash
   malloy-pub list materialization --environment <env> --package <pkg>
   ```
+
+  Columns: ID, Status, **Trigger** (`SCHEDULER` vs `ON_DEMAND`), Started, Completed, Error.
 
 - **A single run's detail** (the cost signals):
 

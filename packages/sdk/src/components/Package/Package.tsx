@@ -1,18 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import CloseIcon from "@mui/icons-material/Close";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
+   Alert,
    Box,
    Container,
-   Dialog,
-   DialogContent,
-   DialogTitle,
    IconButton,
-   Link,
-   Stack,
    Table,
    TableBody,
    TableCell,
@@ -21,20 +16,29 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import React, { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import React, { useCallback, useEffect, useState } from "react";
 import { Database } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
+import type { DocumentLocator } from "../DocumentStorage/DocumentStorage";
+import { useOptionalDocumentStorage } from "../DocumentStorage/DocumentStorageProvider";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
+import { NewDashboardDialog } from "./NewDashboardDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
-import { MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon, {
    CONTENT_TINT,
    type ContentType,
 } from "./ContentTypeIcon";
+import { AddButton } from "../buttons";
+import { AppDialog } from "../AppDialog";
+import { BackLink } from "../BackLink";
+import { ItemRow } from "../ItemRow";
+import { Materializations } from "../Materializations";
+import { PackageSection } from "../PackageSection";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -47,7 +51,8 @@ export default function Package({
    onClickPackageFile,
    resourceUri,
 }: PackageProps) {
-   const { apiClients, server } = useServer();
+   const { apiClients, server, mutable } = useServer();
+   const queryClient = useQueryClient();
    const onClick =
       onClickPackageFile ??
       ((to: string) => {
@@ -57,6 +62,35 @@ export default function Package({
       parseResourceUri(resourceUri);
 
    const [schemaDatabase, setSchemaDatabase] = useState<Database | null>(null);
+   const [creating, setCreating] = useState(false);
+
+   // Dashboards the host keeps for this package and the package does not have:
+   // the builder's drafts, listed so they are found rather than stumbled on.
+   // Each carries the workspace's own description, because where a document is
+   // kept is the backend's to say and only one host's answer is "this browser".
+   const storage = useOptionalDocumentStorage()?.documentStorage;
+   const [drafts, setDrafts] = useState<
+      { locator: DocumentLocator; where: string }[]
+   >([]);
+   const draftPrefix = `${environmentName}/${packageName}/dashboards/`;
+   const refreshDrafts = useCallback(async () => {
+      if (!storage) return;
+      const workspaces = await storage.listWorkspaces(true);
+      const found: { locator: DocumentLocator; where: string }[] = [];
+      for (const workspace of workspaces)
+         for (const locator of await storage.listDocuments(
+            workspace,
+            "dashboard",
+         ))
+            if (locator.path.startsWith(draftPrefix))
+               found.push({ locator, where: workspace.description });
+      setDrafts(found);
+   }, [storage, draftPrefix]);
+   useEffect(() => {
+      void refreshDrafts();
+   }, [refreshDrafts]);
+   const draftSlug = (locator: DocumentLocator) =>
+      locator.path.slice(draftPrefix.length).replace(/\.malloy$/, "");
 
    const pkgQuery = useQueryWithApiError({
       queryKey: ["package", environmentName, packageName, versionId],
@@ -130,15 +164,14 @@ export default function Package({
    });
    const dataApps = dataAppsQuery.data?.data ?? [];
 
-   // No versionId, for the same reason as data apps: the dashboards endpoint
-   // takes only env + package.
    const dashboardsQuery = useQueryWithApiError({
-      queryKey: ["dashboards", environmentName, packageName],
+      queryKey: ["dashboards", environmentName, packageName, versionId],
       queryFn: async () => {
          try {
             return await apiClients.dashboards.listDashboards(
                environmentName,
                packageName,
+               versionId,
             );
          } catch (e) {
             // Non-fatal for the same reasons as the data-apps list above: an
@@ -243,25 +276,10 @@ export default function Package({
          sx={{ maxWidth: 1024, mx: "auto", px: 3, py: 6 }}
       >
          <Box sx={{ mb: 4 }}>
-            <Link
-               onClick={(event: React.MouseEvent) =>
-                  onClick(`/${environmentName}/`, event)
-               }
-               underline="none"
-               sx={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 0.5,
-                  cursor: "pointer",
-                  color: "text.secondary",
-                  fontSize: "0.875rem",
-                  mb: 2,
-                  "&:hover": { color: "primary.main" },
-               }}
-            >
-               <ArrowBackIcon sx={{ fontSize: 18 }} />
-               Back to {environmentName}
-            </Link>
+            <BackLink
+               label={environmentName}
+               onClick={(event) => onClick(`/${environmentName}/`, event)}
+            />
             <Typography
                variant="h4"
                component="h1"
@@ -282,13 +300,69 @@ export default function Package({
 
          {isLoading && <Loading text="Loading package..." />}
 
+         <NewDashboardDialog
+            open={creating}
+            environmentName={environmentName}
+            packageName={packageName}
+            models={models
+               .map((model) => model.path)
+               .filter(
+                  (path): path is string =>
+                     typeof path === "string" &&
+                     path.endsWith(".malloy") &&
+                     !path.startsWith("dashboards/"),
+               )}
+            existing={dashboards
+               .map((dashboard) => dashboard.name)
+               .filter((name): name is string => typeof name === "string")}
+            onClose={() => setCreating(false)}
+            onCreated={(slug) => {
+               setCreating(false);
+               void queryClient.invalidateQueries({ queryKey: ["dashboards"] });
+               onClick(
+                  `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(slug)}/edit`,
+               );
+            }}
+         />
+
          {!isLoading && (
             <>
                {/* First: the at-a-glance artifact a visitor most likely wants,
                    ahead of the notebooks and models it is built on. Hidden when
                    empty, like Data Apps. */}
-               {dashboards.length > 0 && (
-                  <PackageSection title="Dashboards" count={dashboards.length}>
+               {/* A listing that FAILED renders identically to a package with
+                   no dashboards: `dashboards` falls back to `[]` and the
+                   section hides itself. Only `pkgQuery` reaches the error page,
+                   so nothing else here would say a word. Now that the listing
+                   carries a `versionId`, a host that resolves it on some routes
+                   and refuses it on others has a new way in, and "this package
+                   has no dashboards" is the wrong thing to conclude from a
+                   transport error. The 404 above stays swallowed: that one is
+                   an older Publisher with no route, which genuinely has none. */}
+               {dashboardsQuery.isError && (
+                  <Box sx={{ mb: 4 }}>
+                     <Alert severity="warning">
+                        Could not list this package&apos;s dashboards, so any it
+                        has are missing from this page.
+                     </Alert>
+                  </Box>
+               )}
+               {(dashboards.length > 0 || mutable) && (
+                  <PackageSection
+                     title="Dashboards"
+                     count={dashboards.length}
+                     action={
+                        mutable ? (
+                           <AddButton
+                              label="Dashboard"
+                              onClick={() => setCreating(true)}
+                           />
+                        ) : undefined
+                     }
+                  >
+                     {dashboards.length === 0 && (
+                        <EmptyRow label="No dashboards yet" />
+                     )}
                      {dashboards.map((dashboard) => {
                         // A title equal to the slug is what the server falls
                         // back to when the file names itself neither way, so
@@ -320,32 +394,71 @@ export default function Package({
                      })}
                   </PackageSection>
                )}
-
-               <PackageSection title="Notebooks" count={notebooks.length}>
-                  {notebooks.map((notebook) => {
-                     // Named the way dashboards and data apps are: a notebook
-                     // that titles itself is listed by that title, with the
-                     // filename kept as the secondary label so the path a
-                     // reader needs to find the file is never lost.
-                     const hasTitle =
-                        !!notebook.title && notebook.title !== notebook.path;
-                     return (
+               {drafts.length > 0 && (
+                  <PackageSection title="Drafts" count={drafts.length}>
+                     {drafts.map(({ locator, where }) => (
                         <PackageItemRow
-                           key={notebook.path}
-                           type="report"
-                           label={hasTitle ? notebook.title! : notebook.path}
-                           rightLabel={hasTitle ? notebook.path : undefined}
+                           key={locator.path}
+                           type="dashboard"
+                           label={draftSlug(locator)}
+                           rightLabel={where}
                            onClick={(event) =>
                               onClick(
-                                 `/${environmentName}/${packageName}/${notebook.path}`,
+                                 `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(draftSlug(locator))}/edit`,
                                  event,
                               )
                            }
+                           trailingAction={
+                              <Tooltip title="Delete this draft">
+                                 <IconButton
+                                    size="small"
+                                    aria-label={`Delete draft ${draftSlug(locator)}`}
+                                    onClick={(event) => {
+                                       event.stopPropagation();
+                                       void storage
+                                          ?.deleteDocument(locator)
+                                          .then(refreshDrafts);
+                                    }}
+                                 >
+                                    <DeleteOutlineIcon fontSize="small" />
+                                 </IconButton>
+                              </Tooltip>
+                           }
                         />
-                     );
-                  })}
-                  {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
-               </PackageSection>
+                     ))}
+                  </PackageSection>
+               )}
+
+               {/* Hidden when empty, like Dashboards and Data Apps. A package
+                   that holds no notebooks is not a package missing them, and a
+                   heading over the words "No notebooks" is a row of furniture
+                   saying nothing. */}
+               {notebooks.length > 0 && (
+                  <PackageSection title="Notebooks" count={notebooks.length}>
+                     {notebooks.map((notebook) => {
+                        // Named the way dashboards and data apps are: a notebook
+                        // that titles itself is listed by that title, with the
+                        // filename kept as the secondary label so the path a
+                        // reader needs to find the file is never lost.
+                        const hasTitle =
+                           !!notebook.title && notebook.title !== notebook.path;
+                        return (
+                           <PackageItemRow
+                              key={notebook.path}
+                              type="report"
+                              label={hasTitle ? notebook.title! : notebook.path}
+                              rightLabel={hasTitle ? notebook.path : undefined}
+                              onClick={(event) =>
+                                 onClick(
+                                    `/${environmentName}/${packageName}/${notebook.path}`,
+                                    event,
+                                 )
+                              }
+                           />
+                        );
+                     })}
+                  </PackageSection>
+               )}
 
                {dataApps.length > 0 && (
                   <PackageSection title="Data Apps" count={dataApps.length}>
@@ -449,18 +562,7 @@ export default function Package({
                   {databases.length === 0 && <EmptyRow label="No data files" />}
                </PackageSection>
 
-               <PackageSection title="Materializations">
-                  <PackageItemRow
-                     type="materialization"
-                     label="Materializations"
-                     onClick={(event) =>
-                        onClick(
-                           `/${environmentName}/${packageName}/materializations`,
-                           event,
-                        )
-                     }
-                  />
-               </PackageSection>
+               <Materializations resourceUri={resourceUri} />
 
                {hasReadme && (
                   <Box sx={{ mt: 6 }}>
@@ -473,98 +575,42 @@ export default function Package({
             </>
          )}
 
-         <Dialog
+         <AppDialog
             open={schemaDatabase !== null}
             onClose={() => setSchemaDatabase(null)}
-            maxWidth="sm"
-            fullWidth
+            title={schemaDatabase?.path ?? "Columns"}
+            showClose
          >
-            <DialogTitle sx={{ pr: 6 }}>
-               {schemaDatabase?.path}
-               <IconButton
-                  aria-label="close"
-                  onClick={() => setSchemaDatabase(null)}
-                  sx={{ position: "absolute", right: 8, top: 8 }}
-               >
-                  <CloseIcon fontSize="small" />
-               </IconButton>
-            </DialogTitle>
-            <DialogContent>
-               {schemaDatabase?.error && (
-                  <Typography variant="body2" color="error">
-                     {schemaDatabase.error}
-                  </Typography>
-               )}
-               {schemaDatabase?.info?.columns && (
-                  <Table size="small">
-                     <TableHead>
-                        <TableRow>
-                           <TableCell>Column</TableCell>
-                           <TableCell>Type</TableCell>
+            {schemaDatabase?.error && (
+               <Typography variant="body2" color="error">
+                  {schemaDatabase.error}
+               </Typography>
+            )}
+            {schemaDatabase?.info?.columns && (
+               <Table size="small">
+                  <TableHead>
+                     <TableRow>
+                        <TableCell>Column</TableCell>
+                        <TableCell>Type</TableCell>
+                     </TableRow>
+                  </TableHead>
+                  <TableBody>
+                     {schemaDatabase.info.columns.map((column) => (
+                        <TableRow key={column.name}>
+                           <TableCell component="th" scope="row">
+                              {column.name}
+                           </TableCell>
+                           <TableCell>{column.type}</TableCell>
                         </TableRow>
-                     </TableHead>
-                     <TableBody>
-                        {schemaDatabase.info.columns.map((column) => (
-                           <TableRow key={column.name}>
-                              <TableCell component="th" scope="row">
-                                 {column.name}
-                              </TableCell>
-                              <TableCell>{column.type}</TableCell>
-                           </TableRow>
-                        ))}
-                     </TableBody>
-                  </Table>
-               )}
-            </DialogContent>
-         </Dialog>
+                     ))}
+                  </TableBody>
+               </Table>
+            )}
+         </AppDialog>
       </Container>
    );
 }
 
-function PackageSection({
-   title,
-   count,
-   children,
-}: {
-   title: string;
-   count?: number;
-   children: React.ReactNode;
-}) {
-   return (
-      <Box sx={{ mb: 4 }}>
-         <Stack
-            direction="row"
-            alignItems="baseline"
-            spacing={1}
-            sx={{ mb: 1 }}
-         >
-            <Typography
-               variant="h6"
-               sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
-            >
-               {title}
-            </Typography>
-            {count !== undefined && (
-               <Typography variant="caption" color="text.secondary">
-                  ({count})
-               </Typography>
-            )}
-         </Stack>
-         <Box>{children}</Box>
-      </Box>
-   );
-}
-
-/**
- * A row names its content type once. The glyph and the color behind it are two
- * halves of one signal, so the row derives both rather than letting a caller
- * pair a dashboard's icon with a model's color.
- *
- * That is not hypothetical tidying: with the two passed separately, four of the
- * six rows on this page had been handed the same teal, so color told a reader
- * nothing about four of the kinds it was there to distinguish. A rule each call
- * site has to remember is a rule some call sites will forget.
- */
 function PackageItemRow({
    type,
    label,
@@ -581,90 +627,16 @@ function PackageItemRow({
     *  `event.stopPropagation()` so the row click doesn't also fire. */
    trailingAction?: React.ReactNode;
 }) {
-   const interactive = !!onClick;
-   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (!onClick) return;
-      if (event.key === "Enter" || event.key === " ") {
-         event.preventDefault();
-         onClick(event as unknown as React.MouseEvent);
-      }
-   };
    return (
-      <Box
-         onClick={onClick}
-         onKeyDown={interactive ? handleKeyDown : undefined}
-         role={interactive ? "button" : undefined}
-         tabIndex={interactive ? 0 : undefined}
-         sx={(theme) => ({
-            display: "flex",
-            alignItems: "center",
-            gap: 1.5,
-            py: 1,
-            px: 1,
-            mx: -1,
-            cursor: interactive ? "pointer" : "default",
-            borderRadius: 1.5,
-            transition: "background-color 0.1s",
-            "&:hover": interactive
-               ? {
-                    backgroundColor:
-                       theme.palette.mode === "dark"
-                          ? "rgba(255, 255, 255, 0.08)"
-                          : "grey.100",
-                 }
-               : undefined,
-            "&:focus-visible": interactive
-               ? {
-                    outline: "2px solid",
-                    outlineColor: "primary.main",
-                    outlineOffset: 2,
-                 }
-               : undefined,
-         })}
-      >
-         <Box
-            sx={{
-               width: 32,
-               height: 32,
-               borderRadius: 1,
-               bgcolor: CONTENT_TINT[type],
-               color: "#FFFFFF",
-               display: "flex",
-               alignItems: "center",
-               justifyContent: "center",
-               flexShrink: 0,
-            }}
-         >
-            <ContentTypeIcon type={type} />
-         </Box>
-         <Typography
-            variant="body2"
-            sx={{
-               fontFamily: MONO_FONT_FAMILY,
-               flex: 1,
-               minWidth: 0,
-               overflow: "hidden",
-               textOverflow: "ellipsis",
-               whiteSpace: "nowrap",
-            }}
-         >
-            {label}
-         </Typography>
-         {rightLabel && (
-            <Typography
-               variant="caption"
-               color="text.secondary"
-               sx={{ flexShrink: 0 }}
-            >
-               {rightLabel}
-            </Typography>
-         )}
-         {trailingAction && (
-            <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
-               {trailingAction}
-            </Box>
-         )}
-      </Box>
+      <ItemRow
+         icon={<ContentTypeIcon type={type} />}
+         tint={CONTENT_TINT[type]}
+         label={label}
+         mono
+         {...(rightLabel === undefined ? {} : { rightLabel })}
+         {...(onClick === undefined ? {} : { onClick })}
+         {...(trailingAction === undefined ? {} : { trailingAction })}
+      />
    );
 }
 

@@ -23,6 +23,9 @@ export default ({ mode }) => {
             entry: {
                index: "./src/index.ts",
                "client/index": "./src/client-entry.ts",
+               // The dashboard builder, and with it the Malloy parser: its own
+               // entry so a host loads it only when someone opens the builder.
+               "builder/index": "./src/builder-entry.ts",
             },
             name: "@malloy-publisher/sdk",
             fileName: (format, entryName) => {
@@ -30,6 +33,8 @@ export default ({ mode }) => {
                   return `index.${format}.js`;
                } else if (entryName === "client/index") {
                   return `client/index.${format}.js`;
+               } else if (entryName === "builder/index") {
+                  return `builder/index.${format}.js`;
                }
                return `${entryName}.${format}.js`;
             },
@@ -66,7 +71,6 @@ export default ({ mode }) => {
                // Other large React libraries
                "@react-spring/web",
                "@tanstack/react-query",
-               "@uiw/react-md-editor",
 
                // Malloy dependencies (should be provided by host)
                "@malloydata/malloy-explorer",

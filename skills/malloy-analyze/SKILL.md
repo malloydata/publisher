@@ -1,6 +1,6 @@
 ---
 name: malloy-analyze
-description: Explore data for insights and build views/dashboards/notebooks. Use when user asks to "analyze this data", "find insights", "explore for patterns", "what's interesting", "what's driving X", "build a dashboard", "create views", or any analysis task. For EDA exploration, start at Step 1. For building views on an existing model, jump to View Patterns.
+description: Open-ended exploration with no specific question to answer, and building views/dashboards/notebooks on an existing model. Use when the user asks "what's interesting?", "explore this data", "find insights", "look for patterns", "build a dashboard", or "create views". Not for a specific data question - answering one is `malloy-analysis`, and writing down what the answer assumed is `malloy-model-as-you-go`. For exploration start at Step 1; for views on an existing model jump to View Patterns.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -253,7 +253,9 @@ A notebook is also the home for a polished, narrated report: alternate `>>>markd
 
 ### Interactive Filters
 
-**Notebooks do NOT define filters themselves.** When you import a model, the model's `#(filter)` annotations on the source are **inherited and displayed automatically**: the publisher renders the filter widgets, parses caller parameters, and injects `where:` clauses server-side. You don't redeclare them in the consumer. If the analysis needs a knob the model doesn't expose, the right move is to add a `#(filter)` to the source itself (see `skill:malloy-model` § Parameterizable Filters with `#(filter)`), not to wedge filtering into the consumer.
+**Notebooks do NOT define filters themselves.** When you import a model, the model's runtime parameters are **inherited and displayed automatically**: the publisher renders the controls, parses caller parameters, and applies them server-side. You don't redeclare them in the consumer. If the analysis needs a knob the model doesn't expose, the right move is to add it to the source itself, not to wedge filtering into the consumer.
+
+**Declare that knob as a `given:`.** `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters.
 
 The notebook-level `##(filters)` annotation and the dimension-level `#(filter) {"type": "..."}` JSON-blob form are **unsupported legacy syntax**, don't use them. The only supported form is `#(filter) name=... dimension=... type=...` declared above the source.
 

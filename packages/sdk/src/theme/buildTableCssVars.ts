@@ -4,6 +4,29 @@
 import type { ResolvedTheme } from "./types";
 
 /**
+ * Padding inside a dashboard card, around the result. The renderer's own
+ * default, shared with the composite tile so the two cards cannot drift.
+ */
+export const DASHBOARD_CARD_PADDING_PX = 20;
+
+/**
+ * Geometry the two dashboard cards agree on. Not part of {@link ResolvedTheme}
+ * because the radius comes from the HOST's MUI `shape.borderRadius` rather than
+ * from the instance theme: a dashboard card should read as a card of the app it
+ * is embedded in, and pinning it to a constant is what made the renderer's 8px
+ * the only 8px card on a 4px page.
+ */
+export interface DashboardCardGeometry {
+   radius: string;
+   padding: string;
+}
+
+const DEFAULT_CARD_GEOMETRY: DashboardCardGeometry = {
+   radius: "8px",
+   padding: `${DASHBOARD_CARD_PADDING_PX}px`,
+};
+
+/**
  * Build the CSS variable map applied to the wrapper element around
  * `<malloy-render>`. The values here power two things only:
  *
@@ -28,6 +51,7 @@ import type { ResolvedTheme } from "./types";
  */
 export function buildTableCssVars(
    theme: ResolvedTheme,
+   card: DashboardCardGeometry = DEFAULT_CARD_GEOMETRY,
 ): Record<string, string> {
    return {
       "--malloy-render--font-family": theme.font.family,
@@ -63,5 +87,12 @@ export function buildTableCssVars(
       // .publisher-drill rule in injectRendererOverrides: the renderer
       // has no notion of drill, so the affordance is entirely ours.
       "--publisher-drill-link": theme.drillLink,
+      // Card geometry, in the publisher namespace because the renderer's own
+      // `--malloy-theme--dashboard-*` are declared ON `.malloy-render` and so
+      // beat anything inherited from this wrapper. injectRendererOverrides
+      // redeclares them there at raised specificity reading these, which is why
+      // that route needs no !important.
+      "--publisher-dashboard-card-radius": card.radius,
+      "--publisher-dashboard-card-padding": card.padding,
    };
 }

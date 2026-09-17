@@ -11,18 +11,18 @@ import { type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 
-// Zod shape for malloy_compile. environmentName/packageName mirror the other
-// tools and point the agent at malloy_getContext for name discovery.
+// Zod shape for compile_model. environmentName/packageName mirror the other
+// tools and point the agent at get_context for name discovery.
 const compileShape = {
    environmentName: z
       .string()
       .describe(
-         "Environment name. Call malloy_getContext with no arguments to list the available environments.",
+         "Environment name. Call get_context with no arguments to list the available environments.",
       ),
    packageName: z
       .string()
       .describe(
-         "Package containing the model. Call malloy_getContext with just environmentName to list its packages.",
+         "Package containing the model. Call get_context with just environmentName to list its packages.",
       ),
    modelPath: z
       .string()
@@ -55,12 +55,12 @@ const compileShape = {
       ),
 };
 
-const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use this while authoring instead of a throwaway malloy_executeQuery.
+const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use this while authoring instead of a throwaway execute_query.
 
 ## Scopes (the scope parameter)
 - "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
-- "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and #(authorize) still gates caller text. A missing exact path is warned and treated as a new file. Save and call malloy_reloadPackage to serve a clean edit.
+- "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and #(authorize) still gates caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
 
 ## Parameters
 - environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and #(authorize) values. Caller source may not declare #(authorize).
@@ -115,7 +115,7 @@ export function formatDiagnosticsText(
 }
 
 /**
- * Registers the malloy_compile MCP tool: validates Malloy source against a model
+ * Registers the compile_model MCP tool: validates Malloy source against a model
  * and returns structured diagnostics without executing a query. Wraps the same
  * in-process compile path the REST /compile endpoint uses (CompileController).
  */
@@ -126,7 +126,7 @@ export function registerCompileTool(
    const compileController = new CompileController(environmentStore);
 
    mcpServer.tool(
-      "malloy_compile",
+      "compile_model",
       COMPILE_DESCRIPTION,
       compileShape,
       async (params) => {

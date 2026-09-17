@@ -18,6 +18,8 @@ Say "model my data" and the agent will orchestrate the full modeling workflow au
 
 Every skill in this deployment, by what it is for. Start at a driver; it routes to the rest.
 
+This table is a catalogue of what exists, not of what is loaded. A host that installs one group takes that group's skills alone: `analysis`, `modeling`, or `eval`. A row naming a skill from a group you did not install says that the skill exists. It is not an instruction to load it, and it is written as a plain name rather than a `skill:` reference to say so.
+
 **Start here**
 
 | Skill | Use when... |
@@ -41,13 +43,23 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 
 | Skill | Use when... |
 |-------|-------------|
-| `skill:malloy-analyze` | Exploratory data analysis: profiling, building views and dashboards |
+| `skill:malloy-model-as-you-go` | After answering a question, writing down what it assumed: a `#(doc)`'d field in the model, an `extend` in the notebook, or a stated assumption plus snippet, depending on what the session can write |
+| `skill:malloy-analyze` | Open-ended exploration with no intent to keep anything: profiling, hypotheses, views |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
 | `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
 | `skill:malloy-analysis-report` | Combining validated queries into a notebook report or dashboard |
 | `skill:malloy-analysis-pitfalls` | Checking a query and its results before presenting an answer |
-| `skill:malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells |
+| `malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells. Ships in `analysis`. |
 | `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |
+
+**Evaluating a model** (driven by `eval-loop`). These ship in the `eval` group, which neither `analysis` nor `modeling` includes.
+
+| Skill | Use when... |
+|-------|-------------|
+| `eval-loop` | Running the loop: baseline, noise band, diagnose, one edit, gate, checkpoint |
+| `eval-answer` | Scoring one answer against a verified golden, and what retrieval delivered |
+| `eval-diagnose` | Deciding why a case failed and which artifact owns the fix |
+| `eval-improve` | The smallest model edit for a diagnosed cluster, with probe receipts |
 
 **Writing correct Malloy** (read before writing, not after failing)
 
@@ -86,4 +98,4 @@ Publishing is out of scope for open-source Publisher v1. Self-hosters move a fin
 
 ## Syntax Help
 
-Call `malloy_searchDocs` with your question. Use `skill:malloy-patterns` to discover available topics.
+Call `search_malloy_docs` with your question. Use `skill:malloy-patterns` to discover available topics.

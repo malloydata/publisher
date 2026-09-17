@@ -8,6 +8,10 @@ SPDX-License-Identifier: MIT
 > Start at the [project README](../README.md) for the 60-second quick start. This folder holds the
 > deeper reference. If you're an AI agent, read [AGENTS.md](../AGENTS.md) first — it's the canonical
 > guide to running Publisher and connecting over MCP.
+>
+> Publisher is created and maintained by [Credible](https://www.credibledata.com), the company
+> behind the AI Analytics Engine. For where the open-source engine ends and Credible's hosted engine
+> begins, see [credibledata.com/malloy](https://www.credibledata.com/malloy).
 
 ## Examples
 
@@ -23,24 +27,25 @@ every doc below points back to one of them, and each example's README points bac
 
 ## Concepts
 
-| Doc                                | Read it when you want to…                                                                           |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------- |
-| [architecture.md](architecture.md) | Understand how Malloy, Render, Publisher, and the SDK fit together.                                 |
-| [api-overview.md](api-overview.md) | Understand the REST + MCP surfaces and the resource hierarchy.                                      |
-| [packages.md](packages.md)         | Understand the package format: `publisher.json`, models, data files, and how a package gets served. |
-| [dbt-roadmap.md](dbt-roadmap.md)   | See how Malloy and dbt fit together, where the gaps are, and the plan to close them.                |
+| Doc                                | Read it when you want to…                                                                                |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [architecture.md](architecture.md) | Understand how Malloy, Render, Publisher, and the SDK fit together.                                      |
+| [api-overview.md](api-overview.md) | Understand the REST + MCP surfaces and the resource hierarchy.                                           |
+| [packages.md](packages.md)         | Understand the package format: `publisher.json`, models, data files, and how a package gets served.      |
+| [scaffolding.md](scaffolding.md)   | Scaffold a package with `npm create` — the `@latest` rule, the workspace it writes, seeding from a file. |
+| [dbt-roadmap.md](dbt-roadmap.md)   | See how Malloy and dbt fit together, where the gaps are, and the plan to close them.                     |
 
 ## Use it
 
-| Doc                                            | Read it when you want to…                                                              |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.   |
-| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                   |
-| [choosing-a-surface.md](choosing-a-surface.md) | Pick between a notebook, a dashboard, and an HTML data app.                            |
-| [dashboards.md](dashboards.md)                 | Write a `dashboards/*.malloy` file: a filterable, clickable dashboard declared in tags. |
-| [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models. |
-| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.              |
-| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                          |
+| Doc                                            | Read it when you want to…                                                                            |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.                 |
+| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                                 |
+| [choosing-a-surface.md](choosing-a-surface.md) | Pick between a notebook, a dashboard, and an HTML data app.                                          |
+| [dashboards.md](dashboards.md)                 | Build a dashboard by dragging tiles in the Console, or write the `dashboards/*.malloy` file by hand. |
+| [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models.               |
+| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.                            |
+| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                                        |
 
 ## Model & govern
 
@@ -57,26 +62,27 @@ there for the primitive, then follow the application you need.
 
 ## Deploy & operate
 
-| Doc                                                        | Read it when you want to…                                                                                                                           |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [deployment.md](deployment.md)                             | Run a built server via npx, Docker, or Docker Compose.                                                                                              |
-| [connections.md](connections.md)                           | Connect BigQuery, Snowflake, Postgres, DuckDB, and more.                                                                                            |
-| [materialization.md](materialization.md)                   | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior. |
-| [preaggregation.md](preaggregation.md)                     | Roll a measure up to a coarse grain with `#@ preaggregate` so covered queries read a small table — what can be pre-aggregated, what routes, and what it costs. |
+| Doc                                                        | Read it when you want to…                                                                                                                                                                                |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [deployment.md](deployment.md)                             | Run a built server via npx, Docker, or Docker Compose.                                                                                                                                                   |
+| [connections.md](connections.md)                           | Connect BigQuery, Snowflake, Postgres, DuckDB, and more.                                                                                                                                                 |
+| [materialization.md](materialization.md)                   | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior.                                                      |
+| [preaggregation.md](preaggregation.md)                     | Roll a measure up to a coarse grain with `#@ preaggregate` so covered queries read a small table — what can be pre-aggregated, what routes, and what it costs.                                           |
 | [query-metadata.md](query-metadata.md)                     | Tag the statements Publisher sends so the backend's own reporting can attribute them — layers, the contract, and correlating an API call with a backend query. Off unless `PUBLISHER_QUERY_METADATA=on`. |
-| [ducklake.md](ducklake.md)                                 | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped.                                       |
-| [persist-storage-tutorial.md](persist-storage-tutorial.md) | Materialize a `#@ persist` source into a DuckLake storage destination and serve queries from it (the `storage=` tier + the `PERSIST_STORAGE_MODE` switch). |
-| [theming.md](theming.md)                                   | Customize colors, fonts, and light/dark mode.                                                                                                       |
-| [configuration.md](configuration.md)                       | Look up an env var / CLI flag, or tune the OOM guards.                                                                                              |
+| [ducklake.md](ducklake.md)                                 | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped.                                                                                            |
+| [persist-storage-tutorial.md](persist-storage-tutorial.md) | Materialize a `#@ persist` source into a DuckLake storage destination and serve queries from it (the `storage=` tier + the `PERSIST_STORAGE_MODE` switch).                                               |
+| [theming.md](theming.md)                                   | Customize colors, fonts, and light/dark mode.                                                                                                                                                            |
+| [configuration.md](configuration.md)                       | Look up an env var / CLI flag, or tune the OOM guards.                                                                                                                                                   |
 
 ## Develop & contribute
 
-| Doc                                                            | Read it when you want to…                                                                     |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                     |
-| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                |
-| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                    |
-| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.       |
+| Doc                                                            | Read it when you want to…                                                                                                                                                                               |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                                                                                               |
+| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                                                          |
+| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                                                              |
+| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.                                                                                                                 |
+| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder and the Malloyyo-style notebook — research, gaps against the state of the art, how the builder is built, the notebook format and its builder, and the steps for each gap. |
 
 ## Full public docs
 

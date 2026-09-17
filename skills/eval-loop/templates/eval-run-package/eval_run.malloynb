@@ -1,0 +1,160 @@
+>>>markdown
+# Eval run
+
+One or more scored runs over one evaluation set. Publisher renders this natively,
+so every table below is Malloy reading the same model the app reads -- there is no
+second copy of the logic to drift.
+
+This notebook is the **analytical** half: how the arms did, what it cost, and what
+to fix next. The **case-by-case** half lives in the app at `/public/index.html`,
+because reading an eval is mostly drilling into one case and a notebook cannot
+open a drawer.
+
+Read it top to bottom: the headline, then whether the headline is trustworthy,
+then where the failures are, then what to do about them.
+>>>malloy
+import 'eval_run.malloy'
+>>>markdown
+## 1. The headline
+
+Pass rate over **decided** verdicts -- `match` against `no_match`. Two things are
+excluded rather than counted as failures, because a verdict the judge would not
+stand behind is not evidence either way and burying it in the denominator
+quietly depresses every arm:
+
+- `needs_human`, where the judge had too little confidence to say.
+- `near_match`, which means *defensibly different* rather than nearly right.
+
+Read `confident_count` alongside the rate: two arms are only comparable when they
+answered the same cases. Read `near_matches` too. It is the leading indicator of
+rubrics going vague, and it moves before the pass rate does.
+>>>malloy
+run: run_summary
+>>>markdown
+## 2. Is the headline trustworthy?
+
+A pass rate means nothing if the attempts behind it were contaminated, if the
+harness fell over, or if the arms did not face the same set.
+
+Any contamination at all voids the run -- an attempt that saw the gold answer is
+not evidence about the model. Harness errors are excluded from the rate rather
+than counted as failures: a timeout is the eval failing, not the answerer.
+>>>malloy
+run: attempts -> {
+  group_by: arm is runs.label
+  aggregate:
+    attempt_count
+    submitted_count
+    contaminated_count
+    harness_errors
+    judge_version is runs.judge_version.max()
+    set_version is runs.set_version.max()
+}
+>>>markdown
+## 3. What it cost
+
+The claim a semantic model makes is not only that the agent gets the right
+answer, but that it gets there quickly: fewer turns, fewer tokens, less money.
+An arm that wins on accuracy while costing three times as much has not obviously
+won.
+>>>malloy
+run: cost
+>>>malloy
+run: effort
+>>>markdown
+## 4. Where the failures are
+
+Every failure carries exactly one **where to fix**, so these counts sum to the
+run's failure count. If they ever do not, the attribution has a hole and the two
+tables below disagree with each other.
+
+- **query construction** -- retrieval delivered everything; the agent wrote the
+  query wrong. Fix the skill.
+- **retrieval ranking** -- the entity exists and search did not return it. Fix
+  ranking.
+- **model coverage** -- there was nothing to return. Add the entity.
+- **refusal behaviour** -- the model genuinely cannot answer, and the agent
+  answered anyway instead of declining.
+>>>malloy
+run: failures_by_where_to_fix
+>>>markdown
+### Pass rate by coverage
+
+Coverage is the ceiling on what any agent can do. A model-shaped problem shows up
+here as `derivable` scoring far below `covered`: the answer was reachable, but
+only by assembling it, and the agent could not.
+
+`absent` cases are scored on the **refusal** -- passing means the agent correctly
+declined.
+>>>malloy
+run: pass_by_coverage
+>>>markdown
+## 5. Retrieval
+
+**Per-question entity recall**: of the entities each golden answer depends on, how
+many the agent's own `get_context` calls delivered -- as a ranked entity, under a
+sibling source, or named in a returned source's documentation. It uses the search
+terms the answerer chose, so it moves when the answerer changes; use it to
+attribute a failure *within* one arm, not to compare retrieval across arms.
+>>>malloy
+run: retrieval_as_used
+>>>markdown
+### Entities most often needed and not returned
+
+The ranked retrieval backlog. An entity high on this list is one fix that several
+cases are waiting on.
+>>>malloy
+run: most_missed_entities
+>>>markdown
+## 6. What to do next
+
+Failures grouped by shared root cause, ordered by how many cases one edit would
+clear. Eight failures are rarely eight problems.
+
+`proposal` is **empty until someone decides what to change**. A cluster with no
+proposal is an open question, and that is an honest state -- a generated proposal
+that nobody stands behind is worse than a blank, because a reviewer has to
+disprove it.
+>>>malloy
+run: backlog
+>>>markdown
+### Coverage gaps in the set itself
+
+Independent of any run: cases the model cannot answer outright, with the entity
+that would close the gap. This is the model-improvement backlog even before an
+agent has attempted anything, and it is the part a customer can act on directly.
+>>>malloy
+run: coverage_gaps
+>>>markdown
+## 7. Refusal behaviour
+
+Refusal is scored in both directions, and getting one right while getting the
+other wrong is a common and misleading result.
+
+- A case whose golden is **unanswerable** passes by declining and naming what is
+  missing. Substituting a proxy without saying so is a failure.
+- A case tagged **answerable-sounds-unanswerable** passes by *answering*. An agent
+  that has learned to refuse whenever a question sounds hard will fail these while
+  looking well-calibrated on the ones above.
+>>>malloy
+run: refusal_behaviour
+>>>markdown
+## 8. Comparing arms
+
+Only meaningful with two or more arms loaded.
+
+A difference in pass **rate** is not evidence. Two arms can post the same rate
+while disagreeing on a third of the set, and a two-point gap over 49 cases is
+one case. What matters is which cases actually moved, and in which direction.
+
+`arms_passed` between 1 and `arms` means the arms disagree. Read the nested
+verdicts to see who won each one.
+>>>malloy
+run: flips
+>>>markdown
+### Cases every arm failed
+
+Changing the answerer will not move these. They are where model and retrieval
+work pays off, and they are the most durable finding in the whole run.
+>>>malloy
+run: failed_everywhere

@@ -16,10 +16,11 @@ tool does, when to call it, when not to call it, and what comes back.
 ## The five sections
 
 1. **When to use.** The trigger conditions, and just as important, when not to call the tool.
-   State the cases that cause the most misuse. If the tool participates in a multi-call
-   pattern (a discovery call followed by a drill-down call, for instance), name the pattern
-   here in two or three sentences so the response is interpretable on first read. Leave the
-   reasoning (when to retry, when to widen) to the skills.
+   State the cases that cause the most misuse. Where the response shape is not obvious from
+   the parameters, say what a call groups by, in two or three sentences, so the response is
+   interpretable on first read. Describe what the parameters do; do NOT prescribe a call
+   sequence, which turns a capability into a mandatory extra call. Leave the reasoning (when
+   to retry, when to widen) to the skills.
 
 2. **Parameters.** Each input, its type, whether it is required, and the meaning of the value.
    Describe what good input looks like per field. For typed or enumerated parameters, list the
@@ -46,8 +47,8 @@ should appear in. Some MCP clients truncate a tool description, and a tail cut r
 description put last. Numbered as written, that is Contract rules and Worked examples: exactly the
 invariants an agent cannot self-correct without, and no signal that anything was dropped.
 
-`malloy_getContext` was observed arriving cut off mid-sentence at 2271 characters, and the same
-inverted ordering was present in `malloy_searchDocs`. So:
+`get_context` was observed arriving cut off mid-sentence at 2271 characters, and the same
+inverted ordering was present in `search_malloy_docs`. So:
 
 - **Put Contract rules immediately after the opening paragraph**, ahead of Parameters, Response, and
   Worked examples. Losing the worked example still leaves a callable tool; losing the invariants does
@@ -56,7 +57,7 @@ inverted ordering was present in `malloy_searchDocs`. So:
   (the cap belongs to the client and is not published), so `server.protocol.spec.ts` enforces a
   budget as a regrowth guard, not as a guarantee. When a description approaches it, move the
   long-form narrative into a skill, which no cap applies to.
-- Prefer merging over adding. `malloy_getContext` carried a "Progressive discovery" section and a
+- Prefer merging over adding. `get_context` carried a "Progressive discovery" section and a
   "Parameters" section that stated the same call levels twice; merging them cut 16% with no loss.
 
 `server.protocol.spec.ts` pins both rules over the real protocol, so a description that regrows or
@@ -75,11 +76,12 @@ within a tool.
 
 ## Annotated example
 
-The retrieval tool below shows all five sections. It is a strong reference because its two-call
-pattern is tightly coupled to its response shape, so the description has to frame the pattern
-enough that the response reads clearly, while still leaving the workflow reasoning to skills. The
-example also carries a "Call modes" heading, which is the documented divergence for a two-phase
-retrieval tool (see the [design exceptions](./design-exceptions.md)), not a sixth required section.
+The retrieval tool below shows all five sections. It is a strong reference because its response
+shape is not obvious from its parameters, so the description has to say what a call groups by for
+the response to read clearly, while still leaving the workflow reasoning to skills. The example
+also carries a "How targets and scopes work" heading, which is the documented divergence for a
+retrieval tool (see the [design exceptions](./design-exceptions.md)), not a sixth required
+section. Note what it does not do: it never tells the caller which call to make next.
 
 ```
 Retrieve relevant Malloy entities (sources, dimensions, measures, views, dimensional values)
@@ -90,11 +92,14 @@ by matching typed search targets against indexed semantic-model data.
   source, or set of entities, to ground the next step in what is actually in the model.
 - Do NOT guess environment or package names in scopes. Specify them only when you know them.
 
-## Call modes (two-phase pattern)
-1. Source discovery: one call with source targets and usually no scopes; pick the most
-   promising sources from the response.
-2. Entity drill-down: for each chosen source, a parallel call scoped to it, with
-   dimension / measure / view / dimensional_value targets describing what you need.
+## How targets and scopes work
+- Entity targets find their sources. A dimension, measure, view or dimensional_value target
+  with search_text matches fields anywhere in scope, and the response groups the matches by
+  source. Typically this is the whole search: describe the fields the question needs, and the
+  cards that come back say which sources hold them. A source scope is optional.
+- source targets find or list sources, not fields. With search_text they match sources by
+  subject; without it they list the catalog. Entity and source targets can be combined.
+- scopes narrows any call. Scoped to one source, the call returns that source's full metadata.
 
 ## Parameters
 search_targets (required): list of typed targets. Each has a target_type (source, dimension,
@@ -115,21 +120,20 @@ sources: matched sources, each with source_info (a resource_id plus optional doc
   them.
 - Only combine entities from calls with identical scope.
 - Never invent entities; only use what the response returned.
-- Do not mix source targets with other target types in the same call.
 
 ## Worked examples
-Phase 1, source discovery (no scopes):
-{ "search_targets": [ { "target_type": "source", "search_text": "subscriber accounts and churn" } ] }
-
-Phase 2, entity drill-down (scoped to a source from phase 1):
+Entity targets, no scopes (the response says which sources hold these fields):
 { "search_targets": [
     { "target_type": "measure", "search_text": "the rate at which customers leave" },
     { "target_type": "dimension", "search_text": "the city where the subscriber lives" }
-  ],
+  ] }
+
+Scoped to one source:
+{ "search_targets": [ { "target_type": "measure", "search_text": "customer churn rate" } ],
   "scopes": [ { "environment": "demo", "package": "saas", "model_path": "subs.malloy", "source": "subscriptions" } ] }
 ```
 
-Notice what the description does and does not carry. It frames the two-call pattern (without
+Notice what the description does and does not carry. It says what a call groups by (without
 which the response is inscrutable) and it pins the composability contract (resource_id maps 1:1
-to the query tool's scope). It does not teach when to retry, when to widen the search, or how
-to phrase a good search_text. That reasoning lives in skills.
+to the query tool's scope). It does not teach when to retry, when to widen the search, how to
+phrase a good search_text, or which call to make next. That reasoning lives in skills.

@@ -5,12 +5,8 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
@@ -23,6 +19,8 @@ import {
    ConnectionTypeEnum,
    DucklakeConnection,
 } from "../../client/api";
+import { AppDialog } from "../AppDialog";
+import { AddButton, SecondaryButton } from "../buttons";
 import {
    attachedDatabaseConnectionFieldName,
    attributesFieldName,
@@ -56,6 +54,10 @@ export default function AddConnectionDialog({
    // DuckLake top-level connection state
    const [ducklakeCatalogType, setDucklakeCatalogType] = useState("postgres");
    const [ducklakeStorageType, setDucklakeStorageType] = useState("s3");
+   // Which S3 credential shape the storage fields are showing. Needed as state
+   // because this section renders uncontrolled inputs read from FormData, so
+   // `visibleWhen` has nothing to compare against without it.
+   const [ducklakeS3Provider, setDucklakeS3Provider] = useState("config");
 
    const handleClickOpen = () => {
       setOpen(true);
@@ -67,6 +69,7 @@ export default function AddConnectionDialog({
       setType("postgres");
       setDucklakeCatalogType("postgres");
       setDucklakeStorageType("s3");
+      setDucklakeS3Provider("config");
    };
 
    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -123,11 +126,26 @@ export default function AddConnectionDialog({
                }
             });
             // Validate required fields
-            if (!s3Config.accessKeyId) {
-               throw new Error("S3 Access Key ID is required");
-            }
-            if (!s3Config.secretAccessKey) {
-               throw new Error("S3 Secret Access Key is required");
+            // Under `credential_chain` the host supplies the credential, so a key
+            // pair is not merely optional — the server rejects one that is present
+            // and unused.
+            if (s3Config.provider === "credential_chain") {
+               delete s3Config.accessKeyId;
+               delete s3Config.secretAccessKey;
+               delete s3Config.sessionToken;
+            } else {
+               // Symmetric with the deletion above, and load-bearing on the edit
+               // path: switching the provider to a key pair unmounts the chain
+               // field, so it never resubmits and a carried-forward value would
+               // survive into a config the server rejects — naming a field the form
+               // is no longer showing.
+               delete s3Config.chain;
+               if (!s3Config.accessKeyId) {
+                  throw new Error("S3 Access Key ID is required");
+               }
+               if (!s3Config.secretAccessKey) {
+                  throw new Error("S3 Secret Access Key is required");
+               }
             }
             if (Object.keys(s3Config).length > 0) {
                storageConfig.s3Connection = s3Config;
@@ -202,6 +220,29 @@ export default function AddConnectionDialog({
                         connectionConfig[field.name] = value;
                      }
                   });
+
+                  // The S3 key fields are no longer HTML-`required`, because under
+                  // `credential_chain` there is no key to give and a hidden required
+                  // field blocks submit with nothing on screen to fix. Enforce the
+                  // pair here instead, where it can be conditional — otherwise a
+                  // keyless key-based attachment would save and fail at attach.
+                  if (dbType === "s3") {
+                     if (connectionConfig.provider === "credential_chain") {
+                        delete connectionConfig.accessKeyId;
+                        delete connectionConfig.secretAccessKey;
+                        delete connectionConfig.sessionToken;
+                     } else {
+                        delete connectionConfig.chain;
+                        if (
+                           !connectionConfig.accessKeyId ||
+                           !connectionConfig.secretAccessKey
+                        ) {
+                           throw new Error(
+                              `Attached database "${dbName}" requires an S3 Access Key ID and Secret Access Key, or Credential Provider set to the host credential chain`,
+                           );
+                        }
+                     }
+                  }
 
                   // Set the appropriate connection property based on type
                   const connectionFieldName =
@@ -358,43 +399,49 @@ export default function AddConnectionDialog({
 
    return (
       <React.Fragment>
-         {/* Contained with a start icon, matching AddEnvironmentDialog and
-             AddPackageDialog. This was the only add-trigger of the three still
-             outlined and icon-less, which read as the secondary action on a
-             screen where it is the primary one. */}
-         <Button
-            variant="contained"
-            color="primary"
-            startIcon={<AddIcon />}
-            onClick={handleClickOpen}
+         <AddButton label="Connection" onClick={handleClickOpen} />
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="New connection"
+            description="Add a connection so packages in this environment can query your database with Malloy."
+            actions={
+               <>
+                  <Button disabled={isSubmitting} onClick={handleClose}>
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="connection-form"
+                     variant="contained"
+                     loading={isSubmitting}
+                  >
+                     Create connection
+                  </Button>
+               </>
+            }
          >
-            Add Connection
-         </Button>
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Create New Connection</DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Add a new connection to query your data database using Malloy.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="connection-form">
+            <form onSubmit={handleSubmit} id="connection-form">
+               {/* One column, one gap. The fields carry no margin of
+                   their own, so without this they sit flush and their
+                   borders overlap. */}
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Connection Name"
+                     label="Name"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
                   />
                   <TextField
-                     margin="dense"
                      id="type"
                      name="type"
                      label="Connection Type"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      value={type}
                      select
                      onChange={(event) =>
@@ -426,11 +473,10 @@ export default function AddConnectionDialog({
                               Catalog
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_catalogType"
                               label="Catalog Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeCatalogType}
                               select
                               onChange={(event) =>
@@ -445,13 +491,12 @@ export default function AddConnectionDialog({
                                     (field) => (
                                        <TextField
                                           key={`pg_${field.name}`}
-                                          margin="dense"
                                           id={`ducklake_pg_${field.name}`}
                                           name={`ducklake_pg_${field.name}`}
                                           label={field.label}
                                           type={field.type}
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                        />
                                     ),
                                  )}
@@ -475,11 +520,10 @@ export default function AddConnectionDialog({
                               Storage
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_storageType"
                               label="Storage Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeStorageType}
                               select
                               onChange={(event) =>
@@ -490,7 +534,6 @@ export default function AddConnectionDialog({
                               <MenuItem value="gcs">GCS</MenuItem>
                            </TextField>
                            <TextField
-                              margin="dense"
                               required
                               id="ducklake_bucketUrl"
                               name="ducklake_bucketUrl"
@@ -501,7 +544,7 @@ export default function AddConnectionDialog({
                               }
                               type="text"
                               fullWidth
-                              variant="standard"
+                              size="small"
                            />
                            {ducklakeStorageType === "s3" && (
                               <>
@@ -512,24 +555,59 @@ export default function AddConnectionDialog({
                                  >
                                     S3 Credentials
                                  </Typography>
-                                 {s3AttachedDatabaseFields.map((field) => (
-                                    <TextField
-                                       key={`s3_${field.name}`}
-                                       margin="dense"
-                                       id={`ducklake_s3_${field.name}`}
-                                       name={`ducklake_s3_${field.name}`}
-                                       label={field.label}
-                                       type={field.type}
-                                       fullWidth
-                                       variant="standard"
-                                       required={field.required}
-                                       placeholder={
-                                          field.name === "region"
-                                             ? "us-east-1"
-                                             : undefined
-                                       }
-                                    />
-                                 ))}
+                                 {s3AttachedDatabaseFields
+                                    .filter((field) =>
+                                       field.visibleWhen
+                                          ? ducklakeS3Provider ===
+                                            field.visibleWhen.value
+                                          : true,
+                                    )
+                                    .map((field) => (
+                                       <TextField
+                                          key={`s3_${field.name}`}
+                                          id={`ducklake_s3_${field.name}`}
+                                          name={`ducklake_s3_${field.name}`}
+                                          label={field.label}
+                                          type={
+                                             field.selectOptions
+                                                ? undefined
+                                                : field.type
+                                          }
+                                          fullWidth
+                                          size="small"
+                                          required={field.required}
+                                          select={!!field.selectOptions}
+                                          defaultValue={
+                                             field.selectOptions
+                                                ? ducklakeS3Provider
+                                                : undefined
+                                          }
+                                          onChange={
+                                             field.name === "provider"
+                                                ? (e) =>
+                                                     setDucklakeS3Provider(
+                                                        e.target.value,
+                                                     )
+                                                : undefined
+                                          }
+                                          placeholder={
+                                             field.name === "region"
+                                                ? "us-east-1"
+                                                : undefined
+                                          }
+                                       >
+                                          {field.selectOptions?.map(
+                                             (option) => (
+                                                <MenuItem
+                                                   key={option.value}
+                                                   value={option.value}
+                                                >
+                                                   {option.label}
+                                                </MenuItem>
+                                             ),
+                                          )}
+                                       </TextField>
+                                    ))}
                               </>
                            )}
                            {ducklakeStorageType === "gcs" && (
@@ -544,13 +622,12 @@ export default function AddConnectionDialog({
                                  {gcsAttachedDatabaseFields.map((field) => (
                                     <TextField
                                        key={`gcs_${field.name}`}
-                                       margin="dense"
                                        id={`ducklake_gcs_${field.name}`}
                                        name={`ducklake_gcs_${field.name}`}
                                        label={field.label}
                                        type={field.type}
                                        fullWidth
-                                       variant="standard"
+                                       size="small"
                                        required={field.required}
                                     />
                                  ))}
@@ -571,14 +648,12 @@ export default function AddConnectionDialog({
                            <Typography variant="subtitle1" fontWeight={500}>
                               Attached Databases
                            </Typography>
-                           <Button
-                              startIcon={<AddIcon />}
+                           <SecondaryButton
+                              label="Database"
+                              icon={<AddIcon />}
                               onClick={addAttachedDatabase}
-                              size="small"
-                              variant="outlined"
-                           >
-                              Add Database
-                           </Button>
+                              ariaLabel="Add database"
+                           />
                         </Box>
                         {attachedDatabases.length === 0 && (
                            <Typography
@@ -628,23 +703,21 @@ export default function AddConnectionDialog({
                                     </IconButton>
                                  </Box>
                                  <TextField
-                                    margin="dense"
                                     required
                                     id={`attachedDb_${index}_name`}
                                     name={`attachedDb_${index}_name`}
                                     label="Database Name"
                                     type="text"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     defaultValue={db.name}
                                  />
                                  <TextField
-                                    margin="dense"
                                     id={`attachedDb_${index}_type`}
                                     name={`attachedDb_${index}_type`}
                                     label="Database Type"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     value={db.dbType}
                                     select
                                     onChange={(event) =>
@@ -681,7 +754,6 @@ export default function AddConnectionDialog({
                                     .map((field) => (
                                        <TextField
                                           key={field.name}
-                                          margin="dense"
                                           id={`attachedDb_${index}_${field.name}`}
                                           name={`attachedDb_${index}_${field.name}`}
                                           label={field.label}
@@ -691,7 +763,7 @@ export default function AddConnectionDialog({
                                                 : field.type
                                           }
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           required={field.required}
                                           select={!!field.selectOptions}
                                           defaultValue={
@@ -735,32 +807,19 @@ export default function AddConnectionDialog({
                      connectionFieldsByType[type].map((field) => (
                         <TextField
                            key={field.name}
-                           margin="dense"
                            id={field.name}
                            name={field.name}
                            label={field.label}
                            type={field.type}
                            fullWidth
-                           variant="standard"
+                           size="small"
                            required={field.required}
                         />
                      ))
                   )}
-               </form>
-            </DialogContent>
-            <DialogActions>
-               <Button disabled={isSubmitting} onClick={handleClose}>
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="connection-form"
-                  loading={isSubmitting}
-               >
-                  Create Connection
-               </Button>
-            </DialogActions>
-         </Dialog>
+               </Stack>
+            </form>
+         </AppDialog>
       </React.Fragment>
    );
 }

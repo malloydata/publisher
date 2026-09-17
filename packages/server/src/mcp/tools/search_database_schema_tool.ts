@@ -324,7 +324,7 @@ function toResponseTable(
    };
 }
 
-const SEARCH_DATABASE_SCHEMA_DESCRIPTION = `Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names. To search an existing model, use malloy_getContext.
+const SEARCH_DATABASE_SCHEMA_DESCRIPTION = `Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names. To search an existing model, use get_context.
 
 ## Drill down, one level at a time
 Supply what you know, omit the rest. No arguments lists the environments and their connections; + connectionName lists its schemas; + schemaName lists its tables (up to ${MAX_COLUMNS_PER_TABLE} columns each; add searchQuery to rank them); + tableName returns that one table with every column.
@@ -333,7 +333,7 @@ Supply what you know, omit the rest. No arguments lists the environments and the
 - Use connectionName, tablePath and column names exactly as returned.
 - A connection with scope "package" (the "duckdb" sandbox) is per package: pass packageName too, from those it lists.\n- Schemas marked isHidden are system schemas; your tables are in the others.
 - malloySource is the ready-to-use \`source:\` line; its identifiers are already quoted, so paste it as-is.
-- Names and types only: no row value is returned. For a column's values, run malloy_executeQuery against a model using this connection: \`run: c.table('s.t') -> { group_by: col }\`.
+- Names and types only: no row value is returned. For a column's values, run execute_query against a model using this connection: \`run: c.table('s.t') -> { group_by: col }\`.
 - No tables for a searchQuery means nothing matched, not an empty schema. Broaden it, or list without one.
 - An empty schema may still hold data: DuckDB over CSV or Parquet addresses files by path, registering none.
 - Read warnings: they name anything omitted or ignored.
@@ -347,7 +347,7 @@ Start with no arguments and follow what it names. For connection "warehouse", sc
 Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`warehouse\`.table('sales.orders') extend { }`;
 
 /**
- * Registers malloy_searchDatabaseSchema: natural-language search over a
+ * Registers search_database_schema: natural-language search over a
  * configured connection's schema.
  *
  * Ranking is lexical (lunr/BM25) unless the operator has set BOTH
@@ -397,7 +397,7 @@ export function registerSearchDatabaseSchemaTool(
    };
 
    mcpServer.tool(
-      "malloy_searchDatabaseSchema",
+      "search_database_schema",
       SEARCH_DATABASE_SCHEMA_DESCRIPTION,
       searchDatabaseSchemaShape,
       async (params: SearchDatabaseSchemaParams) => {

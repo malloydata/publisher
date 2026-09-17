@@ -3,7 +3,14 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   setDefaultTimeout,
+} from "bun:test";
 import { type ChildProcess, spawn } from "child_process";
 import fs from "fs";
 import net from "net";
@@ -55,6 +62,13 @@ async function poll(
    }
    return false;
 }
+
+// This spec's setup is slow enough to need a raised timeout, and it has to
+// cover the `beforeAll` hook, not just the tests. `setDefaultTimeout` does
+// both, and unlike the suite's `bun test --timeout` flag -- which only exists
+// via the `test:integration` script -- it still holds when this file is run on
+// its own.
+setDefaultTimeout(150_000);
 
 describe("first-boot readiness line", () => {
    let proc: ChildProcess | undefined;
@@ -141,7 +155,7 @@ describe("first-boot readiness line", () => {
       // The line is written in the same tick that flips the status to
       // serving, but the pipe delivery can trail the HTTP response.
       await poll(async () => readyLines().length > 0, 10_000, 100);
-   }, 150_000);
+   });
 
    afterAll(async () => {
       if (proc && !exited) {

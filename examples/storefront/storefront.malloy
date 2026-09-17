@@ -242,11 +242,28 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
     order_by: order_count desc
   }
 
+  // ── The KPI strip, as a view of its own ──────────────────────────────
+  // A view of only measures IS a KPI row once the tile that names it carries
+  // `# big_value`. Declared here rather than inline in the dashboard so the
+  // dashboard can NAME it and say what it is filtered by, which is the form
+  // the dashboard builder reads and writes. The labels and formats come from
+  // the measures themselves, so nothing is restated.
+  #(doc) Revenue, gross margin, orders, customers and average order value
+  view: key_figures is {
+    aggregate:
+      total_sales
+      total_margin
+      order_count
+      customer_count
+      avg_order_value
+  }
+
   // ── Dashboard (KPI tiles + nested charts, one query) ────────────────
   #(doc) Business overview: KPIs, monthly trend, geography, and top sellers
-  # dashboard
+  # dashboard { columns=2 }
   view: business_overview is {
     nest:
+      # colspan=2
       # big_value
       kpis is {
         aggregate:

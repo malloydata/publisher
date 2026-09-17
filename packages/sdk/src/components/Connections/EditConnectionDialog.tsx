@@ -5,14 +5,10 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
@@ -35,6 +31,32 @@ import {
    s3AttachedDatabaseFields,
    uiCreatableConnectionTypes,
 } from "./common";
+import { AppDialog } from "../AppDialog";
+import { SecondaryButton } from "../buttons";
+
+/**
+ * Credential fields the API deliberately never returns, so an edit form can
+ * never prefill them (see the server's connection_public_view.ts). Left blank
+ * they are omitted from the update and the server keeps the value it already
+ * holds; typed into, they replace it. Presence therefore cannot be validated
+ * here, and is validated server-side against the merged config instead.
+ */
+const SERVER_HELD_SECRETS = new Set([
+   "password",
+   "connectionString",
+   "privateKey",
+   "privateKeyPass",
+   "serviceAccountKeyJson",
+   "token",
+   "oauthClientSecret",
+   "accessToken",
+   "peakaKey",
+   "secret",
+   "secretAccessKey",
+   "sessionToken",
+   "clientSecret",
+   "sasUrl",
+]);
 
 type EditConnectionDialogProps = {
    connection: Connection;
@@ -67,6 +89,14 @@ export default function EditConnectionDialog({
 }: EditConnectionDialogProps) {
    const [open, setOpen] = useState(false);
    const [type, setType] = useState<Connection["type"]>(connection.type);
+   // One reader for withheldFields, so the form labels a box as holding a
+   // credential on the same evidence the submit path uses. Keyed by the dotted
+   // path the API reports, e.g. "postgresConnection.connectionString".
+   const withheldFields = React.useMemo(
+      () => new Set(connection.withheldFields ?? []),
+      [connection.withheldFields],
+   );
+
    const [attachedDatabases, setAttachedDatabases] = useState<
       Array<{
          name: string;
@@ -80,10 +110,22 @@ export default function EditConnectionDialog({
    const [ducklakeStorageType, setDucklakeStorageType] = useState(() =>
       initDucklakeStorageType(connection),
    );
+   // Which S3 credential shape the storage fields are showing. Seeded from the
+   // connection being edited, so opening a host-credential connection shows the
+   // chain fields rather than empty key fields it does not use.
+   const [ducklakeS3Provider, setDucklakeS3Provider] = useState<string>(
+      () =>
+         connection.ducklakeConnection?.storage?.s3Connection?.provider ??
+         "config",
+   );
 
    const handleClickOpen = () => {
       setAttachedDatabases(initAttachedDatabases(connection));
       setType(connection.type);
+      setDucklakeS3Provider(
+         connection.ducklakeConnection?.storage?.s3Connection?.provider ??
+            "config",
+      );
       setDucklakeCatalogType("postgres");
       setDucklakeStorageType(initDucklakeStorageType(connection));
       setOpen(true);
@@ -147,23 +189,50 @@ export default function EditConnectionDialog({
                   s3Config[field.name] = value;
                }
             });
-            // For updates, use existing values if not provided
+            // For updates, use existing values if not provided. `provider` and
+            // `chain` are carried forward for the same reason the key pair is:
+            // this form rebuilds the whole s3Connection from its own fields, so
+            // anything it does not resubmit is dropped. Losing `provider` here
+            // silently downgrades a host-credential connection to a key-based one
+            // that has no key — and because the checks below used to be
+            // unconditional, it also made a chain-auth connection impossible to
+            // edit at all, including just its bucket URL.
             const existingS3 =
                connection.ducklakeConnection?.storage?.s3Connection;
             if (existingS3) {
+               if (!s3Config.provider && existingS3.provider) {
+                  s3Config.provider = existingS3.provider;
+               }
+               if (!s3Config.chain && existingS3.chain) {
+                  s3Config.chain = existingS3.chain;
+               }
+               // The identifier is still readable; the secret beside it is not,
+               // so there is nothing to carry forward for it. Blank means "keep
+               // the stored value" and the server merges it.
                if (!s3Config.accessKeyId && existingS3.accessKeyId) {
                   s3Config.accessKeyId = existingS3.accessKeyId;
                }
-               if (!s3Config.secretAccessKey && existingS3.secretAccessKey) {
-                  s3Config.secretAccessKey = existingS3.secretAccessKey;
+            }
+            // Validate required fields. Under `credential_chain` the host supplies
+            // the credential, so a key pair is not merely optional — the server
+            // rejects one that is present and unused.
+            if (s3Config.provider === "credential_chain") {
+               delete s3Config.accessKeyId;
+               delete s3Config.secretAccessKey;
+               delete s3Config.sessionToken;
+            } else {
+               // Symmetric with the deletion above, and load-bearing on the edit
+               // path: switching the provider to a key pair unmounts the chain
+               // field, so it never resubmits and a carried-forward value would
+               // survive into a config the server rejects — naming a field the form
+               // is no longer showing.
+               delete s3Config.chain;
+               if (!s3Config.accessKeyId) {
+                  throw new Error("S3 Access Key ID is required");
                }
-            }
-            // Validate required fields
-            if (!s3Config.accessKeyId) {
-               throw new Error("S3 Access Key ID is required");
-            }
-            if (!s3Config.secretAccessKey) {
-               throw new Error("S3 Secret Access Key is required");
+               // No check for the secret: it is server-held, so a blank box means
+               // "keep the stored one", and only the server sees the merged config
+               // it would have to be validated against.
             }
             if (Object.keys(s3Config).length > 0) {
                storageConfig.s3Connection = s3Config;
@@ -178,23 +247,15 @@ export default function EditConnectionDialog({
                   gcsConfig[field.name] = value;
                }
             });
-            // For updates, use existing values if not provided
+            // Same split as S3 above: the key ID is readable, the secret is
+            // not, so a blank secret means "keep the stored value".
             const existingGcs =
                connection.ducklakeConnection?.storage?.gcsConnection;
-            if (existingGcs) {
-               if (!gcsConfig.keyId && existingGcs.keyId) {
-                  gcsConfig.keyId = existingGcs.keyId;
-               }
-               if (!gcsConfig.secret && existingGcs.secret) {
-                  gcsConfig.secret = existingGcs.secret;
-               }
+            if (existingGcs && !gcsConfig.keyId && existingGcs.keyId) {
+               gcsConfig.keyId = existingGcs.keyId;
             }
-            // Validate required fields
             if (!gcsConfig.keyId) {
                throw new Error("GCS Key ID is required");
-            }
-            if (!gcsConfig.secret) {
-               throw new Error("GCS Secret is required");
             }
             if (Object.keys(gcsConfig).length > 0) {
                storageConfig.gcsConnection = gcsConfig;
@@ -247,6 +308,32 @@ export default function EditConnectionDialog({
                      }
                   });
 
+                  // The S3 key fields are no longer HTML-`required`, because under
+                  // `credential_chain` there is no key to give and a hidden required
+                  // field blocks submit with nothing on screen to fix. Enforce the
+                  // pair here instead, where it can be conditional — otherwise a
+                  // keyless key-based attachment would save and fail at attach. This
+                  // does not ask anyone to retype a secret: the inputs are seeded
+                  // from the stored connection, so an untouched field resubmits its
+                  // existing value.
+                  if (dbType === "s3") {
+                     if (connectionConfig.provider === "credential_chain") {
+                        delete connectionConfig.accessKeyId;
+                        delete connectionConfig.secretAccessKey;
+                        delete connectionConfig.sessionToken;
+                     } else {
+                        delete connectionConfig.chain;
+                        if (
+                           !connectionConfig.accessKeyId ||
+                           !connectionConfig.secretAccessKey
+                        ) {
+                           throw new Error(
+                              `Attached database "${dbName}" requires an S3 Access Key ID and Secret Access Key, or Credential Provider set to the host credential chain`,
+                           );
+                        }
+                     }
+                  }
+
                   const connectionFieldName =
                      attachedDatabaseConnectionFieldName[dbType];
                   if (connectionFieldName) {
@@ -275,20 +362,14 @@ export default function EditConnectionDialog({
             const formValue = formData.get(field.name)?.toString();
             const existingValue = existingConfig[field.name];
 
-            // For password/secret fields, use existing value if form value is empty
-            const isPasswordField =
-               field.type === "password" ||
-               field.name === "password" ||
-               field.name === "secretAccessKey" ||
-               field.name === "secret" ||
-               field.name === "accessToken" ||
-               field.name === "privateKey";
-
+            // A credential is never read back from the API, so there is no
+            // existing value to fall back on and nothing is sent when the field
+            // is left blank: the server keeps what it already stored. Sending a
+            // placeholder here would store the placeholder as the credential.
             if (formValue) {
                connectionConfig[field.name] = formValue;
-            } else if (isPasswordField && existingValue) {
-               // Keep existing password/secret if not provided
-               connectionConfig[field.name] = existingValue;
+            } else if (SERVER_HELD_SECRETS.has(field.name)) {
+               // Leave it out entirely; absent means unchanged.
             } else if (formValue !== undefined) {
                connectionConfig[field.name] = formValue;
             } else if (existingValue) {
@@ -298,17 +379,22 @@ export default function EditConnectionDialog({
 
          // Validate required fields based on connection type
          if (type === "postgres") {
-            const hasConnectionString =
-               !!connectionConfig.connectionString?.trim();
-            if (!hasConnectionString) {
-               // All detailed fields are required if no connection string
-               const requiredFields = [
-                  "host",
-                  "port",
-                  "databaseName",
-                  "userName",
-                  "password",
-               ];
+            const detailFields = ["host", "port", "databaseName", "userName"];
+            // A stored connection string is not readable, so its absence from
+            // the form does not mean there is none. withheldFields is what
+            // separates "this connection is described by a connection string"
+            // from "this connection has nothing".
+            const hasStoredConnectionString = withheldFields.has(
+               "postgresConnection.connectionString",
+            );
+            const describedByConnectionString =
+               !!connectionConfig.connectionString?.trim() ||
+               hasStoredConnectionString;
+            // Something has to describe the connection. A connection string
+            // does it on its own; otherwise all four detail fields are
+            // required, and "the form mentions one of them" is not enough.
+            if (!describedByConnectionString) {
+               const requiredFields = detailFields;
                for (const fieldName of requiredFields) {
                   if (!connectionConfig[fieldName]) {
                      throw new Error(
@@ -316,10 +402,6 @@ export default function EditConnectionDialog({
                      );
                   }
                }
-            }
-         } else if (type === "bigquery") {
-            if (!connectionConfig.serviceAccountKeyJson) {
-               throw new Error("Service Account Key JSON is required");
             }
          } else if (type === "snowflake") {
             if (!connectionConfig.account) {
@@ -331,9 +413,6 @@ export default function EditConnectionDialog({
             if (!connectionConfig.warehouse) {
                throw new Error("Warehouse is required");
             }
-            if (!connectionConfig.password && !connectionConfig.privateKey) {
-               throw new Error("Either password or private key is required");
-            }
          } else if (type === "trino") {
             if (!connectionConfig.server) {
                throw new Error("Server is required");
@@ -341,25 +420,8 @@ export default function EditConnectionDialog({
             if (!connectionConfig.user) {
                throw new Error("User is required");
             }
-            // Password is required for HTTPS unless peakaKey is used
-            const server = connectionConfig.server.trim();
-            if (
-               server.startsWith("https://") &&
-               !connectionConfig.password &&
-               !connectionConfig.peakaKey
-            ) {
-               throw new Error(
-                  "Password is required for HTTPS connections (or use Peaka Key)",
-               );
-            }
          } else if (type === "mysql") {
-            const requiredFields = [
-               "host",
-               "port",
-               "database",
-               "user",
-               "password",
-            ];
+            const requiredFields = ["host", "port", "database", "user"];
             for (const fieldName of requiredFields) {
                if (!connectionConfig[fieldName]) {
                   throw new Error(
@@ -367,24 +429,12 @@ export default function EditConnectionDialog({
                   );
                }
             }
-         } else if (type === "motherduck") {
-            if (!connectionConfig.accessToken) {
-               throw new Error("Access Token is required");
-            }
          } else if (type === "databricks") {
             if (!connectionConfig.host) {
                throw new Error("Host is required");
             }
             if (!connectionConfig.path) {
                throw new Error("HTTP Path is required");
-            }
-            const hasOAuth =
-               connectionConfig.oauthClientId &&
-               connectionConfig.oauthClientSecret;
-            if (!connectionConfig.token && !hasOAuth) {
-               throw new Error(
-                  "Either Access Token or OAuth Client ID + Secret is required",
-               );
             }
          }
 
@@ -468,42 +518,53 @@ export default function EditConnectionDialog({
             </ListItemIcon>
             <ListItemText>Edit</ListItemText>
          </MenuItem>
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle
-               onClick={(event) => {
-                  event.stopPropagation();
-               }}
-            >
-               Edit Connection
-            </DialogTitle>
-            <DialogContent
-               onClick={(event) => {
-                  event.stopPropagation();
-               }}
-            >
-               <DialogContentText>
-                  Edit a connection to query your data database using Malloy.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="connection-form">
+         {/* The `Menu` this is rendered inside already stops its own clicks
+             reaching the row behind it, so the dialog needs no per-section
+             stopPropagation of its own — it had one on each of the title,
+             the body and the actions. */}
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="Edit connection"
+            description="Change how packages in this environment reach your database."
+            actions={
+               <>
+                  <Button disabled={isSubmitting} onClick={handleClose}>
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="connection-form"
+                     variant="contained"
+                     loading={isSubmitting}
+                  >
+                     Save changes
+                  </Button>
+               </>
+            }
+         >
+            <form onSubmit={handleSubmit} id="connection-form">
+               {/* One column, one gap. The fields carry no margin of
+                   their own, so without this they sit flush and their
+                   borders overlap. */}
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Connection Name"
+                     label="Name"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      defaultValue={connection.name}
                   />
                   <TextField
-                     margin="dense"
                      id="type"
                      name="type"
                      label="Connection Type"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      value={type}
                      select
                      onChange={(event) =>
@@ -535,11 +596,10 @@ export default function EditConnectionDialog({
                               Catalog
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_catalogType"
                               label="Catalog Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeCatalogType}
                               select
                               onChange={(event) =>
@@ -554,13 +614,12 @@ export default function EditConnectionDialog({
                                     (field) => (
                                        <TextField
                                           key={`pg_${field.name}`}
-                                          margin="dense"
                                           id={`ducklake_pg_${field.name}`}
                                           name={`ducklake_pg_${field.name}`}
                                           label={field.label}
                                           type={field.type}
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           defaultValue={getDucklakeDefault(
                                              `pg_${field.name}`,
                                           )}
@@ -587,11 +646,10 @@ export default function EditConnectionDialog({
                               Storage
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_storageType"
                               label="Storage Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeStorageType}
                               select
                               onChange={(event) =>
@@ -602,7 +660,6 @@ export default function EditConnectionDialog({
                               <MenuItem value="gcs">GCS</MenuItem>
                            </TextField>
                            <TextField
-                              margin="dense"
                               required
                               id="ducklake_bucketUrl"
                               name="ducklake_bucketUrl"
@@ -613,7 +670,7 @@ export default function EditConnectionDialog({
                               }
                               type="text"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               defaultValue={getDucklakeDefault("bucketUrl")}
                            />
                            {ducklakeStorageType === "s3" && (
@@ -625,32 +682,70 @@ export default function EditConnectionDialog({
                                  >
                                     S3 Credentials
                                  </Typography>
-                                 {s3AttachedDatabaseFields.map((field) => (
-                                    <TextField
-                                       key={`s3_${field.name}`}
-                                       margin="dense"
-                                       id={`ducklake_s3_${field.name}`}
-                                       name={`ducklake_s3_${field.name}`}
-                                       label={field.label}
-                                       type={field.type}
-                                       fullWidth
-                                       variant="standard"
-                                       required={
-                                          field.required &&
-                                          field.name !== "secretAccessKey"
-                                       }
-                                       defaultValue={getDucklakeDefault(
-                                          `s3_${field.name}`,
-                                       )}
-                                       placeholder={
-                                          field.name === "region"
-                                             ? "us-east-1"
-                                             : field.name === "secretAccessKey"
-                                               ? "Leave empty to keep existing"
-                                               : undefined
-                                       }
-                                    />
-                                 ))}
+                                 {s3AttachedDatabaseFields
+                                    .filter((field) =>
+                                       field.visibleWhen
+                                          ? ducklakeS3Provider ===
+                                            field.visibleWhen.value
+                                          : true,
+                                    )
+                                    .map((field) => (
+                                       <TextField
+                                          key={`s3_${field.name}`}
+                                          id={`ducklake_s3_${field.name}`}
+                                          name={`ducklake_s3_${field.name}`}
+                                          label={field.label}
+                                          type={
+                                             field.selectOptions
+                                                ? undefined
+                                                : field.type
+                                          }
+                                          fullWidth
+                                          size="small"
+                                          required={
+                                             field.required &&
+                                             field.name !== "secretAccessKey"
+                                          }
+                                          select={!!field.selectOptions}
+                                          defaultValue={
+                                             field.selectOptions
+                                                ? ducklakeS3Provider
+                                                : getDucklakeDefault(
+                                                     `s3_${field.name}`,
+                                                  )
+                                          }
+                                          onChange={
+                                             field.name === "provider"
+                                                ? (e) =>
+                                                     setDucklakeS3Provider(
+                                                        e.target.value,
+                                                     )
+                                                : undefined
+                                          }
+                                          placeholder={
+                                             field.name === "region"
+                                                ? "us-east-1"
+                                                : field.name ===
+                                                       "secretAccessKey" &&
+                                                    withheldFields.has(
+                                                       "ducklakeConnection.storage.s3Connection.secretAccessKey",
+                                                    )
+                                                  ? "Leave empty to keep existing"
+                                                  : undefined
+                                          }
+                                       >
+                                          {field.selectOptions?.map(
+                                             (option) => (
+                                                <MenuItem
+                                                   key={option.value}
+                                                   value={option.value}
+                                                >
+                                                   {option.label}
+                                                </MenuItem>
+                                             ),
+                                          )}
+                                       </TextField>
+                                    ))}
                               </>
                            )}
                            {ducklakeStorageType === "gcs" && (
@@ -665,13 +760,12 @@ export default function EditConnectionDialog({
                                  {gcsAttachedDatabaseFields.map((field) => (
                                     <TextField
                                        key={`gcs_${field.name}`}
-                                       margin="dense"
                                        id={`ducklake_gcs_${field.name}`}
                                        name={`ducklake_gcs_${field.name}`}
                                        label={field.label}
                                        type={field.type}
                                        fullWidth
-                                       variant="standard"
+                                       size="small"
                                        required={
                                           field.required &&
                                           field.name !== "secret"
@@ -680,7 +774,10 @@ export default function EditConnectionDialog({
                                           `gcs_${field.name}`,
                                        )}
                                        placeholder={
-                                          field.name === "secret"
+                                          field.name === "secret" &&
+                                          withheldFields.has(
+                                             "ducklakeConnection.storage.gcsConnection.secret",
+                                          )
                                              ? "Leave empty to keep existing"
                                              : undefined
                                        }
@@ -703,14 +800,12 @@ export default function EditConnectionDialog({
                            <Typography variant="subtitle1" fontWeight={500}>
                               Attached Databases
                            </Typography>
-                           <Button
-                              startIcon={<AddIcon />}
+                           <SecondaryButton
+                              label="Database"
+                              icon={<AddIcon />}
                               onClick={addAttachedDatabase}
-                              size="small"
-                              variant="outlined"
-                           >
-                              Add Database
-                           </Button>
+                              ariaLabel="Add database"
+                           />
                         </Box>
                         {attachedDatabases.length === 0 && (
                            <Typography
@@ -761,23 +856,21 @@ export default function EditConnectionDialog({
                                     </IconButton>
                                  </Box>
                                  <TextField
-                                    margin="dense"
                                     required
                                     id={`attachedDb_${index}_name`}
                                     name={`attachedDb_${index}_name`}
                                     label="Database Name"
                                     type="text"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     defaultValue={db.name}
                                  />
                                  <TextField
-                                    margin="dense"
                                     id={`attachedDb_${index}_type`}
                                     name={`attachedDb_${index}_type`}
                                     label="Database Type"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     value={db.dbType}
                                     select
                                     onChange={(event) =>
@@ -818,7 +911,6 @@ export default function EditConnectionDialog({
                                     .map((field) => (
                                        <TextField
                                           key={field.name}
-                                          margin="dense"
                                           id={`attachedDb_${index}_${field.name}`}
                                           name={`attachedDb_${index}_${field.name}`}
                                           label={field.label}
@@ -828,7 +920,7 @@ export default function EditConnectionDialog({
                                                 : field.type
                                           }
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           required={field.required}
                                           select={!!field.selectOptions}
                                           defaultValue={
@@ -878,23 +970,32 @@ export default function EditConnectionDialog({
                            connection?.[attributesFieldName[type] ?? ""]?.[
                               field.name ?? ""
                            ] ?? "";
+                        // Wider than the submit path's check on purpose: a
+                        // password-typed field that nobody added to
+                        // SERVER_HELD_SECRETS still renders as a secret, so it
+                        // is never prefilled. It would, however, submit an
+                        // empty string, which reads as an explicit clear, so a
+                        // new secret field belongs in that set.
                         const isPasswordField =
                            field.type === "password" ||
-                           field.name === "password" ||
-                           field.name === "secretAccessKey" ||
-                           field.name === "secret" ||
-                           field.name === "accessToken" ||
-                           field.name === "privateKey";
+                           SERVER_HELD_SECRETS.has(field.name);
+                        // Whether THIS connection holds a value for THIS field,
+                        // rather than whether the field is the kind that can
+                        // hold one. Saying "leave empty to keep it" over a box
+                        // with nothing behind it is the confusion
+                        // withheldFields exists to remove.
+                        const isStored = withheldFields.has(
+                           `${attributesFieldName[type] ?? ""}.${field.name}`,
+                        );
                         return (
                            <TextField
                               key={field.name}
-                              margin="dense"
                               id={field.name}
                               name={field.name}
                               label={field.label}
                               type={field.type}
                               fullWidth
-                              variant="standard"
+                              size="small"
                               required={
                                  field.required &&
                                  !isPasswordField &&
@@ -902,33 +1003,24 @@ export default function EditConnectionDialog({
                               }
                               defaultValue={existingValue}
                               placeholder={
-                                 isPasswordField && existingValue
+                                 isStored
                                     ? "Leave empty to keep existing"
+                                    : undefined
+                              }
+                              helperText={
+                                 isPasswordField
+                                    ? isStored
+                                       ? "Stored value is not shown. Leave empty to keep it."
+                                       : "No value stored."
                                     : undefined
                               }
                            />
                         );
                      })
                   )}
-               </form>
-            </DialogContent>
-            <DialogActions
-               onClick={(event) => {
-                  event.stopPropagation();
-               }}
-            >
-               <Button disabled={isSubmitting} onClick={handleClose}>
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="connection-form"
-                  loading={isSubmitting}
-               >
-                  Edit Connection
-               </Button>
-            </DialogActions>
-         </Dialog>
+               </Stack>
+            </form>
+         </AppDialog>
       </React.Fragment>
    );
 }

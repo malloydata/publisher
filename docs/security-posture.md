@@ -37,6 +37,12 @@ Concretely:
   reachable server with the default config it is open — but so is the query API, and an attacker
   who can register a package can already read the data directly. Set `"frozenConfig": true` to
   close registration on a deployment where that matters.
+- **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
+  dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
+  kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
+  registration; it has no authentication of its own, so on a reachable server it sits behind the
+  same gateway or is closed by the same setting. An attacker who can reach it can already register
+  a package, so it opens no door that was shut.
 - **Governance is mostly a modeling concern.** `#(authorize)`, given-scoped
   row-level access, `explores`, and `queryableSources` constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
@@ -71,9 +77,9 @@ It is a deliberate trade, stated plainly rather than left to be discovered:
 - **403 becomes 200-with-zero-rows.** A caller the retired whole-source gate would have rejected
   outright now gets a successful, empty response. That is wire-visible: a consumer keying its own
   logic on the 403 status must be checked and updated before upgrading a deployment it serves. A 403
-  now means only that the gate could not be *attached* — not that a caller was denied by it.
+  now means only that the gate could not be _attached_ — not that a caller was denied by it.
 - **Fail-closed is the only backstop.** A row filter has no boolean admission to fall back on the
-  way the retired whole-source gate did, so every path that cannot *apply* the filter denies instead — a
+  way the retired whole-source gate did, so every path that cannot _apply_ the filter denies instead — a
   gate whose column doesn't resolve at the entry point, an unresolved given, a compile that
   throws. There is no "serve unfiltered" failure mode.
 - **The gate's own structure is still scrubbed.** Accepting schema disclosure above is not
@@ -147,9 +153,9 @@ React will not execute an inline `<script>` this way, and link `href`s are alrea
 precisely because packages can come from untrusted git or S3 sources — so this is a narrow
 surface, not an open one. Still, it is the one place a declarative artifact touches
 author-controlled HTML, and it is worth either disabling raw HTML or sanitizing deliberately.
-Three call sites, not one: notebook cells, workbook cells, and an environment's About panel
-(`NotebookCell.tsx`, `MutableCell.tsx`, `About.tsx`). None passes the option, so fixing one and
-calling it done would leave the other two open.
+Two call sites, not one: notebook cells and an environment's About panel (`NotebookCell.tsx`,
+`About.tsx`). Neither passes the option, so fixing one and calling it done would leave the other
+open.
 
 **4. Resize messages are not origin-checked.** Both the in-page host runtime
 (`packages/server/src/runtime/publisher.js`) and the Console's data-app viewer

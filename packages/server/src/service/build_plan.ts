@@ -1054,6 +1054,29 @@ export function deriveBuildPlan(
                continue;
             }
          } else {
+            // A rollup needs BOTH gates when it declares a destination, and the
+            // two answer different questions. The authorize refusal is
+            // unconditional for `origin === "preaggregate"` regardless of tier — a
+            // rollup groups ACROSS the gated column, so it can never be row-
+            // filtered afterwards — and the storage-destination gate is the same
+            // one an authored `#@ persist storage=` passes. Neither subsumes the
+            // other, so a storage rollup runs both.
+            // The two gates are recorded differently, and the difference is the
+            // `continue` below rather than the message.
+            //
+            // The AUTHORIZE refusal leaves the rollup in `sources`: Malloy
+            // synthesized it, and the colocated companion may still offer it, so
+            // refused-and-present is both true at once. That is the coexistence the
+            // spec permits for this tier alone.
+            //
+            // The STORAGE refusal does not. Such a rollup cannot build anywhere —
+            // its destination is the only place it was ever going to be written —
+            // so leaving it in `sources` carrying `annotationFields.storage` states
+            // that a table is coming that never is. `Package.storageWarnings` reads
+            // that field with no refusal check and would announce a write-only
+            // rollup as materialized; the auto-run walks the same compiled sources
+            // and would try to build it.
+            let storageRefused = false;
             try {
                assertColocatedPersistNotAuthorizeGated(
                   source,
@@ -1061,6 +1084,11 @@ export function deriveBuildPlan(
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                );
+               if (declaresStorage) {
+                  storageRefused = true;
+                  assertMaterializationEligible(source);
+                  storageRefused = false;
+               }
             } catch (err) {
                if (!(err instanceof MaterializationEligibilityError)) throw err;
                // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
@@ -1070,10 +1098,32 @@ export function deriveBuildPlan(
                   name: source.name,
                   sourceID: source.sourceID,
                   modelPath: sourceModelPaths?.[sourceID],
+                  // `preaggregate` whether or not the rollup declared a
+                  // destination, and the reason is a contract the other values
+                  // carry rather than a preference.
+                  //
+                  // This branch deliberately does NOT `continue`: a refused rollup
+                  // lands in BOTH `refusedSources` and `sources`, because Malloy
+                  // still synthesized it. The spec makes that legal for exactly one
+                  // tier — "a `preaggregate`-tier entry can coexist with an entry of
+                  // the same sourceID in `BuildPlan.sources` … unlike
+                  // `storage`/`colocated` where a refusal means absence from
+                  // `sources`". Reporting `storage` for a rollup would therefore
+                  // tell a consumer the entry cannot be in `sources` while it is,
+                  // which reads as a corrupt plan.
+                  //
+                  // It also loses the only provenance this collection carries. The
+                  // name is synthesized, so `preaggregate` is what says the entry
+                  // describes a rollup at all; which gate refused it is in
+                  // `reason` and the message.
                   tier: "preaggregate",
                   reason: err.reason || "authorize",
                   message: errMessage(err),
                };
+               // Present in BOTH collections only for the authorize refusal; a
+               // storage-refused rollup is absent from `sources`, like any other
+               // source whose only build path was refused.
+               if (storageRefused) continue;
             }
          }
          // EFFECTIVE per-source freshness, resolved most-specific-wins

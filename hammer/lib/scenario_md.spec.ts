@@ -125,6 +125,7 @@ describe("scenario grammar: every step must verify something", () => {
          "connection",
          "sql",
          "buildTargets",
+         "buildRefusals",
          "buildRefused",
          "orchestratedBuild",
          "compile",
@@ -315,5 +316,76 @@ run: daily -> { select: total }
             "t",
          ),
       ).toThrow(/unknown attribute "unplaned"/);
+   });
+
+   it("reads per-source (failed) on an orchestrated build", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Build (orchestrated)\n\n- a -> t_a @ lake\n- b -> nosuch.t_b @ lake (failed)\n`,
+         "t",
+      );
+      const step = parsed.steps[0] as {
+         sources: { src: string; name: string; dest: string; failed: boolean }[];
+      };
+      expect(step.sources).toEqual([
+         { src: "a", name: "t_a", dest: "lake", failed: false },
+         { src: "b", name: "nosuch.t_b", dest: "lake", failed: true },
+      ]);
+   });
+
+   it("rejects a misspelled orchestrated source attribute", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build (orchestrated)\n\n- a -> t_a @ lake (faild)\n`,
+            "t",
+         ),
+      ).toThrow(/unknown attribute "faild"/);
+   });
+
+   // `refused` asserts the RUN failed, so it records no per-source outcome for
+   // `(failed)` to check. Accepting both would silently drop the per-source
+   // assertion.
+   it("rejects (failed) on a refused build", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build refused (orchestrated)\n\n- a -> t_a @ lake (failed)\n`,
+            "t",
+         ),
+      ).toThrow(/`\(failed\)` is meaningless on a refused build/);
+   });
+
+   // The two headers almost share a prefix, and they do opposite things: one
+   // asserts a collection in the plan and runs nothing, the other runs a build and
+   // demands it fail. Pinned because the parse order is what keeps them apart.
+   it("tells ## Build refusals apart from ## Build refused", () => {
+      const refusals = parseMarkdownForTest(
+         `${FRONT}\n## Build refusals\n\nExpect:\n\n| source | tier    | reason |\n| ------ | ------- | ------ |\n| s      | storage | given  |\n`,
+         "t",
+      );
+      expect(refusals.steps[0]).toMatchObject({ kind: "buildRefusals" });
+
+      const refused = parseMarkdownForTest(
+         `${FRONT}\n## Build refused\n\ncites: nope\n`,
+         "t",
+      );
+      expect(refused.steps[0]).toMatchObject({ kind: "buildRefused" });
+   });
+
+   it("accepts an EMPTY ## Build refusals table (nothing was refused)", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Build refusals\n\nExpect:\n\n| source |\n| ------ |\n`,
+         "t",
+      );
+      const step = parsed.steps[0] as { kind: string; expect: { rows: unknown[] } };
+      expect(step.kind).toBe("buildRefusals");
+      expect(step.expect.rows).toEqual([]);
+   });
+
+   it("rejects a ## Build refusals table with no source column", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build refusals\n\nExpect:\n\n| tier    | reason |\n| ------- | ------ |\n| storage | given  |\n`,
+            "t",
+         ),
+      ).toThrow(/requires a "source" column/);
    });
 });

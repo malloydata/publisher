@@ -78,8 +78,7 @@ const ASSET_EXTENSIONS = new Set([
  * Third segments that belong to the app rather than to a package's `public/`
  * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
  * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
- * embedded data app viewer, `workbook/...` is the workbook route, and
- * `dashboards/<slug>` is the dashboard viewer.
+ * embedded data app viewer and `dashboards/<slug>` is the dashboard viewer.
  *
  * `dashboards` is here because a slug is a FILENAME with its `.malloy` suffix
  * removed, so `dashboards/report.csv.malloy` publishes the slug `report.csv`,
@@ -88,7 +87,7 @@ const ASSET_EXTENSIONS = new Set([
  * and reachable by in-app navigation, but a deep link or a refresh 302s to the
  * static route and answers 404. Measured before adding it.
  *
- * The cost, which `pages` pays too and is worth stating for this one: a package
+ * The cost, worth stating: a package
  * that ships a `public/dashboards/` directory can no longer address those files
  * as `/<env>/<pkg>/dashboards/<file>`, since that shape now opens the dashboard
  * viewer, which reports that the package has no dashboard by that name.
@@ -97,22 +96,12 @@ const ASSET_EXTENSIONS = new Set([
  * those files are reachable only on the static URL
  * `/environments/<env>/packages/<pkg>/dashboards/<file>`.
  *
- * `pages` is the OLD spelling of `data-apps`, kept only so an existing bookmark
- * reaches the app and the app can redirect it to the new URL. Without it here the
- * old link is diverted to the static route and 404s, which is a worse answer than
- * a 404 sounds: for a package that ships a `public/pages/` directory it resolves
- * to a real but different document and answers 200.
- *
- * DEPRECATED. Remove one release after the release that ships the rename,
- * together with the redirect in ModelPage.tsx that depends on it. The newest tag
- * when this was written was v0.0.240.
+ * `pages`, the pre-0.0.242 spelling of `data-apps`, was carried here for a while
+ * so an old bookmark could reach the app and be redirected. That alias is gone:
+ * a `pages/...` path is an ordinary path into the package's `public/` directory
+ * again.
  */
-const SPA_OWNED_SEGMENTS = new Set([
-   "dashboards",
-   "data-apps",
-   "pages",
-   "workbook",
-]);
+const SPA_OWNED_SEGMENTS = new Set(["dashboards", "data-apps"]);
 
 export type SpaFallbackAction =
    /** Serve the app shell, as before. */

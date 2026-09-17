@@ -24,22 +24,31 @@ for, **how much control you take on**, and one thing that is easy to miss:
 The one-line version:
 
 - **Notebook.** You're telling a story. Prose and queries in author order, read top to bottom.
-- **Dashboard.** You're monitoring. One grid behind a shared filter row, read at a glance.
+- **Dashboard.** You're monitoring. One grid behind a shared filter row, read at a glance. Build it
+  by **dragging tiles around a grid** in the Console if that is the way you like to work, or by
+  writing the tags by hand — it is the same file either way.
 - **HTML data app.** You're shipping a product. Custom page, total control, built with AI.
+
+If you have built dashboards in a classic BI tool, the dashboard is the surface that will feel
+familiar: [the Console's builder](dashboards.md#editing-in-the-console) is drag-to-move,
+drag-the-edge-to-resize, pick-a-tile-from-a-menu. The difference is what it writes. There is no
+proprietary layout document behind it — it edits the `dashboards/*.malloy` file in your package,
+which you can read, diff, review and commit like any other source file, and which an agent can
+write just as well as the builder can.
 
 ## Side by side
 
-|                      | Notebook                                                                                                       | Dashboard                                                                                                       | HTML data app                                                                                                  |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **What it is**       | A `.malloynb` file: markdown prose + live query cells                                                          | A `dashboards/*.malloy` file: a tagged Malloy query that _is_ the dashboard                                     | A `public/` directory of HTML/CSS/JS, served as-is                                                             |
-| **Reading mode**     | Narrative: a data story, read top to bottom in author order                                                    | Operational: one grid behind a filter row, scanned at a glance                                                  | Whatever you design                                                                                            |
-| **Layout**           | Vertical document flow                                                                                         | Column grid via tags (`# colspan`, `# break`)                                                                   | Fully custom                                                                                                   |
-| **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: Malloy + layout tags (`# artifact`, `# dashboard {columns}`)                                         | Code: HTML/CSS/JS, hand-written or agent-written, no build step. The `malloy-html-data-apps` skills guide an agent through it |
-| **Portability**      | Malloy's notebook format: the same file the VS Code extension authors and runs                                 | Plain Malloy, byte-compatible with [Malloyyo](https://github.com/malloydata/malloyyo)                           | Standard web page; the `Publisher.*` runtime is Publisher-specific                                             |
-| **Filters**          | Auto-rendered from the givens the file declares or imports: select, slider, date picker                                    | Auto-rendered from the givens the query references: select, slider, date picker                                 | You build the controls and pass givens through `Publisher.query` yourself                                      |
-| **Interactivity**    | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                       | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                        | Anything the web platform can do                                                                               |
-| **Embedding**        | SDK `<Notebook>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | SDK `<Dashboard>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | `Publisher.embed`: auto-resizing iframe in any host page                                                       |
-| **Maintenance cost** | Low: the model does the work                                                                                   | Low: the model does the work                                                                                    | You own layout, state, and error handling                                                                      |
+|                      | Notebook                                                                                                       | Dashboard                                                                                                                | HTML data app                                                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| **What it is**       | A `.malloynb` file: markdown prose + live query cells                                                          | A `dashboards/*.malloy` file: a tagged Malloy query that _is_ the dashboard                                              | A `public/` directory of HTML/CSS/JS, served as-is                                                                            |
+| **Reading mode**     | Narrative: a data story, read top to bottom in author order                                                    | Operational: one grid behind a filter row, scanned at a glance                                                           | Whatever you design                                                                                                           |
+| **Layout**           | Vertical document flow                                                                                         | Column grid via tags (`# colspan`, `# break`)                                                                            | Fully custom                                                                                                                  |
+| **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: drag tiles in the Console's builder, or write the layout tags (`# artifact`, `# dashboard {columns}`) by hand | Code: HTML/CSS/JS, hand-written or agent-written, no build step. The `malloy-html-data-apps` skills guide an agent through it |
+| **Portability**      | Malloy's notebook format: the same file the VS Code extension authors and runs                                 | Plain Malloy, near-identical to [Malloyyo](https://github.com/malloydata/malloyyo)'s (the grid width differs)            | Standard web page; the `Publisher.*` runtime is Publisher-specific                                                            |
+| **Filters**          | Auto-rendered from the givens the file declares or imports: select, slider, date picker                        | Auto-rendered from the givens the query references: select, slider, date picker                                          | You build the controls and pass givens through `Publisher.query` yourself                                                     |
+| **Interactivity**    | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                       | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                                 | Anything the web platform can do                                                                                              |
+| **Embedding**        | SDK `<Notebook>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | SDK `<Dashboard>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup]          | `Publisher.embed`: auto-resizing iframe in any host page                                                                      |
+| **Maintenance cost** | Low: the model does the work                                                                                   | Low: the model does the work                                                                                             | You own layout, state, and error handling                                                                                     |
 
 [embed-followup]: https://github.com/malloydata/publisher/issues/931
 [sdk-internal]: embedded-data-apps.md
@@ -55,8 +64,9 @@ nothing. Import the ones you filter by.
 
 A notebook interleaves markdown prose with live query cells, in the order the author wants them
 read. A cell tagged `# dashboard` can render a KPI grid inline, and a model's givens surface as a
-Parameters panel above the cells. Try
-`http://localhost:4000/examples/storefront/storefront.malloynb`.
+Parameters panel above the cells. The `.malloynb` format is deprecated — read-only support stays,
+and the bundled examples no longer ship one — so a new narrative surface should be a dashboard until
+the authored notebook format lands.
 
 Interactivity is not the axis to choose on: a notebook and a dashboard run the same givens code,
 so both get URL-addressable parameters, the same controls, starting values and Apply batching (a
@@ -96,17 +106,16 @@ layout. Filter controls render automatically from the givens the query reference
 makes dimension cells navigate between dashboards; filter state lives in the URL. The package
 page lists them, and the Console renders them at `dashboards/<name>`. How to write one:
 [dashboards.md](dashboards.md); the design behind it:
-[malloyyo-dashboards-design.md](malloyyo-dashboards-design.md). None of the bundled example
-packages ships a dashboard yet, so this is the one surface here you have to write before you can
-look at one; [A first dashboard](dashboards.md#a-first-dashboard) is a complete file to paste into
-any package.
+[malloyyo-dashboards-design.md](malloyyo-dashboards-design.md). The `storefront` example ships one
+at [`dashboards/overview.malloy`](../examples/storefront/dashboards/overview.malloy), which is a
+complete file to read or copy.
 
 **Pros**
 
 - Built for the _recurring look_: same numbers, same layout, different day, one grid behind a
   shared filter row.
 - Still zero code, still plain Malloy: versioned, reviewed, and linted with the model, and
-  byte-compatible with Malloyyo (the migration story).
+  near-identical to Malloyyo's, the grid width aside (the migration story).
 - A real grid: `# colspan` and `# break` lay tiles out across columns, which vertical cell flow
   cannot do.
 
@@ -158,7 +167,7 @@ filter wiring, and error handling. Guide:
 
 - It's still code, even when an agent writes it. The filter widgets, loading states, error
   handling, and responsive layout that notebooks and dashboards give you for free are the app's
-  to get right. The skills cover them, but they live in your page, not the platform.
+  to get right. The skills cover them, but they live in your page, not in Publisher.
 - Nothing is derived from the model: add a given, and the UI has to be updated to match (another
   agent pass, but a pass someone has to remember to make).
 - Highest maintenance cost of the three, and quality depends on the author, human or agent.

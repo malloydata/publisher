@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { formatErrorText, jsonResource, jsonToolError } from "./tool_response";
 
-// Pins the wire shape every malloy_* tool returns. Two properties here are
+// Pins the wire shape every Malloy tool returns. Two properties here are
 // regressions waiting to happen, so they are asserted explicitly rather than
 // left to the tools' own specs:
 //
@@ -59,12 +59,12 @@ describe("formatErrorText", () => {
    it("renders the message and every suggestion", () => {
       const text = formatErrorText({
          message: "Resource not found: env/pkg",
-         suggestions: ["Check the spelling.", "Call malloy_getContext."],
+         suggestions: ["Check the spelling.", "Call get_context."],
       });
 
       expect(text).toContain("Resource not found: env/pkg");
       expect(text).toContain("- Check the spelling.");
-      expect(text).toContain("- Call malloy_getContext.");
+      expect(text).toContain("- Call get_context.");
    });
 
    it("returns the bare message when there are no suggestions", () => {

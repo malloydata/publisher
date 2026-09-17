@@ -33,6 +33,7 @@ import {
 import { recordAttributionSkipped } from "../materialization_metrics";
 import type { QueryMetadata } from "./query_metadata";
 import {
+   applySessionResourceLimits,
    attachDuckLakeReadWrite,
    escapeSQL,
    federateSourceForPassthrough,
@@ -560,13 +561,21 @@ export function passthroughSourceType(
  * attaches, torn down on close. Crucially `databasePath` stays exactly
  * `:memory:` (NOT a temp file): a `:memory:` primary lets a DuckLake attach
  * auto-initialize a fresh catalog, whereas a file primary does not. The working
- * directory is only there to make the share key unique — nothing is written to
- * it (every real path the build uses is absolute), so it stays empty and is
- * removed on dispose (best-effort; a leftover empty dir is benign).
+ * directory started out only as a way to make the share key unique — every real
+ * path the build uses is absolute — and it is also where the caller points
+ * DuckDB's `temp_directory`, so it holds spill for the life of the build and
+ * nothing else. Removed on dispose (best-effort; a leftover dir is benign).
  */
 export function createIsolatedBuildSession(sessionName: string): {
    session: DuckDBConnection;
    dispose: () => Promise<void>;
+   /**
+    * The session's private working directory. Returned so the caller can point
+    * DuckDB's `temp_directory` at it: it is unique per build and removed by
+    * `dispose`, so spill from one build can neither outlive it nor collide with
+    * another build's.
+    */
+   workDir: string;
 } {
    const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
    // The disposer that owns removing workDir does not exist until this function
@@ -634,7 +643,7 @@ export function createIsolatedBuildSession(sessionName: string): {
          });
       }
    };
-   return { session, dispose };
+   return { session, dispose, workDir };
 }
 
 /**
@@ -753,6 +762,12 @@ export interface StorageIncrementalRefresh {
  * @returns the destination connection name and the captured authoritative
  *   schema, both recorded on the manifest entry for the serve transform.
  */
+/** See `buildSourceIntoStorage`'s `deps`. */
+export interface BuildSessionDeps {
+   federate?: typeof federateSourceForPassthrough;
+   read?: typeof issuePassthroughRead;
+}
+
 export async function buildSourceIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
@@ -779,6 +794,14 @@ export async function buildSourceIntoStorage(params: {
     * leaves this function exactly the full build it was.
     */
    incremental?: StorageIncrementalRefresh;
+   /**
+    * Injection seam for tests: how the source is federated onto the session and
+    * how the passthrough read is issued. Production callers pass nothing. It
+    * exists so the one line that closes a proxied source's tunnel — in this
+    * function's `finally` — can be proven to run, on a clean build and on a
+    * failed one, without a live warehouse.
+    */
+   deps?: BuildSessionDeps;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -789,6 +812,8 @@ export async function buildSourceIntoStorage(params: {
       environmentPath,
       queryMetadata,
    } = params;
+   const federate = params.deps?.federate ?? federateSourceForPassthrough;
+   const read = params.deps?.read ?? issuePassthroughRead;
 
    assertSupportedDestination(destinationName, destinationConnection);
    const sourceType = passthroughSourceType(sourceConnection);
@@ -797,12 +822,25 @@ export async function buildSourceIntoStorage(params: {
    // read-write destination attach and federated source credentials cannot be
    // pooled onto — or collide with — any other build/serve connection (see
    // createIsolatedBuildSession).
-   const { session, dispose } = createIsolatedBuildSession(
+   const { session, dispose, workDir } = createIsolatedBuildSession(
       `build_${destinationName}`,
    );
    // Visible to the finally, which clears the session tag before release.
    let federatedHandle: string | undefined;
+   // The tunnel a proxied source was federated through, if any: closed in the
+   // finally, because disposing the DuckDB session does not close a listener
+   // this process opened outside it.
+   let federatedClose: (() => Promise<void>) | undefined;
    try {
+      // FIRST, before the destination attach: the attach is what carries a
+      // DuckLake session into the shared funnel, which applies the limits without
+      // a `tempDirectory` and latches them. Running after it therefore lost this
+      // build its own disposable directory on exactly the destination type that
+      // reaches production, sending spill to the shared configured path instead —
+      // outliving `dispose`, and collidable between concurrent builds. Ordering
+      // it here also puts the memory bound in effect during the attach itself,
+      // and matches `dropStorageTable`.
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
          destinationName,
@@ -824,11 +862,12 @@ export async function buildSourceIntoStorage(params: {
       // session it protects is this one — see pinSessionToUTC.
       await pinSessionToUTC(session);
 
-      const federated = await federateSourceForPassthrough(
+      const federated = await federate(
          session,
          sourceType,
          sourceFederationConfig(sourceConnection),
       );
+      federatedClose = federated.close;
 
       await tagSnowflakeSession(
          session,
@@ -883,7 +922,7 @@ export async function buildSourceIntoStorage(params: {
          }
       }
 
-      const read = await issuePassthroughRead(
+      const passthrough = await read(
          session,
          sourceType,
          federated.handle,
@@ -897,7 +936,7 @@ export async function buildSourceIntoStorage(params: {
       const schema = await createTableAndDescribe(
          session,
          target,
-         read.selectSQL,
+         passthrough.selectSQL,
       );
       // The table now holds a full snapshot, so record where that snapshot
       // reaches: this is what turns the NEXT refresh into a delta. On this
@@ -917,7 +956,7 @@ export async function buildSourceIntoStorage(params: {
          // unchanged, so it can only be asked once the read has run — which is
          // here, while the session still holds the credentials.
          readCost:
-            read.cost ??
+            passthrough.cost ??
             (await snowflakeReadCostAfterBuild(
                session,
                sourceType,
@@ -933,6 +972,16 @@ export async function buildSourceIntoStorage(params: {
       // nothing federated or read-write survives the build) and removes its
       // throwaway working directory.
       await dispose();
+      // Then the tunnel, after the attach that used it is gone. Best-effort: a
+      // listener that fails to close is logged, never raised over the build's
+      // own outcome.
+      if (federatedClose) {
+         await federatedClose().catch((e) =>
+            logger.warn(
+               `Failed to close the SSH proxy a storage build federated through: ${String(e)}`,
+            ),
+         );
+      }
    }
 }
 
@@ -985,10 +1034,19 @@ export async function buildDownstreamIntoStorage(params: {
 
    assertSupportedDestination(destinationName, destinationConnection);
 
-   const { session, dispose } = createIsolatedBuildSession(
+   const { session, dispose, workDir } = createIsolatedBuildSession(
       `build_${destinationName}`,
    );
    try {
+      // FIRST, before the destination attach: the attach is what carries a
+      // DuckLake session into the shared funnel, which applies the limits without
+      // a `tempDirectory` and latches them. Running after it therefore lost this
+      // build its own disposable directory on exactly the destination type that
+      // reaches production, sending spill to the shared configured path instead —
+      // outliving `dispose`, and collidable between concurrent builds. Ordering
+      // it here also puts the memory bound in effect during the attach itself,
+      // and matches `dropStorageTable`.
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
          destinationName,
@@ -1111,6 +1169,12 @@ export async function assertStorageServeShapeCompiles(params: {
 }): Promise<void> {
    const { destinationName, sourceName, virtualHandle, physicalTableName } =
       params;
+   // No `origin`, and none is needed. This gate compiles a throwaway shape from
+   // the CAPTURED schema alone — no author-model lookup, no composite, no
+   // refinements — so it asks the same question of a rollup's table as of an
+   // authored one: do these columns form a valid DuckDB virtual source. It reads
+   // the binding as an opaque (handle, table, destination) triple, which is the
+   // property that makes a consumer origin-neutral.
    const binding: ServeBinding = {
       sourceName,
       destinationName,
@@ -1133,7 +1197,27 @@ export async function assertStorageServeShapeCompiles(params: {
    // left by an earlier one. Pinned in the spec — refusals still refuse after 25
    // successful compiles, a refusal does not poison the session, and the same
    // handle recompiled with a different schema sees the new one.
+   // Assigned synchronously, deliberately. An `await` between the check and the
+   // assignment lets two concurrent callers both pass the check and both build a
+   // session, and the loser is an orphaned connection and temp directory that
+   // nothing disposes for the life of the process — and because the limits call
+   // is `async` even when nothing is configured, that window would be open on
+   // every deployment rather than only opted-in ones.
    sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
+   // Bounded on every use rather than at creation, which is what keeps the line
+   // above synchronous: the call is idempotent per connection, so this is one
+   // WeakMap hit after the first compile. This is the instance that most needs
+   // bounding — process-wide and deliberately never disposed, so the
+   // longest-lived DuckDB instance here — and it reaches `assertServesInDuckDB`
+   // through a `FixedConnectionMap` that builds a Runtime directly, with no
+   // connection lookup and no attach, so neither hook that bounds the other
+   // sessions ever sees it.
+   //
+   // No session-owned spill directory, unlike a build: this session outlives
+   // every build, so a directory of its own would accumulate for the life of the
+   // process with nothing to remove it. It uses the configured one, which is
+   // where an operator who set it wants spill to land.
+   await applySessionResourceLimits(sharedGateSession);
    await assertServesInDuckDB(
       sourceName,
       binding,
@@ -1183,10 +1267,15 @@ export async function dropStorageTable(params: {
    // Fail fast (pre-session, pre-attach) on a destination the build can't target.
    assertSupportedDestination(destinationName, destinationConnection);
 
-   const { session, dispose } = createIsolatedBuildSession(
+   const { session, dispose, workDir } = createIsolatedBuildSession(
       `gc_${destinationName}`,
    );
    try {
+      // Bounded like the build sessions even though a DROP allocates almost
+      // nothing. DuckDB does not reserve the limit up front, so this instance
+      // costs little while idle; what it carries is a CAP, and it is the sum of
+      // the caps across every live instance that has to fit the container.
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
          destinationName,
@@ -1257,12 +1346,16 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
    bigqueryConnection?: components["schemas"]["BigqueryConnection"];
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
    postgresConnection?: components["schemas"]["PostgresConnection"];
+   proxy?: components["schemas"]["ConnectionProxy"];
 } {
    return {
       name: sourceConnection.name ?? "src",
       bigqueryConnection: sourceConnection.bigqueryConnection,
       snowflakeConnection: sourceConnection.snowflakeConnection,
       postgresConnection: sourceConnection.postgresConnection,
+      // A proxied source is reached through its tunnel, on the build path as on
+      // the query path; federatePostgres opens and the build session closes it.
+      proxy: sourceConnection.proxy,
    };
 }
 

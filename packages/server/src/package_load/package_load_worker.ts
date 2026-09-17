@@ -96,6 +96,7 @@ import {
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
+import { assertPartitionAnnotationsValid } from "../service/gate_classification";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -119,6 +120,8 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
    type MalloyGivenApi,
+   attachSuggestGivenNames,
+   suggestGivenLookup,
 } from "../service/given";
 import { ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
@@ -728,8 +731,20 @@ async function compileMalloyModel(
       authorizeOwnNotes,
       attributedAuthorizeOwnNotes,
    } = extractSources(modelDef, givens);
+   // Now that each source's EFFECTIVE gate is known, say which givens each
+   // `suggest` needs in its request. In place, so the copies on `sources` see it.
+   attachSuggestGivenNames(
+      givens,
+      suggestGivenLookup(
+         modelDef,
+         (name) => sources.find((source) => source.name === name)?.authorize,
+         new Set((givens ?? []).map((given) => given.name)),
+      ),
+   );
    const queryResult = extractQueries(modelDef);
    const queries = queryResult.queries;
+   // See the identical check in `Model.create`.
+   assertPartitionAnnotationsValid(modelDef);
    // A `#(authorize)` annotation in a position nothing enforces (a top-level
    // `query:` statement, or a field inside a `source:` rather than the
    // `source:` line itself) fails OPEN — see
@@ -975,9 +990,22 @@ async function compileNotebookModel(
       finalSourceInfos = collected.sourceInfos;
       const extracted = extractSources(finalModelDef, finalGivens);
       finalSources = extracted.sources;
+      // See the identical step in `compileMalloyModel` above.
+      attachSuggestGivenNames(
+         finalGivens,
+         suggestGivenLookup(
+            finalModelDef,
+            (name) =>
+               extracted.sources.find((source) => source.name === name)
+                  ?.authorize,
+            new Set((finalGivens ?? []).map((given) => given.name)),
+         ),
+      );
       finalFilterMap = extracted.filterMap;
       const finalQueryResult = extractQueries(finalModelDef);
       finalQueries = finalQueryResult.queries;
+      // See the identical check in `compileMalloyModel` above.
+      assertPartitionAnnotationsValid(finalModelDef);
       // See the identical check in `compileMalloyModel` above.
       assertNoMisplacedAuthorizeAnnotations([
          ...extracted.misplacedAuthorize,

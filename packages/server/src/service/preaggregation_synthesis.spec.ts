@@ -90,6 +90,287 @@ async function planFor(body: string): Promise<RollupPlan[]> {
    return planSourcePreaggregation("orders", await compileOrders(body));
 }
 
+describe("a rollup is placed in a storage destination by its own line", () => {
+   const GRAIN = `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`;
+   const GRAIN_STORAGE = `  measure:\n    #@ preaggregate grain="category" storage=lake\n    total is sum(amount)`;
+
+   it("a storage= base lends NOTHING — not its destination, not its namespace", async () => {
+      // Inheriting the destination reads as obviously right and is not. A base can
+      // only carry `#@ persist storage=` if it is query-shaped; such a base builds
+      // a stored table of its own; and the serve shape rebinds by author NAME, so
+      // the base's own binding claims the name its rollups need and they are
+      // dropped. Every inherited rollup would be built, refreshed, and unreadable.
+      //
+      // The namespace half is the older rule and unchanged: the base's `name=` is
+      // a name in the destination's catalog, which means nothing in the source
+      // warehouse where the rollup is built.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist storage=lake name="analytics.orders_tbl"',
+            GRAIN,
+         ),
+      );
+      expect(plans).toHaveLength(1);
+      expect(plans[0].storage).toBeUndefined();
+      expect(plans[0].namespace).toBeUndefined();
+   });
+
+   it("emits `storage=` with NO name=, so the destination assigns the table", async () => {
+      // Placement inside a destination is derived, not authored. The resolver
+      // refuses a dotted `name=` outright because a fresh catalog has no schema, so
+      // emitting one would produce a refusal naming a generated source and a
+      // `name=` the author never wrote. Bare is safe because the build self-assigns
+      // from the source name, which carries the grain digest.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileOrders(GRAIN_STORAGE),
+      );
+      expect(plans[0].storage).toBe("lake");
+      const emitted =
+         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
+      expect(emitted).toContain('#@ persist storage="lake"');
+      expect(emitted).not.toContain("name=");
+   });
+
+   it("quotes the destination, so a non-identifier name survives the re-emit", async () => {
+      // Unquoted, the tag parser splits a name at its first non-identifier
+      // character and does so SILENTLY: `storage=my-lake` parses as
+      // `storage="my"` plus a stray `lake` tag with an empty parse log, so the
+      // rollup would target a destination called `my` and nothing would say so.
+      // Fails on the pre-fix emit, which is the point.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileOrders(
+            `  measure:\n    #@ preaggregate grain="category" storage="my-lake"\n    total is sum(amount)`,
+         ),
+      );
+      expect(plans[0].storage).toBe("my-lake");
+      expect(
+         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "",
+      ).toContain('#@ persist storage="my-lake"');
+   });
+
+   it("a colocated base still lends its namespace, unchanged", async () => {
+      // The shipped path must not move. Only the destination was ever in question,
+      // and it is a `name=` namespace that inherits usefully — the colocated
+      // companion composes members synthesis itself names, so nothing is keyed on
+      // the author's source name and there is no binding to collide with.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            GRAIN,
+         ),
+      );
+      expect(plans[0].namespace).toBe("analytics");
+      expect(plans[0].storage).toBeUndefined();
+   });
+
+   it("two grains on one base can be placed differently", async () => {
+      // A grain is a table, so this is a real capability rather than an accident:
+      // one grain to the store, one left colocated.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileOrders(
+            `  measure:\n    #@ preaggregate grain="category" storage=lake\n    #@ preaggregate grain="order_date"\n    total is sum(amount)`,
+         ),
+      );
+      const byGrain = Object.fromEntries(
+         plans.map((p) => [p.grainDimensions.join(","), p.storage]),
+      );
+      expect(byGrain).toEqual({ category: "lake", order_date: undefined });
+   });
+});
+
+describe("the generated name is a single unqualified identifier", () => {
+   // The name is also the rollup's physical table name — the build self-assigns
+   // it, there being no `name=` — so a consumer reading a dotted name as
+   // schema-qualified would refuse it or address the wrong table. Pinned here
+   // rather than left to the publish gate that refuses dotted grains, so the
+   // property belongs to the name instead of to a gate elsewhere agreeing to hold.
+   it("has no dot, for a legal grain or an illegal one", () => {
+      expect(rollupSourceName("orders", ["category"])).toBe(
+         "orders__preagg__category__edb2cd3b",
+      );
+      expect(rollupSourceName("orders", ["category", "d"])).not.toContain(".");
+      // Refused at publish and fatal at load, so it cannot reach a build plan —
+      // asserted anyway, because "cannot reach" is a claim about other code.
+      expect(rollupSourceName("orders", ["d.month"])).not.toContain(".");
+   });
+
+   it("a folded dot still does not collide with a real underscore", () => {
+      // The digest is over the RAW dimensions, so folding cannot merge two grains
+      // that differ only where the dot was.
+      expect(rollupSourceName("orders", ["a.b"])).not.toBe(
+         rollupSourceName("orders", ["a_b"]),
+      );
+   });
+
+   it("is stable across everything but the base and the grain", () => {
+      // Not the connection, and not the destination: neither is an input. The
+      // CONTENT address (sourceEntityId) folds the connection digest; the name
+      // does not, so it is stable per (base, grain) alone.
+      expect(rollupSourceName("orders", ["category"])).toBe(
+         rollupSourceName("orders", ["category"]),
+      );
+   });
+});
+
+describe("a storage rollup is declared but is not a composite member", () => {
+   // The composite here is the COLOCATED serve path, and its members resolve
+   // through the same-connection build manifest, which carries no storage
+   // entries. A storage-bound member could therefore never be substituted: the
+   // resolver would pick it for a query it covers, find no table, and recompute
+   // from the base — beating a colocated rollup that has a built table for the
+   // same query.
+   //
+   // Both assertions below fail on the pre-fix behaviour, which is the point of
+   // writing them: the member was present, and a storage-only base emitted a
+   // composite whose only member could never resolve.
+   const withGrains = async (body: string) => {
+      const text = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""${ROWS}""") extend {
+${body}
+}
+`;
+      const compiled = await loadTestModel(connections, text).getModel();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contents = (compiled as any)._modelDef.contents;
+      const plans = planSourcePreaggregation(
+         "orders",
+         contents["orders"] as ValidatableSource,
+      );
+      return {
+         plans,
+         composeLine: (
+            synthesizePreaggregationModel(plans, "./orders.malloy") ?? ""
+         )
+            .split("\n")
+            .find((l) => l.startsWith("source: orders is compose")) as string,
+      };
+   };
+
+   it("omits the storage member while a colocated one keeps its place", async () => {
+      const { plans, composeLine } = await withGrains(
+         `  measure:\n` +
+            `    #@ preaggregate grain="order_date" storage=lake\n` +
+            `    #@ preaggregate grain="category, order_date"\n` +
+            `    total is sum(amount)`,
+      );
+      const stored = plans.find((p) => p.storage)!.rollupSourceName;
+      const colocated = plans.find((p) => !p.storage)!.rollupSourceName;
+      // Both are still PLANNED — the storage one must still be built.
+      expect(plans).toHaveLength(2);
+      expect(composeLine).not.toContain(stored);
+      expect(composeLine).toContain(colocated);
+   });
+
+   it("a storage-only base still emits a composite, and it compiles", async () => {
+      // The degenerate case the filter creates, and the one worth pinning against
+      // the real compiler rather than by reading: the companion is ONE compile per
+      // model, so a composite that failed here would take every colocated base in
+      // the same model down with it.
+      //
+      // This compiles a SYNTHETIC stand-in — a local base rather than the import
+      // alias, and without the unreferenced rollup declaration — so it pins "a
+      // one-member composite compiles", one step off the artifact. The real
+      // degenerate companion is compiled by the `preaggregate-storage-*` hammer
+      // scenarios, whose bases are storage-only. Noted because it makes this
+      // property depend on hammer scenarios nobody would think to connect to this
+      // test: delete those and it stops being covered anywhere real.
+      const { composeLine } = await withGrains(
+         `  measure:\n` +
+            `    #@ preaggregate grain="category" storage=lake\n` +
+            `    total is sum(amount)`,
+      );
+      expect(composeLine).toBe(
+         "source: orders is compose(orders__preagg_base)",
+      );
+      const model = `##! experimental { persistence composite_sources }
+source: orders__preagg_base is duckdb.sql("""${ROWS}""")
+${composeLine}
+`;
+      await expect(
+         loadTestModel(connections, model).getModel(),
+      ).resolves.toBeDefined();
+   });
+});
+
+describe("the planner never plans what the source hides", () => {
+   // These two skips ARE the access control, not a tidy agreement with the
+   // validator. A rollup stores its grain and each measure's partial, and the
+   // serve path rebinds that table under the base's name with the stored columns
+   // declared — nothing on that path consults the author's model, so a field
+   // hidden on the source is not hidden on the rollup.
+   //
+   // Publish and load refuse these too, but a refusal is a message. What
+   // guarantees nothing is BUILT, and therefore that nothing can be served, is
+   // that no plan exists — which is what these assert. The measure case matters
+   // most in the sequence that produced it: a measure is public, the rollup
+   // builds, the author then marks it private. The table already exists at that
+   // point, and the serve leg matches on the PLAN, so the plan going away is what
+   // takes the table out of service.
+   const withAccess = async (body: string, include: string) => {
+      const text = `##! experimental { persistence composite_sources access_modifiers }
+source: orders is duckdb.sql("""${ROWS}""") extend {
+${body}
+} include {
+${include}
+}
+`;
+      const compiled = await loadTestModel(connections, text).getModel();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contents = (compiled as any)._modelDef.contents;
+      return planSourcePreaggregation(
+         "orders",
+         contents["orders"] as ValidatableSource,
+      );
+   };
+
+   it("plans nothing for a hidden MEASURE", async () => {
+      expect(
+         await withAccess(
+            `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+            "  public: category, amount, order_date\n  private: total",
+         ),
+      ).toEqual([]);
+   });
+
+   it("plans nothing for a hidden GRAIN DIMENSION", async () => {
+      // The asymmetric half: a measure is a field the loop already visits, while
+      // a grain dimension is a STRING that has to be resolved back to its field
+      // before its modifier can be read. Missing this left the grain case guarded
+      // only by the load gate, where the measure case was guarded three ways.
+      expect(
+         await withAccess(
+            `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+            "  public: total, amount, order_date\n  private: category",
+         ),
+      ).toEqual([]);
+   });
+
+   it("plans normally when everything the rollup touches is public", async () => {
+      const plans = await withAccess(
+         `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+         "  public: *",
+      );
+      expect(plans).toHaveLength(1);
+      expect(plans[0].grainDimensions).toEqual(["category"]);
+   });
+
+   it("a grain naming NO field is left alone, which is not the same as hidden", async () => {
+      // The validator refuses an unknown grain dimension; the planner has always
+      // kept it. Absence must not start reading as hidden, or this skip would
+      // silently change what an unknown grain does.
+      const plans = await withAccess(
+         `  measure:\n    #@ preaggregate grain="nonexistent"\n    total is sum(amount)`,
+         "  public: *",
+      );
+      expect(plans).toHaveLength(1);
+   });
+});
+
 describe("the plan groups by grain, not by measure", () => {
    it("two measures at one grain share one rollup", async () => {
       const plans = await planFor(`  #@ preaggregate grain="category"
@@ -717,23 +998,20 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       }
    });
 
-   it("CANARY: when two grains both cover a query, the FIRST member wins, not the smallest", async () => {
-      // Pinned because it bounds what multiple grains buy, and the natural
-      // assumption is the opposite. Members are emitted sorted by synthesized
-      // name (grain slug plus digest), and the resolver takes the first that
-      // covers the query — a name has nothing to do with size, so where two
-      // declared grains BOTH cover a query the larger can win.
+   it("when two grains both cover a query, the COARSER member wins", async () => {
+      // Members are emitted fewest-grain-dimensions first
+      // (`compareRollupBreadth`), and the resolver takes the first that covers,
+      // so of two covering rollups the coarser answers.
       //
-      // Built to make that visible: 200 distinct `a_dim`, 2 distinct `b_dim`, so
-      // the {b_dim} rollup is 2 rows and {a_dim, b_dim} is 200, and both answer a
-      // by-b_dim query. Dimensions are sorted into the slug, so `a_dim_b_dim`
-      // sorts BEFORE `b_dim` and the 200-row table is offered first.
+      // Built so the difference is a real one and not just an ordering: 200
+      // distinct `a_dim`, 2 distinct `b_dim`, so the {b_dim} rollup is 2 rows and
+      // {a_dim, b_dim} is 200, and both answer a by-b_dim query. This previously
+      // read the 200-row table, because members were ordered by synthesized name
+      // and the slug `a_dim_b_dim` sorts before `b_dim`.
       //
-      // Multiple grains still pay off for the case they exist for — grains that
-      // cover DIFFERENT queries — and docs/preaggregation.md says so without
-      // promising the smallest covering table. If this test starts failing
-      // because member order became size-aware, that is an improvement: update
-      // the doc's "Which rollup answers a query" note along with it.
+      // A dimension COUNT is a proxy for size, not a measurement: this test would
+      // pass just as well if the narrow grain were the larger table. What it pins
+      // is that grain breadth decides, and that a grain digest no longer does.
       const { load, manifest, tables } = await synthesizeAndBuild(
          `  dimension: a_dim is concat('a', amount::string)
   dimension: b_dim is pick 'even' when amount % 2 = 0 else 'odd'
@@ -752,8 +1030,67 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       const sql = await load("synth.malloy")
          .loadQuery("run: orders -> { group_by: b_dim; aggregate: total }")
          .getSQL({ buildManifest: manifest });
-      expect(sql).toContain(combined as string);
-      expect(sql).not.toContain(narrow as string);
+      expect(sql).toContain(narrow as string);
+      expect(sql).not.toContain(combined as string);
+   });
+
+   it("an UNBUILT coarse rollup still wins the member race and recomputes from the base", async () => {
+      // Ordering by grain breadth changes WHICH member is offered first, and a
+      // member is offered whether or not its table exists. So the coarsest rollup
+      // now deterministically wins a race it previously won only by name luck —
+      // including when it is the one that never built.
+      //
+      // The failure mode being checked for is a wrong answer. There is none: the
+      // member is selected, the manifest has no entry for it, and with
+      // `strict: false` the rollup recomputes from the base inline, which is what
+      // the live path would have done anyway.
+      //
+      // The COST is real, and calling it "no regression" would undersell it. A
+      // built finer rollup goes unused for this query. Before breadth ordering the
+      // unbuilt member won by name luck, so the loss was intermittent; now it is
+      // CERTAIN for as long as the coarse grain is unbuilt. The shape that hits it
+      // is the ordinary one — an author adds a coarse grain to a package that
+      // already has a built finer rollup — and it lasts until the coarse rollup
+      // builds. Bounded, and strictly better than a wrong answer, but a real
+      // behaviour change inside that window rather than a wash.
+      //
+      // Filtering members by manifest presence is NOT the free fix it looks like:
+      // member order would then depend on the bound manifest, so the build leg and
+      // the serve leg would synthesize different text — the same reason
+      // `compareRollupBreadth` does not order on `rowCount`.
+      const { load, manifest, tables } = await synthesizeAndBuild(
+         `  dimension: a_dim is concat('a', amount::string)
+  dimension: b_dim is pick 'even' when amount % 2 = 0 else 'odd'
+  #@ preaggregate grain="b_dim"
+  #@ preaggregate grain="a_dim, b_dim"
+  measure: total is amount.sum()`,
+      );
+      const combined = tables.find((t) => t.includes("a_dim_b_dim")) as string;
+      const narrow = tables.find((t) => t !== combined) as string;
+      // Drop the coarse rollup's entry: built once, then never refreshed, or
+      // simply not built yet.
+      const partial: BuildManifest = {
+         strict: false,
+         entries: Object.fromEntries(
+            Object.entries(manifest.entries).filter(
+               ([, e]) => e.tableName !== narrow,
+            ),
+         ),
+      };
+      const query = "run: orders -> { group_by: b_dim; aggregate: total }";
+      const sql = await load("synth.malloy")
+         .loadQuery(query)
+         .getSQL({ buildManifest: partial });
+      // Neither table: the chosen member has no entry, so it inlines rather than
+      // falling to the built one.
+      expect(sql).not.toContain(narrow);
+      expect(sql).not.toContain(combined);
+      // And the answer is still right, which is the part that matters.
+      const served = await load("synth.malloy")
+         .loadQuery(query)
+         .run({ buildManifest: partial });
+      const live = await load("author.malloy").loadQuery(query).run();
+      expect(served.data.toObject()).toEqual(live.data.toObject());
    });
 
    it("CANARY: a query naming a VIEW does not route, because compose() drops views", async () => {

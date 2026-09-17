@@ -58,6 +58,27 @@ describe("validatePackageName", () => {
       expect(() => validatePackageName("..")).toThrow(ScaffoldError);
    });
 
+   test('"." is answered with the two forms that work, not the character rule', () => {
+      // Someone typing "." is reaching for `npm create <tool> .`. The generic
+      // message answered by saying "." is an allowed character while refusing
+      // "." as a name, which reads as a contradiction and names neither
+      // working form. Pin the guidance, not just that it threw.
+      for (const name of [".", ".."]) {
+         let message = "";
+         try {
+            validatePackageName(name);
+         } catch (error) {
+            message = (error as Error).message;
+         }
+         expect(message).toContain(`"${name}" is not a package name`);
+         // The two things that actually work.
+         expect(message).toContain("create-malloy-package sales");
+         expect(message).toContain("pass no name at all");
+         // And not the advice that sent people in circles.
+         expect(message).not.toContain("use letters, digits");
+      }
+   });
+
    test("rejects path separators and spaces", () => {
       expect(() => validatePackageName("a/b")).toThrow(ScaffoldError);
       expect(() => validatePackageName("a b")).toThrow(ScaffoldError);

@@ -105,7 +105,7 @@ Consequences:
   copying them.
 - After editing the served copy, reload the package to recompile it:
   `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST, or the
-  `malloy_reloadPackage` MCP tool. The reload is in place, unless the package's metadata was given
+  `reload_package` MCP tool. The reload is in place, unless the package's metadata was given
   a `location` through the API (a PATCH), in which case it re-fetches from that location and
   overwrites local edits. A reload that fails to compile leaves the files alone and keeps serving
   the previous model.

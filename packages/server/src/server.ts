@@ -46,10 +46,14 @@ import {
 import { logger, loggerMiddleware, redactSensitive } from "./logger";
 
 import {
+   assertDuckDBResourceConfig,
+   getDuckDBMemoryLimit,
+   getDuckDBTempDirectory,
    getEmbeddingConfig,
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
+   isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
@@ -80,6 +84,11 @@ import {
    normalizeQueryArray,
    parseNonNegativeIntParam,
 } from "./query_param_utils";
+import {
+   booleanParamOr400,
+   optionalBooleanParamOr400,
+   setCollectionReloadError,
+} from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
@@ -278,6 +287,33 @@ const modelController = new ModelController(environmentStore);
 // an operator relying on `local-only` for a no-network guarantee. Logging the
 // resolved policy also records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
+// Validated and materialized here, not on the first session that opens one:
+// `/health` and `/health/readiness` never touch DuckDB, so a malformed limit or
+// an uncreatable spill directory would leave the pod reporting ready while every
+// query and package load failed. Also creates the directory, since
+// `SET temp_directory` accepts one that does not exist and only fails at the
+// first spill.
+assertDuckDBResourceConfig();
+const duckDBMemoryLimit = getDuckDBMemoryLimit();
+if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
+   // Warned rather than defaulted. A flat value that suits one container size
+   // badly constrains another, so the safe value is the operator's to pick — but
+   // an operator who never reads a release note would otherwise have no way to
+   // learn that this process runs several DuckDB instances which each size
+   // themselves against the whole container independently.
+   logger.warn(
+      "PUBLISHER_DUCKDB_MEMORY_LIMIT is unset: every DuckDB instance in this " +
+         "process sizes its memory_limit from the container independently, so " +
+         "their combined budget exceeds it and the process can be OOM-killed " +
+         "while each instance believes it is within budget. See " +
+         "docs/configuration.md.",
+   );
+} else {
+   logger.info(
+      `DuckDB session limits: memory_limit=${duckDBMemoryLimit ?? "off (explicitly disabled)"} ` +
+         `temp_directory=${getDuckDBTempDirectory() ?? "<duckdb default>"}`,
+   );
+}
 // Resolve the embedding config at boot so a malformed EMBEDDING_API_BASE /
 // EMBEDDING_DIMENSIONS fails loudly at startup (getEmbeddingConfig throws),
 // matching the sibling getters above, rather than surfacing as a warn on the
@@ -1033,7 +1069,14 @@ app.get(
    },
 );
 
-app.get(`${API_PREFIX}/environments`, async (_req, res) => {
+app.get(`${API_PREFIX}/environments`, async (req, res) => {
+   if (req.query.reload !== undefined) {
+      setCollectionReloadError(
+         res,
+         `${API_PREFIX}/environments/{environmentName}`,
+      );
+      return;
+   }
    try {
       res.status(200).json(await environmentStore.listEnvironments());
    } catch (error) {
@@ -1070,10 +1113,14 @@ app.post(`${API_PREFIX}/environments`, async (req, res) => {
 });
 
 app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
+   const reload = booleanParamOr400(req, res, "reload");
+   if (reload === undefined) {
+      return;
+   }
    try {
       const environment = await environmentStore.getEnvironment(
          req.params.environmentName,
-         req.query.reload === "true",
+         reload,
       );
       res.status(200).json(await environment.serialize());
    } catch (error) {
@@ -1478,6 +1525,13 @@ app.get(
          setVersionIdError(res);
          return;
       }
+      if (req.query.reload !== undefined) {
+         setCollectionReloadError(
+            res,
+            `${API_PREFIX}/environments/${req.params.environmentName}/packages/{packageName}`,
+         );
+         return;
+      }
 
       try {
          res.status(200).json(
@@ -1508,36 +1562,15 @@ app.post(
    },
 );
 
-// Environment-scoped aggregate: every materialization across all packages in
-// the env, newest first. Nested under `/packages` as the collection-level
-// sibling of the per-package `/packages/:packageName/materializations` list.
-// MUST stay registered ahead of `/packages/:packageName` below so the literal
-// `materializations` segment wins the match; consequently `materializations` is
-// a reserved package name at this position (a package can never be named that).
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/materializations`,
-   async (req, res) => {
-      try {
-         const limit = parseNonNegativeIntParam(req.query.limit);
-         const offset = parseNonNegativeIntParam(req.query.offset);
-         const builds =
-            await materializationController.listEnvironmentMaterializations(
-               req.params.environmentName,
-               { limit, offset },
-            );
-         res.status(200).json(builds);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
+         return;
+      }
+      const reload = booleanParamOr400(req, res, "reload");
+      if (reload === undefined) {
          return;
       }
 
@@ -1546,7 +1579,7 @@ app.get(
             await packageController.getPackage(
                req.params.environmentName,
                req.params.packageName,
-               req.query.reload === "true",
+               reload,
             ),
          );
       } catch (error) {
@@ -1638,6 +1671,45 @@ app.get(
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+      try {
+         // Express stores wildcard matches in params['0'].
+         const result = await dashboardController.putDashboardSource(
+            req.params.environmentName,
+            req.params.packageName,
+            (req.params as Record<string, string>)["0"],
+            req.body,
+         );
+         // 201 for a file that did not exist, the way a created materialization
+         // answers; 200 for one that was replaced.
+         res.status(result.created ? 201 : 200).json(result);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         // A refused write is the endpoint working: a stale hash, a dashboard
+         // that does not compile, a path that is not a dashboard. Logging all
+         // of those at `error` made the level meaningless on this route and
+         // buried the one case that is genuinely wrong — a write that compiled,
+         // landed, and could not be reloaded.
+         const detail = {
+            environmentName: req.params.environmentName,
+            packageName: req.params.packageName,
+            modelPath: (req.params as Record<string, string>)["0"],
+            status,
+            error,
+         };
+         if (status >= 500) logger.error("Dashboard write failed", detail);
+         else logger.warn("Dashboard write refused", detail);
          res.status(status).json(json);
       }
    },
@@ -1748,8 +1820,13 @@ app.get(
                return;
             }
          }
-         const bypassFilters =
-            req.query.bypass_filters === "true" ? true : undefined;
+         // Absence must stay distinguishable from an explicit `false` here:
+         // the Deprecation header below fires on `bypassFilters !== undefined`.
+         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
+         if (!bypass.ok) {
+            return;
+         }
+         const bypassFilters = bypass.value;
 
          let givens: Record<string, GivenValue> | undefined;
          if (typeof req.query.givens === "string") {
@@ -1911,10 +1988,8 @@ app.post(
 );
 
 // ==================== MATERIALIZATION ROUTES ====================
-// The environment-scoped aggregate list (every materialization across all
-// packages) is registered up in the package routes as
-// `/packages/materializations`, ahead of `/packages/:packageName`, so the
-// literal wins the match — see that route for the ordering contract.
+// Every one of them is package-scoped, because a materialization is a run of
+// one package's persist sources and cannot exist without a package.
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
@@ -1996,12 +2071,16 @@ app.post(
 app.delete(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
+      const dropTables = booleanParamOr400(req, res, "dropTables");
+      if (dropTables === undefined) {
+         return;
+      }
       try {
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables: req.query.dropTables === "true" },
+            { dropTables },
          );
          res.status(204).send();
       } catch (error) {
