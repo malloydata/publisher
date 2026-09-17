@@ -2,10 +2,7 @@
 name: malloy-phrase-detection
 description: How to phrase search_text on a get_context call so retrieval returns the fields you need instead of a truncated catalog. Covers target-type classification and decomposition patterns.
 ---
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
 
 # Search Target Construction for `get_context`
 
@@ -26,11 +23,11 @@ One target per concept is enough: the tool handles phrasing variants internally.
 ## Target-type decision guide
 
 - **`dimension`**: categorical attribute to group, filter, or join on. Also used for time and numeric fields.
-  - "region" becomes `"the geographic region"`
+- "region" becomes `"the geographic region"`
 - **`measure`**: aggregation metric (count, sum, average, rate).
-  - "total revenue" becomes `"the total revenue or sales amount"`
+- "total revenue" becomes `"the total revenue or sales amount"`
 - **`view`**: pre-built analysis. Include one whenever the question sounds like a canned report (summary, breakdown, top-N, trend).
-  - "sales summary" becomes `"a summary of sales metrics"`
+- "sales summary" becomes `"a summary of sales metrics"`
 - **`source`**: data domain, for a question that names a subject area rather than fields (phrasing below).
 
 **Resolving categorical values (no value-search target in v1).** When the user names a literal value like "premium" or "New York City", target the *dimension* it lives on (`"the subscription tier"`, `"the city where the subscriber lives"`). Then confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it. The data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.

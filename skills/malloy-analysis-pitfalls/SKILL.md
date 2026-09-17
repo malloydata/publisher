@@ -2,10 +2,7 @@
 name: malloy-analysis-pitfalls
 description: Checks to run on a query and its numbers before a result is presented: wrong grain, fan-out, invented field names, mismatched filters, count vs distinct. The common data-analysis pitfalls.
 ---
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
 
 # Data Analysis Pitfalls
 

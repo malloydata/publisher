@@ -2,17 +2,13 @@
 name: malloy
 description: Index of all Malloy skills. Use when user asks "malloy help", "what malloy skills are available", "how do I use malloy", or needs guidance on which Malloy skill to use.
 ---
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
 
 # Malloy Skills Index
 
 ## First-Time Setup
 
-**No .malloy files in workspace?**
-Say "model my data" and the agent will orchestrate the full modeling workflow automatically. Make sure the Malloy Publisher MCP tools are configured first.
+**No .malloy files in workspace?** Say "model my data" and the agent will orchestrate the full modeling workflow automatically. Make sure the Malloy Publisher MCP tools are configured first.
 
 ## Skill Reference
 

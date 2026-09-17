@@ -3,10 +3,7 @@ name: malloy-analysis
 description: The workflow for answering a data question over a Malloy semantic model - a metric, breakdown, trend or chart - from get_context discovery through execute_query to verified delivery.
 ---
 
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
 
 # Malloy analysis workflow
 
@@ -55,27 +52,16 @@ If you define a calculated field that is not already in the model, treat it care
 - Test it in isolation before folding it into the main query.
 - Consider alternatives: if there is more than one reasonable way to define the field (different null handling, different aggregation logic), briefly tell the user which approach you chose and why.
 
-**A cumulative total is not a cumulative percentage.** `sum_cumulative(x)` gives a running total in
-the units of `x`: counts, dollars, households. A cumulative SHARE needs a denominator as well:
-`sum_cumulative(x) { partition_by: g, order_by: k } / all(x, g)` for a share within each group, or
-`/ sum_window(x)` for a share of the grand total. Choose the denominator that matches what should
-equal 100%: if each group's curve must reach 100%, the denominator is that group's own total, not
-the overall one.
+**A cumulative total is not a cumulative percentage.** `sum_cumulative(x)` gives a running total in the units of `x`: counts, dollars, households. A cumulative SHARE needs a denominator as well:
+`sum_cumulative(x) { partition_by: g, order_by: k } / all(x, g)` for a share within each group, or `/ sum_window(x)` for a share of the grand total. Choose the denominator that matches what should equal 100%: if each group's curve must reach 100%, the denominator is that group's own total, not the overall one.
 
-Do not decide share-vs-total from the question's wording alone: the question often does not say,
-and the model does. Treat **any** of these as specifying a share:
+Do not decide share-vs-total from the question's wording alone: the question often does not say, and the model does. Treat **any** of these as specifying a share:
 
 - the question asks for a percentage, a share, a proportion, or a curve that reaches 100%;
-- the view, measure or calculation you are working from has `pct`, `percent` or `share` in its
-  NAME;
-- its documentation describes the metric as a percent, a share, or "of total". A doc saying the
-  value is a cumulative percent of total is a specification of the metric, not a remark about it.
+- the view, measure or calculation you are working from has `pct`, `percent` or `share` in its NAME;
+- its documentation describes the metric as a percent, a share, or "of total". A doc saying the value is a cumulative percent of total is a specification of the metric, not a remark about it.
 
-So when the model's own named view for this question computes a share, the answer is a share,
-whether you run that view or rebuild it. If you rebuild, the denominator and the `partition_by`
-come with the calculation; changing the axis or the bucketing is the only part you are meant to
-vary. Returning the running count when a share was specified is a wrong answer, not a formatting
-difference.
+So when the model's own named view for this question computes a share, the answer is a share, whether you run that view or rebuild it. If you rebuild, the denominator and the `partition_by` come with the calculation; changing the axis or the bucketing is the only part you are meant to vary. Returning the running count when a share was specified is a wrong answer, not a formatting difference.
 
 ## 4. Execute
 
@@ -88,60 +74,37 @@ Your first result is a draft, not an answer. The difference between a useful ana
 - **Ground it.** Before interpreting any result, query and state the dataset scope: the time range (`min`/`max` of the primary date dimension) and the row or entity count. Every number is meaningless without it.
 - **Ask "what would make this wrong?"** then run the query that would expose that problem. A plausible-looking wrong answer is the most dangerous kind.
 - **Check the common failure modes:**
-  - Fan-out / double-counting: if you joined across grain, compare `count()` to `count(key)` - in Malloy `count(field)` is already the distinct count. A large gap means duplication is inflating the aggregates.
-  - Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one.
-  - Null-driven loss: `count() - count(the_field)` shows how many rows a key field drops.
-  - Parts that do not sum to the whole: if you split a total into categories, confirm they add up.
-  - The key number: recompute the single most important aggregate a different way, or filter to one entity and recount.
+- Fan-out / double-counting: if you joined across grain, compare `count()` to `count(key)` - in Malloy `count(field)` is already the distinct count. A large gap means duplication is inflating the aggregates.
+- Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one.
+- Null-driven loss: `count() - count(the_field)` shows how many rows a key field drops.
+- Parts that do not sum to the whole: if you split a total into categories, confirm they add up.
+- The key number: recompute the single most important aggregate a different way, or filter to one entity and recount.
 - **Quick reference by query type:**
-  - Top-N by metric: filter to the #1 result and recount it independently.
-  - Time series or trend: query `min(date_field)` and `max(date_field)` to confirm the range matches what you're presenting.
-  - Any percentage: verify the denominator separately.
-  - Ranking or comparison: check whether the conclusion holds under a different reasonable metric; if it doesn't, that's a finding to surface, not a problem to hide.
-  - Extreme of a rate ("worst", "highest failure rate", "best performing"): read the denominator before you report the winner. A group with a handful of rows takes the top spot on noise alone; one failure in three is a 33% failure rate. If the model documents a minimum volume, apply it. If it documents none, choose a floor, say which floor you chose, and show the rate with its denominator beside it.
+- Top-N by metric: filter to the #1 result and recount it independently.
+- Time series or trend: query `min(date_field)` and `max(date_field)` to confirm the range matches what you're presenting.
+- Any percentage: verify the denominator separately.
+- Ranking or comparison: check whether the conclusion holds under a different reasonable metric; if it doesn't, that's a finding to surface, not a problem to hide.
+- Extreme of a rate ("worst", "highest failure rate", "best performing"): read the denominator before you report the winner. A group with a handful of rows takes the top spot on noise alone; one failure in three is a 33% failure rate. If the model documents a minimum volume, apply it. If it documents none, choose a floor, say which floor you chose, and show the rate with its denominator beside it.
 
 If verification reveals a discrepancy, stop and fix it (go back to step 2 or 3). Do not present a result that failed verification with a caveat: fix it, or tell the user you cannot confidently answer. A failed verification is more than two computations disagreeing. Any condition you yourself name that would invalidate the result counts: the field is null for the period asked about, the denominator is eleven rows, the instrumentation started after the window. When that happens the conclusion has to move, not just acquire a footnote. Writing the condition beside an unchanged headline satisfies the wording of this rule and defeats its purpose, because if the caveat is true the headline is wrong. Verification queries are for your reasoning, so do not put chart annotations on them.
 
 Never re-run the exact same query expecting a different result: a given query always returns the same data. This does not forbid the checks above (independent recounts, denominator checks, fan-out probes) - those are different queries that cross-check the result, and running them is expected.
 
-**When the exact ask is impossible, deliver the closest thing that works; do not stop at the
-explanation.** If the model cannot support the request as literally stated (three dimensions that no
-single grain carries, a breakout the report lacks), say so briefly and then RUN the best available
-alternative you can name: fewer dimensions per chart, several focused charts, or a table. Naming
-viable fallbacks and offering to run them later is a non-answer; the user asked a question and
-something runnable exists. The same applies to a breakout you believe is unavailable: **run the query before reporting that it cannot be done.** A `where:` on a dimension value, a dimension you have not tried, or a differently-scoped grain often returns rows when the discovery view suggested otherwise. Report an absence only after a query has actually failed or come back empty.
+**When the exact ask is impossible, deliver the closest thing that works; do not stop at the explanation.** If the model cannot support the request as literally stated (three dimensions that no single grain carries, a breakout the report lacks), say so briefly and then RUN the best available alternative you can name: fewer dimensions per chart, several focused charts, or a table. Naming viable fallbacks and offering to run them later is a non-answer; the user asked a question and something runnable exists. The same applies to a breakout you believe is unavailable: **run the query before reporting that it cannot be done.** A `where:` on a dimension value, a dimension you have not tried, or a differently-scoped grain often returns rows when the discovery view suggested otherwise. Report an absence only after a query has actually failed or come back empty.
 
-**The fallback changes the shape of the answer, never the field that carries the distinction.**
-Fewer dimensions, a coarser grain, several charts instead of one, a table instead of a chart: those
-still answer the question that was asked. Substituting a neighbouring field because the requested
-one is null does not, and it is the more tempting move precisely because it produces a complete
-looking answer. When the field that carries the distinction the user asked about is null across the
-window they asked about, that absence IS the answer: say the split is not recorded for that window,
-name the window where it is recorded if one exists, and stop there. Reporting one side of the split
-as a confirmed number while caveating the other is the same substitution wearing a caveat: if every
-row in the window falls on one side by construction, that number describes how the rows were
-logged, not the thing the user asked about.
+**The fallback changes the shape of the answer, never the field that carries the distinction.** Fewer dimensions, a coarser grain, several charts instead of one, a table instead of a chart: those still answer the question that was asked. Substituting a neighbouring field because the requested one is null does not, and it is the more tempting move precisely because it produces a complete looking answer. When the field that carries the distinction the user asked about is null across the window they asked about, that absence IS the answer: say the split is not recorded for that window, name the window where it is recorded if one exists, and stop there. Reporting one side of the split as a confirmed number while caveating the other is the same substitution wearing a caveat: if every row in the window falls on one side by construction, that number describes how the rows were logged, not the thing the user asked about.
 
 **But once the evidence is in, commit to it.** That rule exists to stop you guessing an absence, not to stop you ever stating one. An authoritative list that does not contain the thing asked about IS proof it is absent: say so plainly. "The model cannot confirm or deny whether X is one of them" is a wrong answer when you are holding the list: the user asked a yes/no question and you have the answer. The same holds for a value you are declining to show: decline it in one clear sentence and deliver the rest. Hedging after you have the evidence reads as not knowing, and it is the failure mode this rule most easily causes.
 
-This is different from a genuine ambiguity about WHICH metric they
-meant; there, ask. Here you already know what they want and only the exact shape is unavailable.
+This is different from a genuine ambiguity about WHICH metric they meant; there, ask. Here you already know what they want and only the exact shape is unavailable.
 
 ## 6. Present
 
-**Do not print spurious precision.** A warehouse returns `108.130521077`; nobody wants nine decimal
-places. Round for display to what the number can actually support (an index or a count to a whole
-number, a rate to one or two decimals, a currency amount to cents), and keep the full value only if
-the user asked for it. Where a field carries a render tag such as `# number` or `# percent`, that is
-the model author telling you the intended display; you are not expected to reimplement the renderer,
-but do not present a value in a way the tag plainly contradicts.
+**Do not print spurious precision.** A warehouse returns `108.130521077`; nobody wants nine decimal places. Round for display to what the number can actually support (an index or a count to a whole number, a rate to one or two decimals, a currency amount to cents), and keep the full value only if the user asked for it. Where a field carries a render tag such as `# number` or `# percent`, that is the model author telling you the intended display; you are not expected to reimplement the renderer, but do not present a value in a way the tag plainly contradicts.
 
 **Running a named view: pass the source as well as the view name.** `query_name` names a view inside a source, so it needs `source` to resolve; without it the call is ambiguous. And before concluding a named view is genuinely empty, re-run it with the source and the model path stated explicitly: an empty result and a misresolved call look alike in an answer, and abandoning a purpose-built view for a hand-written one is the expensive mistake here.
 
-**Careful: aliasing a field drops its documentation and tags.** `rev is net_revenue_amount`
-returns a field with no `#(doc)`, no `# label` and no render tag: the annotations belong to the
-original name. If you need an entity's documentation or its display intent, query it under its own
-name and rename only in your prose.
+**Careful: aliasing a field drops its documentation and tags.** `rev is net_revenue_amount` returns a field with no `#(doc)`, no `# label` and no render tag: the annotations belong to the original name. If you need an entity's documentation or its display intent, query it under its own name and rename only in your prose.
 
 Answer in plain language, lead with the number that was asked for, and show the supporting rows. State the assumptions you made (filter values, date ranges, any ad-hoc field). Acknowledge caveats the verification step surfaced, and say so if you could not fully verify something. When the result lends itself to a chart, say which Malloy render tag fits and why (load `skill:malloy-charts`), for example `# bar_chart` for a category breakdown or `# line_chart` for a trend over time.
 
