@@ -236,7 +236,8 @@ describe("shipped skills", () => {
       });
    });
 
-   it.each(PACKAGED_SKILLS)(
+   // Spread: PACKAGED_SKILLS is `as const`, and it.each takes a mutable array.
+   it.each([...PACKAGED_SKILLS])(
       "%s: description survives the plugin build unchanged",
       (name) => {
          expect(shipped).toContain(name);
