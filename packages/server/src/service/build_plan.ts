@@ -1029,7 +1029,7 @@ export function deriveBuildPlan(
          if (!rollup) {
             try {
                if (declaresStorage) {
-                  assertMaterializationEligible(source);
+                  assertMaterializationEligible(source, deriveAnnotationFields(source));
                } else {
                   assertColocatedPersistNotAuthorizeGated(
                      source,
@@ -1086,7 +1086,7 @@ export function deriveBuildPlan(
                );
                if (declaresStorage) {
                   storageRefused = true;
-                  assertMaterializationEligible(source);
+                  assertMaterializationEligible(source, deriveAnnotationFields(source));
                   storageRefused = false;
                }
             } catch (err) {
@@ -1295,7 +1295,7 @@ function collectSourceEligibility(
    const refused: Record<string, string> = {};
    for (const source of Object.values(sources)) {
       try {
-         assertMaterializationEligible(source);
+         assertMaterializationEligible(source, deriveAnnotationFields(source));
          eligible.push(source.name);
       } catch (err) {
          refused[source.name] = errMessage(err);
