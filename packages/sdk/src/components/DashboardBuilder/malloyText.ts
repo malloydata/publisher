@@ -322,17 +322,18 @@ export interface ViewBodyStage1 {
  * line is dropped: it becomes unmodeled Malloy that is read past and written
  * around, never rewritten.
  *
- * A line is a continuation of the one before it unless it opens a new
- * statement (`aggregate:`, another `where:`, …) or closes the block. A
- * trailing comma settles it on its own — `where: a ~ $A,` is a clause list
- * that has not finished, whatever follows.
+ * What settles it is the NEXT line: the clause has finished if what follows
+ * opens a new statement (`aggregate:`, another `where:`, …) or closes the
+ * block. A trailing comma proves nothing either way -- Malloy takes a comma
+ * as a statement separator, so `where: a ~ $A,` above an `aggregate:` is an
+ * ordinary finished binding, and reading the comma as an unfinished list
+ * would quietly strip that control of its filter.
  */
 function statementTerminated(
    wl: { line: number; code: string },
    codeLines: Array<{ line: number; text: string }>,
    stageEnd: number,
 ): boolean {
-   if (wl.code.trimEnd().endsWith(",")) return false;
    const next = codeLines.find((c) => c.line > wl.line && c.line <= stageEnd);
    if (next === undefined) return true;
    return (

@@ -52,6 +52,30 @@ ${stage}
       expect(out).toContain("# colspan=4");
    });
 
+   // The mirror risk, and the one that fails quietly: Malloy takes a comma as a
+   // statement separator, so a trailing comma does NOT mean the clause list
+   // carries on. Reading it as a continuation would leave an ordinary binding
+   // unmanaged, and the control would silently stop filtering.
+   it("still reads a binding whose line ends in a separator comma", async () => {
+      const d = await openDocument(body("    where: a ~ $A,"));
+      expect(d.tiles[0].filters).toEqual([{ field: "a", given: "A" }]);
+   });
+
+   it("still reads one where the comma is the last thing in the stage", async () => {
+      const trailing = `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: kpis is {
+    aggregate: n is count()
+    where: a ~ $A,
+  }
+}`;
+      const d = await openDocument(trailing);
+      expect(d.tiles[0].filters).toEqual([{ field: "a", given: "A" }]);
+   });
+
    it("leaves a continued predicate whole when the tile changes", async () => {
       const out = await spliced(CONTINUED_PREDICATE, (d) => {
          delete d.tiles[0].filters;
