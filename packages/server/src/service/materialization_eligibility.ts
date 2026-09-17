@@ -479,7 +479,19 @@ function referencesGiven(persistSource: PersistSource): boolean {
  * so the marker reads empty while the build bakes the default.
  *
  * Any `arguments` holder anywhere under the query is searched, not just the
- * outermost: a chain of parameterized sources nests one inside the next.
+ * query's own. That descent is load-bearing rather than defensive: a given
+ * binding a JOINED source declared on the input sits under `structRef.fields`,
+ * and the marker reads empty for it even when the query reads the join and the
+ * build SQL carries the predicate. Checking only the query's own holders admits
+ * that shape — measured, and a fail-open.
+ *
+ * It has a cost, accepted deliberately: the same base with a parameterized
+ * given-filtered join the query does NOT read is refused too, though nothing
+ * reaches the build. That is the over-refusal the marker approach exists to
+ * avoid, reappearing in the one place the marker cannot see. Refusing a source
+ * that does not bake loses a tier; admitting one that does loses a tenant's
+ * isolation, so the descent stays until a signal precise enough to tell the two
+ * apart exists.
  *
  * A CONSTANT argument — `pp(x is 1)` — bakes too and is left alone: it is a
  * concrete instantiation with no per-caller binding, which is exactly the shape

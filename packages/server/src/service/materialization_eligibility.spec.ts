@@ -784,6 +784,34 @@ source: arg_constant is pp(x is 1) -> { select: * }`);
       ).not.toThrow();
    });
 
+   it("refuses a given bound into a joined source the query reads", async () => {
+      // The argument walk has to descend for this: the given binds a joined
+      // source declared on the INPUT, so the holder sits under
+      // `structRef.fields`, and `query.givenUsage` is EMPTY even though the
+      // build SQL carries the predicate. Checking only the query's own holders
+      // admits it — a fail-open, which is why the descent is not narrowed.
+      //
+      // Its cost is stated rather than pinned: the same shape with a join the
+      // query does NOT read is also refused, though nothing reaches the build.
+      // That over-refusal is safe and deliberate, and a future signal precise
+      // enough to flip it would be an improvement, not a regression — so it is
+      // documented on `argumentBindsAGiven` and left unasserted here.
+      const sources =
+         await persistSources(`##! experimental { persistence givens parameters }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
+source: joinee is duckdb.sql("SELECT 1 AS org_id, 'a' AS nm")
+source: J(x::number) is joinee extend { where: org_id = x }
+source: withjoin is raw extend { join_one: j is J(x is $ORG_ID) on org_id = j.org_id }
+
+#@ persist name="join_arg_read"
+source: join_arg_read is withjoin -> { group_by: n is j.nm }`);
+      expect(sources.join_arg_read).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.join_arg_read),
+      ).toThrow(MaterializationEligibilityError);
+   });
+
    it("admits a persisted query that references no given", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>
