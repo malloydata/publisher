@@ -776,6 +776,12 @@ export async function buildSourceIntoStorage(params: {
    buildSQL: string;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
+   /**
+    * Columns to lay the destination table out by (`#@ persist partition=`),
+    * already resolved against the source's public projection. Empty keeps the
+    * single-statement CTAS this function has always issued.
+    */
+   partitionColumns?: string[];
    environmentPath: string;
    /**
     * Per-query metadata for the warehouse read, already resolved through the
@@ -937,6 +943,7 @@ export async function buildSourceIntoStorage(params: {
          session,
          target,
          passthrough.selectSQL,
+         params.partitionColumns ?? [],
       );
       // The table now holds a full snapshot, so record where that snapshot
       // reaches: this is what turns the NEXT refresh into a delta. On this
@@ -1020,6 +1027,12 @@ export async function buildDownstreamIntoStorage(params: {
    virtualMap: Map<string, Map<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
+   /**
+    * Columns to lay the destination table out by (`#@ persist partition=`),
+    * already resolved against the source's public projection. Empty keeps the
+    * single-statement CTAS this function has always issued.
+    */
+   partitionColumns?: string[];
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const {
@@ -1129,7 +1142,12 @@ export async function buildDownstreamIntoStorage(params: {
          `${destinationName}.${physicalTableName}`,
          STORAGE_TARGET_DIALECT,
       );
-      const schema = await createTableAndDescribe(session, target, sql);
+      const schema = await createTableAndDescribe(
+         session,
+         target,
+         sql,
+         params.partitionColumns ?? [],
+      );
 
       return {
          storageDestinationName: destinationName,
@@ -1365,8 +1383,12 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
  * shape the manifest carries. This is the schema the serve transform declares.
  */
 /**
- * CTAS the table, then read back its authoritative schema — dropping the table
- * again if that read-back fails.
+ * Build the table and read back its authoritative schema — dropping the table
+ * again if anything after it is created fails.
+ *
+ * With no partition columns this is the CTAS it has always been. With them it
+ * becomes create-empty / lay out / insert, because DuckLake applies a layout
+ * only to files written after it is set.
  *
  * The window this closes: the CTAS has committed by the time DESCRIBE runs, and
  * the caller records nothing until this function RETURNS. So a DESCRIBE failure
@@ -1384,26 +1406,87 @@ export async function createTableAndDescribe(
    session: DuckDBConnection,
    quotedTablePath: string,
    selectSQL: string,
+   partitionColumns: readonly string[] = [],
 ): Promise<WireColumn[]> {
+   if (partitionColumns.length === 0) {
+      await session.runSQL(
+         `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
+      );
+      return await describeOrDrop(session, quotedTablePath);
+   }
+
+   // DuckLake applies a partition layout to files written AFTER it is set, so
+   // the layout has to precede the rows — which is why this is three statements
+   // rather than a CTAS. `WITH NO DATA` takes the schema from the SELECT without
+   // writing anything, the ALTER declares the layout, and the INSERT then writes
+   // every file into it.
+   //
+   // The session's `SET ducklake_default_data_inlining_row_limit=0` (set on
+   // attach) is what makes this mean anything: with inlining on, a small table
+   // lands in the catalog's own rows rather than in files, and there is nothing
+   // to lay out.
    await session.runSQL(
-      `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
+      `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
    );
+   const columns = partitionColumns
+      .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
+      .join(", ");
+   try {
+      await session.runSQL(
+         `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
+      );
+      await session.runSQL(
+         `INSERT INTO ${quotedTablePath} (${selectSQL})`,
+      );
+   } catch (layoutErr) {
+      // The empty table is already committed, and unlike the CTAS path there is
+      // no single statement whose failure leaves nothing behind. Drop it for the
+      // same reason the read-back failure does: the caller records nothing until
+      // this function returns, so a table left here is named by no manifest
+      // entry and is reachable by neither the failed-run reclaim nor
+      // manifest-driven GC.
+      await dropStranded(session, quotedTablePath, layoutErr);
+      throw layoutErr;
+   }
+   return await describeOrDrop(session, quotedTablePath);
+}
+
+/** Read the built table's schema back, dropping the table if that fails. */
+async function describeOrDrop(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+): Promise<WireColumn[]> {
    try {
       return await describeTable(session, quotedTablePath);
    } catch (describeErr) {
-      try {
-         await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
-      } catch (dropErr) {
-         logger.warn(
-            "Failed to drop a storage table stranded by a schema read-back " +
-               "failure (physical leak)",
-            {
-               table: quotedTablePath,
-               error: errMessage(dropErr),
-            },
-         );
-      }
+      await dropStranded(session, quotedTablePath, describeErr);
       throw describeErr;
+   }
+}
+
+/**
+ * Drop a table a failed build left committed. Best-effort: a failed drop is
+ * logged, never raised, and never replaces the error that is the actual failure.
+ * The drop runs on the session that created the table, whose read-write attach
+ * is still open.
+ */
+async function dropStranded(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+   cause: unknown,
+): Promise<void> {
+   try {
+      await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
+   } catch (dropErr) {
+      logger.warn(
+         "Failed to drop a storage table stranded by a failed build " +
+            "(physical leak)",
+         {
+            table: quotedTablePath,
+            error: errMessage(dropErr),
+            cause: errMessage(cause),
+         },
+      );
    }
 }
 
