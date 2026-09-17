@@ -149,9 +149,12 @@ class FakeStorage implements DocumentStorage {
    readonly documents = new Map<string, string>();
    readFailure: unknown;
    deleteFailure: unknown;
+   /** Slower than the model fetch, so the package answer arrives first. */
+   slow = false;
    constructor(private readonly workspace: Workspace) {}
 
    async listWorkspaces(writeableOnly: boolean): Promise<Workspace[]> {
+      if (this.slow) await new Promise((resolve) => setTimeout(resolve, 150));
       // Honoured, not ignored: a fixture that hands back a read-only
       // workspace to a caller asking for writeable ones cannot tell whether
       // the editor asked the right question.
@@ -341,6 +344,25 @@ describe("DashboardEditor, when the host's store is the record", () => {
       expect(screen.getByText(/you cannot save into it/)).toBeDefined();
    });
 
+   it("does not open the package first when the storage answer is slower", async () => {
+      // Whether the host keeps the record is not known until storage answers.
+      // Opening the package meanwhile puts a reader on a deploy of the record
+      // and reports an open of it.
+      const storage = new FakeStorage(RECORD);
+      storage.slow = true;
+      storage.documents.set(PATH, withTitle("Recorded"));
+      const onEvent = mock((_event: DashboardEvent) => {});
+      mount(storage, undefined, onEvent);
+
+      expect(await screen.findByText("Recorded")).toBeDefined();
+      await settle();
+      const opens = onEvent.mock.calls
+         .map((call) => call[0])
+         .filter((event) => event.type === "dashboard.opened");
+      expect(opens).toHaveLength(1);
+      expect(opens[0]).toMatchObject({ from: "record" });
+   });
+
    it("says where the record is, in the workspace's own words", async () => {
       const storage = new FakeStorage(RECORD);
       storage.documents.set(PATH, PACKAGE_FILE);
@@ -522,6 +544,30 @@ describe("DashboardEditor, after a save", () => {
       expect(screen.queryByText(/changed since you opened it/)).toBeNull();
    });
 
+   it("keeps the next edit after re-saving a copy the reader resumed", async () => {
+      // The resumed copy IS what is open, so saving it again moves that
+      // channel; reading the write back as news offers the reader their own
+      // save as someone else's.
+      const storage = new FakeStorage(BESIDE);
+      storage.documents.set(PATH, withTitle("Drafted"));
+      mount(storage);
+
+      await screen.findByText("Storefront");
+      fireEvent.click(button("Resume"));
+      await screen.findByText("Drafted");
+
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+
+      renameTile("Regions", "Categories");
+      await settle();
+      expect(screen.getByLabelText("Settings for Regions")).toBeDefined();
+      expect(screen.queryByText(/changed since you opened it/)).toBeNull();
+   });
+
    it("offers a version another writer landed while the save was in flight", async () => {
       // The case compare-and-swap exists for: this editor's write never comes
       // back, because someone else's landed after it. Reading "the fetch does
@@ -605,6 +651,40 @@ describe("DashboardEditor, when a new version of the file arrives", () => {
       );
       // Refused, so the file the other writer left is intact.
       expect(serverText).toBe(withTitle("Elsewhere"));
+   });
+
+   it("fetches the version behind a refused save, so the reader can take it", async () => {
+      // The conflict this editor never saw coming: the file moved with no
+      // refetch, so the refusal is the first news of it. Without going and
+      // getting that version, every further save is refused the same way and
+      // there is nothing on screen to load.
+      serverContext.mutable = true;
+      mount(new FakeStorage(BESIDE));
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      // Moved underneath, with nothing telling the editor.
+      serverText = withTitle("Elsewhere");
+
+      fireEvent.click(button("Save changes"));
+      await waitFor(() =>
+         expect(
+            screen
+               .getAllByRole("alert")
+               .some((alert) =>
+                  alert.textContent?.includes(
+                     "changed in the package since you opened it",
+                  ),
+               ),
+         ).toBe(true),
+      );
+      expect(
+         await screen.findByText(/changed since you opened it/),
+      ).toBeDefined();
+      // And the reader's edits are still theirs to keep or drop.
+      expect(screen.getByLabelText("Settings for Categories")).toBeDefined();
+      fireEvent.click(button("Load it"));
+      expect(await screen.findByText("Elsewhere")).toBeDefined();
    });
 
    it("tells the host when there are edits the record does not have", async () => {

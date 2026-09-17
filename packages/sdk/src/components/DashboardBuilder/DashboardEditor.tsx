@@ -265,9 +265,10 @@ export function DashboardEditor({
          : "draft"
       : "package";
    useEffect(() => {
-      // Nothing is safe to open when the record could not be read; opening the
-      // package here would also report an open that never happened.
-      if (opening === undefined || blockedOnRecord) return;
+      // Not until the storage answer is in. Opening on the package file while
+      // the editor still has no idea whether the host keeps the record would
+      // open the wrong document, and report an open of it.
+      if (opening === undefined || !draftChecked || blockedOnRecord) return;
       if (opening === openedSourceRef.current) return;
       let stale = false;
       const packageAtOpen = packageNowRef.current;
@@ -306,7 +307,7 @@ export function DashboardEditor({
       return () => {
          stale = true;
       };
-   }, [opening, blockedOnRecord]);
+   }, [opening, draftChecked, blockedOnRecord]);
 
    const locator =
       workspace === undefined
@@ -330,14 +331,15 @@ export function DashboardEditor({
          // this, not the text it was opened with.
          setOpened((previous) => previous && { ...previous, source });
          setDraft(source);
-         // On the record, the channel IS the copy just written, so it is not
-         // an incoming version. A copy kept beside the package leaves the
-         // package where it was, so nothing on that channel has moved.
-         if (authoritative) setSeen(source);
+         // Whenever the copy IS the channel — the record, or a copy the reader
+         // resumed — the write moved that channel, and its own text is not an
+         // incoming version. A copy written while the package is what is open
+         // leaves the package where it was, so nothing there has moved.
+         if (authoritative || resume === true) setSeen(source);
          // Saving without choosing is choosing the package file.
-         else setResume((chosen) => chosen ?? false);
+         if (!authoritative) setResume((chosen) => chosen ?? false);
       },
-      [storage, locator, authoritative],
+      [storage, locator, authoritative, resume],
    );
    // A supersede that did not happen, left where a reader can see it: the copy
    // is still there and will be offered again on the next visit.
@@ -369,6 +371,17 @@ export function DashboardEditor({
                { source, expectedHash },
             );
          } catch (error) {
+            // A refused write usually means the file moved. Fetch it, so the
+            // reader is offered that version rather than left re-saving
+            // against a base the server will go on rejecting.
+            void queryClient.invalidateQueries({
+               queryKey: [
+                  "dashboard-editor-model",
+                  environmentName,
+                  packageName,
+                  modelPath,
+               ],
+            });
             throw new Error(apiErrorMessage(error));
          }
          setOpened((previous) => previous && { ...previous, source });
@@ -443,8 +456,13 @@ export function DashboardEditor({
    const workspaceName = workspace?.name;
    const reportEvent = useCallback(
       (event: DashboardEvent) => {
+         // Only where a workspace actually took the write: a save into the
+         // package was not taken by one, and naming it there would say the
+         // record moved somewhere it did not.
          onEventRef.current?.(
-            event.type === "dashboard.saved" && workspaceName !== undefined
+            event.type === "dashboard.saved" &&
+               event.where !== "package" &&
+               workspaceName !== undefined
                ? { ...event, workspace: workspaceName }
                : event,
          );
