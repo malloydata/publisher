@@ -126,6 +126,27 @@ function openSshProxy(
    target: { host: string; port: number },
 ): Promise<ProxyEndpoint> {
    return new Promise((resolve, reject) => {
+      // Refuse an unpinned tunnel BEFORE dialing. This needs no network, and the
+      // condition is a permanent misconfiguration rather than a transient one: a
+      // rejected build is evicted from proxyConnectionCache so the next query
+      // rebuilds, and the passthrough federate caller is not cached at all, so
+      // leaving this to the hostVerifier below costs a real TCP connect and key
+      // exchange against the tenant's bastion on every query, forever. It also
+      // buries the actionable message, because a bastion that accepts but stalls
+      // the handshake surfaces as a handshake timeout instead. Same reasoning as
+      // the sslmode check in validateConnectionShape, which fails at config load
+      // for this exact reason. The hostVerifier branch stays as the backstop.
+      if (!ssh.hostKey && !allowUnverifiedHostKey()) {
+         reject(
+            new Error(
+               `SSH host-key verification is required for ${ssh.host}: no hostKey is ` +
+                  `pinned. Pin the bastion host key on the connection's ssh.hostKey, or ` +
+                  `set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
+                  `key (a MITM on the publisher-to-bastion hop is then undetectable).`,
+            ),
+         );
+         return;
+      }
       const client = new SshClient();
       let localPort = 0;
       let server: net.Server | undefined;

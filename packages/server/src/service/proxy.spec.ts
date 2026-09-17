@@ -338,6 +338,47 @@ describe("openProxy — SSH tunnel", () => {
       }
    });
 
+   it("refuses an unpinned tunnel without dialing the bastion", async () => {
+      // The refusal must happen before the TCP connect, not in ssh2's
+      // hostVerifier: unpinned-with-no-opt-in is a permanent misconfiguration, a
+      // rejected build is evicted from the connection cache, and the passthrough
+      // federate caller is not cached at all -- so a post-dial refusal re-pays a
+      // real connect and key exchange against the tenant's bastion on every
+      // query. Counting accepts on a stand-in listener is what distinguishes the
+      // two positions; the message assertion above passes either way.
+      const prev = process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+      delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+      let accepts = 0;
+      const standIn = net.createServer((socket) => {
+         accepts += 1;
+         socket.destroy();
+      });
+      await new Promise<void>((done) => standIn.listen(0, "127.0.0.1", done));
+      const standInPort = (standIn.address() as net.AddressInfo).port;
+      try {
+         await expect(
+            openProxy(
+               {
+                  type: "ssh",
+                  ssh: {
+                     host: "127.0.0.1",
+                     port: standInPort,
+                     username: "testuser",
+                     privateKey: clientPrivatePem,
+                  },
+               },
+               { host: "127.0.0.1", port: echoServer.port },
+            ),
+         ).rejects.toThrow(/host-key verification is required/);
+         expect(accepts).toBe(0);
+      } finally {
+         if (prev === undefined)
+            delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+         else process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = prev;
+         await new Promise<void>((done) => standIn.close(() => done()));
+      }
+   });
+
    it("connects unpinned when the unverified opt-in is set", async () => {
       // The operator escape hatch: with PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY
       // set, an unpinned tunnel connects (the SSH transport is still encrypted).
