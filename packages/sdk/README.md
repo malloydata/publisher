@@ -1488,6 +1488,8 @@ function EnvironmentList() {
 | `createEmbeddedQueryResult` | Serialize query config              |
 | `BrowserDocumentStorage`    | localStorage-based document storage |
 | `globalQueryClient`         | Shared React Query client           |
+| `DocumentNotFoundError`     | Absence, not a failed read          |
+| `isDocumentNotFound`        | Absence check across es/cjs builds  |
 
 ### Exported Types
 
@@ -1502,8 +1504,6 @@ function EnvironmentList() {
 | `DocumentLocator`        | Workspace + type + path          |
 | `DocumentType`           | `"dashboard"` or `"notebook"`    |
 | `Workspace`              | Workspace metadata               |
-| `DocumentNotFoundError`  | Absence, as distinct from a failed read |
-| `isDocumentNotFound`     | Tests for it across the es/cjs builds |
 | `ApiError`               | Standardized API error           |
 | `ModelExplorerProps`     | ModelExplorer props              |
 | `DimensionFiltersConfig` | Dimensional filter configuration |
