@@ -1272,3 +1272,115 @@ source: b is scoped_orders extend {
       expect(b).not.toContain("A by month");
    });
 });
+
+/**
+ * A source whose block opens on a LATER line than its `source:` line, because
+ * the base is a multi-line `duckdb.sql("""…""")` literal. Before
+ * `declarationExtent` replaced the line-bound `declarationEnd`, every one of
+ * these four call sites read this source's extent as the `source:` line
+ * itself — a search that never leaves that one line, an anchor inside the SQL
+ * text, and an insertion point BEFORE the source rather than after its close.
+ */
+describe("spliceDashboardDocument: a source whose block opens after multi-line SQL", () => {
+   const MULTILINE = `## artifact { title="T" tiles=["regional -> by_region", "regional -> by_month"] }
+import { other_source } from "../data_app.malloy"
+
+source: regional is duckdb.sql("""
+  select region, sum(amount) as total from orders group by 1
+""") extend {
+  view: by_region is region_view
+
+  view: by_month is month_view
+}`;
+
+   // viewDeclarationLine: retagging a tile requires finding its `view:` line
+   // WITHIN the source's own extent, which used to be just the `source:` line.
+   it("finds and retags a view declared inside the source, not just its own line", async () => {
+      const out = await spliced(MULTILINE, (d) => {
+         d.tiles[0].colspan = 6;
+      });
+      expect(out).toContain("  # colspan=6\n  view: by_region is region_view");
+   });
+
+   // planRemovedTiles: the LAST view before the extend's own closing brace.
+   // Nothing of `by_month`'s own declaration ever opens a block, so the scan
+   // has to recognize the source's `}` as out of scope rather than deleting it
+   // along with the view — over-deletion that would leave the source's
+   // `extend {` unclosed.
+   it("removes the last view before the extend's closing brace without touching it", async () => {
+      const out = await spliced(MULTILINE, (d) => {
+         d.tiles = d.tiles.filter((t) => t.name !== "by_month");
+      });
+      expect(out).toContain('tiles=["regional -> by_region"]');
+      expect(out).not.toContain("by_month");
+      // The closing brace is exactly one, and it is still the extend's own:
+      // over-deletion would either take it or leave the block unclosed.
+      expect(out.match(/^}/gm)).toHaveLength(1);
+      expect(out).toContain(
+         'select region, sum(amount) as total from orders group by 1\n""") extend {\n  view: by_region is region_view',
+      );
+   });
+
+   // planAddedTiles's `close`: a new view on THIS source is inserted before
+   // its own closing brace, which is AFTER the SQL literal — never before the
+   // `source:` line, where the old bug anchored every insertion.
+   it("adds a tile inside the extension, after the SQL literal", async () => {
+      const out = await spliced(MULTILINE, (d) => {
+         d.tiles.push({
+            name: "by_year",
+            source: "regional",
+            declaration: { kind: "reference", from: "year_view" },
+         });
+      });
+      expect(out).toContain(`  view: by_month is month_view
+
+  view: by_year is year_view
+}`);
+      // Never inside the literal, and never ahead of the `source:` line.
+      expect(out.indexOf("view: by_year")).toBeGreaterThan(
+         out.indexOf('""") extend'),
+      );
+   });
+
+   // planAddedTiles's `lastExtensionEnd`: anchoring a brand NEW extension after
+   // the LAST one in the file has to know where this one actually ends.
+   it("anchors a new extension after this source's real close, not its source line", async () => {
+      const out = await spliced(MULTILINE, (d) => {
+         d.sources.push({ name: "other_tiles", base: "other_source" });
+         d.tiles.push({
+            name: "by_year",
+            source: "other_tiles",
+            declaration: { kind: "reference", from: "year_view" },
+         });
+      });
+      const sourceEnd = out.indexOf('""") extend {\n');
+      const newExtension = out.indexOf("source: other_tiles");
+      expect(newExtension).toBeGreaterThan(sourceEnd);
+      expect(out).toContain(`source: other_tiles is other_source extend {
+  view: by_year is year_view
+}`);
+   });
+
+   // A brace inside the `"""` span is the one case the round-trip gate cannot
+   // catch: a spliced-in `view:` would read back as belonging to the source
+   // above it either way. Refused outright rather than risked.
+   it("refuses to add a tile when the SQL literal itself holds a brace", async () => {
+      const source = MULTILINE.replace(
+         "select region, sum(amount) as total from orders group by 1",
+         "select {'region': 'West'} as region",
+      );
+      const r = await splice(source, (d) => {
+         d.tiles.push({
+            name: "by_year",
+            source: "regional",
+            declaration: { kind: "reference", from: "year_view" },
+         });
+      });
+      expect(r.ok).toBe(false);
+      if (spliceFailed(r)) {
+         expect(r.reason).toContain("regional");
+         expect(r.reason).toContain('brace inside a """ string');
+         expect(r.reason).not.toContain("undefined");
+      }
+   });
+});

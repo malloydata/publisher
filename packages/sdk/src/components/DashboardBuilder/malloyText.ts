@@ -57,6 +57,115 @@ export function declarationsUnder(
    return found;
 }
 
+/**
+ * The extent of the declaration starting at `line`: the last line of its body
+ * for one that opens a `{ … }` block, or `line` itself for one that never does
+ * (`view: x is y`). `opened` says which; `unreadable` replaces both when the
+ * scan cannot trust its own brace count, which only a `"""` span can cause.
+ */
+export type DeclarationExtent =
+   | { end: number; opened: boolean }
+   | { unreadable: string };
+
+/**
+ * Scans forward from `line`, tracking `{`/`}` depth and `"""` spans so a
+ * declaration's body is found even when its block opens on a later line — a
+ * source whose base is a multi-line `duckdb.sql("""…""")` literal is the case
+ * that matters: the literal's own line carries no `{`, and the one that follows
+ * is still SQL text, not the block.
+ *
+ * A `#`/`//` line is skipped outright rather than scanned for braces: a `#
+ * drill { to=… }` tag or a `# label="…"` comment sits between one declaration
+ * and the next, and counting its brace would attribute it to the wrong one —
+ * or, for a blockless declaration such as `view: x is y`, extend the scan past
+ * where it should have stopped.
+ *
+ * Past the start line, a line beginning `<word>:` while no block has opened
+ * yet is the NEXT declaration, not more of this one — checked before that
+ * line's own braces are counted, so `view: c is d + { … }` right after a
+ * blockless `view: b is a` is never mistaken for `b`'s body. The same
+ * reasoning covers running off the end of the block that CONTAINS this
+ * declaration: a bare `}` seen before any `{` of our own belongs to that
+ * enclosing block, not to us, so it stops the scan rather than being counted.
+ *
+ * A `{` found inside a `"""` span is refused rather than guessed at: Malloy's
+ * dashboard grammar has never asked this scan to look inside a SQL literal,
+ * and a brace there (`select {'region': 'West'} as s`) cannot be told apart
+ * from the block this scan is hunting for. Getting it wrong here is the one
+ * case the round-trip gate cannot catch, because a `view:` spliced into the
+ * literal reads back as a `view:` under the source above it either way.
+ */
+export function declarationExtent(
+   lines: string[],
+   line: number,
+): DeclarationExtent {
+   let depth = 0;
+   let opened = false;
+   let tripleQuote = false;
+   let lastLine = -1;
+   for (let i = line; i < lines.length; i++) {
+      const raw = lines[i];
+      const trimmed = raw.trim();
+      // A blank line separating declarations is not part of either one's body
+      // — skipped like a tag or comment, so it is never swallowed into a
+      // blockless declaration's reported end.
+      if (
+         !tripleQuote &&
+         (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      )
+         continue;
+      // Only outside a `"""` span: inside one, every line is string content, and
+      // SQL reaches for `<word>:` readily enough — `file:///data/orders.csv` in
+      // a `read_csv(…)` reads as the next declaration and ends the source at its
+      // first line.
+      if (!tripleQuote && i > line && !opened && /^\s*[a-z_]+:/.test(raw))
+         return { end: lastLine, opened: false };
+
+      let pos = 0;
+      let overshoot = false;
+      while (pos < raw.length) {
+         if (tripleQuote) {
+            const close = raw.indexOf('"""', pos);
+            const segment = close < 0 ? raw.slice(pos) : raw.slice(pos, close);
+            if (segment.includes("{") || segment.includes("}"))
+               return {
+                  unreadable:
+                     `line ${i + 1} holds a brace inside a """ string, which ` +
+                     `this scan cannot tell apart from the block it is looking for`,
+               };
+            if (close < 0) {
+               pos = raw.length;
+               break;
+            }
+            tripleQuote = false;
+            pos = close + 3;
+            continue;
+         }
+         if (raw.startsWith('"""', pos)) {
+            tripleQuote = true;
+            pos += 3;
+            continue;
+         }
+         const ch = raw[pos];
+         if (ch === "{") {
+            depth++;
+            opened = true;
+         } else if (ch === "}") {
+            if (!opened) {
+               overshoot = true;
+               break;
+            }
+            depth--;
+         }
+         pos++;
+      }
+      if (overshoot) return { end: lastLine, opened: false };
+      lastLine = i;
+      if (opened && depth <= 0) return { end: i, opened: true };
+   }
+   return { end: lastLine, opened };
+}
+
 /** The line declaring `<keyword>: <name> is`, or -1. */
 export function declarationLine(
    lines: string[],

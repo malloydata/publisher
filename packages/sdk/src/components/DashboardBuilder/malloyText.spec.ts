@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    artifactLine,
+   declarationExtent,
    declarationLine,
    declarationsUnder,
    givenDeclarations,
@@ -81,6 +82,95 @@ describe("the text a dashboard file is read as", () => {
       });
       expect(tileSteps("{ group_by: x } -> y -> z")).toBeUndefined();
       expect(tileSteps(undefined)).toBeUndefined();
+   });
+});
+
+describe("declarationExtent", () => {
+   // Inside a `"""` span every line is string content, so nothing in it starts
+   // the next declaration. SQL reaches for `<word>:` readily enough that this
+   // is not hypothetical: a `read_csv(file:///data/orders.csv)` ended the
+   // source at its first line, and a tile added to it was refused.
+   it("does not read a URI inside a SQL literal as the next declaration", () => {
+      const lines = `source: s is duckdb.sql("""
+select * from read_csv(
+file:///data/orders.csv
+)
+""") extend {
+  view: v is { group_by: a }
+}`.split("\n");
+      expect(declarationExtent(lines, 0)).toEqual({ end: 6, opened: true });
+   });
+
+   // The defect this scan exists to fix: a source whose block opens on a LATER
+   // line, because the base is a multi-line `"""` SQL literal. The naive read
+   // — no `{` on the start line means the declaration is blockless — reports
+   // the extent as the `source:` line itself, which anchors an insertion
+   // inside the SQL text and attributes the source's own view to the line
+   // above it.
+   const MULTILINE_SOURCE = `source: regional is duckdb.sql("""
+  select region, sum(amount) as total from orders group by 1
+""") extend {
+  view: by_region is { group_by: region }
+}`.split("\n");
+
+   it("finds the block that opens after a multi-line SQL literal", () => {
+      expect(declarationExtent(MULTILINE_SOURCE, 0)).toEqual({
+         end: 4,
+         opened: true,
+      });
+   });
+
+   // The corruption case the round-trip gate cannot catch: a `view:` spliced
+   // into this literal would read back as a `view:` under the source above it,
+   // so the scan has to refuse outright rather than guess.
+   it('refuses when a brace inside a """ span could be the block or could be SQL', () => {
+      const lines = `source: bad is duckdb.sql("""
+  select {'region': 'West'} as s
+""") extend {
+  view: x is y
+}`.split("\n");
+      const extent = declarationExtent(lines, 0);
+      expect("unreadable" in extent).toBe(true);
+      if ("unreadable" in extent) expect(extent.unreadable).toContain("line 2");
+   });
+
+   // A blockless declaration as the LAST one before the enclosing extend's own
+   // closing brace: nothing of this declaration's own ever opens a block, so
+   // the scan has to recognize the enclosing `}` as out of scope rather than
+   // counting it as this declaration's close — which would delete the source's
+   // own closing brace along with the view.
+   it("stops before the enclosing block's closing brace, not at it", () => {
+      const lines = `source: a is one extend {
+  view: by_cat is by_category
+  view: by_brand is by_brand_view
+}`.split("\n");
+      expect(declarationExtent(lines, 2)).toEqual({ end: 2, opened: false });
+   });
+
+   // A `# drill { … }` tag sits between a blockless view and the next
+   // declaration. Its brace is not this declaration's, and skipping the whole
+   // line — rather than scanning it for braces — is what keeps a deletion from
+   // swallowing a tag that belongs to the view after it.
+   it("does not count a tag line's brace between a blockless view and the next", () => {
+      const lines = `source: a is one extend {
+  view: by_cat is by_category
+  # drill { to=self }
+  view: by_brand is by_brand_view
+}`.split("\n");
+      expect(declarationExtent(lines, 1)).toEqual({ end: 1, opened: false });
+   });
+
+   // The stop condition matches ANY `<word>:` line, not a fixed list of
+   // keywords — `join_one:` is one this scan has never been asked about
+   // before, and it has to stop there the same way it stops at `view:`.
+   it("stops at a join_one following a blockless view", () => {
+      const lines = `source: a is one extend {
+  view: by_cat is by_category
+  join_one: b is other_source on b.id = id extend {
+    view: y is z
+  }
+}`.split("\n");
+      expect(declarationExtent(lines, 1)).toEqual({ end: 1, opened: false });
    });
 });
 

@@ -10,6 +10,7 @@ import type {
 import type { LocalGiven } from "./document";
 import {
    artifactLine,
+   declarationExtent,
    declarationLine,
    declarationsUnder,
    givenDeclarations,
@@ -208,28 +209,6 @@ function givenTagLine(given: LocalGiven): string | undefined {
 const givenDeclaration = (given: LocalGiven) =>
    `given: ${given.name} :: ${given.type} is ${given.default}`;
 
-/**
- * The last line of the declaration starting at `line`: the line itself for a
- * one-line `view: x is y + { … }`, or the matching closing brace for a body
- * (`view: x is {`, `source: s is b extend {`). Braces inside strings are not
- * a concern Malloy dashboards have raised, so the count is plain.
- */
-function declarationEnd(lines: string[], line: number): number {
-   let depth = 0;
-   let opened = false;
-   for (let i = line; i < lines.length; i++) {
-      for (const ch of lines[i]) {
-         if (ch === "{") {
-            depth++;
-            opened = true;
-         } else if (ch === "}") depth--;
-      }
-      if (opened && depth <= 0) return i;
-      if (!opened && i === line) return i;
-   }
-   return lines.length - 1;
-}
-
 /** A name as a regex literal: view and source names are identifiers, but the
  * pattern is built from document data and should not be able to mean anything
  * else. */
@@ -257,9 +236,13 @@ function viewDeclarationLine(
       new RegExp(`\\bsource:\\s*${literal(sourceName)}\\s+is\\b`).test(line),
    );
    if (sourceLine < 0) return -1;
-   const end = declarationEnd(lines, sourceLine);
+   const extent = declarationExtent(lines, sourceLine);
+   // A source whose own extent cannot be trusted has nothing here to search;
+   // the caller already produces a specific refusal for "not found".
+   if ("unreadable" in extent) return -1;
    const wanted = new RegExp(`\\bview:\\s*${literal(viewName)}\\s+is\\b`);
-   for (let i = sourceLine; i <= end; i++) if (wanted.test(lines[i])) return i;
+   for (let i = sourceLine; i <= extent.end; i++)
+      if (wanted.test(lines[i])) return i;
    return -1;
 }
 
@@ -789,7 +772,14 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
             reason: `Could not find where \`${tile.name}\` is declared.`,
          };
       }
-      const endLine = declarationEnd(lines, declLine);
+      const extent = declarationExtent(lines, declLine);
+      if ("unreadable" in extent) {
+         return {
+            ok: false,
+            reason: `Could not tell where \`${tile.name}\` ends: ${extent.unreadable}.`,
+         };
+      }
+      const endLine = extent.end;
       const { tags } = blockAbove(lines, declLine);
       const first = Math.min(declLine, ...tags.map((t) => t.line));
       for (const tag of tags) edits.push({ ...wholeLine(tag.line), text: "" });
@@ -849,11 +839,12 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    let lastExtensionEnd = -1;
    for (const source of current.sources) {
       const open = declarationLine(lines, "source", source.name);
-      if (open >= 0)
-         lastExtensionEnd = Math.max(
-            lastExtensionEnd,
-            declarationEnd(lines, open),
-         );
+      if (open < 0) continue;
+      const extent = declarationExtent(lines, open);
+      // An anchor for a NEW extension only; a source this scan cannot read is
+      // simply not counted, rather than failing a splice that never touches it.
+      if ("unreadable" in extent) continue;
+      lastExtensionEnd = Math.max(lastExtensionEnd, extent.end);
    }
    for (const [sourceName, tiles] of byExtension) {
       if (currentSources.has(sourceName)) {
@@ -864,7 +855,24 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
                reason: `Could not find where the source \`${sourceName}\` is declared.`,
             };
          }
-         const close = declarationEnd(lines, open);
+         const extent = declarationExtent(lines, open);
+         if ("unreadable" in extent) {
+            return {
+               ok: false,
+               reason:
+                  `Could not find where \`${sourceName}\`'s extension ends: ` +
+                  `${extent.unreadable}.`,
+            };
+         }
+         if (!extent.opened) {
+            return {
+               ok: false,
+               reason:
+                  `\`${sourceName}\` never opens an \`extend { … }\` block, so a ` +
+                  `new tile cannot be added inside it.`,
+            };
+         }
+         const close = extent.end;
          // The indent the extension already uses for its views, else two spaces.
          let indent = "  ";
          for (let i = open + 1; i < close; i++) {
