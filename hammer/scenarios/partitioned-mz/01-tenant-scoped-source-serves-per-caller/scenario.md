@@ -100,6 +100,7 @@ run: orders -> { aggregate: total is amount.sum() }
 ```
 
 givens: ORG_ID=1
+servedFrom: storage
 
 Expect:
 
@@ -117,6 +118,7 @@ run: orders -> { aggregate: total is amount.sum() }
 ```
 
 givens: ORG_ID=2
+servedFrom: storage
 
 Expect:
 
@@ -133,6 +135,8 @@ quietly losing the tier.
 ```malloy
 run: orders -> { aggregate: total is amount.sum() }
 ```
+
+servedFrom: storage
 
 Expect:
 

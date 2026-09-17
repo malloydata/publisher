@@ -99,6 +99,7 @@ run: orders -> { aggregate: total is amount.sum() }
 ```
 
 givens: ORG_ID=1
+servedFrom: storage
 
 Expect:
 
@@ -113,6 +114,7 @@ run: orders -> { aggregate: total is amount.sum() }
 ```
 
 givens: ORG_ID=3
+servedFrom: storage
 
 Expect:
 

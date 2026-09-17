@@ -94,6 +94,7 @@ run: visible_orders -> { aggregate: total is amount.sum() }
 ```
 
 givens: ORG_ID=1; USER_ID=7
+servedFrom: storage
 
 Expect:
 
@@ -155,8 +156,9 @@ Expect:
 
 ## Mutate orders_pg.qts_orders
 
-Every answer above would be the same served live, so none of them shows the tier
-was used. Change the warehouse underneath: order 1 doubles.
+`servedFrom` above already names the tier, and this corroborates it without
+relying on that one field: change the warehouse underneath, and an answer that
+moves came from the warehouse. Order 1 doubles.
 
 ```sql
 UPDATE qts_orders SET amount = 200 WHERE order_id = 1;
@@ -183,8 +185,10 @@ Expect:
 
 > **Red on the tier, not on the answers.** Every answer above is correct today —
 > the org and user terms both apply, and no caller sees another's rows. What does
-> not happen is routing: the last step mutates the warehouse and the re-query
-> returns the NEW value, so the query was recomputed live.
+> not happen is routing, which `servedFrom` reports directly on the first query.
+> The mutate-and-requery at the end corroborates it from the other side: the
+> re-query returns the NEW value, so the rows were recomputed rather than read
+> from a frozen artifact.
 >
 > The serve shape rebinds materialized sources and only those. For this package it
 > declares `orders_all`, `vis_all` and the model's givens, and nothing named
