@@ -191,6 +191,27 @@ the active one, so you can query `p1` and `p2` side by side.
 routing proof: mutate the source, run the query again, expect the value
 **unchanged**.
 
+**Proving the tier ANSWERED, not just that the answer is right.** A correct
+storage-tier answer and a live fallback return the same rows — that is the
+feature — so rows alone cannot tell them apart, and neither can `expect binding:`,
+which proves a binding exists rather than that it was used. Two signals do, and a
+scenario claiming the tier served should carry at least one:
+
+- `servedFrom: storage` on the query, the direct report; and
+- the mutate-and-`(again)` proof above, which corroborates from the other side —
+  an answer that moves came from the warehouse.
+
+Assert `servedFrom` **positively**, against the value you expect. A query that
+never reached the routing decision reports nothing, and "nothing" must not read as
+"not the storage tier": it is the same shape a serialization dropping the field
+would leave behind.
+
+One plumbing detail worth knowing before extending the harness, because it costs
+an hour and fails quietly: **`servedFrom` rides the response ENVELOPE, beside
+`result`, not inside the result JSON.** Reading it from the parsed result yields
+`undefined` for every query, which looks exactly like a tier that never served —
+so the mistake reports as a product failure rather than as a harness bug.
+
 **Environments.** Steps take `(env=<name>)` to run against a specific environment,
 and `## Model <pkg>/<path> (env=<name>)` registers a package under that
 environment. A package name may recur across environments with a different model.
