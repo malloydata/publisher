@@ -34,6 +34,8 @@ const SKILL_REF = /skill:([a-z0-9][a-z0-9-]*)(\/[^\s`)\]]*)?/g;
 const ABSOLUTE_INSTALL_PATH = /\.(?:cursor|credible|claude)\/skills\//;
 /** A same-skill resource reference, which must resolve inside that skill. */
 const RELATIVE_REF = /(?<![\w/.`-])reference\/[\w./-]+\.md/g;
+/** The routing skill an agent reads to find a sibling. */
+const INDEX_SKILL = "malloy";
 
 /**
  * A description is the only text a host reads before deciding whether to load a
@@ -292,6 +294,34 @@ describe("cross-skill references", () => {
          }
       }
       expect([...new Set(problems)]).toEqual([]);
+   });
+
+   it("are complete: the index accounts for every skill that ships", () => {
+      // The closure test above asks that the index point at nothing missing.
+      // This asks the other direction, which nothing else covers: that nothing
+      // shipped is missing FROM the index. The index is how an agent that
+      // already has one skill open finds a sibling, so a skill it never names
+      // is installed and effectively undiscoverable -- and silently, because
+      // the skill loads fine when asked for by name and nothing ever asks.
+      //
+      // A MENTION, not a `skill:` reference, deliberately. A group must be
+      // closed under its own `skill:` references so that excluding it cannot
+      // strand a pointer, and the index sits in `modeling` while some skills
+      // it should still account for sit in `analysis` and `eval`. Naming those
+      // in prose is how the index stays complete without dragging three groups
+      // into one. Requiring the invocable form here instead turns a correct
+      // index into a group-closure failure, which is what happened when this
+      // test was first written.
+      const indexBody = fs.readFileSync(
+         path.join(skillDir(INDEX_SKILL), "SKILL.md"),
+         "utf8",
+      );
+      const unaccounted = shipped.filter(
+         (name) =>
+            name !== INDEX_SKILL &&
+            !new RegExp(`\`(?:skill:)?${name}\``).test(indexBody),
+      );
+      expect(unaccounted).toEqual([]);
    });
 
    it("invoke a skill by name, never by subpath", () => {
