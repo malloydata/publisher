@@ -1,6 +1,6 @@
 ---
 name: malloy-queries
-description: Malloy query patterns, syntax rules, and chart annotation reference. Consult before writing or debugging any query. Covers dates, aggregates vs dimensions, join paths, filters, string matching, and common error patterns.
+description: Read BEFORE writing or debugging any Malloy query. Covers dates, aggregates vs dimensions, join paths, filters, string matching, chart annotations, and the errors a SQL habit produces.
 ---
 <!--
 Copyright (c) Credible Data Inc.

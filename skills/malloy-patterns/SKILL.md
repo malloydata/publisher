@@ -1,6 +1,6 @@
 ---
 name: malloy-patterns
-description: Index of Malloy documentation topics. Use to discover what's available in search_malloy_docs. Covers language reference (sources, queries, views, fields, aggregates, joins, filters, expressions, functions), common patterns (YoY, cohorts, percent of total), rendering, and experimental features.
+description: Read BEFORE searching Malloy docs, to pick a topic worth searching for. An index of what search_malloy_docs covers - language reference, common patterns (YoY, cohorts, percent of total), rendering.
 ---
 <!--
 Copyright (c) Credible Data Inc.

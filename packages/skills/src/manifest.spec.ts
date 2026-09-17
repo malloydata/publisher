@@ -35,6 +35,49 @@ const ABSOLUTE_INSTALL_PATH = /\.(?:cursor|credible|claude)\/skills\//;
 /** A same-skill resource reference, which must resolve inside that skill. */
 const RELATIVE_REF = /(?<![\w/.`-])reference\/[\w./-]+\.md/g;
 
+/**
+ * A description is the only text a host reads before deciding whether to load a
+ * skill, so it has two budgets, set by the two things that consume it.
+ *
+ * `DESCRIPTION_CEILING` is the loader budget: Claude Code accepts roughly 1 KiB
+ * of frontmatter description. Nothing here enforced it, and nothing here is
+ * near it (the longest is ~633), so this is a regrowth guard rather than a
+ * constraint anyone is currently fighting.
+ *
+ * `PACKAGED_DESCRIPTION_BUDGET` is tighter and only applies to the shared
+ * skills that a downstream plugin build packages. That build rewrites the
+ * `description:` line in place at 200 characters and appends an ellipsis --
+ * silently, at build time, on the surface where the description matters most.
+ * `malloy-analysis` shipped for several releases as "...and answer delivery.
+ * Use..." with the clause saying WHEN to load it cut off. Above 200 the tail is
+ * written for an audience that never reads it, so it is asserted here, where an
+ * author sees it, rather than applied downstream where nobody does.
+ */
+const DESCRIPTION_CEILING = 1024;
+const PACKAGED_DESCRIPTION_BUDGET = 200;
+
+/**
+ * The shared skills a downstream plugin packages today (ms2data/agent-skills
+ * `manifests/analysis-plugin.json`, minus its `credible-*` entry, which never
+ * lands here).
+ *
+ * Listed rather than derived because this repo cannot see that manifest. The
+ * companion test in agent-skills is scoped to the manifest itself, so a skill
+ * ADDED to the plugin is caught there, at the moment it is added; this list
+ * holds the ones already in it from growing back past the budget on the side
+ * where they are authored. The two are complementary, not duplicates.
+ */
+const PACKAGED_SKILLS = [
+   "malloy-analysis",
+   "malloy-analysis-pitfalls",
+   "malloy-charts",
+   "malloy-gotchas-queries",
+   "malloy-gotchas-rendering",
+   "malloy-patterns",
+   "malloy-phrase-detection",
+   "malloy-queries",
+] as const;
+
 function skillDir(name: string): string {
    return path.join(sourceSkillsDir, name);
 }
@@ -65,6 +108,22 @@ function frontmatter(name: string): Record<string, string> {
       if (match) fields[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
    }
    return fields;
+}
+
+/**
+ * The `description:` line's value as the packaging build sees it.
+ *
+ * Deliberately not `frontmatter()`: that strips outer quotes, and the build
+ * that truncates does not -- it rewrites the raw rest of the line. A quoted
+ * description two characters over would read as compliant here and still ship
+ * cut. The same reason agent-skills reads the raw line rather than the
+ * YAML-parsed value, where a `#` in a description ends the scalar early.
+ */
+function rawDescriptionLength(name: string): number {
+   const text = fs
+      .readFileSync(path.join(skillDir(name), "SKILL.md"), "utf8")
+      .replace(/\r\n/g, "\n");
+   return text.match(/^description:[ \t]*(.+)$/m)?.[1].length ?? 0;
 }
 
 describe("publisher-local manifest", () => {
@@ -166,6 +225,26 @@ describe("shipped skills", () => {
       expect(fields.name).toBe(name);
       expect((fields.description ?? "").trim().length).toBeGreaterThan(0);
    });
+
+   it.each(shipped)("%s: description fits the loader budget", (name) => {
+      const description = frontmatter(name).description ?? "";
+      expect({ name, length: description.length }).toEqual({
+         name,
+         length: Math.min(description.length, DESCRIPTION_CEILING),
+      });
+   });
+
+   it.each(PACKAGED_SKILLS)(
+      "%s: description survives the plugin build unchanged",
+      (name) => {
+         expect(shipped).toContain(name);
+         const length = rawDescriptionLength(name);
+         expect({ name, length }).toEqual({
+            name,
+            length: Math.min(length, PACKAGED_DESCRIPTION_BUDGET),
+         });
+      },
+   );
 
    it.each(shipped)("%s: declares no version of its own", (name) => {
       // The pack stamps `version:` at pack time and refuses a second one, so a

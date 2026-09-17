@@ -1,6 +1,6 @@
 ---
 name: malloy-phrase-detection
-description: How to construct search targets for the get_context tool. Covers target-type classification and non-obvious decomposition patterns. Read the tool description for field definitions and the end-to-end workflow.
+description: Read BEFORE your first get_context call. How to phrase search_text so retrieval returns the fields you need instead of a truncated catalog. Covers target-type classification and decomposition.
 ---
 <!--
 Copyright (c) Credible Data Inc.
