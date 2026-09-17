@@ -6047,6 +6047,26 @@ components:
           items:
             type: string
 
+    StrippedTerm:
+      type: object
+      required: [code, givens]
+      description: >-
+        One `where:` conjunct a storage build leaves out of the artifact and the
+        read puts back. Its `code` is the author's verbatim expression, which is
+        what a serve shape re-emits; `givens` are the names that expression reads,
+        which is what the shape must declare for it to compile.
+      properties:
+        code:
+          type: string
+          description: The author's verbatim filter expression, e.g. `org_id = $ORG_ID`.
+        givens:
+          type: array
+          items:
+            type: string
+          description: >-
+            The given names this term reads, in first-seen order. A reader must
+            bind these for the term to apply; binding none applies each given's
+            declared default, as a live query would.
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
@@ -6112,6 +6132,45 @@ components:
           description:
             The source's build SQL (with the build manifest applied for upstream
             rewrites).
+        partition:
+          type: array
+          items:
+            type: string
+          description: >-
+            The source's declared `#@ persist partition=` columns, resolved
+            against its public projection and reported in the author's order,
+            which is the order the stored table's directories nest in. Absent or
+            empty means the table is written unpartitioned, which is the default
+            and what every source built before this field existed means.
+
+
+            A layout, not an access control. Every term the build strips from a
+            source is re-applied when the artifact is read whether or not its
+            column is partitioned, so a list omitting the column a caller is
+            scoped by costs a full scan and never widens what that caller sees.
+            Consumers should not infer isolation from it.
+
+
+            `partition=` requires `storage=`; declared without one it is a
+            publish refusal rather than an ignored key, so this is empty for
+            every colocated source.
+        strippedTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrippedTerm"
+          description: >-
+            The source's extend-block `where:` conjuncts that reference a given —
+            the terms Malloy leaves OUT of the build and that must be re-applied,
+            with the caller's own values, whenever the artifact is read. Absent
+            or empty means the artifact is the whole relation and needs no
+            re-application.
+
+
+            Reported so a consumer that supplies its own serve bindings can tell
+            that this artifact is under-filtered on its own, and which givens a
+            reader has to bind for it to be served correctly. The publisher's own
+            serve path re-derives these from the compiled model rather than from
+            here.
         refresh:
           type: ["string", "null"]
           description: >-
