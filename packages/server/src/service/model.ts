@@ -176,6 +176,7 @@ import {
    type PartitionGraftEntry,
 } from "./gate_classification";
 import {
+   collectSourceInfos,
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "./source_extraction";
@@ -459,6 +460,18 @@ export class Model {
     * bind. Keying on the version means such a write is simply never read again.
     */
    private preaggregatePlansVersion = 0;
+   /**
+    * The model file's text as the compile that produced {@link modelDef} read
+    * it, when the loader shipped it (worker package loads of `.malloy` files).
+    *
+    * Held on the Model, not re-read on demand, because it is only meaningful
+    * paired with THIS compile's `DocumentLocation` coordinates. A Model is
+    * replaced wholesale by a reload, so the two never drift; a file read later
+    * can be newer than the IR, which is exactly the case a failed reload
+    * leaves behind (the package keeps serving the previous model while the
+    * files on disk have moved on).
+    */
+   private compiledSourceText: string | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -3068,50 +3081,12 @@ export class Model {
                },
             });
 
-            // Collect sourceInfos from imported models first
-            // This follows the same pattern as notebook imports handling
-            const imports = modelDef.imports || [];
-            const importedSourceNames = new Set<string>();
-            for (const importLocation of imports) {
-               try {
-                  const modelString = await runtime.urlReader.readURL(
-                     new URL(importLocation.importURL),
-                  );
-                  const importedModelDef = (
-                     await runtime
-                        .loadModel(modelString as string, { importBaseURL })
-                        .getModel()
-                  )._modelDef;
-                  const importedModelInfo =
-                     modelDefToModelInfo(importedModelDef);
-                  const importedSources = importedModelInfo.entries.filter(
-                     (entry) => entry.kind === "source",
-                  ) as Malloy.SourceInfo[];
-                  for (const source of importedSources) {
-                     if (!importedSourceNames.has(source.name)) {
-                        sourceInfos.push(source);
-                        importedSourceNames.add(source.name);
-                     }
-                  }
-               } catch (importError) {
-                  // Log but don't fail if we can't load an import's sourceInfo
-                  logger.warn("Failed to load sourceInfo from import", {
-                     importURL: importLocation.importURL,
-                     error: importError,
-                  });
-               }
-            }
-
-            // Add locally-defined sources (not already added from imports)
-            const localModelInfo = modelDefToModelInfo(modelDef);
-            const localSources = localModelInfo.entries.filter(
-               (entry) => entry.kind === "source",
-            ) as Malloy.SourceInfo[];
-            for (const source of localSources) {
-               if (!importedSourceNames.has(source.name)) {
-                  sourceInfos.push(source);
-               }
-            }
+            // Every source this file can resolve — its own declarations plus
+            // exactly the names an `import { … }` selected. Shared with the
+            // package-load worker so the two paths cannot drift; see
+            // collectSourceInfos on why re-loading each imported file (what
+            // this used to do) reported sources that resolve nowhere here.
+            sourceInfos.push(...collectSourceInfos(modelDef));
          }
 
          const model = new Model(
@@ -3270,6 +3245,9 @@ export class Model {
       // reloading it through this runtime, so it has to be the one that
       // shares this model's given identities, not a fresh one.
       model.setGateRuntime(runtime);
+      // Paired with `modelDef` above: the coordinates in that IR index this
+      // text and no other revision of the file.
+      model.compiledSourceText = data.modelSourceText;
       return model;
    }
 
@@ -3397,7 +3375,17 @@ export class Model {
       if (!items) return items;
       if (!this.discoveryCurationEnabled) return items;
       const exports = this.modelDef?.exports;
-      if (!Array.isArray(exports)) return items;
+      if (!Array.isArray(exports)) {
+         // Every other step on this path fails closed; this one cannot without
+         // blanking a package's listing over a malloy shape change. `exports`
+         // is non-optional in `ModelDef`, so reaching here means the IR moved
+         // under us — say so instead of quietly serving an uncurated surface.
+         logger.warn(
+            "Discovery curation skipped: modelDef.exports is not an array",
+            { modelPath: this.modelPath, packageName: this.packageName },
+         );
+         return items;
+      }
       const exported = new Set(exports);
       return items.filter(
          (item) => item.name !== undefined && exported.has(item.name),
@@ -3514,6 +3502,20 @@ export class Model {
     */
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
+   }
+
+   /**
+    * The model file's text as this model's compile read it, or undefined when
+    * the loader did not ship it (a notebook, a compile failure, or an
+    * in-process `Model.create`).
+    *
+    * The only safe input for slicing a `DocumentLocation` out of: the ranges in
+    * {@link getModelDef}'s IR index THIS text. Callers must not fall back to
+    * reading the file, which can be newer than the compile. See
+    * `SerializedModel.modelSourceText`.
+    */
+   public getCompiledSourceText(): string | undefined {
+      return this.compiledSourceText;
    }
 
    /**
