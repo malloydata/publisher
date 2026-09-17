@@ -1368,10 +1368,9 @@ export async function spliceDashboardDocument(
    // comparison it would have to fail never looks at it. Malloy's parser is
    // the only reader here that judges the whole file.
    //
-   // What this promises is narrow on purpose: a file that parsed before still
-   // parses after. It says nothing about one that was already broken -- an
-   // editor can open a file the compiler rejects, and refusing every save on
-   // it would trap the user with no way out.
+   // A file with a syntax error never reaches here -- the parse above refuses
+   // it, and the editor refuses to open it at all -- so the guard below is
+   // belt and braces against those two ever disagreeing.
    //
    // Comparing the two error lists instead, and refusing what looks new, is
    // what this replaced: the parser's messages quote the tokens around the

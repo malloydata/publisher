@@ -521,10 +521,9 @@ source: a is one extend {
       expect(restored).toBe(oneLiner);
    });
 
-   // A multi-stage `->` pipeline has no single first stage to write the
-   // binding into, and the reason names the shape, not the tile's kind.
-   // The first stage IS the tile's own, so a filter goes there. Only a later
-   // stage is out of reach, and nothing is written into one.
+   // The first stage of a `{ … } -> { … }` body IS the tile's own, so a filter
+   // goes there. Only a later stage is out of reach, and nothing is written
+   // into one.
    it("writes a filter into the first stage of a multi-stage body", async () => {
       const source = `## artifact { title="T" tiles=["a -> kpis"] }
 import "../m.malloy"

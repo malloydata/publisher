@@ -204,16 +204,28 @@ describe("canBind", () => {
    // The doc comment on canBind used to say an inline tile's body "is a
    // query, not a reference", which stopped a filter from being addable on
    // the majority of real dashboards: an inline body is how most tiles are
-   // actually written. Only `inherited` — a view declared on the model, which
-   // this file never writes — is excluded now.
-   it("excludes only inherited", () => {
+   // actually written. What is excluded is the two kinds with nowhere to put
+   // a binding: a view declared on the model, and one declared here whose
+   // body the builder does not rewrite.
+   it("excludes inherited and opaque, and nothing else", () => {
       const d = doc();
       d.tiles.push({
          name: "by_region",
          source: "orders",
          declaration: { kind: "inherited" },
       });
-      expect(d.tiles.map((t) => canBind(t))).toEqual([true, true, true, false]);
+      d.tiles.push({
+         name: "chained",
+         source: "orders",
+         declaration: { kind: "opaque", why: "a chained refinement" },
+      });
+      expect(d.tiles.map((t) => canBind(t))).toEqual([
+         true,
+         true,
+         true,
+         false,
+         false,
+      ]);
    });
 });
 

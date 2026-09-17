@@ -396,9 +396,11 @@ depth-1 `where:` statement inside the body's own first stage, which is valid Mal
 reads back exactly like a reference tile's refinement does. Only that shape is
 recognized — a nested `where:` inside a `nest:`, a compound predicate such as `where: a
 ~ $A and c = 1`, and a source-level `where:` outside any view are all left exactly as
-written, never touched and never reported as a binding. A tile whose body is a
-multi-stage `->` pipeline or a `{ … } + { … }` compound refinement still refuses a filter
-change, with a reason naming the shape.
+written, never touched and never reported as a binding. Where a body has more than one
+stage, only the first is the tile's own: `{ … } -> { … }` takes its binding in stage one
+and nothing is ever written into a later stage, while a body with no single first stage
+-- a `{ … } + { … }` compound refinement, or a pipeline starting from a named view --
+refuses a filter change with a reason naming the shape.
 
 Recognizing that shape is a question about statements, and every scan here reads a line
 at a time, so the two can disagree: a clause list or a predicate carried onto a second
