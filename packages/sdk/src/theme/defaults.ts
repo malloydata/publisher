@@ -58,16 +58,16 @@ export const DEFAULT_THEME: Required<Theme> = {
          light: "#475569",
          dark: "#e2e8f0",
       },
-      // The padded container that wraps each chart / table in a
-      // dashboard. Light mode: a faint recess off white; dark mode:
-      // page-outer slate.
+      // The padded container that wraps each chart / table in a dashboard.
       //
-      // Neutral slate, not a tint. This was `#f5fafc`, a cyan-cast
-      // near-white left from the logo palette, and it was the most visible
-      // survivor of it: every dashboard on the server painted a pale blue
-      // panel behind its tiles, under charts that were no longer blue-green.
+      // White in light mode: the card is separated from the page by its
+      // border and its radius, and it does not need a wash as well. A tinted
+      // card reads as a recess — something switched off — under charts whose
+      // own surface is white, which put two greys and a white on one tile.
+      // Dark mode keeps the page-outer slate, where a card DOES need a value
+      // difference to read as a card at all.
       tile: {
-         light: "#f8fafc",
+         light: "#ffffff",
          dark: "#0f172a",
       },
       tileTitle: {
