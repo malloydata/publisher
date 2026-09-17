@@ -8,7 +8,7 @@
 // it can fail to be get different answers, because they have different fixes.
 import type { FixedConnectionMap, PersistSource } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { deriveAnnotationFields } from "./build_plan";
+import { computeSourceEntityId, deriveAnnotationFields } from "./build_plan";
 import {
    compilePersistSources,
    duckdbTestConnections,
@@ -115,5 +115,95 @@ source: p is raw -> { select: * }`,
       );
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("partition_without_storage");
+   });
+});
+
+describe("partition= and the content address", () => {
+   // A storage build is skipped when the address is unchanged, so a layout the
+   // address cannot see is a layout the author can change with no effect.
+   async function addressOf(body: string): Promise<string> {
+      const { sources } = await compilePersistSources(
+         connections,
+         `${HEAD}\n${body}`,
+      );
+      return computeSourceEntityId(sources["p"], { duckdb: "dig-1" });
+   }
+
+   const UNPARTITIONED = `#@ persist name="p" storage=credible
+source: p is raw -> { select: * }`;
+
+   it("re-addresses when the declared partition changes, so the table is rebuilt", async () => {
+      const byOrg = await addressOf(
+         `#@ persist name="p" storage=credible partition="org_id"
+source: p is raw -> { select: * }`,
+      );
+      const byS = await addressOf(
+         `#@ persist name="p" storage=credible partition="s"
+source: p is raw -> { select: * }`,
+      );
+      expect(byOrg).not.toBe(byS);
+      // And declaring one at all differs from declaring none.
+      expect(byOrg).not.toBe(await addressOf(UNPARTITIONED));
+   });
+
+   it("re-addresses when the partition ORDER changes, which is a different layout", async () => {
+      const a = await addressOf(
+         `#@ persist name="p" storage=credible partition="org_id,s"
+source: p is raw -> { select: * }`,
+      );
+      const b = await addressOf(
+         `#@ persist name="p" storage=credible partition="s,org_id"
+source: p is raw -> { select: * }`,
+      );
+      expect(a).not.toBe(b);
+   });
+
+   it("leaves an unpartitioned source's address exactly where it was", async () => {
+      // The property that keeps every artifact already in a lake from
+      // re-addressing — and so rebuilding — the moment this ships.
+      //
+      // Asserted against the formula this replaced, spelled out, rather than
+      // against another unpartitioned source: comparing two of those would hold
+      // just as well if BOTH had shifted, which is the failure worth catching.
+      const { sources } = await compilePersistSources(
+         connections,
+         `${HEAD}\n${UNPARTITIONED}`,
+      );
+      const source = sources["p"];
+      expect(computeSourceEntityId(source, { duckdb: "dig-1" })).toBe(
+         source.makeBuildId("dig-1", source.getSQL()),
+      );
+   });
+});
+
+describe("the wire plan reports what the build and the read need", () => {
+   // The two fields exist for a consumer that supplies its own serve bindings:
+   // without them it cannot tell that an artifact is under-filtered on its own,
+   // nor which givens a reader has to bind for it to be served correctly.
+   async function planFor(body: string) {
+      const { sources } = await compilePersistSources(
+         connections,
+         `${HEAD}\n${body}`,
+      );
+      const source = sources["p"];
+      const fields = deriveAnnotationFields(source);
+      const partition = resolvePartitionColumns(source, fields);
+      return { source, fields, partition };
+   }
+
+   it("reports the resolved partition columns in the author's order", async () => {
+      const { partition } = await planFor(
+         `#@ persist name="p" storage=credible partition="org_id,s"
+source: p is raw -> { select: * }`,
+      );
+      expect(partition).toEqual({ ok: true, columns: ["org_id", "s"] });
+   });
+
+   it("reports nothing for a source that declares no layout", async () => {
+      const { partition } = await planFor(
+         `#@ persist name="p" storage=credible
+source: p is raw -> { select: * }`,
+      );
+      expect(partition).toEqual({ ok: true, columns: [] });
    });
 });
