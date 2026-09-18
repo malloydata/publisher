@@ -266,6 +266,75 @@ source: f is duckdb.sql("SELECT 1 as x")
       { timeout: 30000 },
    );
 
+   // ── refused persist sources reach the author ──────────────────────────
+
+   // `partition=` with no `storage=`: refused by the colocated gate, which is the
+   // gate a plain `#@ persist` is evaluated against. Chosen because it needs no
+   // storage destination to resolve, so the refusal is the only thing under test.
+   const PARTITION_WITHOUT_STORAGE_MODEL = `##! experimental.persistence
+
+#@ persist name="p_table" partition="x"
+source: p is duckdb.sql("SELECT 1 as x")
+`;
+
+   it(
+      "surfaces a refused persist source on the package warnings",
+      async () => {
+         const pkg = await loadPackage(PARTITION_WITHOUT_STORAGE_MODEL);
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         const refusal = warnings.find((w) =>
+            w.message?.includes("'partition=' is declared without 'storage='"),
+         );
+         expect(refusal).toBeDefined();
+         // The source the author named, so the finding is attributable to a line
+         // they can open — not the refusal's map key.
+         expect(refusal!.subject).toBe("p");
+         expect(refusal!.model).toBe("model.malloy");
+         // The remedy the gate authored, carried rather than re-worded.
+         expect(refusal!.message).toContain("drop 'partition='");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "warns about a refused source even though the build plan omits it",
+      async () => {
+         const pkg = await loadPackage(PARTITION_WITHOUT_STORAGE_MODEL);
+         const plan = pkg.getBuildPlan();
+         // A storage/colocated refusal means ABSENCE from `sources` — so the plan
+         // itself carries no trace of the annotation, and the warning is the only
+         // thing standing between the author and a silent no-op.
+         expect(
+            Object.values(plan?.sources ?? {}).some((s) => s.name === "p"),
+         ).toBe(false);
+         expect(
+            Object.values(plan?.refusedSources ?? {}).some(
+               (r) => r.name === "p",
+            ),
+         ).toBe(true);
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some((w) =>
+               w.message?.includes("'partition=' is declared without 'storage='"),
+            ),
+         ).toBe(true);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "raises no refusal warning for a package whose persist sources are eligible",
+      async () => {
+         const pkg = await loadPackage(PLAIN_MODEL);
+         expect(pkg.getBuildPlan()?.refusedSources ?? {}).toEqual({});
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some((w) =>
+               w.message?.includes("cannot be materialized"),
+            ),
+         ).toBe(false);
+      },
+      { timeout: 30000 },
+   );
+
    // ── within-package persist-target collisions ──────────────────────────
 
    // Two DISTINCT sources both resolving to name="dup" in the same destination

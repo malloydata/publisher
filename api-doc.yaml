@@ -3115,9 +3115,14 @@ components:
             inline error at query time, or inert where it sits and silently
             ignored. Materialization
             findings: a `storage=` source not served from storage, a `#@ persist`
-            source that was not recognized as materializable, a persist-target
-            collision, and materialization-config problems that degrade
-            attribution. Discovery findings: a model listed in `explores` whose
+            source that was not recognized as materializable, a `#@ persist`
+            REFUSED by the compile-time eligibility gate (one entry per
+            `BuildPlan.refusedSources` member, carrying that gate's own message),
+            a persist-target collision, and materialization-config problems that
+            degrade attribution. A refusal is the one materialization finding the
+            build plan cannot also be read for: a refused `storage`/`colocated`
+            source is ABSENT from `BuildPlan.sources`, so nothing there records
+            that the annotation was written at all. Discovery findings: a model listed in `explores` whose
             export closure surfaces no sources or named queries, so it lists as
             empty and renders a blank page. Dashboard findings: a
             `dashboards/` file whose `# artifact` tag does not parse or does not
