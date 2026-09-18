@@ -94,5 +94,11 @@ export function buildTableCssVars(
       // that route needs no !important.
       "--publisher-dashboard-card-radius": card.radius,
       "--publisher-dashboard-card-padding": card.padding,
+      // The card's EDGE, separate from --malloy-render--table-border, which
+      // is the gridline inside the table a card may hold. Same reason
+      // TileCard reads theme.cardBorder: the two weights are answering
+      // different questions, and a card outlined at gridline weight on a
+      // white page did not read as a card at all.
+      "--publisher-dashboard-card-border": theme.cardBorder,
    };
 }
