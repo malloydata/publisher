@@ -1404,6 +1404,9 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
+   // sqlSource runs a live DB introspection (a DESCRIBE against the connection),
+   // so it is admission-controlled like a query rather than left unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1424,6 +1427,7 @@ app.post(
 // Per-package versions
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1703,6 +1707,13 @@ app.get(
 
 app.put(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   // A dashboard save compiles the submitted text and then writes it under the
+   // package lock, across a full package reload and the rollback reload on
+   // failure -- strictly more of the work this cap exists to bound than one
+   // /compile does. Ungated it also convoys: the save holds the package mutex
+   // while holding no slot, so slot-holding compiles on that package pile up
+   // behind it.
+   queryConcurrency(),
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -1987,6 +1998,10 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
+   // Compile runs real Malloy compilation (and resolves source schemas against
+   // the connection), so it is admission-controlled like a query rather than
+   // left to pin the shared event loop unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          // Express stores wildcard matches in params['0'], so nested model

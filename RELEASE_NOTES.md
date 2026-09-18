@@ -31,6 +31,36 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — compile and sqlSource now count against the concurrency cap
+
+`PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
+flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`,
+but not `compile` or `sqlSource` -- and both of those reach the database too:
+compile resolves a source's schema against the connection, and sqlSource runs a
+live introspection. A burst of either bypassed the cap its sibling routes
+enforce. The legacy `/projects/...` routes and the `compile_model` MCP tool had
+the same gap, so all three surfaces are gated together; leaving one open would
+just move the bypass.
+
+What changes for an operator: the cap now has to be sized for authoring traffic
+as well as query traffic. An agent loop or a notebook that compiles on every edit
+draws on the same pool a query does, so a deployment that sits near its cap may
+start seeing 503s on compile and sqlSource that it did not see before. The cap
+defaults to 32 and `0` still disables it entirely. The dashboard save
+(`PUT /environments/:env/packages/:pkg/models/*?`) admits here too: it compiles
+the submitted text and rewrites the package under its lock.
+
+A deployment that finds the cap too tight once authoring traffic counts against
+it can raise `PUBLISHER_MAX_CONCURRENT_QUERIES` -- 64 or 128 -- rather than
+leaving these routes ungated. Raise it knowing what it governs: one pool bounds
+aggregate memory for concurrent warehouse work, so a cap sized to absorb
+authoring pressure also raises the ceiling on concurrent query memory.
+
+What this does not cover, so the entry is not read as a complete list:
+`?reload=true` answers to the memory governor but not to this cap, and the REST
+connection `schemas` and `tables` routes and the MCP `search_database_schema`
+tool take no slot.
+
 ## [Unreleased] - two server defaults now close instead of open
 
 Two settings that were open by default are closed. Both are silent until
