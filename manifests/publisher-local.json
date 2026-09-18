@@ -24,6 +24,7 @@
     "malloy-gotchas-modeling",
     "malloy-gotchas-queries",
     "malloy-gotchas-rendering",
+    "malloy-gx",
     "malloy-html-data-app-embedding",
     "malloy-html-data-app-runtime",
     "malloy-html-data-apps",
