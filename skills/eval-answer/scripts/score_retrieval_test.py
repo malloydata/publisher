@@ -111,6 +111,32 @@ class AnyOf(unittest.TestCase):
         r = score_case(self.group_case(), calls([D_STATUS, M_REVENUE]), KEY, "no_match")
         self.assertEqual(r["where_to_fix"], "delivered, wrong")
 
+    def test_a_satisfied_group_does_not_make_its_unused_route_unasked(self):
+        """The route not taken is not a miss, so its KIND is not unasked-for.
+
+        Collecting every undelivered member regardless of whether its group
+        was satisfied let a satisfied group contribute a phantom kind, which
+        `attribute` read as NEVER-ASKED. A case whose only real miss was a
+        dimension the agent DID search for came back owned by agent-skill,
+        "no search asked for a join at all" -- charging the skills team for a
+        route the case never needed.
+        """
+        c = {"qid": "q", "coverage": "covered",
+             "expectedEntities": {
+                 "required": [D_STATUS],
+                 "requiredAnyOf": [[M_SALES, "join:order_items:users"]]}}
+        # The agent asked for exactly the kinds it needed, never for a join,
+        # and the group is satisfied through its measure route.
+        events = calls_with_targets([M_SALES],
+                                    ["dimension: order status",
+                                     "measure: total sales"])
+        r = score_case(c, events, KEY, "no_match")
+        self.assertEqual(r["missing"], [D_STATUS])
+        self.assertEqual(r["recall"], 0.5)
+        self.assertEqual(r["where_to_fix"], "not retrieved")
+        self.assertEqual(r["owner"], "undecided")
+        self.assertNotIn("join", r["why"])
+
 
 class Recall(unittest.TestCase):
     def test_everything_needed_was_returned(self):

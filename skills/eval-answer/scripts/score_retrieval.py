@@ -410,8 +410,16 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
                          if not any(e in delivered for e in g))
         noise = sorted(got_set - acceptable)
 
-    missing_kinds = {split_entity(e)[0] for g in req_groups for e in g
-                     if e not in delivered}
+    # Only a group NO member satisfied, the same guard `missing` uses above. A
+    # `requiredAnyOf` group names alternate routes to one need, so the routes
+    # not taken are not missing and their kinds are not unasked-for. Collecting
+    # every undelivered member instead let a satisfied group contribute a
+    # phantom kind, and `attribute` read that as NEVER-ASKED: a case whose real
+    # miss was a dimension the agent DID search for came back owned by
+    # agent-skill, "no search asked for a join at all". That is the
+    # charge-the-agent default this file exists to remove.
+    missing_kinds = {split_entity(e)[0] for g in req_groups
+                     if not any(e in delivered for e in g) for e in g}
     component, owner, where_to_fix, why = attribute(
         recall, coverage, passed, missing_kinds, asked)
     return {
