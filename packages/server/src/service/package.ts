@@ -3041,7 +3041,48 @@ export class Package {
       );
    }
 
-   private static buildPackageMalloyConfig(
+   /**
+    * Confine the per-package DuckDB sandbox to the package directory.
+    *
+    * The sandbox is reachable with caller-supplied raw SQL, so DuckDB's file
+    * and URL functions run with whatever reach the session was opened with.
+    * Left at DuckDB's defaults that is the whole host filesystem, on a worker
+    * that serves more than one tenant.
+    *
+    * `sandboxed` is the only policy that fits. `local` turns external access
+    * off wholesale, which also blocks the package's OWN `.csv`/`.parquet`
+    * files -- the thing the sandbox exists to read. `sandboxed` keeps
+    * `allowedDirectories` readable and denies everything else, which is
+    * exactly the package boundary. Setting `allowedDirectories` WITHOUT a
+    * policy would be a silent no-op: DuckDB defines it as the paths allowed
+    * "even when enable_external_access is false", so on its own it widens an
+    * allowance that is not yet restricting anything.
+    *
+    * `workingDirectory` is required alongside it, and not only because
+    * `sandboxed` derives its secret and temp directories from one: it also
+    * participates in the connector's instance share key, so distinct packages
+    * keep distinct DuckDB instances.
+    *
+    * POSIX only, enforced by the connector rather than by us: it canonicalizes
+    * and containment-checks real paths, which Windows path semantics do not
+    * support. A Windows host therefore keeps DuckDB's defaults here, so this
+    * hardens the deployed (Linux container) posture and local macOS/Linux
+    * development without failing package load on a Windows checkout.
+    */
+   private static buildSandboxSecurityPolicy(
+      packagePath: string,
+   ): Record<string, unknown> {
+      if (path.sep !== "/") {
+         return {};
+      }
+      return {
+         securityPolicy: "sandboxed",
+         allowedDirectories: [packagePath],
+         workingDirectory: packagePath,
+      };
+   }
+
+   public static buildPackageMalloyConfig(
       packagePath: string,
       getEnvironmentMalloyConfig: () => MalloyConfig,
    ): MalloyConfig {
@@ -3051,6 +3092,7 @@ export class Package {
                duckdb: {
                   is: "duckdb",
                   databasePath: ":memory:",
+                  ...Package.buildSandboxSecurityPolicy(packagePath),
                },
             },
          },
