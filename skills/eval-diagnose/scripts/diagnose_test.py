@@ -421,7 +421,9 @@ class SelectingWhatToDiagnose(unittest.TestCase):
                 for i in range(n)]
 
     def select(self, events, cases, **kw):
-        return diagnose.select_cases(events, cases, ("no_match",), **kw)
+        """(failed, passed, retrieval_only, excluded) -- the four buckets most
+        of these assert on. `excluded_passes` has its own tests below."""
+        return diagnose.select_cases(events, cases, ("no_match",), **kw)[:4]
 
     def test_limit_records_what_it_dropped_as_an_exclusion(self):
         # Truncating `failed` in place moved numerator and denominator
@@ -482,6 +484,47 @@ class SelectingWhatToDiagnose(unittest.TestCase):
             events, cases, include_holdout=True)
         self.assertEqual(passed, ["q0"])
         self.assertEqual(retrieval_only, ["q0"])
+
+    def passing_with_a_miss(self):
+        """Three cases that all PASSED, two of them on an incomplete
+        retrieval."""
+        cases, ev = {}, []
+        for q in ("q1", "q2", "q3"):
+            cases[q] = {"qid": q, "coverage": "covered",
+                        "expectedEntities": {"required": ["measure:m:total"]}}
+            got = [] if q in ("q1", "q2") else ["measure:m:total"]
+            ev += [{"kind": "score", "qid": q, "sample": None,
+                    "phase": "baseline", "verdict": "match", "reason": "ok"},
+                   {"kind": "tool_call", "qid": q, "sample": None,
+                    "phase": "baseline", "tool": "get_context",
+                    "rankedSummary": {"entityIds": got},
+                    "target_shapes": [{"type": "measure", "has_text": True}]}]
+        return cases, ev
+
+    def test_a_pass_kept_out_of_diagnosis_is_not_a_non_passing_case(self):
+        """`--no-retrieval-misses` used to push these into `excluded`, which
+        `not_passing` sums, so a run where every case passed printed
+        "coverage: 0 of 2 non-passing case(s) diagnosed (0%)"."""
+        cases, ev = self.passing_with_a_miss()
+        f, p, r, excluded, excluded_passes = diagnose.select_cases(
+            ev, cases, ("no_match",), no_retrieval_misses=True)
+        self.assertEqual(f, [])
+        self.assertEqual(sorted(p), ["q1", "q2", "q3"])
+        self.assertEqual(excluded, {})
+        not_passing = len(f) + sum(len(v) for v in excluded.values())
+        self.assertEqual(not_passing, 0)
+        # Still reported, just not as a failure.
+        self.assertEqual(
+            excluded_passes["passed with a retrieval miss "
+                            "(--no-retrieval-misses)"], ["q1", "q2"])
+
+    def test_without_the_flag_those_passes_are_diagnosed(self):
+        cases, ev = self.passing_with_a_miss()
+        f, p, r, excluded, excluded_passes = diagnose.select_cases(
+            ev, cases, ("no_match",))
+        self.assertEqual(sorted(r), ["q1", "q2"])
+        self.assertEqual(excluded_passes, {})
+        self.assertEqual(len(f) + sum(len(v) for v in excluded.values()), 0)
 
     def test_contamination_still_outranks_the_split(self):
         cases = self.cases(1, split="holdout")

@@ -60,6 +60,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
                            manifest_skills, skills_roots, spawn_agent)
 import ledger  # noqa: E402
+import cluster_failures  # noqa: E402
 import score_retrieval  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
@@ -549,15 +550,19 @@ def select_cases(events: list[dict[str, Any]],
                  no_retrieval_misses: bool = False,
                  only: str | None = None,
                  limit: int | None = None) -> tuple[
-                     list[str], list[str], list[str], dict[str, list[str]]]:
+                     list[str], list[str], list[str], dict[str, list[str]],
+                     dict[str, list[str]]]:
     """Sort every scored case into diagnose / passed / excluded.
 
-    Pure, so the two accounting rules it enforces are pinned by tests rather
-    than only by reading a run: a case lands in exactly ONE bucket, and a case
-    the run did not pass stays counted as non-passing even when `--only` or
-    `--limit` keeps it out of this diagnosis.
+    Pure, so the three accounting rules it enforces are pinned by tests rather
+    than only by reading a run: a case lands in exactly ONE bucket; a case the
+    run did not pass stays counted as non-passing even when `--only` or
+    `--limit` keeps it out of this diagnosis; and a case that PASSED never
+    reaches the non-passing denominator, however it was excluded.
 
-    Returns (failed, passed, retrieval_only, excluded).
+    Returns (failed, passed, retrieval_only, excluded, excluded_passes).
+    `excluded` holds only non-passing cases, so `not_passing` can sum it;
+    `excluded_passes` holds passes kept out of diagnosis, reported separately.
     """
     # Account for EVERY scored case, not just the ones that get diagnosed.
     # A run that diagnosed 8 of 18 failures reported six clusters as though
@@ -566,6 +571,9 @@ def select_cases(events: list[dict[str, Any]],
     # cases and a reader can see what the clusters are silent about.
     failed, passed, retrieval_only = [], [], []
     excluded: dict[str, list[str]] = {}
+    # Passes kept out of diagnosis. Separate from `excluded` because
+    # `not_passing` sums that one and a pass is not a non-passing case.
+    excluded_passes: dict[str, list[str]] = {}
 
     def exclude(why: str, *qids: str) -> None:
         excluded.setdefault(why, []).extend(qids)
@@ -619,8 +627,14 @@ def select_cases(events: list[dict[str, Any]],
                       if q not in failed]
     if no_retrieval_misses:
         if retrieval_only:
-            exclude("passed with a retrieval miss (--no-retrieval-misses)",
-                    *retrieval_only)
+            # NOT `exclude()`: these cases PASSED. `excluded` is the account of
+            # what the clusters are silent about among cases the run did not
+            # pass, and `not_passing` sums it -- so putting a pass in there
+            # printed "coverage: 0 of 2 non-passing case(s) diagnosed (0%)" on
+            # a run where every case passed. Reported on its own line instead,
+            # which is also what `retrieval_only` gets when the flag is off.
+            excluded_passes["passed with a retrieval miss "
+                            "(--no-retrieval-misses)"] = list(retrieval_only)
         retrieval_only = []
 
     # `--only` and `--limit` narrow what gets DIAGNOSED; they do not change
@@ -642,7 +656,7 @@ def select_cases(events: list[dict[str, Any]],
             exclude(f"beyond --limit {limit}", *failed[limit:])
         failed = failed[:limit]
         retrieval_only = retrieval_only[:max(0, limit - len(failed))]
-    return failed, passed, retrieval_only, excluded
+    return failed, passed, retrieval_only, excluded, excluded_passes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -786,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  --include-holdout: holdout cases WILL be diagnosed. This run "
               "must not go on to an improve step.")
 
-    failed, passed, retrieval_only, excluded = select_cases(
+    failed, passed, retrieval_only, excluded, excluded_passes = select_cases(
         events, cases, want_verdicts,
         include_holdout=a.include_holdout,
         no_retrieval_misses=a.no_retrieval_misses,
@@ -918,8 +932,8 @@ def main(argv: list[str] | None = None) -> int:
     # maps kept the old ones -- so the package's `where_to_fix` column carried
     # "query construction" from here and "delivered, wrong" from the scorer,
     # under one name, with the column's own doc matching neither.
-    where = score_retrieval.WHERE_BY_OWNER
-    lever = score_retrieval.LEVER_BY_OWNER
+    where = cluster_failures.WHERE_BY_OWNER
+    lever = cluster_failures.LEVER_BY_OWNER
     with (a.run / "clusters.jsonl").open("w") as fh:
         for n, c in enumerate(clusters.get("clusters", []), 1):
             qids = [q for q in c.get("qids", []) if q in by_qid]
@@ -978,6 +992,12 @@ def main(argv: list[str] | None = None) -> int:
         if undiagnosed:
             print(f"  {undiagnosed:>3} selected but not diagnosed (the "
                   f"diagnoser errored or its reply did not parse)")
+    # Below the coverage block and never inside its denominator: these PASSED.
+    # Reported all the same, because "2 passing cases carried a retrieval miss
+    # and you told me not to look at them" is a thing a reader should see.
+    for why, qids in sorted(excluded_passes.items()):
+        print(f"\n{len(qids)} passing case(s) kept out of diagnosis -- {why}: "
+              f"{', '.join(sorted(qids))}")
     if invalid:
         print(f"{len(invalid)} broke the skill's vocabulary "
               f"(see `_invalid` in diagnoses.jsonl)")
