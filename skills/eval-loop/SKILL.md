@@ -41,6 +41,7 @@ all of them for every run is how a skill stops being read.
 | auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
 | deciding whether an edit stays | `reference/acceptance-check.md` |
 | about to quote a number, or set the noise band | `reference/measurement.md` |
+| the run finished and someone has to read it | **Report the run**, below |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
 
 Read the file, do not work from the summary here. The acceptance-check rules and
@@ -56,6 +57,9 @@ produces a confident wrong answer rather than an error.
 | **c. diagnose** | Why it failed, who owns it | `issue` / `issue_status`. Stop. Do not edit. |
 | **d. improve** | One smallest model edit, then the acceptance check | improve writes `candidate`; you write `acceptance_check`. Revert on reject. |
 | **e. checkpoint** | Git commit after an accepted acceptance check | `checkpoint` event, then the commit |
+
+Every run then **reports** (below). A run whose result exists only as JSONL and
+a scrolled-away console summary has not been delivered.
 
 **scrape** and **run** share a letter but are not the same job. Scrape writes
 cases. Run writes attempts. Do not invent questions and score
@@ -414,6 +418,50 @@ the run measure something other than what it names:
    cases, and only after the score event exists.
 6. `skill:eval-improve` only when this run includes improve, and only for
    `owner: model`. Then run the acceptance check. On accept, checkpoint.
+
+## Report the run, or nobody can read it
+
+A run directory is JSONL. It is a record, not a result, and the console summary
+scrolls away. **Every run ends by producing something a person can open**, and
+saying the four things below out loud. This is not optional polish: the
+standing complaint about this loop is that "a bunch of stuff happens and it is
+hard to know the actual results", and a ledger nobody renders is why.
+
+```bash
+python3 skills/eval-loop/scripts/build_run_package.py \
+    --run <run-dir> --set <set-dir> --out /tmp/eval-<label>
+curl -sS -X POST http://<publisher>/api/v0/environments/<env>/packages \
+    -H 'content-type: application/json' \
+    -d '{"name":"eval-<label>","location":"/tmp/eval-<label>"}'
+```
+
+That builds a servable Malloy package over the run's own CSVs and registers it
+with no restart. It holds `eval_run.malloynb` -- the analytical half, rendered
+natively: pass rate, effort, cost, most-missed entities, the backlog -- and an
+in-package HTML app at the package URL for the case matrix and its per-case
+drawer. Pass `--run` more than once to put two arms side by side. Both read the
+same model, so the two halves cannot disagree.
+
+Then state, in prose, in this order:
+
+1. **The headline and whether it is trustworthy.** The pass rate over DECIDED
+   verdicts, and every exclusion beside it: truncated, contaminated, unscorable,
+   unreadable. A run that printed `INCOMPLETE` has no rate to quote yet; say
+   that instead of quoting the count as though it were one.
+2. **What the failures were**, case by case, in one line each. Not a cluster id
+   -- what the answer got wrong.
+3. **Who owns each one**, from diagnose if it ran, and say if it did not. The
+   default is nobody: an undiagnosed failure has no owner yet.
+4. **What it cost, and what the next command is.** Usually re-run the excluded
+   cases, diagnose, or stop.
+
+**Say when a step did not run, and why.** `improve` not running because every
+cluster came back `owner: agent-skill` is a RESULT -- the model is not the
+problem -- and it reads identically to having forgotten, unless it is written
+down.
+
+Keep the write-up in the repository beside the set, not in a chat log and not
+in `~/Downloads`.
 
 ## Checkpoint
 
