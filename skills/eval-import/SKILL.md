@@ -125,9 +125,13 @@ are the ones already stated rather than new ones:
   Measured: an agent given the model and one question found alternatives a
   hand-written key had missed on all three cases tried -- carrier name against
   nickname against code, `destination_count` against its underlying
-  `destination.airport_count` -- and correctly demoted a named measure the key
-  had over-required. At roughly $0.13 a question. It is better at this than a
-  person working from notes.
+  `destination.airport_count`. At roughly $0.13 a question. It is better than a
+  person working from notes at finding what the model actually offers.
+
+  It is worse at deciding what to REQUIRE, and the two rules below are why. On
+  the same three cases it proposed demoting two named measures on the grounds
+  that a raw expression answered identically. One of those equivalences was
+  false; the other was true today and is not a reason to demote anything.
 
 - **But VERIFY every "this is not strictly required" claim by running both
   sides.** This is the rule that makes the step above safe, and it is not
@@ -147,10 +151,33 @@ are the ones already stated rather than new ones:
   testing the thing it exists to test.
 
   So: an equivalence is a claim about DATA, and reading a definition is not
-  evidence. Run both expressions, compare the rows, and record the receipt.
-  Where they agree, a `requiredAnyOf` group is right. Where they differ, the
-  named entity is required precisely BECAUSE its definition is not obvious. An
-  unverified equivalence is how a key gets quietly weakened.
+  evidence. Run both expressions and compare the rows.
+
+  **But agreeing today is not a reason to demote the model's entity, and this
+  is the part the probe got backwards.** `airport_count is count()` returns the
+  same 984 as a bare `count()` right now, and stops doing so the moment anyone
+  adds a null filter or a deduplication to it. The key would not notice: it
+  would go on passing while testing nothing. That applies to every measure that
+  is currently a thin wrapper, which is most of them until the day one is not.
+
+  **`requiredAnyOf` is for two routes the MODEL defines** -- a carrier's `name`
+  and its `nickname`, `destination_count` and the `destination.airport_count`
+  it wraps. Both are entities, both are retrievable, and an answer using either
+  has gone through the semantic layer. That is a real choice and the group
+  records it.
+
+  It is NOT for "the model's entity, or a raw expression that happens to
+  agree". Those are not two routes: one is the route, the other is a bypass
+  that currently works. Keeping the named entity in `required` is what makes
+  the eval measure what the semantic layer is for, and finding it IS the
+  retrieval behaviour under test -- an agent that searches for the pre-defined
+  entity inherits its definition and its rules, while one that rebuilds from
+  raw columns inherits whatever it thought of.
+
+  What the equivalence check is FOR is reading a run afterwards. When an answer
+  came out right without the entity, comparing the two says whether it got
+  lucky or got it wrong, and a set whose passes are merely lucky is a set of
+  near-misses.
 
 - **Then prove each one is retrievable, and record what finds it.**
   `check_findable.py --set <set> --mcp-url <mcp> --environment <env>
