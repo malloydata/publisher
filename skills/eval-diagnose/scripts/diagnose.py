@@ -341,12 +341,62 @@ def validate(obj: dict[str, Any], codes: set[str]) -> list[str]:
     return bad
 
 
+def behaviour_stats(qid: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """How an attempt CONDUCTED itself, for one case, in comparable numbers.
+
+    The measures a behavioural root cause gets stated in: how much retrieval it
+    did, how much of that retrieval named what it wanted, how many queries it
+    ran, how many skills it opened, how long it took. Cheap -- it reads events
+    already on disk and calls nothing.
+    """
+    attempt = next((e for e in events
+                    if e.get("kind") == "attempt" and e.get("qid") == qid), {})
+    calls = [e for e in events if e.get("kind") == "tool_call"
+             and e.get("qid") == qid and e.get("tool") == "get_context"]
+    targets = [t for c in calls for t in (c.get("targets") or [])]
+    # A target with no `search_text` does not search: it enumerates that type
+    # for the scope, which returns the source's fields rather than ranking
+    # them. "Substitutes broad enumeration for targeted retrieval" is a real
+    # and frequent observation about failures, and this is the number that
+    # says whether it separates them from passes.
+    bare = sum(1 for t in targets
+               if not (t.get("search_text") if isinstance(t, dict) else t))
+    return {
+        "qid": qid,
+        "verdict": next((e.get("verdict") for e in events
+                         if e.get("kind") == "score" and e.get("qid") == qid),
+                        None),
+        "nGetContext": attempt.get("n_get_context"),
+        "nExecute": attempt.get("n_execute"),
+        "nExecuteErrors": attempt.get("n_execute_errors"),
+        "searchTargets": len(targets),
+        "targetsWithoutSearchText": bare,
+        "skillsInvoked": attempt.get("skills_invoked") or [],
+        "numTurns": attempt.get("num_turns"),
+    }
+
+
 CLUSTER_PROMPT = """Apply Step 5 of the eval-diagnose skill across a whole run.
 
 These are the per-case diagnoses from one run. Cluster them.
 
 DIAGNOSED ISSUES
 {issues}
+
+CONTROLS: the same measurements on cases that PASSED this run
+{controls}
+
+These are the falsifier for any cluster whose root cause is a BEHAVIOUR -- how
+much the agent retrieved, how it phrased its targets, how many queries it ran,
+which skills it opened. Diagnosis only ever looks at failures, so a behaviour
+common to both looks causal here and is not.
+
+Before you claim a behaviour explains a cluster, compare it against these rows.
+If it occurs at a similar rate in the passes, say so and mark that cluster
+`contributing` rather than `primary`; a cluster whose behaviour does not
+separate the two groups must not be routed to a skill or model edit as the
+root cause. If the controls are empty, say that the cluster is unfalsified
+rather than treating it as confirmed.
 
 Emit the object defined under `## Per run, clustering` in
 `reference/output-contract.md` of the eval-diagnose skill as the LAST thing in
@@ -367,12 +417,14 @@ the improve step's job, not yours.
 
 
 def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
-            out: pathlib.Path) -> dict[str, Any]:
+            out: pathlib.Path,
+            controls: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     keep = ("qid", "component", "primary_code", "contributing_codes", "owner",
             "sufficiency", "severity", "diagnosis", "sharedWith")
     compact = [{k: v for k, v in i.items() if k in keep} for i in issues]
     r = spawn_agent(
-        CLUSTER_PROMPT.format(issues=json.dumps(compact, indent=2)),
+        CLUSTER_PROMPT.format(issues=json.dumps(compact, indent=2),
+                              controls=json.dumps(controls or [], indent=2)),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.cluster_model,
         # 14, not 8. The output contract moved into
@@ -420,6 +472,13 @@ def main(argv: list[str] | None = None) -> int:
                          "will not close it -- take the stable list from "
                          "flip_table.py and pass --verdicts near_match. Never "
                          "diagnose a one-armed near_match; that is noise.")
+    ap.add_argument("--include-holdout", action="store_true",
+                    help="diagnose holdout cases too. Holdout is normally "
+                         "withheld so the acceptance check keeps something "
+                         "the improve step never saw -- but a MEASURE-ONLY "
+                         "run never reaches improve, so it is holding them "
+                         "back from nothing. Refused when the run already "
+                         "carries a candidate edit.")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--no-cluster", action="store_true")
     ap.add_argument("--target", choices=("local", "platform"), default="local",
@@ -501,16 +560,59 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"--verdicts: {', '.join(sorted(unknown))} is not a "
                          f"diagnosable verdict (no_match, near_match, "
                          f"needs_human)")
-    failed = []
+    # Holdout exists so the acceptance check has something the improve step
+    # never saw. A run that will never reach improve is holding it back from
+    # nothing -- but the harness cannot take that on trust, so it checks: a run
+    # already carrying a `candidate` has an edit in flight, and diagnosing its
+    # holdout would burn the only split that can still falsify that edit.
+    if a.include_holdout:
+        spent = [e for e in events if e.get("kind") == "candidate"]
+        if spent:
+            raise SystemExit(
+                f"--include-holdout: this run already carries "
+                f"{len(spent)} candidate edit(s), so its holdout is the only "
+                f"thing left that can falsify them. Diagnose holdout only on a "
+                f"run that will not reach improve.")
+        print("  --include-holdout: holdout cases WILL be diagnosed. This run "
+              "must not go on to an improve step.")
+
+    # Account for EVERY scored case, not just the ones that get diagnosed.
+    # A run that diagnosed 8 of 18 failures reported six clusters as though
+    # they covered the failures; they covered 44% of them, and nothing said so.
+    # Each case lands in exactly one bucket, so the buckets sum to the scored
+    # cases and a reader can see what the clusters are silent about.
+    failed, passed = [], []
+    excluded: dict[str, list[str]] = {}
+
+    def exclude(why: str, qid: str) -> None:
+        excluded.setdefault(why, []).append(qid)
+
     for e in events:
-        if e.get("kind") != "score" or e.get("verdict") not in want_verdicts:
+        if e.get("kind") != "score":
             continue
-        case = cases.get(e["qid"])
-        if case is None or case.get("split") == "holdout":
-            continue
-        if ledger.is_contaminated(e):
-            continue
-        failed.append(e["qid"])
+        qid, verdict = e["qid"], e.get("verdict")
+        case = cases.get(qid)
+        if case is None:
+            exclude("not in the case file", qid)
+        elif ledger.is_contaminated(e):
+            # Ahead of the holdout and verdict checks: a contaminated attempt
+            # is not evidence either way, so it is excluded for that reason
+            # whatever split it is on.
+            exclude("contaminated", qid)
+        elif verdict is None:
+            # No verdict to explain: an unestablished key, a truncated
+            # attempt, or a judge reply that could not be read. The `reason`
+            # says which, and none of them is a model failure.
+            exclude(f"unscored ({e.get('reason') or 'no reason recorded'})",
+                    qid)
+        elif verdict == "match":
+            passed.append(qid)
+        elif case.get("split") == "holdout" and not a.include_holdout:
+            exclude("holdout, withheld from diagnosis", qid)
+        elif verdict not in want_verdicts:
+            exclude(f"{verdict}, not in --verdicts", qid)
+        else:
+            failed.append(qid)
     failed = list(dict.fromkeys(failed))
 
     if a.only:
@@ -552,8 +654,18 @@ def main(argv: list[str] | None = None) -> int:
     good = [i for i in issues if not i.get("error")]
     clusters: dict[str, Any] = {"clusters": []}
     if good and not a.no_cluster:
-        print(f"\ntier 2: clustering {len(good)} diagnoses with {a.cluster_model}")
-        clusters = cluster(good, a, a.run)
+        # The control group. Diagnosis only ever reads failures, so any
+        # behaviour common to the whole run looks causal from inside it. On one
+        # measured run the largest cluster was built on "substitutes broad
+        # enumeration for targeted retrieval", and the enumeration rate was 25%
+        # of targets in the failures against 26% in the passes -- identical.
+        # What actually separated them was volume, which question difficulty
+        # explains at least as well as call style. So the passes go to the
+        # clustering agent as a falsifier, measured the same way.
+        controls = [behaviour_stats(q, events) for q in passed]
+        print(f"\ntier 2: clustering {len(good)} diagnoses with "
+              f"{a.cluster_model} ({len(controls)} passing case(s) as controls)")
+        clusters = cluster(good, a, a.run, controls=controls)
         for c in clusters.get("clusters", []):
             print(f"  {len(c.get('qids', [])):>2} cases  {c.get('cluster_id')} "
                   f"({c.get('owner')})  {(c.get('rootCause') or '')[:66]}")
@@ -642,6 +754,23 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n{len(good)}/{len(failed)} diagnosed, "
           f"{len(clusters.get('clusters', []))} clusters, "
           f"{len(new) // 2} issues in {ev_path}")
+    # What the clusters are silent about. A run that diagnosed 8 of 18
+    # non-passing cases reported its six clusters as though they covered the
+    # failures, and the exclusions -- five holdout, two near_match, one
+    # unparseable diagnoser reply, one lost verdict -- were each individually
+    # correct and never added up anywhere. The denominator is every case the
+    # run did NOT pass, because that is the number a reader has in mind.
+    not_passing = len(failed) + sum(len(v) for v in excluded.values())
+    if not_passing:
+        print(f"\ncoverage: {len(good)} of {not_passing} non-passing case(s) "
+              f"diagnosed ({100 * len(good) / not_passing:.0f}%)")
+        for why, qids in sorted(excluded.items(),
+                                key=lambda kv: (-len(kv[1]), kv[0])):
+            print(f"  {len(qids):>3} {why}: {', '.join(sorted(qids))}")
+        undiagnosed = len(failed) - len(good)
+        if undiagnosed:
+            print(f"  {undiagnosed:>3} selected but not diagnosed (the "
+                  f"diagnoser errored or its reply did not parse)")
     if invalid:
         print(f"{len(invalid)} broke the skill's vocabulary "
               f"(see `_invalid` in diagnoses.jsonl)")

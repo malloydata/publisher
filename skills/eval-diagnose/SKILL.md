@@ -23,6 +23,19 @@ repair closes that. Take the stable list `flip_table.py` prints and pass
 `--only <qids> --verdicts near_match`. Never diagnose a one-armed `near_match`;
 that is noise, and it sends an agent to fix a model that is already right.
 
+Holdout is withheld so the acceptance check keeps something the improve step
+never saw. A **measure-only** run never reaches improve, so it is holding those
+cases back from nothing: pass `--include-holdout` there. The script refuses it
+on a run that already carries a `candidate`, because that run's holdout is the
+only thing left that can falsify the edit.
+
+**Say what the clusters do not cover.** `diagnose.py` prints a coverage account
+of every non-passing case and which bucket it fell in -- holdout, contaminated,
+a verdict outside `--verdicts`, unscored, or selected and not diagnosed. Quote
+it whenever you report clusters. One run's six clusters were read as covering
+its failures; they covered 8 of 18, and each individual exclusion had been
+correct and added up nowhere.
+
 ## Components, in order
 
 Walk **in this order** and stop at the first with positive evidence. A later
@@ -314,6 +327,22 @@ but keep them separate, because only `owner: model` may proceed to an edit.
 Say what you considered merging and chose not to. A cluster is a claim that one
 change fixes N cases, and the near-misses are what a reviewer needs to falsify
 it.
+
+**Falsify a behavioural cluster against the passes.** This skill reads failures
+only, so any behaviour common to the whole run looks causal from inside it.
+`diagnose.py` hands the clustering step a `CONTROLS` block: the same
+measurements -- retrieval calls, targets carrying no `search_text`, queries,
+skills opened, turns -- taken on the cases that PASSED. Before claiming a
+behaviour explains a cluster, compare it there. If it occurs at a similar rate
+in the passes it does not separate the groups: mark the cluster `contributing`
+rather than `primary` and do not route it to an edit as the root cause.
+Measured, on the run this comes from: the largest cluster said the agent
+"substitutes broad enumeration for targeted retrieval", and bare targets were
+25% of all targets in the failures against 26% in the passes. What actually
+separated them was volume -- failures made about 50% more retrieval calls --
+and question difficulty explains that at least as well as call style does. With
+no controls at all, a behavioural cluster is unfalsified, which is a different
+claim from confirmed.
 
 Still no patch. Naming the shared root cause precisely enough that someone else
 can design the edit is the whole job here; the edit itself is
