@@ -247,8 +247,9 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 > tenant-configured bastion, so it is authorized by whoever configures the connection. It
 > is **not** behind an env-flag gate, and is deliberately kept separate from the
 > `publisher` type's `PUBLISHER_ALLOW_PROXY_CONNECTIONS` (that flag is about
-> publisher-to-publisher HTTP proxying, a different decision). Optional **host-key
-> pinning** (below) adds a fail-closed trust control on the tunnel.
+> publisher-to-publisher HTTP proxying, a different decision). **Host-key
+> pinning** (below) is required on an SSH tunnel: without it the tunnel is refused
+> unless the deployment opts out.
 
 ```json
 {
@@ -281,19 +282,21 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 - `proxy.ssh.privateKey` (+ optional `privateKeyPass`) — the customer generates the
   keypair, authorizes their own public key on the bastion, and provides the private key
   here. Public-key auth only.
-- `proxy.ssh.hostKey` — **optional** pinned bastion host public key(s), verified on every
+- `proxy.ssh.hostKey` — **required** pinned bastion host public key(s), verified on every
   connect (fail-closed on mismatch). Provide one or more OpenSSH `known_hosts` lines (or
   bare base64 blobs), one per line; a load-balanced/HA bastion presents a different key per
   backend, so list every backend's key and any listed key is accepted. Both plain and
   hashed (`|1|…`, from `ssh-keyscan -H`) lines work — only the key blob is compared, never
-  the hostname. **When omitted, the tunnel connects without host-key verification** (the
-  self-service default, matching mainstream BI tools); the SSH transport is still
-  encrypted, but an unpinned publisher→bastion hop is exposed to MITM — mitigated by the
-  customer allowlisting our egress on the bastion's inbound SSH.
+  the hostname. **When omitted, the tunnel is refused**: an unverified host key means a
+  MITM on the publisher→bastion hop cannot be detected, so the connection fails closed
+  rather than connecting to whatever key the far end presents. A deployment that accepts
+  that risk — typically because the bastion's inbound SSH is allowlisted to our egress —
+  opts in with `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`, which restores the unpinned
+  connect and logs a warning each time. The SSH transport is encrypted either way.
 
 A proxy makes the server open an outbound SSH tunnel to a tenant-configured host, so
-connection configuration is the authorization boundary; host-key pinning is an optional,
-additional trust control on the tunnel itself.
+connection configuration is the authorization boundary; host-key pinning is the trust
+control on the tunnel itself, and is required unless the deployment opts out.
 
 ### TLS to the database through the tunnel
 
@@ -367,6 +370,55 @@ connection can point it at a host they control and have the stored credential se
 does not authenticate either operation, so this is not a new boundary on a bare Publisher, but a
 deployment that gates reads and writes separately should gate connection writes as tightly as it
 gates credential reads.
+
+## Telling whether a Publisher still holds the config you sent (`configEtag`)
+
+Because credentials are never returned, a system that distributes the same connection to several
+Publishers cannot confirm from a read that one of them is still holding the credential it was last
+sent. A read distinguishes a Publisher holding *some* password from one holding *none*; it cannot
+distinguish one holding *last month's* password from one holding the current one.
+
+`configEtag` closes that. It is an opaque string the writer owns: Publisher stores it with the
+connection, returns it on reads, and never derives, validates or interprets it. Compute a tag over
+the configuration you are about to send, send the two together, and compare the tag each Publisher
+reports against the one you would send now — the same equality-only comparison an HTTP `ETag`
+supports. A Publisher reporting a different tag, or none, has not been given that configuration.
+
+```jsonc
+{
+  "name": "warehouse",
+  "type": "postgres",
+  "configEtag": "sha256:9f2b…",   // yours; Publisher echoes it back unchanged
+  "postgresConnection": { "host": "db.internal", "password": "…" }
+}
+```
+
+A write that does not carry a `configEtag` **clears** it. The tag describes the configuration the
+writer that set it sent, so an update replacing that configuration without supplying a tag has
+invalidated it. That also means an edit made outside your distribution system — someone changing the
+connection through this API directly — drops the tag and shows up as a difference on your next
+comparison, rather than hiding behind a tag that no longer describes what is stored.
+
+Nothing in Publisher reads the value, so its format is entirely yours — a hash, a version string,
+anything you can compare for equality.
+
+**Choose it with the read path in mind.** The tag comes back on every read, so a plain digest over a
+configuration that includes credentials does not reveal them but does *commit* to them: a reader who
+can see the connection's other fields holds a preimage whose only unknown is the secret, and can test
+guesses offline. That is fine when only your own control plane can read the connection, and not fine
+when a tenant can. Use a keyed digest (HMAC under a secret only the writer holds) if it is readable
+more widely, or keep the tag off the surface those readers reach.
+
+Do not reach for `fingerprint` instead. That field identifies the *data* a connection reaches and
+deliberately excludes credentials so that rotating one does not re-address the artifacts built
+through it; two configurations differing only by password share a fingerprint, which is exactly the
+case this field exists to catch. The two answer different questions and neither substitutes for the
+other.
+
+What a tag cannot tell you is whether a Publisher is still *behaving* the way the configuration it
+echoes describes — an upgrade that changes how a stored config is parsed or defaulted moves the
+effective configuration without moving the tag. It reports what was delivered, not what is in
+effect.
 
 ## Example: mixed connections
 

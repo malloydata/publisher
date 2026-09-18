@@ -16,8 +16,8 @@ export type ThemeMode = "light" | "dark";
  *
  * The seven `palette.*` colour keys are stored per-mode on the raw Theme
  * (one of light/dark per field) and collapse to the active mode here.
- * The five "derived" fields (border, pinnedBorder, valueColor,
- * foreground, axisFaint) are computed once from the resolved mode so
+ * The six "derived" fields (border, cardBorder, pinnedBorder,
+ * valueColor, foreground, axisFaint) are computed once from the resolved mode so
  * the same hex literal isn't repeated across three builders.
  */
 export interface ResolvedTheme {
@@ -43,6 +43,16 @@ export interface ResolvedTheme {
    mapColor: string;
 
    border: string;
+   /**
+    * The edge of a dashboard CARD, kept off `border` on purpose. `border` is
+    * the gridline inside a table, where a hairline is right because there are
+    * dozens of them and they only have to separate rows. A card's edge has one
+    * job — say where the card stops — and at the gridline's weight, on a page
+    * whose ground and tile are both white, it did not do it: the cards read as
+    * floating content rather than as cards. A step down the same slate ramp,
+    * so the two still read as one system.
+    */
+   cardBorder: string;
    pinnedBorder: string;
    valueColor: string;
    foreground: string;

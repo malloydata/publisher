@@ -61,9 +61,17 @@ source — is refused for `storage=` and for pre-aggregation, unconditionally. A
 point's own row filter, and refused otherwise.
 
 - **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
-  reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
+  reference in ANY position (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
   a materialized-once table is served frozen to every caller, and the served shape carries no gate
   to re-evaluate. This refusal is unaffected by anything below.
+- **A colocated `#@ persist` and givens.** Distinct from the gate question, and decided by WHERE the
+  given sits. A given the persisted query is built with — inside the `-> { … }`, or in a field the
+  query uses — is substituted at build time with its declaration default, so the artifact holds one
+  caller's slice and every caller is served it; that shape is **refused**. A given applied when the
+  source is READ — a `where:` in its extend block, or a dimension, measure or join declared there —
+  never reaches the build and binds per caller over the materialized rows; that shape is admitted,
+  and is the documented form (see [row-level-access.md](row-level-access.md)).
+
 - **A colocated `#@ persist`** is not served frozen with respect to the gate at all: persistence
   changes only where the rows are read FROM, never whether the entry point's own `#(authorize)` is
   re-evaluated — the substitution swaps only the source's relation SQL, and the gate applies as the
@@ -97,6 +105,12 @@ package with a colocated `#@ persist` on an `#(authorize)`-gated source already 
 row-level and attributed to the entry point, and the next auto-run or scheduled build materializes the
 source and binds it for serving **with no author action** — a source that served live yesterday serves
 from a possibly-stale artifact afterwards, subject to the staleness below.
+
+The given refusal above runs the other way, and such packages may also already exist. On upgrade a
+colocated `#@ persist` whose persisted query references a given stops materializing: the package
+still loads and the source still serves — live, correctly, per caller — but its next materialization
+run 422s, and an artifact built before the upgrade is unbound on the next reload rather than served.
+The remedy is to move the given out of the persisted query, which the refusal message names.
 
 What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the
 querying principal's attributes (givens, roles) are still evaluated live, on every query, against the

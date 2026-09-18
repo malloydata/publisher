@@ -34,6 +34,51 @@ const SKILL_REF = /skill:([a-z0-9][a-z0-9-]*)(\/[^\s`)\]]*)?/g;
 const ABSOLUTE_INSTALL_PATH = /\.(?:cursor|credible|claude)\/skills\//;
 /** A same-skill resource reference, which must resolve inside that skill. */
 const RELATIVE_REF = /(?<![\w/.`-])reference\/[\w./-]+\.md/g;
+/** The routing skill an agent reads to find a sibling. */
+const INDEX_SKILL = "malloy";
+
+/**
+ * A description is the only text a host reads before deciding whether to load a
+ * skill, so it has two budgets, set by the two things that consume it.
+ *
+ * `DESCRIPTION_CEILING` is the loader budget: Claude Code accepts roughly 1 KiB
+ * of frontmatter description. Nothing here enforced it, and nothing here is
+ * near it (the longest is ~633), so this is a regrowth guard rather than a
+ * constraint anyone is currently fighting.
+ *
+ * `PACKAGED_DESCRIPTION_BUDGET` is tighter and only applies to the shared
+ * skills that a downstream plugin build packages. That build rewrites the
+ * `description:` line in place at 200 characters and appends an ellipsis --
+ * silently, at build time, on the surface where the description matters most.
+ * `malloy-analysis` shipped for several releases as "...and answer delivery.
+ * Use..." with the clause saying WHEN to load it cut off. Above 200 the tail is
+ * written for an audience that never reads it, so it is asserted here, where an
+ * author sees it, rather than applied downstream where nobody does.
+ */
+const DESCRIPTION_CEILING = 1024;
+const PACKAGED_DESCRIPTION_BUDGET = 200;
+
+/**
+ * The shared skills a downstream plugin packages today (ms2data/agent-skills
+ * `manifests/analysis-plugin.json`, minus its `credible-*` entry, which never
+ * lands here).
+ *
+ * Listed rather than derived because this repo cannot see that manifest. The
+ * companion test in agent-skills is scoped to the manifest itself, so a skill
+ * ADDED to the plugin is caught there, at the moment it is added; this list
+ * holds the ones already in it from growing back past the budget on the side
+ * where they are authored. The two are complementary, not duplicates.
+ */
+const PACKAGED_SKILLS = [
+   "malloy-analysis",
+   "malloy-analysis-pitfalls",
+   "malloy-charts",
+   "malloy-gotchas-queries",
+   "malloy-gotchas-rendering",
+   "malloy-patterns",
+   "malloy-phrase-detection",
+   "malloy-queries",
+] as const;
 
 function skillDir(name: string): string {
    return path.join(sourceSkillsDir, name);
@@ -53,18 +98,57 @@ function markdownFiles(name: string): string[] {
    return out.sort();
 }
 
+/**
+ * The frontmatter block, or undefined when the file has none.
+ */
+function frontmatterBlock(name: string): string | undefined {
+   return fs
+      .readFileSync(path.join(skillDir(name), "SKILL.md"), "utf8")
+      .replace(/\r\n/g, "\n")
+      .match(/^---\n([\s\S]*?)\n---/)?.[1];
+}
+
+/**
+ * The frontmatter as a host reads it: parsed by a real YAML parser.
+ *
+ * Deliberately not a line regex. A hand-rolled `^([a-z_]+):\s*(.+)$` returns a
+ * value for a scalar YAML refuses -- an unquoted `: ` mid-description ends the
+ * plain scalar and makes the whole block `mapping values are not allowed here`
+ * -- so every assertion built on it passes on a skill no host can load. Five
+ * skills shipped that way before this parsed. `Bun.YAML` is the oracle here
+ * rather than a reimplementation of one.
+ *
+ * Throws on an unparseable block, which is the point: "parses as YAML" below
+ * names the failure, and the other frontmatter tests go red alongside it.
+ */
 function frontmatter(name: string): Record<string, string> {
+   const block = frontmatterBlock(name);
+   if (block === undefined) return {};
+   const parsed = Bun.YAML.parse(block);
+   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`${name}: frontmatter is not a mapping`);
+   }
+   const fields: Record<string, string> = {};
+   for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string") fields[key] = value.trim();
+   }
+   return fields;
+}
+
+/**
+ * The `description:` line's value as the packaging build sees it.
+ *
+ * Deliberately not `frontmatter()`: that strips outer quotes, and the build
+ * that truncates does not -- it rewrites the raw rest of the line. A quoted
+ * description two characters over would read as compliant here and still ship
+ * cut. The same reason agent-skills reads the raw line rather than the
+ * YAML-parsed value, where a `#` in a description ends the scalar early.
+ */
+function rawDescriptionLength(name: string): number {
    const text = fs
       .readFileSync(path.join(skillDir(name), "SKILL.md"), "utf8")
       .replace(/\r\n/g, "\n");
-   const block = text.match(/^---\n([\s\S]*?)\n---/)?.[1];
-   if (block === undefined) return {};
-   const fields: Record<string, string> = {};
-   for (const line of block.split("\n")) {
-      const match = line.match(/^([a-z_]+):\s*(.+)$/);
-      if (match) fields[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
-   }
-   return fields;
+   return text.match(/^description:[ \t]*(.+)$/m)?.[1].length ?? 0;
 }
 
 describe("publisher-local manifest", () => {
@@ -161,11 +245,41 @@ describe("publisher-local manifest", () => {
 });
 
 describe("shipped skills", () => {
+   it.each(shipped)("%s: frontmatter parses as YAML", (name) => {
+      // The property that decides whether the skill loads at all. A host parses
+      // this block; if it raises, the skill is rejected rather than loaded, and
+      // nothing downstream reports why.
+      const block = frontmatterBlock(name);
+      expect(block).toBeDefined();
+      expect(() => Bun.YAML.parse(block as string)).not.toThrow();
+   });
+
    it.each(shipped)("%s: frontmatter names its own directory", (name) => {
       const fields = frontmatter(name);
       expect(fields.name).toBe(name);
       expect((fields.description ?? "").trim().length).toBeGreaterThan(0);
    });
+
+   it.each(shipped)("%s: description fits the loader budget", (name) => {
+      const description = frontmatter(name).description ?? "";
+      expect({ name, length: description.length }).toEqual({
+         name,
+         length: Math.min(description.length, DESCRIPTION_CEILING),
+      });
+   });
+
+   // Spread: PACKAGED_SKILLS is `as const`, and it.each takes a mutable array.
+   it.each([...PACKAGED_SKILLS])(
+      "%s: description survives the plugin build unchanged",
+      (name) => {
+         expect(shipped).toContain(name);
+         const length = rawDescriptionLength(name);
+         expect({ name, length }).toEqual({
+            name,
+            length: Math.min(length, PACKAGED_DESCRIPTION_BUDGET),
+         });
+      },
+   );
 
    it.each(shipped)("%s: declares no version of its own", (name) => {
       // The pack stamps `version:` at pack time and refuses a second one, so a
@@ -213,6 +327,34 @@ describe("cross-skill references", () => {
          }
       }
       expect([...new Set(problems)]).toEqual([]);
+   });
+
+   it("are complete: the index accounts for every skill that ships", () => {
+      // The closure test above asks that the index point at nothing missing.
+      // This asks the other direction, which nothing else covers: that nothing
+      // shipped is missing FROM the index. The index is how an agent that
+      // already has one skill open finds a sibling, so a skill it never names
+      // is installed and effectively undiscoverable -- and silently, because
+      // the skill loads fine when asked for by name and nothing ever asks.
+      //
+      // A MENTION, not a `skill:` reference, deliberately. A group must be
+      // closed under its own `skill:` references so that excluding it cannot
+      // strand a pointer, and the index sits in `modeling` while some skills
+      // it should still account for sit in `analysis` and `eval`. Naming those
+      // in prose is how the index stays complete without dragging three groups
+      // into one. Requiring the invocable form here instead turns a correct
+      // index into a group-closure failure, which is what happened when this
+      // test was first written.
+      const indexBody = fs.readFileSync(
+         path.join(skillDir(INDEX_SKILL), "SKILL.md"),
+         "utf8",
+      );
+      const unaccounted = shipped.filter(
+         (name) =>
+            name !== INDEX_SKILL &&
+            !new RegExp(`\`(?:skill:)?${name}\``).test(indexBody),
+      );
+      expect(unaccounted).toEqual([]);
    });
 
    it("invoke a skill by name, never by subpath", () => {

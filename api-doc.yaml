@@ -511,6 +511,17 @@ paths:
             schema:
               type: object
               properties:
+                configEtag:
+                  type: string
+                  description: >
+                    The writer's opaque tag for the configuration this update
+                    produces. Declared here because the rest of this body is a
+                    hand-picked subset of `Connection` rather than a partial of
+                    it, and a writer that could not send the tag on the endpoint
+                    it rotates credentials through could only ever clear it —
+                    an update that omits the tag drops the stored one, since the
+                    configuration that tag described has been replaced. See the
+                    field on `Connection` for what it is and how it is compared.
                 proxy:
                   $ref: "#/components/schemas/ConnectionProxy"
                 postgresConnection:
@@ -4807,6 +4818,48 @@ components:
             environments on the same project with different
             impersonateServiceAccount values but the same fingerprint would
             share persisted-table ids.
+        configEtag:
+          type: string
+          description: >
+            Optional, opaque entity tag for this connection's configuration,
+            owned by whoever wrote the connection. The server stores it
+            verbatim, returns it verbatim, and never derives, validates or
+            interprets it; it has no meaning to Publisher itself.
+
+            It exists so that a writer distributing this connection to several
+            Publishers can tell which of them are still holding the
+            configuration it last sent. The writer computes a tag over the
+            configuration it is about to send, sends the two together, and
+            compares the tag each server reports against the one it would send
+            now — the same equality-only comparison an HTTP ETag supports, and
+            no other operation is defined on it. A server that reports a
+            different tag, or none, has not been given that configuration.
+
+            Distinct from `fingerprint`, which identifies the DATA a connection
+            reaches and deliberately excludes credentials so it survives
+            rotation. This identifies the CONFIGURATION, credentials included,
+            which is what makes it able to distinguish a server holding a
+            rotated-away password from one holding the current one — a
+            distinction no read can otherwise make, since credentials are never
+            returned. The two change independently and neither substitutes for
+            the other.
+
+            It is returned on reads, because a writer that cannot read it back
+            cannot compare it. Choose the value with that in mind: a digest over
+            configuration that includes credentials does not reveal them, but it
+            COMMITS to them, and a reader who can see the other inputs has a
+            preimage with only the secret missing. If the connection is readable
+            by anyone you would not hand the credential to, use a keyed digest,
+            or keep this tag out of the reach of that reader.
+
+            A write that does not carry a tag CLEARS it, rather than inheriting
+            the stored one. The tag describes the configuration the writer that
+            set it sent; an update that replaces that configuration without
+            supplying a tag has invalidated it. This is also what keeps a writer
+            convergent when it stops sending tags — it pushes its own config, the
+            stale tag is dropped, and its next comparison agrees, where an
+            inherited tag would differ from a config that writer itself just sent
+            and make it re-push on every poll.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -5915,6 +5968,7 @@ components:
             [
               free_parameter,
               given,
+              given_in_persisted_query,
               authorize,
               partition,
               not_duckdb_portable,
@@ -5922,9 +5976,14 @@ components:
             ]
           description: >-
             The bounded refusal reason. Only `free_parameter`, `given`,
-            `authorize` and `partition` can appear here — those are the only
-            reasons the two compile-time eligibility asserts this collection is
-            computed from produce. `not_duckdb_portable` is decided against the
+            `given_in_persisted_query`, `authorize` and `partition` can appear
+            here — those are the only reasons the two compile-time eligibility
+            asserts this collection is computed from produce.
+            `given_in_persisted_query` is the colocated refusal for a given the
+            BUILD would substitute (one inside the persisted query, as opposed
+            to the source's extend block, where it is applied per caller at
+            read); `given` is the storage refusal, which covers either
+            placement. `not_duckdb_portable` is decided against the
             post-build captured schema, which does not exist at compile time,
             and `public_surface_unknown` is raised by the build-time narrowing
             of a stored table to the source's public columns; both are listed
