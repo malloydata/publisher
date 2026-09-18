@@ -406,5 +406,92 @@ class RetrievalMissOnAPassingCase(unittest.TestCase):
         self.assertIn("good_failures", src)
 
 
+class SelectingWhatToDiagnose(unittest.TestCase):
+    """Every scored case lands in exactly one bucket, and narrowing what gets
+    diagnosed does not change what the run failed."""
+
+    def cases(self, n, split=None):
+        return {f"q{i}": {"qid": f"q{i}", "coverage": "covered",
+                          **({"split": split} if split else {})}
+                for i in range(n)}
+
+    def scores(self, n, verdict="no_match"):
+        return [{"kind": "score", "qid": f"q{i}", "sample": None,
+                 "phase": "baseline", "verdict": verdict, "reason": "r"}
+                for i in range(n)]
+
+    def select(self, events, cases, **kw):
+        return diagnose.select_cases(events, cases, ("no_match",), **kw)
+
+    def test_limit_records_what_it_dropped_as_an_exclusion(self):
+        # Truncating `failed` in place moved numerator and denominator
+        # together: 23 failures with --limit 5 printed "5 of 5 (100%)".
+        failed, _, _, excluded = self.select(
+            self.scores(23), self.cases(23), limit=5)
+        self.assertEqual(len(failed), 5)
+        not_passing = len(failed) + sum(len(v) for v in excluded.values())
+        self.assertEqual(not_passing, 23)
+        self.assertEqual(len(excluded["beyond --limit 5"]), 18)
+
+    def test_only_records_what_it_dropped_as_an_exclusion(self):
+        failed, _, _, excluded = self.select(
+            self.scores(4), self.cases(4), only="q0,q1")
+        self.assertEqual(sorted(failed), ["q0", "q1"])
+        self.assertEqual(
+            len(failed) + sum(len(v) for v in excluded.values()), 4)
+
+    def test_an_unnarrowed_run_excludes_nothing_for_narrowing(self):
+        failed, _, _, excluded = self.select(self.scores(3), self.cases(3))
+        self.assertEqual(len(failed), 3)
+        self.assertEqual(excluded, {})
+
+    def test_a_passing_holdout_with_a_retrieval_miss_stays_withheld(self):
+        """The leak: `verdict == "match"` was tested BEFORE the split, so a
+        holdout case that answered correctly with an incomplete retrieval went
+        into `retrieval_only` and on to a diagnosis call on every run, with no
+        flag able to prevent it. Holdout exists so improve has something
+        diagnosis never saw."""
+        cases = {"q0": {"qid": "q0", "coverage": "covered", "split": "holdout",
+                        "expectedEntities": {"required": ["measure:m:total"]}}}
+        events = [
+            {"kind": "score", "qid": "q0", "sample": None, "phase": "baseline",
+             "verdict": "match", "reason": "ok"},
+            {"kind": "tool_call", "qid": "q0", "sample": None,
+             "phase": "baseline", "tool": "get_context",
+             "rankedSummary": {"entityIds": []},
+             "target_shapes": [{"type": "dimension", "has_text": True}]},
+        ]
+        failed, passed, retrieval_only, excluded = self.select(events, cases)
+        self.assertEqual(retrieval_only, [])
+        self.assertEqual(passed, [])
+        self.assertEqual(failed, [])
+        self.assertIn("q0", excluded["holdout, withheld from diagnosis"])
+
+    def test_include_holdout_lets_that_same_case_through(self):
+        cases = {"q0": {"qid": "q0", "coverage": "covered", "split": "holdout",
+                        "expectedEntities": {"required": ["measure:m:total"]}}}
+        events = [
+            {"kind": "score", "qid": "q0", "sample": None, "phase": "baseline",
+             "verdict": "match", "reason": "ok"},
+            {"kind": "tool_call", "qid": "q0", "sample": None,
+             "phase": "baseline", "tool": "get_context",
+             "rankedSummary": {"entityIds": []},
+             "target_shapes": [{"type": "dimension", "has_text": True}]},
+        ]
+        _, passed, retrieval_only, _ = self.select(
+            events, cases, include_holdout=True)
+        self.assertEqual(passed, ["q0"])
+        self.assertEqual(retrieval_only, ["q0"])
+
+    def test_contamination_still_outranks_the_split(self):
+        cases = self.cases(1, split="holdout")
+        events = [{"kind": "score", "qid": "q0", "sample": None,
+                   "phase": "baseline", "verdict": "no_match", "reason": "r",
+                   "contaminated": True}]
+        _, _, _, excluded = self.select(events, cases)
+        self.assertIn("contaminated", excluded)
+        self.assertNotIn("holdout, withheld from diagnosis", excluded)
+
+
 if __name__ == "__main__":
     unittest.main()

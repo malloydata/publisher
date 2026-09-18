@@ -115,8 +115,6 @@ def worst(values: Iterable[str | None], vocab: tuple[str, ...],
     return max(ranked, key=vocab.index) if ranked else fallback
 
 
-
-
 def skill_codes() -> set[str]:
     text = (SKILLS_ROOT / "eval-diagnose" / "SKILL.md").read_text()
     codes = set(CODE_IN_TABLE.findall(text))
@@ -544,6 +542,109 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
     return res
 
 
+def select_cases(events: list[dict[str, Any]],
+                 cases: dict[str, dict[str, Any]],
+                 want_verdicts: set[str] | tuple[str, ...],
+                 *, include_holdout: bool = False,
+                 no_retrieval_misses: bool = False,
+                 only: str | None = None,
+                 limit: int | None = None) -> tuple[
+                     list[str], list[str], list[str], dict[str, list[str]]]:
+    """Sort every scored case into diagnose / passed / excluded.
+
+    Pure, so the two accounting rules it enforces are pinned by tests rather
+    than only by reading a run: a case lands in exactly ONE bucket, and a case
+    the run did not pass stays counted as non-passing even when `--only` or
+    `--limit` keeps it out of this diagnosis.
+
+    Returns (failed, passed, retrieval_only, excluded).
+    """
+    # Account for EVERY scored case, not just the ones that get diagnosed.
+    # A run that diagnosed 8 of 18 failures reported six clusters as though
+    # they covered the failures; they covered 44% of them, and nothing said so.
+    # Each case lands in exactly one bucket, so the buckets sum to the scored
+    # cases and a reader can see what the clusters are silent about.
+    failed, passed, retrieval_only = [], [], []
+    excluded: dict[str, list[str]] = {}
+
+    def exclude(why: str, *qids: str) -> None:
+        excluded.setdefault(why, []).extend(qids)
+
+    for e in events:
+        if e.get("kind") != "score":
+            continue
+        qid, verdict = e["qid"], e.get("verdict")
+        case = cases.get(qid)
+        if case is None:
+            exclude("not in the case file", qid)
+        elif ledger.is_contaminated(e):
+            # Ahead of the holdout and verdict checks: a contaminated attempt
+            # is not evidence either way, so it is excluded for that reason
+            # whatever split it is on.
+            exclude("contaminated", qid)
+        elif verdict is None:
+            # No verdict to explain: an unestablished key, a truncated
+            # attempt, or a judge reply that could not be read. The `reason`
+            # says which, and none of them is a model failure.
+            exclude(f"unscored ({e.get('reason') or 'no reason recorded'})",
+                    qid)
+        elif case.get("split") == "holdout" and not include_holdout:
+            # Ahead of the verdict checks, beside contamination and for the
+            # same reason: what split a case is on does not depend on how it
+            # scored. Below the `match` branch, a holdout case that answered
+            # correctly WITH a retrieval miss went straight into
+            # `retrieval_only` and on to a diagnosis call, because the holdout
+            # test was on a branch it never reached -- so the split leaked on
+            # every run and no flag could stop it.
+            exclude("holdout, withheld from diagnosis", qid)
+        elif verdict == "match":
+            passed.append(qid)
+            # A correct answer can still rest on a retrieval miss, and that is
+            # a finding: the answer was right by another route, which on the
+            # run this comes from meant the agent rebuilding the model's own
+            # measure inline. It held while the measure was `count()` and
+            # failed the moment one carried a grain rule. "It worked anyway" is
+            # not a reason to leave the gap, so the case is diagnosed -- with
+            # its correctness recorded, so nobody reads the issue as a wrong
+            # number.
+            key = (qid, e.get("sample"), e.get("phase"))
+            if retrieval_finding(case, events, key, verdict):
+                retrieval_only.append(qid)
+        elif verdict not in want_verdicts:
+            exclude(f"{verdict}, not in --verdicts", qid)
+        else:
+            failed.append(qid)
+    failed = list(dict.fromkeys(failed))
+    retrieval_only = [q for q in dict.fromkeys(retrieval_only)
+                      if q not in failed]
+    if no_retrieval_misses:
+        if retrieval_only:
+            exclude("passed with a retrieval miss (--no-retrieval-misses)",
+                    *retrieval_only)
+        retrieval_only = []
+
+    # `--only` and `--limit` narrow what gets DIAGNOSED; they do not change
+    # what the run failed. The cases they drop are recorded as exclusions so
+    # the coverage denominator below still counts every non-passing case:
+    # truncating `failed` in place moved numerator and denominator together
+    # and printed "coverage: 5 of 5 non-passing case(s) diagnosed (100%)" on a
+    # run with 23 failures and --limit 5, which is the exact silence the
+    # coverage line was added to break.
+    if only:
+        want = {q.strip() for q in only.split(",")}
+        dropped = [q for q in failed if q not in want]
+        if dropped:
+            exclude("not named in --only", *dropped)
+        failed = [q for q in failed if q in want]
+        retrieval_only = [q for q in retrieval_only if q in want]
+    if limit:
+        if failed[limit:]:
+            exclude(f"beyond --limit {limit}", *failed[limit:])
+        failed = failed[:limit]
+        retrieval_only = retrieval_only[:max(0, limit - len(failed))]
+    return failed, passed, retrieval_only, excluded
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, type=pathlib.Path)
@@ -685,70 +786,11 @@ def main(argv: list[str] | None = None) -> int:
         print("  --include-holdout: holdout cases WILL be diagnosed. This run "
               "must not go on to an improve step.")
 
-    # Account for EVERY scored case, not just the ones that get diagnosed.
-    # A run that diagnosed 8 of 18 failures reported six clusters as though
-    # they covered the failures; they covered 44% of them, and nothing said so.
-    # Each case lands in exactly one bucket, so the buckets sum to the scored
-    # cases and a reader can see what the clusters are silent about.
-    failed, passed, retrieval_only = [], [], []
-    excluded: dict[str, list[str]] = {}
-
-    def exclude(why: str, *qids: str) -> None:
-        excluded.setdefault(why, []).extend(qids)
-
-    for e in events:
-        if e.get("kind") != "score":
-            continue
-        qid, verdict = e["qid"], e.get("verdict")
-        case = cases.get(qid)
-        if case is None:
-            exclude("not in the case file", qid)
-        elif ledger.is_contaminated(e):
-            # Ahead of the holdout and verdict checks: a contaminated attempt
-            # is not evidence either way, so it is excluded for that reason
-            # whatever split it is on.
-            exclude("contaminated", qid)
-        elif verdict is None:
-            # No verdict to explain: an unestablished key, a truncated
-            # attempt, or a judge reply that could not be read. The `reason`
-            # says which, and none of them is a model failure.
-            exclude(f"unscored ({e.get('reason') or 'no reason recorded'})",
-                    qid)
-        elif verdict == "match":
-            passed.append(qid)
-            # A correct answer can still rest on a retrieval miss, and that is
-            # a finding: the answer was right by another route, which on the
-            # run this comes from meant the agent rebuilding the model's own
-            # measure inline. It held while the measure was `count()` and
-            # failed the moment one carried a grain rule. "It worked anyway" is
-            # not a reason to leave the gap, so the case is diagnosed -- with
-            # its correctness recorded, so nobody reads the issue as a wrong
-            # number.
-            key = (qid, e.get("sample"), e.get("phase"))
-            if retrieval_finding(case, events, key, verdict):
-                retrieval_only.append(qid)
-        elif case.get("split") == "holdout" and not a.include_holdout:
-            exclude("holdout, withheld from diagnosis", qid)
-        elif verdict not in want_verdicts:
-            exclude(f"{verdict}, not in --verdicts", qid)
-        else:
-            failed.append(qid)
-    failed = list(dict.fromkeys(failed))
-    retrieval_only = [q for q in dict.fromkeys(retrieval_only)
-                      if q not in failed]
-    if a.no_retrieval_misses:
-        if retrieval_only:
-            exclude("passed with a retrieval miss (--no-retrieval-misses)",
-                    *retrieval_only)
-        retrieval_only = []
-
-    if a.only:
-        want = {q.strip() for q in a.only.split(",")}
-        failed = [q for q in failed if q in want]
-        retrieval_only = [q for q in retrieval_only if q in want]
-    if a.limit:
-        failed = failed[:a.limit]
-        retrieval_only = retrieval_only[:max(0, a.limit - len(failed))]
+    failed, passed, retrieval_only, excluded = select_cases(
+        events, cases, want_verdicts,
+        include_holdout=a.include_holdout,
+        no_retrieval_misses=a.no_retrieval_misses,
+        only=a.only, limit=a.limit)
     # Diagnosed together, because the question asked of both is the same one:
     # why did the model not deliver what the answer needed. They are told
     # apart on the way in, so the prompt can say the answer was right, and on
