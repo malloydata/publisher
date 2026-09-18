@@ -4287,7 +4287,20 @@ export class Model {
       );
    }
 
-   private async loadServeShapeQuery(queryString: string): Promise<{
+   private async loadServeShapeQuery(
+      queryString: string,
+      /**
+       * The request's given values, passed to the origin probe below.
+       *
+       * The probe compiles the query to decide whether a rollup answered it, and
+       * compiling resolves every given the shape declares. A given with no
+       * DEFAULT — which is every `#(secure)` attribute, since a scalar cannot be
+       * secure and a set-valued one is server-set — has nothing to resolve to at
+       * that point, so the probe threw and the whole tier fell back to live for
+       * exactly the sources that carry a row-level boundary.
+       */
+      givens?: Record<string, GivenValue>,
+   ): Promise<{
       runnable: QueryMaterializer;
       virtualMap: VirtualMap;
       /**
@@ -4378,7 +4391,7 @@ export class Model {
       // so without this the error would escape at prepare/run instead of at the
       // caller's try, defeating the safe fallback. Cheap relative to the run. The
       // serve shape is pure virtual sources, so no buildManifest is needed.
-      const probeSQL = await runnable.getSQL({ virtualMap });
+      const probeSQL = await runnable.getSQL({ virtualMap, givens });
       // The rollup members' physical paths, quoted exactly as the virtualMap
       // substitutes them, so this compares like with like rather than re-deriving
       // the quoting and drifting from it.
@@ -5175,7 +5188,10 @@ export class Model {
          // row-level-gated entry point, per the pre-check just above.
          if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
             try {
-               const shaped = await this.loadServeShapeQuery(queryString);
+               const shaped = await this.loadServeShapeQuery(
+                  queryString,
+                  querySurfaceGivens,
+               );
                runnable = shaped.runnable;
                serveVirtualMap = shaped.virtualMap;
                serveShapeBindings = shaped.bindings;
@@ -5562,10 +5578,12 @@ export class Model {
          //    mixed set is normal and a sibling must not decide this query;
          //  - never for a client error (a bad given) or an abort, where a retry
          //    would just reproduce it or defy the caller;
-         //  - the retry re-supplies the REAL givens. The storage path suppresses
-         //    them because the shape is built from given-free sources; the live
-         //    source may filter on them, and running it without them would serve
-         //    unfiltered rows.
+         //  - the retry re-supplies the REAL givens. It always did for the live
+         //    source, which may filter on them — running it without them would
+         //    serve unfiltered rows. The storage path now supplies them too (the
+         //    shape declares the model's given surface), so the two paths carry
+         //    the same values and this retry changes only where the rows come
+         //    from.
          const canDegradeToLive =
             !!serveVirtualMap &&
             !!liveRunnable &&
