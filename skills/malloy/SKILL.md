@@ -58,6 +58,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `eval-improve` | The smallest model edit for a diagnosed cluster, with probe receipts |
 | `eval-judge` | Scoring one attempt against its golden, and saying whether the golden itself is believed |
 | `eval-import` | Turning questions that arrived from outside into a set, before the first run against it |
+| `eval-report` | Turning a finished run into something a person can open, and saying what it did and did not measure |
 
 **Writing correct Malloy** (read before writing, not after failing)
 

@@ -474,7 +474,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",
         "host_tool_uses", "mcp_tool_uses", "reported_calls", "contaminated",
         "final_query_source", "servedRevision",
-        "input_tokens", "output_tokens", "cache_read_tokens", "cost_usd",
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "cost_usd",
         "num_turns", "wall_seconds", "run_error", "transcriptPath",
         "n_steps", "prediction"])
     write_csv(data / "steps.csv", steps_rows, [

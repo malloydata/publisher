@@ -89,11 +89,25 @@ Comparing retrieval itself across engine versions is not this package's job; a c
 
 ## Every failure is placed
 
-`where_to_fix` is one of *query construction*, *retrieval ranking*, *model
-coverage* or *refusal behaviour*, and every scored failure has exactly one. The
-counts in `failures_by_where_to_fix` therefore sum to the failure count in
-`run_summary`. If they ever do not, attribution has a hole -- that exact bug is why
-the tables are cross-checked rather than trusted.
+`where_to_fix` is one of *model coverage*, *never asked*, *not retrieved*,
+*delivered, wrong*, *refusal behaviour* or *coverage not measured*, and every
+scored failure has exactly one. Only two name an owner.
+
+*never asked* is the agent's, and it is mechanical: no search asked for the
+missing entity's kind, so nothing of that kind could come back. *model coverage*
+is the model's. *not retrieved* means the entity exists, a search of the right
+kind was issued, and it still did not come back -- the docs may not say what the
+question asks, or the search wording may be off, and eval-diagnose separates
+NOT-RETURNED from QUESTION-VOCAB. *delivered, wrong* means everything arrived and
+the answer is still wrong: the agent misused it, or the docs never said how.
+*coverage not measured* is a miss whose case carries no measured coverage label.
+
+Two of these are deliberately ownerless. A label that asserted *documentation* on
+every retrieval miss was wrong on the first real run, where the agent had searched
+only for a source and a dimension and the measure it needed was blamed on docs
+that described it perfectly well. The counts in `failures_by_where_to_fix` therefore sum
+to the failure count in `run_summary`. If they ever do not, attribution has a
+hole -- that exact bug is why the tables are cross-checked rather than trusted.
 
 `needs_human` is neither a pass nor a failure and is attributed to nothing.
 

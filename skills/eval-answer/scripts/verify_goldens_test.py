@@ -531,6 +531,90 @@ class AValueFreeSetNeedsNoTruthServer(unittest.TestCase):
         self.assertTrue(verify(self.tmp, None, "samples", quiet=True)["skipped"])
 
 
+class TheCompositionRuleAtTheGate(unittest.TestCase):
+    """A truth server re-derives values; a ledger validates the definitions a
+    value rests on. Either is evidence. Neither present is a check that did not
+    happen, and the gate says which."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "set.json").write_text('{"name": "s"}')   # no truthPackage
+        self.led = self.tmp / "led.jsonl"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write_case(self, status="verified", ids=("measure:s:m",),
+                   verification=None):
+        g = {"status": status, "kind": "scalar", "value": {"v": 1}}
+        if verification:
+            g["verification"] = verification
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1", "question": "x", "split": "dev", "golden": g,
+             "expectedEntities": {"required": list(ids)}}) + "\n")
+
+    def write_ledger(self, **verdicts):
+        self.led.write_text("".join(json.dumps(
+            {"entityId": e, "verdict": v, "exprSha": "s"}) + "\n"
+            for e, v in verdicts.items()))
+
+    def test_validated_definitions_lift_the_skip(self):
+        self.write_case()
+        self.write_ledger(**{"measure:s:m": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertTrue(r["skipped"], "still no truth server")
+        self.assertTrue(r["ledgerValidated"], "but the definitions are checked")
+        self.assertEqual(r["unvalidated"], [])
+
+    def test_an_unchecked_definition_names_the_case(self):
+        self.write_case()
+        self.write_ledger(**{"measure:s:m": "unchecked"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertFalse(r["ledgerValidated"])
+        self.assertEqual(r["unvalidated"], ["q1 (unchecked)"])
+
+    def test_a_definition_missing_from_the_ledger_does_not_validate(self):
+        self.write_case()
+        self.write_ledger(**{"measure:s:other": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertFalse(r["ledgerValidated"])
+
+    def test_an_empty_ledger_validates_nothing(self):
+        # Zero rows is not "every definition agrees"; it is no evidence at all.
+        self.write_case()
+        self.led.write_text("")
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertFalse(r["ledgerValidated"])
+
+    def test_promotion_through_the_ledger_still_needs_the_second_derivation(self):
+        # Validated definitions say the pieces are right; two derivations
+        # agreeing say the VALUE is. `verified` needs both.
+        self.write_case(status="provisional")
+        self.write_ledger(**{"measure:s:m": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led,
+                   promote=True)
+        self.assertEqual(r["promoted"], [])
+        self.assertTrue(any("q1" in n for n in r["promotionNotes"]),
+                        r["promotionNotes"])
+
+    def test_promotion_through_the_ledger_names_the_ledger(self):
+        self.write_case(status="provisional",
+                        verification={"primaryAxis": "a", "variesAxis": "b"})
+        self.write_ledger(**{"measure:s:m": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led,
+                   promote=True)
+        self.assertEqual(r["promoted"], ["q1"])
+        g = json.loads((self.tmp / "cases.jsonl").read_text())["golden"]
+        self.assertEqual(g["status"], "verified")
+        self.assertIn("definition ledger", g["verifiedBy"])
+
+    def test_no_ledger_keeps_the_old_behaviour(self):
+        self.write_case()
+        r = verify(self.tmp, None, "samples", quiet=True)
+        self.assertTrue(r["skipped"])
+        self.assertFalse(r["ledgerValidated"])
+
+
 class Promotion(unittest.TestCase):
     """`--promote` is the ONLY thing that writes `golden.status`.
 
@@ -759,6 +843,69 @@ class RubricFigures(unittest.TestCase):
             "Right: 99999.99 exactly.", total=6564004.49))
         self.assertEqual(len(f), 1)
         self.assertIn("99999.99", f[0])
+
+    def test_a_four_digit_stale_figure_is_now_caught(self):
+        # The floor was five significant digits, so a four-digit quantity the
+        # golden does not hold passed silently. Measured over the local sets,
+        # moving it to three digits at or above 100 took the findings from 14
+        # to 17 over 54 rubrics.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: 2672 returned line items.", returned=1830))
+        self.assertEqual(len(f), 1)
+        self.assertIn("2672", f[0])
+
+    def test_a_bare_three_digit_figure_is_NOT_caught(self):
+        # Deliberate, and the limit of this check. Catching it means
+        # tokenising every three-digit integer in rubric prose, which was
+        # measured over the same sets: 17 findings become 552, because a
+        # rubric quoting a list of ids contributes one per id. A check that
+        # reports 552 things is not read at all.
+        #
+        # So the "615 and 502 over goldens holding 747 and 370" case -- a
+        # correct answer failed against prose one re-derivation out of date --
+        # is NOT closed here. It is closed in the judge prompt, which is told
+        # that where the rubric and the golden disagree about a figure, the
+        # golden is the key. That rule holds at any precision and needs no
+        # regex. This test exists so nobody re-opens the floor without
+        # re-measuring.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: monthly page views of 615 and 502.",
+            first=747, second=370))
+        self.assertEqual(f, [])
+
+    def test_a_year_is_not_a_figure(self):
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: the 2024 total, 747.", total=747))
+        self.assertEqual(f, [])
+
+    def test_a_small_count_is_not_a_figure(self):
+        # Below 100 stays out: "the top 12 categories", "5 rows", an ordinal.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: the top 12 categories, over 5 regions.", total=747))
+        self.assertEqual(f, [])
+
+    def test_a_one_decimal_average_is_checked(self):
+        # "about 740.5" is how a rubric quotes an average, and the tokeniser
+        # required TWO decimal places, so that whole shape was invisible.
+        # Admitting one-decimal figures added zero findings across every set
+        # available locally, so it is free.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: an average flight distance of about 688.2.",
+            average=740.48))
+        self.assertEqual(len(f), 1)
+        self.assertIn("688.2", f[0])
+
+    def test_a_small_decimal_is_still_excluded(self):
+        # The floor still applies after the tokeniser: a value under 100 with
+        # few digits is a rate or a ratio, not a quoted result.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: a ratio of 3.5.", total=747))
+        self.assertEqual(f, [])
+
+    def test_a_figure_the_golden_holds_is_not_reported(self):
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: 747 page views.", views=747))
+        self.assertEqual(f, [])
 
 if __name__ == "__main__":
     unittest.main()

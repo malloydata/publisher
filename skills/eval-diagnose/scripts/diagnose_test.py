@@ -211,5 +211,330 @@ class OffVocabularyValuesDoNotLoseTheRun(unittest.TestCase):
                       improve_py)
 
 
+class BehaviourStats(unittest.TestCase):
+    """The measurements a behavioural root cause gets stated in.
+
+    Diagnosis reads failures only, so a behaviour common to the whole run looks
+    causal from inside it. On one measured run the largest cluster was built on
+    "substitutes broad enumeration for targeted retrieval", and the enumeration
+    rate was 25% of targets in the failures against 26% in the passes.
+
+    THE FIXTURES HERE ARE THE SHAPES THE HARNESS ACTUALLY WRITES. An earlier
+    version of this class invented a `{"target_type", "search_text"}` dict that
+    no writer emits, and the code passed those tests while reading
+    `targetsWithoutSearchText: 0` on every real attempt -- because `targets`
+    holds `"<type>: <text>"` STRINGS and a target with no text is dropped
+    before the ledger sees it.
+    """
+
+    def events(self, qid, tool_call, *, verdict="match", turns=9):
+        return [
+            {"kind": "attempt", "qid": qid, "n_get_context": 2, "n_execute": 5,
+             "n_execute_errors": 1, "num_turns": turns,
+             "skills_invoked": ["malloy-analysis"]},
+            {"kind": "score", "qid": qid, "verdict": verdict},
+            {"kind": "tool_call", "qid": qid, "tool": "get_context",
+             **tool_call},
+            {"kind": "tool_call", "qid": qid, "tool": "execute_query"},
+        ]
+
+    def shapes(self, *pairs):
+        return {"target_shapes": [{"type": t, "has_text": h} for t, h in pairs]}
+
+    def test_a_bare_target_is_counted_from_target_shapes(self):
+        s = diagnose.behaviour_stats("q1", self.events("q1", self.shapes(
+            ("dimension", False), ("measure", True), ("view", False))))
+        self.assertEqual(s["searchTargets"], 3)
+        self.assertEqual(s["targetsWithoutSearchText"], 2)
+        self.assertTrue(s["targetsMeasured"])
+
+    def test_it_records_which_target_types_were_asked_for(self):
+        # A type-classification error is the most common agent-call defect, and
+        # a falsifier that cannot reach it is not much of a falsifier -- which
+        # a clustering agent said, in those terms, about the first version.
+        s = diagnose.behaviour_stats("q1", self.events("q1", self.shapes(
+            ("measure", True), ("dimension", True), ("dimension", False))))
+        self.assertEqual(s["targetTypes"], {"measure": 1, "dimension": 2})
+
+    def test_a_legacy_run_reads_types_but_abstains_on_the_bare_count(self):
+        # Runs written before `target_shapes` existed. The types survive in the
+        # `"<type>: <text>"` strings; the bare count does not, and reporting it
+        # as 0 would be a falsifier quietly asserting the opposite of the truth.
+        s = diagnose.behaviour_stats("q1", self.events(
+            "q1", {"targets": ["measure: total revenue", "source: flights"]}))
+        self.assertEqual(s["targetTypes"], {"measure": 1, "source": 1})
+        self.assertIsNone(s["targetsWithoutSearchText"])
+        self.assertFalse(s["targetsMeasured"])
+
+    def test_the_two_shapes_do_not_get_mixed(self):
+        # If both are present the measured one wins; the legacy strings are a
+        # lossy view of the same call.
+        s = diagnose.behaviour_stats("q1", self.events("q1", {
+            "targets": ["measure: total revenue"],
+            **self.shapes(("measure", True), ("dimension", False))}))
+        self.assertEqual(s["searchTargets"], 2)
+        self.assertEqual(s["targetsWithoutSearchText"], 1)
+
+    def test_it_carries_the_verdict_so_the_groups_are_comparable(self):
+        s = diagnose.behaviour_stats("q1", self.events("q1", self.shapes(),
+                                                       verdict="match"))
+        self.assertEqual(s["verdict"], "match")
+        self.assertEqual(s["skillsInvoked"], ["malloy-analysis"])
+        self.assertEqual(s["numTurns"], 9)
+
+    def test_only_this_case_is_measured(self):
+        ev = self.events("q1", self.shapes(("dimension", True))) + \
+            self.events("q2", self.shapes(("a", True), ("b", True)))
+        self.assertEqual(
+            diagnose.behaviour_stats("q1", ev)["searchTargets"], 1)
+
+    def test_an_attempt_with_no_calls_is_still_a_row(self):
+        s = diagnose.behaviour_stats("q9", [])
+        self.assertEqual(s["qid"], "q9")
+        self.assertEqual(s["searchTargets"], 0)
+
+    def test_the_clustering_prompt_asks_for_the_falsification(self):
+        self.assertIn("{controls}", diagnose.CLUSTER_PROMPT)
+
+
+class ControlsBlock(unittest.TestCase):
+    """The CONTROLS section sizes itself, because the instruction that is right
+    for twenty passing cases is wrong for one and meaningless for none."""
+
+    def block(self, n):
+        return diagnose.controls_block(
+            [{"qid": f"q{i}", "verdict": "match"} for i in range(n)])
+
+    def test_a_run_where_everything_failed_says_there_is_nothing_to_compare(self):
+        # 10 of 10 failing is a real shape, and asking the agent to compare
+        # rates against an empty list invites it to read [] as evidence.
+        b = self.block(0)
+        self.assertIn("CONTROLS: none", b)
+        self.assertIn("unfalsified", b)
+        self.assertIn("Do NOT read the absence of controls", b)
+        # A model-fact cluster is not affected by having no controls, and the
+        # block has to say so or every cluster gets downgraded.
+        self.assertIn("unaffected", b)
+
+    def test_one_or_two_controls_is_not_a_rate(self):
+        for n in (1, 2):
+            with self.subTest(n=n):
+                b = self.block(n)
+                self.assertIn("is NOT a rate", b)
+                self.assertIn("Do not compute a percentage", b)
+
+    def test_three_or_more_gets_the_real_comparison(self):
+        b = self.block(3)
+        self.assertIn("similar rate in the passes", b)
+        self.assertNotIn("is NOT a rate", b)
+
+    def test_the_prompt_renders_at_every_size(self):
+        # The failure this guards: an unrendered {controls} shipping to the
+        # agent, or a KeyError at the one moment the run cannot be redone.
+        for n in (0, 1, 2, 3, 20):
+            with self.subTest(n=n):
+                out = diagnose.CLUSTER_PROMPT.format(
+                    issues="[]", controls=self.block(n))
+                self.assertNotIn("{controls}", out)
+                self.assertNotIn("{issues}", out)
+
+    def test_every_size_carries_the_rows_it_has(self):
+        self.assertIn('"qid": "q0"', self.block(1))
+        self.assertNotIn('"qid"', self.block(0))
+
+
+class RetrievalMissOnAPassingCase(unittest.TestCase):
+    """A correct answer that never received a required entity is a finding.
+
+    It was silently dropped in three places: `attribute()` short-circuited on
+    `passed`, `summarise()` dropped the empty label, and `diagnose.py` routed
+    `match` to a control group. Measured on one run, 3 of 4 findings sat on
+    passing cases and produced nothing.
+    """
+
+    def case(self, qid="q", required=("measure:m:total",)):
+        return {"qid": qid, "coverage": "covered",
+                "expectedEntities": {"required": list(required)}}
+
+    def events(self, qid, returned, targets):
+        return [
+            {"kind": "attempt", "qid": qid, "sample": None, "phase": "baseline"},
+            {"kind": "score", "qid": qid, "sample": None, "phase": "baseline",
+             "verdict": "match", "reason": "ok"},
+            {"kind": "tool_call", "qid": qid, "sample": None, "phase": "baseline",
+             "tool": "get_context",
+             "rankedSummary": {"entityIds": list(returned)},
+             "target_shapes": [{"type": t, "has_text": True} for t in targets]},
+        ]
+
+    def test_a_pass_that_missed_an_entity_yields_a_finding(self):
+        ev = self.events("q", [], ["source", "dimension"])
+        row = diagnose.retrieval_finding(self.case(), ev,
+                                         ("q", None, "baseline"), "match")
+        self.assertIsNotNone(row)
+        # Deterministic: it needed a measure and sent no measure target.
+        self.assertIn("never asked", row["where_to_fix"])
+        # And the answer is still not a failure.
+        self.assertFalse(row["failed"])
+
+    def test_a_pass_that_received_everything_yields_nothing(self):
+        ev = self.events("q", ["measure:m:total"], ["measure"])
+        self.assertIsNone(diagnose.retrieval_finding(
+            self.case(), ev, ("q", None, "baseline"), "match"))
+
+    def test_it_calls_the_real_scorer_rather_than_restating_the_rule(self):
+        # Two definitions of "a miss" would drift, and the run summary and the
+        # diagnosis would then disagree about what happened.
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("score_retrieval.score_case", src)
+
+    def test_the_prompt_says_the_answer_was_correct(self):
+        # Without it the diagnoser reads the evidence as a wrong answer and
+        # goes looking for a number that is not wrong.
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("THIS ANSWER WAS CORRECT", src)
+        self.assertIn("answered_correctly", src)
+
+    def test_there_is_an_opt_out(self):
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("--no-retrieval-misses", src)
+
+    def test_the_coverage_denominator_excludes_them(self):
+        # They are passes. Counting a diagnosed pass against a non-passing
+        # denominator printed "2 of 1 non-passing case(s) diagnosed (200%)".
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("good_failures", src)
+
+
+class SelectingWhatToDiagnose(unittest.TestCase):
+    """Every scored case lands in exactly one bucket, and narrowing what gets
+    diagnosed does not change what the run failed."""
+
+    def cases(self, n, split=None):
+        return {f"q{i}": {"qid": f"q{i}", "coverage": "covered",
+                          **({"split": split} if split else {})}
+                for i in range(n)}
+
+    def scores(self, n, verdict="no_match"):
+        return [{"kind": "score", "qid": f"q{i}", "sample": None,
+                 "phase": "baseline", "verdict": verdict, "reason": "r"}
+                for i in range(n)]
+
+    def select(self, events, cases, **kw):
+        """(failed, passed, retrieval_only, excluded) -- the four buckets most
+        of these assert on. `excluded_passes` has its own tests below."""
+        return diagnose.select_cases(events, cases, ("no_match",), **kw)[:4]
+
+    def test_limit_records_what_it_dropped_as_an_exclusion(self):
+        # Truncating `failed` in place moved numerator and denominator
+        # together: 23 failures with --limit 5 printed "5 of 5 (100%)".
+        failed, _, _, excluded = self.select(
+            self.scores(23), self.cases(23), limit=5)
+        self.assertEqual(len(failed), 5)
+        not_passing = len(failed) + sum(len(v) for v in excluded.values())
+        self.assertEqual(not_passing, 23)
+        self.assertEqual(len(excluded["beyond --limit 5"]), 18)
+
+    def test_only_records_what_it_dropped_as_an_exclusion(self):
+        failed, _, _, excluded = self.select(
+            self.scores(4), self.cases(4), only="q0,q1")
+        self.assertEqual(sorted(failed), ["q0", "q1"])
+        self.assertEqual(
+            len(failed) + sum(len(v) for v in excluded.values()), 4)
+
+    def test_an_unnarrowed_run_excludes_nothing_for_narrowing(self):
+        failed, _, _, excluded = self.select(self.scores(3), self.cases(3))
+        self.assertEqual(len(failed), 3)
+        self.assertEqual(excluded, {})
+
+    def test_a_passing_holdout_with_a_retrieval_miss_stays_withheld(self):
+        """The leak: `verdict == "match"` was tested BEFORE the split, so a
+        holdout case that answered correctly with an incomplete retrieval went
+        into `retrieval_only` and on to a diagnosis call on every run, with no
+        flag able to prevent it. Holdout exists so improve has something
+        diagnosis never saw."""
+        cases = {"q0": {"qid": "q0", "coverage": "covered", "split": "holdout",
+                        "expectedEntities": {"required": ["measure:m:total"]}}}
+        events = [
+            {"kind": "score", "qid": "q0", "sample": None, "phase": "baseline",
+             "verdict": "match", "reason": "ok"},
+            {"kind": "tool_call", "qid": "q0", "sample": None,
+             "phase": "baseline", "tool": "get_context",
+             "rankedSummary": {"entityIds": []},
+             "target_shapes": [{"type": "dimension", "has_text": True}]},
+        ]
+        failed, passed, retrieval_only, excluded = self.select(events, cases)
+        self.assertEqual(retrieval_only, [])
+        self.assertEqual(passed, [])
+        self.assertEqual(failed, [])
+        self.assertIn("q0", excluded["holdout, withheld from diagnosis"])
+
+    def test_include_holdout_lets_that_same_case_through(self):
+        cases = {"q0": {"qid": "q0", "coverage": "covered", "split": "holdout",
+                        "expectedEntities": {"required": ["measure:m:total"]}}}
+        events = [
+            {"kind": "score", "qid": "q0", "sample": None, "phase": "baseline",
+             "verdict": "match", "reason": "ok"},
+            {"kind": "tool_call", "qid": "q0", "sample": None,
+             "phase": "baseline", "tool": "get_context",
+             "rankedSummary": {"entityIds": []},
+             "target_shapes": [{"type": "dimension", "has_text": True}]},
+        ]
+        _, passed, retrieval_only, _ = self.select(
+            events, cases, include_holdout=True)
+        self.assertEqual(passed, ["q0"])
+        self.assertEqual(retrieval_only, ["q0"])
+
+    def passing_with_a_miss(self):
+        """Three cases that all PASSED, two of them on an incomplete
+        retrieval."""
+        cases, ev = {}, []
+        for q in ("q1", "q2", "q3"):
+            cases[q] = {"qid": q, "coverage": "covered",
+                        "expectedEntities": {"required": ["measure:m:total"]}}
+            got = [] if q in ("q1", "q2") else ["measure:m:total"]
+            ev += [{"kind": "score", "qid": q, "sample": None,
+                    "phase": "baseline", "verdict": "match", "reason": "ok"},
+                   {"kind": "tool_call", "qid": q, "sample": None,
+                    "phase": "baseline", "tool": "get_context",
+                    "rankedSummary": {"entityIds": got},
+                    "target_shapes": [{"type": "measure", "has_text": True}]}]
+        return cases, ev
+
+    def test_a_pass_kept_out_of_diagnosis_is_not_a_non_passing_case(self):
+        """`--no-retrieval-misses` used to push these into `excluded`, which
+        `not_passing` sums, so a run where every case passed printed
+        "coverage: 0 of 2 non-passing case(s) diagnosed (0%)"."""
+        cases, ev = self.passing_with_a_miss()
+        f, p, r, excluded, excluded_passes = diagnose.select_cases(
+            ev, cases, ("no_match",), no_retrieval_misses=True)
+        self.assertEqual(f, [])
+        self.assertEqual(sorted(p), ["q1", "q2", "q3"])
+        self.assertEqual(excluded, {})
+        not_passing = len(f) + sum(len(v) for v in excluded.values())
+        self.assertEqual(not_passing, 0)
+        # Still reported, just not as a failure.
+        self.assertEqual(
+            excluded_passes["passed with a retrieval miss "
+                            "(--no-retrieval-misses)"], ["q1", "q2"])
+
+    def test_without_the_flag_those_passes_are_diagnosed(self):
+        cases, ev = self.passing_with_a_miss()
+        f, p, r, excluded, excluded_passes = diagnose.select_cases(
+            ev, cases, ("no_match",))
+        self.assertEqual(sorted(r), ["q1", "q2"])
+        self.assertEqual(excluded_passes, {})
+        self.assertEqual(len(f) + sum(len(v) for v in excluded.values()), 0)
+
+    def test_contamination_still_outranks_the_split(self):
+        cases = self.cases(1, split="holdout")
+        events = [{"kind": "score", "qid": "q0", "sample": None,
+                   "phase": "baseline", "verdict": "no_match", "reason": "r",
+                   "contaminated": True}]
+        _, _, _, excluded = self.select(events, cases)
+        self.assertIn("contaminated", excluded)
+        self.assertNotIn("holdout, withheld from diagnosis", excluded)
+
+
 if __name__ == "__main__":
     unittest.main()

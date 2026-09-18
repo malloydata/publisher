@@ -114,6 +114,47 @@ COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
               "retrievalMode", "modelGitSha", "targetVersion")
 
 
+def completeness_note(ca: dict, cb: dict, la: str, lb: str,
+                      A: dict, B: dict) -> int:
+    """Say which cases one arm excluded and the other scored. Never refuses.
+
+    This REPLACED a refusal, and the refusal was wrong. It rested on the claim
+    that an excluded case "reads as a flip", and it does not: a flip requires a
+    real pass or fail on BOTH sides (`a_only` / `b_only` below), so a case
+    carrying `verdict: null` on either side lands in `unscored` and contributes
+    to no flip count. The pairing already handles this, and the header already
+    prints "N cases, M scored in both, K not". Refusing a 99-versus-100 pair
+    threw away 99 good comparisons to avoid a distortion that was not there.
+
+    What IS worth saying is the asymmetry, which nothing named before. The
+    excluded cases are not a random sample: an attempt truncates BECAUSE it ran
+    long, so the cases one arm drops are its hard ones, and the surviving
+    comparison is over an easier subset than the case list suggests. That is a
+    caveat to carry into the number, not a reason to withhold it.
+
+    An `aborted` arm needs nothing here either: it stopped early, so its cases
+    are absent rather than unscored, and the existing "the runs do not cover
+    the same cases" check already exits 1 on it.
+    """
+    for label, cfg, mine, theirs in ((la, ca, A, B), (lb, cb, B, A)):
+        excluded = [q for q in sorted(set(mine) & set(theirs))
+                    if mine[q]["passed"] is None
+                    and theirs[q]["passed"] is not None]
+        if not excluded:
+            continue
+        why = ", ".join(
+            [f"{len(cfg.get('truncated') or [])} truncated"]
+            * bool(cfg.get("truncated"))
+            + [f"{len(cfg.get('contaminated') or [])} contaminated"]
+            * bool(cfg.get("contaminated"))) or "unscored"
+        print(f"\n  ! {label} left {len(excluded)} case(s) unscored that "
+              f"the other arm scored ({why}): {', '.join(excluded)}")
+        print("    They are out of the flips above, so the comparison holds --"
+              " but an attempt truncates BECAUSE it ran long, so these are not"
+              " a random sample of the set.")
+    return 0
+
+
 def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
                    allow: bool) -> int:
     """Refuse a pair whose runs used different retrievers.
@@ -443,6 +484,7 @@ def main() -> int:
 
     gate = retrieval_gate(cfg_a, cfg_b, la, lb,
                           a_args.allow_retrieval_mismatch)
+    completeness_note(cfg_a, cfg_b, la, lb, A, B)
 
     ca, cb = cost(a_args.a), cost(a_args.b)
     print(f"\ncost\n----")

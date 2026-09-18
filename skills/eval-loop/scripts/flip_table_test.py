@@ -146,6 +146,70 @@ class Calibration(unittest.TestCase):
         self.assertIn("sonnet / opus", block)
 
 
+class CompletenessNote(unittest.TestCase):
+    """The asymmetry between two arms' unscored cases, reported not refused.
+
+    This replaced a refusal that was based on a false claim: that a case one
+    arm excluded "reads as a flip". It cannot. A flip needs a real pass or fail
+    on BOTH sides, so a null verdict on either lands in `unscored` and counts
+    toward no flip. Refusing a 99-versus-100 pair discarded 99 good
+    comparisons to avoid a distortion that was not there.
+    """
+
+    def verdicts(self, **qids):
+        return {q: {"verdict": v, "passed": p, "outcome": "x", "reason": "",
+                    "confidence": None}
+                for q, (v, p) in qids.items()}
+
+    def test_an_excluded_case_cannot_become_a_flip(self):
+        # The claim the refusal rested on, tested directly against the pairing
+        # rule the report uses.
+        A = self.verdicts(q1=("match", True), q2=(None, None))
+        B = self.verdicts(q1=("match", True), q2=("no_match", False))
+        shared = sorted(A)
+        a_only = [q for q in shared if A[q]["passed"] and B[q]["passed"] is False]
+        b_only = [q for q in shared if A[q]["passed"] is False and B[q]["passed"]]
+        unscored = [q for q in shared
+                    if A[q]["passed"] is None or B[q]["passed"] is None]
+        self.assertEqual(a_only + b_only, [])
+        self.assertEqual(unscored, ["q2"])
+
+    def test_it_never_refuses(self):
+        A = self.verdicts(q1=("match", True), q2=(None, None))
+        B = self.verdicts(q1=("match", True), q2=("no_match", False))
+        self.assertEqual(
+            ft.completeness_note({"status": "incomplete", "truncated": ["q2"]},
+                                 {"status": "complete"}, "a", "b", A, B), 0)
+
+    def test_two_complete_arms_say_nothing(self):
+        A = B = self.verdicts(q1=("match", True))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ft.completeness_note({}, {}, "a", "b", A, B)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_it_names_the_cases_and_why(self):
+        A = self.verdicts(q1=("match", True), q2=(None, None))
+        B = self.verdicts(q1=("match", True), q2=("no_match", False))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ft.completeness_note({"truncated": ["q2"]}, {}, "arm-a", "arm-b",
+                                 A, B)
+        body = out.getvalue()
+        self.assertIn("arm-a left 1 case(s) unscored", body)
+        self.assertIn("1 truncated", body)
+        self.assertIn("q2", body)
+        # The caveat that is actually true: the dropped cases are the long ones.
+        self.assertIn("BECAUSE it ran long", body)
+
+    def test_the_answerer_model_is_already_a_pin(self):
+        # Not this note's job, and worth pinning so nobody adds a second
+        # mechanism: an arm on one model against another is already reported
+        # as a differing pin. That was the largest uncontrolled variable in the
+        # run this came from.
+        self.assertIn("answererModel", ft.COMPARABLE)
+
+
 class Outcome(unittest.TestCase):
     def test_near_match_is_neither(self):
         self.assertEqual(ft.outcome("near_match"), "neither")

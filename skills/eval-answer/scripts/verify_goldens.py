@@ -46,6 +46,17 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  is compared with the model's own definition of X. Catches the
                  rubric that goes stale when the model is fixed.
 
+4b. rubric alternatives -- a rubric that accepts an alternative reading
+                 ("either the full name or the nickname is fine") whose
+                 `expectedEntities.required` names one id per concept and no
+                 `requiredAnyOf` group. The two halves of a key are read by
+                 different things -- prose by the judge, ids by retrieval
+                 scoring -- so they can disagree silently, and an answer taking
+                 the other reading then scores CORRECT and loses recall in the
+                 same run. Review items: the phrasing is a heuristic over
+                 prose. Measured over the sets available locally: 3 findings
+                 over 64 rubrics, all three genuine.
+
 5. set names  -- every `required` / `requiredAnyOf` entity id, and every
                  `mustNotUse` name, exists in the model under test (`--model`).
                  An id naming a field this package does not have can never be
@@ -99,6 +110,10 @@ EXIT CODES
   2  usage error (argparse)
   3  the value check did not happen -- says nothing about whether the goldens
      still hold. Either this crashed, or set.json names no truthPackage.
+     With --definitions, a set whose every value-bearing case rests on
+     validated definitions exits 0 instead: the values were not re-derived,
+     but the definitions they rest on were checked, which is the other half
+     of the same rule.
 
 3 is load-bearing and it is why the codes are enumerated here. `improve.py`'s
 acceptance gate has to tell "your edit may have invalidated a golden" from "the
@@ -113,6 +128,12 @@ golden was re-derived, and 0 told a caller it had been: `improve.py` recorded
 `clean: True` for an audit that never looked. When one of those checks DOES
 find something, 1 wins over 3: a finding is evidence, and 3 says there is none
 to read, so a caller obeying that would discard it.
+
+The composition rule: a golden is trustworthy if it was derived independently,
+OR if every definition it tests has itself been validated. A truth server is the
+first half. `--definitions <ledger>` (from verify_definitions.py) is the second,
+and the only thing it settles is the exit code and the promotion basis -- never a
+golden's value, which it does not touch.
 """
 from __future__ import annotations
 
@@ -211,7 +232,7 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
 
 # ---------------------------------------------------------------- 2. rubric numbers
 
-_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{2,}|\d{4,})(?![\w])")
+_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{1,}|\d{4,})(?![\w])")
 
 
 def golden_numbers(value: Any) -> list[float]:
@@ -287,9 +308,32 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     Only the rubric's accepting clause is read -- the text before its first
     "wrong" / "close but wrong" / "trap" marker -- because the rejecting half
     quotes numbers that are supposed to be absent. Only figures specific
-    enough to be a quoted result are checked (five or more significant
-    digits, or a decimal with two-plus places on a value over 100); years and
-    small counts are excluded by construction. A figure matches if it is a
+    enough to be a quoted result are checked (a comma-grouped
+    number, an integer of four digits or more, or any decimal, each then held
+    to three significant digits at 100 or more); years and small counts are
+    excluded by construction. The TOKENISER gates before the floor does, so
+    what the floor admits is only what the pattern found -- a bare three-digit
+    integer reaches neither, which is the limit described below.
+
+    The floor was five significant digits and is now three at or above 100.
+    Measured over the local sets: 14 findings to 17 over 54 rubrics. The three
+    added are one numerator ("2672/271019", the legitimate-intermediate case
+    below) and, twice, the last id in a long comma-separated list. No lexical
+    guard was added to suppress either -- see the paragraph below, where one
+    was tried and dropped for hiding a real finding.
+
+    WHAT THIS CHECK CANNOT CATCH, AND WHERE THAT IS HANDLED. A BARE
+    three-digit integer is not tokenised at all (`_NUM` starts at four digits
+    ungrouped), so the defect that motivated the change -- a rubric saying
+    "615 and 502" over goldens holding 747 and 370, one re-derivation out of
+    date, against which an agent that computed the golden's own figures was
+    marked wrong -- is NOT reported here. Tokenising three-digit integers was
+    measured on the same sets and takes the findings from 17 to 552, because a
+    rubric that quotes a list of ids contributes one finding per id; a report
+    of 552 items is not read. The general rule lives in the judge prompt
+    instead: where the rubric and the golden disagree about a figure, the
+    golden is the key. That holds at any precision and needs no regex. Lower
+    the floor again only with a fresh measurement beside it. A figure matches if it is a
     golden value, or the sum of a golden column -- rubrics legitimately quote
     "177,340,447.81 across the three groups".
 
@@ -325,7 +369,15 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
         digits = tok.replace(",", "").replace(".", "").lstrip("0")
         decimals = len(tok.split(".")[1]) if "." in tok else 0
         n = float(tok.replace(",", ""))
-        if decimals == 0 and (len(digits) < 5 or 1900 <= n <= 2100):
+        # Three significant digits and at least 100, not five. The old floor
+        # let through the exact defect this check exists to catch: a rubric
+        # saying "615 and 502" over goldens holding 747 and 370, after the
+        # goldens were re-derived and the prose was not. The agent computed the
+        # golden's own figures and was failed for it. Three-digit quantities
+        # are ordinary results, so a floor above them is a floor above the
+        # answers.
+        if decimals == 0 and (len(digits) < 3 or n < 100
+                              or 1900 <= n <= 2100):
             continue
         if decimals and n < 100 and len(digits) < 5:
             continue
@@ -436,14 +488,96 @@ DEFINES = re.compile(r"^\s*(\w+)\s+is\s+(.+?)\s*$", re.M)
 ASSERTS = re.compile(r"(\w+)\s+is\s+(?:defined\s+as\s+)?(count\([^)]*\)|sum\([^)]*\))")
 
 
-def model_definitions(model_path: pathlib.Path | None) -> dict[str, str]:
+# `source: NAME is`, and the block labels that say what KIND of thing follows.
+# Line-oriented like DEFINES above, for the same reason: this reads text, not a
+# compiled model, because no Publisher API returns a definition's expression.
+SOURCE_DECL = re.compile(r"^\s*source:\s*(\w+)\s+is\b")
+KIND_LABEL = re.compile(r"^\s*(measure|dimension|view|join_one|join_many|join_cross):\s*(.*)$")
+# `public: runtimeMinutes` inside an `include { }` block: a raw column passed
+# through, with no expression. It has no definition that could be wrong, but it
+# DOES get an entity id from get_context and so can be named in a case's
+# `expectedEntities`. Parsed so the ledger knows it exists: without a row, a
+# case naming one is indistinguishable from a case naming a definition nobody
+# checked, and stays unvalidated forever.
+PASSTHROUGH = re.compile(r"^\s*public:\s*(\w+)\s*$")
+KIND_OF_LABEL = {"measure": "measure", "dimension": "dimension", "view": "view",
+                 "join_one": "join", "join_many": "join", "join_cross": "join"}
+
+
+def parse_definitions(model_path: pathlib.Path | None,
+                      recursive: bool = False) -> list[dict[str, Any]]:
+    """Every `name is expr` in the model, with the source and kind it belongs to.
+
+    `model_definitions()` below is the flat view of this and keeps its old
+    contract. This one exists because a ledger keyed on `kind:source:name`
+    cannot use a flat `dict[name]`: the flat form resolves a same-named field
+    in two sources to whichever was read first, silently, and a model with
+    `total_sales` on two sources would have one of them validated under the
+    other's definition.
+
+    A line scanner, not a parser. It tracks the enclosing `source:` and the most
+    recent `measure:`/`dimension:`/`view:` block label, which is how Malloy
+    declares them. It does not track braces, so a definition inside a nested
+    block is attributed to the enclosing source rather than to the nesting --
+    good enough to key a ledger, and wrong in the same direction as the flat
+    dict it replaces rather than in a new one.
+    """
     if not model_path or not model_path.exists():
-        return {}
-    out: dict[str, str] = {}
-    files = [model_path] if model_path.is_file() else sorted(model_path.glob("*.malloy"))
+        return []
+    # `glob`, not `rglob`, by default: `model_definitions()` has always read
+    # only the top level and `stale_rubric_claims()` is calibrated to that.
+    # `model_text()` next door DOES recurse, which reads like an oversight
+    # rather than a decision -- but changing it here would quietly move an
+    # existing check, so the ledger opts in and the inconsistency stays visible.
+    files = ([model_path] if model_path.is_file()
+             else sorted(model_path.rglob("*.malloy") if recursive
+                         else model_path.glob("*.malloy")))
+    out: list[dict[str, Any]] = []
     for f in files:
-        for name, expr in DEFINES.findall(f.read_text()):
-            out.setdefault(name, expr.split("#")[0].strip())
+        source, kind = None, None
+        for n, raw in enumerate(f.read_text(errors="replace").splitlines(), 1):
+            line = raw.split("//")[0]
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            m = SOURCE_DECL.match(line)
+            if m:
+                source, kind = m.group(1), None
+                # `source: x is y extend { ... }` declares x itself; fall
+                # through so the `is` on this line is not read as a field.
+                continue
+            m = KIND_LABEL.match(line)
+            if m:
+                kind = KIND_OF_LABEL[m.group(1)]
+                line = m.group(2)          # `measure: x is ...` on one line
+                if not line.strip():
+                    continue
+            pt = PASSTHROUGH.match(line)
+            if pt:
+                out.append({"source": source, "kind": "dimension",
+                            "name": pt.group(1), "expr": None,
+                            "passthrough": True, "file": str(f), "line": n})
+                continue
+            d = DEFINES.match(line if line.startswith(" ") else "  " + line)
+            if not d:
+                continue
+            out.append({"source": source, "kind": kind or "dimension",
+                        "name": d.group(1), "expr": d.group(2).split("#")[0].strip(),
+                        "passthrough": False,
+                        "file": str(f), "line": n})
+    return out
+
+
+def model_definitions(model_path: pathlib.Path | None) -> dict[str, str]:
+    """Flat `name -> expr`, first declaration wins. The old contract, unchanged.
+
+    `stale_rubric_claims()` compares a rubric's claim against a name it has no
+    source for, so the flat view is what it needs; `parse_definitions()` is for
+    anything that must tell two same-named fields apart.
+    """
+    out: dict[str, str] = {}
+    for r in parse_definitions(model_path):
+        if r["expr"] is not None:
+            out.setdefault(r["name"], r["expr"])
     return out
 
 
@@ -602,6 +736,57 @@ def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+# A rubric that sanctions an alternative reading, in the words sets actually
+# use. Deliberately narrow: these are phrases that grant the ANSWER a choice,
+# not any use of the word "or".
+_ALLOWS_ALT = re.compile(
+    r"\b(either\b[^.]{0,80}\bor\b"
+    r"|or the \w+ is (?:fine|correct|acceptable|also correct)"
+    r"|is (?:also )?(?:fine|correct|acceptable)\b[^.]{0,40}\beither"
+    r"|any of (?:these|the following)"
+    r"|(?:is|are) (?:also )?acceptable)", re.I)
+
+
+def rubric_alternative_findings(cases: list[dict[str, Any]]) -> list[str]:
+    """Rubrics that accept an alternative while `required` demands one id.
+
+    The two halves of an answer key are read by different things and can
+    disagree without anything noticing: the rubric is prose for the judge, and
+    `expectedEntities.required` is ids for retrieval scoring. When the rubric
+    says "either the full carrier name or the nickname is fine" and the
+    required list names only `dimension:carriers:name`, an answer that uses the
+    nickname is scored CORRECT by the judge and loses recall in the same run.
+
+    That is not a retrieval finding, it is the key contradicting itself, and it
+    was mistaken for a retrieval failure on a real run. `requiredAnyOf` is the
+    repair: a group is satisfied when any member is delivered.
+
+    REVIEW, not a hard finding. The phrasing is a heuristic over prose, a set
+    may legitimately allow an alternative that is not an entity choice ("either
+    rounding is fine"), and a false alarm here costs a glance while a missed
+    one costs a wrong attribution.
+    """
+    out = []
+    for case in cases:
+        g = case.get("golden") or {}
+        rubric = g.get("rubric") or ""
+        if not rubric or not _ALLOWS_ALT.search(rubric):
+            continue
+        exp = case.get("expectedEntities") or {}
+        if exp.get("requiredAnyOf"):
+            continue
+        if not exp.get("required"):
+            continue
+        m = _ALLOWS_ALT.search(rubric)
+        out.append(
+            f"review {case['qid']}: the rubric accepts an alternative "
+            f"({m.group(0)[:60].strip()!r}) but expectedEntities.required "
+            f"names one id per concept and no requiredAnyOf group. An answer "
+            f"taking the other reading scores correct and loses recall in the "
+            f"same run")
+    return out
+
+
 def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
     """Set names that do not exist in the model under test.
 
@@ -635,9 +820,14 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
                            f"whatever the model holds. Fix: "
                            f"measure:<source>:<name>, or dimension:/view:")
             elif not _id_named(e, text):
-                out.append(f"{qid}: required entity {e} names nothing in the "
-                           f"model under test, so it can only ever score as a "
-                           f"retrieval miss. Fix the id, or make it a "
+                out.append(f"{qid}: required entity {e} does not appear in "
+                           f"the model TEXT. Confirm with check_findable.py "
+                           f"before deleting it: this is a grep and cannot see "
+                           f"a column a source exposes implicitly. Measured, "
+                           f"dimension:airports:own_type appears zero times in "
+                           f"the .malloy and retrieves at relevance 1.0. If it "
+                           f"is not retrievable either, it can only ever score "
+                           f"as a retrieval miss; fix the id, or make it a "
                            f"requiredAnyOf group naming both packages' ids")
         for g in exp.get("requiredAnyOf") or []:
             if isinstance(g, list) and g and not any(_id_named(e, text) for e in g):
@@ -686,7 +876,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
            target_package: str | None = None,
            cases_file: str = "cases.jsonl",
            quiet: bool = False, attest: str | None = None,
-           verbose: bool = False) -> dict[str, Any]:
+           verbose: bool = False,
+           definitions: pathlib.Path | None = None) -> dict[str, Any]:
     """Run every check. Returns a summary; `drifted` is the count that should
     stop a run.
 
@@ -737,6 +928,34 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     if skipped and chosen and not any(needs_value_check(c) for c in chosen):
         skipped = None
 
+    # The composition rule's second half. A truth server re-derives VALUES; a
+    # definition ledger validates the DEFINITIONS a value rests on. When every
+    # value-bearing case's tested definitions read `agrees` in the ledger and
+    # are not stale against --model, the absent server is not a check that
+    # failed to happen, and main() may exit 0 instead of 3. The value loop
+    # below still does not run -- there is nothing to run it against -- so this
+    # settles the exit code and the promotion basis, never a golden's value.
+    # Imported here rather than at the top: verify_definitions imports from
+    # this file, and the cycle is harmless once this module is fully loaded.
+    ledger_validated, unvalidated = False, []
+    if skipped and definitions:
+        from verify_definitions import (case_basis, load_ledger,  # noqa: E402
+                                        stale_ids)
+        led = load_ledger(definitions)
+        stale = stale_ids(led, model)
+        for c in chosen:
+            if not needs_value_check(c):
+                continue
+            basis = case_basis(c, led, stale, set_dir)
+            if basis not in ("independent", "definitions"):
+                unvalidated.append(f"{c['qid']} ({basis})")
+        ledger_validated = bool(led) and not unvalidated
+        if not quiet:
+            print(f"  definition ledger {definitions}: "
+                  + ("every value-bearing case rests on validated definitions"
+                     if ledger_validated else
+                     f"{len(unvalidated)} case(s) rest on unvalidated definitions"))
+
     tally: dict[str, int] = {}
     findings: list[str] = []
     refreshed: list[str] = []
@@ -748,6 +967,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     for c in chosen:
         findings += rubric_number_findings(c)
         findings += axis_findings(c, set_dir)
+    findings += rubric_alternative_findings(chosen)
     findings += stale_rubric_claims(chosen, model_definitions(model))
     findings += unknown_name_findings(chosen, model_text(model))
     findings += question_drift_findings(chosen)
@@ -777,6 +997,26 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 g["status"] = "verified"
                 g["verifiedBy"] = "authored_criteria"
                 promoted.append(c["qid"])
+
+    # Promotion through the ledger. `verified` here means two derivations of
+    # the value agree (the second derivation, as always) AND every definition
+    # those derivations used is validated. Nothing re-derived the value on a
+    # truth server, and verifiedBy says so by naming the ledger. No --attest
+    # path: an authored control plus a human vouching, with no second
+    # derivation, is too thin to call verified.
+    if promote and ledger_validated:
+        for c in chosen:
+            g = c["golden"]
+            if not needs_value_check(c) or g.get("status") != "provisional":
+                continue
+            why = promotion_blocker(c, set_dir)
+            if why:
+                promotion_notes.append(f"{c['qid']}: not promoted, {why}")
+                continue
+            g["status"] = "verified"
+            g["verifiedBy"] = (f"verify_goldens.py --promote via definition "
+                               f"ledger {definitions.name}")
+            promoted.append(c["qid"])
 
     # `[] if skipped else chosen` rather than an `if` block: the guard belongs
     # next to the one call that needs it, and wrapping would reindent the
@@ -913,7 +1153,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # string so both existing predicates still read; `tally` is {} rather than
     # {"skipped": N}, because check_value already returns a per-case status
     # spelled "skipped" and one word may not mean two things in one dict.
-    return {"skipped": skipped, "tally": tally, "drifted": drifted,
+    return {"skipped": skipped, "ledgerValidated": ledger_validated,
+            "unvalidated": unvalidated, "tally": tally, "drifted": drifted,
             "findings": findings, "refreshed": refreshed,
             "promoted": promoted, "attested": attested,
             "promotionNotes": promotion_notes}
@@ -969,6 +1210,11 @@ def main() -> int:
     ap.add_argument("--target-package",
                     help="the package under test, for the isolation guard. "
                          "Falls back to set.json's `targetPackage`")
+    ap.add_argument("--definitions", type=pathlib.Path, default=None,
+                    help="a definition ledger (verify_definitions.py). With no "
+                         "truth server, a set whose every value-bearing case "
+                         "rests on validated definitions exits 0 instead of 3, "
+                         "and --promote may promote through it")
     args = ap.parse_args()
     if args.attest is not None and (not args.promote or not args.attest.strip()):
         ap.error("--attest needs --promote and non-empty text naming who "
@@ -978,7 +1224,8 @@ def main() -> int:
                qids=set(args.qid) if args.qid else None, model=args.model,
                refresh=args.refresh, promote=args.promote,
                target_package=args.target_package, cases_file=args.cases,
-               attest=args.attest, verbose=args.verbose)
+               attest=args.attest, verbose=args.verbose,
+               definitions=args.definitions)
     if r.get("skipped"):
         print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a
@@ -1000,10 +1247,23 @@ def main() -> int:
               f"or gold/<qid>.json with verifyRows).", file=sys.stderr)
         return CANNOT_RUN
     if r.get("skipped"):
+        if r.get("ledgerValidated"):
+            print("No truth server, and none needed here: every value-bearing "
+                  "golden rests on definitions the ledger validates. Values were "
+                  "not re-derived; the definitions they rest on were.",
+                  file=sys.stderr)
+            return 0
+        if args.definitions:
+            print("The definition ledger does not validate every case: "
+                  + "; ".join(r.get("unvalidated") or ["the ledger has no rows"])
+                  + ". Author or re-run controls for those definitions, or name "
+                    "a truthPackage in set.json.", file=sys.stderr)
+            return CANNOT_RUN
         print("The audits above ran without a truth server. No golden was "
               "re-derived, so this says NOTHING about whether the goldens still "
               "hold; do not read it as a pass. Name a truthPackage in set.json "
-              "(init_truth_package.py scaffolds one).", file=sys.stderr)
+              "(init_truth_package.py scaffolds one), or validate the "
+              "definitions and pass --definitions.", file=sys.stderr)
         return CANNOT_RUN
     return 0
 

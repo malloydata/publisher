@@ -56,6 +56,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 SKILLS_ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 
+from json_scan import json_objects  # noqa: E402
 from verify_goldens import model_text as local_model_text  # noqa: E402
 
 # The `claude -p` invocation lives once, in the harness, rather than being
@@ -232,27 +233,6 @@ The enumeration comes first because the verdict follows from it. Before you emit
 `verdict`, re-read `quantities` and `ruled_out`: if any quantity holds more than
 one candidate and its `ruled_out` entry is null, the verdict is not `ok`.
 """
-
-
-def json_objects(text: str) -> list[dict[str, Any]]:
-    """Every JSON object in `text`, in the order they appear.
-
-    Decoded from each `{` rather than matched with `\\{.*\\}`, which is greedy
-    and spans the FIRST brace to the LAST. The prompt hands the agent the model
-    text, so one `extend { ... }` quoted back in the narration would swallow the
-    verdict and a good reply would read as unparseable.
-    """
-    dec, out, i = json.JSONDecoder(), [], 0
-    while (i := text.find("{", i)) >= 0:
-        try:
-            v, end = dec.raw_decode(text, i)
-        except json.JSONDecodeError:
-            i += 1
-            continue
-        if isinstance(v, dict):
-            out.append(v)
-        i = max(end, i + 1)
-    return out
 
 
 def parse_reply(text: str, allowed: tuple[str, ...]) -> dict[str, Any]:

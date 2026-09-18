@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -41,6 +42,28 @@ class Invocation(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def capture(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        with mock.patch.object(improve.subprocess, "run", fake_run):
+            improve.verify_goldens(self.a, self.art, "a diff")
+        return seen["cmd"]
+
+    def test_definitions_reaches_the_verifier_command(self):
+        # The acceptance check can pass on a set with no truth package only if
+        # the ledger gets as far as the verifier.
+        self.a.definitions = pathlib.Path("/tmp/led.jsonl")
+        cmd = self.capture()
+        self.assertIn("--definitions", cmd)
+        self.assertIn("/tmp/led.jsonl", cmd)
+
+    def test_a_namespace_without_definitions_is_still_accepted(self):
+        # Older callers and these fixtures build the Namespace by hand.
+        self.assertNotIn("--definitions", self.capture())
 
     def test_the_verifier_accepts_the_arguments_improve_sends(self):
         r = improve.verify_goldens(self.a, self.art, "a diff")

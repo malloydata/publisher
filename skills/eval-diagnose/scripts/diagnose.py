@@ -60,6 +60,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
                            manifest_skills, skills_roots, spawn_agent)
 import ledger  # noqa: E402
+import cluster_failures  # noqa: E402
+import score_retrieval  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -114,8 +116,6 @@ def worst(values: Iterable[str | None], vocab: tuple[str, ...],
     return max(ranked, key=vocab.index) if ranked else fallback
 
 
-
-
 def skill_codes() -> set[str]:
     text = (SKILLS_ROOT / "eval-diagnose" / "SKILL.md").read_text()
     codes = set(CODE_IN_TABLE.findall(text))
@@ -148,6 +148,12 @@ def evidence_for(qid: str, case: dict[str, Any],
             continue
         summary = c.get("rankedSummary") or {}
         asked.append({"targets": c.get("targets"),
+                      # Without this a narrow scope is invisible, and a miss it
+                      # fully explains reads as a retrieval failure. One
+                      # diagnosis asserted "a single unscoped get_context call"
+                      # about a call scoped to one source, and charged the miss
+                      # to retrieval on that premise.
+                      "scopes": c.get("scopes"),
                       "returnedInRankOrder": summary.get("entityIds") or [],
                       "resultCount": summary.get("resultCount"),
                       "error": c.get("error")})
@@ -192,8 +198,18 @@ commit to a code -- use them. You may not edit anything.{scope_line}
 EVIDENCE FROM THE RUN
 {evidence}
 
-In `getContextCalls`, `targets` is what the agent searched for and
-`returnedInRankOrder` is what came back, in rank order.
+In `getContextCalls`, `targets` is what the agent searched for, `scopes` is
+the scope it searched UNDER, and `returnedInRankOrder` is what came back.
+
+**Read `scopes` before you blame retrieval for anything.** A call carrying a
+`source` in its scope is pinned to that source and cannot return an entity from
+another one, however well documented that entity is. A miss under a narrow
+scope is the agent's scoping -- `agent-call` -- not `get_context/retrieval`.
+Not hypothetical: a diagnosis asserted "a single unscoped get_context call"
+about a call scoped to `source: flights`, and charged a missing `airports`
+field to retrieval on that premise. The scope was in the request all along and
+was missing from the evidence; it is there now, so calling a scoped call
+unscoped is a checkable error.
 
 Emit the object defined under `## Per case` in `reference/output-contract.md`
 of the eval-diagnose skill as the LAST thing in your reply. Read that file; it
@@ -208,12 +224,25 @@ the analysis inside it is.
 
 
 def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
-                 a: argparse.Namespace, art: pathlib.Path) -> dict[str, Any]:
+                 a: argparse.Namespace, art: pathlib.Path, *,
+                 answered_correctly: bool = False) -> dict[str, Any]:
     d = art / qid
     out = d / "diagnosis.json"
     if out.exists() and not a.force:
         return {**json.loads(out.read_text()), "qid": qid, "_cached": True}
 
+    # Said up front, because the evidence would otherwise read as a wrong
+    # answer and the diagnosis would go looking for one. The finding here is
+    # narrower: a required entity never reached the answerer, and the answer
+    # was right anyway -- by another route, which is worth naming.
+    correct_line = ("\nTHIS ANSWER WAS CORRECT. Diagnose the RETRIEVAL miss "
+                    "only: a required entity never reached the answerer and "
+                    "the answer was right without it. Say by what route it "
+                    "was right (a rebuilt measure, a sibling field, the "
+                    "source docs), and do NOT look for a wrong number. An "
+                    "answer that is right without the model's own entity is "
+                    "right for now, not right by design.\n"
+                    if answered_correctly else "")
     platform = a.target == "platform"
     scope_line = ""
     if platform and a.scope:
@@ -236,7 +265,7 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
         DIAGNOSE_PROMPT.format(
             environment=a.environment, package=a.package,
             tools_name="the hosted platform" if platform else "Publisher",
-            scope_line=scope_line,
+            scope_line=scope_line + correct_line,
             evidence=json.dumps(evidence_for(qid, case, events),
                                 indent=2)[:14000]),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
@@ -341,12 +370,135 @@ def validate(obj: dict[str, Any], codes: set[str]) -> list[str]:
     return bad
 
 
+def retrieval_finding(case: dict[str, Any], events: list[dict[str, Any]],
+                      key: tuple, verdict: str | None) -> dict[str, Any] | None:
+    """The retrieval attribution for one case, when there is one to report.
+
+    Calls the real scorer rather than restating its rule: `where_to_fix` is
+    non-empty exactly when a required entity did not reach the answerer, and
+    `score_retrieval` owns that decision for the run summary too, so the two
+    cannot drift into disagreeing about what counts as a miss.
+    """
+    row = score_retrieval.score_case(case, events, key, verdict)
+    return row if row.get("where_to_fix") else None
+
+
+def behaviour_stats(qid: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """How an attempt CONDUCTED itself, for one case, in comparable numbers.
+
+    The measures a behavioural root cause gets stated in: how much retrieval it
+    did, how much of that retrieval named what it wanted, how many queries it
+    ran, how many skills it opened, how long it took. Cheap -- it reads events
+    already on disk and calls nothing.
+    """
+    attempt = next((e for e in events
+                    if e.get("kind") == "attempt" and e.get("qid") == qid), {})
+    calls = [e for e in events if e.get("kind") == "tool_call"
+             and e.get("qid") == qid and e.get("tool") == "get_context"]
+    # `target_shapes` when the run recorded it, `targets` otherwise. They are
+    # not interchangeable and the difference is the whole point: `targets` is
+    # the terms SEARCHED FOR, and a target carrying no `search_text` is dropped
+    # before it is written, so counting bare targets from it always yields
+    # zero. Measured on a real 10-case run, every attempt read
+    # `targetsWithoutSearchText: 0` while the argument the field exists to test
+    # is precisely about how often that count is high.
+    shapes = [t for c in calls for t in (c.get("target_shapes") or [])]
+    if shapes:
+        by_type: dict[str, int] = {}
+        for t in shapes:
+            by_type[t.get("type") or "?"] = by_type.get(t.get("type") or "?", 0) + 1
+        n_targets = len(shapes)
+        bare = sum(1 for t in shapes if not t.get("has_text"))
+        measured = True
+    else:
+        # A run written before `target_shapes` existed. The types are readable
+        # from the `"<type>: <text>"` strings, but the bare count is NOT
+        # recoverable, so it is reported as unknown rather than as zero -- a
+        # falsifier that silently reads zero is worse than one that abstains.
+        targets = [t for c in calls for t in (c.get("targets") or [])]
+        by_type = {}
+        for t in targets:
+            kind = (t.split(":", 1)[0].strip()
+                    if isinstance(t, str) and ":" in t else "?")
+            by_type[kind] = by_type.get(kind, 0) + 1
+        n_targets, bare, measured = len(targets), None, False
+
+    return {
+        "qid": qid,
+        "verdict": next((e.get("verdict") for e in events
+                         if e.get("kind") == "score" and e.get("qid") == qid),
+                        None),
+        "targetTypes": by_type,
+        "targetsMeasured": measured,
+        "nGetContext": attempt.get("n_get_context"),
+        "nExecute": attempt.get("n_execute"),
+        "nExecuteErrors": attempt.get("n_execute_errors"),
+        "searchTargets": n_targets,
+        "targetsWithoutSearchText": bare,
+        "skillsInvoked": attempt.get("skills_invoked") or [],
+        "numTurns": attempt.get("num_turns"),
+    }
+
+
+def controls_block(controls: list[dict[str, Any]]) -> str:
+    """The CONTROLS section of the clustering prompt, sized to what exists.
+
+    Three cases, because the instruction that is right for twenty passing cases
+    is wrong for one and meaningless for none:
+
+    - **None.** Every case in the run failed, so there is nothing to compare
+      against. Asking the agent to compare rates against an empty list invites
+      it to read `[]` as evidence of absence. Say plainly that no behavioural
+      cluster can be falsified here.
+    - **One or two.** Not a rate. Two passing cases cannot establish that a
+      behaviour is rarer in passes, and treating them as if they could is how a
+      cluster gets confirmed by a coin flip.
+    - **Three or more.** The real comparison.
+    """
+    n = len(controls)
+    if not n:
+        return ("CONTROLS: none. Every scored case in this run failed.\n\n"
+                "There is nothing to compare a behaviour against, so a cluster\n"
+                "whose root cause is a BEHAVIOUR -- how much the agent\n"
+                "retrieved, how it phrased its targets, how many queries it ran\n"
+                "-- cannot be falsified from this run. Mark every such cluster\n"
+                "`unfalsified` and say why. Do NOT read the absence of controls\n"
+                "as evidence that the behaviour is causal. A cluster resting on\n"
+                "a MODEL fact -- a missing entity, a wrong measure, an\n"
+                "undocumented convention -- is unaffected: those are checked\n"
+                "against the model, not against other cases.")
+    head = (f"CONTROLS: the same measurements on the {n} case(s) that PASSED "
+            f"this run\n\n" + json.dumps(controls, indent=2) + "\n\n")
+    if n < 3:
+        return head + (
+            f"{n} passing case(s) is NOT a rate. It is enough to notice that a\n"
+            "behaviour you called causal also appears in a passing case, which\n"
+            "is worth saying; it is not enough to establish that the behaviour\n"
+            "is rarer in passes. Do not compute a percentage from it. If the\n"
+            "behaviour appears here too, mark the cluster `contributing` rather\n"
+            "than `primary`; if it does not, the cluster stays weakly supported\n"
+            "and say so.")
+    return head + (
+        "These are the falsifier for any cluster whose root cause is a\n"
+        "BEHAVIOUR -- how much the agent retrieved, how it phrased its targets,\n"
+        "how many queries it ran, which skills it opened. Diagnosis only ever\n"
+        "looks at failures, so a behaviour common to both looks causal here and\n"
+        "is not.\n\n"
+        "Before you claim a behaviour explains a cluster, compare it against\n"
+        "these rows. If it occurs at a similar rate in the passes, say so and\n"
+        "mark that cluster `contributing` rather than `primary`; a cluster\n"
+        "whose behaviour does not separate the two groups must not be routed to\n"
+        "a skill or model edit as the root cause.")
+
+
 CLUSTER_PROMPT = """Apply Step 5 of the eval-diagnose skill across a whole run.
 
 These are the per-case diagnoses from one run. Cluster them.
 
 DIAGNOSED ISSUES
 {issues}
+
+{controls}
 
 Emit the object defined under `## Per run, clustering` in
 `reference/output-contract.md` of the eval-diagnose skill as the LAST thing in
@@ -367,12 +519,14 @@ the improve step's job, not yours.
 
 
 def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
-            out: pathlib.Path) -> dict[str, Any]:
+            out: pathlib.Path,
+            controls: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     keep = ("qid", "component", "primary_code", "contributing_codes", "owner",
             "sufficiency", "severity", "diagnosis", "sharedWith")
     compact = [{k: v for k, v in i.items() if k in keep} for i in issues]
     r = spawn_agent(
-        CLUSTER_PROMPT.format(issues=json.dumps(compact, indent=2)),
+        CLUSTER_PROMPT.format(issues=json.dumps(compact, indent=2),
+                              controls=controls_block(controls or [])),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.cluster_model,
         # 14, not 8. The output contract moved into
@@ -387,6 +541,122 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
     res = r.json or {"clusters": [], "reasoning": r.error or "unparseable"}
     res["_cost_usd"] = r.cost_usd
     return res
+
+
+def select_cases(events: list[dict[str, Any]],
+                 cases: dict[str, dict[str, Any]],
+                 want_verdicts: set[str] | tuple[str, ...],
+                 *, include_holdout: bool = False,
+                 no_retrieval_misses: bool = False,
+                 only: str | None = None,
+                 limit: int | None = None) -> tuple[
+                     list[str], list[str], list[str], dict[str, list[str]],
+                     dict[str, list[str]]]:
+    """Sort every scored case into diagnose / passed / excluded.
+
+    Pure, so the three accounting rules it enforces are pinned by tests rather
+    than only by reading a run: a case lands in exactly ONE bucket; a case the
+    run did not pass stays counted as non-passing even when `--only` or
+    `--limit` keeps it out of this diagnosis; and a case that PASSED never
+    reaches the non-passing denominator, however it was excluded.
+
+    Returns (failed, passed, retrieval_only, excluded, excluded_passes).
+    `excluded` holds only non-passing cases, so `not_passing` can sum it;
+    `excluded_passes` holds passes kept out of diagnosis, reported separately.
+    """
+    # Account for EVERY scored case, not just the ones that get diagnosed.
+    # A run that diagnosed 8 of 18 failures reported six clusters as though
+    # they covered the failures; they covered 44% of them, and nothing said so.
+    # Each case lands in exactly one bucket, so the buckets sum to the scored
+    # cases and a reader can see what the clusters are silent about.
+    failed, passed, retrieval_only = [], [], []
+    excluded: dict[str, list[str]] = {}
+    # Passes kept out of diagnosis. Separate from `excluded` because
+    # `not_passing` sums that one and a pass is not a non-passing case.
+    excluded_passes: dict[str, list[str]] = {}
+
+    def exclude(why: str, *qids: str) -> None:
+        excluded.setdefault(why, []).extend(qids)
+
+    for e in events:
+        if e.get("kind") != "score":
+            continue
+        qid, verdict = e["qid"], e.get("verdict")
+        case = cases.get(qid)
+        if case is None:
+            exclude("not in the case file", qid)
+        elif ledger.is_contaminated(e):
+            # Ahead of the holdout and verdict checks: a contaminated attempt
+            # is not evidence either way, so it is excluded for that reason
+            # whatever split it is on.
+            exclude("contaminated", qid)
+        elif verdict is None:
+            # No verdict to explain: an unestablished key, a truncated
+            # attempt, or a judge reply that could not be read. The `reason`
+            # says which, and none of them is a model failure.
+            exclude(f"unscored ({e.get('reason') or 'no reason recorded'})",
+                    qid)
+        elif case.get("split") == "holdout" and not include_holdout:
+            # Ahead of the verdict checks, beside contamination and for the
+            # same reason: what split a case is on does not depend on how it
+            # scored. Below the `match` branch, a holdout case that answered
+            # correctly WITH a retrieval miss went straight into
+            # `retrieval_only` and on to a diagnosis call, because the holdout
+            # test was on a branch it never reached -- so the split leaked on
+            # every run and no flag could stop it.
+            exclude("holdout, withheld from diagnosis", qid)
+        elif verdict == "match":
+            passed.append(qid)
+            # A correct answer can still rest on a retrieval miss, and that is
+            # a finding: the answer was right by another route, which on the
+            # run this comes from meant the agent rebuilding the model's own
+            # measure inline. It held while the measure was `count()` and
+            # failed the moment one carried a grain rule. "It worked anyway" is
+            # not a reason to leave the gap, so the case is diagnosed -- with
+            # its correctness recorded, so nobody reads the issue as a wrong
+            # number.
+            key = (qid, e.get("sample"), e.get("phase"))
+            if retrieval_finding(case, events, key, verdict):
+                retrieval_only.append(qid)
+        elif verdict not in want_verdicts:
+            exclude(f"{verdict}, not in --verdicts", qid)
+        else:
+            failed.append(qid)
+    failed = list(dict.fromkeys(failed))
+    retrieval_only = [q for q in dict.fromkeys(retrieval_only)
+                      if q not in failed]
+    if no_retrieval_misses:
+        if retrieval_only:
+            # NOT `exclude()`: these cases PASSED. `excluded` is the account of
+            # what the clusters are silent about among cases the run did not
+            # pass, and `not_passing` sums it -- so putting a pass in there
+            # printed "coverage: 0 of 2 non-passing case(s) diagnosed (0%)" on
+            # a run where every case passed. Reported on its own line instead,
+            # which is also what `retrieval_only` gets when the flag is off.
+            excluded_passes["passed with a retrieval miss "
+                            "(--no-retrieval-misses)"] = list(retrieval_only)
+        retrieval_only = []
+
+    # `--only` and `--limit` narrow what gets DIAGNOSED; they do not change
+    # what the run failed. The cases they drop are recorded as exclusions so
+    # the coverage denominator below still counts every non-passing case:
+    # truncating `failed` in place moved numerator and denominator together
+    # and printed "coverage: 5 of 5 non-passing case(s) diagnosed (100%)" on a
+    # run with 23 failures and --limit 5, which is the exact silence the
+    # coverage line was added to break.
+    if only:
+        want = {q.strip() for q in only.split(",")}
+        dropped = [q for q in failed if q not in want]
+        if dropped:
+            exclude("not named in --only", *dropped)
+        failed = [q for q in failed if q in want]
+        retrieval_only = [q for q in retrieval_only if q in want]
+    if limit:
+        if failed[limit:]:
+            exclude(f"beyond --limit {limit}", *failed[limit:])
+        failed = failed[:limit]
+        retrieval_only = retrieval_only[:max(0, limit - len(failed))]
+    return failed, passed, retrieval_only, excluded, excluded_passes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -420,6 +690,19 @@ def main(argv: list[str] | None = None) -> int:
                          "will not close it -- take the stable list from "
                          "flip_table.py and pass --verdicts near_match. Never "
                          "diagnose a one-armed near_match; that is noise.")
+    ap.add_argument("--no-retrieval-misses", action="store_true",
+                    help="do not diagnose a case that answered correctly but "
+                         "never received a required entity. Those are real "
+                         "findings -- the answer was right by another route -- "
+                         "so this is an opt-out for a run that only wants "
+                         "answer failures, not a default.")
+    ap.add_argument("--include-holdout", action="store_true",
+                    help="diagnose holdout cases too. Holdout is normally "
+                         "withheld so the acceptance check keeps something "
+                         "the improve step never saw -- but a MEASURE-ONLY "
+                         "run never reaches improve, so it is holding them "
+                         "back from nothing. Refused when the run already "
+                         "carries a candidate edit.")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--no-cluster", action="store_true")
     ap.add_argument("--target", choices=("local", "platform"), default="local",
@@ -449,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
                          "model, and without it diagnosis is biased away from "
                          "model-owned causes. Deliberately NOT the answerer's "
                          "manifest -- a diagnoser fluent in the answerer's own "
-                         "playbook over-attributes to query construction")
+                         "playbook over-attributes to how the query was built")
     ap.add_argument("--skills-root", default=None,
                     help="checkout holding skills/ and manifests/ for the role "
                          "skills (a Publisher checkout); this checkout still "
@@ -501,36 +784,48 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"--verdicts: {', '.join(sorted(unknown))} is not a "
                          f"diagnosable verdict (no_match, near_match, "
                          f"needs_human)")
-    failed = []
-    for e in events:
-        if e.get("kind") != "score" or e.get("verdict") not in want_verdicts:
-            continue
-        case = cases.get(e["qid"])
-        if case is None or case.get("split") == "holdout":
-            continue
-        if ledger.is_contaminated(e):
-            continue
-        failed.append(e["qid"])
-    failed = list(dict.fromkeys(failed))
+    # Holdout exists so the acceptance check has something the improve step
+    # never saw. A run that will never reach improve is holding it back from
+    # nothing -- but the harness cannot take that on trust, so it checks: a run
+    # already carrying a `candidate` has an edit in flight, and diagnosing its
+    # holdout would burn the only split that can still falsify that edit.
+    if a.include_holdout:
+        spent = [e for e in events if e.get("kind") == "candidate"]
+        if spent:
+            raise SystemExit(
+                f"--include-holdout: this run already carries "
+                f"{len(spent)} candidate edit(s), so its holdout is the only "
+                f"thing left that can falsify them. Diagnose holdout only on a "
+                f"run that will not reach improve.")
+        print("  --include-holdout: holdout cases WILL be diagnosed. This run "
+              "must not go on to an improve step.")
 
-    if a.only:
-        want = {q.strip() for q in a.only.split(",")}
-        failed = [q for q in failed if q in want]
-    if a.limit:
-        failed = failed[:a.limit]
-    if not failed:
+    failed, passed, retrieval_only, excluded, excluded_passes = select_cases(
+        events, cases, want_verdicts,
+        include_holdout=a.include_holdout,
+        no_retrieval_misses=a.no_retrieval_misses,
+        only=a.only, limit=a.limit)
+    # Diagnosed together, because the question asked of both is the same one:
+    # why did the model not deliver what the answer needed. They are told
+    # apart on the way in, so the prompt can say the answer was right, and on
+    # the way out, so a reader never mistakes one for a wrong number.
+    to_diagnose = failed + retrieval_only
+    if not to_diagnose:
         print("no diagnosable failures in this run")
         return 0
 
     art = a.run / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
-    print(f"tier 1: {len(failed)} failed dev cases, {a.model}, "
+    extra = (f" + {len(retrieval_only)} that answered correctly without a "
+             f"required entity" if retrieval_only else "")
+    print(f"tier 1: {len(failed)} failed dev cases{extra}, {a.model}, "
           f"{a.parallel} at a time  ({len(codes)} codes in the skill)")
 
     issues: list[dict[str, Any]] = []
     with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
-        fut = {ex.submit(diagnose_one, q, cases[q], events, a, art): q
-               for q in failed}
+        fut = {ex.submit(diagnose_one, q, cases[q], events, a, art,
+                         answered_correctly=q in retrieval_only): q
+               for q in to_diagnose}
         for i, f in enumerate(futures.as_completed(fut), 1):
             q = fut[f]
             try:
@@ -539,11 +834,13 @@ def main(argv: list[str] | None = None) -> int:
                 obj = {"qid": q, "error": f"{type(exc).__name__}: {exc}"[:200]}
             issues.append(obj)
             if obj.get("error"):
-                print(f"  [{i}/{len(failed)}] ! {q} {obj['error']}", flush=True)
+                print(f"  [{i}/{len(to_diagnose)}] ! {q} {obj['error']}",
+                      flush=True)
             else:
                 obj["_invalid"] = validate(obj, codes)
                 tag = "=" if obj.get("_cached") else ("!" if obj["_invalid"] else ".")
-                print(f"  [{i}/{len(failed)}] {tag} {q} "
+                mark = " (answered correctly)" if q in retrieval_only else ""
+                print(f"  [{i}/{len(to_diagnose)}] {tag} {q}{mark} "
                       f"{obj.get('component')}/{obj.get('primary_code')} "
                       f"-> {obj.get('owner')}"
                       + (f"  [{'; '.join(obj['_invalid'])}]"
@@ -552,8 +849,25 @@ def main(argv: list[str] | None = None) -> int:
     good = [i for i in issues if not i.get("error")]
     clusters: dict[str, Any] = {"clusters": []}
     if good and not a.no_cluster:
-        print(f"\ntier 2: clustering {len(good)} diagnoses with {a.cluster_model}")
-        clusters = cluster(good, a, a.run)
+        # The control group. Diagnosis only ever reads failures, so any
+        # behaviour common to the whole run looks causal from inside it. On one
+        # measured run the largest cluster was built on "substitutes broad
+        # enumeration for targeted retrieval", and the enumeration rate was 25%
+        # of targets in the failures against 26% in the passes -- identical.
+        # What actually separated them was volume, which question difficulty
+        # explains at least as well as call style. So the passes go to the
+        # clustering agent as a falsifier, measured the same way.
+        controls = [behaviour_stats(q, events) for q in passed]
+        how = (f"{len(controls)} passing case(s) as controls"
+               if len(controls) >= 3 else
+               f"only {len(controls)} passing case(s): too few to establish a "
+               f"rate, so behavioural clusters stay weakly supported"
+               if controls else
+               "NO passing cases in this run, so no behavioural cluster can be "
+               "falsified here")
+        print(f"\ntier 2: clustering {len(good)} diagnoses with "
+              f"{a.cluster_model} ({how})")
+        clusters = cluster(good, a, a.run, controls=controls)
         for c in clusters.get("clusters", []):
             print(f"  {len(c.get('qids', [])):>2} cases  {c.get('cluster_id')} "
                   f"({c.get('owner')})  {(c.get('rootCause') or '')[:66]}")
@@ -613,10 +927,13 @@ def main(argv: list[str] | None = None) -> int:
     # so the browsable package always carried the mechanical grouping -- which
     # on both the ecommerce and VideoAmp runs charged everything to retrieval
     # while the diagnosis beside it said otherwise.
-    where = {"model": "model coverage", "retrieval": "retrieval ranking",
-             "agent-skill": "query construction", "dataset": "dataset"}
-    lever = {"model": "model", "retrieval": "retrieval", "agent-skill": "skill",
-             "dataset": "dataset"}
+    # Imported, not spelled: this file and `cluster_failures.py` both write
+    # `clusters.jsonl`, and when `score_retrieval` renamed the labels these two
+    # maps kept the old ones -- so the package's `where_to_fix` column carried
+    # "query construction" from here and "delivered, wrong" from the scorer,
+    # under one name, with the column's own doc matching neither.
+    where = cluster_failures.WHERE_BY_OWNER
+    lever = cluster_failures.LEVER_BY_OWNER
     with (a.run / "clusters.jsonl").open("w") as fh:
         for n, c in enumerate(clusters.get("clusters", []), 1):
             qids = [q for q in c.get("qids", []) if q in by_qid]
@@ -639,9 +956,48 @@ def main(argv: list[str] | None = None) -> int:
     invalid = [i for i in good if i.get("_invalid")]
     spend = sum(i.get("cost_usd") or 0 for i in issues) + \
         (clusters.get("_cost_usd") or 0)
-    print(f"\n{len(good)}/{len(failed)} diagnosed, "
+    print(f"\n{len(good)}/{len(to_diagnose)} diagnosed, "
           f"{len(clusters.get('clusters', []))} clusters, "
           f"{len(new) // 2} issues in {ev_path}")
+    if retrieval_only:
+        # Counted apart from the failures on purpose. These answers were
+        # RIGHT; what is wrong is that the model did not deliver what they
+        # needed and they were right by another route. Folding them into a
+        # failure count would misreport the run.
+        print(f"  of those, {len(retrieval_only)} answered correctly and are "
+              f"diagnosed for a retrieval miss only: "
+              f"{', '.join(sorted(retrieval_only))}")
+    # What the clusters are silent about. A run that diagnosed 8 of 18
+    # non-passing cases reported its six clusters as though they covered the
+    # failures, and the exclusions -- five holdout, two near_match, one
+    # unparseable diagnoser reply, one lost verdict -- were each individually
+    # correct and never added up anywhere. The denominator is every case the
+    # run did NOT pass, because that is the number a reader has in mind.
+    # `retrieval_only` cases are PASSES and stay out of this denominator: the
+    # account answers "what did the clusters not cover, of what did not pass".
+    not_passing = len(failed) + sum(len(v) for v in excluded.values())
+    # Numerator and denominator must describe the same population. `good` now
+    # includes cases that PASSED and were diagnosed for a retrieval miss, and
+    # counting those against a non-passing denominator printed "2 of 1 (200%)".
+    # They are reported on their own line above instead.
+    good_failures = [i for i in good if i.get("qid") in set(failed)]
+    if not_passing:
+        print(f"\ncoverage: {len(good_failures)} of {not_passing} "
+              f"non-passing case(s) diagnosed "
+              f"({100 * len(good_failures) / not_passing:.0f}%)")
+        for why, qids in sorted(excluded.items(),
+                                key=lambda kv: (-len(kv[1]), kv[0])):
+            print(f"  {len(qids):>3} {why}: {', '.join(sorted(qids))}")
+        undiagnosed = len(failed) - len(good_failures)
+        if undiagnosed:
+            print(f"  {undiagnosed:>3} selected but not diagnosed (the "
+                  f"diagnoser errored or its reply did not parse)")
+    # Below the coverage block and never inside its denominator: these PASSED.
+    # Reported all the same, because "2 passing cases carried a retrieval miss
+    # and you told me not to look at them" is a thing a reader should see.
+    for why, qids in sorted(excluded_passes.items()):
+        print(f"\n{len(qids)} passing case(s) kept out of diagnosis -- {why}: "
+              f"{', '.join(sorted(qids))}")
     if invalid:
         print(f"{len(invalid)} broke the skill's vocabulary "
               f"(see `_invalid` in diagnoses.jsonl)")
