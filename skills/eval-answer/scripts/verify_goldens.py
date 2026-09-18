@@ -221,7 +221,7 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
 
 # ---------------------------------------------------------------- 2. rubric numbers
 
-_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{2,}|\d{4,})(?![\w])")
+_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{1,}|\d{4,})(?![\w])")
 
 
 def golden_numbers(value: Any) -> list[float]:
@@ -297,9 +297,12 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     Only the rubric's accepting clause is read -- the text before its first
     "wrong" / "close but wrong" / "trap" marker -- because the rejecting half
     quotes numbers that are supposed to be absent. Only figures specific
-    enough to be a quoted result are checked (three or more significant digits
-    on a value of 100 or more, or a decimal with two-plus places over 100);
-    years and small counts are excluded by construction.
+    enough to be a quoted result are checked (a comma-grouped
+    number, an integer of four digits or more, or any decimal, each then held
+    to three significant digits at 100 or more); years and small counts are
+    excluded by construction. The TOKENISER gates before the floor does, so
+    what the floor admits is only what the pattern found -- a bare three-digit
+    integer reaches neither, which is the limit described below.
 
     The floor was five significant digits and is now three at or above 100.
     Measured over the local sets: 14 findings to 17 over 54 rubrics. The three

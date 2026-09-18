@@ -884,6 +884,24 @@ class RubricFigures(unittest.TestCase):
             "Right: the top 12 categories, over 5 regions.", total=747))
         self.assertEqual(f, [])
 
+    def test_a_one_decimal_average_is_checked(self):
+        # "about 740.5" is how a rubric quotes an average, and the tokeniser
+        # required TWO decimal places, so that whole shape was invisible.
+        # Admitting one-decimal figures added zero findings across every set
+        # available locally, so it is free.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: an average flight distance of about 688.2.",
+            average=740.48))
+        self.assertEqual(len(f), 1)
+        self.assertIn("688.2", f[0])
+
+    def test_a_small_decimal_is_still_excluded(self):
+        # The floor still applies after the tokeniser: a value under 100 with
+        # few digits is a rate or a ratio, not a quoted result.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: a ratio of 3.5.", total=747))
+        self.assertEqual(f, [])
+
     def test_a_figure_the_golden_holds_is_not_reported(self):
         f = verify_goldens.rubric_number_findings(self.case(
             "Right: 747 page views.", views=747))
