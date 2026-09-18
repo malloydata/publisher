@@ -185,6 +185,7 @@ from publisher_rest import package_identity, served_model_path, try_query  # noq
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
     summarise)
+from json_scan import json_objects  # noqa: E402
 from check_contamination import check as path_check  # noqa: E402
 from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
@@ -2032,24 +2033,17 @@ def verdict_object(text: str) -> dict[str, Any] | None:
     and the case left every bucket -- including the denominator the pass rate
     is printed over.
 
-    So: scan the candidate spans and take the LAST one that parses and names a
-    verdict. Last rather than first because the judge is told to end with the
-    object, and prose that reasons toward it may quote a fragment on the way.
-    Unbalanced or non-JSON spans are skipped rather than failing the read,
-    which is what makes a quoted query harmless.
+    The scan itself is `check_coverage.json_objects`, which already solved this
+    for the coverage judge and says so in the same words. Reading every object
+    and choosing here is the whole of what this adds: LAST rather than first,
+    because the judge is told to end with the object and prose reasoning toward
+    it may quote a fragment on the way. Writing a second scanner is what the
+    `where_to_fix` rename spent four commits undoing -- two copies of one
+    parser drift, and the one that drifts is the one nobody is looking at.
     """
-    starts = [i for i, ch in enumerate(text) if ch == "{"]
-    for start in reversed(starts):
-        for end in range(len(text), start, -1):
-            if text[end - 1] != "}":
-                continue
-            try:
-                v = json.loads(text[start:end])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(v, dict) and "verdict" in v:
-                return v
-            break
+    for v in reversed(json_objects(text)):
+        if "verdict" in v:
+            return v
     return None
 
 
