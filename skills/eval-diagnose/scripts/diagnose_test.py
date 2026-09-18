@@ -261,8 +261,52 @@ class BehaviourStats(unittest.TestCase):
         # A control group nothing is told to use is a bigger prompt, not a
         # better diagnosis.
         self.assertIn("{controls}", diagnose.CLUSTER_PROMPT)
-        self.assertIn("contributing", diagnose.CLUSTER_PROMPT)
-        self.assertIn("unfalsified", diagnose.CLUSTER_PROMPT)
+
+
+class ControlsBlock(unittest.TestCase):
+    """The CONTROLS section sizes itself, because the instruction that is right
+    for twenty passing cases is wrong for one and meaningless for none."""
+
+    def block(self, n):
+        return diagnose.controls_block(
+            [{"qid": f"q{i}", "verdict": "match"} for i in range(n)])
+
+    def test_a_run_where_everything_failed_says_there_is_nothing_to_compare(self):
+        # 10 of 10 failing is a real shape, and asking the agent to compare
+        # rates against an empty list invites it to read [] as evidence.
+        b = self.block(0)
+        self.assertIn("CONTROLS: none", b)
+        self.assertIn("unfalsified", b)
+        self.assertIn("Do NOT read the absence of controls", b)
+        # A model-fact cluster is not affected by having no controls, and the
+        # block has to say so or every cluster gets downgraded.
+        self.assertIn("unaffected", b)
+
+    def test_one_or_two_controls_is_not_a_rate(self):
+        for n in (1, 2):
+            with self.subTest(n=n):
+                b = self.block(n)
+                self.assertIn("is NOT a rate", b)
+                self.assertIn("Do not compute a percentage", b)
+
+    def test_three_or_more_gets_the_real_comparison(self):
+        b = self.block(3)
+        self.assertIn("similar rate in the passes", b)
+        self.assertNotIn("is NOT a rate", b)
+
+    def test_the_prompt_renders_at_every_size(self):
+        # The failure this guards: an unrendered {controls} shipping to the
+        # agent, or a KeyError at the one moment the run cannot be redone.
+        for n in (0, 1, 2, 3, 20):
+            with self.subTest(n=n):
+                out = diagnose.CLUSTER_PROMPT.format(
+                    issues="[]", controls=self.block(n))
+                self.assertNotIn("{controls}", out)
+                self.assertNotIn("{issues}", out)
+
+    def test_every_size_carries_the_rows_it_has(self):
+        self.assertIn('"qid": "q0"', self.block(1))
+        self.assertNotIn('"qid"', self.block(0))
 
 
 if __name__ == "__main__":

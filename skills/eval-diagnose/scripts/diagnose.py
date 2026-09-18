@@ -376,6 +376,57 @@ def behaviour_stats(qid: str, events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def controls_block(controls: list[dict[str, Any]]) -> str:
+    """The CONTROLS section of the clustering prompt, sized to what exists.
+
+    Three cases, because the instruction that is right for twenty passing cases
+    is wrong for one and meaningless for none:
+
+    - **None.** Every case in the run failed, so there is nothing to compare
+      against. Asking the agent to compare rates against an empty list invites
+      it to read `[]` as evidence of absence. Say plainly that no behavioural
+      cluster can be falsified here.
+    - **One or two.** Not a rate. Two passing cases cannot establish that a
+      behaviour is rarer in passes, and treating them as if they could is how a
+      cluster gets confirmed by a coin flip.
+    - **Three or more.** The real comparison.
+    """
+    n = len(controls)
+    if not n:
+        return ("CONTROLS: none. Every scored case in this run failed.\n\n"
+                "There is nothing to compare a behaviour against, so a cluster\n"
+                "whose root cause is a BEHAVIOUR -- how much the agent\n"
+                "retrieved, how it phrased its targets, how many queries it ran\n"
+                "-- cannot be falsified from this run. Mark every such cluster\n"
+                "`unfalsified` and say why. Do NOT read the absence of controls\n"
+                "as evidence that the behaviour is causal. A cluster resting on\n"
+                "a MODEL fact -- a missing entity, a wrong measure, an\n"
+                "undocumented convention -- is unaffected: those are checked\n"
+                "against the model, not against other cases.")
+    head = (f"CONTROLS: the same measurements on the {n} case(s) that PASSED "
+            f"this run\n\n" + json.dumps(controls, indent=2) + "\n\n")
+    if n < 3:
+        return head + (
+            f"{n} passing case(s) is NOT a rate. It is enough to notice that a\n"
+            "behaviour you called causal also appears in a passing case, which\n"
+            "is worth saying; it is not enough to establish that the behaviour\n"
+            "is rarer in passes. Do not compute a percentage from it. If the\n"
+            "behaviour appears here too, mark the cluster `contributing` rather\n"
+            "than `primary`; if it does not, the cluster stays weakly supported\n"
+            "and say so.")
+    return head + (
+        "These are the falsifier for any cluster whose root cause is a\n"
+        "BEHAVIOUR -- how much the agent retrieved, how it phrased its targets,\n"
+        "how many queries it ran, which skills it opened. Diagnosis only ever\n"
+        "looks at failures, so a behaviour common to both looks causal here and\n"
+        "is not.\n\n"
+        "Before you claim a behaviour explains a cluster, compare it against\n"
+        "these rows. If it occurs at a similar rate in the passes, say so and\n"
+        "mark that cluster `contributing` rather than `primary`; a cluster\n"
+        "whose behaviour does not separate the two groups must not be routed to\n"
+        "a skill or model edit as the root cause.")
+
+
 CLUSTER_PROMPT = """Apply Step 5 of the eval-diagnose skill across a whole run.
 
 These are the per-case diagnoses from one run. Cluster them.
@@ -383,20 +434,7 @@ These are the per-case diagnoses from one run. Cluster them.
 DIAGNOSED ISSUES
 {issues}
 
-CONTROLS: the same measurements on cases that PASSED this run
 {controls}
-
-These are the falsifier for any cluster whose root cause is a BEHAVIOUR -- how
-much the agent retrieved, how it phrased its targets, how many queries it ran,
-which skills it opened. Diagnosis only ever looks at failures, so a behaviour
-common to both looks causal here and is not.
-
-Before you claim a behaviour explains a cluster, compare it against these rows.
-If it occurs at a similar rate in the passes, say so and mark that cluster
-`contributing` rather than `primary`; a cluster whose behaviour does not
-separate the two groups must not be routed to a skill or model edit as the
-root cause. If the controls are empty, say that the cluster is unfalsified
-rather than treating it as confirmed.
 
 Emit the object defined under `## Per run, clustering` in
 `reference/output-contract.md` of the eval-diagnose skill as the LAST thing in
@@ -424,7 +462,7 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
     compact = [{k: v for k, v in i.items() if k in keep} for i in issues]
     r = spawn_agent(
         CLUSTER_PROMPT.format(issues=json.dumps(compact, indent=2),
-                              controls=json.dumps(controls or [], indent=2)),
+                              controls=controls_block(controls or [])),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.cluster_model,
         # 14, not 8. The output contract moved into
@@ -663,8 +701,15 @@ def main(argv: list[str] | None = None) -> int:
         # explains at least as well as call style. So the passes go to the
         # clustering agent as a falsifier, measured the same way.
         controls = [behaviour_stats(q, events) for q in passed]
+        how = (f"{len(controls)} passing case(s) as controls"
+               if len(controls) >= 3 else
+               f"only {len(controls)} passing case(s): too few to establish a "
+               f"rate, so behavioural clusters stay weakly supported"
+               if controls else
+               "NO passing cases in this run, so no behavioural cluster can be "
+               "falsified here")
         print(f"\ntier 2: clustering {len(good)} diagnoses with "
-              f"{a.cluster_model} ({len(controls)} passing case(s) as controls)")
+              f"{a.cluster_model} ({how})")
         clusters = cluster(good, a, a.run, controls=controls)
         for c in clusters.get("clusters", []):
             print(f"  {len(c.get('qids', [])):>2} cases  {c.get('cluster_id')} "
