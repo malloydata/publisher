@@ -120,6 +120,33 @@ describe("compile construct containment", () => {
          ).rejects.toThrow(CompileRefusedError);
       });
 
+      // `name!type(...)` and the `sql_*` family are classified inside
+      // `getExpression(fs)`, which needs a resolved FieldSpace -- unlike the
+      // five constructs refused on sight. So they are the two the gate can
+      // only see when the base model loaded, and a base model that does not
+      // load has to fail the request rather than pass the fragment through.
+      it("refuses a raw-SQL function call", async () => {
+         await expect(
+            compile(
+               `run: base_source -> { group_by: v is read_csv!string('${secretPath}') }`,
+               "append",
+            ),
+         ).rejects.toThrow(CompileRefusedError);
+      });
+
+      it("refuses the fragment when the base model cannot be loaded", async () => {
+         // Without this the gate compiled against no base namespace, which
+         // cannot resolve `base_source`, so the construct above was never
+         // classified and the real compile ran it for real.
+         await expect(
+            compile(
+               `run: base_source -> { group_by: v is read_csv!string('${secretPath}') }`,
+               "append",
+               "no_such_model.malloy",
+            ),
+         ).rejects.toThrow(CompileRefusedError);
+      });
+
       it("refuses direct table access", async () => {
          await expect(
             compile(

@@ -23,6 +23,7 @@ import {
 import {
    AccessDeniedError,
    BadRequestError,
+   CompileRefusedError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -948,18 +949,29 @@ export class Environment {
             // fragment is checked against the surface the author published, so
             // the caller cannot widen the namespace it is judged against.
             //
-            // A model that does not exist or does not compile yields no base
-            // namespace. The gate still runs against none, because the
-            // restricted constructs it refuses are refused on sight rather
-            // than by name resolution -- skipping the gate here would let an
-            // unreadable target model turn the restriction off.
-            let baseModel: MalloyModel | undefined;
+            // Five of the seven restricted constructs are refused on sight,
+            // but two are not: `name!type(...)` and the `sql_*` family are
+            // classified inside `getExpression(fs)`, which needs a resolved
+            // FieldSpace. With no base model a fragment like
+            // `run: base_source -> { ... }` never resolves `base_source`, so
+            // the expression is never evaluated, the construct is never
+            // classified, and the gate passes text the real compile then runs
+            // for real. So a base model that will not load fails the request
+            // rather than lowering the gate: the caller's own text is not what
+            // failed, and the same argument `assertNoRestrictedConstructs`
+            // makes about its own catch applies here -- an infrastructure
+            // error carries no evidence either way.
+            let baseModel: MalloyModel;
             try {
                baseModel = await runtime
                   .loadModel(pathToFileURL(modelPath))
                   .getModel();
-            } catch {
-               baseModel = undefined;
+            } catch (error) {
+               throw new CompileRefusedError(
+                  `Cannot validate the submitted source: the model at ` +
+                     `"${modelPath}" could not be loaded to check it against ` +
+                     `(${error instanceof Error ? error.message : String(error)}).`,
+               );
             }
             await assertNoRestrictedConstructs(
                runtime,
