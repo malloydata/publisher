@@ -115,6 +115,30 @@ are the ones already stated rather than new ones:
   legitimate routes, write a `requiredAnyOf` group rather than pick one.
   `verify_goldens.py` check 5 audits every id against the model, so a wrong one
   is a hard finding rather than a silent retrieval miss.
+- **Then prove each one is retrievable, and record what finds it.**
+  `check_findable.py --set <set> --mcp-url <mcp> --environment <env>
+  --package <pkg>` issues a search of each entity's own kind for its own name
+  and reports any that does not come back. It needs no model call.
+
+  This matters more than it looks, because `required` is what BOTH retrieval
+  numbers are computed against: whether the agent asked for the entity, and
+  whether it came back. An id retrieval cannot deliver makes both fiction, and
+  the case reports a retrieval miss on every run, which reads as a defect in
+  the model or the agent rather than in the key.
+
+  It catches what a name check cannot. `dimension:flights:flight_count` names a
+  field the model really has, so grepping the source passes it; the kind is
+  wrong, and `target_type` is a hard filter, so no `dimension` request can ever
+  return it. Check 5 says yes and this says no.
+
+  A pass is a floor, not a verdict on the docs: each entity is searched by its
+  OWN NAME, the easiest query that could find it. An entity that answers to its
+  identifier and not to the words a question uses still fails at run time, as
+  `not retrieved`.
+
+  Writing the list forces the question an author has to answer anyway: what
+  would a reasonable agent search for, and of what type, to find this? If you
+  cannot state that, the agent cannot be expected to guess it.
 - `status: provisional`, never `verified`, for the reason stated above: you
   derived it THROUGH the model under test, so a model bug would certify its
   own key. `verify_goldens.py --promote` is still the only way out.

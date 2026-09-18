@@ -316,6 +316,12 @@ the run measure something other than what it names:
    on comparable answers -- which is the available measure of how much a key
    depends on its author, and a reason to reuse one rather than rebuild it.
 
+   **Audit the set's entity ids before the first arm.** `verify_goldens.py`
+   checks that each id names something in the model; `check_findable.py` checks
+   that a search of its own kind actually returns it. Both are free of model
+   calls. An id that fails either scores a retrieval miss on every run, and the
+   miss reads as the model's fault.
+
    **Commit the set before you spend money on an arm**, and keep durable
    outputs in the repository. A findings document in `~/Downloads` is gone the
    first time somebody tidies up; the set, the run directory and the write-up
