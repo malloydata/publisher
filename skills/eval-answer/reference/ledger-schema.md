@@ -135,10 +135,12 @@ on that axis.
 | `coverageReport` | The `check_coverage.py --out` report this run read, when `--coverage` named one: its path, the model version it was stamped with, its `agentModel`, and `decided` of `cases`. Coverage is a read of the MODEL, so it is measured separately and costs a judge call per case; the run does not run it, it consumes it. Its per-case verdict then beats the authored `coverage` label in retrieval attribution, and each `score_retrieval` row records `coverage_source` (`measured`, `authored`, `none`) so nobody has to guess which one charged the failure. Absent when no report was given, which is a different fact from a report that found everything covered. |
 | `label` | `<set>-<phase>-<nn>`, assigned by `run_baseline.py` from the set name, the run's phase and the next free number beside it (`ecommerce-baseline-01`, `ecommerce-baseline-02`, `ecommerce-blind_gate-01`). The A/A pair is two runs of the same phase; the post-edit arms are two runs of `blind_gate`. Hand-typed names do not survive one afternoon of runs -- `base`, `rejudged2`, `r3`, `post1` sort wrongly, group not at all, and cannot be matched to an arm. `--label` overrides for a run that genuinely needs a human name. |
 | `effort` | |
+| `maxTurns` / `answererTimeout` *(pins)* | The answerer's turn cap and per-attempt timeout, as the arm ran them. `skill:eval-loop` step 6 lists the call budget among the pins to freeze for a whole run, and nothing wrote one, so no two runs could be compared on the setting that decides whether a case got to finish at all. Distinct from `callBudget`, which no harness has ever written. Size the cap from a pilot rather than taking the default: on a 29-case arm at the default 30, completed attempts had a median of 17 turns and a 90th percentile of 26, and the four cases that ran past it were recorded as wrong answers. |
+| `truncated` / `contaminated` | The qids excluded for a HARNESS-owned reason: the cap cut the answer off, or the attempt breached isolation. Both leave the denominator, both are named here rather than only in the console, and either one makes `status` `incomplete`. |
 | `answererCostUsd` / `judgeCostUsd` | What the arm cost, split by role. The judge's half was discarded until 2026-09-02, so every "cost per arm" quoted before then was the answerer alone. |
 | `goldenCheck` | What `verify_goldens.py` said before the run started: `N ok, M drifted, K other finding(s)`, or why it did not run (no truth server on a platform target; `--skip-golden-check`; rebuild). A run that started on a drifted set says so here rather than pretending its verdicts mean something. `run_baseline` calls `verify()` without a model, so the set-name audit (check 5) does not run in-arm; the trailing `N stale entity name(s)` is the in-arm lint's own count, and `entity-name lint not run` says there was no model text to lint against. Without it the field read `0 other finding(s)` for a check that never happened. |
 | `staleEntityNames` | The `expectedEntities` names that appear nowhere in the served model, from the in-arm lint. Each one depresses the run's own recall on every case listing it, so a stale set reads as a retrieval failure until someone checks by hand. `null` when there was no model text to lint against (a platform target), which is a different fact from `[]`. |
-| `status` | `complete`, or `aborted` when four consecutive attempts errored or found the server dead and the harness stopped rather than spend the rest of the budget on attempts nobody will trust. |
+| `status` | `complete`; `aborted` when four consecutive attempts errored or found the server dead and the harness stopped rather than spend the rest of the budget on attempts nobody will trust; or `incomplete` when the arm ran to the end and still cannot report a rate, because `truncated` or `contaminated` is non-empty. `incomplete` is a third state, not a soft `complete`: the arm did everything asked of it and the number is still unearned. `flip_table.py` refuses to compare one. |
 | `packageSha` / `servedRevision` *(pins)* | Taken from the server, not recomputed: `sourceContentSha` is a content hash over EVERY model path in the package, so an edit to an imported file moves it where a sha of the one `--model-path` does not; `servedRevision` is minted per load, so it identifies a load rather than content and is a poor pin alone. Measured: `publisher.json`'s `version` moves neither, and nothing in Publisher reads it -- it is not in the Package API schema and never returned, so it pins nothing. |
 | `datasetSha` *(pin)* | Content hash of `set.json` + `cases.jsonl`. Deliberately SEPARATE from the model's sha: a golden repair is not a model change, and one pin covering both would make every answer-key fix read as an edit to the model, which is the distinction an A/B rests on. Automatic, so nobody has to remember it; `datasetVersion` stays beside it as the human-readable sequence. **Local targets only.** A hosted target that publishes IMMUTABLE versions needs none of this: the set rides inside the version, and immutability -- not hashing -- is what makes a pin trustworthy. There, `targetVersion` alone identifies model and set together. |
 | `doubtedGoldens` | The cases whose golden is not believed: `qid`, `gold_status` (`suspect` or `verified_wrong`), `gold_note`, and `declaredBy` (`judge` or `set`). A status the SET declared is a key somebody already settled, not an opinion the judge formed this run, and attributing both to the judge claimed a judgement that never happened. **Read this before diagnose.** These are dataset issues, not model failures, and they go through the golden side door in `skill:eval-loop`. Empty list when no key is in doubt from either source. Written from the same scan that prints the end-of-run warning, because a warning that lives only in console text is one scrollback away from sending a modelling agent at a model that is already right. |
@@ -223,14 +225,14 @@ The answer judge's verdict for one attempt (protocol in
 | Field | Type | Notes |
 |---|---|---|
 | `verdict` | string or null | `match` / `near_match` / `no_match` / `needs_human`; null when the attempt is not scorable. Only `match` and `no_match` are decisions; see below. |
-| `reason` | string | Why, from the judge; for a null verdict, why not scorable: `not_submitted`, `contaminated`, or `golden_<status>` -- `golden_missing`, `golden_provisional`, `golden_invalid`, `golden_ambiguous`, `golden_verified_wrong`. The `golden_*` reasons are decided before the judge is called, so an unestablished key costs nothing to refuse. |
+| `reason` | string | Why, from the judge; for a null verdict, why not scorable, and it is ALWAYS one of these: `not_submitted`, `answerer_truncated`, `contaminated`, `judge_unparseable`, `no_saved_verdict`, `judge_error: <text>`, or `golden_<status>` -- `golden_missing`, `golden_provisional`, `golden_invalid`, `golden_ambiguous`, `golden_verified_wrong`. A null verdict never arrives without one: a nulling that does not say which of these it was is indistinguishable from the field being dropped on the write path, and was read as exactly that from a real run. The `golden_*` reasons and `answerer_truncated` are decided before the judge is called, so neither an unestablished key nor a cut-off attempt costs a judge call. |
 | `confidence` | int or null | 1 to 10. Confidence of 5 or lower forces `needs_human`. |
 | `column_pairing` | object or null | The judge's named gold-to-prediction column correspondence. |
 | `judge_version` / `rubric_sha` | string | Pins which rubric produced this verdict. |
 | `golden_revision` | int | From the case at score time. |
 | `contaminated` | bool or `"unknown"` | Copied from the attempt; true or unknown means `verdict: null`. |
 | `must_not_use_hits` | list or null | Entries of `golden.mustNotUse` a script found in the final query. A hit forces `verdict: no_match`. Decided by `check_must_not_use.py`, never by the judge: it is a question about query text. Only a BARE name vetoes; an entry with a connective (`X as ...`, `X through ...`) objects to a use of X rather than to X, and goes to the judge with the prose entries and a path's bare leaf. |
-| `judge_verdict` | string or null | What the judge said when a `must_not_use_hits` veto overrode it. Null otherwise, so the judge's own agreement rate stays measurable across vetoes. |
+| `judge_verdict` | string or null | What the judge said when a MECHANICAL override replaced it: a `must_not_use_hits` veto, or contamination voiding the verdict. Null otherwise, so the judge's own agreement rate stays measurable across both. When a case is vetoed AND contaminated this still holds the judge's read, not the veto's `no_match`. |
 | `artifactPath` | string | The full judge output under `artifacts/`. |
 | `gold_status` | string | `verified` / `verified_benign` / `suspect` / `verified_wrong`, and never anything else: the case file's `golden.status` is a DIFFERENT vocabulary that shares only `verified` and `verified_wrong`, and only those two fall back into this field. A `provisional` / `invalid` / `ambiguous` key is reported through the verdict's `reason` (`golden_<status>`) instead, so nothing downstream has to match on two vocabularies in one field. **From the judge**, which scored against the golden as written and reports separately whether it believes it; falls back to the case's standing `golden.status` when the judge does not say, written onto the verdict itself so the run summary and the aggregates see it too. `verified_wrong` excludes the case from run aggregates -- from the judge OR from the case file; assigning the fallback into a copy of the verdict meant a key the set had marked wrong stayed in the aggregates unless the judge independently agreed. `suspect` and `verified_wrong` route to the golden side door as `dataset` issues, never to improve. |
 | `gold_note` | string or null | The judge's evidence for a non-`verified` status: the two values, or the model line against the rubric sentence. Null when `verified`. |
@@ -255,6 +257,28 @@ as unscorable dropped a confident refusal on an answerable case out of the pass
 rate, which is the one thing the answerable-sounds-unanswerable cases exist to
 measure. A refusal is exempt only where `golden.kind` is `unanswerable`, and
 there naming the gap is the pass and a confident number is the fail.
+
+`answerer_truncated` means the answerer hit the run's `maxTurns` cap and the
+CLI returned whatever it had, which is usually a sentence stopping mid-thought.
+It is refused BEFORE the golden gate and before a saved verdict is reused, so
+`--rebuild` over a run made without this re-derives the right ledger from its
+transcripts. A cap is a harness setting, so a case cut off by one says nothing
+about whether the model could answer it: measured on one 29-case arm, four
+attempts ended at exactly 31 turns and each was judged as a wrong answer, one
+of them on the text "Let me build the correct monthly trend query."
+
+`contaminated` means the attempt breached isolation (`contamination_reasons`
+names how) and the verdict is withheld rather than lost. The judge's own read
+moves to `judge_verdict`. Before this reason was written, a voided verdict kept
+the judge's prose in `reason` beside `verdict: null`, and a run report
+reasonably concluded the ledger was dropping the field -- it recovered nine
+"lost" verdicts by re-parsing the stored judge replies, every one of which had
+been voided on purpose.
+
+Both are HARNESS-owned, not model-owned, and a run containing either reports
+`status: incomplete` in `run.json` and **prints no pass rate**. `unscorable`
+(no established golden) and `judge_unparseable` do not suppress the rate: the
+first is a dataset state no arm can fix, and the second already has a retry.
 
 Aggregates count decided verdicts only. `match` and `no_match` are the pass and
 the fail; **`near_match`, `needs_human` and null are none of the above** and stay

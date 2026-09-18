@@ -261,6 +261,127 @@ class JudgeGate(unittest.TestCase):
         self.assertEqual(v["reason"], "no_saved_verdict")
 
 
+class TruncatedAttempt(unittest.TestCase):
+    """An attempt the turn cap cut off is not judged.
+
+    Measured on a 29-case customer arm: four attempts ended at exactly 31 turns
+    with `error_max_turns`, and each went to the judge as a complete answer.
+    One of them was a planning fragment -- "Let me build the correct monthly
+    trend query" -- which the judge scored `no_match` at confidence 9, where it
+    counted in the pass rate as if the model had got the question wrong.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def judge(self, att, *, rebuild=True, rejudge=False, golden=None):
+        a = argparse.Namespace(rebuild=rebuild, rejudge=rejudge)
+        return rb.run_judge(
+            {"qid": "q", "question": "?",
+             "golden": golden if golden is not None else {"status": "verified",
+                                                          "value": 1}},
+            att, a, self.tmp, "", "", False)
+
+    def test_a_truncated_attempt_is_refused_and_says_so(self):
+        v = self.judge({"answer_text": "Let me build the correct query.",
+                        "submitted": True, "error": "error_max_turns"})
+        self.assertIsNone(v["verdict"])
+        self.assertEqual(v["reason"], "answerer_truncated")
+
+    def test_it_is_decided_before_a_saved_verdict_is_reused(self):
+        # The point of putting it first: `--rebuild` over the runs that
+        # motivated this re-derives the right ledger from their transcripts,
+        # rather than restoring the verdict the truncated attempt was given.
+        (self.tmp / "q").mkdir(parents=True)
+        (self.tmp / "q" / "judge.md").write_text(
+            '{"why": "trails off", "verdict": "no_match", "confidence": 9}')
+        v = self.judge({"answer_text": "frag", "submitted": True,
+                        "error": "error_max_turns"})
+        self.assertEqual(v["reason"], "answerer_truncated")
+        self.assertIsNone(v["verdict"])
+
+    def test_it_is_decided_before_the_golden_gate(self):
+        # Order matters the other way too: a truncated attempt against a
+        # provisional key is truncated. Both refuse, and the one that names
+        # the harness's own setting is the one a conductor can act on.
+        v = self.judge({"answer_text": "frag", "submitted": True,
+                        "error": "error_max_turns"},
+                       golden={"status": "provisional", "value": 1})
+        self.assertEqual(v["reason"], "answerer_truncated")
+
+    def test_another_run_error_is_still_judged(self):
+        # Only the cap. A timeout or a crash is a different fact, and the
+        # four-strikes abort already covers a sick environment.
+        v = self.judge({"answer_text": "4.2M", "submitted": True,
+                        "error": "error_during_execution"})
+        self.assertEqual(v["reason"], "no_saved_verdict")
+
+    def test_a_clean_attempt_is_unaffected(self):
+        v = self.judge({"answer_text": "4.2M", "submitted": True,
+                        "error": None})
+        self.assertEqual(v["reason"], "no_saved_verdict")
+
+
+class ContaminatedVerdict(unittest.TestCase):
+    """A voided verdict says why, and keeps what the judge said.
+
+    Nulling in silence left a score event carrying a correct `reason` and
+    `confidence` beside `verdict: null`, which is indistinguishable from the
+    field being dropped on the write path -- and was read as exactly that in a
+    real run report, where nine "lost" verdicts were recovered by re-parsing
+    the stored judge replies. They had been voided on purpose.
+    """
+
+    def void(self, verdict, breaches, *, vetoed=False):
+        """The real nulling, not a copy of it: `main` calls this same
+        function, so a change there cannot pass these tests by drifting."""
+        v = dict(verdict)
+        if vetoed:
+            # What the mustNotUse veto does just above the call site.
+            v["judge_verdict"] = v["verdict"]
+            v["verdict"] = "no_match"
+        return rb.void_contaminated(v, breaches)
+
+    def test_a_voided_verdict_names_contamination(self):
+        v = self.void({"verdict": "match", "reason": "the figures agree",
+                       "confidence": 9},
+                      ["host tool available to the answerer: Bash"])
+        self.assertIsNone(v["verdict"])
+        self.assertEqual(v["reason"], "contaminated")
+        # The schema documents this reason; before, the judge's own prose sat
+        # here and the null looked like a bug.
+        self.assertEqual(v["judge_verdict"], "match")
+
+    def test_a_veto_that_is_also_contaminated_keeps_the_judges_read(self):
+        # Two overrides on one case. `judge_verdict` is for what the JUDGE
+        # said, so the veto's own `no_match` must not displace it.
+        v = self.void({"verdict": "match", "reason": "ok", "confidence": 8},
+                      ["mcp server 'malloy' failed"], vetoed=True)
+        self.assertIsNone(v["verdict"])
+        self.assertEqual(v["judge_verdict"], "match")
+
+    def test_a_clean_attempt_keeps_its_verdict_and_reason(self):
+        v = self.void({"verdict": "match", "reason": "the figures agree",
+                       "confidence": 9}, [])
+        self.assertEqual(v["verdict"], "match")
+        self.assertEqual(v["reason"], "the figures agree")
+
+    def test_every_null_verdict_reason_is_in_the_documented_set(self):
+        # The generalisation of the report's own ask ("a score event with a
+        # reason also has a verdict, or an explicit unreadable marker"): a null
+        # verdict must always name which of the known causes it was, so no
+        # future nulling can be silent the way contamination was.
+        schema = (pathlib.Path(rb.__file__).parent.parent.parent
+                  / "eval-answer" / "reference" / "ledger-schema.md").read_text()
+        for reason in ("not_submitted", "contaminated", "answerer_truncated",
+                       "judge_unparseable", "no_saved_verdict"):
+            with self.subTest(reason):
+                self.assertIn(reason, schema)
+
+
 class GoldenStatusGate(unittest.TestCase):
     """A verdict is refused against a key nobody has established.
 
@@ -447,6 +568,48 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
         # not have to know the line exists to notice it is missing.
         body = self.summary()
         self.assertIn("unreadable    0", body)
+
+    def test_a_truncated_case_suppresses_the_pass_rate(self):
+        # The stop rule, made mechanical. A directive did not hold against an
+        # arm that had already been paid for: on the run this comes from, the
+        # truncation was known before the cases were judged and the rate was
+        # quoted anyway.
+        body = self.summary(truncated=["cq-01", "cq-05"], max_turns=30)
+        self.assertIn("INCOMPLETE: 2 truncated", body)
+        self.assertIn("no pass rate until re-run", body)
+        self.assertNotIn("(50%)", body)   # 4 of 8 would have printed this
+
+    def test_it_names_the_command_that_finishes_the_arm(self):
+        # Four cases, not a whole arm: the answers already paid for are kept
+        # and only the truncated ones are re-run, at twice the cap.
+        body = self.summary(truncated=["cq-05", "cq-01"], max_turns=30)
+        self.assertIn("--only cq-01,cq-05", body)
+        self.assertIn("--max-turns 60", body)
+
+    def test_a_contaminated_case_suppresses_it_too(self):
+        body = self.summary(contaminated=["cq-03"])
+        self.assertIn("INCOMPLETE: 1 contaminated", body)
+        self.assertNotIn("(50%)", body)
+
+    def test_both_are_named_when_both_happened(self):
+        body = self.summary(truncated=["cq-01"], contaminated=["cq-03"])
+        self.assertIn("INCOMPLETE: 1 truncated, 1 contaminated", body)
+
+    def test_contamination_reasons_are_counted(self):
+        # One breach across every case is a harness misconfiguration to fix
+        # once; one breach on one case is that answerer going somewhere it
+        # should not have. The count is what tells them apart.
+        body = self.summary(
+            contaminated=["cq-03", "cq-04"],
+            contamination_reasons={"host tool available to the answerer: Bash": 2})
+        self.assertIn("2x host tool available to the answerer: Bash", body)
+
+    def test_a_complete_run_still_prints_its_rate(self):
+        # The suppression is narrow: neither `unscorable` (a dataset state) nor
+        # `unreadable` (which has a retry) withholds the number.
+        body = self.summary(unscorable=3, unparseable=["cq-02"])
+        self.assertIn("(50%)", body)
+        self.assertNotIn("INCOMPLETE", body)
 
     def test_it_is_not_folded_into_unscorable(self):
         # `unscorable` is a DATASET state no answerer can change. This is the

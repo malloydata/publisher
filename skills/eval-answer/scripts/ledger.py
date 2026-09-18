@@ -160,6 +160,18 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "serverVersion", "diagnoserModel", "improverModel",
                 "rubricSha", "setName", "targetVersion", "scope", "mode",
                 "traceMode",
+                # The answerer's cap and timeout, as the run actually ran them.
+                # `eval-loop` step 6 lists "call budget" among the pins to
+                # freeze for a whole arm, and nothing wrote one, so no two runs
+                # could be compared on the setting that decides whether a case
+                # got to finish at all. `callBudget` stays for runs written
+                # before this, and is not the same field: it was never
+                # populated by this harness.
+                "maxTurns", "answererTimeout",
+                # How many attempts never reached a verdict for a reason that
+                # is the HARNESS's, not the model's. Both leave the denominator
+                # and both suppress the pass rate (`incomplete` below).
+                "truncated", "contaminated",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 "skillsRoot", "harnessVersion",

@@ -1303,6 +1303,10 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
                   unscorable: int, unparseable: list[str] | None = None,
+                  truncated: list[str] | None = None,
+                  contaminated: list[str] | None = None,
+                  contamination_reasons: dict[str, int] | None = None,
+                  max_turns: int | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
                   publisher: str, environment: str,
@@ -1328,7 +1332,27 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
 
     Pure, so the shape is pinned by tests rather than only by reading a run.
     """
+    # A pass rate over an arm that did not finish is a number nobody earned, so
+    # it is WITHHELD rather than printed with a caveat beside it. `eval-loop`'s
+    # prime directive already says "never diagnose a sick system", and measured
+    # against a real run a directive does not hold: an arm that has already
+    # been paid for gets its number quoted whatever the caveat said. On the run
+    # that motivated this, four truncated attempts were judged as wrong answers
+    # and the reported figure was 42% against a real 39%. So the suppression is
+    # mechanical, and it names the command that finishes the arm.
+    #
+    # Only the two HARNESS-owned exclusions suppress it. `unscorable` (no
+    # established golden) and `unreadable` (the judge's reply) are reported
+    # beside it and do not: the first is a dataset state that an arm cannot
+    # fix, and the second already has a retry.
+    trunc, contam = list(truncated or []), list(contaminated or [])
+    incomplete = len(trunc) + len(contam)
     pct = f" ({100 * passed / decided:.0f}%)" if decided else ""
+    if incomplete:
+        why = ", ".join(
+            [f"{len(trunc)} truncated"] * bool(trunc)
+            + [f"{len(contam)} contaminated"] * bool(contam))
+        pct = f"  -- INCOMPLETE: {why}; no pass rate until re-run"
     lines = ["", "=" * 64,
              f"RESULTS  {out.name}  ({attempted} cases)",
              f"  passed        {passed} of {decided} decided{pct}",
@@ -1348,6 +1372,26 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
              f"could not be parsed, after retries)"]
     if unparseable:
         lines += [f"                {', '.join(sorted(unparseable))}"]
+    # The two harness-owned exclusions, each naming what to do about it. Both
+    # were invisible before: a truncated attempt was judged as a wrong answer,
+    # and a contaminated one left the denominator with nothing printed at all,
+    # which read as verdicts being lost on the ledger's write path.
+    if trunc:
+        cap = f" at --max-turns {max_turns}" if max_turns else ""
+        lines += [f"  truncated     {len(trunc)} (hit the turn cap{cap}; not "
+                  f"judged, and not evidence about the model)",
+                  f"                {', '.join(sorted(trunc))}",
+                  f"                re-run just these, at a higher cap:",
+                  f"                  --from {out.name} --out <new-run> "
+                  f"--only {','.join(sorted(trunc))} "
+                  f"--max-turns {(max_turns or 30) * 2}"]
+    if contam:
+        lines += [f"  contaminated  {len(contam)} (isolation breached; the "
+                  f"judge's verdict is kept as judge_verdict and withheld)",
+                  f"                {', '.join(sorted(contam))}"]
+        for reason, n in sorted((contamination_reasons or {}).items(),
+                                key=lambda kv: (-kv[1], kv[0])):
+            lines += [f"                {n}x {reason}"]
     lines += [
              f"  cost          ${answerer_cost:.2f} answerer"
              + (f" + ${judge_cost:.2f} judge" if judge_cost else "")]
@@ -1977,6 +2021,37 @@ def parse_verdict(text: str) -> dict[str, Any]:
             "gold_status": gs, "gold_note": v.get("gold_note")}
 
 
+def void_contaminated(verdict: dict[str, Any],
+                      breaches: list[str] | None) -> dict[str, Any]:
+    """Null a verdict whose attempt breached isolation, and SAY SO.
+
+    Mutates and returns the verdict, the way the `mustNotUse` veto beside it
+    does, so the run summary and the retrieval attribution see what a reader of
+    `events.jsonl` sees.
+
+    The nulling itself is old and correct: an answer that may not have come
+    through the model under test is not evidence about that model. What was
+    missing is the word for it. A voided verdict kept the judge's `reason` and
+    `confidence` beside `verdict: null`, which is indistinguishable from the
+    field being DROPPED -- and a real run report drew exactly that conclusion,
+    recovering nine "lost" verdicts by re-parsing the stored judge replies and
+    filing the ledger's write path as buggy. Every one of the nine had been
+    voided deliberately.
+
+    `reference/ledger-schema.md` has documented `reason: contaminated` for this
+    case all along, so this is the code keeping the schema's promise.
+    """
+    if not breaches:
+        return verdict
+    # `setdefault`, because the veto may have written it already: there it
+    # holds what the JUDGE said, and that is the one worth keeping. Overwriting
+    # would store the veto's own `no_match` and lose the judge's read.
+    verdict.setdefault("judge_verdict", verdict.get("verdict"))
+    verdict["verdict"] = None
+    verdict["reason"] = "contaminated"
+    return verdict
+
+
 def judge_unusable(events: list[dict[str, Any]], text: str) -> bool:
     """Retry the judge when what came back cannot be scored with.
 
@@ -2215,6 +2290,29 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
               art: pathlib.Path, rubric: str, model_src: str,
               reexec: bool) -> dict[str, Any]:
     g = case.get("golden") or {}
+    # A truncated attempt is not evidence about the model, so it is never
+    # judged -- and this is checked FIRST, ahead of the golden refusal and
+    # ahead of the saved-verdict path, so that `--rebuild` over a run made
+    # before this existed re-derives the right ledger from its transcripts.
+    #
+    # The answerer hit `--max-turns` mid-sentence and the CLI returned what it
+    # had. Measured on a 29-case customer arm: four attempts ended at exactly
+    # 31 turns, and one of them was sent to the judge as the complete answer:
+    #
+    #   "Good -- `traffic.total_page_views` and `traffic.total_citations` are
+    #    proper measures. Let me build the correct monthly trend query."
+    #
+    # The judge said, correctly, that this "trails off without a conclusion"
+    # and scored it `no_match` at confidence 9, where it counted in the pass
+    # rate as a wrong answer. The cap is a harness setting; a case cut off by
+    # one says nothing about whether the model could answer it, and paying a
+    # judge call to be told the text stops mid-sentence buys nothing either.
+    # `run_error` carried this fact on the attempt from the start and was read
+    # by nothing (`grep -rn run_error` over the six skills returned no prose).
+    if att.get("error") == "error_max_turns":
+        return {"verdict": None, "reason": "answerer_truncated",
+                "confidence": None}
+
     # `not_submitted` means the attempt produced NOTHING to judge: no prose and
     # no query. An attempt with prose and no query is judged, and against a
     # golden that holds a value an answer containing none of it is `no_match`
@@ -2775,6 +2873,14 @@ def main(argv: list[str] | None = None) -> int:
         scope=a.scope if a.target == "platform" else None,
         answererModel=a.model, judgeModel=a.judge_model,
         effort=a.effort, phase=a.phase,
+        # The answerer's cap, pinned with the rest. `eval-loop` step 6 says to
+        # freeze the call budget for the whole arm and this is it; until now it
+        # was a flag that left no trace, so a run could not be compared with a
+        # later one on the one setting that decides whether a case finished.
+        # Four cases on a 29-case customer arm died at the default 30 with a
+        # median completed-case cost of 17 turns, and nothing in the run said
+        # what the cap had been.
+        maxTurns=a.max_turns, answererTimeout=a.timeout,
         started=ledger.now(),
         judgeVersion=JUDGE_VERSION, rubricSha=RUBRIC_SHA,
         datasetVersion=set_meta.get("datasetVersion"),
@@ -2970,8 +3076,7 @@ def main(argv: list[str] | None = None) -> int:
             # 33-case run reported `12 of 21 decided (57%)` while every score
             # event in its own ledger carried `verdict: null`.
             tainted = bool(att.get("breaches"))
-            if tainted:
-                v["verdict"] = None
+            void_contaminated(v, att.get("breaches"))
             sc = {k: x for k, x in v.items()
                   if k not in ("judge_cost_usd", "gold_status_from")}
             events.append(ledger.event("score", **base, **sc,
@@ -3063,12 +3168,30 @@ def main(argv: list[str] | None = None) -> int:
     # the one thing that would have named it.
     unparseable = sorted(q for q, v in verdicts.items()
                          if v.get("reason") == "judge_unparseable")
+    # The two harness-owned exclusions, read off the same dict for the same
+    # reason. Both suppress the pass rate; see `summary_lines`.
+    truncated = sorted(q for q, v in verdicts.items()
+                       if v.get("reason") == "answerer_truncated")
+    contaminated = sorted(q for q, v in verdicts.items()
+                          if v.get("reason") == "contaminated")
+    # Why isolation broke, counted. One breach repeated across every case is a
+    # harness misconfiguration to fix once; one breach on one case is that
+    # answerer going somewhere it should not have. The distinction is the whole
+    # value of the histogram, and the raw reasons are already on every attempt.
+    contamination_reasons: dict[str, int] = {}
+    for qid in contaminated:
+        for reason in attempts.get(qid, {}).get("breaches") or []:
+            contamination_reasons[reason] = \
+                contamination_reasons.get(reason, 0) + 1
 
     for line in summary_lines(
             out=a.out, set_dir=a.set_dir, events_n=len(events),
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable, unparseable=unparseable,
+            truncated=truncated, contaminated=contaminated,
+            contamination_reasons=contamination_reasons,
+            max_turns=a.max_turns,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses,
@@ -3096,7 +3219,16 @@ def main(argv: list[str] | None = None) -> int:
                       doubtedGoldens=[{"qid": q, "gold_status": st,
                                        "gold_note": note, "declaredBy": src}
                                       for q, st, note, src in doubted],
-                      status="aborted" if aborted else "complete")
+                      truncated=truncated, contaminated=contaminated,
+                      # `incomplete` beside `complete` and `aborted`: the arm
+                      # ran to the end and still cannot report a rate, which is
+                      # a different state from both. Recorded rather than only
+                      # printed, because the reader who quotes the number a day
+                      # later has the run directory and not the scrollback --
+                      # and `flip_table.py` refuses to compare one.
+                      status=("aborted" if aborted
+                              else "incomplete" if (truncated or contaminated)
+                              else "complete"))
     # An aborted arm wrote a partial ledger and said so in run.json; it did not
     # do what was asked, and a caller reading 0 would treat it as an arm.
     return 1 if aborted else 0
