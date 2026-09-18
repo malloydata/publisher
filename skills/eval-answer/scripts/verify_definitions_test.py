@@ -126,6 +126,31 @@ class DependenciesResolveInTheSourceThatOwnsThem(unittest.TestCase):
         finally:
             shutil.rmtree(p.parent, ignore_errors=True)
 
+    def test_a_join_alias_resolves_to_the_source_it_targets(self):
+        """`join_one: destination is airports` declares `destination`, so
+        `destination.airport_count` is a field of `airports`.
+
+        Scoping bare words to the declaring source is right; treating a join
+        ALIAS as if it were a source name is not, and it dropped the edge
+        outright. Measured on faa: `flights.destination_count` came back
+        depending on nothing, so an edit to `airports.airport_count` would not
+        have moved its sha. The join is a dependency too, because its `on`
+        clause decides which rows the field sees.
+        """
+        p = write(
+            "source: airports is duckdb.table('data/a.parquet') extend {\n"
+            "  measure:\n    airport_count is count()\n}\n"
+            "source: flights is duckdb.table('data/f.parquet') extend {\n"
+            "  join_one: destination is airports with destination_code\n"
+            "  measure:\n    destination_count is destination.airport_count\n}\n")
+        try:
+            recs = {r["entityId"]: r for r in vd.records(p, recursive=False)}
+            self.assertEqual(
+                recs["measure:flights:destination_count"]["depends"],
+                ["measure:airports:airport_count", "join:flights:destination"])
+        finally:
+            shutil.rmtree(p.parent, ignore_errors=True)
+
     def test_the_two_same_named_measures_hash_apart(self):
         a = self.recs["measure:source_a:total_sales"]["exprSha"]
         b = self.recs["measure:source_b:total_sales"]["exprSha"]

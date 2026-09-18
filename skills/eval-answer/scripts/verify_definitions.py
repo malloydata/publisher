@@ -192,21 +192,45 @@ def records(model: pathlib.Path, recursive: bool,
     # name used as one. Both make the within-model comparison fanout-blind.
     joins = ({r["name"] for r in parsed if r["kind"] == "join"}
              | {r["source"] for r in parsed if r["source"]})
+    sources = {r["source"] for r in parsed if r["source"]}
+    # A join's ALIAS is not its target source: `join_one: destination is
+    # airports with destination_code` declares `destination`, and
+    # `destination.airport_count` is a field of `airports`. Resolving the
+    # alias as if it were a source name loses that edge entirely -- measured
+    # on the faa model, `flights.destination_count` came back depending on
+    # nothing. `parse_definitions` records the join's expr as
+    # "airports with destination_code", so the target is its first word. A
+    # join written without `is` (`join_one: carriers with carrier`) has alias
+    # and target already equal and needs no entry.
+    join_target = {(r["source"], r["name"]): r["expr"].split()[0]
+                   for r in parsed
+                   if r["kind"] == "join" and (r.get("expr") or "").split()}
 
     def deps_of(rec: dict[str, Any]) -> list[tuple[str, str]]:
         """What this expression builds on, resolved in the source that owns it.
 
         A bare word in a Malloy expression names a field of the DECLARING
-        source, so it resolves there and nowhere else. A dotted path names the
-        source or join it traverses into, so the word after the dot resolves in
-        that source instead. Resolving a bare word globally is what produced a
-        phantom edge from `source_b.doubled` to `source_a.total_sales` on a
-        model where only `source_a` declares the name.
+        source, so it resolves there and nowhere else. Resolving bare words
+        globally is what produced a phantom edge from `source_b.doubled` to
+        `source_a.total_sales` on a model where only `source_a` declares the
+        name, and on faa pointed `airports.name` at a `code` belonging to
+        `carriers`.
+
+        A dotted path is the one place a word refers to another source's
+        field. Its prefix names either a source or a join alias, and a join
+        alias resolves to the source the join targets. The join itself is a
+        dependency too: its `on` clause decides which rows the field sees.
         """
         src, expr = rec["source"], rec["expr"]
-        found = {(prefix, field)
-                 for prefix, field in DOTTED.findall(expr)
-                 if (prefix, field) in by_key}
+        found: set[tuple[str, str]] = set()
+        for prefix, field in DOTTED.findall(expr):
+            if (src, prefix) in by_key:
+                # A join (or a field) of this source, named on the way through.
+                found.add((src, prefix))
+            target = join_target.get((src, prefix),
+                                     prefix if prefix in sources else None)
+            if target and (target, field) in by_key:
+                found.add((target, field))
         # Dotted paths are blanked before the bare scan, so the field half of
         # `source_a.total_sales` is not ALSO read as this source's own
         # `total_sales` when both declare that name.
