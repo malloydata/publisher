@@ -245,6 +245,19 @@ describe("compile and sqlSource are admission-controlled", () => {
  * comment stripping, so it cannot be satisfied by a comment or drift into the
  * maintenance liability the source-scan spec it replaced became.
  */
+/**
+ * Reads a source file with line endings normalised to LF.
+ *
+ * The assertions below match a verb and a route literal as an adjacent pair, so
+ * they are sensitive to what separates them. A Windows checkout has no
+ * `.gitattributes` forcing LF here, so the working tree carries CRLF and a
+ * pattern written with `\n` finds nothing -- green on the platforms that
+ * develop this file and red only on Windows CI.
+ */
+function readSourceLf(filePath: string): string {
+   return readFileSync(filePath, "utf8").replace(/\r\n/gu, "\n");
+}
+
 describe("every compile and sqlSource route registers the concurrency gate", () => {
    const gatedRoutes: Array<{
       file: string;
@@ -299,9 +312,8 @@ describe("every compile and sqlSource route registers the concurrency gate", () 
       // middleware, so it needs its own assertion: the HTTP twin being gated
       // while malloy_compile is not would leave the same flood open one surface
       // over, which is the argument this change makes about the legacy routes.
-      const source = readFileSync(
+      const source = readSourceLf(
          join(import.meta.dir, "mcp/tools/compile_tool.ts"),
-         "utf8",
       );
       expect(
          source,
@@ -311,7 +323,7 @@ describe("every compile and sqlSource route registers the concurrency gate", () 
 
    for (const { file, literal, verb } of gatedRoutes) {
       it(`gates ${verb ?? ""}${literal} in ${file}`, () => {
-         const source = readFileSync(join(import.meta.dir, file), "utf8");
+         const source = readSourceLf(join(import.meta.dir, file));
          // A path registered on more than one verb needs the pair matched, not
          // the verb or the path alone: the first app.put( in the file is a
          // different route, and the path also appears on a GET that is correctly
