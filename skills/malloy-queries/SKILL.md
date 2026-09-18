@@ -1,6 +1,6 @@
 ---
 name: malloy-queries
-description: Malloy query patterns and syntax, for writing or debugging a query: dates, aggregates vs dimensions, join paths, filters, string matching, chart annotations, and the errors a SQL habit produces.
+description: Malloy query patterns and syntax, for writing or debugging a query - dates, aggregates vs dimensions, join paths, filters, string matching, chart annotations, and the errors a SQL habit produces.
 ---
 <!--
 Copyright (c) Credible Data Inc.

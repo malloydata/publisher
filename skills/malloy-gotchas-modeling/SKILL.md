@@ -1,6 +1,6 @@
 ---
 name: malloy-gotchas-modeling
-description: Common Malloy modeling mistakes, for writing source definitions, dimensions, measures or joins: reserved words, NULL checks, date functions, type casts, field management (extend except/accept/rename vs include public/internal/private), query-based source gotchas.
+description: Common Malloy modeling mistakes, for writing source definitions, dimensions, measures or joins - reserved words, NULL checks, date functions, type casts, field management (extend except/accept/rename vs include public/internal/private), query-based source gotchas.
 ---
 <!--
 Copyright (c) Credible Data Inc.

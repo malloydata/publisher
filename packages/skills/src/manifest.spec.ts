@@ -98,16 +98,39 @@ function markdownFiles(name: string): string[] {
    return out.sort();
 }
 
-function frontmatter(name: string): Record<string, string> {
-   const text = fs
+/**
+ * The frontmatter block, or undefined when the file has none.
+ */
+function frontmatterBlock(name: string): string | undefined {
+   return fs
       .readFileSync(path.join(skillDir(name), "SKILL.md"), "utf8")
-      .replace(/\r\n/g, "\n");
-   const block = text.match(/^---\n([\s\S]*?)\n---/)?.[1];
+      .replace(/\r\n/g, "\n")
+      .match(/^---\n([\s\S]*?)\n---/)?.[1];
+}
+
+/**
+ * The frontmatter as a host reads it: parsed by a real YAML parser.
+ *
+ * Deliberately not a line regex. A hand-rolled `^([a-z_]+):\s*(.+)$` returns a
+ * value for a scalar YAML refuses -- an unquoted `: ` mid-description ends the
+ * plain scalar and makes the whole block `mapping values are not allowed here`
+ * -- so every assertion built on it passes on a skill no host can load. Five
+ * skills shipped that way before this parsed. `Bun.YAML` is the oracle here
+ * rather than a reimplementation of one.
+ *
+ * Throws on an unparseable block, which is the point: "parses as YAML" below
+ * names the failure, and the other frontmatter tests go red alongside it.
+ */
+function frontmatter(name: string): Record<string, string> {
+   const block = frontmatterBlock(name);
    if (block === undefined) return {};
+   const parsed = Bun.YAML.parse(block);
+   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`${name}: frontmatter is not a mapping`);
+   }
    const fields: Record<string, string> = {};
-   for (const line of block.split("\n")) {
-      const match = line.match(/^([a-z_]+):\s*(.+)$/);
-      if (match) fields[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
+   for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string") fields[key] = value.trim();
    }
    return fields;
 }
@@ -222,6 +245,15 @@ describe("publisher-local manifest", () => {
 });
 
 describe("shipped skills", () => {
+   it.each(shipped)("%s: frontmatter parses as YAML", (name) => {
+      // The property that decides whether the skill loads at all. A host parses
+      // this block; if it raises, the skill is rejected rather than loaded, and
+      // nothing downstream reports why.
+      const block = frontmatterBlock(name);
+      expect(block).toBeDefined();
+      expect(() => Bun.YAML.parse(block as string)).not.toThrow();
+   });
+
    it.each(shipped)("%s: frontmatter names its own directory", (name) => {
       const fields = frontmatter(name);
       expect(fields.name).toBe(name);
