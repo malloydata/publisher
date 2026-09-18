@@ -216,6 +216,17 @@ primary-category, and on one set the two readings differed by 4,070 against
 both. That one was right. The rest were repaired afterwards, having failed
 correct answers in the meantime.
 
+**If the rubric accepts an alternative, the entity list must too.** The two
+halves of a key are read by different things: the rubric is prose for the judge,
+`expectedEntities.required` is ids for retrieval scoring. They can disagree
+without anything noticing. A rubric saying "either the full carrier name or the
+nickname is fine" beside a required list naming only `dimension:carriers:name`
+scores an answer that used the nickname CORRECT and docks it recall in the same
+run, and that lost recall then reads as a retrieval failure. Use a
+`requiredAnyOf` group, which is satisfied when any member is delivered.
+`verify_goldens.py` reports the mismatch as a review item, but the rule is
+yours: it is a heuristic over prose and cannot catch every phrasing.
+
 **A trap note is not a requirement.** Notes that arrive beside the questions
 describe what their author thought was hard, and they mention things the
 question never asked for. Turning one into a rubric clause invents a

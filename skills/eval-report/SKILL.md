@@ -214,6 +214,18 @@ them out:
   9 of 16 in the top 5" is a statement about retrieval. Precision alone reads
   as an indictment of it and is mostly a statement about how many fields the
   package has.
+- **Report the misses split by cause, not as one recall figure.** The run
+  attributes each to `never asked` (no target of a type that could return it --
+  deterministic, because `target_type` is a hard filter on the server, so no
+  documentation could have delivered it) or `not retrieved` (a compatible target
+  was issued and it still did not come back, which is the docs or the wording,
+  and diagnose separates them). Those have different owners and one recall
+  number hides which you have.
+- **A miss on a case that PASSED is still a miss, and the report says so.** The
+  answer was right by another route; name the route. Measured on one run, 3 of
+  4 findings were on passing cases and the route was always the same: the agent
+  rebuilding the model's own measure inline, which held for `count()` and failed
+  on the one measure carrying a grain rule.
 - **Read the entities that did NOT come back, and what was asked for.** That is
   where the retrieval signal actually is, and the misses are rarely independent.
   Measured on one run: 5 required entities never came back as ranked results,
