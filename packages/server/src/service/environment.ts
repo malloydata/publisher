@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { GivenValue, LogMessage } from "@malloydata/malloy";
+import type {
+   GivenValue,
+   LogMessage,
+   Model as MalloyModel,
+} from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -28,6 +32,7 @@ import {
    WriteRolledBackError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import { assertNoRestrictedConstructs } from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -926,6 +931,41 @@ export class Environment {
                );
             }
             return { problems };
+         }
+
+         // Containment for caller-submitted fragments. Scope "append" is the
+         // one scope whose text is a FRAGMENT checked against a curated model
+         // rather than a file the author owns, so it has no legitimate need to
+         // define its own data roots -- and Malloy resolves a source's schema
+         // at compile time, so an unrestricted one reaches the connection, the
+         // filesystem and the network without running a query. Scopes "file"
+         // and "package" are deliberately NOT gated: there the source IS the
+         // model file, and `import` plus `connection.table(...)` /
+         // `connection.sql(...)` are how any model declares what it reads.
+         // Gating them would make an ordinary package un-authorable.
+         if (scope === "append") {
+            // The model as saved, WITHOUT the caller's appended text: the
+            // fragment is checked against the surface the author published, so
+            // the caller cannot widen the namespace it is judged against.
+            //
+            // A model that does not exist or does not compile yields no base
+            // namespace. The gate still runs against none, because the
+            // restricted constructs it refuses are refused on sight rather
+            // than by name resolution -- skipping the gate here would let an
+            // unreadable target model turn the restriction off.
+            let baseModel: MalloyModel | undefined;
+            try {
+               baseModel = await runtime
+                  .loadModel(pathToFileURL(modelPath))
+                  .getModel();
+            } catch {
+               baseModel = undefined;
+            }
+            await assertNoRestrictedConstructs(
+               runtime,
+               baseModel,
+               source ?? "",
+            );
          }
 
          // Attempt to compile
