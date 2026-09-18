@@ -153,9 +153,27 @@ export function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
  * source the query reads, so the predicate lands in the build SQL — byte
  * identical to writing the given inside the query. It binds at `structRef`
  * construction rather than by being referenced, so the `givenUsage` marker
- * reads empty while the build bakes the default. A CONSTANT argument bakes too
- * and is left alone: that is a concrete instantiation with no per-caller
- * binding, which is the shape `parameter-eligibility` admits.
+ * reads empty while the build bakes the default.
+ *
+ * Any `arguments` holder anywhere under the query is searched, not just the
+ * query's own. That descent is load-bearing rather than defensive: a given
+ * binding a JOINED source declared on the input sits under `structRef.fields`,
+ * and the marker reads empty for it even when the query reads the join and the
+ * build SQL carries the predicate. Checking only the query's own holders admits
+ * that shape — measured. A chain of parameterized sources nests one inside the
+ * next for the same reason.
+ *
+ * It has a cost, accepted deliberately: the same base with a parameterized
+ * given-filtered join the query does NOT read is refused too, though nothing
+ * reaches the build. That is the over-refusal the marker approach exists to
+ * avoid, reappearing in the one place the marker cannot see. Refusing a source
+ * that does not bake loses a tier; admitting one that does loses a tenant's
+ * isolation, so the descent stays until a signal precise enough to tell the two
+ * apart exists.
+ *
+ * A CONSTANT argument bakes too and is left alone: that is a concrete
+ * instantiation with no per-caller binding, which is the shape
+ * `parameter-eligibility` admits.
  */
 function argumentBindsAGiven(node: unknown, depth = 0): boolean {
    if (depth > MAX_WALK_DEPTH) {

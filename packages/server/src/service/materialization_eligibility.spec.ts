@@ -529,13 +529,13 @@ source: mz_colocated_partition is base -> { aggregate: c is count() }`);
       ).toThrow(/partition/i);
    });
 
-   it("accepts a colocated persist source that references a given but carries no gate (narrow check does not pull in referencesGiven)", async () => {
+   it("accepts a colocated persist source that references a given but carries no gate, and so does the storage gate", async () => {
       // The given sits in the source's extend block, so it is absent from the
       // build and applied over the artifact at read with each caller's value.
       // Previously written with the given INSIDE the persisted query, which is
-      // the shape that bakes the default and serves it to everyone — the check
-      // added below refuses that one, so this test would have been asserting the
-      // defect as the contract.
+      // the shape that bakes the default and serves it to everyone — that one is
+      // refused, so this test would otherwise have been asserting the defect as
+      // the contract.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: tenant :: string is 'acme'
@@ -543,18 +543,25 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 #@ persist name="mz_colocated_given"
 source: mz_colocated_given is base -> { select: * } extend { where: tenant = $tenant }`);
       expect(sources.mz_colocated_given).toBeDefined();
-      // assertMaterializationEligible would refuse this (referencesGiven finds a
-      // given wherever it sits), but the colocated check deliberately does not
-      // apply that rule — it refuses only a given the BUILD would freeze.
-      expect(() =>
-         assertMaterializationEligible(
-            sources.mz_colocated_given,
-            deriveAnnotationFields(sources.mz_colocated_given),
-         ),
-      ).toThrow(MaterializationEligibilityError);
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),
       ).not.toThrow();
+
+      // The two gates AGREE on this shape, and the agreement is the point. This
+      // assertion used to be the contrast — the storage gate refused a given
+      // wherever it sat, and that difference was what "the colocated check is
+      // narrower" meant. The storage gate now asks the same question both do:
+      // does the BUILD substitute a value? Here it does not, so both admit it,
+      // and the storage side additionally reports the term it will re-apply at
+      // read. What still separates the tiers is what they do with that term,
+      // not whether they tolerate it.
+      const plan = assertMaterializationEligible(
+         sources.mz_colocated_given,
+         deriveAnnotationFields(sources.mz_colocated_given),
+      );
+      expect(plan.terms).toEqual([
+         { code: "tenant = $tenant", givens: ["tenant"] },
+      ]);
    });
 
    describe("row-level relaxation (gateOutcome)", () => {
