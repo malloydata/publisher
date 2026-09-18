@@ -190,6 +190,24 @@ A pass rate says an answer was wrong. It does not say WHERE, and the three
 metrics that do are already in the run summary and the notebook. Report them,
 because a report that omits them makes every failure look like the model's:
 
+**Say what each denominator is, and give the per-entity number too.** The
+cascade is a FUNNEL over cases: each rung counts only what survived the one
+above, because a case the model cannot express has nothing to retrieve, and a
+case that never received its entities is not a clean test of the answer. So
+"3 of 5" on the middle rung means three of the five cases that were covered,
+not three of ten. Written without that, a reader reasonably asks what the five
+is, and whether retrieval should not be measured over entities instead.
+
+It should, as well. Give both, and label them:
+
+- per CASE, the funnel: did this case get everything it needed
+- per ENTITY, recall: of the N entities the answers depended on, how many were
+  delivered
+
+They answer different questions and the entity number is the more natural read
+of "how did search do". One run reported `3 of 5` cases and buried `16 required
+entities, 80% recall`, and the case funnel was the only thing a reader saw.
+
 - **Covered?** Can the model express a correct answer at all? Not computed by
   the run: `check_coverage.py` reads the MODEL rather than the answers, and the
   run consumes its report through `--coverage`. **If it was not run, say
