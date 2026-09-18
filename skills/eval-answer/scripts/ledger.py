@@ -199,6 +199,9 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # `answererCostUsd` across run files double-counts without it:
                 # one re-judge reported $17.56 of answering that never happened.
                 "answererCostCopiedFrom",
+                # Set when a rebuild reused saved verdicts, so `judgeCostUsd`
+                # is the ORIGINAL judging spend rather than this run's zero.
+                "judgeCostCopiedFrom",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
                 "improverManifest", "doubtedGoldens",

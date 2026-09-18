@@ -102,6 +102,48 @@ Malloy the answerer wrote that would not run, and whether it recovered.
 ## What to do next
 ```
 
+### "What to do next" is a checklist, and most of it is derived
+
+Do not invent this section. Most of it falls out of what the run did NOT do,
+and a reader should be able to see that nothing was skipped silently. Walk
+these in order and put every one that fires into the list, with its command:
+
+| If the run shows | Then the next step is |
+|---|---|
+| `coverage: unmeasured` | run `check_coverage.py --set <set> --model <pkg> --out coverage.json`, then re-run with `--coverage` so it charges the failures |
+| `goldenCheck: skipped` or the set names no `truthPackage` | build one with `init_truth_package.py`; until then the goldens were derived through the model under test and certify themselves |
+| any golden still `provisional` | re-derive and `verify_goldens.py --promote` |
+| a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do |
+| a passing case with recall below 1.0 | check whether `required` over-specifies one path |
+| `truncated` non-empty | re-run those cases at a higher cap with `--from` |
+| diagnose did not run | run it, or say the failures have no owner yet |
+| a cluster with `owner: model` | `skill:eval-improve`, then the acceptance check |
+| a cluster with `owner: agent-skill` | **edit that skill.** This is NOT a dead end |
+| a cluster with `owner: dataset` | the golden side door in `skill:eval-loop` |
+| only one arm exists | an A/A before any delta is quoted |
+
+**An `agent-skill` cluster is work, not an absence of work.** `eval-improve`
+may not touch it, and writing "nothing to do, the model is fine" there is how a
+real defect gets closed as a non-finding. Name the skill, name the rule to add
+or change, and say who owns it. The model being innocent is a statement about
+the model, never about the run.
+
+### Write it for someone who was not there
+
+The reader is a colleague who did not run this and does not know the loop's
+vocabulary. Two rules, both learned by handing a report to one:
+
+- **Never make a bare count carry the meaning.** "The only cluster is
+  `owner: agent-skill`" tells a reader nothing: what is a cluster, and what
+  follows from it? Write what happened and what to do: "The one wrong answer
+  came from the agent picking the wrong kind of field, so the fix is in the
+  analysis skill, not in the model."
+- **Do not open with a negation of something you just reported.** A section
+  that says "nothing to do" directly under a section reporting a wrong answer
+  reads as a contradiction, and the reader stops trusting both. Lead with the
+  wrong answer and what closes it; put anything genuinely needing no action
+  after that, and say why.
+
 ## The two failure sections, and why they are separate
 
 This is the part most reports get wrong. A wrong answer and a broken

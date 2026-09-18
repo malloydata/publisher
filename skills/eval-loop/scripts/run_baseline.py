@@ -2949,6 +2949,12 @@ def main(argv: list[str] | None = None) -> int:
             f"answers from.")
     coverage_report = coverage_report_summary(a.coverage) if a.coverage else None
 
+    # BEFORE the fresh run.json overwrites it: a rebuild reuses saved verdicts
+    # and spends nothing on judging, and `run_config` does not carry the
+    # previous judging spend forward. Read at the end, this is already gone.
+    _rj = a.out / "run.json"
+    prior_judge = (json.loads(_rj.read_text()).get("judgeCostUsd")
+                   if _rj.exists() else None)
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
         retrievalGate=retrieval_gate,
         coverageReport=coverage_report,
@@ -3319,9 +3325,19 @@ def main(argv: list[str] | None = None) -> int:
     # the source is what lets a total skip it; `None` means this run paid.
     copied_from = (str(a.from_run) if a.from_run
                    else a.out.name if (a.rebuild or a.rejudge) else None)
+    # A rebuild that reuses saved verdicts spends nothing on judging, and
+    # writing that 0 over the figure the ORIGINAL judging cost loses it: the
+    # run then reports $0.00 judge for verdicts somebody paid for. Same shape
+    # as the answerer cost above and the opposite direction, so it is kept
+    # rather than overwritten, and `judgeCostCopiedFrom` says it was not spent
+    # again. Found by writing a report off a rebuilt run and having the cost
+    # line disagree with the arm that produced the verdicts.
+    judge_kept = judge_cost or (prior_judge or 0)
     ledger.update_run(a.out, answererCostUsd=round(cost, 4),
                       answererCostCopiedFrom=copied_from,
-                      judgeCostUsd=round(judge_cost, 4),
+                      judgeCostCopiedFrom=(copied_from if not judge_cost
+                                           and prior_judge else None),
+                      judgeCostUsd=round(judge_kept, 4),
                       retrievalMode=mode, retrievalCalls=tally,
                       reExecution=reexecution_summary(
                           art, [c["qid"] for c in cases], judged=judged_qids),
