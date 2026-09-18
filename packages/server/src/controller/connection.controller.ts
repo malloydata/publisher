@@ -19,7 +19,7 @@ import {
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
-import { redactConnectionSecrets } from "../pg_helpers";
+import { redactConnectionSecretShapes } from "../pg_helpers";
 import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
 import {
@@ -950,16 +950,13 @@ export class ConnectionController {
          // values that arrived in this request.
          return {
             status: "failed",
-            // Redacted for the same reason the service redacts its own copy: a
-            // driver error embeds the config it was handed, credentials
-            // included. Covers every connection type, not only Postgres -- an
-            // SSH tunnel failure carries the private key and its passphrase,
-            // and a warehouse auth failure carries the token or key JSON, none
-            // of which the Postgres-shaped passes recognise. Untested on
-            // purpose: the service resolves every failure rather than throwing,
-            // so reaching this needs a module mock, and bun shares one process
-            // across spec files -- mocking this module breaks connection.spec.ts.
-            errorMessage: redactConnectionSecrets(
+            // Defence in depth, NOT the redaction point. testConnectionConfig
+            // resolves every failure into a ConnectionStatus rather than
+            // throwing, so this catch only fires if it throws before reaching
+            // its own catch-all -- which is also why it cannot be tested
+            // without a module mock. The redaction that matters is in
+            // service/connection.ts, on the object this path returns.
+            errorMessage: redactConnectionSecretShapes(
                `Connection test failed: ${
                   error instanceof Error ? error.message : String(error)
                }`,

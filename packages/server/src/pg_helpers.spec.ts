@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { redactConnectionSecrets, redactPgSecrets } from "./pg_helpers";
+import { redactConnectionSecretShapes, redactPgSecrets } from "./pg_helpers";
 
 describe("redactPgSecrets", () => {
    it("redacts a quoted password carrying a space and an escaped quote", () => {
@@ -240,7 +240,7 @@ describe("redactPgSecrets", () => {
    });
 });
 
-describe("redactConnectionSecrets", () => {
+describe("redactConnectionSecretShapes", () => {
    // A connection test is handed the caller's own configuration, and drivers
    // build their failure text by quoting that configuration back. Every case
    // below is a credential the API accepts for some connection type, in the
@@ -249,7 +249,7 @@ describe("redactConnectionSecrets", () => {
 
    it("redacts an SSH private key reported as a PEM block", () => {
       const msg = `tunnel setup failed for -----BEGIN RSA PRIVATE KEY-----\n${SECRET}\n-----END RSA PRIVATE KEY----- while dialing bastion`;
-      const redacted = redactConnectionSecrets(msg);
+      const redacted = redactConnectionSecretShapes(msg);
       expect(redacted).not.toContain(SECRET);
       // The surrounding prose is what makes the failure diagnosable.
       expect(redacted).toContain("tunnel setup failed");
@@ -258,7 +258,7 @@ describe("redactConnectionSecrets", () => {
 
    it("redacts an OPENSSH private key block", () => {
       const msg = `-----BEGIN OPENSSH PRIVATE KEY-----\n${SECRET}\n-----END OPENSSH PRIVATE KEY-----`;
-      expect(redactConnectionSecrets(msg)).not.toContain(SECRET);
+      expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
    });
 
    it.each([
@@ -275,7 +275,9 @@ describe("redactConnectionSecrets", () => {
       ["connectionString", `connectionString=${SECRET}`],
       ["token", `token=${SECRET}`],
    ])("redacts %s in keyword form", (_name, fragment) => {
-      const redacted = redactConnectionSecrets(`auth failed: ${fragment} rc=7`);
+      const redacted = redactConnectionSecretShapes(
+         `auth failed: ${fragment} rc=7`,
+      );
       expect(redacted).not.toContain(SECRET);
       // The match must stop at the field it started in.
       expect(redacted).toContain("rc=7");
@@ -283,7 +285,7 @@ describe("redactConnectionSecrets", () => {
 
    it("redacts a secret quoted as JSON, keeping the rest of the object", () => {
       const msg = `invalid config: {"account":"acme","privateKey":"${SECRET}","role":"reader"}`;
-      const redacted = redactConnectionSecrets(msg);
+      const redacted = redactConnectionSecretShapes(msg);
       expect(redacted).not.toContain(SECRET);
       expect(redacted).toContain('"account":"acme"');
       expect(redacted).toContain('"role":"reader"');
@@ -293,23 +295,23 @@ describe("redactConnectionSecrets", () => {
       // The API schema says privateKey; a driver that snake-cases its config
       // before reporting it says private_key for the same value.
       expect(
-         redactConnectionSecrets(`bad key: private_key=${SECRET}`),
+         redactConnectionSecretShapes(`bad key: private_key=${SECRET}`),
       ).not.toContain(SECRET);
    });
 
    it("still redacts the Postgres shapes it delegates", () => {
       expect(
-         redactConnectionSecrets(`postgres://u:${SECRET}@h:5432/db`),
+         redactConnectionSecretShapes(`postgres://u:${SECRET}@h:5432/db`),
       ).not.toContain(SECRET);
       expect(
-         redactConnectionSecrets(`host=h password=${SECRET} dbname=d`),
+         redactConnectionSecretShapes(`host=h password=${SECRET} dbname=d`),
       ).not.toContain(SECRET);
    });
 
    it("redacts a password quoted as JSON, which the libpq pass does not reach", () => {
       // redactPgSecrets' keyword pass matches `password=`; a serialized config
       // reports `"password":"..."`, which goes straight through it.
-      const redacted = redactConnectionSecrets(
+      const redacted = redactConnectionSecretShapes(
          `connect refused; config={"password":"${SECRET}","host":"h"}`,
       );
       expect(redacted).not.toContain(SECRET);
@@ -321,19 +323,38 @@ describe("redactConnectionSecrets", () => {
       // format`. The text after the colon is the diagnosis, not the key, and
       // redacting it would leave the caller with no reason for the failure.
       const msg = "Cannot parse privateKey: Unsupported key format";
-      expect(redactConnectionSecrets(msg)).toBe(msg);
+      expect(redactConnectionSecretShapes(msg)).toBe(msg);
+   });
+
+   it("redacts a SAS URL's signature, which follows an ampersand", () => {
+      // The credential in an Azure SAS URL IS the `sig=` parameter, and it comes
+      // after a `&`. A value class that stopped there redacted the harmless
+      // prefix and left the signature in place.
+      const msg =
+         "auth failed: sasUrl=https://acct.blob.core.windows.net/c?sv=2021-08-06&ss=b&sig=" +
+         SECRET +
+         "&se=2030";
+      expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
+   });
+
+   it("redacts a PEM block that was truncated before its terminator", () => {
+      // Drivers truncate long values, and requiring -----END ...----- meant a
+      // truncated key -- still most of the key -- passed through untouched.
+      const msg =
+         "could not parse key: -----BEGIN RSA PRIVATE KEY-----\n" + SECRET + "\n... (truncated)";
+      expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
    });
 
    it("leaves non-secret content alone", () => {
       const msg =
          'Connection test failed: no such host "warehouse.internal" (port 5432), user analytics_ro';
-      expect(redactConnectionSecrets(msg)).toBe(msg);
+      expect(redactConnectionSecretShapes(msg)).toBe(msg);
    });
 
    it("is idempotent", () => {
       const input = `privateKey=${SECRET} and password=${SECRET}`;
-      const once = redactConnectionSecrets(input);
-      expect(redactConnectionSecrets(once)).toBe(once);
+      const once = redactConnectionSecretShapes(input);
+      expect(redactConnectionSecretShapes(once)).toBe(once);
       expect(once).not.toContain(SECRET);
    });
 });

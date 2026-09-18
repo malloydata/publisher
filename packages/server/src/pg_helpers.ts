@@ -111,22 +111,42 @@ const SECRET_QUOTED_PATTERN = new RegExp(
 );
 
 // Bare value after `=` only. The value class stops at the separators that end a
-// field in libpq keyword form, in a query string and in ordinary prose, so a
-// match cannot run past the field it started in.
+// field in libpq keyword form and in ordinary prose, so a match cannot run past
+// the field it started in.
+//
+// `&` is NOT a terminator. A URL-valued field carries its credential in a query
+// parameter -- an Azure SAS URL's secret IS the `sig=` parameter, which follows
+// one -- so stopping at `&` redacted the harmless prefix and left the signature
+// in place. The cost of including it is that a bare `a=1&b=2` pair following a
+// secret-named field is swallowed whole, which is the safe direction.
 const SECRET_BARE_PATTERN = new RegExp(
-   String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*=\s*)(?:[^,;&\s}"']+)`,
+   String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*=\s*)(?:[^,;\s}"']+)`,
    "gi",
 );
 
 // A PEM block is the one secret shape with no field name in front of it: a
 // driver reporting "could not parse key: -----BEGIN RSA PRIVATE KEY----- ..."
 // carries the whole key as prose. Matched by its own delimiters instead.
+//
+// The terminator is optional, falling back to the end of the string. Drivers
+// truncate long values routinely, and requiring `-----END ...-----` meant a
+// truncated key -- which still contains most of the key -- passed through
+// untouched. Over-redacting the tail of a message that demonstrably contains a
+// raw private key is the right trade.
 const PEM_BLOCK_PATTERN =
-   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*)/g;
 
 /**
  * Redact every connection credential this server can be handed, from a string
- * that is about to reach a caller or a log.
+ * that is about to reach a caller or a log, by the SHAPE the credential takes.
+ *
+ * <p>Named for the shape rather than the concern because
+ * {@code materialization_service.redactConnectionSecrets} is the value-based
+ * counterpart: given the config in hand, it removes those exact strings. Prefer
+ * that one where the config is available -- it needs no list of field names and
+ * cannot miss a field the schema gains. This one is the backstop for what it
+ * cannot see: an echo that is base64- or URL-encoded, or a secret that reached
+ * the message from somewhere other than the config passed in.
  *
  * A connection test is given the caller's own configuration and reports why it
  * did not work, and drivers build those messages by quoting the configuration
@@ -141,7 +161,7 @@ const PEM_BLOCK_PATTERN =
  * Over-redaction is the safe direction and is preferred to a leak -- a field
  * merely named `token` is masked whether or not it held a credential.
  */
-export function redactConnectionSecrets(s: string): string {
+export function redactConnectionSecretShapes(s: string): string {
    return redactPgSecrets(
       s
          .replace(PEM_BLOCK_PATTERN, "***")

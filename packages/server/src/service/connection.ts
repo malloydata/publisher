@@ -56,7 +56,7 @@ import {
    UnsupportedCatalogFormatError,
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
-import { redactPgSecrets } from "../pg_helpers";
+import { redactConnectionSecretShapes, redactPgSecrets } from "../pg_helpers";
 import {
    assertSafeEnvironmentPath,
    assertSafePackageName,
@@ -2845,6 +2845,75 @@ async function testDuckDBConnection(
    }
 }
 
+/**
+ * Redacts a connection-test failure before it reaches the caller or the log.
+ *
+ * <p>Two passes, because neither alone is sufficient. The value pass removes the
+ * exact credential strings this very request supplied, which needs no list of
+ * field names and so cannot miss a field the schema gains -- the failure mode of
+ * a name list. The shape pass then catches what the value pass cannot see: a
+ * credential the driver echoed re-encoded, and any secret that reached the
+ * message from somewhere other than the config in hand.
+ *
+ * <p>Credentials shorter than four characters are left to the shape pass alone:
+ * removing every occurrence of a two-character string would shred the prose.
+ */
+export function redactTestFailure(message: string, config: unknown): string {
+   const secrets = new Set<string>();
+   collectConfigSecrets(config, secrets, new WeakSet());
+   let redacted = message;
+   for (const secret of secrets) {
+      redacted = redacted.split(secret).join("***");
+      // A driver that echoes the offending SQL shows a quote-carrying secret in
+      // its escaped form, so the raw value alone would not match.
+      const escaped = escapeSQL(secret);
+      if (escaped !== secret) redacted = redacted.split(escaped).join("***");
+   }
+   return redactConnectionSecretShapes(redacted);
+}
+
+/**
+ * Connection-config keys whose string values are credentials to remove whole.
+ *
+ * Excludes `connectionString` and `sasUrl` on purpose. Those carry a credential
+ * inside a larger value that is otherwise the most useful part of the message --
+ * the host and port a reader needs to tell "wrong password" from "wrong host".
+ * Removing the whole value passes a "no credential present" assertion while
+ * destroying the diagnosis. The shape passes handle them instead, masking the
+ * password or signature in place and leaving the rest readable.
+ */
+const CONFIG_SECRET_KEY =
+   /pass(word)?|secret|private_?key|service_?account|access_?key|token/i;
+
+/** Collects the credential strings a connection config carries. */
+function collectConfigSecrets(
+   value: unknown,
+   out: Set<string>,
+   seen: WeakSet<object>,
+): void {
+   if (value === null || typeof value !== "object") return;
+   // Depth-guarded: a config that has been hydrated into a live connection can
+   // hold a back-reference, and an unguarded walk would exhaust the stack and
+   // replace the failure being redacted with a RangeError.
+   if (seen.has(value)) return;
+   seen.add(value);
+   if (Array.isArray(value)) {
+      for (const v of value) collectConfigSecrets(v, out, seen);
+      return;
+   }
+   for (const [key, v] of Object.entries(value)) {
+      if (
+         typeof v === "string" &&
+         v.length >= 4 &&
+         CONFIG_SECRET_KEY.test(key)
+      ) {
+         out.add(v);
+      } else {
+         collectConfigSecrets(v, out, seen);
+      }
+   }
+}
+
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
@@ -2932,22 +3001,33 @@ export async function testConnectionConfig(
          logAxiosError(error);
       } else {
          // Same redaction as the response, but keep the stack for diagnostics
-         // (the raw message/stack can carry the DSN).
+         // (the raw message/stack can carry the credentials). Operator logs are
+         // read more widely than the caller's own response body, so this is the
+         // wider of the two exposures, not the lesser one.
          logger.error("Connection test failed", {
-            error: redactPgSecrets(
+            error: redactTestFailure(
                error instanceof Error
                   ? (error.stack ?? error.message)
                   : String(error),
+               connectionConfig,
             ),
          });
       }
 
       return {
          status: "failed",
-         // Attach failures echo the connection string verbatim (DuckDB embeds
-         // the full DSN), and this message goes into the REST response body.
-         errorMessage: redactPgSecrets(
+         // Drivers echo the config they were handed: attach failures embed the
+         // full DSN (DuckDB), an SSH tunnel failure carries the private key and
+         // its passphrase, and a warehouse auth failure carries the token or key
+         // JSON. This message goes into the REST response body, which API
+         // clients print into their own logs.
+         //
+         // This is the redaction point for the connection test. The controller's
+         // catch above it never runs: every failure here is resolved into this
+         // object rather than thrown.
+         errorMessage: redactTestFailure(
             error instanceof Error ? error.message : String(error),
+            connectionConfig,
          ),
       };
    } finally {
