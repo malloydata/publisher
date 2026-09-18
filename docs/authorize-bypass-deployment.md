@@ -8,8 +8,12 @@ SPDX-License-Identifier: MIT
 Publisher accepts a request header that **skips `#(authorize)` gate evaluation**:
 
 ```
-x-publisher-bypass-authorize: true
+x-publisher-bypass-authorize: <the configured secret>
 ```
+
+The header is honoured only when `PUBLISHER_BYPASS_AUTHORIZE_SECRET` is set on the server and
+the header carries exactly that value. With the variable unset the bypass is refused outright,
+whatever the header says, and gates are enforced.
 
 It exists so a data-management caller can scan a gated source — an indexer is a machine identity
 with no givens, so a gated source returns 403 and is never indexed, which turns an author's

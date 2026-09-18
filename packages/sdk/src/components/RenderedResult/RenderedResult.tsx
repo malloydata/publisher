@@ -276,7 +276,27 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    background: var(--malloy-render--tile-background) !important;
    color: var(--malloy-render--table-body-color) !important;
    box-shadow: none !important;
-   border: var(--malloy-render--table-border) !important;
+   /* The card edge, not the table gridline: --publisher-dashboard-card-border,
+      the same value TileCard paints, so the renderer's card and the composite
+      one are outlined identically. */
+   border: var(--publisher-dashboard-card-border) !important;
+}
+/* The renderer's big-value card — the small card a "# big_value" measure sits
+   in, several to a row inside one tile. (No backticks in here: this is inside
+   a template literal.) Its own CSS gives it a 0.55px edge in
+   #e5e7eb: a sub-pixel width, and a grey off the slate ramp everything else on
+   the page is on. It is a dashboard card like any other, so it takes the card
+   edge and stops being the one card outlined in a hairline nobody can see. */
+.malloy-render .malloy-big-value-card {
+   border: var(--publisher-dashboard-card-border) !important;
+   /* Its shadow is a four-layer Tailwind stack, and only two of those layers
+      are a shadow: the other is "0 0 0 1px #e5e7eb", a spread ring drawn as a
+      second border OVER the real one. So the border above was landing
+      underneath a ring in the renderer's own grey, and the card kept both a
+      lifted look the flat cards around it do not have and an edge we did not
+      pick. Dropped whole rather than rebuilt layer by layer: the ring's job is
+      the border's job, and the border is already doing it. */
+   box-shadow: none !important;
 }
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
