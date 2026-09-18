@@ -60,6 +60,7 @@ export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
    "merge_key",
    "freshness",
    "queryMetadata",
+   "partition",
    "sharing",
    "schedule",
 ]);

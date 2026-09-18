@@ -13,6 +13,7 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "./incremental_test_harness";
+import { RECOGNIZED_PERSIST_KEYS } from "./incremental_declaration";
 import {
    parsePartitionValue,
    resolvePartitionColumns,
@@ -205,5 +206,24 @@ source: p is raw -> { select: * }`,
 source: p is raw -> { select: * }`,
       );
       expect(partition).toEqual({ ok: true, columns: [] });
+   });
+});
+
+describe("partition= is a recognized persist key", () => {
+   // Found by publishing through a real control plane rather than by any unit
+   // test: the eligibility gate and the build both honoured `partition=`, while
+   // the publish-time unknown-key warning still called it unrecognized and told
+   // the author it was "passed through untouched". Every correct use of the key
+   // drew a warning saying it did nothing.
+   //
+   // Asserted against the exported set rather than by publishing, because the
+   // set is what the warning reads and a key absent from it cannot be warned
+   // about correctly no matter what the rest of the pipeline does.
+   it("does not warn an author that a working key is ignored", () => {
+      expect(RECOGNIZED_PERSIST_KEYS.has("partition")).toBe(true);
+   });
+
+   it("still reports a genuinely unknown key, so the guard is not blanket", () => {
+      expect(RECOGNIZED_PERSIST_KEYS.has("parition")).toBe(false);
    });
 });
