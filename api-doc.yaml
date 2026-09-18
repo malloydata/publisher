@@ -511,6 +511,17 @@ paths:
             schema:
               type: object
               properties:
+                configEtag:
+                  type: string
+                  description: >
+                    The writer's opaque tag for the configuration this update
+                    produces. Declared here because the rest of this body is a
+                    hand-picked subset of `Connection` rather than a partial of
+                    it, and a writer that could not send the tag on the endpoint
+                    it rotates credentials through could only ever clear it —
+                    an update that omits the tag drops the stored one, since the
+                    configuration that tag described has been replaced. See the
+                    field on `Connection` for what it is and how it is compared.
                 proxy:
                   $ref: "#/components/schemas/ConnectionProxy"
                 postgresConnection:

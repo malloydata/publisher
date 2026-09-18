@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { components } from "../api";
+import { assembleEnvironmentConnections } from "./connection_config";
 import {
    PUBLIC_FIELDS_BY_INLINE_PATH,
    PUBLIC_FIELDS_BY_SCHEMA,
@@ -691,6 +692,51 @@ describe("configEtag", () => {
          configEtag: opaque,
       } as ApiConnection);
       expect(view.configEtag).toBe(opaque);
+   });
+});
+
+describe("configEtag survives storage", () => {
+   /**
+    * The two tests above cover the projection and the merge, which are pure. The claim the docs
+    * actually make -- Publisher stores the tag with the connection and returns it on reads -- rests
+    * on the step between them: a write goes through assembleEnvironmentConnections, whose
+    * apiConnections are what a later read projects.
+    *
+    * That step preserves the tag only because it clones with a spread. Nothing else asserts it, so
+    * hardening that clone into a field-by-field rebuild -- exactly the allowlist reasoning that
+    * produced PUBLIC_CONNECTION in the file beside this one -- would kill the feature with every
+    * other test in this file still green. This is the one that would go red.
+    */
+   it("is carried through assembleEnvironmentConnections onto the read", () => {
+      const written = {
+         name: "warehouse",
+         type: "postgres",
+         configEtag: "sha256:abc",
+         postgresConnection: { host: "db.internal", password: SENTINEL },
+      } as ApiConnection;
+
+      const stored = assembleEnvironmentConnections([written]).apiConnections;
+      expect(stored).toHaveLength(1);
+      expect(stored[0].configEtag).toBe("sha256:abc");
+
+      const read = toPublicConnection(stored[0]);
+      expect(read.configEtag).toBe("sha256:abc");
+      expect(allStrings(read)).not.toContain(SENTINEL);
+   });
+
+   it("does not leak into the Malloy connection pojo", () => {
+      // The pojo is what the engine connects with; the tag is orchestration metadata and has no
+      // business there. It is assembled field by field, so this holds today -- pinned because the
+      // tag reaching it would put a credential-derived value somewhere nobody audits for one.
+      const assembled = assembleEnvironmentConnections([
+         {
+            name: "warehouse",
+            type: "postgres",
+            configEtag: "sha256:abc",
+            postgresConnection: { host: "db.internal", password: SENTINEL },
+         } as ApiConnection,
+      ]);
+      expect(JSON.stringify(assembled.pojo)).not.toContain("sha256:abc");
    });
 });
 
