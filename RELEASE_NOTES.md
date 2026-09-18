@@ -46,7 +46,13 @@ What changes for an operator: the cap now has to be sized for authoring traffic
 as well as query traffic. An agent loop or a notebook that compiles on every edit
 draws on the same pool a query does, so a deployment that sits near its cap may
 start seeing 503s on compile and sqlSource that it did not see before. The cap
-defaults to 32 and `0` still disables it entirely.
+defaults to 32 and `0` still disables it entirely. The dashboard save
+(`PUT /environments/:env/packages/:pkg/models/*?`) admits here too: it compiles
+the submitted text and rewrites the package under its lock.
+
+A deployment that finds the cap too tight once authoring traffic counts against
+it can raise `PUBLISHER_MAX_CONCURRENT_QUERIES` -- 64 or 128 -- rather than
+leaving these routes ungated.
 
 ## [Unreleased] - two server defaults now close instead of open
 

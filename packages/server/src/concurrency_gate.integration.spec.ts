@@ -317,7 +317,10 @@ describe("every compile and sqlSource route registers the concurrency gate", () 
          // different route, and the path also appears on a GET that is correctly
          // ungated.
          const start = verb
-            ? source.indexOf(literal, source.indexOf(`${verb}\n   \`${literal}`))
+            ? source.indexOf(
+                 literal,
+                 source.indexOf(`${verb}\n   \`${literal}`),
+              )
             : source.indexOf(literal);
          expect(
             start,
