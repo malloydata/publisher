@@ -1250,8 +1250,12 @@ export class MaterializationService {
             // Self-assign the physical name from `name=` (or the source name)
             // verbatim for BOTH the colocated and storage destinations — the only
             // difference between the two is which connection the table lands in. A
-            // storage build replaces the table atomically (`CREATE OR REPLACE`),
-            // so no generational decoration is needed to make a rebuild safe. An
+            // storage build replaces the table atomically — a single `CREATE OR
+            // REPLACE`, or, when the source declares `partition=`, the
+            // create/alter/insert trio inside ONE transaction for exactly this
+            // reason — so no generational decoration is needed to make a rebuild
+            // safe. Without that transaction a rebuild would empty the table it
+            // is serving. An
             // orchestrated build ignores this and trusts the host-supplied
             // `physicalTableName`; the host owns any generational,
             // ownership-scoped naming.

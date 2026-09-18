@@ -45,9 +45,11 @@ describe("createTableAndDescribe: statements issued", () => {
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
       expect(sql).toEqual([
+         "BEGIN TRANSACTION",
          `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS}) WITH NO DATA`,
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id")',
          `INSERT INTO "lake"."t" (${ROWS})`,
+         "COMMIT",
          'DESCRIBE "lake"."t"',
       ]);
    });
@@ -55,16 +57,17 @@ describe("createTableAndDescribe: statements issued", () => {
    it("keeps the author's column order, which is the directory nesting", async () => {
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id", "s"]);
-      expect(sql[1]).toBe(
+      expect(sql[2]).toBe(
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id", "s")',
       );
    });
 
-   it("drops the empty table when the layout fails, leaving nothing stranded", async () => {
-      // Unlike the CTAS path, the table is already committed by the time the
-      // ALTER runs — and the caller records no manifest entry until this
-      // function returns, so a table left here is reachable by neither the
-      // failed-run reclaim nor manifest-driven GC.
+   it("rolls back rather than dropping when the layout fails", async () => {
+      // The physical name is self-assigned and STABLE across generations, so a
+      // rebuild targets the table currently being served. Dropping it on failure
+      // would delete the generation the manifest still names; rolling back
+      // restores it. This is why the three statements are one transaction —
+      // see the real-DuckLake case below, which proves the rows survive.
       const issued: string[] = [];
       const conn = {
          runSQL: async (q: string) => {
@@ -77,8 +80,9 @@ describe("createTableAndDescribe: statements issued", () => {
       await expect(
          createTableAndDescribe(conn, '"lake"."t"', ROWS, ["nope"]),
       ).rejects.toThrow("no such column");
-      expect(issued).toContain('DROP TABLE IF EXISTS "lake"."t"');
-      // The failure the caller sees is the layout error, not a drop error.
+      expect(issued).toContain("ROLLBACK");
+      // Never a drop: that is what destroyed the served generation.
+      expect(issued.filter((q) => q.startsWith("DROP"))).toEqual([]);
       expect(issued.filter((q) => q.startsWith("INSERT"))).toEqual([]);
    });
 });
@@ -127,5 +131,47 @@ describe("createTableAndDescribe: against a real DuckLake", () => {
       // Every row is present: the layout separates the files, it does not filter.
       const count = await conn.runSQL(`SELECT count(*) AS n FROM lake.t`);
       expect(Number((count.rows as { n: unknown }[])[0].n)).toBe(3);
+   }, 120000);
+
+   it("leaves the previous generation serving when the build fails", async () => {
+      // The property the transaction exists for, proved on a real catalog rather
+      // than on issued SQL.
+      //
+      // The physical name is self-assigned and stable across generations, so a
+      // rebuild REPLACES the table being served. Unwrapped, `WITH NO DATA` empties
+      // it — routed queries then answer zero rows reporting `servedFrom: storage`,
+      // which is not even a visible fallback — and a failed INSERT leaves the drop
+      // to delete a table the manifest still names. A source-warehouse timeout mid
+      // refresh is routine, so this is a reachable path, not a hypothetical.
+      const dir = mkdtempSync(join(tmpdir(), "ducklake-partition-fail-"));
+      const conn = new DuckDBConnection("duckdb");
+      await conn.runSQL("INSTALL ducklake");
+      await conn.runSQL("LOAD ducklake");
+      await conn.runSQL(
+         `ATTACH 'ducklake:${join(dir, "catalog.ducklake")}' AS lake2 ` +
+            `(DATA_PATH '${join(dir, "data")}/')`,
+      );
+      await conn.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+
+      // The generation currently being served.
+      await conn.runSQL(`CREATE OR REPLACE TABLE lake2.t AS (${ROWS})`);
+      const rows = async () => {
+         const r = await conn.runSQL("SELECT count(*) AS n FROM lake2.t");
+         return Number((r.rows as { n: unknown }[])[0].n);
+      };
+      expect(await rows()).toBe(3);
+
+      // A rebuild whose INSERT cannot run — the select names nothing.
+      await expect(
+         createTableAndDescribe(
+            conn,
+            "lake2.t",
+            "SELECT * FROM no_such_source",
+            ["org_id"],
+         ),
+      ).rejects.toThrow();
+
+      // Still serving the previous generation's rows, not zero and not absent.
+      expect(await rows()).toBe(3);
    }, 120000);
 });

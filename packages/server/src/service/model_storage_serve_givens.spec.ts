@@ -173,9 +173,11 @@ describe("a term the shape cannot reproduce withholds the binding", () => {
    // refactor making shape compilation more forgiving would delete the
    // guarantee, and without this, nothing would go red.
    //
-   // The unreproducible term here reads a given the model does not declare, so
-   // the re-emitted `where:` cannot compile against the shape. The required
-   // outcome is a LIVE answer, never an unfiltered one.
+   // The term is made unreproducible by narrowing the binding's declared schema
+   // so it no longer carries `org_id` — the same shape a source that hides a
+   // column produces. The re-emitted `where:` then names a column the shape does
+   // not have and fails to compile. The required outcome is a LIVE answer, never
+   // an unfiltered one.
    it("serves live rather than serving the artifact unfiltered", async () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       const model = await buildModel();

@@ -1417,34 +1417,56 @@ export async function createTableAndDescribe(
 
    // DuckLake applies a partition layout to files written AFTER it is set, so
    // the layout has to precede the rows — which is why this is three statements
-   // rather than a CTAS. `WITH NO DATA` takes the schema from the SELECT without
-   // writing anything, the ALTER declares the layout, and the INSERT then writes
-   // every file into it.
+   // rather than a CTAS.
+   //
+   // IN ONE TRANSACTION, because the unpartitioned path's single `CREATE OR
+   // REPLACE` is not merely convenient: the physical name is self-assigned and
+   // stable across generations (`selfAssignTableName`), so a rebuild targets the
+   // table currently being SERVED. Run bare, `WITH NO DATA` replaces the served
+   // generation with an empty one and every routed query answers zero rows —
+   // with `servedFrom: storage`, so not even a visible fallback — until the
+   // INSERT lands. A failed INSERT is worse: the drop below would remove the
+   // table the manifest still names.
+   //
+   // Verified against a real DuckLake: bare, the served table reads 0 rows
+   // mid-rebuild and is gone after the failure; wrapped, a ROLLBACK leaves the
+   // previous generation's rows intact and a committed rebuild still writes one
+   // directory per partition value.
    //
    // The session's `SET ducklake_default_data_inlining_row_limit=0` (set on
-   // attach) is what makes this mean anything: with inlining on, a small table
-   // lands in the catalog's own rows rather than in files, and there is nothing
-   // to lay out.
-   await session.runSQL(
-      `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
-   );
+   // attach) is what makes the layout mean anything: with inlining on, a small
+   // table lands in the catalog's own rows rather than in files, and there is
+   // nothing to lay out.
    const columns = partitionColumns
       .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
       .join(", ");
+   await session.runSQL("BEGIN TRANSACTION");
    try {
+      await session.runSQL(
+         `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
+      );
       await session.runSQL(
          `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
       );
       await session.runSQL(`INSERT INTO ${quotedTablePath} (${selectSQL})`);
-   } catch (layoutErr) {
-      // The empty table is already committed, and unlike the CTAS path there is
-      // no single statement whose failure leaves nothing behind. Drop it for the
-      // same reason the read-back failure does: the caller records nothing until
-      // this function returns, so a table left here is named by no manifest
-      // entry and is reachable by neither the failed-run reclaim nor
-      // manifest-driven GC.
-      await dropStranded(session, quotedTablePath, layoutErr);
-      throw layoutErr;
+      await session.runSQL("COMMIT");
+   } catch (buildErr) {
+      // Restores the previous generation rather than deleting it. Best-effort:
+      // a rollback that itself fails must not replace the error that caused it.
+      try {
+         await session.runSQL("ROLLBACK");
+      } catch (rollbackErr) {
+         logger.warn(
+            "Failed to roll back a partitioned storage build; the served " +
+               "generation may have been replaced",
+            {
+               table: quotedTablePath,
+               error: errMessage(rollbackErr),
+               cause: errMessage(buildErr),
+            },
+         );
+      }
+      throw buildErr;
    }
    return await describeOrDrop(session, quotedTablePath);
 }

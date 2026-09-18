@@ -988,9 +988,11 @@ export function narrowSchemaToPublic(
  * not reproduce, and re-entering the ladder with the rest — so a sibling keeps
  * its joins and views rather than being frozen at the shape that failed.
  *
- * A filter referencing a given cannot reach here: `assertMaterializationEligible`
- * refuses a given-referencing source outright, as it does `#(partition)` and
- * `#(authorize)`.
+ * A filter referencing a given is the main thing that reaches here. The gate
+ * admits an extend-block `where:` over a given — the build leaves it out, so the
+ * artifact holds every caller's rows and this re-emission is what puts the term
+ * back per caller. It compiles because the shape declares the model's givens.
+ * `#(partition)` and `#(authorize)` are still refused outright.
  *
  * `filterList` accumulates through `extend`, so a source's own entries already
  * carry every filter it inherits from the source it extends.
