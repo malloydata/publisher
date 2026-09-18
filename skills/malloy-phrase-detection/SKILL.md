@@ -14,20 +14,26 @@ The `get_context` tool description defines each field and what a call returns. T
 
 **A note on matching:** `get_context` searches over the model (sources, fields, views, and their descriptions), not the distinct categorical *values* stored in the data. To find which literal values a categorical dimension holds, target the dimension, then query its distinct values with `execute_query` (see the patterns below).
 
+## Always send `search_text`
+
+**Do not enumerate.** Omitting `search_text` lists a catalog rather than searching it. Knowing the package narrows *where* to look; it does not substitute for saying *what* you need: if you know the package, that is a reason to scope, not a reason to skip `search_text`. Enumerated listings are capped per source and per entity type, and with no relevance signal the cap drops the fields your question is about while keeping join-path noise.
+
+A bare listing has two legitimate uses. The first is answering "what data is here?" when the user has named no subject at all. The second is reading a specific entity you already have the exact name of: scope to its source, set `entity_name`, and pass `search_text: null`, which returns that entity's docstring and Malloy code without spending a search. Every other call carries `search_text` on every target.
+
 ## Authoring `search_text` for entity targets
 
-Write `search_text` as a brief semantic **description** of what you're looking for, not an echo of the user's word. This applies even when you already know the entity name from a prior result: still describe it, don't just repeat the name.
+Write `search_text` as a brief semantic **description** of what you're looking for, not an echo of the user's word. This applies even when you already know the entity name from a prior result: still describe it, don't just repeat the name. That is a rule about how to *phrase* a search, and it does not conflict with the exact-entity lookup above: if you want that one entity's code and docstring rather than a ranked set, pin it with `entity_name` and skip the search entirely. Sending its name back as `search_text` is the move this rule forbids, because it searches for a name instead of either describing a concept or asking for the entity.
 
 One target per concept is enough: the tool handles phrasing variants internally. Don't pile up dimension targets that point at the same field. Use multiple targets only when they describe genuinely distinct concepts (see "Non-obvious decomposition patterns" below).
 
 ## Target-type decision guide
 
 - **`dimension`**: categorical attribute to group, filter, or join on. Also used for time and numeric fields.
-- "region" becomes `"the geographic region"`
+  - "region" becomes `"the geographic region"`
 - **`measure`**: aggregation metric (count, sum, average, rate).
-- "total revenue" becomes `"the total revenue or sales amount"`
+  - "total revenue" becomes `"the total revenue or sales amount"`
 - **`view`**: pre-built analysis. Include one whenever the question sounds like a canned report (summary, breakdown, top-N, trend).
-- "sales summary" becomes `"a summary of sales metrics"`
+  - "sales summary" becomes `"a summary of sales metrics"`
 - **`source`**: data domain, for a question that names a subject area rather than fields (phrasing below).
 
 **Resolving categorical values (no value-search target in v1).** When the user names a literal value like "premium" or "New York City", target the *dimension* it lives on (`"the subscription tier"`, `"the city where the subscriber lives"`). Then confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it. The data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
