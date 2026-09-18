@@ -199,3 +199,36 @@ describe("a term the shape cannot reproduce withholds the binding", () => {
       expect(answer).toBe(0);
    });
 });
+
+describe("the cached serve shape cannot carry one caller's values to another", () => {
+   // The shape MODEL is cached per binding set and reused across requests, and a
+   // given's value is substituted as an INLINE LITERAL — so "is anything on the
+   // cached path holding one caller's literal" is worth an assertion rather than
+   // an argument.
+   //
+   // What makes it safe is structural rather than careful: the cached object is
+   // the compiled model, which DECLARES givens and binds none, and values are
+   // bound per call at prepare/run. No layer in between retains a substituted
+   // query. Memoizing the runnable does not change that — it was tried, and this
+   // case still passed — so read this as pinning the observable property
+   // (each caller's own answer through one shared cached model), not as a guard
+   // on the cache key. The guard against a stale compiled query is the withheld-
+   // binding case above, which a memoized runnable does break.
+   //
+   // Alternating and repeating is still the right shape: a per-caller answer that
+   // degraded to the first one would survive a single A-then-B check.
+   it("answers each caller correctly however the requests interleave", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+
+      for (const org of [1, 2, 1, 2, 2, 1]) {
+         expect(await sumFor(model, { ORG_ID: org })).toBe(org === 1 ? 30 : 7);
+      }
+
+      // And an unbound request still falls to the declared default rather than
+      // inheriting whatever the previous caller bound.
+      expect(await sumFor(model)).toBe(30);
+      expect(await sumFor(model, { ORG_ID: 2 })).toBe(7);
+      expect(await sumFor(model)).toBe(30);
+   });
+});
