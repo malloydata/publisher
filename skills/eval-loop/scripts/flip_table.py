@@ -114,50 +114,45 @@ COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
               "retrievalMode", "modelGitSha", "targetVersion")
 
 
-def completeness_gate(ca: dict, cb: dict, la: str, lb: str,
-                      allow: bool) -> int:
-    """Refuse a pair in which either arm did not finish.
+def completeness_note(ca: dict, cb: dict, la: str, lb: str,
+                      A: dict, B: dict) -> int:
+    """Say which cases one arm excluded and the other scored. Never refuses.
 
-    `run_baseline.py` marks a run `incomplete` when attempts were excluded for
-    a reason the HARNESS owns -- the turn cap cut the answer off, or isolation
-    broke -- and withholds that run's own pass rate for it. A flip table is the
-    same claim made twice, so it has to withhold too: the excluded cases are
-    missing from one side and present on the other, and every one of them reads
-    here as a flip that some change caused.
+    This REPLACED a refusal, and the refusal was wrong. It rested on the claim
+    that an excluded case "reads as a flip", and it does not: a flip requires a
+    real pass or fail on BOTH sides (`a_only` / `b_only` below), so a case
+    carrying `verdict: null` on either side lands in `unscored` and contributes
+    to no flip count. The pairing already handles this, and the header already
+    prints "N cases, M scored in both, K not". Refusing a 99-versus-100 pair
+    threw away 99 good comparisons to avoid a distortion that was not there.
 
-    Note what this does NOT need to cover. Two arms on different answerer
-    models are already refused by the `answererModel` pin in COMPARABLE, which
-    is where the largest uncontrolled variable in the run that motivated this
-    would have been caught: a set scored 12 match / 11 near / 0 no_match on
-    Opus and 8 / 4 / 15 on Sonnet, and nothing in either run named the
-    difference.
+    What IS worth saying is the asymmetry, which nothing named before. The
+    excluded cases are not a random sample: an attempt truncates BECAUSE it ran
+    long, so the cases one arm drops are its hard ones, and the surviving
+    comparison is over an easier subset than the case list suggests. That is a
+    caveat to carry into the number, not a reason to withhold it.
+
+    An `aborted` arm needs nothing here either: it stopped early, so its cases
+    are absent rather than unscored, and the existing "the runs do not cover
+    the same cases" check already exits 1 on it.
     """
-    sa, sb = ca.get("status"), cb.get("status")
-    bad = [(lb_, s) for lb_, s in ((la, sa), (lb, sb))
-           if s in ("incomplete", "aborted")]
-    if not bad:
-        return 0
-    for lb_, s in bad:
-        if s == "aborted":
-            print(f"\n  ! {lb_} was ABORTED: four consecutive attempts errored "
-                  f"or found the server dead, so it holds a partial ledger.")
-        else:
-            cfg = ca if lb_ == la else cb
-            why = ", ".join(
-                [f"{len(cfg.get('truncated') or [])} truncated"]
-                * bool(cfg.get("truncated"))
-                + [f"{len(cfg.get('contaminated') or [])} contaminated"]
-                * bool(cfg.get("contaminated")))
-            print(f"\n  ! {lb_} is INCOMPLETE ({why}), so it reports no pass "
-                  f"rate of its own and cannot anchor one here. Its excluded "
-                  f"cases read as flips against an arm that has them.")
-    if allow:
-        print("    --allow-incomplete given; reporting anyway.")
-        return 0
-    print("    Finish the arm first: re-run the excluded cases into a new run "
-          "(`--from <run> --out <new> --only <qids>`), or pass "
-          "--allow-incomplete to report anyway.")
-    return 2
+    for label, cfg, mine, theirs in ((la, ca, A, B), (lb, cb, B, A)):
+        excluded = [q for q in sorted(set(mine) & set(theirs))
+                    if mine[q]["passed"] is None
+                    and theirs[q]["passed"] is not None]
+        if not excluded:
+            continue
+        why = ", ".join(
+            [f"{len(cfg.get('truncated') or [])} truncated"]
+            * bool(cfg.get("truncated"))
+            + [f"{len(cfg.get('contaminated') or [])} contaminated"]
+            * bool(cfg.get("contaminated"))) or "unscored"
+        print(f"\n  ! {label} left {len(excluded)} case(s) unscored that "
+              f"the other arm scored ({why}): {', '.join(excluded)}")
+        print("    They are out of the flips above, so the comparison holds --"
+              " but an attempt truncates BECAUSE it ran long, so these are not"
+              " a random sample of the set.")
+    return 0
 
 
 def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
@@ -381,10 +376,6 @@ def main() -> int:
                    help="report a pair whose arms used different retrievers. "
                         "The flips are then not a measurement of the change; "
                         "say so wherever the number is quoted.")
-    p.add_argument("--allow-incomplete", action="store_true",
-                   help="report a pair in which an arm did not finish "
-                        "(status `incomplete` or `aborted`). Its excluded "
-                        "cases read as flips; say so wherever it is quoted.")
     p.add_argument("--calibration", action="store_true",
                    help="print the set's CALIBRATION.md entry for this pair, "
                         "ready to append. Use it on an A/A.")
@@ -493,9 +484,7 @@ def main() -> int:
 
     gate = retrieval_gate(cfg_a, cfg_b, la, lb,
                           a_args.allow_retrieval_mismatch)
-    # `or`, not a short-circuit: both gates report, and either one refuses.
-    gate = completeness_gate(cfg_a, cfg_b, la, lb,
-                             a_args.allow_incomplete) or gate
+    completeness_note(cfg_a, cfg_b, la, lb, A, B)
 
     ca, cb = cost(a_args.a), cost(a_args.b)
     print(f"\ncost\n----")

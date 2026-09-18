@@ -146,47 +146,67 @@ class Calibration(unittest.TestCase):
         self.assertIn("sonnet / opus", block)
 
 
-class CompletenessGate(unittest.TestCase):
-    """A flip table over an arm that did not finish is not a flip table.
+class CompletenessNote(unittest.TestCase):
+    """The asymmetry between two arms' unscored cases, reported not refused.
 
-    `run_baseline.py` withholds an incomplete run's own pass rate. The same
-    claim made twice has to withhold too: the cases that arm excluded are
-    missing on one side and present on the other, so each one reads here as a
-    flip that some change caused.
+    This replaced a refusal that was based on a false claim: that a case one
+    arm excluded "reads as a flip". It cannot. A flip needs a real pass or fail
+    on BOTH sides, so a null verdict on either lands in `unscored` and counts
+    toward no flip. Refusing a 99-versus-100 pair discarded 99 good
+    comparisons to avoid a distortion that was not there.
     """
 
-    COMPLETE = {"status": "complete"}
+    def verdicts(self, **qids):
+        return {q: {"verdict": v, "passed": p, "outcome": "x", "reason": "",
+                    "confidence": None}
+                for q, (v, p) in qids.items()}
 
-    def gate(self, ca, cb, allow=False):
-        return ft.completeness_gate(ca, cb, "a", "b", allow)
+    def test_an_excluded_case_cannot_become_a_flip(self):
+        # The claim the refusal rested on, tested directly against the pairing
+        # rule the report uses.
+        A = self.verdicts(q1=("match", True), q2=(None, None))
+        B = self.verdicts(q1=("match", True), q2=("no_match", False))
+        shared = sorted(A)
+        a_only = [q for q in shared if A[q]["passed"] and B[q]["passed"] is False]
+        b_only = [q for q in shared if A[q]["passed"] is False and B[q]["passed"]]
+        unscored = [q for q in shared
+                    if A[q]["passed"] is None or B[q]["passed"] is None]
+        self.assertEqual(a_only + b_only, [])
+        self.assertEqual(unscored, ["q2"])
 
-    def test_two_complete_arms_pass(self):
-        self.assertEqual(self.gate(self.COMPLETE, self.COMPLETE), 0)
-
-    def test_an_incomplete_arm_refuses(self):
+    def test_it_never_refuses(self):
+        A = self.verdicts(q1=("match", True), q2=(None, None))
+        B = self.verdicts(q1=("match", True), q2=("no_match", False))
         self.assertEqual(
-            self.gate({"status": "incomplete", "truncated": ["q1"]},
-                      self.COMPLETE), 2)
+            ft.completeness_note({"status": "incomplete", "truncated": ["q2"]},
+                                 {"status": "complete"}, "a", "b", A, B), 0)
 
-    def test_an_aborted_arm_refuses(self):
-        self.assertEqual(self.gate(self.COMPLETE, {"status": "aborted"}), 2)
+    def test_two_complete_arms_say_nothing(self):
+        A = B = self.verdicts(q1=("match", True))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ft.completeness_note({}, {}, "a", "b", A, B)
+        self.assertEqual(out.getvalue(), "")
 
-    def test_the_flag_reports_anyway(self):
-        self.assertEqual(
-            self.gate({"status": "incomplete", "contaminated": ["q1"]},
-                      self.COMPLETE, allow=True), 0)
-
-    def test_a_run_predating_the_field_is_not_refused(self):
-        # `status` is absent on older runs. Refusing every historical pair
-        # would make the gate unusable rather than safe, which is the rule
-        # `retrieval_gate` already follows for an unrecorded mode.
-        self.assertEqual(self.gate({}, {}), 0)
+    def test_it_names_the_cases_and_why(self):
+        A = self.verdicts(q1=("match", True), q2=(None, None))
+        B = self.verdicts(q1=("match", True), q2=("no_match", False))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ft.completeness_note({"truncated": ["q2"]}, {}, "arm-a", "arm-b",
+                                 A, B)
+        body = out.getvalue()
+        self.assertIn("arm-a left 1 case(s) unscored", body)
+        self.assertIn("1 truncated", body)
+        self.assertIn("q2", body)
+        # The caveat that is actually true: the dropped cases are the long ones.
+        self.assertIn("BECAUSE it ran long", body)
 
     def test_the_answerer_model_is_already_a_pin(self):
-        # Not this gate's job, and worth pinning so nobody adds a second
-        # mechanism for it: an arm on Sonnet against one on Opus is refused by
-        # COMPARABLE. That was the largest uncontrolled variable in the run
-        # this gate comes from.
+        # Not this note's job, and worth pinning so nobody adds a second
+        # mechanism: an arm on one model against another is already reported
+        # as a differing pin. That was the largest uncontrolled variable in the
+        # run this came from.
         self.assertIn("answererModel", ft.COMPARABLE)
 
 
