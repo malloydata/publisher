@@ -2,6 +2,7 @@
 name: malloy-scope
 description: Present discovery findings and propose an analytical scope before modeling. Use after inspecting a package's model and data, to classify tables and recommend an analytical focus the user can pick from.
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -63,9 +64,11 @@ Flag tables that shouldn't be modeled (with reasoning):
 
 ### 4. Scope Options
 
-Present 2-3 concrete options as a **numbered list the user can easily select from**. Each option should be a single line with a label, tables included, and key questions it answers. Mark your recommendation.
+Offer 2-3 concrete options. Each is one line: a label, the tables it covers, and the key questions it answers. Mark your recommendation.
 
-Format choices for easy selection, so the user can reply "A", "B", or "C":
+**If your host has an `ask_user` tool, the options belong in that card and nowhere else.** Write the evidence and your recommendation as prose, then let the card carry the choices. Do not also list them as A/B/C: saying the same three options twice buries the recommendation, and the user reads one decision as though it were two.
+
+Only when there is no such tool, format them for a short typed reply:
 
 **A. Order Analysis (recommended)**: orders + customers + products + order_items. Answers: What's selling? How is revenue trending? Who are the top customers?
 
@@ -77,7 +80,7 @@ Pick one (or mix, e.g., "A plus suppliers").
 
 ## User Interaction
 
-**Present choices in a format that's easy to type a short answer to.** Avoid long prose that requires the user to read and synthesize. Numbered/lettered options with one-line descriptions.
+**Make the choice easy to answer in one word.** Avoid long prose the user has to read and synthesize. An `ask_user` card if the host has one; otherwise lettered options with one-line descriptions.
 
 The user will:
 - **Select** one of the options (or combine them, e.g., "A plus inventory")

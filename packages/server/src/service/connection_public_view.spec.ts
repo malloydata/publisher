@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { components } from "../api";
+import { assembleEnvironmentConnections } from "./connection_config";
 import {
    PUBLIC_FIELDS_BY_INLINE_PATH,
    PUBLIC_FIELDS_BY_SCHEMA,
@@ -594,6 +595,148 @@ describe("withheldFields", () => {
       expect(
          (merged.postgresConnection as Record<string, unknown>).password,
       ).toBe("stored");
+   });
+});
+
+describe("configEtag", () => {
+   const tagged = {
+      name: "pg",
+      type: "postgres",
+      configEtag: "sha256:abc",
+      postgresConnection: { host: "db.internal", password: SENTINEL },
+   } as ApiConnection;
+
+   it("is returned rather than withheld", () => {
+      // The whole point of the field is that a writer can compare the tag a
+      // server reports against the one it would send now. A view that dropped
+      // it would report every server as diverged forever, so this has to fail
+      // if someone ever reclassifies it as a credential.
+      const view = toPublicConnection(tagged);
+      expect(view.configEtag).toBe("sha256:abc");
+      expect(view.withheldFields ?? []).not.toContain("configEtag");
+   });
+
+   it("still withholds the credentials beside it", () => {
+      const view = toPublicConnection(tagged);
+      expect(allStrings(view)).not.toContain(SENTINEL);
+      expect(view.withheldFields).toEqual(["postgresConnection.password"]);
+   });
+
+   it("is absent from the view when the connection carries none", () => {
+      const view = toPublicConnection({
+         name: "pg",
+         type: "postgres",
+         postgresConnection: { host: "db.internal" },
+      } as ApiConnection);
+      expect("configEtag" in view).toBe(false);
+   });
+
+   it("is replaced by an update that carries one", () => {
+      const merged = mergeConnectionUpdate(tagged, {
+         configEtag: "sha256:def",
+         postgresConnection: { host: "db.new" },
+      } as Partial<ApiConnection>);
+      expect(merged.configEtag).toBe("sha256:def");
+   });
+
+   it("is cleared by an update that does not mention it", () => {
+      // The tag describes the configuration the writer that set it sent. This
+      // update replaces that configuration and supplies no tag, so the old one
+      // no longer describes anything stored here.
+      const merged = mergeConnectionUpdate(tagged, {
+         postgresConnection: { host: "db.new" },
+      } as Partial<ApiConnection>);
+      expect(merged.configEtag).toBeUndefined();
+      expect(merged.postgresConnection?.host).toBe("db.new");
+   });
+
+   it("keeps a writer that stops sending tags convergent", () => {
+      // The loop this prevents: a writer downgraded to a version that does not
+      // know the field pushes its own untagged config and then compares. If the
+      // stale tag survived, every comparison would differ from a config the
+      // writer itself just sent, and it would re-push on every poll forever.
+      const untaggedPush = { ...tagged } as Record<string, unknown>;
+      delete untaggedPush["configEtag"];
+
+      const afterPush = mergeConnectionUpdate(
+         tagged,
+         untaggedPush as Partial<ApiConnection>,
+      );
+      expect(afterPush.configEtag).toBeUndefined();
+
+      // Second poll: what the writer would send still carries no tag, and what
+      // is stored now carries none either, so they agree and it stops pushing.
+      const afterSecond = mergeConnectionUpdate(
+         afterPush,
+         untaggedPush as Partial<ApiConnection>,
+      );
+      expect(afterSecond.configEtag).toBeUndefined();
+   });
+
+   it("is left alone by a null patch, which writes nothing", () => {
+      expect(
+         mergeConnectionUpdate(
+            tagged,
+            null as unknown as Partial<ApiConnection>,
+         ).configEtag,
+      ).toBe("sha256:abc");
+   });
+
+   it("is stored verbatim rather than interpreted", () => {
+      // Opaque means opaque: the server does not parse, normalize or validate
+      // the value, so a tag in a shape no hash produces round-trips unchanged.
+      const opaque = "  not/a*hash  ";
+      const view = toPublicConnection({
+         name: "pg",
+         type: "postgres",
+         configEtag: opaque,
+      } as ApiConnection);
+      expect(view.configEtag).toBe(opaque);
+   });
+});
+
+describe("configEtag survives storage", () => {
+   /**
+    * The two tests above cover the projection and the merge, which are pure. The claim the docs
+    * actually make -- Publisher stores the tag with the connection and returns it on reads -- rests
+    * on the step between them: a write goes through assembleEnvironmentConnections, whose
+    * apiConnections are what a later read projects.
+    *
+    * That step preserves the tag only because it clones with a spread. Nothing else asserts it, so
+    * hardening that clone into a field-by-field rebuild -- exactly the allowlist reasoning that
+    * produced PUBLIC_CONNECTION in the file beside this one -- would kill the feature with every
+    * other test in this file still green. This is the one that would go red.
+    */
+   it("is carried through assembleEnvironmentConnections onto the read", () => {
+      const written = {
+         name: "warehouse",
+         type: "postgres",
+         configEtag: "sha256:abc",
+         postgresConnection: { host: "db.internal", password: SENTINEL },
+      } as ApiConnection;
+
+      const stored = assembleEnvironmentConnections([written]).apiConnections;
+      expect(stored).toHaveLength(1);
+      expect(stored[0].configEtag).toBe("sha256:abc");
+
+      const read = toPublicConnection(stored[0]);
+      expect(read.configEtag).toBe("sha256:abc");
+      expect(allStrings(read)).not.toContain(SENTINEL);
+   });
+
+   it("does not leak into the Malloy connection pojo", () => {
+      // The pojo is what the engine connects with; the tag is orchestration metadata and has no
+      // business there. It is assembled field by field, so this holds today -- pinned because the
+      // tag reaching it would put a credential-derived value somewhere nobody audits for one.
+      const assembled = assembleEnvironmentConnections([
+         {
+            name: "warehouse",
+            type: "postgres",
+            configEtag: "sha256:abc",
+            postgresConnection: { host: "db.internal", password: SENTINEL },
+         } as ApiConnection,
+      ]);
+      expect(JSON.stringify(assembled.pojo)).not.toContain("sha256:abc");
    });
 });
 

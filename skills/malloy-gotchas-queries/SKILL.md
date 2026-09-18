@@ -1,6 +1,6 @@
 ---
 name: malloy-gotchas-queries
-description: Common Malloy query and view mistakes. Read BEFORE writing views, queries, or notebooks. Covers chart constraints, aggregate filters, joined field aliasing, method syntax, and time truncation vs extraction.
+description: Common Malloy query and view mistakes, for writing views, queries or notebooks - chart constraints, aggregate filters, joined field aliasing, method syntax, time truncation vs extraction.
 ---
 <!--
 Copyright (c) Credible Data Inc.
