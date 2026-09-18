@@ -73,6 +73,33 @@ def search_terms(tool_input: dict[str, Any]) -> list[str]:
     return terms
 
 
+def target_shapes(tool_input: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every search target's TYPE, and whether it carried search text.
+
+    Separate from `search_terms` because that function answers a different
+    question -- what did the answerer search FOR -- and to answer it, it drops
+    a target with no `search_text`: there is no term to record. A target with
+    no text is not a search, it is an enumeration of that type over the scope,
+    and dropping it means the ledger cannot express the single statistic the
+    "the agent enumerates instead of searching" argument is made of. Measured
+    on a real 10-case run, every attempt read `targetsWithoutSearchText: 0`
+    because a bare target had already been discarded before the ledger saw it.
+
+    So this keeps one row per target, text or not, and nothing else. Reading
+    the bare-target rate off transcripts instead works and is what has been
+    done; it means the number cannot be recomputed from a run directory after
+    the transcripts are pruned.
+    """
+    out: list[dict[str, Any]] = []
+    for t in tool_input.get("search_targets") or []:
+        if not isinstance(t, dict):
+            continue
+        text = t.get("search_text") or t.get("text")
+        out.append({"type": t.get("target_type") or "?",
+                    "has_text": bool(isinstance(text, str) and text.strip())})
+    return out
+
+
 def entity_id(kind: str, source: str | None, name: str) -> str:
     """The `kind:source:name` id, minted in one place.
 

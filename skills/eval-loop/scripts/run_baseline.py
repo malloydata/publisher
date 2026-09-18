@@ -179,7 +179,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
-from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
+from mcp_payload import (doc_tokens, entity_ids,  # noqa: E402
+                         search_terms, target_shapes)
 from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
@@ -1780,8 +1781,15 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     if (name.endswith("malloy_getContext")
                             or name.endswith("__get_context")):
                         n_get += 1
-                        pending[c["id"]] = {"tool": "get_context",
-                                            "targets": search_terms(c["input"])}
+                        pending[c["id"]] = {
+                            "tool": "get_context",
+                            "targets": search_terms(c["input"]),
+                            # Beside `targets`, not instead of it: that field
+                            # is the terms searched for and DROPS a target with
+                            # no text, so the bare-target rate -- the whole of
+                            # the "enumerates instead of searching" argument --
+                            # could not be recomputed from a run directory.
+                            "target_shapes": target_shapes(c["input"])}
                     elif (name.endswith("malloy_executeQuery")
                             or name.endswith("__execute_query")):
                         n_exec += 1

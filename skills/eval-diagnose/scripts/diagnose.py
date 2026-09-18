@@ -353,23 +353,45 @@ def behaviour_stats(qid: str, events: list[dict[str, Any]]) -> dict[str, Any]:
                     if e.get("kind") == "attempt" and e.get("qid") == qid), {})
     calls = [e for e in events if e.get("kind") == "tool_call"
              and e.get("qid") == qid and e.get("tool") == "get_context"]
-    targets = [t for c in calls for t in (c.get("targets") or [])]
-    # A target with no `search_text` does not search: it enumerates that type
-    # for the scope, which returns the source's fields rather than ranking
-    # them. "Substitutes broad enumeration for targeted retrieval" is a real
-    # and frequent observation about failures, and this is the number that
-    # says whether it separates them from passes.
-    bare = sum(1 for t in targets
-               if not (t.get("search_text") if isinstance(t, dict) else t))
+    # `target_shapes` when the run recorded it, `targets` otherwise. They are
+    # not interchangeable and the difference is the whole point: `targets` is
+    # the terms SEARCHED FOR, and a target carrying no `search_text` is dropped
+    # before it is written, so counting bare targets from it always yields
+    # zero. Measured on a real 10-case run, every attempt read
+    # `targetsWithoutSearchText: 0` while the argument the field exists to test
+    # is precisely about how often that count is high.
+    shapes = [t for c in calls for t in (c.get("target_shapes") or [])]
+    if shapes:
+        by_type: dict[str, int] = {}
+        for t in shapes:
+            by_type[t.get("type") or "?"] = by_type.get(t.get("type") or "?", 0) + 1
+        n_targets = len(shapes)
+        bare = sum(1 for t in shapes if not t.get("has_text"))
+        measured = True
+    else:
+        # A run written before `target_shapes` existed. The types are readable
+        # from the `"<type>: <text>"` strings, but the bare count is NOT
+        # recoverable, so it is reported as unknown rather than as zero -- a
+        # falsifier that silently reads zero is worse than one that abstains.
+        targets = [t for c in calls for t in (c.get("targets") or [])]
+        by_type = {}
+        for t in targets:
+            kind = (t.split(":", 1)[0].strip()
+                    if isinstance(t, str) and ":" in t else "?")
+            by_type[kind] = by_type.get(kind, 0) + 1
+        n_targets, bare, measured = len(targets), None, False
+
     return {
         "qid": qid,
         "verdict": next((e.get("verdict") for e in events
                          if e.get("kind") == "score" and e.get("qid") == qid),
                         None),
+        "targetTypes": by_type,
+        "targetsMeasured": measured,
         "nGetContext": attempt.get("n_get_context"),
         "nExecute": attempt.get("n_execute"),
         "nExecuteErrors": attempt.get("n_execute_errors"),
-        "searchTargets": len(targets),
+        "searchTargets": n_targets,
         "targetsWithoutSearchText": bare,
         "skillsInvoked": attempt.get("skills_invoked") or [],
         "numTurns": attempt.get("num_turns"),

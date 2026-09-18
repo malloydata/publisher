@@ -218,37 +218,73 @@ class BehaviourStats(unittest.TestCase):
     causal from inside it. On one measured run the largest cluster was built on
     "substitutes broad enumeration for targeted retrieval", and the enumeration
     rate was 25% of targets in the failures against 26% in the passes.
+
+    THE FIXTURES HERE ARE THE SHAPES THE HARNESS ACTUALLY WRITES. An earlier
+    version of this class invented a `{"target_type", "search_text"}` dict that
+    no writer emits, and the code passed those tests while reading
+    `targetsWithoutSearchText: 0` on every real attempt -- because `targets`
+    holds `"<type>: <text>"` STRINGS and a target with no text is dropped
+    before the ledger sees it.
     """
 
-    def events(self, qid, targets, *, verdict="match", turns=9):
+    def events(self, qid, tool_call, *, verdict="match", turns=9):
         return [
             {"kind": "attempt", "qid": qid, "n_get_context": 2, "n_execute": 5,
              "n_execute_errors": 1, "num_turns": turns,
              "skills_invoked": ["malloy-analysis"]},
             {"kind": "score", "qid": qid, "verdict": verdict},
             {"kind": "tool_call", "qid": qid, "tool": "get_context",
-             "targets": targets},
+             **tool_call},
             {"kind": "tool_call", "qid": qid, "tool": "execute_query"},
         ]
 
-    def test_a_target_with_no_search_text_counts_as_bare(self):
-        s = diagnose.behaviour_stats("q1", self.events("q1", [
-            {"target_type": "dimension"},
-            {"target_type": "measure", "search_text": "total revenue"},
-            {"target_type": "view", "search_text": ""}]))
+    def shapes(self, *pairs):
+        return {"target_shapes": [{"type": t, "has_text": h} for t, h in pairs]}
+
+    def test_a_bare_target_is_counted_from_target_shapes(self):
+        s = diagnose.behaviour_stats("q1", self.events("q1", self.shapes(
+            ("dimension", False), ("measure", True), ("view", False))))
         self.assertEqual(s["searchTargets"], 3)
-        # The empty string enumerates exactly as a missing key does.
         self.assertEqual(s["targetsWithoutSearchText"], 2)
+        self.assertTrue(s["targetsMeasured"])
+
+    def test_it_records_which_target_types_were_asked_for(self):
+        # A type-classification error is the most common agent-call defect, and
+        # a falsifier that cannot reach it is not much of a falsifier -- which
+        # a clustering agent said, in those terms, about the first version.
+        s = diagnose.behaviour_stats("q1", self.events("q1", self.shapes(
+            ("measure", True), ("dimension", True), ("dimension", False))))
+        self.assertEqual(s["targetTypes"], {"measure": 1, "dimension": 2})
+
+    def test_a_legacy_run_reads_types_but_abstains_on_the_bare_count(self):
+        # Runs written before `target_shapes` existed. The types survive in the
+        # `"<type>: <text>"` strings; the bare count does not, and reporting it
+        # as 0 would be a falsifier quietly asserting the opposite of the truth.
+        s = diagnose.behaviour_stats("q1", self.events(
+            "q1", {"targets": ["measure: total revenue", "source: flights"]}))
+        self.assertEqual(s["targetTypes"], {"measure": 1, "source": 1})
+        self.assertIsNone(s["targetsWithoutSearchText"])
+        self.assertFalse(s["targetsMeasured"])
+
+    def test_the_two_shapes_do_not_get_mixed(self):
+        # If both are present the measured one wins; the legacy strings are a
+        # lossy view of the same call.
+        s = diagnose.behaviour_stats("q1", self.events("q1", {
+            "targets": ["measure: total revenue"],
+            **self.shapes(("measure", True), ("dimension", False))}))
+        self.assertEqual(s["searchTargets"], 2)
+        self.assertEqual(s["targetsWithoutSearchText"], 1)
 
     def test_it_carries_the_verdict_so_the_groups_are_comparable(self):
-        s = diagnose.behaviour_stats("q1", self.events("q1", [], verdict="match"))
+        s = diagnose.behaviour_stats("q1", self.events("q1", self.shapes(),
+                                                       verdict="match"))
         self.assertEqual(s["verdict"], "match")
         self.assertEqual(s["skillsInvoked"], ["malloy-analysis"])
         self.assertEqual(s["numTurns"], 9)
 
     def test_only_this_case_is_measured(self):
-        ev = self.events("q1", [{"target_type": "dimension"}]) + \
-            self.events("q2", [{"target_type": "x"}, {"target_type": "y"}])
+        ev = self.events("q1", self.shapes(("dimension", True))) + \
+            self.events("q2", self.shapes(("a", True), ("b", True)))
         self.assertEqual(
             diagnose.behaviour_stats("q1", ev)["searchTargets"], 1)
 
@@ -258,8 +294,6 @@ class BehaviourStats(unittest.TestCase):
         self.assertEqual(s["searchTargets"], 0)
 
     def test_the_clustering_prompt_asks_for_the_falsification(self):
-        # A control group nothing is told to use is a bigger prompt, not a
-        # better diagnosis.
         self.assertIn("{controls}", diagnose.CLUSTER_PROMPT)
 
 

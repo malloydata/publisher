@@ -86,7 +86,13 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # errors, while a replay under another report's filter values returns
         # real rows for the wrong population. Keeping all three on the event
         # is what lets a re-execution be audited from the ledger at all.
-        "optional": {"targets", "rankedSummary", "error", "traceId",
+        # `target_shapes` is one row per search target -- its type, and whether
+        # it carried search text -- beside `targets`, which is the terms
+        # searched for and drops a target that carried none. Without it the
+        # bare-target rate is not recomputable from a run directory, only from
+        # transcripts, and transcripts get pruned.
+        "optional": {"targets", "target_shapes", "rankedSummary", "error",
+                     "traceId",
                      "query", "modelPath", "filterParams", "retrieval_mode",
                      "at"},
     },
