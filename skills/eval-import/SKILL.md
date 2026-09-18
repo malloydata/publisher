@@ -115,6 +115,43 @@ are the ones already stated rather than new ones:
   legitimate routes, write a `requiredAnyOf` group rather than pick one.
   `verify_goldens.py` check 5 audits every id against the model, so a wrong one
   is a hard finding rather than a silent retrieval miss.
+- **Derive the list with the model in front of you, not from memory, and not
+  with grep.** The model knows what each field IS; an author does not reliably.
+  Ask the question of the model: which entities does an answer to this depend
+  on, and is each a measure or a dimension. Confirm every id with `get_context`
+  before writing it. A list written from recollection is the most common way a
+  set acquires a retrieval expectation nobody can satisfy.
+
+  Measured: an agent given the model and one question found alternatives a
+  hand-written key had missed on all three cases tried -- carrier name against
+  nickname against code, `destination_count` against its underlying
+  `destination.airport_count` -- and correctly demoted a named measure the key
+  had over-required. At roughly $0.13 a question. It is better at this than a
+  person working from notes.
+
+- **But VERIFY every "this is not strictly required" claim by running both
+  sides.** This is the rule that makes the step above safe, and it is not
+  optional.
+
+  The same probe got one badly wrong. Told that a named measure is not required
+  when a raw column plus a plain aggregate answers identically, it wrote that
+  `average_plane_size` was "equally answerable by
+  `avg(aircraft.aircraft_models.seats)`". Executed, those are 229 and 196.93.
+  The measure is `aircraft.avg(...)`, an average over distinct aircraft, and the
+  inline version averages over flights. The claim was false for exactly the
+  measure whose entire purpose is to carry that distinction -- and it is the
+  same mistake, on the same field, that produced the only wrong answer in the
+  run this set came from.
+
+  Had that proposal been written into the key, the case would have stopped
+  testing the thing it exists to test.
+
+  So: an equivalence is a claim about DATA, and reading a definition is not
+  evidence. Run both expressions, compare the rows, and record the receipt.
+  Where they agree, a `requiredAnyOf` group is right. Where they differ, the
+  named entity is required precisely BECAUSE its definition is not obvious. An
+  unverified equivalence is how a key gets quietly weakened.
+
 - **Then prove each one is retrievable, and record what finds it.**
   `check_findable.py --set <set> --mcp-url <mcp> --environment <env>
   --package <pkg>` issues a search of each entity's own kind for its own name
