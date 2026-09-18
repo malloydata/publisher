@@ -624,6 +624,22 @@ export function mergeConnectionUpdate(
    // The top-level shallow spread is the pre-existing update semantics, kept as
    // it was: a stored field the patch does not mention survives.
    const shallow = { ...current, ...incoming } as Record<string, unknown>;
+   // configEtag is the exception, and it has to be: it describes the
+   // configuration the writer that set it sent. An update that replaces that
+   // configuration without supplying a tag has invalidated it, so carrying the
+   // old one forward would assert that a config nobody has seen is still the one
+   // the tag names -- the one thing an entity tag must never do.
+   //
+   // It also keeps a writer that compares tags convergent when it stops sending
+   // them. A writer downgraded to a version that does not know the field pushes
+   // its own config, the stale tag is dropped, and its next comparison agrees.
+   // Inherited instead, the tag outlives every config it described and that
+   // writer re-pushes on every poll forever.
+   //
+   // A null or non-object patch is not a write of anything, so it clears nothing.
+   if (isPlainObject(patch) && !Object.hasOwn(patch, "configEtag")) {
+      delete shallow["configEtag"];
+   }
    const hidden = hiddenFields(current, PUBLIC_CONNECTION);
    if (!hidden || Object.keys(hidden).length === 0) {
       return shallow as ApiConnection;

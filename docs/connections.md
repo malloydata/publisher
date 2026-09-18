@@ -393,10 +393,14 @@ supports. A Publisher reporting a different tag, or none, has not been given tha
 }
 ```
 
-A write that does not mention `configEtag` keeps whatever tag the connection already had, so a
-client that does not use the field never has to think about it. Nothing in Publisher reads the
-value, so its format is entirely yours — a hash, a version string, anything you can compare for
-equality.
+A write that does not carry a `configEtag` **clears** it. The tag describes the configuration the
+writer that set it sent, so an update replacing that configuration without supplying a tag has
+invalidated it. That also means an edit made outside your distribution system — someone changing the
+connection through this API directly — drops the tag and shows up as a difference on your next
+comparison, rather than hiding behind a tag that no longer describes what is stored.
+
+Nothing in Publisher reads the value, so its format is entirely yours — a hash, a version string,
+anything you can compare for equality.
 
 Do not reach for `fingerprint` instead. That field identifies the *data* a connection reaches and
 deliberately excludes credentials so that rotating one does not re-address the artifacts built

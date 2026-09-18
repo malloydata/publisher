@@ -4834,9 +4834,16 @@ components:
             the other.
 
             Unlike a credential, it is returned on reads: it names no secret,
-            and withholding it would defeat its only purpose. A connection
-            written without one keeps whatever tag it already had, so a writer
-            that does not use this field never has to think about it.
+            and withholding it would defeat its only purpose.
+
+            A write that does not carry a tag CLEARS it, rather than inheriting
+            the stored one. The tag describes the configuration the writer that
+            set it sent; an update that replaces that configuration without
+            supplying a tag has invalidated it. This is also what keeps a writer
+            convergent when it stops sending tags — it pushes its own config, the
+            stale tag is dropped, and its next comparison agrees, where an
+            inherited tag would differ from a config that writer itself just sent
+            and make it re-push on every poll.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-

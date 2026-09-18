@@ -137,8 +137,8 @@ holding the current one.
 connection, returns it on reads, and never derives, validates or interprets it — compute a tag over
 the config you are about to send, send the two together, and compare what each Publisher reports
 against what you would send now. A different tag, or none, means that Publisher was not given that
-configuration. A write that does not mention the field keeps the tag already stored, so a client
-that ignores it is unaffected.
+configuration. A write that does not carry a tag clears it, so a client that ignores the field is
+unaffected and a config changed outside your writer stops hiding behind a tag it no longer matches.
 
 It is deliberately not `fingerprint`, which identifies the *data* a connection reaches and excludes
 credentials so rotation does not re-address artifacts: two configs differing only by password share

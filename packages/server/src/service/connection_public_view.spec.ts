@@ -638,13 +638,47 @@ describe("configEtag", () => {
       expect(merged.configEtag).toBe("sha256:def");
    });
 
-   it("survives an update that does not mention it", () => {
-      // A writer that does not use the field never has to think about it, which
-      // is only true if omitting it is not the same as clearing it.
+   it("is cleared by an update that does not mention it", () => {
+      // The tag describes the configuration the writer that set it sent. This
+      // update replaces that configuration and supplies no tag, so the old one
+      // no longer describes anything stored here.
       const merged = mergeConnectionUpdate(tagged, {
          postgresConnection: { host: "db.new" },
       } as Partial<ApiConnection>);
-      expect(merged.configEtag).toBe("sha256:abc");
+      expect(merged.configEtag).toBeUndefined();
+      expect(merged.postgresConnection?.host).toBe("db.new");
+   });
+
+   it("keeps a writer that stops sending tags convergent", () => {
+      // The loop this prevents: a writer downgraded to a version that does not
+      // know the field pushes its own untagged config and then compares. If the
+      // stale tag survived, every comparison would differ from a config the
+      // writer itself just sent, and it would re-push on every poll forever.
+      const untaggedPush = { ...tagged } as Record<string, unknown>;
+      delete untaggedPush["configEtag"];
+
+      const afterPush = mergeConnectionUpdate(
+         tagged,
+         untaggedPush as Partial<ApiConnection>,
+      );
+      expect(afterPush.configEtag).toBeUndefined();
+
+      // Second poll: what the writer would send still carries no tag, and what
+      // is stored now carries none either, so they agree and it stops pushing.
+      const afterSecond = mergeConnectionUpdate(
+         afterPush,
+         untaggedPush as Partial<ApiConnection>,
+      );
+      expect(afterSecond.configEtag).toBeUndefined();
+   });
+
+   it("is left alone by a null patch, which writes nothing", () => {
+      expect(
+         mergeConnectionUpdate(
+            tagged,
+            null as unknown as Partial<ApiConnection>,
+         ).configEtag,
+      ).toBe("sha256:abc");
    });
 
    it("is stored verbatim rather than interpreted", () => {
