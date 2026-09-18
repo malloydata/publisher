@@ -368,13 +368,32 @@ the run measure something other than what it names:
    the answerer to persist -- retry a phrasing, let a small query settle whether
    a field exists -- so a tight cap and that instruction are in direct conflict.
 
-   **Change one thing per arm.** A model edit and an answer-key repair landed
-   together between two arms once, and the resulting move from 20% to 39%
-   cannot be attributed to either. That includes the answerer model: match it
-   to whatever run you intend to compare against, and say which it was. The
-   same 23-case set read 12 match / 11 near / 0 no_match on one model and 8 / 4
-   / 15 on a smaller one, so no statement about "the agent's" capability is
-   safe until the two arms name the same answerer.
+   **Do not change the model and the measuring instrument in the same step.**
+   Those are two different axes and only one of them is cheap to separate.
+
+   Batching MODEL edits is fine and expected. Clustering exists so that one
+   edit closes several cases, and an arm per fix does not survive contact with
+   arithmetic: 20 fixes over 100 cases is 2,000 answers, and at the measured
+   $0.33 a case on a proxied warehouse that is $660 of answering to attribute
+   what the acceptance check attributes for the price of the affected cases
+   plus holdout. Budget five arms for a defensible claim (a baseline, two for
+   the A/A, two post-edit), not one per edit, and let `skill:eval-improve`
+   carry each cluster.
+
+   The instrument is the other axis: the answer key, the judge and its prompt,
+   the answerer model, the skills. Move one of those together with the model
+   and there is nothing left holding still, so the result measures neither. On
+   the run this comes from, nine model commits and a re-derived answer key
+   landed between two arms, and the move from 20% to 39% belongs to no one --
+   not because two model edits were batched, but because the ruler changed at
+   the same time as the thing being measured. A key repair mid-improve is not
+   forbidden; it ends that comparison, so re-baseline rather than quoting a
+   delta across it.
+
+   The answerer model is instrument too, and it is the one most often left
+   unstated. The same 23-case set read 12 match / 11 near / 0 no_match on one
+   model and 8 / 4 / 15 on a smaller one. No statement about "the agent's"
+   capability means anything until two arms name the same answerer.
 
 7. Generate every answerer prompt from the stored case in `cases.jsonl`.
    Never retype the question. A truncated retype is indistinguishable from a
@@ -452,7 +471,8 @@ conductor. Do not:
   once with the confound stated in the same message that started the arm -- so
   the harness now enforces the parts it can. A run with a truncated or
   contaminated attempt prints no pass rate and records `status: incomplete`,
-  and `flip_table.py` refuses to compare one. Read `run_error` on the attempts
+  and `flip_table.py` names what one arm left unscored that the other did not.
+  Read `run_error` on the attempts
   and the INCOMPLETE line before quoting any number.
 - When a subagent disagrees with you, probe. Do not win by authority.
 - When a rule here is wrong, change this file and note it on the run.
