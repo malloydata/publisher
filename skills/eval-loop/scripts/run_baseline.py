@@ -2610,9 +2610,27 @@ def main(argv: list[str] | None = None) -> int:
     ext_repo = a.roots[0].parent if a.skills_root else None
     if not a.answerer_manifest:
         a.answerer_manifest = default_manifest("analysis", ext_repo or REPO_ROOT)
-    a.answerer_skills = ([] if a.no_answerer_skills
-                         else manifest_skills(a.answerer_manifest,
-                                              ext_repo or REPO_ROOT))
+    # A run that spawns no answerer must not die resolving the answerer's
+    # doctrine. `--rejudge`, `--rebuild` and `--from` score answers that
+    # already exist, so a manifest that has since been renamed, moved, or left
+    # behind in another checkout is a fact about today's tree and not about
+    # those answers -- and refusing there strands a run whose whole purpose is
+    # to re-score what is already on disk. It is still resolved when it can be,
+    # because `answererManifest` is a pin and dropping it would lose which
+    # doctrine those answers were produced under; only the FAILURE is downgraded.
+    answers_exist = bool(a.rebuild or a.rejudge or a.from_run)
+    try:
+        a.answerer_skills = ([] if a.no_answerer_skills
+                             else manifest_skills(a.answerer_manifest,
+                                                  ext_repo or REPO_ROOT))
+    except FileNotFoundError:
+        if not answers_exist:
+            raise
+        print(f"  ! answerer manifest {a.answerer_manifest!r} does not resolve "
+              f"in this checkout. No answerer runs here, so this is not fatal; "
+              f"the run's answererManifest pin is left unset.")
+        a.answerer_skills = []
+        a.answerer_manifest = None
     a.judge_skills = list(JUDGE_SKILLS)
     # The reachability probe's own `get_context` reply, when one was made. The
     # retrieval gate reads it rather than making a second call it cannot
