@@ -66,6 +66,15 @@ export function allowUnverifiedHostKey(): boolean {
 // Mirrors the accepted set in config.ts's parseBoolEnv.
 const TRUTHY_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
+function unpinnedRefusal(host: string): Error {
+   return new Error(
+      `SSH host-key verification is required for ${host}: no hostKey is ` +
+         `pinned. Pin the bastion host key on the connection's ssh.hostKey, or ` +
+         `set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
+         `key (a MITM on the publisher-to-bastion hop is then undetectable).`,
+   );
+}
+
 export interface ProxyEndpoint {
    host: string;
    port: number;
@@ -137,14 +146,7 @@ function openSshProxy(
       // the sslmode check in validateConnectionShape, which fails at config load
       // for this exact reason. The hostVerifier branch stays as the backstop.
       if (!ssh.hostKey && !allowUnverifiedHostKey()) {
-         reject(
-            new Error(
-               `SSH host-key verification is required for ${ssh.host}: no hostKey is ` +
-                  `pinned. Pin the bastion host key on the connection's ssh.hostKey, or ` +
-                  `set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
-                  `key (a MITM on the publisher-to-bastion hop is then undetectable).`,
-            ),
-         );
+         reject(unpinnedRefusal(ssh.host));
          return;
       }
       const client = new SshClient();
@@ -215,14 +217,7 @@ function openSshProxy(
                );
                return true;
             }
-            fail(
-               new Error(
-                  `SSH host-key verification is required for ${ssh.host}: no hostKey is ` +
-                     `pinned. Pin the bastion host key on the connection's ssh.hostKey, or ` +
-                     `set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
-                     `key (a MITM on the publisher-to-bastion hop is then undetectable).`,
-               ),
-            );
+            fail(unpinnedRefusal(ssh.host));
             return false;
          }) as SyncHostVerifier,
       };

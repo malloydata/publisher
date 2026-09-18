@@ -54,8 +54,9 @@ Two ways forward, and the first is the one to prefer:
   presents a different key per backend, so list every backend's key; any listed
   key is accepted.
 - Or opt out for the deployment. `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`
-  restores the old behaviour and logs a warning on every unpinned connect. Only
-  the exact value `true` opts in.
+  restores the old behaviour and logs a warning on every unpinned connect.
+  `true`, `1`, `yes` and `on` all opt in, case-insensitive; an unrecognised value
+  fails config load rather than leaving verification silently off.
 
 To find the affected connections before upgrading, look for a connection with a
 `proxy.ssh` block and no `ssh.hostKey`. After upgrading, you do not have to wait
