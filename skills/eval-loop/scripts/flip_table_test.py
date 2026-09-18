@@ -146,6 +146,50 @@ class Calibration(unittest.TestCase):
         self.assertIn("sonnet / opus", block)
 
 
+class CompletenessGate(unittest.TestCase):
+    """A flip table over an arm that did not finish is not a flip table.
+
+    `run_baseline.py` withholds an incomplete run's own pass rate. The same
+    claim made twice has to withhold too: the cases that arm excluded are
+    missing on one side and present on the other, so each one reads here as a
+    flip that some change caused.
+    """
+
+    COMPLETE = {"status": "complete"}
+
+    def gate(self, ca, cb, allow=False):
+        return ft.completeness_gate(ca, cb, "a", "b", allow)
+
+    def test_two_complete_arms_pass(self):
+        self.assertEqual(self.gate(self.COMPLETE, self.COMPLETE), 0)
+
+    def test_an_incomplete_arm_refuses(self):
+        self.assertEqual(
+            self.gate({"status": "incomplete", "truncated": ["q1"]},
+                      self.COMPLETE), 2)
+
+    def test_an_aborted_arm_refuses(self):
+        self.assertEqual(self.gate(self.COMPLETE, {"status": "aborted"}), 2)
+
+    def test_the_flag_reports_anyway(self):
+        self.assertEqual(
+            self.gate({"status": "incomplete", "contaminated": ["q1"]},
+                      self.COMPLETE, allow=True), 0)
+
+    def test_a_run_predating_the_field_is_not_refused(self):
+        # `status` is absent on older runs. Refusing every historical pair
+        # would make the gate unusable rather than safe, which is the rule
+        # `retrieval_gate` already follows for an unrecorded mode.
+        self.assertEqual(self.gate({}, {}), 0)
+
+    def test_the_answerer_model_is_already_a_pin(self):
+        # Not this gate's job, and worth pinning so nobody adds a second
+        # mechanism for it: an arm on Sonnet against one on Opus is refused by
+        # COMPARABLE. That was the largest uncontrolled variable in the run
+        # this gate comes from.
+        self.assertIn("answererModel", ft.COMPARABLE)
+
+
 class Outcome(unittest.TestCase):
     def test_near_match_is_neither(self):
         self.assertEqual(ft.outcome("near_match"), "neither")
