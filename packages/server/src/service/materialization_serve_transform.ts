@@ -653,7 +653,8 @@ function optsOutOfPersist(def: DerivedSourceDef): boolean {
    )?.blockNotes;
    return (notes ?? []).some(
       (note) =>
-         typeof note?.text === "string" && /^\s*#@\s*-persist\b/.test(note.text),
+         typeof note?.text === "string" &&
+         /^\s*#@\s*-persist\b/.test(note.text),
    );
 }
 

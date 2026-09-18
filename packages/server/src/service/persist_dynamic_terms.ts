@@ -403,7 +403,11 @@ function localFieldNames(entry: unknown): string[] {
    const names = new Set<string>();
    for (const use of usage) {
       const path = use?.path;
-      if (Array.isArray(path) && path.length === 1 && typeof path[0] === "string") {
+      if (
+         Array.isArray(path) &&
+         path.length === 1 &&
+         typeof path[0] === "string"
+      ) {
          names.add(path[0]);
       }
    }

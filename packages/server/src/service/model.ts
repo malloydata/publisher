@@ -4777,9 +4777,7 @@ export class Model {
     * already got, so a package serving today serves identically if the lift
     * fails.
     */
-   private liftedDerivedSources(
-      bindings: ServeBinding[],
-   ): DerivedSourceLift[] {
+   private liftedDerivedSources(bindings: ServeBinding[]): DerivedSourceLift[] {
       const { contents, sourceNameById, liftText } = this.authorModelLift();
       return liftDerivedSources({
          contents,

@@ -57,9 +57,9 @@ describe("derived-source lift onto the serve shape", () => {
          connections,
       });
       /* eslint-disable @typescript-eslint/no-explicit-any */
-      const def = ((await runtime
-         .loadModel(new URL(`${ROOT}m.malloy`))
-         .getModel()) as any)._modelDef as ModelDef;
+      const def = (
+         (await runtime.loadModel(new URL(`${ROOT}m.malloy`)).getModel()) as any
+      )._modelDef as ModelDef;
       /* eslint-enable @typescript-eslint/no-explicit-any */
       const contents = def.contents as unknown as Record<
          string,
@@ -67,7 +67,8 @@ describe("derived-source lift onto the serve shape", () => {
       >;
       const sourceNameById = new Map<string, string>();
       for (const [name, d] of Object.entries(contents)) {
-         if (typeof d?.sourceID === "string") sourceNameById.set(d.sourceID, name);
+         if (typeof d?.sourceID === "string")
+            sourceNameById.set(d.sourceID, name);
       }
       return liftDerivedSources({
          contents,

@@ -314,7 +314,9 @@ source: p is duckdb.sql("SELECT 1 as x")
          ).toBe(true);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).some((w) =>
-               w.message?.includes("'partition=' is declared without 'storage='"),
+               w.message?.includes(
+                  "'partition=' is declared without 'storage='",
+               ),
             ),
          ).toBe(true);
       },

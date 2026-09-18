@@ -68,7 +68,13 @@ source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
       const result = classifyDynamicTerms(source);
       expect(result).toEqual({
          ok: true,
-         terms: [{ code: "org_id = $ORG_ID", givens: ["ORG_ID"], columns: ["org_id"] }],
+         terms: [
+            {
+               code: "org_id = $ORG_ID",
+               givens: ["ORG_ID"],
+               columns: ["org_id"],
+            },
+         ],
       });
    });
 
@@ -88,7 +94,11 @@ source: p is scoped extend { where: s != 'zzz' }`,
       // shape's ordinary filter re-emission whether or not this pass names it.
       if (result.ok) {
          expect(result.terms).toEqual([
-            { code: "org_id = $ORG_ID", givens: ["ORG_ID"], columns: ["org_id"] },
+            {
+               code: "org_id = $ORG_ID",
+               givens: ["ORG_ID"],
+               columns: ["org_id"],
+            },
          ]);
       }
    });
