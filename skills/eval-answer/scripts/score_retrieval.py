@@ -304,13 +304,11 @@ def attribute(recall: float | None, coverage: str, passed: bool | None,
     counted as failures in the score table and appeared under no heading here,
     so the two never summed to the same number.
     """
-    # NO short-circuit on `passed`. This used to open with
-    # `if passed: return (*UNATTRIBUTED, "passed")`, before recall was looked
-    # at -- so a case that answered correctly while never receiving a required
-    # entity was attributed to nobody, `summarise()` dropped it because the
-    # empty label is falsy, and no issue could ever be raised for it. Measured
-    # on one run: 4 of 5 undelivered entities were on passing cases and
-    # produced zero findings.
+    # NO short-circuit on `passed`: recall is read before the verdict is. A
+    # short-circuit attributes a case that answered correctly while never
+    # receiving a required entity to nobody, and `summarise()` then drops it
+    # because the empty label is falsy, so no issue can ever be raised for it.
+    # Measured on one run: 4 of 5 undelivered entities sat on passing cases.
     #
     # "It worked anyway" is not a reason to leave the gap. The answer being
     # right is recorded on the row (`failed`, `verdict`) and reported

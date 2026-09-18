@@ -181,6 +181,7 @@ exist in the flat shape, so the flat shape is the contract.) `kind` is one of:
 | `cost_usd` | float or null | Answerer cost for this attempt. |
 | `num_turns` / `wall_seconds` | int, float or null | |
 | `answer_text` | string or null | The answer the judge scored. Kept so a verdict can be re-read without the transcript. |
+| `skills_invoked` | list of string | The skills the answerer invoked through the `Skill` tool, deduplicated and sorted, counted from its own transcript. Always a list on a run that recorded it, so an EMPTY list is the finding: the arm granted a manifest and the agent reached for none of it. Absent on runs written before 2026-09-15, which is why every reader takes `or []`. Only explicit `Skill` calls are counted, and only skills the arm granted -- one outside `--answerer-skills` is a contamination breach and lands in `contamination_reasons` instead. What it is for: a manifest names what an arm GRANTED, and comparing two arms' doctrine is meaningless if the doctrine never loaded. |
 | `transcriptPath` | string | The answerer's transcript under `artifacts/`. |
 
 Token counts sit here rather than being derived later because the claim a

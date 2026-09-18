@@ -365,8 +365,8 @@ class TheRetrievalGateIsWired(unittest.TestCase):
 
     def test_a_401_is_named_not_retried(self):
         # The probe carries no credentials and no CLI login reaches it, so
-        # waiting buys another 401. It used to spend twelve tries at ten
-        # seconds each to arrive at "retrieval is not ready", blaming the
+        # waiting buys another 401. Retrying one spends twelve tries at ten
+        # seconds each to arrive at "retrieval is not ready", which blames the
         # retriever for an auth failure.
         def denied(_a):
             raise rb.AuthRequired(401, "https://hosted/mcp")
@@ -430,8 +430,8 @@ class AuthIsNotAColdIndex(unittest.TestCase):
             self.probe(503)
 
     def test_waiting_does_not_swallow_it(self):
-        # `wait_retrieval_ready`'s bare `except Exception` used to catch it and
-        # record "probe failed", which reads as a warming index.
+        # A bare `except Exception` in `wait_retrieval_ready` would catch it
+        # and record "probe failed", which reads as a warming index.
         def denied(_a):
             raise rb.AuthRequired(401, "http://x/mcp")
         a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",

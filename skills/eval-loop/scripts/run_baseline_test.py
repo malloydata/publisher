@@ -433,12 +433,11 @@ class TruncatedAttempt(unittest.TestCase):
         self.assertEqual(v["reason"], "answerer_truncated")
 
     def test_any_other_harness_failure_is_also_refused(self):
-        # This test previously asserted the opposite, on the reasoning that
-        # "the four-strikes abort already covers a sick environment". A live
-        # run disproved it: the abort stops the arm but still judges what it
-        # collected. Four attempts whose text was the CLI's own "model not
-        # found" message were scored `no_match` for $0.29, and the run printed
-        # `passed 0 of 4 decided (0%)` about a model no answerer had reached.
+        # The four-strikes abort does NOT cover this: it stops the arm and
+        # still judges what it collected. Measured on a live run, four attempts
+        # whose text was the CLI's own "model not found" message were scored
+        # `no_match` for $0.29, and the run printed `passed 0 of 4 decided
+        # (0%)` about a model no answerer had reached.
         v = self.judge({"answer_text": "Error: model not found",
                         "submitted": False, "error": "error_during_execution"})
         self.assertIsNone(v["verdict"])

@@ -609,11 +609,9 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
     # does NOT retry an attempt that came back with events but no text -- that
     # is a real failed answer, and re-rolling it would put a second sample
     # where the run records one. That rule is the ANSWERER's, so it is a
-    # default and not a constant: instrumentation callers pass their own.
-    #
-    # This used to pass `no_events` literally, ignoring the parameter it had
-    # just accepted, so the judge's predicate never reached run_cli and the
-    # judge has never once retried.
+    # default and not a constant: instrumentation callers pass their own, and
+    # the parameter is what reaches `run_cli` -- passing the default literally
+    # here would silently disable every caller's predicate.
     events, _text, stderr, _attempts, _wall = run_cli(
         cmd, cwd=cwd, timeout=timeout, retry_when=retry_when,
         retries=retry, backoff=backoff)
@@ -3398,8 +3396,10 @@ def main(argv: list[str] | None = None) -> int:
                       # ran to the end and still cannot report a rate, which is
                       # a different state from both. Recorded rather than only
                       # printed, because the reader who quotes the number a day
-                      # later has the run directory and not the scrollback --
-                      # and `flip_table.py` refuses to compare one.
+                      # later has the run directory and not the scrollback, and
+                      # because `flip_table.py` reads `truncated` and
+                      # `contaminated` off this file to name which cases one
+                      # arm left unscored that the other scored.
                       status=("aborted" if aborted
                               else "incomplete" if (truncated or contaminated)
                               else "complete"))

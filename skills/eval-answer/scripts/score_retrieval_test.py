@@ -269,13 +269,11 @@ class Attribution(unittest.TestCase):
         self.assertEqual(r["where_to_fix"], "coverage not measured")
 
     def test_a_miss_is_attributed_even_when_the_answer_was_right(self):
-        # This asserted the opposite until 2026-09-18: a passing case returned
-        # UNATTRIBUTED before recall was examined, so a required entity that
-        # never arrived produced no finding at all. Measured on one run, 4 of 5
-        # undelivered entities sat on passing cases and nothing was raised for
-        # any of them. An answer that came out right WITHOUT the entity was
-        # right by another route -- usually the agent rebuilding the model's
-        # own measure inline, which holds only while the measure is trivial.
+        # An answer that came out right WITHOUT a required entity was right by
+        # another route -- usually the agent rebuilding the model's own measure
+        # inline, which holds only while the measure is trivial. Attributing
+        # the miss anyway is what makes it visible: measured on one run, 4 of 5
+        # undelivered entities sat on passing cases.
         for verdict in ("match", "near_match"):
             r = score_case(case(), calls([]), KEY, verdict)
             self.assertTrue(r["where_to_fix"],
