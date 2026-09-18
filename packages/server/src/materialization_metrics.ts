@@ -54,6 +54,7 @@ export type StorageBuildEngine =
 export type EligibilityRefusalReason =
    | "free_parameter"
    | "given"
+   | "given_in_persisted_query"
    | "authorize"
    | "partition"
    | "not_duckdb_portable"

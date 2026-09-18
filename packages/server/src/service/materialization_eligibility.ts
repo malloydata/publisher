@@ -235,9 +235,10 @@ export function assertColocatedPersistNotAuthorizeGated(
    // one this function would have to guess whether the persisted table's
    // read path still passes through the graft. Refusing outright is also
    // what closes the gap this check exists for in the first place: this
-   // function checks ONLY the authorize condition (see its own doc) and does
-   // NOT run `assertMaterializationEligible`'s other rules, so a partitioned
-   // source with no `storage=` would otherwise sail past both refusals.
+   // function runs only its own three rules — partition, a build-substituted
+   // given, and authorize — and NOT `assertMaterializationEligible`'s, so a
+   // partitioned source with no `storage=` would otherwise sail past both
+   // refusals.
    if (referencesPartition(persistSource)) {
       recordEligibilityRefused("partition");
       const what =
@@ -257,6 +258,37 @@ export function assertColocatedPersistNotAuthorizeGated(
             `artifact's read path still applies it, so this is refused for ` +
             `safety. Move the marker to a source that is not materialized, ` +
             `or stop persisting this one.`,
+      });
+   }
+
+   // A given INSIDE the persisted query is frozen at its default and served to
+   // every caller; one in the source's `filterList` is applied at read with the
+   // caller's value and is the documented form (docs/row-level-access.md). Only
+   // the first is refused, so the safe shape stays available.
+   //
+   // Givens only: a parameter cannot appear in a persisted source's own query
+   // pipeline at all — the compiler answers `'<name>' is not defined` — so there
+   // is no parameter equivalent of this shape to refuse here. (A parameter IS
+   // frozen when a source is DERIVED from a parameterized one, which is a
+   // different shape with its own gate.)
+   if (buildSubstitutesAGiven(persistSource)) {
+      recordEligibilityRefused("given_in_persisted_query");
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}'`
+            : `Source '${sourceName}'`;
+      throw new MaterializationEligibilityError({
+         reason: "given_in_persisted_query",
+         message:
+            `${what} cannot be materialized (colocated '#@ persist'): its ` +
+            `persisted query references a given. A given the persisted query ` +
+            `is built with is substituted at BUILD time, so the table would ` +
+            `hold the default's rows and serve them to every caller, ignoring ` +
+            `the value each one supplies. Keep the given OUT of the persisted ` +
+            `query and apply it when the source is read — a \`where:\` in the ` +
+            `source's extend block, or a dimension, measure or join declared ` +
+            `there — where it binds per caller over the materialized rows. ` +
+            `Otherwise stop persisting this source.`,
       });
    }
 
@@ -392,6 +424,124 @@ function referencesGiven(persistSource: PersistSource): boolean {
       return walkForGiven(persistSource._sourceDef, new WeakSet(), 0);
    } catch {
       // Fail closed: if we cannot prove the source is given-free, refuse it.
+      return true;
+   }
+}
+
+/**
+ * Whether the BUILD substitutes a given's value into the relation it writes.
+ *
+ * That is the question, and the compiler answers it directly: a query source's
+ * `query.givenUsage` is the transitive summary of the givens its pipeline
+ * actually reads. Non-empty means a value was substituted while producing the
+ * persisted relation — and the only value available then is the declaration
+ * default, so the artifact holds one caller's slice and the read path, which
+ * swaps only the `FROM`, serves it to everyone. Empty means the given is applied
+ * when the source is READ, with the caller's own value, which is the documented
+ * form (docs/row-level-access.md).
+ *
+ * What the marker provably covers, checked against `getSQL()`: a segment's own
+ * references, a join's `on:` and filters, an atomic field's references, and
+ * turtles. It does NOT cover a given bound as a source argument, which
+ * {@link argumentBindsAGiven} handles separately — and that gap was found by
+ * probing, so treat this list as what has been shown rather than as exhaustive.
+ * The shapes it was checked on:
+ *
+ *   baked        `where:` in the query · a given in a `group_by` · the input
+ *                source's own `where:` · a dimension, measure or join declared
+ *                on the INPUT source that the query READS
+ *   not baked    `where:`, dimension, measure or join in the persist source's
+ *                own extend block · the same declared on the input source and
+ *                NOT read by the query
+ *
+ * The last row is why this reads `givenUsage` rather than walking the IR.
+ * `query.structRef` inlines the input source's whole definition, so a structural
+ * walk refuses every derivation of a base that merely OFFERS a given-filtered
+ * join — a base joining a visibility source, with persisted derivations over it
+ * using different subsets, is an ordinary shape. And the walk cannot be narrowed
+ * to fix it: for a dimension the query reads, the given sits in
+ * `structRef.fields`, exactly where an unread one sits.
+ *
+ * The walk survives as the fallback for when the marker is absent or unreadable
+ * — a non-query source has no `query` at all — and it excludes the two top-level
+ * keys that are read-time by construction, `filterList` and the source's own
+ * `fields`. Unreadable IR refuses, as {@link referencesGiven} does.
+ */
+/**
+ * Whether a given is bound into the relation as a source ARGUMENT.
+ *
+ * `pp(x is $ORG_ID) -> { … }` substitutes the given while constructing the
+ * source the query reads, so the predicate lands in the build SQL — byte
+ * identical to writing the given inside the query. It reaches none of the
+ * places {@link buildSubstitutesAGiven}'s marker is collected from (a segment's
+ * `refSummary`, a join's `on:`/`filterList`, an atomic field's `refSummary`),
+ * because it binds at `structRef` construction rather than by being referenced,
+ * so the marker reads empty while the build bakes the default.
+ *
+ * Any `arguments` holder anywhere under the query is searched, not just the
+ * query's own. That descent is load-bearing rather than defensive: a given
+ * binding a JOINED source declared on the input sits under `structRef.fields`,
+ * and the marker reads empty for it even when the query reads the join and the
+ * build SQL carries the predicate. Checking only the query's own holders admits
+ * that shape — measured, and a fail-open.
+ *
+ * It has a cost, accepted deliberately: the same base with a parameterized
+ * given-filtered join the query does NOT read is refused too, though nothing
+ * reaches the build. That is the over-refusal the marker approach exists to
+ * avoid, reappearing in the one place the marker cannot see. Refusing a source
+ * that does not bake loses a tier; admitting one that does loses a tenant's
+ * isolation, so the descent stays until a signal precise enough to tell the two
+ * apart exists.
+ *
+ * A CONSTANT argument — `pp(x is 1)` — bakes too and is left alone: it is a
+ * concrete instantiation with no per-caller binding, which is exactly the shape
+ * `parameter-eligibility` admits. Only a given is a refusal.
+ */
+function argumentBindsAGiven(node: unknown, depth = 0): boolean {
+   if (depth > MAX_GIVEN_WALK_DEPTH) {
+      throw new Error("argument walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (Array.isArray(node)) {
+      return node.some((item) => argumentBindsAGiven(item, depth + 1));
+   }
+   for (const [key, value] of Object.entries(node)) {
+      if (
+         (key === "arguments" || key === "sourceArguments") &&
+         walkForGiven(value, new WeakSet(), 0)
+      ) {
+         return true;
+      }
+      if (argumentBindsAGiven(value, depth + 1)) return true;
+   }
+   return false;
+}
+
+function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
+   try {
+      const def = persistSource._sourceDef as unknown;
+      if (def === null || typeof def !== "object") {
+         throw new Error("compiled source definition is not readable");
+      }
+      const query = (def as { query?: unknown }).query;
+      if (query !== null && typeof query === "object") {
+         const usage = (query as { givenUsage?: unknown }).givenUsage;
+         // Transitive where a single field's own `refSummary` is not, which is
+         // the whole reason it is read here — but it summarises what the
+         // pipeline REFERENCES, and a source argument binds without being
+         // referenced. So an empty marker is only trusted once the argument
+         // holders are clear; see {@link argumentBindsAGiven}.
+         if (Array.isArray(usage) && usage.length > 0) return true;
+         if (argumentBindsAGiven(query)) return true;
+         if (Array.isArray(usage)) return false;
+      }
+      const {
+         filterList: _sourceFilters,
+         fields: _queryTimeFields,
+         ...relation
+      } = def as Record<string, unknown>;
+      return walkForGiven(relation, new WeakSet(), 0);
+   } catch {
       return true;
    }
 }

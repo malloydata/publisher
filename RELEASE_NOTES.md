@@ -101,6 +101,28 @@ no expected-version slot, so two people editing one authoritative workspace are 
 last writer wins, and the editor cannot detect it. Only the package path is
 compare-and-swap protected.
 
+## [Unreleased] — a colocated persist whose query is built with a given is refused
+
+A given's value is substituted when the compiler compiles. Inside a persisted query the only value available is the declaration default, so it was baked into the relation — and persistence swaps only the source's `FROM`, leaving nothing to re-apply a filter that lives inside that relation. The table held one caller's slice and was served to everyone, whatever value they supplied. That shape is now refused.
+
+**What is still admitted**, and is the documented form ([row-level-access.md](docs/row-level-access.md)): a given applied when the source is READ — a `where:` in the source's extend block, or a dimension, measure or join declared there. It never reaches the build, and binds per caller over the materialized rows. Only a given the persisted query is built with is refused.
+
+```malloy
+#@ persist name="refused"
+source: refused is raw -> { where: org_id = $ORG_ID; select: * }
+
+#@ persist name="admitted"
+source: admitted is raw -> { select: * } extend { where: org_id = $ORG_ID }
+```
+
+**On upgrade**, such a package keeps loading and its source keeps serving — live, correctly, per caller. What changes is that its materialization run now 422s with the refusal, and an artifact built before the upgrade is unbound on the next reload rather than served. Moving the given out of the persisted query restores materialization; the refusal message names the placement.
+
+The `storage=` tier still refuses a given reference in any position, so what it accepts is unchanged. One reported value shifts: a `#@ preaggregate` rollup that also declares `storage=` runs the colocated check first, so a refusal that read `given` now reads `given_in_persisted_query`. Same refusal, different label.
+
+**A new `reason` value.** Refusals are reported on the build plan, and this adds `given_in_persisted_query` to that enum. A consumer generating a strict client from an older copy of the spec can fail to parse a package whose plan carries it — which happens only for a package that actually has the refused shape. Regenerate against this release's `api-doc.yaml`, or expect the value.
+
+---
+
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
 A materialization is a run of one package's persist sources: `package_name` is NOT NULL on the row, every create takes a package, and the scheduler arms per package. The environment page nonetheless carried a second materializations surface on top of that — a cross-package list, plus a dialog that ticked packages and fired one ordinary per-package create for each — which read like a level of its own while offering strictly less than the package's own page. It is gone, and so is the one endpoint behind it, an aggregate that was the per-package query with the package predicate dropped.
