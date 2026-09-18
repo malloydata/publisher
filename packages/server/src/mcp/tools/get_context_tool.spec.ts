@@ -1689,6 +1689,59 @@ describe("get_context semantic retrieval", () => {
          }),
       );
 
+   it("returns every resolving model path, like the lexical path does", async () => {
+      // The vector cache holds ONE row per (kind, source, name) -- the text is
+      // identical whichever file resolves the source -- and the scan fans that
+      // hit back out to every live entity sharing the key. The merge that
+      // follows has to keep those apart: keyed on the bare name it collapsed
+      // them straight back to one and kept whichever landed last, so the same
+      // question answered with one model_path on semantic and all of them on
+      // lexical. lunr never had the bug because its ref is the per-path id.
+      const provider = stubProviderFor({
+         shared: [1, 0],
+         "shared: A source two files resolve.": [1, 0],
+         amount: [1, 0],
+         "the shared source": [1, 0],
+      });
+      _setEmbeddingProviderForTests(provider);
+
+      const sharedSource = {
+         name: "shared",
+         annotations: ["#(doc) A source two files resolve."],
+         schema: {
+            fields: [{ kind: "dimension", name: "amount", annotations: [] }],
+         },
+      };
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [
+               { path: "defs.malloy" },
+               { path: "uses.malloy" },
+            ],
+            // Both files resolve `shared`, so it is queryable under both.
+            getModel: () => ({
+               getSourceInfos: () => [sharedSource],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const params = {
+         search_targets: [
+            { target_type: "source", search_text: "the shared source" },
+         ],
+         scopes: [{ environment: "specs", package: "multipath" }],
+      };
+      const payload = await callUntilSemantic(handler, params);
+
+      const paths = payload.sources.map(
+         (c: { source_info: { resource_id: { model_path: string } } }) =>
+            c.source_info.resource_id.model_path,
+      );
+      expect([...paths].sort()).toEqual(["defs.malloy", "uses.malloy"]);
+      expect(payload.returned).toBe(2);
+      expect(payload.total_available).toBe(2);
+   });
+
    it("embeds every target in ONE provider request and scans once", async () => {
       // The claim the multi-target design rests on: N targets cost one round
       // trip, not N. embedBatch already batches and the scan cross-joins the
@@ -2374,6 +2427,104 @@ describe("get_context semantic retrieval", () => {
       expect(payload.below_cutoff_count).toBe(0);
    });
 
+   describe("a scope narrows the counts as well as the rows", () => {
+      // The counts come from the scan, the rows from the scan filtered by the
+      // caller's scope -- so a scope the scan does not know about leaves the
+      // two describing different sets. `model_path` is not a column in the
+      // vector cache and an `entity_name` scope exempts source rows, so
+      // neither can be a predicate; both go in as the rows the scan may
+      // consider.
+      const scopedPackage = () =>
+         semanticStoreFor({
+            listModels: async () => [{ path: "w.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "orders",
+                     annotations: ["#(doc) Every order."],
+                     schema: {
+                        fields: [
+                           {
+                              kind: "dimension",
+                              name: "dim_a",
+                              annotations: [],
+                           },
+                           {
+                              kind: "dimension",
+                              name: "dim_b",
+                              annotations: [],
+                           },
+                           {
+                              kind: "measure",
+                              name: "revenue",
+                              annotations: [],
+                           },
+                        ],
+                     },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         });
+      const scopedVectors = {
+         orders: [0, 1],
+         "orders: Every order.": [0, 1],
+         "dim a": [1, 0],
+         "dim b": [1, 0],
+         revenue: [0, 1],
+         "total revenue": [0, 1],
+      };
+
+      it("counts the scoped set when the pinned entity matches nothing", async () => {
+         // A pin nothing answers returns the source cards and no entities
+         // under them. The counts have to describe THAT set: read against an
+         // unpinned total_entities of 4, a below_cutoff_count of 0 beside no
+         // entities says every entity cleared the floor and none came back,
+         // which is not a state the contract allows and not what happened.
+         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
+         const handler = captureHandler(scopedPackage());
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total revenue"),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "scope-counts-miss",
+                  entity_name: "no_such_field",
+               },
+            ],
+         });
+         expect(rankedEntities(payload)).toEqual([]);
+         // Only the source row is in scope: an entity_name scope exempts it,
+         // because it is the card a named entity nests in. The package's
+         // three fields are not weighed and so are in neither count.
+         expect(payload.total_entities).toBe(1);
+         expect(payload.below_cutoff_count).toBe(0);
+      });
+
+      it("counts only what the pin admits when it does match", async () => {
+         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
+         const handler = captureHandler(scopedPackage());
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total revenue"),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "scope-counts-hit",
+                  entity_name: "revenue",
+               },
+            ],
+         });
+         expect(rankedEntities(payload).map((e) => e.name)).toEqual([
+            "revenue",
+         ]);
+         // The source row survives an entity_name scope -- it is the card the
+         // entity nests in -- so the scoped set is `orders` and `revenue`,
+         // not the package's four entities.
+         expect(payload.total_entities).toBe(2);
+         expect(payload.below_cutoff_count).toBe(0);
+      });
+   });
+
    it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
       // The contract this replaces said "0 with no results means nothing is
       // related". That state is unreachable: every entity in scope is either
@@ -2867,11 +3018,19 @@ describe("get_context duplicate and visibility handling", () => {
       },
    };
 
-   it("indexes a re-exported source once, from the same model every time", async () => {
-      // A package can expose one source from several models (an import, or a
-      // model that extends another). Only the first is kept, so which model
-      // that is has to be a property of the package rather than of the order
-      // the filesystem happened to list it in.
+   it("reports a source under every model that resolves it", async () => {
+      // A source is queryable at every model path that resolves it -- its own
+      // file and every file importing it -- so each pairing is its own card
+      // with its own resource_id, and a caller can query the one it prefers.
+      //
+      // This deliberately reverses an earlier decision to keep only the first
+      // model. That rule made the OTHER valid paths unreachable, and picked
+      // its survivor before `collectSourceInfos` existed, when a model also
+      // claimed sources it could not resolve -- so "first sorted model" could
+      // name a file the source did not compile in. With the namespace fixed,
+      // every path here is a path that compiles, and returning them all
+      // matches the comparable retrieval service, which keys its result set
+      // the same way.
       const pathsFor = async (models: string[]) => {
          const handler = captureHandler({
             getEnvironment: async () =>
@@ -2889,12 +3048,22 @@ describe("get_context duplicate and visibility handling", () => {
                scopes: [{ environment: "specs", package: "dup" }],
             }),
          );
-         expect(payload.sources).toHaveLength(1);
-         return payload.sources[0].source_info.resource_id.model_path;
+         return payload.sources.map(
+            (s: { source_info: { resource_id: { model_path: string } } }) =>
+               s.source_info.resource_id.model_path,
+         );
       };
-      expect(await pathsFor(["a.malloy", "b.malloy"])).toBe("a.malloy");
-      // Reversed listing, same answer: the choice does not follow the order.
-      expect(await pathsFor(["b.malloy", "a.malloy"])).toBe("a.malloy");
+      expect(await pathsFor(["a.malloy", "b.malloy"])).toEqual([
+         "a.malloy",
+         "b.malloy",
+      ]);
+      // Reversed listing, same answer IN THE SAME ORDER. Sorting this side
+      // too would have asserted only that the same set comes back, which is
+      // true with no sort at all.
+      expect(await pathsFor(["b.malloy", "a.malloy"])).toEqual([
+         "a.malloy",
+         "b.malloy",
+      ]);
    });
 
    it("never returns a join declared inside another join's target", async () => {
