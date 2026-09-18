@@ -165,7 +165,13 @@ RUN_RECOMMENDED = {"judgeModel", "judgeVersion", "datasetVersion", "modelSha",
 RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "modelGitSha", "mcpUrl", "publisher", "predictionsReExecuted",
                 "serverVersion", "diagnoserModel", "improverModel",
-                "rubricSha", "setName", "targetVersion", "scope", "mode",
+                "rubricSha",
+                # The prompt the judge was SHOWN, hashed. `rubricSha` covers
+                # the judge's skill file and not the harness's own prompt
+                # template, so two runs whose prompts differed compared as the
+                # same judge -- the blind spot that let a golden-rendering
+                # defect run for three arms with every test passing.
+                "judgePromptSha", "setName", "targetVersion", "scope", "mode",
                 "traceMode",
                 # The answerer's cap and timeout, as the run actually ran them.
                 # `eval-loop` step 6 lists "call budget" among the pins to

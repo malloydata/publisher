@@ -316,6 +316,29 @@ class VerdictObject(unittest.TestCase):
         self.assertFalse(rb.judge_unusable([{"type": "assistant"}], text))
 
 
+class JudgePrompt(unittest.TestCase):
+    """What the judge is SHOWN, and whether a run can say which version of it.
+
+    The tests cover the code paths; the defect that ran for three arms was in
+    the text the model reads. These are about that text.
+    """
+
+    def test_the_prompt_is_pinned_separately_from_the_skill(self):
+        # `rubricSha` hashes eval-judge/SKILL.md. The prompt template lives
+        # here and carries the golden rendering and the tie-breaking rules, so
+        # a run that names only the skill cannot say which judge it ran.
+        import ledger
+        self.assertIn("judgePromptSha", ledger.RUN_OPTIONAL)
+
+    def test_a_stale_rubric_figure_loses_to_the_golden(self):
+        # An answer holding the golden's own figures was failed against a
+        # rubric still quoting the previous morning's. Stated as a rule the
+        # judge applies at any precision, rather than a regex over prose.
+        self.assertIn("Where the CASE RUBRIC quotes a figure that the GOLDEN "
+                      "contradicts", rb.JUDGE_PROMPT)
+        self.assertIn("the rubric's figure is stale prose", rb.JUDGE_PROMPT)
+
+
 class TruncatedAttempt(unittest.TestCase):
     """An attempt the turn cap cut off is not judged.
 

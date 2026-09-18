@@ -183,6 +183,42 @@ Where you cannot decide, mark the case and report it rather than guessing. A
 criterion nobody could classify is a question for its author, and
 `skill:eval-loop`'s golden side door is where it waits.
 
+### Four rules for writing the rubric itself
+
+Each of these cost a scored case on a real set, and none of them is obvious
+while you are writing one.
+
+**The golden rows are the figures. The rubric's prose is a gloss on them, and
+where the two disagree the prose is what is stale.** On one set 26 of 29
+rubrics quoted a figure that appears nowhere in their own golden rows: the
+goldens were re-derived the next morning, the prose was not, and an agent that
+computed 747 and 370 -- the exact numbers in the golden JSON -- was failed
+against a rubric still saying 615 and 502. Say how to derive the figure, not
+what it equalled. `verify_goldens.py` check 2 reports figures in the accepting
+clause that are absent from the rows; read what it gives you.
+
+**Do not assert the model's current behaviour.** "`contract_terms` cannot be
+used here at all -- it returns ZERO rows" was true when written and false four
+hours later, when a commit unblocked that view. Nothing linked the two, and the
+judge then reasoned from the stale claim against an answer that was right.
+Co-locating the set with the model makes such drift visible in a diff; it does
+not detect it. A rubric that describes a bug is a rubric with an expiry date:
+write the requirement, not the defect.
+
+**When a question admits two honest populations, accept either and require the
+answer to name which.** "Products in a category" can mean listed-in or
+primary-category, and on one set the two readings differed by 4,070 against
+2,707. Six or more cases turned on it and one rubric had been written to accept
+both. That one was right. The rest were repaired afterwards, having failed
+correct answers in the meantime.
+
+**A trap note is not a requirement.** Notes that arrive beside the questions
+describe what their author thought was hard, and they mention things the
+question never asked for. Turning one into a rubric clause invents a
+requirement the answerer was never given, and it happened: a term appearing
+nowhere in any question became a clause an answer was marked down for missing.
+Convert a note only where it constrains the answer to the question as asked.
+
 ## Step 5: never change a question, and seal it
 
 The question is the stimulus. It is what a human asked, and it is not yours to

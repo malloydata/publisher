@@ -1963,6 +1963,12 @@ a bar the answer has to clear.
   figure, and do not penalise an answer for the number of queries it took.
 - Whether the answer must SAY that it derived the metric is the case rubric's
   call, not yours. Apply that only where the rubric asks for it.
+- Where the CASE RUBRIC quotes a figure that the GOLDEN contradicts, the GOLDEN
+  is the key and the rubric's figure is stale prose. Goldens get re-derived;
+  the sentences around them do not always follow. Score against the golden, and
+  say in `why` that the rubric disagreed with it. Measured: an answer holding
+  the golden's own two figures was failed against a rubric that still carried
+  the figures from the morning before.
 - The model source is there so you can check the rubric against it. A rubric is
   a claim about the model written at some past moment; where it asserts a
   definition the model contradicts, the model is what the answerer actually had.
@@ -2916,6 +2922,15 @@ def main(argv: list[str] | None = None) -> int:
         maxTurns=a.max_turns, answererTimeout=a.timeout,
         started=ledger.now(),
         judgeVersion=JUDGE_VERSION, rubricSha=RUBRIC_SHA,
+        # The prompt the judge is actually SHOWN, hashed. `rubricSha` covers
+        # `eval-judge/SKILL.md` -- the doctrine the judge loads -- and not this
+        # file's JUDGE_PROMPT, which carries the golden rendering, the evidence
+        # blocks and the tie-breaking rules. Two runs whose prompts differed
+        # therefore compared as the same judge, which is exactly the blind spot
+        # that let a golden-rendering defect run for three arms: every test
+        # passed, because the tests covered the code paths and not the text the
+        # model sees. Additive, so no run written before this moves a pin.
+        judgePromptSha=sha256(JUDGE_PROMPT.encode()),
         datasetVersion=set_meta.get("datasetVersion"),
         # Content hash of the set, beside the human-readable version. A golden
         # repair moves this without anyone remembering to bump anything.

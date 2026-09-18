@@ -116,6 +116,7 @@ on that axis.
 | `answererModel` *(required)* | |
 | `phase` / `started` *(required)* | |
 | `judgeModel` / `judgeVersion` / `rubricSha` *(pins)* | The judge's model, and the version + content sha of `skill:eval-judge`. |
+| `judgePromptSha` *(pin)* | Content sha of the prompt the judge is SHOWN, which is the harness's own template and not the skill file `rubricSha` covers. The template carries the golden rendering, the evidence blocks and the tie-breaking rules, so two runs whose prompts differed compared as the same judge -- the blind spot that let a golden-rendering defect run through three arms with every test passing, because the tests covered the code paths and not the text the model sees. Absent on runs written before it existed. |
 | `datasetVersion` *(pin)* | From `set.json` at run time. |
 | `modelSha` *(pin)* | Content sha of the `model.malloy` snapshot in the run directory -- the bytes the answerer actually queried. A git sha is not enough: a snapshot host serves a copy, often of a dirty tree no commit names. |
 | `skillsVersion` *(pin)* | HEAD of the checkout the agents' skills were loaded from, dirty-marked (`ledger.skills_git_sha(root)`). The skills are the doctrine the agents load; a run that cannot name their version cannot anchor a skills A/B. |

@@ -61,6 +61,15 @@ produces a confident wrong answer rather than an error.
 cases. Run writes attempts. Do not invent questions and score
 them in one breath.
 
+**Step d is `skill:eval-improve`, not a hand edit plus another arm.** The
+failure mode is specific and it has happened: the edits were made by hand,
+published, and validated by re-running the whole arm -- with the answer key
+repaired in the same window. No `candidate`, `acceptance_check` or `checkpoint`
+event exists in that run's ledger, and the resulting move cannot be attributed
+to the model, the key, or the answerer. Re-running a whole arm after changing
+two things is the one thing the acceptance check exists to replace: it scores
+the edit against dev AND holdout, and it is cheaper than the arm.
+
 ### Scrape, minimally
 
 Importing an existing corpus IS the scrape step: copy the set from its home
@@ -291,6 +300,23 @@ the run measure something other than what it names:
    under a published version, which is what makes it a pin. Check which you have
    before deciding how much of this you need.
 
+   **Look for a set and for prior runs before you author either.** A minute of
+   `find . -name cases.jsonl`, a glance at `evals/*/runs/` and at your host's
+   own transcripts for this repo. Two sessions fourteen minutes apart built the
+   same 29-case answer key from scratch, because the first had committed
+   nothing before it was deleted and the second had no way to know it existed.
+   Roughly a working day was spent twice, and three specific things were
+   rediscovered at cost: the MCP login flow, the retrieval gate's 401, and a
+   judge-rendering bug that had already cost $17 of arm once. The two keys,
+   independently authored from the same questions, differ by about ten points
+   on comparable answers -- which is the available measure of how much a key
+   depends on its author, and a reason to reuse one rather than rebuild it.
+
+   **Commit the set before you spend money on an arm**, and keep durable
+   outputs in the repository. A findings document in `~/Downloads` is gone the
+   first time somebody tidies up; the set, the run directory and the write-up
+   belong in git beside the model.
+
 2. The server must be up with retrieval tracing on, so a call's ranked results
    can be recovered afterwards (open-source Publisher: `PUBLISHER_MCP_TRACE=retrieval`).
    Confirm a trace lookup is available (absent means tracing is off).
@@ -330,6 +356,25 @@ the run measure something other than what it names:
    rubric sha, answerer model, call budget, trace mode. Freeze those for the
    whole run. Raising a call budget mid-run moved mean outcomes on an unchanged
    model.
+
+   The call budget is `--max-turns`, written to `run.json` as `maxTurns`.
+   **Size it from a pilot rather than taking the default of 30.** Run the three
+   cheapest cases uncapped (`--max-turns 100`) and set the cap at twice their
+   maximum. A set whose questions need two or three sources joined does not fit
+   a cap sized for single-source lookups: on one such set the completed
+   attempts had a median of 17 turns and a 90th percentile of 26 against a cap
+   of 30, and four cases died at it. A cap 15% above the 90th percentile of
+   completed work is not a safety margin. Note also that `malloy-analysis` tells
+   the answerer to persist -- retry a phrasing, let a small query settle whether
+   a field exists -- so a tight cap and that instruction are in direct conflict.
+
+   **Change one thing per arm.** A model edit and an answer-key repair landed
+   together between two arms once, and the resulting move from 20% to 39%
+   cannot be attributed to either. That includes the answerer model: match it
+   to whatever run you intend to compare against, and say which it was. The
+   same 23-case set read 12 match / 11 near / 0 no_match on one model and 8 / 4
+   / 15 on a smaller one, so no statement about "the agent's" capability is
+   safe until the two arms name the same answerer.
 
 7. Generate every answerer prompt from the stored case in `cases.jsonl`.
    Never retype the question. A truncated retype is indistinguishable from a
@@ -400,7 +445,15 @@ conductor. Do not:
 
 - The model is the only thing improve edits. No question text, qids, or
   expected values in any name, doc, or comment.
-- When the environment misbehaves, stop. Never diagnose a sick system.
+- When the environment misbehaves, stop. Never diagnose a sick system. The
+  harness is part of the environment: a known-broken measurement does not
+  become quotable by being finished. Measured against this directive, an arm
+  already paid for gets quoted anyway -- it happened three times in one run,
+  once with the confound stated in the same message that started the arm -- so
+  the harness now enforces the parts it can. A run with a truncated or
+  contaminated attempt prints no pass rate and records `status: incomplete`,
+  and `flip_table.py` refuses to compare one. Read `run_error` on the attempts
+  and the INCOMPLETE line before quoting any number.
 - When a subagent disagrees with you, probe. Do not win by authority.
 - When a rule here is wrong, change this file and note it on the run.
 
