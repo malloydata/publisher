@@ -1558,8 +1558,16 @@ export class Model {
       if (!skipOwnSourceGate && ownSourceName) {
          const onDiskGates = this.entryPointGatesBySource.get(ownSourceName);
          if (onDiskGates) {
+            // The parts are concatenated, so the separator has to be a
+            // character that neither a label nor an expression can contain:
+            // otherwise `{label: "a b", exprs: []}` keys the same as
+            // `{label: "a", exprs: ["b"]}`. Not \0, which has that property
+            // but also makes the whole file binary to anything that sniffs
+            // for one, and a tool that skips binaries skips every line of
+            // this one in silence.
+            const SEP = "\x1f";
             const keyOf = (entry: GateEntry): string =>
-               `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`;
+               `${entry.label}${SEP}${entry.exprs.join(SEP)}${SEP}${entry.selfContained}`;
             const byKey = new Map(
                entryPointGates.map((entry) => [keyOf(entry), entry]),
             );
