@@ -718,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
                          "model, and without it diagnosis is biased away from "
                          "model-owned causes. Deliberately NOT the answerer's "
                          "manifest -- a diagnoser fluent in the answerer's own "
-                         "playbook over-attributes to query construction")
+                         "playbook over-attributes to how the query was built")
     ap.add_argument("--skills-root", default=None,
                     help="checkout holding skills/ and manifests/ for the role "
                          "skills (a Publisher checkout); this checkout still "
@@ -913,10 +913,13 @@ def main(argv: list[str] | None = None) -> int:
     # so the browsable package always carried the mechanical grouping -- which
     # on both the ecommerce and VideoAmp runs charged everything to retrieval
     # while the diagnosis beside it said otherwise.
-    where = {"model": "model coverage", "retrieval": "retrieval ranking",
-             "agent-skill": "query construction", "dataset": "dataset"}
-    lever = {"model": "model", "retrieval": "retrieval", "agent-skill": "skill",
-             "dataset": "dataset"}
+    # Imported, not spelled: this file and `cluster_failures.py` both write
+    # `clusters.jsonl`, and when `score_retrieval` renamed the labels these two
+    # maps kept the old ones -- so the package's `where_to_fix` column carried
+    # "query construction" from here and "delivered, wrong" from the scorer,
+    # under one name, with the column's own doc matching neither.
+    where = score_retrieval.WHERE_BY_OWNER
+    lever = score_retrieval.LEVER_BY_OWNER
     with (a.run / "clusters.jsonl").open("w") as fh:
         for n, c in enumerate(clusters.get("clusters", []), 1):
             qids = [q for q in c.get("qids", []) if q in by_qid]

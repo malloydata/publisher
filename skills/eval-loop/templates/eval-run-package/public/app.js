@@ -401,11 +401,18 @@ async function main() {
 
   const fixes = [...new Set(state.rows.flatMap(r => r.arms.map(a => a.where_to_fix).filter(Boolean)))].sort();
   document.getElementById('wtf').title =
-    'Where a failure would have to be fixed: model coverage (nothing in the '
-    + 'model answers this), documentation (the entity existed and search did '
-    + 'not return it: its docs do not say what people ask), delivered, wrong '
-    + '(everything arrived; the agent or the docs, diagnose decides), refusal '
-    + 'behaviour, or coverage not measured.';
+    // No label is split across a concatenation: `score_retrieval_test.py`
+    // checks each one appears here verbatim, and a label broken over two
+    // string literals reads as absent.
+    'Where a failure would have to be fixed. '
+    + '"model coverage": nothing in the model answers this. '
+    + '"not retrieved": a search of the right kind went out and the entity '
+    + 'did not come back. '
+    + '"never asked": no search of that kind went out at all. '
+    + '"delivered, wrong": everything arrived; the agent or the docs, '
+    + 'diagnose decides. '
+    + '"refusal behaviour": the model cannot answer and the agent did. '
+    + '"coverage not measured": a miss with no measured coverage label.';
   document.getElementById('wtf').innerHTML = '<option value="">Where to fix: any</option>' +
     fixes.map(f => `<option${f === state.wtf ? ' selected' : ''}>${esc(f)}</option>`).join('');
 

@@ -101,22 +101,18 @@ from typing import Any
 # version charged every such case to the agent, which is how a documentation gap
 # gets filed as a skills bug and never fixed.
 DELIVERED = ("construction", "undecided", "delivered, wrong")
-# Covered, and not returned. eval-diagnose's default code for that is
-# NOT-RETURNED under get_context/model, owner model: "labels, docs, synonyms,
-# index". Its RETRIEVAL code (owner retrieval) exists, but needs a rare-token
-# proof -- a distinctive phrase from the entity's own doc retrieves it and
-# ordinary phrasing does not -- and is never assigned mechanically here. From
-# the customer's side the retrieval algorithm is fixed, semantic search over doc
-# strings, so an entity that exists and does not come back is one whose docs do
-# not say what people ask. This label used to read "retrieval ranking", which
-# named the engine and sent the fix to the wrong team.
-# Asked for the right KIND of thing, and it still did not come back. Two live
-# causes and the run cannot separate them: the docs do not describe the entity
-# the way this question phrases it, or the search vocabulary was off. Both are
-# real, they have different owners, and eval-diagnose decides between them
-# (NOT-RETURNED / LOW-RANK are the model's; QUESTION-VOCAB and VAGUE are the
-# agent's). An earlier version asserted `documentation` here outright, which
-# was provably wrong on the first real run.
+# Covered, asked for by the right KIND of search, and it still did not come
+# back. Two live causes, and this run cannot separate them: the docs do not
+# describe the entity the way the question phrases it, or the search vocabulary
+# was off. They have different owners, so the label names the OUTCOME and
+# leaves the owner undecided; eval-diagnose separates them (NOT-RETURNED and
+# LOW-RANK are the model's, QUESTION-VOCAB and VAGUE the agent's, and its
+# RETRIEVAL code needs a rare-token proof that is never assigned mechanically
+# here). Two earlier labels are both wrong and are worth naming because each
+# looks reasonable: "retrieval ranking" names the engine, which from the
+# customer's side is fixed and not the thing anyone can edit; `documentation`
+# asserts one of the two causes outright, and was contradicted on the first
+# real run.
 NOT_RETURNED = ("get_context", "undecided", "not retrieved")
 # Never issued a search for that kind of entity at all. eval-diagnose's
 # NEVER-ASKED / WRONG-TYPE-OR-SCOPE, owner agent-skill. Mechanical and certain:
@@ -145,6 +141,31 @@ MEASURED_OK = "ok"
 # conservative reading is eval-diagnose's own convention for `sufficiency`; it
 # is not a new owner, it is the absence of one.
 UNMEASURED = ("get_context", "unknown", "coverage not measured")
+
+# A DIAGNOSED cluster arrives labelled by eval-diagnose's owner rather than by
+# a retrieval outcome, and both land in the same `where_to_fix` column of the
+# run package. These two maps are the translation, and they live here, beside
+# the labels, because the alternative was two maps: `diagnose.py` and
+# `cluster_failures.py` each wrote that column with their own spelling, so the
+# package served two vocabularies under one name and the doc on the column
+# matched neither. A cluster's label is the nearest shared bucket, not a new
+# one -- the cluster's own `component` and cause code carry the precise
+# finding.
+WHERE_BY_OWNER = {
+    "model": MODEL[2],
+    "retrieval": NOT_RETURNED[2],
+    "agent-skill": DELIVERED[2],
+    "dataset": "dataset",
+}
+# Which artifact the edit lands in. An owner nobody has named yet -- eval-
+# diagnose has not run, or it ran and declined -- yields no lever rather than a
+# guessed one, because a guess here is the default blame this taxonomy removed.
+LEVER_BY_OWNER = {
+    "model": "model",
+    "retrieval": "retrieval",
+    "agent-skill": "skill",
+    "dataset": "dataset",
+}
 
 PASSING = {"match", "near_match"}
 # Verdicts the acceptance check counts as neither a pass nor a failure.

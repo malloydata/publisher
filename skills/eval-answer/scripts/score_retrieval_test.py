@@ -497,6 +497,41 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
                                   REFUSAL, UNMEASURED)}
         self.assertEqual(literals, emitted)
 
+    def package_file(self, *parts):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "..", "..", "eval-loop", "templates",
+                               "eval-run-package", *parts)) as fh:
+            return fh.read()
+
+    def emitted(self):
+        from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,
+                                     NOT_RETURNED, REFUSAL, UNMEASURED)
+        return {t[2] for t in (DELIVERED, MODEL, NEVER_ASKED, NOT_RETURNED,
+                               REFUSAL, UNMEASURED)}
+
+    def test_the_notebook_legend_names_every_label(self):
+        """The legend is what a reader consults to interpret the column, so a
+        label missing from it is worse than no legend. It named `documentation`
+        -- a value that never appears -- and omitted `never asked` entirely."""
+        text = self.package_file("eval_run.malloynb")
+        for label in self.emitted():
+            self.assertIn(f"**{label}**", text, label)
+
+    def test_the_dashboard_tooltip_names_every_label(self):
+        text = self.package_file("public", "app.js")
+        start = text.index("Where a failure would have to be fixed")
+        tooltip = text[start:start + 700]
+        for label in self.emitted():
+            self.assertIn(label, tooltip, label)
+
+    def test_no_retired_label_survives_in_the_package(self):
+        # Each of these was a real value once; each now matches nothing.
+        for f in (("eval_run.malloy",), ("eval_run.malloynb",),
+                  ("public", "app.js"), ("README.md",)):
+            text = self.package_file(*f)
+            for retired in ("query construction", "retrieval ranking"):
+                self.assertNotIn(retired, text, f"{f}: {retired}")
+
 
 class Summary(unittest.TestCase):
     def test_an_unmeasured_failure_is_counted_not_dropped(self):
