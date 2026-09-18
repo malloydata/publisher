@@ -75,17 +75,17 @@ Your first result is a draft, not an answer. The difference between a useful ana
 - **Ground it.** Before interpreting any result, query and state the dataset scope: the time range (`min`/`max` of the primary date dimension) and the row or entity count. Every number is meaningless without it.
 - **Ask "what would make this wrong?"** then run the query that would expose that problem. A plausible-looking wrong answer is the most dangerous kind.
 - **Check the common failure modes:**
-- Fan-out / double-counting: if you joined across grain, compare `count()` to `count(key)` - in Malloy `count(field)` is already the distinct count. A large gap means duplication is inflating the aggregates.
-- Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one.
-- Null-driven loss: `count() - count(the_field)` shows how many rows a key field drops.
-- Parts that do not sum to the whole: if you split a total into categories, confirm they add up.
-- The key number: recompute the single most important aggregate a different way, or filter to one entity and recount.
+  - Fan-out / double-counting: if you joined across grain, compare `count()` to `count(key)` - in Malloy `count(field)` is already the distinct count. A large gap means duplication is inflating the aggregates.
+  - Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one.
+  - Null-driven loss: `count() - count(the_field)` shows how many rows a key field drops.
+  - Parts that do not sum to the whole: if you split a total into categories, confirm they add up.
+  - The key number: recompute the single most important aggregate a different way, or filter to one entity and recount.
 - **Quick reference by query type:**
-- Top-N by metric: filter to the #1 result and recount it independently.
-- Time series or trend: query `min(date_field)` and `max(date_field)` to confirm the range matches what you're presenting.
-- Any percentage: verify the denominator separately.
-- Ranking or comparison: check whether the conclusion holds under a different reasonable metric; if it doesn't, that's a finding to surface, not a problem to hide.
-- Extreme of a rate ("worst", "highest failure rate", "best performing"): read the denominator before you report the winner. A group with a handful of rows takes the top spot on noise alone; one failure in three is a 33% failure rate. If the model documents a minimum volume, apply it. If it documents none, choose a floor, say which floor you chose, and show the rate with its denominator beside it.
+  - Top-N by metric: filter to the #1 result and recount it independently.
+  - Time series or trend: query `min(date_field)` and `max(date_field)` to confirm the range matches what you're presenting.
+  - Any percentage: verify the denominator separately.
+  - Ranking or comparison: check whether the conclusion holds under a different reasonable metric; if it doesn't, that's a finding to surface, not a problem to hide.
+  - Extreme of a rate ("worst", "highest failure rate", "best performing"): read the denominator before you report the winner. A group with a handful of rows takes the top spot on noise alone; one failure in three is a 33% failure rate. If the model documents a minimum volume, apply it. If it documents none, choose a floor, say which floor you chose, and show the rate with its denominator beside it.
 
 If verification reveals a discrepancy, stop and fix it (go back to step 2 or 3). Do not present a result that failed verification with a caveat: fix it, or tell the user you cannot confidently answer. A failed verification is more than two computations disagreeing. Any condition you yourself name that would invalidate the result counts: the field is null for the period asked about, the denominator is eleven rows, the instrumentation started after the window. When that happens the conclusion has to move, not just acquire a footnote. Writing the condition beside an unchanged headline satisfies the wording of this rule and defeats its purpose, because if the caveat is true the headline is wrong. Verification queries are for your reasoning, so do not put chart annotations on them.
 
