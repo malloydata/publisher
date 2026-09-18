@@ -9,6 +9,8 @@ import sys
 import tempfile
 import unittest
 
+import score_retrieval
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from score_retrieval import (  # noqa: E402
@@ -240,11 +242,26 @@ class Attribution(unittest.TestCase):
         r = score_case(case(coverage="unknown"), calls([]), KEY, "no_match")
         self.assertEqual(r["where_to_fix"], "coverage not measured")
 
-    def test_a_passing_attempt_is_attributed_to_nobody(self):
+    def test_a_miss_is_attributed_even_when_the_answer_was_right(self):
+        # This asserted the opposite until 2026-09-18: a passing case returned
+        # UNATTRIBUTED before recall was examined, so a required entity that
+        # never arrived produced no finding at all. Measured on one run, 4 of 5
+        # undelivered entities sat on passing cases and nothing was raised for
+        # any of them. An answer that came out right WITHOUT the entity was
+        # right by another route -- usually the agent rebuilding the model's
+        # own measure inline, which holds only while the measure is trivial.
         for verdict in ("match", "near_match"):
             r = score_case(case(), calls([]), KEY, verdict)
-            self.assertEqual(r["where_to_fix"], "",
-                             f"{verdict} should not be a failure")
+            self.assertTrue(r["where_to_fix"],
+                            f"{verdict} with an undelivered entity must attribute")
+            # The pass rate is untouched: the answer is still not a failure.
+            self.assertFalse(r["failed"])
+            self.assertEqual(r["verdict"], verdict)
+
+    def test_a_pass_that_received_everything_has_nothing_to_attribute(self):
+        r = score_case(case(), calls([M_SALES]), KEY, "match")
+        self.assertEqual(r["recall"], 1.0)
+        self.assertEqual(r["where_to_fix"], "")
 
     def test_an_unscored_verdict_is_attributed_to_nobody(self):
         # needs_human and null are neither passes nor failures. Attributing them
@@ -546,6 +563,81 @@ class EndToEnd(unittest.TestCase):
                          "had everything and still failed")
         self.assertEqual(by["b"]["owner"], "model",
                          "nothing to retrieve, so not retrieval's fault")
+
+
+class TargetKinds(unittest.TestCase):
+    """What a search target can return, and who is blamed when it cannot."""
+
+    def test_kinds_by_target_matches_the_server(self):
+        # This module is stdlib-only and cannot import the TypeScript, so the
+        # map is mirrored and pinned here. Wrong in either direction
+        # misattributes: too narrow blames the agent for not asking when it
+        # did, too wide reads a real never-asked as a retrieval failure.
+        here = os.path.dirname(os.path.abspath(__file__))
+        src = os.path.join(here, "..", "..", "..", "packages", "server", "src",
+                           "mcp", "tools", "get_context_tool.ts")
+        with open(src, encoding="utf-8") as fh:
+            text = fh.read()
+        block = text.split("const KINDS_BY_TARGET")[1].split("};")[0]
+        for target, kinds in score_retrieval.KINDS_BY_TARGET.items():
+            self.assertIn(f"{target}:", block,
+                          f"{target} is not in the server's map")
+            line = next(l for l in block.splitlines()
+                        if l.strip().startswith(f"{target}:"))
+            for k in kinds:
+                self.assertIn(f'"{k}"', line,
+                              f"server's {target} does not select {k}")
+            if not kinds:
+                self.assertIn("[]", line, f"{target} should select nothing")
+
+    def test_a_bare_target_still_counts_as_having_asked(self):
+        # A target carrying no `search_text` enumerates its type. `targets`
+        # drops it (there is no term to record), so reading only that scored an
+        # agent who enumerated every measure as never having asked for one.
+        ev = [{"kind": "tool_call", "tool": "get_context", "qid": "q",
+               "sample": None, "phase": "baseline",
+               "rankedSummary": {"entityIds": []},
+               "targets": ["dimension: carrier"],
+               "target_shapes": [{"type": "dimension", "has_text": True},
+                                 {"type": "measure", "has_text": False}]}]
+        _, _, _, asked = score_retrieval.retrieved(ev, KEY)
+        self.assertIn("measure", asked)
+
+    def test_a_view_target_covers_a_named_query(self):
+        ev = [{"kind": "tool_call", "tool": "get_context", "qid": "q",
+               "sample": None, "phase": "baseline",
+               "rankedSummary": {"entityIds": []},
+               "target_shapes": [{"type": "view", "has_text": True}]}]
+        _, _, _, asked = score_retrieval.retrieved(ev, KEY)
+        self.assertEqual(asked, {"view", "query"})
+
+    def test_a_legacy_run_without_shapes_still_reads_its_targets(self):
+        ev = [{"kind": "tool_call", "tool": "get_context", "qid": "q",
+               "sample": None, "phase": "baseline",
+               "rankedSummary": {"entityIds": []},
+               "targets": ["measure: flight count", "dimension: carrier"]}]
+        _, _, _, asked = score_retrieval.retrieved(ev, KEY)
+        self.assertEqual(asked, {"measure", "dimension"})
+
+    def test_a_measure_missed_with_no_measure_target_is_never_asked(self):
+        # The deterministic case, and the one this whole distinction exists
+        # for: `target_type` is a hard filter on the server, so no amount of
+        # documentation could have delivered it.
+        comp, owner, where, why = score_retrieval.attribute(
+            recall=0.0, coverage="covered", passed=False,
+            missing_kinds={"measure"}, asked_kinds={"source", "dimension"})
+        self.assertEqual(owner, "agent-skill")
+        self.assertIn("never asked", where)
+
+    def test_a_measure_missed_despite_a_measure_target_is_not_never_asked(self):
+        # A measure target existed but described a different concept. That is a
+        # judgement about phrasing, not a mechanical miss, so it goes to
+        # diagnose rather than being charged to the agent here.
+        comp, owner, where, why = score_retrieval.attribute(
+            recall=0.0, coverage="covered", passed=False,
+            missing_kinds={"measure"}, asked_kinds={"measure", "dimension"})
+        self.assertNotIn("never asked", where)
+        self.assertEqual(owner, "undecided")
 
 
 if __name__ == "__main__":

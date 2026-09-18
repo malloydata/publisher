@@ -170,6 +170,30 @@ def attempt_key(e: dict[str, Any]) -> tuple:
     return (e.get("qid"), e.get("sample"), e.get("phase"))
 
 
+# Which entity KINDS each search target type can return. Mirrors
+# `KINDS_BY_TARGET` in the server's get_context tool, and `test_kinds_by_target_
+# matches_the_server` pins it against that file, because this module stays
+# stdlib-only and cannot import TypeScript. Getting this wrong in either
+# direction misattributes a miss: too narrow and the agent is blamed for not
+# asking when it did, too wide and a real never-asked reads as a retrieval
+# failure.
+#
+# `target_type` is a HARD FILTER on the server, which is what makes a miss of
+# this shape mechanical rather than a judgement: no amount of documentation can
+# deliver a measure to a search that asked only for dimensions.
+KINDS_BY_TARGET = {
+    "source": {"source"},
+    "dimension": {"dimension"},
+    "measure": {"measure"},
+    # A model-level named query is a pre-built analysis, which is what the
+    # published shape says a `view` target is for.
+    "view": {"view", "query"},
+    "join": {"join"},
+    # Publisher indexes no dimensional values, so this target selects nothing.
+    "dimensional_value": set(),
+}
+
+
 def retrieved(events: list[dict[str, Any]],
               key: tuple) -> tuple[list[str], int, set[str], set[str]]:
     """Entities pooled over the attempt's get_context calls, the call count,
@@ -195,12 +219,26 @@ def retrieved(events: list[dict[str, Any]],
         for eid in rs.get("entityIds") or []:
             seen.setdefault(eid, None)
         tokens.update(rs.get("docTokens") or [])
-        for t in e.get("targets") or []:
-            if isinstance(t, str) and ":" in t:
-                asked.add(t.split(":", 1)[0].strip().lower())
-            elif isinstance(t, dict) and t.get("target_type"):
-                asked.add(str(t["target_type"]).strip().lower())
-    return list(seen), calls, tokens, asked
+        # `target_shapes` when the run recorded it: it keeps EVERY target,
+        # including one carrying no `search_text`, which `targets` drops
+        # because there is no term to record. Reading only `targets` scored an
+        # agent that enumerated all measures as never having asked for one.
+        shapes = e.get("target_shapes")
+        if shapes:
+            for t in shapes:
+                if isinstance(t, dict) and t.get("type"):
+                    asked.add(str(t["type"]).strip().lower())
+        else:
+            for t in e.get("targets") or []:
+                if isinstance(t, str) and ":" in t:
+                    asked.add(t.split(":", 1)[0].strip().lower())
+                elif isinstance(t, dict) and t.get("target_type"):
+                    asked.add(str(t["target_type"]).strip().lower())
+    # Expand target types to the kinds they can actually return, so a `view`
+    # target counts as having asked for a model-level named query.
+    reachable = set().union(*(KINDS_BY_TARGET.get(a, {a}) for a in asked)) \
+        if asked else set()
+    return list(seen), calls, tokens, reachable
 
 
 def split_entity(eid: str) -> tuple[str, str, str]:
@@ -245,23 +283,43 @@ def attribute(recall: float | None, coverage: str, passed: bool | None,
     counted as failures in the score table and appeared under no heading here,
     so the two never summed to the same number.
     """
-    if passed:
-        return (*UNATTRIBUTED, "passed")
+    # NO short-circuit on `passed`. This used to open with
+    # `if passed: return (*UNATTRIBUTED, "passed")`, before recall was looked
+    # at -- so a case that answered correctly while never receiving a required
+    # entity was attributed to nobody, `summarise()` dropped it because the
+    # empty label is falsy, and no issue could ever be raised for it. Measured
+    # on one run: 4 of 5 undelivered entities were on passing cases and
+    # produced zero findings.
+    #
+    # "It worked anyway" is not a reason to leave the gap. The answer being
+    # right is recorded on the row (`failed`, `verdict`) and reported
+    # separately, so attributing the miss does not move the pass rate.
     if passed is None:
         # needs_human or unscorable. Neither a pass nor a failure, so it must not
         # be attributed -- doing so would inflate whichever bucket it landed in.
         return (*UNATTRIBUTED, "not scored")
     if recall is None:
         # No required entities, which in this set means coverage is `absent`.
-        # The case failed, so the answerer produced something for a question the
-        # model cannot answer.
+        if passed:
+            # It declined a question the model cannot answer, which is the
+            # right behaviour and the pass. Nothing to attribute.
+            return (*UNATTRIBUTED, "declined an unanswerable question")
         return (*REFUSAL,
                 "the model cannot answer this and the answerer did not decline")
     if recall >= 1.0:
+        if passed:
+            # Everything arrived and the answer was right. The only shape with
+            # genuinely nothing to report.
+            return (*UNATTRIBUTED, "delivered and correct")
         return (*DELIVERED,
                 "retrieval delivered every required entity; the failure is in how "
                 "it was used, or in docs that never said how to use it. Diagnose "
                 "decides which, sufficiency first")
+    # Below here recall is < 1.0: a required entity did not reach the answerer.
+    # That is attributed whether or not the answer came out right, because an
+    # answer that was right WITHOUT the entity was right by another route --
+    # most often the agent rebuilding the model's own measure inline, which is
+    # correct only while the measure is trivial.
     if coverage in ("covered", MEASURED_OK):
         unasked = sorted((missing_kinds or set()) - (asked_kinds or set()))
         if unasked:
