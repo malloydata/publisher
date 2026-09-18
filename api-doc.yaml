@@ -4833,8 +4833,13 @@ components:
             returned. The two change independently and neither substitutes for
             the other.
 
-            Unlike a credential, it is returned on reads: it names no secret,
-            and withholding it would defeat its only purpose.
+            It is returned on reads, because a writer that cannot read it back
+            cannot compare it. Choose the value with that in mind: a digest over
+            configuration that includes credentials does not reveal them, but it
+            COMMITS to them, and a reader who can see the other inputs has a
+            preimage with only the secret missing. If the connection is readable
+            by anyone you would not hand the credential to, use a keyed digest,
+            or keep this tag out of the reach of that reader.
 
             A write that does not carry a tag CLEARS it, rather than inheriting
             the stored one. The tag describes the configuration the writer that

@@ -402,6 +402,13 @@ comparison, rather than hiding behind a tag that no longer describes what is sto
 Nothing in Publisher reads the value, so its format is entirely yours — a hash, a version string,
 anything you can compare for equality.
 
+**Choose it with the read path in mind.** The tag comes back on every read, so a plain digest over a
+configuration that includes credentials does not reveal them but does *commit* to them: a reader who
+can see the connection's other fields holds a preimage whose only unknown is the secret, and can test
+guesses offline. That is fine when only your own control plane can read the connection, and not fine
+when a tenant can. Use a keyed digest (HMAC under a secret only the writer holds) if it is readable
+more widely, or keep the tag off the surface those readers reach.
+
 Do not reach for `fingerprint` instead. That field identifies the *data* a connection reaches and
 deliberately excludes credentials so that rotating one does not re-address the artifacts built
 through it; two configurations differing only by password share a fingerprint, which is exactly the
