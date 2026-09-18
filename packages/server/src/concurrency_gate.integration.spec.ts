@@ -246,7 +246,12 @@ describe("compile and sqlSource are admission-controlled", () => {
  * maintenance liability the source-scan spec it replaced became.
  */
 describe("every compile and sqlSource route registers the concurrency gate", () => {
-   const gatedRoutes: Array<{ file: string; literal: string }> = [
+   const gatedRoutes: Array<{
+      file: string;
+      literal: string;
+      /** Anchor for a path registered on more than one verb. */
+      verb?: string;
+   }> = [
       {
          file: "server.ts",
          literal:
@@ -261,6 +266,16 @@ describe("every compile and sqlSource route registers the concurrency gate", () 
          file: "server.ts",
          literal:
             "${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile",
+      },
+      {
+         // The dashboard save: compiles the submitted text, then writes it under
+         // the package lock across a full reload. The same path is also
+         // registered as a GET, which reads and is correctly ungated, so this
+         // entry anchors on the verb.
+         file: "server.ts",
+         verb: "app.put(",
+         literal:
+            "${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`",
       },
       {
          file: "server-old.ts",
@@ -294,10 +309,16 @@ describe("every compile and sqlSource route registers the concurrency gate", () 
       ).toContain('tryAcquireQuerySlot("mcp:compile")');
    });
 
-   for (const { file, literal } of gatedRoutes) {
-      it(`gates ${literal} in ${file}`, () => {
+   for (const { file, literal, verb } of gatedRoutes) {
+      it(`gates ${verb ?? ""}${literal} in ${file}`, () => {
          const source = readFileSync(join(import.meta.dir, file), "utf8");
-         const start = source.indexOf(literal);
+         // A path registered on more than one verb needs the pair matched, not
+         // the verb or the path alone: the first app.put( in the file is a
+         // different route, and the path also appears on a GET that is correctly
+         // ungated.
+         const start = verb
+            ? source.indexOf(literal, source.indexOf(`${verb}\n   \`${literal}`))
+            : source.indexOf(literal);
          expect(
             start,
             `route literal not found in ${file}; if it was renamed, update this list`,

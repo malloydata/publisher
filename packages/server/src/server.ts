@@ -1682,6 +1682,13 @@ app.get(
 
 app.put(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   // A dashboard save compiles the submitted text and then writes it under the
+   // package lock, across a full package reload and the rollback reload on
+   // failure -- strictly more of the work this cap exists to bound than one
+   // /compile does. Ungated it also convoys: the save holds the package mutex
+   // while holding no slot, so slot-holding compiles on that package pile up
+   // behind it.
+   queryConcurrency(),
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
