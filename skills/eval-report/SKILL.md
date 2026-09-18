@@ -30,10 +30,19 @@ curl -sS -X POST http://<publisher>/api/v0/environments/<env>/packages \
 That builds a Malloy package over the run's own CSVs and registers it with no
 restart. It gives you two things to link:
 
-| Artifact | What it is | Where |
+| Artifact | What it is | URL |
 |---|---|---|
 | The case matrix app | Every question, its verdict, which needed entities retrieval delivered, and a drawer per case holding the reference answer, the judge's reasoning, the re-executed rows and every query the answerer ran | `<publisher>/environments/<env>/packages/eval-<label>/` |
-| `eval_run.malloynb` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | the same package, rendered by Publisher |
+| `eval_run.malloynb` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | `<publisher>/<env>/eval-<label>/eval_run.malloynb` |
+
+**Those two URLs are in different path spaces, and guessing costs a 404.** The
+app is served by the in-package `public/` handler, which owns
+`/environments/<env>/packages/<pkg>/<file>`. The notebook is a MODEL, rendered
+by the Console, whose routes are `/<env>/<package>/<model path>` with no
+`environments` or `packages` segment at all. Putting the notebook under the
+app's prefix 404s, because the public-file handler answers there and the
+notebook is not in `public/`. Verified both, on a real package, by opening
+them.
 
 Pass `--run` more than once to put two arms side by side.
 
@@ -70,6 +79,10 @@ check, and the console rounds.
 
 [case matrix](<url>) - [aggregate tables](<url>)
 
+## Retrieval and coverage
+
+Covered? -> Retrieved? -> Correct?, with the per-arm numbers under each.
+
 ## Model failures
 
 One entry per wrong answer. What it got wrong in plain words, then the
@@ -79,6 +92,10 @@ mechanism, then the link.
 
 What went wrong with the MEASUREMENT rather than the model. Empty is a real
 and good answer; say "none" rather than dropping the section.
+
+## Query errors
+
+Malloy the answerer wrote that would not run, and whether it recovered.
 
 ## What this run taught us
 
@@ -117,6 +134,50 @@ harness prints `INCOMPLETE` and withholds the percentage; the report does the
 same. Give the counts and the re-run command instead of a number with a caveat,
 because the number is what gets repeated and the caveat is what gets dropped.
 
+## Retrieval and coverage belong in every report
+
+A pass rate says an answer was wrong. It does not say WHERE, and the three
+metrics that do are already in the run summary and the notebook. Report them,
+because a report that omits them makes every failure look like the model's:
+
+- **Covered?** Can the model express a correct answer at all? Not computed by
+  the run: `check_coverage.py` reads the MODEL rather than the answers, and the
+  run consumes its report through `--coverage`. **If it was not run, say
+  `unmeasured` rather than leaving the row out** -- an unmeasured coverage
+  label is not evidence that the model covers the question.
+- **Retrieved?** Of the entities the golden answer depends on, how many did
+  `get_context` hand back. Quote `required_count`, `delivered_count` and how
+  many were ranked rather than merely mentioned in a returned source's docs.
+- **Correct?** The pass rate, which is the rung the other two qualify.
+
+Two numbers here are routinely misread, so qualify them in the report or leave
+them out:
+
+- **Entity precision is breadth unless the set authored `acceptable`.** With no
+  `acceptable` list, every entity beyond the strictly required ones counts as
+  noise, so a precision of 3.6% means the response was broad, not wrong.
+- **A PASSING case with recall below 1.0 is usually an expectation defect**, not
+  a retrieval miss: the set named one path to an answer the agent reached by
+  another. Report the count and read it as a prompt to check `required`.
+
+## Query errors are worth a section of their own
+
+Malloy the answerer wrote that would not compile or run, whether or not the
+case passed. These sit on `tool_call` events as `error`, and nothing else
+surfaces them: a case that errored twice and then recovered scores exactly like
+one that got it right first time, so the effort disappears.
+
+They are the sharpest available evidence on whether the skills and the docs are
+leading agents astray, because each one names a specific thing the agent
+believed and the language does not support. Report the count, the distinct
+error kinds, and for each whether an existing skill already covers it. An error
+whose fix IS documented, in a skill the answerer did not open, is a finding
+about the skills rather than about the agent.
+
+`eval-diagnose` does not see these today: it reads failing cases only, so an
+error inside a passing case is invisible to it. Say so rather than implying
+they were triaged.
+
 ## Say what did not run, and why
 
 A step that did not run is a result, and it is indistinguishable from having
@@ -150,8 +211,14 @@ A report whose evidence cannot be opened is a report nobody checks.
   directory, and a terminal only makes an absolute path clickable.
 - **The served URL** for the app and the notebook, with the real host and port
   the run used, not a placeholder.
-- Per case, link its `artifacts/<qid>/` directory: it holds `answer.md`,
-  `judge.md` and the answerer transcript.
+- Per case, link the FILES, not the directory: `artifacts/<qid>/answer.md`,
+  `artifacts/<qid>/judge.md`, `artifacts/<qid>/answerer.jsonl`. A `file://`
+  link to a directory opens nothing in most editors, which is a dead link that
+  looks live.
+- Write a local path bare, as `/abs/path/to/file`, not as `[text](file:///...)`.
+  Terminals and editors linkify a bare absolute path; a `file://` markdown link
+  is frequently inert, and an inert link is worse than the path in plain text
+  because the reader has nothing to copy.
 - Never link a run LABEL or a qid as though it were a path. `faa-v1-baseline-01`
   is a label; the path is the run directory. A backticked label that looks like
   a link and resolves to nothing is worse than plain text, and it has already
