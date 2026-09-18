@@ -81,7 +81,9 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | Env var | CLI flag | Default | Meaning |
 | --- | --- | --- | --- |
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
-| `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
+| `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for the REST server, and the fallback for the MCP server. Set `127.0.0.1` to keep both loopback-only. |
+| `MCP_HOST` | `--mcp_host <addr>` | `127.0.0.1` | Host binding for the MCP server. Takes precedence over `PUBLISHER_HOST`. Set `0.0.0.0` to expose MCP on the network, behind an authenticating gateway. |
+| `MCP_CORS_ORIGINS` | | (none) | Comma-separated origins allowed to read a cross-origin response from the MCP endpoint; `*` allows any. Unset or empty sends no `Access-Control-Allow-Origin` at all. |
 | `PUBLISHER_RATE_LIMIT` | _none_ | _unset_ | Maximum requests per minute one client may make to the REST server; over it, requests get `429` with `RateLimit-*` headers until the minute rolls over. Unset or `0` means no limit; any other value must be a non-negative integer or startup fails. `/health*` and `/metrics` are never limited. Clients are told apart by the connection's peer address, so behind a reverse proxy every client shares one bucket: rate-limit at the proxy there, or leave this unset. The MCP port is not covered. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the eight MCP tools (`list_packages`, `get_context`, `execute_query`, `compile_model`, `reload_package`, `get_status`, `search_malloy_docs`, `search_database_schema`) and the agent skills as MCP prompts. `list_packages` is listed first because it is where an agent starts: `get_context` requires an environment and package in its `scopes`, and those names come from there. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |

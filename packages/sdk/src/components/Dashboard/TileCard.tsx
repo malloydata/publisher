@@ -17,9 +17,13 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
  * draws a stand-in tile when it has no server to run one, draws the same card
  * the reader does rather than restating its geometry.
  *
- * The instance theme's border, not MUI's `divider`: the renderer card's edge is
- * this same value, and a card that agrees with the theme everywhere except its
- * outline still reads as a different card. Radius stays on the host's
+ * The instance theme's `cardBorder`, not MUI's `divider` and not the `border`
+ * a table's gridlines take: the renderer card's edge is this same value, and a
+ * card that agrees with the theme everywhere except its outline still reads as
+ * a different card. Both surfaces moved together when the edge was darkened;
+ * either one left behind is a dashboard whose tiles are outlined two ways.
+ *
+ * Radius stays on the host's
  * `shape.borderRadius`, which the renderer card is pointed at too. The
  * background is `theme.tile`, the value the renderer card paints — left unset,
  * on a theme whose page is also white the composite tiles lost the tint that
@@ -51,7 +55,7 @@ export function TileCard({
          elevation={0}
          sx={[
             {
-               border: borderless ? "none" : theme.border,
+               border: borderless ? "none" : theme.cardBorder,
                borderRadius: borderless ? 0 : 1,
                background: borderless ? "none" : theme.tile,
                overflow: "hidden",

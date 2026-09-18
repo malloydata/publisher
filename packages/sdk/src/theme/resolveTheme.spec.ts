@@ -87,6 +87,13 @@ describe("resolveTheme cascade", () => {
       // attempt at whatever the data is painted in.
       expect(light.border).toBe("1px solid #e2e8f0");
       expect(dark.border).toBe("1px solid #334155");
+      // A card's edge is a step darker than a table's gridline in both modes:
+      // the gridline separates rows inside a card, the card edge says where
+      // the card stops, and at one weight the second job went undone.
+      expect(light.cardBorder).toBe("1px solid #cbd5e1");
+      expect(dark.cardBorder).toBe("1px solid #475569");
+      expect(light.cardBorder).not.toBe(light.border);
+      expect(dark.cardBorder).not.toBe(dark.border);
       expect(light.foreground).toBe("#0f172a");
       expect(dark.foreground).toBe("#e2e8f0");
       expect(light.axisFaint).toBe("#cbd5e1");
