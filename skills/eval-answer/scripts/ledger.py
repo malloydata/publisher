@@ -338,14 +338,29 @@ def skills_git_sha(root: pathlib.Path | None = None) -> str | None:
     the `skillsVersion` pin. Defaults to this checkout; pass the external
     --skills-root when the doctrine came from elsewhere (a Publisher checkout).
     The skills ARE the doctrine the agents load, so a run that cannot name
-    their version cannot take part in a comparison."""
-    d = pathlib.Path(root) if root else pathlib.Path(__file__).resolve().parent
+    their version cannot take part in a comparison.
+
+    `-dirty` is decided over the SKILLS PATH, not the whole repository. It used
+    to be the whole tree, so every run ever taken read `-dirty` -- including
+    runs taken before anything was edited -- because a checkout picks up stray
+    untracked files as a matter of course. A marker that cannot distinguish
+    "someone left a scratch file in the repo root" from "the judge prompt was
+    rewritten between these two arms" is not a pin, and the runs that carry it
+    cannot be told apart on the one thing it exists to record."""
+    # Resolved, always: the path is used BOTH as git's working directory and as
+    # its pathspec, and a relative one means different things in those two
+    # positions. Passed `skills`, git ran in `skills/` and then looked for
+    # `skills/skills`, which matches nothing -- so every tree read clean and
+    # the marker silently stopped working in the other direction.
+    d = (pathlib.Path(root) if root
+         else pathlib.Path(__file__).resolve().parent).resolve()
     try:
         head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
                               capture_output=True, text=True, timeout=10)
         if head.returncode != 0:
             return None
-        dirty = subprocess.run(["git", "-C", str(d), "status", "--porcelain"],
+        dirty = subprocess.run(["git", "-C", str(d), "status", "--porcelain",
+                                "--", str(d)],
                                capture_output=True, text=True, timeout=10)
         return head.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:  # noqa: BLE001
