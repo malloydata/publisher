@@ -98,7 +98,14 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         "optional": {"judge_version", "rubric_sha", "golden_revision",
                      "artifactPath", "confidence", "column_pairing",
                      "contaminated", "gold_status", "gold_note",
-                     "must_not_use_hits", "judge_verdict", "at"},
+                     "must_not_use_hits", "judge_verdict",
+                     # What this case's judge call cost. Collected per case and
+                     # discarded on the write path until now, so the run could
+                     # report what judging cost in total and never which case
+                     # was expensive -- and a case that spent its whole turn
+                     # budget without producing a verdict is the one worth
+                     # finding.
+                     "judge_cost_usd", "at"},
     },
     "retrieval_score": {
         "required": {"intentId", "term"},
@@ -174,6 +181,12 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "truncated", "contaminated",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
+                # The run whose attempts this run's answerer cost was COPIED
+                # from, when it did not spawn an answerer at all (a re-judge, a
+                # rebuild, a `--from`). Null when this run paid. Summing
+                # `answererCostUsd` across run files double-counts without it:
+                # one re-judge reported $17.56 of answering that never happened.
+                "answererCostCopiedFrom",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
                 "improverManifest", "doubtedGoldens",

@@ -1990,13 +1990,41 @@ def contradicts(reason: str, verdict: str | None) -> bool:
         not re.search(r"\b(but|however|except|although)\b", low)
 
 
+def verdict_object(text: str) -> dict[str, Any] | None:
+    """The judge's verdict object, from a reply that may hold other braces.
+
+    `re.search(r"\\{.*\\}", re.S)` spans from the FIRST brace in the whole
+    document to the last, so a judge that quotes a Malloy snippet before its
+    verdict hands `json.loads` a blob starting mid-query. Reproduced: a reply
+    opening with a fenced `run: orders -> { aggregate: n is count() }` and
+    closing with a perfectly good verdict object parsed as `judge_unparseable`,
+    and the case left every bucket -- including the denominator the pass rate
+    is printed over.
+
+    So: scan the candidate spans and take the LAST one that parses and names a
+    verdict. Last rather than first because the judge is told to end with the
+    object, and prose that reasons toward it may quote a fragment on the way.
+    Unbalanced or non-JSON spans are skipped rather than failing the read,
+    which is what makes a quoted query harmless.
+    """
+    starts = [i for i, ch in enumerate(text) if ch == "{"]
+    for start in reversed(starts):
+        for end in range(len(text), start, -1):
+            if text[end - 1] != "}":
+                continue
+            try:
+                v = json.loads(text[start:end])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(v, dict) and "verdict" in v:
+                return v
+            break
+    return None
+
+
 def parse_verdict(text: str) -> dict[str, Any]:
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return {"verdict": None, "reason": "judge_unparseable", "confidence": None}
-    try:
-        v = json.loads(m.group(0))
-    except json.JSONDecodeError:
+    v = verdict_object(text)
+    if v is None:
         return {"verdict": None, "reason": "judge_unparseable", "confidence": None}
     verdict, conf = v.get("verdict"), v.get("confidence")
     reason = v.get("why", "")
@@ -2379,11 +2407,16 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # of the denominator the pass rate is printed over. The judge is
     # instrumentation, so a retry can only help; the measurement-integrity
     # argument against retrying applies to the answerer alone.
-    # Six turns, not three: the judge now LOADS skill:eval-judge rather than
-    # being handed it, and the load costs a turn before it has read a word of
-    # the rubric. Three left it emitting a verdict with the skill still
-    # unopened on a bad day.
-    events = claude(prompt, work, a.judge_model, mcp=None, turns=6,
+    # Ten turns. Three was too few once the judge LOADED skill:eval-judge
+    # rather than being handed it -- the load costs a turn before it has read a
+    # word of the rubric -- and six was still too few on a long rubric.
+    # Measured across three consecutive runs of one set, five cases recorded
+    # `judge_unparseable` with a `judge.md` containing no `{` at all; one of
+    # them is 202 bytes and ends mid-checklist, on the sentence "I have what I
+    # need to decide." The judge reasons through its clauses, reaches the point
+    # of deciding, and the process ends. A judge is instrumentation, so turns
+    # spent there buy measurement rather than the thing being measured.
+    events = claude(prompt, work, a.judge_model, mcp=None, turns=10,
                     timeout=300, skills=bool(a.judge_skills),
                     retry_when=judge_unusable)
     shutil.rmtree(work, ignore_errors=True)
@@ -3077,8 +3110,15 @@ def main(argv: list[str] | None = None) -> int:
             # event in its own ledger carried `verdict: null`.
             tainted = bool(att.get("breaches"))
             void_contaminated(v, att.get("breaches"))
-            sc = {k: x for k, x in v.items()
-                  if k not in ("judge_cost_usd", "gold_status_from")}
+            # `judge_cost_usd` rides onto the event now rather than being
+            # stripped with `gold_status_from`. It was collected per case,
+            # summed for the run total, and then discarded, so the ledger could
+            # say what judging cost in aggregate and never which case was
+            # expensive -- and a case that burned its turns without producing a
+            # verdict is exactly the one worth finding. `gold_status_from` is
+            # still stripped: it is for this run's own report and the score
+            # schema has no row for it.
+            sc = {k: x for k, x in v.items() if k != "gold_status_from"}
             events.append(ledger.event("score", **base, **sc,
                           judge_version=JUDGE_VERSION,
                           rubric_sha=RUBRIC_SHA,
@@ -3211,7 +3251,16 @@ def main(argv: list[str] | None = None) -> int:
     judged_qids = {q for q, v in verdicts.items()
                    if not (v.get("reason") or "").startswith("golden_")
                    and v.get("reason") != "not_submitted"}
+    # Whose money `answererCostUsd` is. A re-judge and a `--from` copy the
+    # source run's attempt events verbatim, `cost_usd` included, so the new run
+    # reports answerer spend for a run in which no answerer executed -- one
+    # re-judge claimed $17.56 of it. The figure is right for the attempts and
+    # wrong as this run's spend, and summing run files double-counts it. Naming
+    # the source is what lets a total skip it; `None` means this run paid.
+    copied_from = (str(a.from_run) if a.from_run
+                   else a.out.name if (a.rebuild or a.rejudge) else None)
     ledger.update_run(a.out, answererCostUsd=round(cost, 4),
+                      answererCostCopiedFrom=copied_from,
                       judgeCostUsd=round(judge_cost, 4),
                       retrievalMode=mode, retrievalCalls=tally,
                       reExecution=reexecution_summary(

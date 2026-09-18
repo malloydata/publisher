@@ -261,6 +261,61 @@ class JudgeGate(unittest.TestCase):
         self.assertEqual(v["reason"], "no_saved_verdict")
 
 
+class VerdictObject(unittest.TestCase):
+    """Finding the judge's verdict in a reply that holds other braces.
+
+    The old read spanned from the FIRST brace in the document to the last, so a
+    judge that quoted a Malloy snippet on its way to deciding handed
+    `json.loads` a blob starting mid-query. The case then counted in no bucket
+    at all and left the denominator the pass rate is printed over.
+    """
+
+    GOOD = '{"why": "the figures agree", "verdict": "match", "confidence": 9}'
+
+    def test_a_quoted_malloy_query_does_not_break_the_read(self):
+        # The reproduction: a fenced query, then the verdict.
+        text = ("```malloy\nrun: orders -> { aggregate: n is count() }\n```\n"
+                f"Looks right.\n{self.GOOD}")
+        self.assertEqual(rb.parse_verdict(text)["verdict"], "match")
+
+    def test_the_last_verdict_object_wins(self):
+        # The judge is told to end with the object, and prose reasoning toward
+        # it may quote a draft on the way.
+        text = ('{"why": "draft", "verdict": "near_match", "confidence": 6}\n'
+                f"On reflection:\n{self.GOOD}")
+        v = rb.parse_verdict(text)
+        self.assertEqual(v["verdict"], "match")
+        self.assertEqual(v["reason"], "the figures agree")
+
+    def test_a_nested_object_still_parses(self):
+        text = ('{"why": "a", "verdict": "match", "confidence": 9, '
+                '"column_pairing": {"gold": "pred"}}')
+        self.assertEqual(rb.parse_verdict(text)["column_pairing"],
+                         {"gold": "pred"})
+
+    def test_prose_around_the_object_is_fine(self):
+        self.assertEqual(
+            rb.parse_verdict(f"Here you go:\n{self.GOOD}\nHope that helps"
+                             )["verdict"], "match")
+
+    def test_a_reply_with_no_object_is_unparseable(self):
+        # The shape five cases across three runs actually produced: the judge
+        # reasons to the point of deciding and the process ends.
+        v = rb.parse_verdict("I have what I need to decide.")
+        self.assertIsNone(v["verdict"])
+        self.assertEqual(v["reason"], "judge_unparseable")
+
+    def test_braces_without_a_verdict_are_not_a_verdict(self):
+        v = rb.parse_verdict('{"note": "no verdict here"}')
+        self.assertEqual(v["reason"], "judge_unparseable")
+
+    def test_the_retry_predicate_agrees_with_the_parser(self):
+        # `judge_unusable` reuses `parse_verdict` rather than re-deciding what
+        # parseable means, so a reply this now reads must not be re-rolled.
+        text = f"```malloy\nrun: x -> {{ aggregate: n is count() }}\n```\n{self.GOOD}"
+        self.assertFalse(rb.judge_unusable([{"type": "assistant"}], text))
+
+
 class TruncatedAttempt(unittest.TestCase):
     """An attempt the turn cap cut off is not judged.
 
