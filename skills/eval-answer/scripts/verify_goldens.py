@@ -297,9 +297,29 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     Only the rubric's accepting clause is read -- the text before its first
     "wrong" / "close but wrong" / "trap" marker -- because the rejecting half
     quotes numbers that are supposed to be absent. Only figures specific
-    enough to be a quoted result are checked (five or more significant
-    digits, or a decimal with two-plus places on a value over 100); years and
-    small counts are excluded by construction. A figure matches if it is a
+    enough to be a quoted result are checked (three or more significant digits
+    on a value of 100 or more, or a decimal with two-plus places over 100);
+    years and small counts are excluded by construction.
+
+    The floor was five significant digits and is now three at or above 100.
+    Measured over the local sets: 14 findings to 17 over 54 rubrics. The three
+    added are one numerator ("2672/271019", the legitimate-intermediate case
+    below) and, twice, the last id in a long comma-separated list. No lexical
+    guard was added to suppress either -- see the paragraph below, where one
+    was tried and dropped for hiding a real finding.
+
+    WHAT THIS CHECK CANNOT CATCH, AND WHERE THAT IS HANDLED. A BARE
+    three-digit integer is not tokenised at all (`_NUM` starts at four digits
+    ungrouped), so the defect that motivated the change -- a rubric saying
+    "615 and 502" over goldens holding 747 and 370, one re-derivation out of
+    date, against which an agent that computed the golden's own figures was
+    marked wrong -- is NOT reported here. Tokenising three-digit integers was
+    measured on the same sets and takes the findings from 17 to 552, because a
+    rubric that quotes a list of ids contributes one finding per id; a report
+    of 552 items is not read. The general rule lives in the judge prompt
+    instead: where the rubric and the golden disagree about a figure, the
+    golden is the key. That holds at any precision and needs no regex. Lower
+    the floor again only with a fresh measurement beside it. A figure matches if it is a
     golden value, or the sum of a golden column -- rubrics legitimately quote
     "177,340,447.81 across the three groups".
 
@@ -335,7 +355,15 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
         digits = tok.replace(",", "").replace(".", "").lstrip("0")
         decimals = len(tok.split(".")[1]) if "." in tok else 0
         n = float(tok.replace(",", ""))
-        if decimals == 0 and (len(digits) < 5 or 1900 <= n <= 2100):
+        # Three significant digits and at least 100, not five. The old floor
+        # let through the exact defect this check exists to catch: a rubric
+        # saying "615 and 502" over goldens holding 747 and 370, after the
+        # goldens were re-derived and the prose was not. The agent computed the
+        # golden's own figures and was failed for it. Three-digit quantities
+        # are ordinary results, so a floor above them is a floor above the
+        # answers.
+        if decimals == 0 and (len(digits) < 3 or n < 100
+                              or 1900 <= n <= 2100):
             continue
         if decimals and n < 100 and len(digits) < 5:
             continue

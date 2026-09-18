@@ -195,7 +195,11 @@ goldens were re-derived the next morning, the prose was not, and an agent that
 computed 747 and 370 -- the exact numbers in the golden JSON -- was failed
 against a rubric still saying 615 and 502. Say how to derive the figure, not
 what it equalled. `verify_goldens.py` check 2 reports figures in the accepting
-clause that are absent from the rows; read what it gives you.
+clause that are absent from the rows, but it reads only figures specific enough
+to be a quoted result -- a bare three-digit number is invisible to it, and 615
+is exactly that. So the check is a help, not a guarantee, and the rule above is
+yours to keep. The judge is told the same thing from the other side: where a
+rubric and a golden disagree about a figure, it scores against the golden.
 
 **Do not assert the model's current behaviour.** "`contract_terms` cannot be
 used here at all -- it returns ZERO rows" was true when written and false four
