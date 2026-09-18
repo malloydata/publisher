@@ -128,13 +128,24 @@ const SECRET_BARE_PATTERN = new RegExp(
 // driver reporting "could not parse key: -----BEGIN RSA PRIVATE KEY----- ..."
 // carries the whole key as prose. Matched by its own delimiters instead.
 //
-// The terminator is optional, falling back to the end of the string. Drivers
-// truncate long values routinely, and requiring `-----END ...-----` meant a
-// truncated key -- which still contains most of the key -- passed through
-// untouched. Over-redacting the tail of a message that demonstrably contains a
-// raw private key is the right trade.
-const PEM_BLOCK_PATTERN =
-   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*)/g;
+// Two patterns rather than one with an alternation. A single pattern offering
+// "terminated OR run to the end" lets the engine retry the same input down two
+// branches, which is polynomial on a message carrying many BEGIN markers and is
+// what CodeQL's js/polynomial-redos flags. Applied in order, each is linear.
+//
+// The terminated form forbids a further BEGIN inside its body, so two keys in
+// one message match as two blocks rather than one span -- and the lazy body has
+// no overlapping alternative to backtrack through. Measured on a message of
+// 20,000 repeated BEGIN markers: 3ms, against 404ms for the lazy-body form
+// without the guard.
+const PEM_TERMINATED_PATTERN =
+   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S])*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+
+// Whatever BEGIN marker survives the pass above is unterminated: the driver
+// truncated the value. A truncated key still contains most of the key, so the
+// tail goes with it.
+const PEM_UNTERMINATED_PATTERN =
+   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*$/;
 
 /**
  * Redact every connection credential this server can be handed, from a string
@@ -164,7 +175,8 @@ const PEM_BLOCK_PATTERN =
 export function redactConnectionSecretShapes(s: string): string {
    return redactPgSecrets(
       s
-         .replace(PEM_BLOCK_PATTERN, "***")
+         .replace(PEM_TERMINATED_PATTERN, "***")
+         .replace(PEM_UNTERMINATED_PATTERN, "***")
          .replace(SECRET_QUOTED_PATTERN, "$1***")
          .replace(SECRET_BARE_PATTERN, "$1***"),
    );

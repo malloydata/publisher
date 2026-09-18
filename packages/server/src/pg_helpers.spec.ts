@@ -337,6 +337,21 @@ describe("redactConnectionSecretShapes", () => {
       expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
    });
 
+   it("redacts two PEM blocks in one message as two blocks", () => {
+      // The terminated pattern forbids a further BEGIN inside its body, so a
+      // message carrying a complete key and then a truncated one redacts both
+      // rather than collapsing into a single span (or leaving the second).
+      const msg =
+         "first -----BEGIN A PRIVATE KEY-----" +
+         SECRET +
+         "-----END A PRIVATE KEY----- second -----BEGIN B PRIVATE KEY-----" +
+         SECRET;
+      const out = redactConnectionSecretShapes(msg);
+      expect(out).not.toContain(SECRET);
+      expect(out).toContain("first");
+      expect(out).toContain("second");
+   });
+
    it("redacts a PEM block that was truncated before its terminator", () => {
       // Drivers truncate long values, and requiring -----END ...----- meant a
       // truncated key -- still most of the key -- passed through untouched.
