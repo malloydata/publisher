@@ -247,8 +247,9 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 > tenant-configured bastion, so it is authorized by whoever configures the connection. It
 > is **not** behind an env-flag gate, and is deliberately kept separate from the
 > `publisher` type's `PUBLISHER_ALLOW_PROXY_CONNECTIONS` (that flag is about
-> publisher-to-publisher HTTP proxying, a different decision). Optional **host-key
-> pinning** (below) adds a fail-closed trust control on the tunnel.
+> publisher-to-publisher HTTP proxying, a different decision). **Host-key
+> pinning** (below) is required on an SSH tunnel: without it the tunnel is refused
+> unless the deployment opts out.
 
 ```json
 {
@@ -281,19 +282,21 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 - `proxy.ssh.privateKey` (+ optional `privateKeyPass`) — the customer generates the
   keypair, authorizes their own public key on the bastion, and provides the private key
   here. Public-key auth only.
-- `proxy.ssh.hostKey` — **optional** pinned bastion host public key(s), verified on every
+- `proxy.ssh.hostKey` — **required** pinned bastion host public key(s), verified on every
   connect (fail-closed on mismatch). Provide one or more OpenSSH `known_hosts` lines (or
   bare base64 blobs), one per line; a load-balanced/HA bastion presents a different key per
   backend, so list every backend's key and any listed key is accepted. Both plain and
   hashed (`|1|…`, from `ssh-keyscan -H`) lines work — only the key blob is compared, never
-  the hostname. **When omitted, the tunnel connects without host-key verification** (the
-  self-service default, matching mainstream BI tools); the SSH transport is still
-  encrypted, but an unpinned publisher→bastion hop is exposed to MITM — mitigated by the
-  customer allowlisting our egress on the bastion's inbound SSH.
+  the hostname. **When omitted, the tunnel is refused**: an unverified host key means a
+  MITM on the publisher→bastion hop cannot be detected, so the connection fails closed
+  rather than connecting to whatever key the far end presents. A deployment that accepts
+  that risk — typically because the bastion's inbound SSH is allowlisted to our egress —
+  opts in with `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`, which restores the unpinned
+  connect and logs a warning each time. The SSH transport is encrypted either way.
 
 A proxy makes the server open an outbound SSH tunnel to a tenant-configured host, so
-connection configuration is the authorization boundary; host-key pinning is an optional,
-additional trust control on the tunnel itself.
+connection configuration is the authorization boundary; host-key pinning is the trust
+control on the tunnel itself, and is required unless the deployment opts out.
 
 ### TLS to the database through the tunnel
 
