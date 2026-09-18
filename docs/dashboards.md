@@ -314,6 +314,14 @@ source, reading the model's givens) is the other design and still works: import 
 `import '../givens.malloy'` whole, and the controls render for the givens the tiles reach. The two do
 not mix on one given.
 
+**A tile whose body has no one place for a binding keeps everything but its filter.** A `->`
+pipeline from a named view, or a chained `vx + { … } + { … }` where neither block is where a binding
+belongs, is declared in the dashboard file but is not a body the builder rewrites. Its label,
+subtitle, colspan and position are ordinary `#` lines and stay editable; only the filter control is
+off, and the tile menu names the shape. A tile that is not declared in the dashboard at all — `orders
+-> by_brand` against an imported source — is read and shown but not changed either way, because its
+tags live on the model's own view and the builder does not write model files.
+
 **Declare in the dashboard when the dashboard is the thing being edited.** The builder adds and
 removes filters by writing `given:` declarations and tile bindings into the dashboard file, and it
 never edits imports or model files, so a control that lives in `givens.malloy` is one it can bind but
@@ -729,7 +737,8 @@ An older host may still pass `environmentName`, `packageName` and `dashboardName
 working untouched.
 
 `versionId` on the URI pins every READ the editor makes — the file, the manifest, the dashboard list,
-and the catalog behind the filter window's field search — exactly as it does for `<Dashboard>`. It
+the catalog behind the filter window's field search, and, through the live surface it renders, each
+tile's query and each control's suggest query — exactly as it does for `<Dashboard>`. It
 never reaches the write: `updateModelSource` answers `501 Not Implemented` to a `versionId` on this
 route, same as everywhere else, and a version is a fixed point in history regardless. Pin one against
 a package that would otherwise take the editor's writes and Save turns itself off, with the toolbar

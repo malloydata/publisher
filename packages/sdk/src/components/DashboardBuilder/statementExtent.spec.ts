@@ -385,6 +385,50 @@ source: a is one extend {
 });
 
 /**
+ * The other shape that reads `opaque`. `->` and a chained `+ { … }` reach that
+ * kind by different routes in `readBody`, and only one of them was followed all
+ * the way out to a document and back: a tree-level assertion says the body is
+ * unsupported, not that the tile keeps its tags, offers no filter, and survives
+ * a retag with its text intact.
+ */
+describe("a `->` pipeline is left alone rather than half-read", () => {
+   const PIPELINE = `##! experimental.givens
+## artifact { title="T" tiles=["a -> kpis"] }
+import "../m.malloy"
+
+source: a is one extend {
+  # colspan=6
+  view: kpis is vx -> { group_by: b }
+}`;
+
+   it("reads as declared here, with a reason, and keeps its tags", async () => {
+      const d = await openDocument(PIPELINE);
+      expect(d.tiles[0].declaration).toEqual({
+         kind: "opaque",
+         why: "a `->` pipeline from a named view",
+      });
+      expect(d.tiles[0].colspan).toBe(6);
+      expect(d.tiles[0].filters).toBeUndefined();
+   });
+
+   it("survives an unrelated change untouched", async () => {
+      const out = await spliced(PIPELINE, (d) => {
+         d.tiles[0].colspan = 4;
+      });
+      expect(out).toContain("vx -> { group_by: b }");
+      expect(out).toContain("# colspan=4");
+   });
+
+   it("refuses a filter change rather than writing into a stage", async () => {
+      const reason = await refused(PIPELINE, (d) => {
+         d.tiles[0].filters = [{ field: "n", given: "N" }];
+      });
+      expect(reason).toContain("pipeline");
+      expect(reason).not.toContain("declared on its source");
+   });
+});
+
+/**
  * A `//` comment is trivia: it sits outside every parse-tree span, so a writer
  * that deletes a range wider than one node's own text takes it without either
  * gate noticing -- the file still parses, and the projection the readback

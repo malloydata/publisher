@@ -234,6 +234,44 @@ describe("comments", () => {
       expect(text(p, p.commentIn(gap)!)).toBe("/* keep */");
    });
 
+   // What precedes a comment is not enough to call the LINE a comment: code can
+   // follow one. Deciding otherwise made the walk above a declaration step over
+   // a line that declares something, and collect the `#` tag belonging to it.
+   it("does not call a line a comment when code follows the comment", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  /* keep tidy */ dimension: helper is 1\n  view: v is x\n}\n",
+      );
+      expect(p.commentLine(1)).toBe(false);
+      // ...so the block above `view:` stops at that line rather than walking on.
+      expect(p.blockStart(2)).toBe(2);
+   });
+
+   it("does not call the closing line of a block comment a comment when code follows", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  /* keep\n     tidy */ dimension: helper is 1\n  view: v is x\n}\n",
+      );
+      expect(p.commentLine(1)).toBe(true);
+      expect(p.commentLine(2)).toBe(false);
+      expect(p.blockStart(3)).toBe(3);
+   });
+
+   it("still calls a line a comment when only whitespace surrounds the comment", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  /* just a note */\n  # colspan=6\n  view: v is x\n}\n",
+      );
+      expect(p.commentLine(1)).toBe(true);
+      expect(p.blockStart(3)).toBe(1);
+   });
+
+   // A comment with code on BOTH sides is not trailing: anything appended at the
+   // statement's end would be pushed past code that follows it.
+   it("does not treat a comment with code after it as a trailing comment", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  view: v is x + { where: a ~ $A, /* c */ b ~ $B }\n}\n",
+      );
+      expect(p.trailingComment(1)).toBeUndefined();
+   });
+
    // A block comment's own text is not code, so a line inside one that happens
    // to start with `#` is prose, not an annotation. Reading it as a tag makes
    // the writer rewrite a line inside a comment.
@@ -253,6 +291,42 @@ describe("comments", () => {
          "source: s is a extend {\n\n  -- why this tile leads\n  # colspan=6\n  view: v is x\n}\n",
       );
       expect(p.blockStart(4)).toBe(2);
+   });
+});
+
+describe("locating dimensions", () => {
+   // The name and the expression are both nodes the tree hands over. Splitting
+   // the declaration's text on the word `is` instead made a backtick-quoted
+   // name containing that word cut the declaration in half -- the last place in
+   // this module that re-derived Malloy's grammar from text.
+   it("reads a dimension's name and expression off the tree", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  dimension: total is price * qty\n}\n",
+      );
+      expect(
+         p.sources[0].dimensions.map((d) => [d.name, d.expression]),
+      ).toEqual([["total", "price * qty"]]);
+   });
+
+   it("reads a backtick name that contains the word `is`", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  dimension: `is` is 1\n}\n",
+      );
+      expect(
+         p.sources[0].dimensions.map((d) => [d.name, d.expression]),
+      ).toEqual([["`is`", "1"]]);
+   });
+
+   it("reads each dimension of a comma-separated list", async () => {
+      const p = await parsed(
+         "source: s is a extend {\n  dimension: one is 1, two is 2\n}\n",
+      );
+      expect(
+         p.sources[0].dimensions.map((d) => [d.name, d.expression]),
+      ).toEqual([
+         ["one", "1"],
+         ["two", "2"],
+      ]);
    });
 });
 

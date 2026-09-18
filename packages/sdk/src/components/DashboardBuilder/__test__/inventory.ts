@@ -35,6 +35,15 @@ export interface Declaration {
     * cannot see a tag it is about to duplicate.
     */
    tags: string[];
+   /**
+    * The same lines as written.
+    *
+    * `tags` masks a modelled tag to its key, so it answers "did the set of tag
+    * lines change?" and CANNOT see `# label="A"` become `# label="B"`. That is
+    * the whole of the damage when a writer retags the wrong declaration, so the
+    * verbatim text is kept beside the masked form rather than instead of it.
+    */
+   tagText: string[];
    /** The comment lines above it, `#` and `##` lines excluded. */
    block: string[];
    /** Its statement, tag block off the front and child declarations excised. */
@@ -103,23 +112,41 @@ export async function inventory(source: string): Promise<Inventory> {
    const covered: Span[] = [];
    const declarations: Record<string, Declaration> = {};
 
-   // Every line any comment touches, taken from the lexer's raw spans.
-   //
-   // NOT `parsed.blockStart`, which is the same heuristic `blockAbove` walks:
-   // an oracle that shares a locator with the code under test can be blind in
-   // exactly the way that code is, and one of the defects this file exists for
-   // was a walk that could not see a comment.
-   const commentLines = new Set<number>();
-   for (const at of parsed.comments)
-      for (let l = lineOf(at.start); l <= lineOf(at.end - 1); l++)
-         commentLines.add(l);
+   // The file with every comment blanked out, newlines kept, so a line can be
+   // asked what CODE is on it. Built here from the lexer's raw spans rather
+   // than taken from `parsed.blockStart` or `parsed.commentLine`, which are the
+   // same locators the writer walks: an oracle that shares one can be blind in
+   // exactly the way the code is, and it was -- a line holding a comment AND a
+   // declaration read as wholly comment on both sides at once.
+   let code = "";
+   {
+      let at = 0;
+      for (const span of [...parsed.comments].sort(
+         (a, b) => a.start - b.start,
+      )) {
+         code += source.slice(at, Math.max(at, span.start));
+         code += source
+            .slice(Math.max(at, span.start), Math.max(at, span.end))
+            .replace(/[^\n\r]/g, " ");
+         at = Math.max(at, span.end);
+      }
+      code += source.slice(at);
+   }
+   const codeOn = (line: number) =>
+      code.slice(
+         parsed.lineStarts[line],
+         parsed.lineStarts[line + 1] ?? code.length,
+      );
+   /** A line carrying a comment and no code of its own. */
+   const commentOnly = (line: number) =>
+      codeOn(line).trim() === "" && lines[line]?.trim() !== "";
 
    /** The first line of the `#`/comment block above `line`. */
    const blockStart = (line: number): number => {
       let start = line;
       for (let i = line - 1; i >= 0; i--) {
          const text = lines[i].trim();
-         if (commentLines.has(i)) {
+         if (commentOnly(i)) {
             start = i;
             continue;
          }
@@ -138,14 +165,15 @@ export async function inventory(source: string): Promise<Inventory> {
       // `view:\n  kpis is ...` puts the keyword on a line of its own. One walk
       // that stops at the first line which is neither blank, a `#` line nor a
       // comment lands in the right place for all of them.
-      let code = lineOf(statement.start);
+      let codeLine = lineOf(statement.start);
       const tags: string[] = [];
+      const tagText: string[] = [];
       const block: string[] = [];
-      for (let i = blockStart(code); i < lines.length; i++) {
+      for (let i = blockStart(codeLine); i < lines.length; i++) {
          const text = lines[i].trim();
          if (text === "") continue;
-         // Inside a comment, where a line beginning `#` is prose.
-         if (commentLines.has(i)) {
+         // Wholly comment, where a line beginning `#` is prose.
+         if (commentOnly(i)) {
             block.push(text);
             continue;
          }
@@ -154,17 +182,23 @@ export async function inventory(source: string): Promise<Inventory> {
          // sits directly above `import` in every dashboard -- keeping it would
          // make the import's prelude differ on every correct tile removal.
          if (text.startsWith("##")) continue;
-         if (text.startsWith("#")) tags.push(maskTag(text));
-         else {
-            code = i;
+         if (text.startsWith("#")) {
+            tags.push(maskTag(text));
+            tagText.push(text);
+         } else {
+            codeLine = i;
             break;
          }
       }
       // A declaration that is not the first thing on its line owns no prelude:
       // Malloy lets a second `view:` share a line, and the tags above belong to
       // the one that opens it.
-      const start = Math.max(statement.start, parsed.lineStarts[code]);
-      const shared = source.slice(parsed.lineStarts[code], start).trim() !== "";
+      const start = Math.max(statement.start, parsed.lineStarts[codeLine]);
+      // CODE before it on the line, not merely a comment: a declaration that
+      // follows `/* note */` is still the first declaration on its line and
+      // still owns the tag block above it.
+      const shared =
+         code.slice(parsed.lineStarts[codeLine], start).trim() !== "";
       let text = "";
       let at = start;
       for (const child of [...excise].sort((a, b) => a.start - b.start)) {
@@ -174,9 +208,10 @@ export async function inventory(source: string): Promise<Inventory> {
       text += source.slice(at, Math.max(at, statement.end));
       declarations[key] = {
          tags: shared ? [] : tags,
+         tagText: shared ? [] : tagText,
          block: shared ? [] : block,
          text: flatten(text),
-         indent: /^[ \t]*/.exec(lines[code])?.[0] ?? "",
+         indent: /^[ \t]*/.exec(lines[codeLine])?.[0] ?? "",
       };
    };
 
@@ -216,7 +251,7 @@ export async function inventory(source: string): Promise<Inventory> {
    const residue: string[] = [];
    lines.forEach((raw, i) => {
       const text = raw.trim();
-      if (text === "" || text.startsWith("#") || commentLines.has(i)) return;
+      if (text === "" || text.startsWith("#") || commentOnly(i)) return;
       const start = parsed.lineStarts[i];
       const end = start + raw.length;
       if (covered.some((at) => at.start < end && at.end > start)) return;
@@ -241,6 +276,7 @@ export async function inventory(source: string): Promise<Inventory> {
 export interface InventoryDiff {
    declarations: string[];
    tags: string[];
+   tagText: string[];
    block: string[];
    indent: string[];
    attached: string[];
@@ -252,6 +288,7 @@ export interface InventoryDiff {
 export const NOTHING_MOVED: InventoryDiff = {
    declarations: [],
    tags: [],
+   tagText: [],
    block: [],
    indent: [],
    attached: [],
@@ -312,6 +349,7 @@ export function diffInventories(
          (a, b) => a.text === b.text,
       ),
       tags: changed((d) => d.tags.join("\v")),
+      tagText: changed((d) => d.tagText.join("\v")),
       block: changed((d) => d.block.join("\v")),
       indent: changed((d) => d.indent),
       attached: keyDiff(before.attached, after.attached, (a, b) => a === b),

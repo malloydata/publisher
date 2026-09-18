@@ -112,7 +112,12 @@ export interface TreeSource extends Positioned {
    name: string;
    /** What it extends, as written — `orders`, or `` `odd name` ``. */
    base: string;
-   /** The whole `source: …` statement, its `#` tag block included. */
+   /**
+    * The `source: …` statement, from the start of its line. Its `#` tag block
+    * is NOT included: the parser puts a source's annotations outside the rule's
+    * own range, and this type has no `tags` field to hold them either. A caller
+    * that wants them walks up from `line` with {@link ParsedMalloy.blockStart}.
+    */
    statement: Span;
    /** The `extend { … }` block, when it has one. */
    properties?: TreeStage;
@@ -585,13 +590,15 @@ function readDimensions(r: Reader, props: Ctx): TreeDimension[] {
       const keyword = r.terminal(call(stmt, "DIMENSION"));
       for (const def of callAll(list, "fieldDef")) {
          const span = r.span(def);
-         if (!span) continue;
-         const whole = r.text.slice(span.start, span.end);
-         const isAt = /\bis\b/.exec(whole);
-         if (!isAt) continue;
+         // Both halves are nodes the tree hands over. Splitting the text on the
+         // word `is` cut `dimension: \`is\` is 1` in half inside its own name --
+         // the last place in this module that re-derived Malloy's grammar.
+         const name = r.text_(call(def, "fieldNameDef"))?.trim();
+         const expression = r.text_(call(def, "fieldExpr"))?.trim();
+         if (!span || !name || expression === undefined) continue;
          out.push({
-            name: whole.slice(0, isAt.index).trim(),
-            expression: whole.slice(isAt.index + 2).trim(),
+            name,
+            expression,
             span,
             line: r.line(span.start),
             statement,
@@ -713,38 +720,14 @@ function readImports(r: Reader, root: Ctx): TreeImport[] {
  * such a file either, so the way out of one is the code editor, not this.
  */
 export async function parseMalloy(text: string): Promise<ParseResult> {
-   // Imported dynamically, never statically: `builder-entry.ts` installs the
-   // `process.env` shim the parser's dependencies read at module scope, and a
-   // static import would be evaluated before that shim runs.
-   const { MalloyTranslator } = await import("@malloydata/malloy");
-   const url = "file://dashboard-builder.malloy";
-
-   let translator: {
-      translate(): { problems?: Array<{ code?: string; message?: string }> };
-      parseStep?: {
-         response?: {
-            parse?: {
-               root?: unknown;
-               tokenStream?: unknown;
-               malloyVersion?: string;
-            };
-         };
-      };
-   };
-   let problems: Array<{ code?: string; message?: string }>;
+   let translation: Translation;
    try {
-      translator = new MalloyTranslator(url, null, {
-         urls: { [url]: text },
-      }) as never;
-      // Stops at the first step: a document with imports comes back asking for
-      // urls, by which point it has been parsed and nothing has been resolved.
-      // So this sees every syntax error and none of the semantic ones.
-      problems = translator.translate().problems ?? [];
+      translation = await translate(text, "file://dashboard-builder.malloy");
    } catch (error) {
       return { ok: false, reason: `Malloy could not read this file: ${error}` };
    }
 
-   const syntax = problems.filter((p) => p.code === "syntax-error");
+   const syntax = translation.problems.filter((p) => p.code === "syntax-error");
    if (syntax.length > 0)
       return {
          ok: false,
@@ -753,7 +736,7 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
          }`,
       };
 
-   const parse = translator.parseStep?.response?.parse;
+   const parse = translation.parse;
    const root = parse?.root as Ctx | undefined;
    if (!root || !isRule(root) || typeof root.getChild !== "function")
       return {
@@ -763,10 +746,35 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
             `read (malloy ${parse?.malloyVersion ?? "unknown"}), so editing is off.`,
       };
 
+   // The same shape assertion as above, for the TOKEN stream, which the tree
+   // check cannot speak for. `@malloydata/malloy` is a peer dependency, so a
+   // host may resolve a build whose token API differs -- and a comment index
+   // that silently comes back empty is worse than a refusal: every comment
+   // guard passes clean while comments are deleted, and a `#` line inside a
+   // `/* … */` starts reading as a real tag. Neither gate can see either.
+   const tokenStream = (parse?.tokenStream ?? {}) as TokenStream;
+   const tokens =
+      typeof tokenStream.getTokens === "function"
+         ? tokenStream.getTokens()
+         : undefined;
+   if (
+      !tokens ||
+      typeof tokenStream.tokenSource?.vocabulary?.getSymbolicName !==
+         "function" ||
+      (tokens.length === 0 && text.trim() !== "")
+   )
+      return {
+         ok: false,
+         reason:
+            "This build of Malloy does not expose a token stream the builder " +
+            `can read (malloy ${parse?.malloyVersion ?? "unknown"}), so it ` +
+            "cannot tell a comment from code and editing is off.",
+      };
+
    const r = new Reader(text);
    // Before anything is read: `readTags` has to know which lines are comment,
    // and a source is read through it.
-   const comments = commentIndex(r, (parse?.tokenStream ?? {}) as TokenStream);
+   const comments = commentIndex(r, tokenStream);
    r.commentLines = comments.lines;
    const sources = readSources(r, root);
 
@@ -798,6 +806,48 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
             ),
          blockStart: (line) => blockStart(r, comments.lines, line),
       },
+   };
+}
+
+/** One of the translator's complaints. */
+export interface MalloyProblem {
+   code?: string;
+   message?: string;
+}
+
+/** One parse of one file, stopped at the parse step. */
+export interface Translation {
+   problems: MalloyProblem[];
+   parse?: { root?: unknown; tokenStream?: unknown; malloyVersion?: string };
+}
+
+/**
+ * The ONE place the translator's shape is written down. `@malloydata/malloy` is
+ * a peer dependency, so nothing here can import its types and every caller has
+ * to hand-type a cast; a second copy is a second thing to miss when the shape
+ * upstream moves.
+ *
+ * The translation stops at the first step. A document with imports comes back
+ * asking for urls, by which point it has been parsed and nothing has been
+ * resolved -- so callers see every syntax error and none of the semantic ones.
+ */
+export async function translate(
+   text: string,
+   url: string,
+): Promise<Translation> {
+   // Imported dynamically, never statically: `builder-entry.ts` installs the
+   // `process.env` shim the parser's dependencies read at module scope, and a
+   // static import would be evaluated before that shim runs.
+   const { MalloyTranslator } = await import("@malloydata/malloy");
+   const translator = new MalloyTranslator(url, null, {
+      urls: { [url]: text },
+   }) as unknown as {
+      translate(): { problems?: MalloyProblem[] };
+      parseStep?: { response?: { parse?: Translation["parse"] } };
+   };
+   return {
+      problems: translator.translate().problems ?? [],
+      parse: translator.parseStep?.response?.parse,
    };
 }
 
@@ -838,13 +888,43 @@ function commentIndex(
       )
          end--;
       all.push({ start, end });
-      const line = r.line(start);
-      if (r.text.slice(r.lineStarts[line], start).trim() === "")
-         lines.add(line);
-      else trailing.set(line, { start, end });
-      // A `/* ... */` can run over several lines, and every line after its
-      // first is comment through and through whatever the first one held.
-      for (let l = line + 1; l <= r.line(end - 1); l++) lines.add(l);
+   }
+
+   // The file with every comment blanked out, newlines kept so the same offsets
+   // still address the same lines.
+   //
+   // Both questions below are about what ELSE is on a line, and asking only
+   // what precedes a comment cannot answer either: `/* tidy */ dimension: x is
+   // 1` is not a comment line, and `a ~ $A, /* c */ b ~ $B` has no trailing
+   // comment. Reading the first as a comment line made the walk above a
+   // declaration step over a line that declares something and collect the `#`
+   // tag belonging to it -- and report success.
+   const ordered = [...all].sort((a, b) => a.start - b.start);
+   let code = "";
+   let at = 0;
+   for (const span of ordered) {
+      code += r.text.slice(at, Math.max(at, span.start));
+      code += r.text
+         .slice(Math.max(at, span.start), Math.max(at, span.end))
+         .replace(/[^\n\r]/g, " ");
+      at = Math.max(at, span.end);
+   }
+   code += r.text.slice(at);
+   const codeOn = (line: number) =>
+      code.slice(r.lineStarts[line], r.lineStarts[line + 1] ?? code.length);
+
+   for (const span of all) {
+      const first = r.line(span.start);
+      const last = r.line(span.end - 1);
+      for (let l = first; l <= last; l++)
+         if (codeOn(l).trim() === "") lines.add(l);
+      // Trailing: code before it, and nothing but whitespace after it on the
+      // line it ends on. Anything appended at a statement's end goes before it.
+      const before = code.slice(r.lineStarts[first], span.start).trim();
+      const after = code
+         .slice(span.end, r.lineStarts[last + 1] ?? code.length)
+         .trim();
+      if (before !== "" && after === "") trailing.set(last, span);
    }
    return { trailing, lines, all };
 }

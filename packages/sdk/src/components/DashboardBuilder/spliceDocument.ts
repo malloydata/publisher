@@ -12,6 +12,7 @@ import { artifactLine } from "./malloyText";
 import {
    parseMalloy,
    parseRefused,
+   translate,
    type ParsedMalloy,
    type Span,
    type TreeGiven,
@@ -32,16 +33,8 @@ import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
  * to hand over is not damage we caused.
  */
 export async function syntaxErrors(text: string): Promise<string[]> {
-   // Imported dynamically, never statically: `builder-entry.ts` installs the
-   // `process.env` shim the parser's dependencies read at module scope, and a
-   // static import here would be evaluated before that shim runs. The reader
-   // loads the parser the same way, for the same reason.
-   const { MalloyTranslator } = await import("@malloydata/malloy");
-   const url = "file://splice-check.malloy";
-   const result = new MalloyTranslator(url, null, {
-      urls: { [url]: text },
-   }).translate() as { problems?: Array<{ code?: string; message?: string }> };
-   return (result.problems ?? [])
+   const { problems } = await translate(text, "file://splice-check.malloy");
+   return problems
       .filter((p) => p.code === "syntax-error")
       .map((p) => p.message ?? "")
       .sort();

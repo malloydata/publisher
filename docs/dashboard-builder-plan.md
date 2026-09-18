@@ -269,11 +269,13 @@ change lands in the right place.
 - `document.ts` — the editing projection: tiles, sources and their own
   dimensions, local givens with their control contract, drills, settings; one
   `tileKey` for the grid, the drag and the history.
-- `malloyText.ts` — the one textual reading of a file the reader and writer
-  share: declarations under a source, `given:` in both spellings, the artifact
-  line, a tile expression's steps.
-- `readDocument.ts` — parser symbols for structure, text for content; refuses
-  with a reason and a line.
+- `malloyTree.ts` — the one reading of a file the reader and writer share, taken
+  from Malloy's own parse tree and token stream: declarations under a source,
+  `given:` in both spellings, the artifact line, a tile expression's steps, and
+  the comment index every guard asks before it deletes a range. It refuses
+  rather than guessing when the tree is not the shape it was written against.
+- `readDocument.ts` — the tree for structure, spans for content; refuses with a
+  reason and a line.
 - `spliceDocument.ts` — `checkShape` (what comes and goes, and whether that is
   writable), seven planners over one context (order, settings, givens, drills,
   removed tiles, added tiles, tile presentation), then the round-trip gate.

@@ -93,7 +93,7 @@ export interface DashboardDrill {
 /**
  * Where a tile's view is declared, and therefore what the builder may edit.
  *
- * Three forms, all of them found in dashboards that ship in this repository, and
+ * Four forms, all of them found in dashboards that ship in this repository, and
  * the distinction decides which affordances a tile gets:
  *
  * - `reference` — `view: revenue_trend is sales_by_month` in this file. Fully

@@ -476,6 +476,14 @@ hand-written walk is gone; where a tag block begins now comes from the lexer, wh
 means a line inside a `/* … */` that happens to begin `#` is read as the prose it is rather
 than as a tag to report or rewrite.
 
+**A tile the builder cannot bind is no longer described as somebody else's.** A `->` pipeline
+from a named view, or a chained `vx + { … } + { … }` where no one block is where a binding
+belongs, is declared right there in the dashboard file — but the tile menu said it was declared
+on its source, which is untrue and hid the fact that its tags are the builder's to write. Such a
+tile now reads as declared here, with the shape named; its label, subtitle, colspan and position
+stay editable like any other tile's, only the filter control is off, and the reason a filter
+change gives points at the body rather than sending you to the model file.
+
 **One rule for the three removal paths.** Removing every clause of a `where:` used to delete a
 comment written inside it, or leave one trailing it stranded above the closing brace, while
 collapsing a refinement over a comment refused. All three now answer the same question the same
@@ -496,7 +504,8 @@ matching `Dashboard` exactly; the old `environmentName` / `packageName` / `dashb
 form still works, deprecated rather than removed, so an existing integration is unaffected.
 
 A `versionId` on the URI pins every read the editor makes — the file, the manifest, the
-dashboard list, and the catalog behind the filter window's field search — the same as it
+dashboard list, the catalog behind the filter window's field search, and, through the live
+surface it renders, each tile's query and each control's suggest query — the same as it
 already does for `Dashboard`. It never reaches the write: Publisher answers `501 Not
 Implemented` to a `versionId` on `updateModelSource`, and a version is a fixed point in
 history regardless, so a pin against a package that would otherwise take the editor's

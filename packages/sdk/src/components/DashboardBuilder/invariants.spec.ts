@@ -49,7 +49,10 @@ import {
  *    `/* ... *\/`, both of which are comments to Malloy. The reader takes tags
  *    from the parser and sees the tag; a writer that reads the block as text
  *    does not, and writes a second copy below.
- *  - `trend`: a refinement that collapses, with a comment beside it.
+ *  - `trend`: a refinement that collapses, with a comment beside it, and above
+ *    it a dimension that SHARES ITS LINE with a block comment. A locator that
+ *    asks "does this line hold a comment" rather than "does it hold code" walks
+ *    straight past that dimension and takes its `# label` for the tile's.
  *  - `counts`: a trailing comment on the LAST statement of the body, which is
  *    where an appended binding slides underneath one, and a `#` line written
  *    inside its block comment that WOULD be a modelled tag anywhere else,
@@ -89,6 +92,8 @@ source: a is one extend {
       brand ~ $BRAND
   }
 
+  # label="A helper, not a tile"
+  /* a helper, not a tile */ dimension: helper is 1
   # colspan=6
   view: trend is base // the trend, on the right
     + { where: sold_on ~ $SINCE }
@@ -151,6 +156,7 @@ const ROWS: Row[] = [
          tile(d, "kpis").colspan = 3;
       },
       outcome: "succeeds",
+      moved: { tagText: ["~view:a.kpis"] },
    },
    {
       // The same shape as the row above, in the spelling that also hid a tag
@@ -164,6 +170,21 @@ const ROWS: Row[] = [
          tile(d, "counts").colspan = 6;
       },
       outcome: "succeeds",
+      moved: { tagText: ["~view:a.counts"] },
+   },
+   {
+      // A line that is a comment AND a declaration at once. Read as wholly
+      // comment, it is walked straight past, and the `# label` above it -- the
+      // dimension's -- is taken for part of the tile's tag block and rewritten
+      // to match a tile that never had a label. Nothing downstream can tell:
+      // the reader takes tags from the parser and never attributed it to the
+      // tile in the first place.
+      what: "retags a tile below a declaration sharing its line with a comment",
+      edit: (d) => {
+         tile(d, "trend").colspan = 4;
+      },
+      outcome: "succeeds",
+      moved: { tagText: ["~view:a.trend"] },
    },
    {
       what: "relabels a control",
@@ -171,6 +192,7 @@ const ROWS: Row[] = [
          d.localGivens!.find((g) => g.name === "CATEGORY")!.label = "Product";
       },
       outcome: "succeeds",
+      moved: { tagText: ["~given:CATEGORY"] },
    },
    {
       // The anchor is the last statement's end and the comment is past it, so
