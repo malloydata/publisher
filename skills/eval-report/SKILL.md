@@ -190,23 +190,45 @@ A pass rate says an answer was wrong. It does not say WHERE, and the three
 metrics that do are already in the run summary and the notebook. Report them,
 because a report that omits them makes every failure look like the model's:
 
-**Say what each denominator is, and give the per-entity number too.** The
-cascade is a FUNNEL over cases: each rung counts only what survived the one
-above, because a case the model cannot express has nothing to retrieve, and a
-case that never received its entities is not a clean test of the answer. So
-"3 of 5" on the middle rung means three of the five cases that were covered,
-not three of ten. Written without that, a reader reasonably asks what the five
-is, and whether retrieval should not be measured over entities instead.
+**Copy the cascade the run printed. Do not re-derive it.** `cascade_lines()`
+in `run_baseline.py` already renders every rung, and it carries one field a
+hand-made table keeps losing: how many cases **answered correctly anyway**
+after stopping on that rung. Paste its block into the report.
 
-It should, as well. Give both, and label them:
+**A finer measurement must never revise the headline result.** This is the rule
+the re-derivation breaks. Written as a funnel with a shrinking denominator --
+`5 of 10 covered`, then `3 of the 5`, then `3 of the 3` -- the last rung reads
+as "only 3 of 10 succeeded" on a run where **all ten answers were correct**.
+That report went to a reviewer, and the objection was the right one: adding
+detail about retrieval cannot turn a 10 of 10 into a 3.
 
-- per CASE, the funnel: did this case get everything it needed
+Two things stop it:
+
+- **Report every rung over all N cases**, never over the survivors of the rung
+  above. The rungs are three measurements of the same cases, not a narrowing of
+  them.
+- **`delivered, right` is NOT the pass rate.** The passing cases are
+  `delivered, right` plus `passed_not_covered` plus `passed_not_retrieved`. A
+  report that omits those last two has dropped the only numbers that reconcile
+  the cascade with the score.
+
+**Label a rung for what it measures, not for what a reader will assume.**
+"Can the model express an answer?" is wrong for most of what lands on the `no`
+side of the first rung. `CONVENTION` means the data is present and no named
+measure encodes the statistical or business convention; `NO-DISAMBIG` means two
+plausible candidates and no doc saying which the question means. The model can
+express an answer in both -- it does not say WHICH answer is meant. So the rung
+asks whether the model NAMES what the question needs.
+
+**Give the per-entity number too, and label both.**
+
+- per CASE, the cascade: did this case get everything it needed
 - per ENTITY, recall: of the N entities the answers depended on, how many were
   delivered
 
-They answer different questions and the entity number is the more natural read
+They answer different questions, and the entity number is the more natural read
 of "how did search do". One run reported `3 of 5` cases and buried `16 required
-entities, 80% recall`, and the case funnel was the only thing a reader saw.
+entities, 80% delivered`, and the case number was the only thing a reader saw.
 
 - **Covered?** Can the model express a correct answer at all? Not computed by
   the run: `check_coverage.py` reads the MODEL rather than the answers, and the

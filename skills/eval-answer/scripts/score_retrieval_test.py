@@ -375,10 +375,45 @@ class Cascade(unittest.TestCase):
             score_case(case(), calls([M_SALES]), KEY, "needs_human"),
         ]
 
+    # `passed_not_covered` and `passed_not_retrieved` OVERLAY the rungs: they
+    # re-count rows already counted by "not covered" and "not retrieved". They
+    # are not rungs and must never be added to them.
+    OVERLAY = ("total", "passed_not_covered", "passed_not_retrieved")
+
     def test_every_row_lands_on_exactly_one_rung(self):
         c = cascade(self.rows())
         self.assertEqual(c["total"], 6)
-        self.assertEqual(sum(v for k, v in c.items() if k != "total"), 6)
+        self.assertEqual(sum(v for k, v in c.items()
+                             if k not in self.OVERLAY), 6)
+
+    def test_the_rungs_never_revise_the_pass_rate(self):
+        """The rule a hand-written report broke, on a run that was 10 of 10.
+
+        Rendered as a shrinking funnel -- 5 of 10 covered, 3 of those 5
+        retrieved, 3 of those 3 correct -- the last rung reads as "3 of 10
+        succeeded" on a run where every answer was right. The three numbers
+        that reconcile it are `delivered, right` plus the two overlays, and a
+        report that drops them cannot be checked. So pin the identity.
+        """
+        rows = [
+            # passes that stop on the coverage rung
+            score_case(case(coverage="derivable"), calls([M_SALES]), KEY, "match"),
+            score_case(case(coverage="absent"), calls([M_SALES]), KEY, "match"),
+            # a pass that stops on the retrieval rung
+            score_case(case(required=(M_SALES, M_COUNT)), calls([M_SALES]),
+                       KEY, "match"),
+            # a pass that goes all the way
+            score_case(case(), calls([M_SALES]), KEY, "match"),
+            # and a genuine failure, which the last rung DOES own
+            score_case(case(), calls([M_SALES]), KEY, "no_match"),
+        ]
+        c = cascade(rows)
+        passes = (c["delivered, right"] + c["passed_not_covered"]
+                  + c["passed_not_retrieved"])
+        self.assertEqual(passes, 4, "four of the five rows matched")
+        self.assertEqual(c["delivered, right"], 1)
+        self.assertNotEqual(c["delivered, right"], passes,
+                            "the last rung alone must not be read as the score")
 
     def test_the_rungs(self):
         c = cascade(self.rows())
