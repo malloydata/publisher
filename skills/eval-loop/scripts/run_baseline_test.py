@@ -390,12 +390,30 @@ class TruncatedAttempt(unittest.TestCase):
                        golden={"status": "provisional", "value": 1})
         self.assertEqual(v["reason"], "answerer_truncated")
 
-    def test_another_run_error_is_still_judged(self):
-        # Only the cap. A timeout or a crash is a different fact, and the
-        # four-strikes abort already covers a sick environment.
-        v = self.judge({"answer_text": "4.2M", "submitted": True,
-                        "error": "error_during_execution"})
-        self.assertEqual(v["reason"], "no_saved_verdict")
+    def test_any_other_harness_failure_is_also_refused(self):
+        # This test previously asserted the opposite, on the reasoning that
+        # "the four-strikes abort already covers a sick environment". A live
+        # run disproved it: the abort stops the arm but still judges what it
+        # collected. Four attempts whose text was the CLI's own "model not
+        # found" message were scored `no_match` for $0.29, and the run printed
+        # `passed 0 of 4 decided (0%)` about a model no answerer had reached.
+        v = self.judge({"answer_text": "Error: model not found",
+                        "submitted": False, "error": "error_during_execution"})
+        self.assertIsNone(v["verdict"])
+        self.assertTrue(v["reason"].startswith("environment_failure"))
+        # The cap keeps its own word, because the remedy differs: re-run those
+        # cases at a higher cap, versus fix the environment and re-run the arm.
+        self.assertNotIn("truncated", v["reason"])
+
+    def test_the_cli_reporting_subtype_success_on_an_error_still_refuses(self):
+        # Observed exactly: `is_error` true with subtype "success", so the
+        # attempt carried `run_error: "success"`. Testing the VALUE would have
+        # let every one of those through; the test is that an error was
+        # reported at all.
+        v = self.judge({"answer_text": "Error: model not found",
+                        "submitted": False, "error": "success"})
+        self.assertIsNone(v["verdict"])
+        self.assertTrue(v["reason"].startswith("environment_failure"))
 
     def test_a_clean_attempt_is_unaffected(self):
         v = self.judge({"answer_text": "4.2M", "submitted": True,
@@ -646,6 +664,14 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
         # not have to know the line exists to notice it is missing.
         body = self.summary()
         self.assertIn("unreadable    0", body)
+
+    def test_an_aborted_arm_suppresses_the_pass_rate(self):
+        # The four-strikes abort fires, `run.json` says `aborted`, and the
+        # headline still printed a percentage. Live: `passed 0 of 4 decided
+        # (0%)` for an arm whose answerer never started.
+        body = self.summary(aborted=True)
+        self.assertIn("INCOMPLETE: the arm ABORTED", body)
+        self.assertNotIn("(50%)", body)
 
     def test_a_truncated_case_suppresses_the_pass_rate(self):
         # The stop rule, made mechanical. A directive did not hold against an

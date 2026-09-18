@@ -1305,6 +1305,7 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   unscorable: int, unparseable: list[str] | None = None,
                   truncated: list[str] | None = None,
                   contaminated: list[str] | None = None,
+                  aborted: bool = False,
                   contamination_reasons: dict[str, int] | None = None,
                   max_turns: int | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
@@ -1346,11 +1347,12 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     # beside it and do not: the first is a dataset state that an arm cannot
     # fix, and the second already has a retry.
     trunc, contam = list(truncated or []), list(contaminated or [])
-    incomplete = len(trunc) + len(contam)
+    incomplete = len(trunc) + len(contam) + bool(aborted)
     pct = f" ({100 * passed / decided:.0f}%)" if decided else ""
     if incomplete:
         why = ", ".join(
-            [f"{len(trunc)} truncated"] * bool(trunc)
+            ["the arm ABORTED"] * bool(aborted)
+            + [f"{len(trunc)} truncated"] * bool(trunc)
             + [f"{len(contam)} contaminated"] * bool(contam))
         pct = f"  -- INCOMPLETE: {why}; no pass rate until re-run"
     lines = ["", "=" * 64,
@@ -2347,6 +2349,23 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
         return {"verdict": None, "reason": "answerer_truncated",
                 "confidence": None}
 
+    # Any OTHER harness-level failure, for the same reason and with a separate
+    # word. The answerer process errored, found the server dead, or could not
+    # be started at all, so whatever text it left is a report about the
+    # environment and not an answer about the model.
+    #
+    # Observed: a run started with a bad `--model` produced four attempts whose
+    # text was the CLI's own "model not found" message. Each had
+    # `submitted: false` and non-empty prose, so the `not_submitted` gate let
+    # them through, the judge scored four `no_match` for $0.29, and the run
+    # printed `passed 0 of 4 decided (0%)` about a model no answerer had
+    # reached. `run_error` alone cannot be the test: the CLI reported
+    # `is_error` with subtype `"success"` on every one of them.
+    if att.get("error"):
+        return {"verdict": None,
+                "reason": f"environment_failure: {att['error']}"[:200],
+                "confidence": None}
+
     # `not_submitted` means the attempt produced NOTHING to judge: no prose and
     # no query. An attempt with prose and no query is judged, and against a
     # golden that holds a value an answer containing none of it is `no_match`
@@ -3262,7 +3281,7 @@ def main(argv: list[str] | None = None) -> int:
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable, unparseable=unparseable,
-            truncated=truncated, contaminated=contaminated,
+            truncated=truncated, contaminated=contaminated, aborted=aborted,
             contamination_reasons=contamination_reasons,
             max_turns=a.max_turns,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
