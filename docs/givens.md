@@ -76,6 +76,23 @@ givens are not among them**: `given: categories :: string[] is []` is a compile 
 (`unexpected ']'`), not an unsupported-but-tolerated form. To let a caller pass several values, use
 `filter<string>` and send a Malloy filter expression such as `Footwear, Outerwear`.
 
+### `#(secure)`: a given the deployment resolves, not the caller
+
+A `given:` declaration annotated `#(secure)` is one whose value a deployment in front of Publisher
+resolves from the caller's identity, stripping whatever the request supplied. Publisher itself has
+no identity source, so the marker is a contract with that deployment rather than something the
+server enforces on its own -- see [security-posture.md](security-posture.md).
+
+**A secure given must be able to carry more than one value**, so declare it `filter<string>` (or an
+`array` type where the grammar allows one). The reason is the fail-closed sentinel: a caller the
+deployment resolves no value for gets an empty set, which matches nothing. A scalar has no empty
+form -- an unvalued scalar is refused outright rather than matching nothing -- so a registry cannot
+register it, the marker ends up protecting nothing, and the value stays caller-supplied while the
+author believes otherwise. Package load refuses a scalar `#(secure)` given for that reason.
+
+A given a `#(authorize)` gate references may not carry a default either, since a caller who
+supplies no value would receive it.
+
 The `timestamptz` cast is not decoration. A bare `@2024-01-01 00:00:00` literal is a `timestamp`,
 so using it as a `timestamptz` default fails to compile with a type-mismatch error. Declaring the
 given with no default at all also works.

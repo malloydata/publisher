@@ -103,7 +103,7 @@ import {
    containsAuthorizeAnnotationTag,
    findLegacyStringGates,
    findMultipleAuthorizeGates,
-   findScalarSecureGivens,
+   findScalarSecureGivensInApiGivens,
    referencedGivenNames,
    validateAuthorizeProbes,
    type AuthorizeMap,
@@ -3015,18 +3015,7 @@ export class Model {
             // with the other load-time authoring mistakes — see
             // `assertNoScalarSecureGivens`'s doc.
             assertNoScalarSecureGivens(
-               findScalarSecureGivens(
-                  Object.values(modelDef.givens ?? {}).map((given) => ({
-                     name: given.name,
-                     type:
-                        given.type.type === "filter expression"
-                           ? `filter<${given.type.filterType}>`
-                           : given.type.type,
-                     annotations: (given.annotations?.blockNotes ?? [])
-                        .concat(given.annotations?.notes ?? [])
-                        .map((note) => note.text),
-                  })),
-               ),
+               findScalarSecureGivensInApiGivens(givens ?? []),
             );
 
             // A `#(authorize)` annotation in a position nothing enforces (a

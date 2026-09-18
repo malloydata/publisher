@@ -4316,3 +4316,83 @@ source: Gated is duckdb.table('parent') extend {
       }
    });
 });
+
+/**
+ * `#(secure)` marks a given the deployment resolves from the caller's identity
+ * rather than accepting from the request. The marker only means something for a
+ * given that can carry more than one value, because the fail-closed sentinel is
+ * an empty set and a scalar has no empty form -- so a trusted-name registry
+ * refuses to register a scalar and the marker protects nothing.
+ *
+ * Pinned HERE, on the worker-pool harness above, rather than against
+ * `Model.create`: a published package loads through
+ * `Package.create -> pool.loadPackage -> Model.fromSerialized`, and a refusal
+ * wired only into `Model.create` never runs in production. `Model.create` also
+ * catches its own throws and returns a Model carrying the error, so a spec that
+ * reads `getNotebookError()` cannot tell a wired check from an unwired one.
+ */
+describe("a #(secure) given that cannot carry more than one value", () => {
+   async function loadThroughPool(givenDecl: string): Promise<void> {
+      const originalWorkers = process.env.PACKAGE_LOAD_WORKERS;
+      process.env.PACKAGE_LOAD_WORKERS = "1";
+      const pool = new PackageLoadPool(1);
+      await __setPackageLoadPoolForTests(pool);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "secure-given-pool-"));
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      try {
+         fs.writeFileSync(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({ name: "pkg" }),
+         );
+         // Row data travels in the query text for the reason the harness above
+         // documents: the pool compiles in a separate worker with its own
+         // :memory: DuckDB.
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+given:
+${givenDecl}
+
+#(authorize) $ROLE = 'admin'
+source: X is duckdb.sql("select 1 as id") extend {
+   measure: n is count()
+}
+`,
+         );
+         const { MalloyConfig, FixedConnectionMap: FCM } = await import(
+            "@malloydata/malloy"
+         );
+         const connections = new FCM(new Map([["duckdb", duckdb]]), "duckdb");
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(() => connections);
+         await Package.create("env", "pkg", dir, malloyConfig);
+      } finally {
+         await __setPackageLoadPoolForTests(null);
+         if (originalWorkers === undefined) {
+            delete process.env.PACKAGE_LOAD_WORKERS;
+         } else {
+            process.env.PACKAGE_LOAD_WORKERS = originalWorkers;
+         }
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   }
+
+   it("refuses the package through the real worker-pool path", async () => {
+      await expect(
+         loadThroughPool("  #(secure)\n  ROLE :: string"),
+      ).rejects.toThrow(/must be able to carry more than one value/);
+   });
+
+   it("loads when the same given is declared filter<string>", async () => {
+      // The form the dashboard builder writes, and the one docs/givens.md names
+      // for passing several values. Refusing it would stop every package
+      // carrying a secure given from loading at all.
+      await expect(
+         // No default: a gate-referenced given with one is separately refused,
+         // because a caller who supplies nothing would get it.
+         loadThroughPool("  #(secure)\n  ROLE :: filter<string>"),
+      ).resolves.toBeUndefined();
+   });
+});

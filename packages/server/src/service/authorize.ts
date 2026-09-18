@@ -1129,20 +1129,27 @@ export function assertNoLegacyStringGate(
  */
 export type ScalarSecureGiven = { name: string; type: string };
 
-/** A `#(secure)` marker, on its own line or leading a block note. */
-const SECURE_ANNOTATION_PATTERN = /^\s*#\(secure\)\s*$/mu;
-
 /**
- * True when the declared type is set-valued, which is what `#(secure)` requires.
+ * True when the declared type can carry more than one value, which is what
+ * `#(secure)` requires.
  *
- * Both spellings are accepted because the two producers render differently:
- * Malloy's own type tag for a list is `array`, while the rendered form used in
- * the API and by the trusted-name registry is `string[]`. Matching only one
- * would refuse a correctly-declared given from the other producer.
+ * `array` is what both producers actually render for a list given, and
+ * `filter<T>` is what `docs/givens.md` names as THE way to let a caller pass
+ * several values, because the grammar rejects an array given's `is []` default.
+ * Accepting only the first would refuse every `#(secure)` given written today --
+ * each one in this repo is `filter<string>`, which the dashboard builder writes.
+ *
+ * `string[]` is kept as registry-facing defensiveness rather than because
+ * anything here emits it: the trusted-name registry compares against that form,
+ * so a given arriving already rendered that way should not be refused.
  */
-function isSetValuedGivenType(type: string): boolean {
+function isMultiValuedGivenType(type: string): boolean {
    const rendered = type.trim();
-   return rendered.endsWith("[]") || rendered === "array";
+   return (
+      rendered.endsWith("[]") ||
+      rendered === "array" ||
+      rendered.startsWith("filter<")
+   );
 }
 
 /**
@@ -1153,15 +1160,50 @@ function isSetValuedGivenType(type: string): boolean {
  * package-load worker, so both hand their assembled form here rather than each
  * re-deriving the rule.
  */
+/**
+ * The `#(secure)` givens of a compiled model that are not multi-valued.
+ *
+ * Takes the ALREADY-RENDERED api givens (`malloyGivenToApi` output) rather than
+ * the raw `ModelDef.givens` registry, because `Model.givens` is the surface that
+ * collapses the `inherits` chain from an import and applies `finalizeGivens`. A
+ * hand-rolled `blockNotes.concat(notes)` over the registry misses a `#(secure)`
+ * inherited from an import, and conversely refuses a finalized given that no
+ * caller can supply. The three load paths that must agree -- `Model.create` and
+ * both `package_load_worker` compile points -- share this one reading.
+ */
+export function findScalarSecureGivensInApiGivens(
+   givens: readonly {
+      name?: string;
+      type?: string;
+      annotations?: string[];
+   }[],
+): ScalarSecureGiven[] {
+   return findScalarSecureGivens(
+      givens
+         // The api shape types both as optional. A given with neither cannot be
+         // judged, and is not something a caller could supply a value for.
+         .filter((given) => given.name && given.type)
+         .map((given) => ({
+            name: given.name as string,
+            type: given.type as string,
+            annotations: given.annotations ?? [],
+         })),
+   );
+}
+
 export function findScalarSecureGivens(
    givens: Iterable<{ name: string; type: string; annotations: string[] }>,
 ): ScalarSecureGiven[] {
    const found: ScalarSecureGiven[] = [];
    for (const given of givens) {
-      if (isSetValuedGivenType(given.type)) continue;
-      if (
-         !given.annotations.some((note) => SECURE_ANNOTATION_PATTERN.test(note))
-      )
+      if (isMultiValuedGivenType(given.type)) continue;
+      // Malloy's own routing decides what carries the marker, never a pattern
+      // of this module's invention: the rule stated above is that a rejecter
+      // accepting LESS than the parser is the dangerous direction. `routeOf`
+      // reads the route to the first whitespace, so `#(secure) keep this
+      // server-side` and the block form both route here while a regex anchored
+      // to end-of-line misses them.
+      if (!given.annotations.some((note) => noteRoute(note) === "secure"))
          continue;
       found.push({ name: given.name, type: given.type });
    }
@@ -1192,12 +1234,16 @@ export function assertNoScalarSecureGivens(
       .join("\n");
    throw new ModelCompilationError({
       message:
-         `A \`#(secure)\` given must be set-valued, but these are scalar:\n` +
+         `A \`#(secure)\` given must be able to carry more than one value, but ` +
+         `these are scalar:\n` +
          `${declarations}\n` +
-         `A secure given fails closed by resolving to the empty list when the ` +
-         `server has no value for the caller, and a scalar has no empty form ` +
-         `to resolve to. Declare each as a list (for example \`string[]\` ` +
-         `rather than \`string\`), or drop the \`#(secure)\` marker if the ` +
-         `given is not meant to be server-controlled.`,
+         `A secure given is resolved from the caller's identity, and the ` +
+         `deployment's trusted-name registry only registers a multi-valued ` +
+         `attribute: the fail-closed sentinel is an empty set, which matches ` +
+         `nothing, and a scalar has no empty form. Left scalar the marker ` +
+         `registers nothing and the value stays caller-supplied. Declare each ` +
+         `as \`filter<string>\`, which is how a caller passes several values ` +
+         `(see docs/givens.md), or drop the \`#(secure)\` marker if the given ` +
+         `is not meant to be server-controlled.`,
    });
 }

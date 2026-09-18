@@ -3842,7 +3842,9 @@ source: gated is duckdb.table('customers') extend {}
       const err = model.getNotebookError();
       expect(err).toBeDefined();
       expect(err?.message).toMatch(/`ROLE` declared `string`/);
-      expect(err?.message).toMatch(/must be set-valued/i);
+      expect(err?.message).toMatch(
+         /must be able to carry more than one value/i,
+      );
    });
 
    it("loads a secure given declared set-valued", async () => {
