@@ -249,9 +249,12 @@ include {
   public: precision
   #(doc) How many distinct entities get_context returned across the attempt.
   public: n_returned
-  #(doc) construction, get_context/retrieval or get_context/model. Empty when the attempt passed.
+  #(doc) Which stage the failure sits in: construction, get_context,
+  #(doc) get_context/agent-call or get_context/model. Empty when the attempt passed.
   public: component
-  #(doc) agent-skill, retrieval or model. Kept to match eval-diagnose's taxonomy; for reading, use where_to_fix.
+  #(doc) model, agent-skill, or undecided when the run cannot tell and eval-diagnose
+  #(doc) decides, or unknown when coverage was never measured. Kept to match
+  #(doc) eval-diagnose's taxonomy; for reading, use where_to_fix.
   public: owner
   #(doc) Where to go and fix it: model coverage, not retrieved, never asked, delivered wrong,
   #(doc) refusal behaviour, or coverage not measured. Empty unless the attempt failed. Every failure

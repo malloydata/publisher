@@ -522,6 +522,25 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
         for label in self.emitted():
             self.assertIn(label, tooltip, label)
 
+    def test_the_template_documents_the_real_component_and_owner_values(self):
+        """The `where_to_fix` sweep checked its own column and left the two
+        beside it: `component` was documented as `get_context/retrieval`, a
+        value nothing emits, while `get_context` and `get_context/agent-call`
+        went unmentioned; `owner` claimed `retrieval` and omitted `undecided`
+        and `unknown`."""
+        from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,
+                                     NOT_RETURNED, REFUSAL, UNMEASURED)
+        atts = (DELIVERED, MODEL, NEVER_ASKED, NOT_RETURNED, REFUSAL,
+                UNMEASURED)
+        text = self.package_file("eval_run.malloy")
+        # The doc block for each column, up to the `public:` line it describes.
+        for col, values in (("component", {a[0] for a in atts}),
+                            ("owner", {a[1] for a in atts})):
+            block = text[:text.index(f"public: {col}")].rsplit("\n\n", 1)[-1]
+            for v in values:
+                if v:
+                    self.assertIn(v, block, f"{col} doc omits {v!r}")
+
     def test_no_retired_label_survives_in_the_package(self):
         # Each of these was a real value once; each now matches nothing.
         for f in (("eval_run.malloy",), ("eval_run.malloynb",),

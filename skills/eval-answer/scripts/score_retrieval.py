@@ -142,31 +142,6 @@ MEASURED_OK = "ok"
 # is not a new owner, it is the absence of one.
 UNMEASURED = ("get_context", "unknown", "coverage not measured")
 
-# A DIAGNOSED cluster arrives labelled by eval-diagnose's owner rather than by
-# a retrieval outcome, and both land in the same `where_to_fix` column of the
-# run package. These two maps are the translation, and they live here, beside
-# the labels, because the alternative was two maps: `diagnose.py` and
-# `cluster_failures.py` each wrote that column with their own spelling, so the
-# package served two vocabularies under one name and the doc on the column
-# matched neither. A cluster's label is the nearest shared bucket, not a new
-# one -- the cluster's own `component` and cause code carry the precise
-# finding.
-WHERE_BY_OWNER = {
-    "model": MODEL[2],
-    "retrieval": NOT_RETURNED[2],
-    "agent-skill": DELIVERED[2],
-    "dataset": "dataset",
-}
-# Which artifact the edit lands in. An owner nobody has named yet -- eval-
-# diagnose has not run, or it ran and declined -- yields no lever rather than a
-# guessed one, because a guess here is the default blame this taxonomy removed.
-LEVER_BY_OWNER = {
-    "model": "model",
-    "retrieval": "retrieval",
-    "agent-skill": "skill",
-    "dataset": "dataset",
-}
-
 PASSING = {"match", "near_match"}
 # Verdicts the acceptance check counts as neither a pass nor a failure.
 UNSCORED = (None, "", "needs_human")

@@ -41,8 +41,8 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
-from score_retrieval import (DELIVERED, LEVER_BY_OWNER, MODEL,  # noqa: E402
-                             NEVER_ASKED, NOT_RETURNED, REFUSAL, UNMEASURED,
+from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,  # noqa: E402
+                             NOT_RETURNED, REFUSAL, UNMEASURED,
                              load, score_case)
 
 # The labels are imported, never spelled again here. They were spelled out
@@ -58,14 +58,36 @@ WHERE_MODEL = MODEL[2]
 WHERE_REFUSAL = REFUSAL[2]
 WHERE_UNMEASURED = UNMEASURED[2]
 
-# `LEVER_BY_OWNER` is imported above rather than defined here, for the same
-# reason the labels are: `diagnose.py` writes the same `clusters.jsonl` column
-# and had its own copy, so the two drifted. Keying on the OWNER the scorer
-# already assigned means there is one decision about who owns a failure. An
-# owner it declines to name -- `undecided` for a delivered-wrong or an
-# unreturned entity, `unknown` for unmeasured coverage -- yields no lever, on
-# purpose: naming one would put back the default blame this taxonomy exists to
-# remove. eval-diagnose decides those, and its clusters supersede these.
+# A DIAGNOSED cluster arrives labelled by eval-diagnose's OWNER rather than by
+# a retrieval outcome, and both land in the same `where_to_fix` column of the
+# run package. These two maps are the translation, and they live here, in
+# eval-diagnose, because the owners they key on are eval-diagnose's vocabulary
+# (`diagnose.py`'s OWNERS): `retrieval` and `dataset` are values the retrieval
+# scorer never assigns, so holding them over there left eval-answer carrying
+# keys only this package can trigger. `diagnose.py` imports them from here.
+#
+# One map rather than two, because `diagnose.py` and this file both write
+# `clusters.jsonl` and each used to spell its own -- so the package served two
+# vocabularies under one column name and the doc on it matched neither. A
+# cluster's label is the nearest shared bucket, not a new one; its `component`
+# and cause code carry the precise finding.
+WHERE_BY_OWNER = {
+    "model": MODEL[2],
+    "retrieval": NOT_RETURNED[2],
+    "agent-skill": DELIVERED[2],
+    "dataset": "dataset",
+}
+# Which artifact the edit lands in. An owner nobody has named yet -- eval-
+# diagnose has not run, or it ran and declined (`undecided` for a
+# delivered-wrong or an unreturned entity, `unknown` for unmeasured coverage)
+# -- yields no lever rather than a guessed one, because a guess here is the
+# default blame this taxonomy exists to remove.
+LEVER_BY_OWNER = {
+    "model": "model",
+    "retrieval": "retrieval",
+    "agent-skill": "skill",
+    "dataset": "dataset",
+}
 
 
 def cluster_key(row: dict[str, Any], case: dict[str, Any]) -> tuple[str, str]:
