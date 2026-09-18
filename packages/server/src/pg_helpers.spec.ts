@@ -341,7 +341,9 @@ describe("redactConnectionSecretShapes", () => {
       // Drivers truncate long values, and requiring -----END ...----- meant a
       // truncated key -- still most of the key -- passed through untouched.
       const msg =
-         "could not parse key: -----BEGIN RSA PRIVATE KEY-----\n" + SECRET + "\n... (truncated)";
+         "could not parse key: -----BEGIN RSA PRIVATE KEY-----\n" +
+         SECRET +
+         "\n... (truncated)";
       expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
    });
 
