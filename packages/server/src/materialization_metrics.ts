@@ -55,7 +55,6 @@ export type EligibilityRefusalReason =
    | "free_parameter"
    | "given"
    | "authorize"
-   | "partition"
    | "not_duckdb_portable"
    | "public_surface_unknown";
 /**

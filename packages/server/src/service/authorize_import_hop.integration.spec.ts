@@ -72,7 +72,7 @@ const GIVEN_ONLY_GATE = `##! experimental.givens
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('orgtable') extend {
   measure: c is count()
 }

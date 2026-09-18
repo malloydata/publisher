@@ -246,7 +246,7 @@ export function validateSourceLineGateGivenUsage(
    if (!expansion.ok) {
       throw new ModelCompilationError({
          message:
-            `#(authorize) on source "${sourceName}" references ` +
+            `The row-level authorize gate on source "${sourceName}" references ` +
             `"${expansion.unresolvedPath}", which could not be resolved to a ` +
             `field this model can reach. An unresolvable reference is refused, ` +
             `not treated as referencing no given`,
@@ -261,7 +261,7 @@ export function validateSourceLineGateGivenUsage(
       ) {
          throw new ModelCompilationError({
             message:
-               `#(authorize) on source "${sourceName}" references ` +
+               `The row-level authorize gate on source "${sourceName}" references ` +
                `\`$${given.name}\`, which is declared with a default. A ` +
                `caller who supplies no value for \`$${given.name}\` gets ` +
                `that default, which can admit rows the gate was meant to ` +
@@ -273,14 +273,14 @@ export function validateSourceLineGateGivenUsage(
    if (givenIds.size === 0) {
       onWarning?.(
          "source_line_gate_no_given_reference",
-         `#(authorize) on source "${sourceName}" references no given; it is ` +
+         `The row-level authorize gate on source "${sourceName}" references no given; it is ` +
             `a fixed predicate, not an access rule keyed on the caller`,
       );
    }
    if (containsNegatedMembership(conditionExpr)) {
       onWarning?.(
          "source_line_gate_negated_membership",
-         `#(authorize) on source "${sourceName}" negates a membership test; ` +
+         `The row-level authorize gate on source "${sourceName}" negates a membership test; ` +
             `an empty given then matches every row instead of none`,
       );
    }

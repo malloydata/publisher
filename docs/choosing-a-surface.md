@@ -155,7 +155,7 @@ filter wiring, and error handling. Guide:
 - The strongest embedding story today: `Publisher.embed` drops it into any host page with
   auto-resizing and cross-origin support.
 - Given-scoped filtering and query caps apply as usual, because the page asks the same endpoints
-  every other surface asks. **`#(authorize)` is the exception, and it follows from the author-code
+  every other surface asks. **`#(row_authorize)` is the exception, and it follows from the author-code
   property rather than from the endpoint:** because the page controls its own requests, it can send
   `x-publisher-bypass-authorize: true` and skip gate evaluation on any deployment that does not strip
   that header at its edge ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),

@@ -8,16 +8,16 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Eligibility: an #(authorize)-gated source is refused
+# Eligibility: a #(row_authorize)-gated source is refused
 
-An `#(authorize)` expression is a per-request *who-can-query* gate, evaluated at
+A `#(row_authorize)` expression is a per-request *who-can-query* gate, evaluated at
 query time against the caller's givens. A `storage=` materialization is built
 once and served frozen — the served virtual shape carries **no gate to
 evaluate** — so materializing an authorize-gated source would serve it to
 everyone, bypassing authorization. Like the given refusal (`givens-refused`),
 this is a hard security refusal at build time: the source must be served live.
 
-(This refusal was a follow-up gated on the transitive-`#(authorize)` enforcement
+(This refusal was a follow-up gated on the transitive-`#(row_authorize)` enforcement
 in #906; #906 is merged, so it's now enforced. The gate is fail-closed and also
 catches an authorize expression reached through a join — see the eligibility
 unit tests.)
@@ -40,7 +40,7 @@ unit tests.)
 
 source: orders is orders_pg.table('public.az_orders')
 
-#(authorize) true
+#(row_authorize) true
 #@ persist name="az_daily" storage=lake
 source: daily is orders -> {
   group_by: order_date
@@ -50,6 +50,6 @@ source: daily is orders -> {
 
 ## Build refused
 
-Materializing an `#(authorize)`-gated source into storage is refused for safety.
+Materializing a `#(row_authorize)`-gated source into storage is refused for safety.
 
 cites: authorize

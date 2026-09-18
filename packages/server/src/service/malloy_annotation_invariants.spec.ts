@@ -47,6 +47,10 @@ import {
 } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
+import {
+   ROW_AUTHORIZE_ROUTE,
+   SOURCE_AUTHORIZE_ROUTE,
+} from "./authorize_routes";
 import * as fs from "fs";
 
 const ROOT = "file:///malloy-annotation-invariants-tests/";
@@ -152,13 +156,15 @@ describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", (
    // fixed in `effectiveAncestorGateExprs` (`gate_registry_walk.ts`): reading
    // the resolved member's own notes without first identity-subtracting the
    // composite parent's (`parentOwnNotes`/`compositeOwnNotes` there) folds
-   // TWO different sources' conditions into one OR'd list, silently turning
-   // this file's own AND-across-sources rule into an OR. If Malloy stops
-   // copying the composite parent's note onto the resolved member (or starts
-   // copying a re-parsed COPY instead of the same object), the identity
-   // subtraction in `effectiveAncestorGateExprs` stops matching anything,
-   // `compositeOwnNotes` silently includes the parent's note again, and the
-   // P0 leak reopens with no other signal.
+   // TWO different sources' conditions into one list attributed to a single
+   // source, silently misattributing which source declared which term (the
+   // fold result is harmless — both levels AND — but validation keyed on the
+   // wrong declaring source can pass a gate it should reject). If Malloy
+   // stops copying the composite parent's note onto the resolved member (or
+   // starts copying a re-parsed COPY instead of the same object), the
+   // identity subtraction in `effectiveAncestorGateExprs` stops matching
+   // anything, `compositeOwnNotes` silently includes the parent's note
+   // again, and the P0 leak reopens with no other signal.
    // -------------------------------------------------------------------
    it("composite: a resolved member's own notes include BOTH the composite parent's own note and the member's own, by reference", async () => {
       const modelDef = await compileModel(`##! experimental.composite_sources
@@ -523,6 +529,58 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
          expect(routesToAuthorize(text)).toBe(false);
       }
    });
+
+   // Same claim about Malloy's routing, for the two canonical route names. A
+   // rename only holds if the compiler actually routes the new spellings, and
+   // only those — `#(row_authorize)` silently not routing would turn a locked
+   // source into one that serves every row, load-clean.
+   it.each([ROW_AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE])(
+      "annotation routing: exactly these spellings reach the `%s` route",
+      (route) => {
+         const at = {
+            url: `${ROOT}m.malloy`,
+            range: {
+               start: { line: 0, character: 0 },
+               end: { line: 0, character: 0 },
+            },
+         };
+         const routesTo = (text: string): boolean =>
+            new Annotations({ notes: [{ text, at }] }).forRoute(route).length >
+            0;
+
+         for (const text of [
+            `#(${route}) "x=1"`,
+            `##(${route}) "x=1"`,
+            `#|(${route}) "x=1"`,
+            `##|(${route}) "x=1"`,
+            `#[${route}] "x=1"`,
+            `#<${route}> "x=1"`,
+            `#{${route}} "x=1"`,
+         ]) {
+            expect(routesTo(text)).toBe(true);
+         }
+
+         // The near misses, including the hyphenated spelling this rename
+         // refuses rather than aliases, and the case variant — both are
+         // DIFFERENT routes as far as the compiler is concerned, which is
+         // exactly why publisher has to refuse them rather than ignore them.
+         for (const text of [
+            `# (${route}) "x=1"`,
+            `## (${route}) "x=1"`,
+            `#( ${route} ) "x=1"`,
+            `#(${route} ) "x=1"`,
+            `#(${route})X "x=1"`,
+            `#${route} "x=1"`,
+            `#(${route.toUpperCase()}) "x=1"`,
+            `#(${route}d) "x=1"`,
+            `#(${route.replace("_", "-")}) "x=1"`,
+            `#(authorize) "x=1"`,
+            "# bar_chart",
+         ]) {
+            expect(routesTo(text)).toBe(false);
+         }
+      },
+   );
 
    it("given: `_internal.defaultText` is the rendered default literal, and is absent when no default is declared", async () => {
       // This one does not pin a discriminator — it pins a private Malloy

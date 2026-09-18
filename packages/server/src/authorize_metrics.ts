@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Telemetry for caller-submitted `#(authorize)` rejections (HTTP 400).
+ * Telemetry for caller-submitted `#(authorize)` rejections (HTTP 400), plus
+ * the load-time gate counters below.
  *
  * `assertNoCallerAuthorizeAnnotation` refuses an authorize annotation in any
  * caller-supplied Malloy text, because a source's own gate replaces the gate it
@@ -34,6 +35,7 @@ import {
    ROW_LEVEL_GATE_REJECTION_CAUSES,
    type RowLevelGateRejectionCause,
 } from "./service/authorize";
+import { CANONICAL_AUTHORIZE_ROUTES } from "./service/authorize_routes";
 
 /** The caller-supplied request field a rejected annotation arrived in. */
 export type AuthorizeGuardField =
@@ -46,6 +48,8 @@ let guardRejectionCounter: Counter | null = null;
 let bypassCounter: Counter | null = null;
 let rowLevelDecisionCounter: Counter | null = null;
 let rowLevelRejectionCounter: Counter | null = null;
+let deprecatedSpellingCounter: Counter | null = null;
+let admitAllCounter: Counter | null = null;
 
 /**
  * Record one caller-declared-authorize rejection. Call BEFORE throwing, for the
@@ -213,6 +217,69 @@ export function recordRowLevelGateRejected(
 }
 
 /**
+ * Record one source that declares its OWN unconditional admit-all gate
+ * (`#(authorize) true` / `#(source_authorize) true`).
+ *
+ * `true` is the only body in the gate grammar that turns a gate OFF, and
+ * because a source with no gate of its own inherits its ancestor's, one such
+ * line on an extension re-opens a locked base. That is a deliberate
+ * capability, not a fault — nothing here rejects or warns — but it is the
+ * one declaration whose blast radius is invisible from the outside, so it is
+ * counted: "how many sources across this deployment are gated open" should
+ * be answerable without reading every model.
+ *
+ * Fires at package LOAD, once per own admit-all declaration, from
+ * `gate_classification.ts`'s `assertAuthorizeGrammarValid`. An INHERITED
+ * `true` is not counted — the declaring source already was, and counting
+ * every entry point that inherits it would make the number a function of
+ * model shape rather than of authoring decisions. So this is a step function
+ * on publish, not a request-rate signal: the useful alert is a jump since the
+ * last publish, not a slope.
+ *
+ * Labelled by `route` only. Org / package / model / source are
+ * unbounded-cardinality and belong in the model text an investigation reads
+ * once the number moves, not on the counter.
+ */
+export function recordAuthorizeAdmitAllGate(route: string): void {
+   admitAllCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_admit_all_total",
+      {
+         description:
+            "Sources declaring their OWN unconditional admit-all gate (`#(row_authorize) true` / `#(source_authorize) true`), counted once each at package load. Label: route (" +
+            // Derived from the canonical routes, not retyped beside them —
+            // this file already shipped one description that drifted from the
+            // values it documented.
+            CANONICAL_AUTHORIZE_ROUTES.map((r) => `'${r}'`).join("|") +
+            "). A gate written in the deprecated `#(authorize)` spelling reports as 'row_authorize', so one gate never splits across two label values. Not an error — `true` is the only spelling for an extension that deliberately re-opens a gated base — but it is the one declaration that turns a gate off, so a jump since the last publish is worth a look.",
+      },
+   );
+   admitAllCounter.add(1, { route });
+}
+
+/**
+ * One source declaring an OWN gate in the deprecated `#(authorize)` spelling,
+ * counted once per source at package load — so "how much of the corpus still
+ * uses the old spelling" is answerable without reading logs.
+ *
+ * UNLABELLED. Org / package / model / source are unbounded-cardinality and
+ * belong in the log line an investigation reads once the number moves — the
+ * worker emits exactly that over `SerializedModel.authorizeWarnings` — not on
+ * the counter. Like the admit-all counter this is a step function on publish,
+ * not a request-rate signal: the useful read is the trend across releases as
+ * models migrate.
+ */
+export function recordDeprecatedAuthorizeSpelling(): void {
+   deprecatedSpellingCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_deprecated_spelling_total",
+      {
+         description:
+            "Sources declaring an OWN gate in the deprecated `#(authorize)` spelling rather than `#(row_authorize)`, counted once each at package load. No labels — the load-time warning names the source. `#(authorize)` still loads and still behaves identically; this counts how much of the corpus has yet to migrate.",
+      },
+   );
+   deprecatedSpellingCounter.add(1);
+}
+
+/**
  * Visible for tests. Drops the cached instrument so a fresh `MeterProvider` can
  * capture future emissions. Do NOT call from production code.
  */
@@ -221,4 +288,6 @@ export function resetAuthorizeGuardTelemetryForTesting(): void {
    bypassCounter = null;
    rowLevelDecisionCounter = null;
    rowLevelRejectionCounter = null;
+   deprecatedSpellingCounter = null;
+   admitAllCounter = null;
 }

@@ -78,20 +78,29 @@ import {
    type QueryMaterializer,
    type SourceDef,
 } from "@malloydata/malloy";
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { resetAuthorizeGuardTelemetryForTesting } from "../authorize_metrics";
 import { AccessDeniedError, ModelCompilationError } from "../errors";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import {
+   AuthorizeGrammarError,
+   type AuthorizeGrammarRejectionCause,
+} from "./authorize_grammar";
+import {
    createGateClassificationDeps,
    resolveGateShape,
 } from "./gate_classification";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 import { Model } from "./model";
 import { Package } from "./package";
 
@@ -601,17 +610,11 @@ describe("row-level authorize — load-time scoping", () => {
       }
    });
 
-   it("a negated membership gate (W2) now loads and warns rather than failing the whole model — the STRING form's grammar refusal does not exist for the source-line form", async () => {
-      // Under the STRING form, `not (x in $Y)` was refused outright at load
-      // (`array_given_needs_in`/negated-membership grammar check). The
-      // source-line form's `validateSourceLineGateGivenUsage` demotes this to
-      // W2 (`source_line_gate_negated_membership`) — a non-fatal warning
-      // (`containsNegatedMembership`) — because it is only a hazard for the
-      // EMPTY-given case, not a reason to refuse the whole expression. This
-      // test's old intent (grammar refusal) no longer exists; it now pins
-      // the two real, opposite outcomes: an empty `GROUPS` matches every row
-      // (the W2 hazard, proven rather than assumed), and a non-empty one
-      // still filters correctly.
+   it("a negated membership gate is refused at load by the grammar (compound_boolean), never reaching W2", async () => {
+      // The W2 hazard this test used to pin (an empty given makes `not (x in
+      // $Y)` admit every row) can no longer arise: the grammar refuses any
+      // `not` outright, so a negated membership gate never compiles far
+      // enough to reach `validateSourceLineGateGivenUsage`'s W2 check at all.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
@@ -625,33 +628,11 @@ source: X is duckdb.table('parent') extend {
 `,
       );
       try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const empty = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [] },
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "compound_boolean",
          );
-         // The W2 hazard: an EMPTY given makes `not (org_id in [])` true for
-         // every row, admitting all 4 rather than denying every row.
-         expect((empty.compactResult as unknown as { n: number }[])[0].n).toBe(
-            4,
-         );
-         const nonEmpty = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
-         );
-         // A non-empty given filters correctly: org_id=1 rows (ids 1,2) are
-         // EXCLUDED by the negation, leaving only the org_id=2 rows (ids 3,4).
-         expect(
-            (nonEmpty.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(2);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -796,7 +777,10 @@ describe("row-level authorize — misplaced-annotation scan (Task C)", () => {
     *  of its own — docs/authorize.md's own worked example shape. */
    const JOIN_OF_GATED_SOURCE = `##! experimental.givens
 
-#(authorize) false
+given:
+  ID :: number
+
+#(authorize) id = $ID
 source: salaries is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -850,7 +834,10 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
             path.join(dir, "m.malloy"),
             `##! experimental.givens
 
-#(authorize) false
+given:
+  ID :: number
+
+#(authorize) id = $ID
 source: salaries is duckdb.sql("select 1 as id") extend {
    measure: n is count()
 }
@@ -1851,6 +1838,7 @@ source: X is duckdb.table('parent') extend {
             label: "X",
             exprs: ["org_id in $GROUPS"],
             selfContained: false,
+            route: "authorize",
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -2068,6 +2056,10 @@ source: X is duckdb.table('parent') extend {
       // and the decidable check required EITHER `constantTrue` OR at least
       // one given with every one supplied — a no-given gate satisfied
       // neither. Fixed by deciding directly on `givenNames.length === 0`.)
+      // A bare `#(authorize) true` is refused by the grammar at real load
+      // (`docs/authorize.md`: "true stays refused") — `buildGatedModel`
+      // bypasses that preflight on purpose, so this pins the internal
+      // decision logic in isolation, not a shape a caller can ever produce.
       const text = `
 #(authorize) true
 source: X is duckdb.table('parent') extend {
@@ -2127,6 +2119,9 @@ source: X is duckdb.table('parent') extend {
       // `entryPointGatesBySource`, so the fold-in never runs for it and
       // `resolveGraftTarget` never gets a target to classify against —
       // rejected before `resolveGateShape` ever sees the literal "true".
+      // Both `#(authorize) true` bodies below are load-impossible shapes —
+      // `buildGatedModel` bypasses the real preflight on purpose, to pin
+      // this walk-entry logic without a loadable fixture to carry it.
       const { model, duckdb } = await buildGatedModel(`
 #(authorize) true
 source: X is duckdb.table('parent') extend {
@@ -2193,7 +2188,7 @@ source: X is duckdb.table('parent') extend {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2395,11 +2390,11 @@ source: X is duckdb.table('parent') extend {
 // `expandRefSummaryGivenIds` against the condition's own `refSummary`) — it
 // never re-implements the STRING form's own grammar restrictions
 // (`array_given_needs_in`, `?`'s "same node as `=`" rejection, a
-// function-call operand). None of this describe block's original
-// grammar-refusal guarantees survive migration — confirmed empirically
-// below, not assumed. This is a real, unfixed gap this task does not correct
-// (out of scope — a product decision, flagged in the report).
-describe("row-level authorize — grammar (STRING form's restrictions do not carry over to the source-line form)", () => {
+// function-call operand). The narrow authorize grammar (`authorize_grammar.ts`)
+// closes this gap at LOAD time instead: `field = $ARRAY`, `field ? $ARRAY`,
+// and a function-call operand are all refused before `resolveGateShape` is
+// ever reached, confirmed empirically below.
+describe("row-level authorize — grammar (the authorize grammar closes the STRING form's array/operator/function-call gaps)", () => {
    /** Load `gate` as a source-line expression through the REAL
     *  `Model.create`, since one of the cases below now fails at LOAD time
     *  rather than request time (unlike every other test in this file's
@@ -2448,56 +2443,30 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("KNOWN GAP — `field = $ARRAY` (the STRING form's array_given_needs_in refusal) now COMPILES and fails at QUERY EXECUTION with a raw DB type error, not a clean 403", async () => {
-      // No rows ever leak (DuckDB itself refuses the malformed comparison),
-      // but the failure surface changed: a `BadRequestError` carrying a raw
-      // "Conversion Error" message from the database, not an
-      // `AccessDeniedError` the caller can't learn anything from.
+   it("`field = $ARRAY` (the STRING form's array_given_needs_in refusal) is refused at LOAD time by the grammar's arity check, not left to fail at query execution", async () => {
       const { model, duckdb, dir } = await grammarModel("org_id = $GROUPS");
       try {
-         const err = await model
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: X -> { aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
-            )
-            .catch((e) => e);
-         expect(err).not.toBeInstanceOf(AccessDeniedError);
-         expect(err).toBeInstanceOf(Error);
-         // Tightened: a warehouse that silently COERCED instead of erroring
-         // would still satisfy the two checks above (a throw serves no
-         // rows either way) but would be a materially different, worse
-         // failure mode. Pin the actual message so that residual risk is
-         // covered rather than merely "some Error was thrown".
-         expect((err as Error).message).toMatch(/Conversion Error/);
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "operator_arity_mismatch",
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("KNOWN GAP — `field ? $ARRAY` compiles to the same node as `=`, so it fails the same way (query execution, not a 403)", async () => {
+   it("`field ? $ARRAY` is refused at load — `?` is not `=`/`in`, so the grammar's operator scan finds no legal operator", async () => {
       const { model, duckdb, dir } = await grammarModel("org_id ? $GROUPS");
       try {
-         const err = await model
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: X -> { aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
-            )
-            .catch((e) => e);
-         expect(err).not.toBeInstanceOf(AccessDeniedError);
-         expect(err).toBeInstanceOf(Error);
-         // Tightened for the same reason as the `=` case above: pin the
-         // actual message so a warehouse that silently coerced instead of
-         // erroring would fail this test.
-         expect((err as Error).message).toMatch(/Conversion Error/);
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "malformed_body",
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -2510,32 +2479,23 @@ source: X is duckdb.table('parent') extend {
    // proves both the empty-given hazard and the non-empty-given correct
    // filter end to end.
 
-   it("a function-call operand (`upper(val) = $REGION`) loads and filters correctly (C2 fix — was wrongly a whole-model load abort)", async () => {
-      // Was: `expandGivenIds`'s `resolveFieldUsagePath` walk reported the
-      // synthetic empty-path `fieldUsage` entry Malloy emits for the
-      // function call as unresolvable, so G3 refused the WHOLE model's load
-      // for a perfectly legal gate. Fixed by skipping empty-path entries
-      // (the real reference, `val`, arrives as its own separate entry) —
-      // see task-3-fix-brief.md C2. Confirmed load succeeds and the gate
-      // actually filters, not just that it no longer throws.
+   it("a function-call operand (`upper(val) = $REGION`) is refused at load — the grammar requires a single column or dotted join path on the left", async () => {
+      // C2 (`task-3-fix-brief.md`) fixed a load-abort bug in the field-usage
+      // walk for exactly this shape, which made it load and filter
+      // correctly. The authorize grammar now bans a function-call operand
+      // outright regardless of that fix — `left_not_field_path` fires before
+      // the field-usage walk C2 touched is ever reached.
       const { model, duckdb, dir } = await grammarModel(
          "upper(val) = $REGION",
          "REGION :: string",
       );
       try {
-         expect(
-            (model as unknown as { compilationError?: Error }).compilationError,
-         ).toBeUndefined();
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { REGION: "A" },
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "left_not_field_path",
          );
-         const rows = result.compactResult as unknown as { n: number }[];
-         expect(rows[0].n).toBe(1);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -2623,68 +2583,55 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("an `or`-combined gate dimension ORs, not ANDs, its two disjuncts", async () => {
-      // The STRING form expressed this as TWO stacked `#(authorize)`
-      // annotations on one source; the dimension form only permits ONE gate
-      // dimension per source (G1), so the two disjuncts fold into ONE
-      // boolean expression joined by `or` — Malloy's own operator, not a
-      // second annotation.
+   it("an `and`-joined gate ANDs its two terms — satisfying only one still denies", async () => {
+      // The grammar only ever joins terms with `and` now (`or` is refused at
+      // load) — this fold is Malloy's own `and`, not a second annotation.
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
   VAL :: string
 
-#(authorize) (org_id in $GROUPS) or (val = $VAL)
+#(authorize) org_id in $GROUPS and val = $VAL
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 `);
       try {
-         // Supplying a group that would match id 2 (org_id=1, val='b') but a
-         // VAL that matches nothing proves OR: if this were AND, no row
-         // would ever satisfy both disjuncts in the one WHERE, but
-         // disjunction means group membership alone suffices.
+         // Group membership alone (org_id=1 matches ids 1,2) is not enough:
+         // an AND requires `val = $VAL` too, and no row's `val` is
+         // "no-such-value", so nothing is admitted.
          const rows = await boundRows(
             internals,
             mm,
             "run: X -> { aggregate: n is count() }",
             { GROUPS: [1], VAL: "no-such-value" },
          );
-         expect(rows[0].n).toBe(2);
+         expect(rows[0].n).toBe(0);
       } finally {
          await duckdb.close();
       }
    });
 
-   it("an `or`-combined gate dimension: an admin-role match sees everything, a non-admin sees only their own orgs", async () => {
-      // Same fold as the test above — the admin-override disjunct
-      // (`$ROLE = 'admin'`) and the group disjunct (`org_id in $GROUPS`)
-      // join with `or` in ONE gate dimension rather than two annotations.
+   it("an `and`-joined gate admits only the row satisfying BOTH terms", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
-  ROLE :: string
   GROUPS :: number[]
+  VAL :: string
 
-#(authorize) ($ROLE = 'admin') or (org_id in $GROUPS)
+#(authorize) org_id in $GROUPS and val = $VAL
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 `);
       try {
-         const admin = await boundRows(
+         // id 2 is the only row with org_id=1 AND val='b'.
+         const both = await boundRows(
             internals,
             mm,
             "run: X -> { aggregate: n is count() }",
-            { ROLE: "admin", GROUPS: [] },
+            { GROUPS: [1], VAL: "b" },
          );
-         expect(admin[0].n).toBe(4);
-         const nonAdmin = await boundRows(
-            internals,
-            mm,
-            "run: X -> { aggregate: n is count() }",
-            { ROLE: "analyst", GROUPS: [1] },
-         );
-         expect(nonAdmin[0].n).toBe(2);
+         expect(both[0].n).toBe(1);
       } finally {
          await duckdb.close();
       }
@@ -2785,7 +2732,7 @@ given:
   ROLE :: string
 
 #(filter) dimension=nonexistent_field type=equal
-#(authorize) $ROLE = 'admin'
+#(authorize) 'admin' = $ROLE
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3145,7 +3092,12 @@ run: gated -> { group_by: id, org_id, childtable.name }
          fs.writeFileSync(
             path.join(dir, "nb.malloynb"),
             `>>>malloy
-#(authorize) false
+##! experimental.givens
+
+given:
+  ID :: number
+
+#(authorize) id = $ID
 source: childtable is duckdb.table('childtable') extend {
 }
 
@@ -3499,7 +3451,7 @@ source: W_except is X extend { except: org_id }
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3562,27 +3514,29 @@ source: X is duckdb.table('parent') extend {
 });
 
 // ---------------------------------------------------------------------------
-// Constant gate dimensions — `authorized is false` and `authorized is true`.
-// The constant-false short-circuit optimization (synthesizing an empty
-// result instead of dispatching a `WHERE false` query) is retired — it had
-// no security role, only a warehouse round trip it skipped — so both
-// constants are now evaluated live, same as any other gate. This block pins
-// that the deny-everyone and admit-everyone kill switches both still work
-// through the ordinary (live) execution path.
+// Constant gate expressions — `#(authorize) false` and `#(authorize) 1 = 1`.
+// The authorize grammar retires the admit-everyone constant outright (every
+// term must reference a given), but `false` gets one deliberate exception:
+// a whole body that is exactly `false` still parses, as a `deny_all`
+// sentinel — without it there is no gate a caller cannot eventually
+// satisfy, and the locked-base-plus-curated-extensions idiom these docs
+// teach has no legal spelling. `true` is NOT given the same treatment: an
+// admit-everyone gate is not a gate at all, so it stays refused.
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — constant gate dimensions", () => {
-   const CONSTANT_FALSE_MODEL = `#(authorize) false
-source: X is duckdb.table('parent') extend {
-   measure: n is count()
-}
-`;
-
-   it("`authorized is false` denies every row via a live WHERE (false) query — zero rows, no short circuit", async () => {
+describe("row-level authorize — constant gate expressions are refused by the grammar", () => {
+   it("`#(authorize) false` loads clean as a deny-all and denies every request with a live empty-result filter", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-const-false-"));
       try {
-         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `#(authorize) false
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`,
+         );
          const model = await Model.create(
             "test-pkg",
             dir,
@@ -3592,33 +3546,73 @@ source: X is duckdb.table('parent') extend {
          expect(
             (model as unknown as { compilationError?: Error }).compilationError,
          ).toBeUndefined();
-
-         const runSqlSpy = spyOn(duckdb, "runSQL");
-         runSqlSpy.mockClear();
-
+         expect(model.getAuthorize("X")).toEqual(["false"]);
+         // A real query: the `where: false` graft is dispatched and the
+         // warehouse counts zero matching rows — a 200 with n=0, not an
+         // opaque denial, exactly like every other row-level gate's
+         // zero-match case. `aggregate: count()` always returns one row, so
+         // the assertion is on the counted value, not the row count.
          const result = await model.getQueryResults(
             undefined,
             undefined,
-            "run: X -> { group_by: org_id; aggregate: n is count() }",
+            "run: X -> { aggregate: n is count() }",
             {},
             true,
+            {},
          );
-
-         expect(result.compactResult).toEqual([]);
-         expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            0,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("`authorized is 1 = 1` admits every row — grafts as `where: authorized`, the warehouse evaluates TRUE", async () => {
+   it("`#(authorize) 1 = 1` is refused at load (left_not_field_path) — the admit-everyone constant no longer parses", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-const-true-"));
       try {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
             `#(authorize) 1 = 1
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "left_not_field_path",
+         );
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("CRITICAL — bypassAuthorize still executes the query live and returns every row unfiltered even under a gate that would otherwise deny everything", async () => {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-const-false-bypass-"),
+      );
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3637,51 +3631,19 @@ source: X is duckdb.table('parent') extend {
          const result = await model.getQueryResults(
             undefined,
             undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-         );
-         const rows = result.compactResult as unknown as { n: number }[];
-         // The seed data is 4 rows across both org groups — every one admitted.
-         expect(rows[0].n).toBe(4);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("CRITICAL — bypassAuthorize still executes the query live and returns every row unfiltered even under `authorized is false`", async () => {
-      const duckdb = await newDuckdb();
-      const dir = fs.mkdtempSync(
-         path.join(os.tmpdir(), "rla-const-false-bypass-"),
-      );
-      try {
-         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "m.malloy",
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         expect(
-            (model as unknown as { compilationError?: Error }).compilationError,
-         ).toBeUndefined();
-
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
             "run: X -> { group_by: org_id; aggregate: n is count() }",
             {},
             true,
-            {},
+            { GROUPS: [] },
             undefined,
             undefined,
             "full",
             /* bypassAuthorize */ true,
          );
 
-         // The unfiltered live rows — bypassing authorize skips the "false"
-         // gate entirely, so both org groups (4 seed rows) come back.
+         // The unfiltered live rows — bypassing authorize skips the gate
+         // entirely, so both org groups (4 seed rows) come back despite an
+         // empty GROUPS, which would otherwise deny every row.
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows.length).toBe(2);
          expect(rows.reduce((sum, r) => sum + r.n, 0)).toBe(4);
@@ -3691,12 +3653,12 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("an admin-override `$ROLE = 'admin'` disjunct still filters normally (live, not a constant)", async () => {
+   it("an admin-override `'admin' = $ROLE` term still filters normally (live, not a constant)", async () => {
       const { model, duckdb } = await buildGatedModel(`
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'admin'
+#(authorize) 'admin' = $ROLE
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3728,14 +3690,14 @@ source: X is duckdb.table('parent') extend {
 // `$ROLE != 'admin'` OR'd in, with ROLE defaulting to '', is REFUSED
 // (vacuously TRUE for a caller supplying nothing — admits everyone), while
 // `$ROLE = 'admin'` with the SAME default is fine (FALSE at the default, a
-// legitimate admin-override idiom). G4 (`validateSourceLineGateGivenUsage` in
-// `gate_dimension.ts`) does not draw that distinction at all: it refuses ANY
-// referenced given carrying a declared default, UNCONDITIONALLY — this is
-// the permanent security rule the task brief names, not a narrower
-// vacuousness check. Both shapes below are now refused for the SAME reason
-// (G4), including the admin-override idiom that used to load and work
-// correctly. This is a real, confirmed, INTENDED narrowing (G4 is by design
-// unconditional), not a regression to paper over.
+// legitimate admin-override idiom). The authorize grammar refuses the `or`
+// shape entirely, before any given-default reasoning runs at all — see the
+// first test below. G4 (`validateSourceLineGateGivenUsage` in
+// `gate_dimension.ts`) is what remains for the surviving `and`-only shape:
+// it refuses ANY referenced given carrying a declared default,
+// UNCONDITIONALLY, including the admin-override idiom that used to load and
+// work correctly under the STRING form. This is a real, confirmed, INTENDED
+// narrowing (G4 is by design unconditional), not a regression to paper over.
 describe("row-level authorize — vacuous default atom (superseded by G4's unconditional defaulted-given refusal)", () => {
    async function createModel(
       text: string,
@@ -3757,7 +3719,7 @@ describe("row-level authorize — vacuous default atom (superseded by G4's uncon
          .compilationError;
    }
 
-   it("CRITICAL — `$ROLE != 'admin'` OR'd with a row-level gate, ROLE defaulting to '', is refused at load — now by G4 (any defaulted given), not the string form's narrower vacuousness detection", async () => {
+   it("CRITICAL — `org_id in $GROUPS or $ROLE != 'admin'` is refused at load by the grammar (compound_boolean), before G4's given-default reasoning ever runs", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -3771,59 +3733,40 @@ source: X is duckdb.table('parent') extend {
 `);
       try {
          const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/\$ROLE.*declared with a default/);
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "compound_boolean",
+         );
+         expect(err?.message).toMatch(/Source "X" declares/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("G4 fires on the source that declares the gate dimension, regardless of any derivation reachable from it", async () => {
-      // Different mechanic from the string form's own "which entry point
-      // probed first" concern: G4 (`validateSourceLineGateGivenUsage`) runs
-      // against the DECLARING source's own lifted condition
-      // (`validateAuthorizeProbes`'s `onOwnRowLevelConditionCompiled`), never
-      // an inheritor's. `Derived` (a query-source projection) inherits `X`'s
-      // gate rather than declaring its own, so G4 only ever fires on `X`.
+   it("G4 fires on the source that declares the gate, regardless of any derivation reachable from it", async () => {
+      // The admin-override idiom this used to test as an `or`-combined
+      // disjunct (`org_id in $GROUPS or $ROLE = 'admin'`, and its `!=`
+      // variant) no longer parses at all — `or` inside one term is refused by
+      // the grammar (`compound_boolean`) before G4 is ever reached; the
+      // override is written as two extension sources over a locked base
+      // instead. What survives, and is what this test pins, is that G4
+      // (`validateSourceLineGateGivenUsage`) runs against the DECLARING
+      // source's own lifted condition (`validateAuthorizeProbes`'s
+      // `onOwnRowLevelConditionCompiled`), never an inheritor's — `Derived`
+      // (a query-source projection) inherits `X`'s gate rather than
+      // declaring its own, so G4 only ever fires on `X`.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
   ROLE :: string is ''
-  GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS or $ROLE != 'admin'
+#(authorize) 'admin' = $ROLE
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 
 source: Derived is X -> { group_by: org_id }
-`);
-      try {
-         const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/on source "X"/);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("KNOWN GAP — `$ROLE = 'admin'` OR'd with a row-level gate, ROLE defaulting to '', used to load and work as an admin-override (false at the default, not vacuous); G4 now refuses it too, unconditionally", async () => {
-      // Confirms the loss is real and total: even the SAFE defaulted-given
-      // idiom the string form's narrower check preserved is gone. An author
-      // wanting this shape today must declare `ROLE` with NO default and
-      // require every caller to supply it explicitly.
-      const { model, duckdb, dir } = await createModel(`##! experimental.givens
-
-given:
-  ROLE :: string is ''
-  GROUPS :: number[]
-
-#(authorize) org_id in $GROUPS or $ROLE = 'admin'
-source: X is duckdb.table('parent') extend {
-   measure: n is count()
-}
 `);
       try {
          const err = compilationErrorOf(model);
@@ -3837,20 +3780,19 @@ source: X is duckdb.table('parent') extend {
 });
 
 // ---------------------------------------------------------------------------
-// Field-vs-given comparison against a given carrying a declared default — the
-// SCALAR_COMPARISON_NODES sibling of the `not in $GROUPS` hazard: `org_id in
-// $GROUPS` is refused when negated because an empty default admits every row,
-// but `tenant != $EXCLUDED` / `amount > $FLOOR` carry the IDENTICAL hazard at
-// the documented default convention ('' / 0) and were previously accepted —
-// `assertNoVacuousDefaultAtom` only evaluates a `<given> <op> <literal>` atom,
-// never a `<field> <op> <given>` comparison, so it structurally cannot catch
-// these. `validateSourceLineGateGivenUsage` (`gate_dimension.ts`) now refuses
-// a field comparison outright at load time when its given carries ANY
-// declared default, regardless of operator — see its doc comment for why
-// this is about the DEFAULT, not the operator, and the anti-narrowing test
-// below for why narrowing to `=`/`in` instead would be wrong (a `<=`/`>=`
+// Field-vs-given term against a given carrying a declared default: `org_id
+// in $GROUPS` is refused when GROUPS defaults to `[]` because an unsupplied
+// caller then admits every row, and the identical hazard holds for
+// `amount = $FLOOR` / `tenant = $EXCLUDED` at the documented default
+// convention (0 / ''). `validateSourceLineGateGivenUsage`
+// (`gate_dimension.ts`) refuses a row-level term outright at load time when
+// its given carries ANY declared default — this check is operator-agnostic
+// by construction (it walks the expanded given set, not the comparison
+// shape), which is why the authorize grammar's restriction to `=`/`in` does
+// not narrow its coverage. See the anti-narrowing test below for why the
+// refusal is keyed on the DEFAULT and not on the term's operator: a
 // no-read-up gate against a given with NO default is legitimate and stays
-// accepted).
+// accepted.
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — field comparison against a defaulted given", () => {
@@ -3876,7 +3818,7 @@ describe("row-level authorize — field comparison against a defaulted given", (
          .compilationError;
    }
 
-   it("CRITICAL — `amount > $FLOOR`, FLOOR defaulting to 0, is refused at load (a caller supplying nothing admits ~every row)", async () => {
+   it("CRITICAL — `amount = $FLOOR`, FLOOR defaulting to 0, is refused at load (a caller supplying nothing admits every row whose amount is 0)", async () => {
       // The refusal this test pins is `validateSourceLineGateGivenUsage`'s
       // (`gate_dimension.ts`) G4 check.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
@@ -3884,7 +3826,7 @@ describe("row-level authorize — field comparison against a defaulted given", (
 given:
   FLOOR :: number is 0
 
-#(authorize) amount > $FLOOR
+#(authorize) amount = $FLOOR
 source: X is duckdb.table('parent') extend {
    dimension: amount is id
    measure: n is count()
@@ -3901,15 +3843,15 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — `tenant != $EXCLUDED`, EXCLUDED defaulting to '', is refused at load", async () => {
-      // Same G4 check (`validateSourceLineGateGivenUsage`) as `amount >
+   it("CRITICAL — `tenant = $EXCLUDED`, EXCLUDED defaulting to '', is refused at load", async () => {
+      // Same G4 check (`validateSourceLineGateGivenUsage`) as `amount =
       // $FLOOR` above.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
   EXCLUDED :: string is ''
 
-#(authorize) tenant != $EXCLUDED
+#(authorize) tenant = $EXCLUDED
 source: X is duckdb.table('parent') extend {
    dimension: tenant is val
    measure: n is count()
@@ -3926,13 +3868,13 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("ANTI-NARROWING GUARD — `clearance <= $MAXLVL`, MAXLVL with NO default, loads cleanly and filters rows (a no-read-up gate must not be refused merely for using a comparison operator)", async () => {
+   it("ANTI-NARROWING GUARD — `clearance in $MAXLVL`, MAXLVL with NO default, loads cleanly and filters rows (G4 fires on the DEFAULT, not on the term appearing at all)", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
-  MAXLVL :: number
+  MAXLVL :: number[]
 
-#(authorize) clearance <= $MAXLVL
+#(authorize) clearance in $MAXLVL
 source: X is duckdb.table('parent') extend {
    dimension: clearance is org_id
    measure: n is count()
@@ -3941,17 +3883,17 @@ source: X is duckdb.table('parent') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          // org_id=1 rows are ids 1,2 (clearance=1); org_id=2 rows are ids 3,4
-         // (clearance=2). MAXLVL=1 admits only the clearance=1 rows; MAXLVL=2
-         // admits all four — two different values, two different real row
-         // counts, so a fix that refused every comparison operator (not just
-         // ones whose given carries a default) would fail this test loudly.
+         // (clearance=2). MAXLVL=[1] admits only the clearance=1 rows;
+         // MAXLVL=[1,2] admits all four — two different real row counts, so
+         // a fix that refused this term merely for existing (rather than for
+         // MAXLVL carrying a default) would fail this test loudly.
          const low = await model.getQueryResults(
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
             {},
             true,
-            { MAXLVL: 1 },
+            { MAXLVL: [1] },
          );
          const lowRows = low.compactResult as unknown as { n: number }[];
          expect(lowRows[0].n).toBe(2);
@@ -3962,7 +3904,7 @@ source: X is duckdb.table('parent') extend {
             "run: X -> { aggregate: n is count() }",
             {},
             true,
-            { MAXLVL: 2 },
+            { MAXLVL: [1, 2] },
          );
          const highRows = high.compactResult as unknown as { n: number }[];
          expect(highRows[0].n).toBe(4);
@@ -3972,7 +3914,7 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("`org_id in $GROUPS`, a caller supplying an empty array, loads cleanly and returns zero rows (the fail-closed empty-array case, unaffected by this refusal since `in` is not a field-vs-given SCALAR_COMPARISON_NODES comparison)", async () => {
+   it("`org_id in $GROUPS`, a caller supplying an empty array, loads cleanly and returns zero rows (the fail-closed empty-array case, unaffected by G4 since an array-typed given cannot declare a default)", async () => {
       // An array-typed given can't declare a default at all (Malloy grammar
       // rejects `:: number[] is []` — confirmed against this suite's own
       // compiler), so there is no declared-default hazard on this shape to
@@ -4128,32 +4070,18 @@ source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
 });
 
 // ---------------------------------------------------------------------------
-// KNOWN GAP — the entire premise of this block (the row-level STRING form's
-// grammar refuses a gate that reads no ROW FIELD, since a field-less boolean
-// used to be a legitimate `given_only` gate under the pre-row-level design)
-// does not carry over to the source-line form AT ALL. Neither G4 (declared
-// default) nor W1/W2 (`validateSourceLineGateGivenUsage`, `gate_dimension.ts`)
-// refuse an expression merely for not referencing a row field — a
-// source-line gate is just a boolean expression, and Malloy is perfectly
-// happy to compile `1 = 1` or `$ROLE like 'ana%'` as one. Confirmed
-// empirically below: every one of the STRING form's field-less refusals now
-// LOADS and FUNCTIONS as an ordinary (if unusual) fixed-or-given-keyed
-// predicate, not a refused gate.
+// The authorize grammar closes the field-less-gate gap the old STRING form
+// left open (a boolean that reads no row field used to be a legitimate
+// `given_only` gate). Every shape below is now refused by
+// `assertAuthorizeGrammarValid` at load time, before G4/W1/W2 ever run — a
+// source-line gate is no longer "just a boolean expression" Malloy is
+// willing to compile. Exercised against `Model.create` directly, not just
+// `parseAuthorizeGrammarBody` in isolation, so a validation-ordering
+// regression that let one of these slip past the grammar and into G4 or
+// straight to query execution shows up here.
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — a field-less gate (KNOWN GAP: the STRING form's grammar refusal does not exist for the source-line form)", () => {
-   /** `gate` reads no ROW FIELD — some reference no given at all (W1, a fixed
-    *  predicate), some reference `ROLE` (a given with no default) and work
-    *  exactly as an author who wrote them would expect. */
-   const FIELD_LESS_GATES: Array<{ gate: string; expectedRows: number }> = [
-      { gate: "1 = 1", expectedRows: 4 },
-      { gate: "'a' = 'a'", expectedRows: 4 },
-      { gate: "$ROLE like 'ana%'", expectedRows: 0 },
-      { gate: "$ROLE is not null", expectedRows: 4 },
-      { gate: "$ROLE = 'a' and 1 = 1", expectedRows: 4 },
-      { gate: "not false", expectedRows: 4 },
-   ];
-
+describe("row-level authorize — a field-less gate is refused by the authorize grammar", () => {
    function modelText(gate: string): string {
       return `##! experimental.givens
 
@@ -4165,13 +4093,25 @@ given:
 source: Gated is duckdb.table('parent') extend {
    measure: n is count()
 }
-
-source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
 `;
    }
 
-   for (const { gate, expectedRows } of FIELD_LESS_GATES) {
-      it(`\`${gate}\`: loads cleanly and the gated source enforces the expression as written (ROLE = "a")`, async () => {
+   const FIELD_LESS_GATES: Array<{
+      gate: string;
+      cause: AuthorizeGrammarRejectionCause;
+   }> = [
+      { gate: "1 = 1", cause: "left_not_field_path" },
+      { gate: "'a' = 'a'", cause: "missing_given_reference" },
+      { gate: "$ROLE like 'ana%'", cause: "malformed_body" },
+      { gate: "$ROLE is not null", cause: "compound_boolean" },
+      { gate: "$ROLE = 'a' and 1 = 1", cause: "left_not_field_path" },
+      { gate: "not false", cause: "compound_boolean" },
+      { gate: "$ROLE = $ROLE_D", cause: "left_not_field_path" },
+      { gate: "$ROLE_D != 'blocked'", cause: "negated_operator" },
+   ];
+
+   for (const { gate, cause } of FIELD_LESS_GATES) {
+      it(`\`${gate}\` is refused at load (${cause})`, async () => {
          const duckdb = await newDuckdb();
          const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldless-"));
          try {
@@ -4182,33 +4122,10 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
                "m.malloy",
                new Map<string, Connection>([["duckdb", duckdb]]),
             );
-            expect(
-               (model as unknown as { compilationError?: Error })
-                  .compilationError,
-            ).toBeUndefined();
-
-            const result = await model.getQueryResults(
-               undefined,
-               undefined,
-               "run: Gated -> { aggregate: n is count() }",
-               {},
-               true,
-               { ROLE: "a" },
-            );
-            expect(
-               (result.compactResult as unknown as { n: number }[])[0].n,
-            ).toBe(expectedRows);
-
-            const ungated = await model.getQueryResults(
-               undefined,
-               undefined,
-               "run: Ungated -> { aggregate: n is count() }",
-               {},
-               true,
-            );
-            expect(
-               (ungated.compactResult as unknown as { n: number }[])[0].n,
-            ).toBe(2);
+            const err = (model as unknown as { compilationError?: Error })
+               .compilationError;
+            expect(err).toBeInstanceOf(AuthorizeGrammarError);
+            expect((err as AuthorizeGrammarError).rejectionCause).toBe(cause);
          } finally {
             await duckdb.close();
             fs.rmSync(dir, { recursive: true, force: true });
@@ -4216,59 +4133,7 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
       });
    }
 
-   it("`$ROLE = $ROLE_D` (a given-vs-given comparison where $ROLE_D carries a declared default) is refused at load by G4, not the field-less grammar", async () => {
-      const duckdb = await newDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldless-g4-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "m.malloy"),
-            modelText("$ROLE = $ROLE_D"),
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "m.malloy",
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         const err = (model as unknown as { compilationError?: Error })
-            .compilationError;
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/\$ROLE_D.*declared with a default/);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("a vacuous-at-default atom (`$ROLE_D != 'blocked'`) is refused too, but by G4 (any declared default), not vacuousness specifically", async () => {
-      // Same finding as the "vacuous default atom" describe block: G4 draws
-      // no distinction between a genuinely vacuous atom and a safe one at
-      // its given's default — it refuses every referenced default,
-      // unconditionally.
-      const duckdb = await newDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-vacuous-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "m.malloy"),
-            modelText("$ROLE_D != 'blocked'"),
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "m.malloy",
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         const err = (model as unknown as { compilationError?: Error })
-            .compilationError;
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/\$ROLE_D.*declared with a default/);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("KNOWN GAP — `org_id = $GROUPS` (array_given_needs_in's old refusal) now compiles and fails at QUERY EXECUTION, same finding as the 'grammar' describe block above", async () => {
+   it("`org_id = $GROUPS`, a scalar operator against a list-typed given, is refused at load by the grammar's arity check (not left to fail later at query execution)", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldful-"));
       try {
@@ -4291,25 +4156,326 @@ source: Gated is duckdb.table('parent') extend {
             "m.malloy",
             new Map<string, Connection>([["duckdb", duckdb]]),
          );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "operator_arity_mismatch",
+         );
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// The `true` admit-all sentinel — the motivating capability behind the
+// `false`/`true` symmetry: a `#(authorize) false` base, plus a curated
+// `#(authorize) true` extension that deliberately re-opens it. Every test
+// here runs a REAL query and asserts rows, never stops at "it loaded".
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — the `true` admit-all sentinel", () => {
+   async function createModel(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-admit-all-"));
+      fs.writeFileSync(
+         path.join(dir, "m.malloy"),
+         text.includes("experimental.givens")
+            ? text
+            : `##! experimental.givens\n\n${text}`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   function compilationErrorOf(model: Model): Error | undefined {
+      return (model as unknown as { compilationError?: Error })
+         .compilationError;
+   }
+
+   async function ids(
+      model: Model,
+      sourceName: string,
+      givens: Record<string, unknown>,
+   ): Promise<number[]> {
+      const result = await model.getQueryResults(
+         undefined,
+         undefined,
+         `run: ${sourceName} -> { select: id; order_by: id }`,
+         {},
+         true,
+         givens as never,
+      );
+      return (result.compactResult as unknown as { id: number }[])
+         .map((r) => r.id)
+         .sort((a, b) => a - b);
+   }
+
+   it("a `#(authorize) false` base plus a `#(authorize) true` extension — the base still denies every caller, the extension admits all", async () => {
+      const { model, duckdb, dir } = await createModel(`
+#(authorize) false
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "base", {})).toEqual([]);
+         expect(await ids(model, "reopened", {})).toEqual([1, 2, 3, 4]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an extension's own `#(authorize) true` sheds only the ROW-LEVEL inherited gate — an inherited `#(source_authorize)` still ANDs in", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string[]
+
+#(source_authorize) 'finance' in $ROLE
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The row-level gate is shed (own `true`), but the INHERITED
+         // source_authorize gate still denies a caller it excludes.
+         expect(await ids(model, "reopened", { ROLE: ["sales"] })).toEqual([]);
+         expect(await ids(model, "reopened", { ROLE: ["finance"] })).toEqual([
+            1, 2, 3, 4,
+         ]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an extension's own `#(source_authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(authorize)` still filters rows", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: base is duckdb.table('parent') extend {}
+
+#(source_authorize) true
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The caller check is shed (own `true`), but the INHERITED row-level
+         // gate still filters — a GROUPS value matching no row admits zero.
+         expect(await ids(model, "reopened", { GROUPS: [999] })).toEqual([]);
+         expect(await ids(model, "reopened", { GROUPS: [1] })).toEqual([1, 2]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an inherited `#(source_authorize) true` alongside the SAME source's own row-level `#(authorize)` — rows are still filtered", async () => {
+      // `#(source_authorize) true` here is inherited from `base`, not owned
+      // by `X`, while `X` owns its row-level `#(authorize)`. Own-wins-over-
+      // ancestor is decided PER ROUTE, so the two coexist.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: number[]
+
+#(source_authorize) true
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) org_id in $GROUPS
+source: X is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "X", { GROUPS: [1] })).toEqual([1, 2]);
+         expect(await ids(model, "X", { GROUPS: [999] })).toEqual([]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a source's OWN `#(authorize) true` alongside its OWN `#(source_authorize)` term — the row lock is lifted, the caller check still decides", async () => {
+      // The admit-all guard is ROUTE-scoped: `true` sheds only the
+      // `authorize` route's inherited gate, so the caller rule on the other
+      // route is live and both notes are legal on one source.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string[]
+
+#(authorize) false
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+#(source_authorize) 'finance' in $ROLE
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The base still denies everyone; the extension's own `true`
+         // replaced that lock, and only the caller check remains.
+         expect(await ids(model, "base", { ROLE: ["finance"] })).toEqual([]);
+         expect(await ids(model, "reopened", { ROLE: ["finance"] })).toEqual([
+            1, 2, 3, 4,
+         ]);
+         expect(await ids(model, "reopened", { ROLE: ["sales"] })).toEqual([]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("`true` re-opens an `extend` derivation but NOT a query-source one — the base's `false` stays in the conjunction", async () => {
+      // Pins fail-closed behavior the docs now state, not a bug to fix later:
+      // a query-source derivation collects its base's gate unconditionally, so
+      // an own gate can only narrow it, never replace it.
+      const { model, duckdb, dir } = await createModel(`
+#(authorize) false
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+source: reopened is base extend {}
+
+#(authorize) true
+source: derived is base -> { select: id }
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "reopened", {})).toEqual([1, 2, 3, 4]);
+         expect(await ids(model, "derived", {})).toEqual([]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a source's OWN `#(authorize) true` alongside another note ON THE SAME ROUTE is refused (admit_all_with_sibling)", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) true
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('parent') extend {}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "admit_all_with_sibling",
+         );
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// `publisher_authorize_admit_all_total` counts DECLARATIONS, not entry points.
+// Malloy copies a base's annotation note objects onto a plain `extend {}`
+// derivation BY REFERENCE, so the presence-based `authorizeOwnNotes` calls
+// every such derivation an owner. Counting off it ticked once per inheriting
+// entry point, making the number a function of model shape.
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — the admit-all counter counts declarations", () => {
+   let harness: MetricsHarness;
+
+   const COUNTER = "publisher_authorize_admit_all_total";
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      // Drop the cached instrument so it re-binds to this test's provider.
+      resetAuthorizeGuardTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      resetAuthorizeGuardTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   async function loadModel(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-admit-count-"));
+      fs.writeFileSync(
+         path.join(dir, "m.malloy"),
+         `##! experimental.givens\n\n${text}`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   it("one declared `#(authorize) true` inherited by two `extend` derivations ticks ONCE, not once per entry point", async () => {
+      const { model, duckdb, dir } = await loadModel(`
+#(authorize) true
+source: base is duckdb.table('parent') extend {}
+
+source: mid is base extend {}
+
+source: leaf is mid extend {}
+`);
+      try {
          expect(
             (model as unknown as { compilationError?: Error }).compilationError,
          ).toBeUndefined();
-         const err = await model
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: Gated -> { aggregate: n is count() }",
-               {},
-               true,
-               { GROUPS: [1] },
-            )
-            .catch((e) => e);
-         expect(err).not.toBeInstanceOf(AccessDeniedError);
-         expect(err).toBeInstanceOf(Error);
-         // Tightened for the same reason as the "grammar" describe block's
-         // `=`/`?` cases: pin the actual message so a warehouse that
-         // silently coerced instead of erroring would fail this test.
-         expect((err as Error).message).toMatch(/Conversion Error/);
+         // `row_authorize`, not `authorize`: the deprecated spelling
+         // canonicalizes before anything keys on it, so the counter never
+         // splits one gate across two label values.
+         expect(
+            await harness.collectCounter(COUNTER, {
+               route: "row_authorize",
+            }),
+         ).toBe(1);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a model refused as admit_all_with_sibling ticks nothing — the callback runs after coherence", async () => {
+      const { model, duckdb, dir } = await loadModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) true
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('parent') extend {}
+`);
+      try {
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "admit_all_with_sibling",
+         );
+         expect(
+            await harness.collectCounter(COUNTER, {
+               route: "authorize",
+            }),
+         ).toBe(0);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });

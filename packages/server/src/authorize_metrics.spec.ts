@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
+   recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
    recordRowLevelGateDecision,
@@ -126,5 +127,48 @@ describe("authorize_metrics", () => {
             { cause: "legacy_string_gate" },
          ),
       ).toBe(1);
+   });
+
+   it("publisher_authorize_admit_all_total ticks per call, labeled by route", async () => {
+      recordAuthorizeAdmitAllGate("row_authorize");
+      recordAuthorizeAdmitAllGate("row_authorize");
+      recordAuthorizeAdmitAllGate("source_authorize");
+
+      expect(
+         await harness.collectCounter("publisher_authorize_admit_all_total", {
+            route: "row_authorize",
+         }),
+      ).toBe(2);
+      expect(
+         await harness.collectCounter("publisher_authorize_admit_all_total", {
+            route: "source_authorize",
+         }),
+      ).toBe(1);
+   });
+
+   it("resetAuthorizeGuardTelemetryForTesting drops the cached admit-all instrument", async () => {
+      recordAuthorizeAdmitAllGate("row_authorize");
+      expect(
+         await harness.collectCounter("publisher_authorize_admit_all_total", {
+            route: "row_authorize",
+         }),
+      ).toBe(1);
+
+      resetAuthorizeGuardTelemetryForTesting();
+      const freshHarness = await startMetricsHarness();
+      try {
+         // A fresh provider with no prior emissions sees nothing until this
+         // call re-inits the instrument against it — proves the OLD cached
+         // instrument (bound to the first harness's reader) was dropped.
+         recordAuthorizeAdmitAllGate("row_authorize");
+         expect(
+            await freshHarness.collectCounter(
+               "publisher_authorize_admit_all_total",
+               { route: "row_authorize" },
+            ),
+         ).toBe(1);
+      } finally {
+         await freshHarness.shutdown();
+      }
    });
 });
