@@ -23,6 +23,9 @@ describe("buildTableCssVars", () => {
       expect(vars["--malloy-render--table-header-color"]).toBe(t.tableHeader);
       expect(vars["--malloy-render--table-body-color"]).toBe(t.tableBody);
       expect(vars["--malloy-render--table-border"]).toBe(t.border);
+      // The card edge rides its own var, so darkening a card cannot darken
+      // every gridline in the table it holds.
+      expect(vars["--publisher-dashboard-card-border"]).toBe(t.cardBorder);
       // `tile-background` is our custom var for the dashboard tile
       // container. It's NOT the renderer's `table-pinned-background`
       // (which now carries `tableHeaderBackground` via the theme prop).

@@ -278,15 +278,27 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                   border: "none",
                },
                root: {
-                  border: `1px solid ${divider}`,
+                  // The card edge, not `divider`: a field is a box on the page
+                  // the same way a dashboard card is, and it is already the
+                  // construction an outlined Button uses (same two values,
+                  // just above). On `divider` a field rested a full step
+                  // lighter than the card holding it and the button beside it
+                  // — three boxes in a row outlined three different ways.
+                  // Kept in step with the SDK's `theme.cardBorder`
+                  // (#cbd5e1 / #475569), which is these same two points on the
+                  // slate ramp.
+                  border: `1px solid ${isDark ? greyScale[600] : greyScale[300]}`,
                   borderRadius: 8,
                   transition: "border-color 120ms ease-in",
                   backgroundColor: surface,
+                  // Rest darkened, so hover and focus each move up a rung to
+                  // stay told apart from it — a field whose hover state is its
+                  // resting state has no hover state.
                   "&:hover": {
-                     borderColor: isDark ? "#475569" : greyScale[300],
+                     borderColor: isDark ? "#64748b" : greyScale[400],
                   },
                   "&.Mui-focused": {
-                     borderColor: isDark ? "#64748b" : greyScale[400],
+                     borderColor: isDark ? greyScale[400] : greyScale[500],
                      outline: "none",
                   },
                },
