@@ -105,8 +105,13 @@ const NAME_ALTERNATION = SECRET_FIELD_NAMES.map((n) =>
 ).join("|");
 
 // Quoted value after `:` or `=`, e.g. "privateKey": "..." or privateKey='...'.
+//
+// Escape-aware in both quote styles, matching the form redactPgSecrets already
+// uses for single quotes. A naive `"[^"]*"` ends the match at the first escaped
+// quote INSIDE the value, so a credential containing one kept its tail:
+// `"password":"ab\"TAIL"` redacted `ab\` and left `TAIL"` in the message.
 const SECRET_QUOTED_PATTERN = new RegExp(
-   String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*')`,
+   String.raw`(["']?(?:${NAME_ALTERNATION})["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`,
    "gi",
 );
 

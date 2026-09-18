@@ -2883,7 +2883,7 @@ export function redactTestFailure(message: string, config: unknown): string {
  * password or signature in place and leaving the rest readable.
  */
 const CONFIG_SECRET_KEY =
-   /pass(word)?|secret|private_?key|service_?account|access_?key|token/i;
+   /pass(word)?|secret|private_?key|service_?account|access_?key|token|peaka_?key/i;
 
 /** Collects the credential strings a connection config carries. */
 function collectConfigSecrets(

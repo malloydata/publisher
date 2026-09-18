@@ -326,6 +326,16 @@ describe("redactConnectionSecretShapes", () => {
       expect(redactConnectionSecretShapes(msg)).toBe(msg);
    });
 
+   it("redacts a quoted secret whose value contains an escaped quote", () => {
+      // A naive "[^"]*" ends the match at the escaped quote INSIDE the value, so
+      // the tail after it stayed in the message. redactPgSecrets already carries
+      // the escape-aware form for single quotes.
+      const msg = `config={"password":"ab\\"${SECRET}","host":"h"}`;
+      const out = redactConnectionSecretShapes(msg);
+      expect(out).not.toContain(SECRET);
+      expect(out).toContain('"host":"h"');
+   });
+
    it("redacts a SAS URL's signature, which follows an ampersand", () => {
       // The credential in an Azure SAS URL IS the `sig=` parameter, and it comes
       // after a `&`. A value class that stopped there redacted the harmless
