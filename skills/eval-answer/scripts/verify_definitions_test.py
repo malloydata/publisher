@@ -74,6 +74,64 @@ class TheLedgerItBuilds(unittest.TestCase):
         self.assertNotIn("inventory_items", self.recs)
 
 
+TWO_SOURCES = """\
+source: source_a is duckdb.table('data/a.parquet') extend {
+  measure:
+    total_sales is sale_price.sum()
+}
+source: source_b is duckdb.table('data/b.parquet') extend {
+  measure:
+    total_sales is price.sum()
+    doubled is total_sales * 2
+    borrowed is source_a.total_sales * 3
+}
+"""
+
+
+class DependenciesResolveInTheSourceThatOwnsThem(unittest.TestCase):
+    """A bare word names a field of the DECLARING source.
+
+    Resolving it against a flat `dict[name]` linked `source_b.doubled` to
+    `source_a.total_sales` on a model where the two sources both declare the
+    name -- and, worse, on one where only the OTHER source declares it, giving
+    a dependant a dependency its own source does not have. Either way the sha
+    chain hashes the wrong expression, so `stale_ids` marks the wrong rows.
+    """
+
+    def setUp(self):
+        self.model = write(TWO_SOURCES)
+        self.recs = {r["entityId"]: r
+                     for r in vd.records(self.model, recursive=False)}
+
+    def tearDown(self):
+        shutil.rmtree(self.model.parent, ignore_errors=True)
+
+    def test_a_bare_word_resolves_to_its_own_sources_field(self):
+        self.assertEqual(self.recs["measure:source_b:doubled"]["depends"],
+                         ["measure:source_b:total_sales"])
+
+    def test_a_dotted_path_resolves_in_the_source_it_names(self):
+        self.assertEqual(self.recs["measure:source_b:borrowed"]["depends"],
+                         ["measure:source_a:total_sales"])
+
+    def test_a_name_only_the_other_source_declares_is_not_a_dependency(self):
+        p = write(
+            "source: source_a is duckdb.table('data/a.parquet') extend {\n"
+            "  measure:\n    total_sales is sale_price.sum()\n}\n"
+            "source: source_b is duckdb.table('data/b.parquet') extend {\n"
+            "  dimension:\n    doubled is total_sales * 2\n}\n")
+        try:
+            recs = {r["entityId"]: r for r in vd.records(p, recursive=False)}
+            self.assertEqual(recs["dimension:source_b:doubled"]["depends"], [])
+        finally:
+            shutil.rmtree(p.parent, ignore_errors=True)
+
+    def test_the_two_same_named_measures_hash_apart(self):
+        a = self.recs["measure:source_a:total_sales"]["exprSha"]
+        b = self.recs["measure:source_b:total_sales"]["exprSha"]
+        self.assertNotEqual(a, b)
+
+
 class TheShaChainInvalidatesDownstream(unittest.TestCase):
     """A measure whose own text never moved is still stale when something it
     builds on does. A flat hash of the one line reports it as current, which is

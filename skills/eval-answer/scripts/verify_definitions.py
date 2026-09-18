@@ -97,6 +97,9 @@ CANNOT_RUN = 3
 CHECKABLE_KINDS = ("measure", "dimension")
 
 WORD = re.compile(r"[A-Za-z_]\w*")
+# `prefix.field`: the one place a word in an expression refers to a field of a
+# source OTHER than the one declaring it, so `deps_of` resolves it over there.
+DOTTED = re.compile(r"([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
 # Aggregates that survive uniform duplication, so fanout does not move them.
 # `verify_goldens`' own fanout note lists the same four.
 FANOUT_SAFE = ("avg(", "stddev(", "min(", "max(")
@@ -177,31 +180,53 @@ def records(model: pathlib.Path, recursive: bool,
     control for a measure that no longer exists is not a validated measure.
     """
     parsed = parse_definitions(model, recursive=recursive)
-    by_name: dict[str, dict[str, Any]] = {}
+    # Keyed on (source, name) for the reason `parse_definitions` gives: a flat
+    # `dict[name]` resolves a same-named field in two sources to whichever was
+    # read first, so a model declaring `total_sales` on two sources links one
+    # of them to the other's definition and hashes it into the wrong chain.
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for r in parsed:
         if r.get("expr") is not None:
-            by_name.setdefault(r["name"], r)
+            by_key.setdefault((r["source"], r["name"]), r)
     # Anything an expression can traverse INTO: a declared join, or a source
     # name used as one. Both make the within-model comparison fanout-blind.
     joins = ({r["name"] for r in parsed if r["kind"] == "join"}
              | {r["source"] for r in parsed if r["source"]})
 
-    def deps_of(rec: dict[str, Any]) -> list[str]:
-        return sorted({w for w in WORD.findall(rec["expr"])
-                       if w in by_name and w != rec["name"]})
+    def deps_of(rec: dict[str, Any]) -> list[tuple[str, str]]:
+        """What this expression builds on, resolved in the source that owns it.
+
+        A bare word in a Malloy expression names a field of the DECLARING
+        source, so it resolves there and nowhere else. A dotted path names the
+        source or join it traverses into, so the word after the dot resolves in
+        that source instead. Resolving a bare word globally is what produced a
+        phantom edge from `source_b.doubled` to `source_a.total_sales` on a
+        model where only `source_a` declares the name.
+        """
+        src, expr = rec["source"], rec["expr"]
+        found = {(prefix, field)
+                 for prefix, field in DOTTED.findall(expr)
+                 if (prefix, field) in by_key}
+        # Dotted paths are blanked before the bare scan, so the field half of
+        # `source_a.total_sales` is not ALSO read as this source's own
+        # `total_sales` when both declare that name.
+        bare = DOTTED.sub(" ", expr)
+        found |= {(src, w) for w in WORD.findall(bare) if (src, w) in by_key}
+        found.discard((src, rec["name"]))
+        return sorted(found)
 
     # Depth-first so a dependency's sha exists before its dependants'.
-    shas: dict[str, str] = {}
+    shas: dict[tuple[str, str], str] = {}
 
-    def sha_of(name: str, stack: frozenset = frozenset()) -> str:
-        if name in shas:
-            return shas[name]
-        if name in stack:                       # cycle: hash the text alone
-            return sha256_text(by_name[name]["expr"])
-        rec = by_name[name]
+    def sha_of(key: tuple[str, str], stack: frozenset = frozenset()) -> str:
+        if key in shas:
+            return shas[key]
+        if key in stack:                        # cycle: hash the text alone
+            return sha256_text(by_key[key]["expr"])
+        rec = by_key[key]
         v = expr_sha(rec["expr"],
-                     [sha_of(d, stack | {name}) for d in deps_of(rec)])
-        shas[name] = v
+                     [sha_of(d, stack | {key}) for d in deps_of(rec)])
+        shas[key] = v
         return v
 
     out = []
@@ -238,8 +263,8 @@ def records(model: pathlib.Path, recursive: bool,
             "source": r["source"],
             "name": r["name"],
             "expr": r["expr"],
-            "exprSha": sha_of(r["name"]),
-            "depends": [entity_id(by_name[d]["kind"], by_name[d]["source"], d)
+            "exprSha": sha_of((r["source"], r["name"])),
+            "depends": [entity_id(by_key[d]["kind"], d[0], d[1])
                         for d in deps],
             "check": {"kind": "unreadable" if incomplete(r["expr"])
                               else "raw" if why else "within_model"},
