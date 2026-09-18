@@ -35,7 +35,10 @@ import request from "supertest";
 import type { CompileController } from "./controller/compile.controller";
 import type { ConnectionController } from "./controller/connection.controller";
 import { internalErrorToHttpError } from "./errors";
-import { queryConcurrency } from "./query_concurrency";
+import {
+   queryConcurrency,
+   resetActiveQueryCountForTesting,
+} from "./query_concurrency";
 
 /** Restored after each case so a cap set here cannot leak into another file. */
 const ORIGINAL_CAP = process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
@@ -46,6 +49,11 @@ afterEach(() => {
    } else {
       process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = ORIGINAL_CAP;
    }
+   // The slot counter is module-global and this file runs in a process with 170
+   // other spec files. A case that leaked a slot would not fail here; it would
+   // make a later cap-of-1 case fail on its FIRST request rather than on the
+   // admission it is testing, which reads as the gate being broken.
+   resetActiveQueryCountForTesting();
 });
 
 /** A promise plus the handle that settles it, so a request can be held open. */
@@ -241,9 +249,12 @@ describe("compile and sqlSource are admission-controlled", () => {
  * rather than the routes: reverting `queryConcurrency()` out of `server.ts`
  * leaves every one of them green. This block closes that gap by reading the
  * registrations themselves, the way `data_apps_route_parity.spec.ts` pins a
- * route -- one targeted match per route literal, no window extraction and no
- * comment stripping, so it cannot be satisfied by a comment or drift into the
- * maintenance liability the source-scan spec it replaced became.
+ * route -- one targeted match per route literal rather than the window
+ * extraction that made the source-scan spec this replaced a maintenance
+ * liability. Line comments ARE stripped from the matched span: a comment
+ * naming `queryConcurrency()` in place of the call is the shape someone
+ * removing a gate would plausibly leave behind, and it would otherwise satisfy
+ * the assertion on its own.
  */
 /**
  * Reads a source file with line endings normalised to LF.
@@ -256,6 +267,20 @@ describe("compile and sqlSource are admission-controlled", () => {
  */
 function readSourceLf(filePath: string): string {
    return readFileSync(filePath, "utf8").replace(/\r\n/gu, "\n");
+}
+
+/**
+ * Line comments removed, so a comment naming `queryConcurrency()` cannot stand
+ * in for the call.
+ *
+ * Someone removing a gate would plausibly document why, naming the thing they
+ * removed -- which is exactly the text these assertions search for, so without
+ * this the scan passes on the comment alone. Line comments only: the block form
+ * `/\*[\s\S]*?\*\//` is unsound on `server.ts`, where the `/*` inside a route
+ * literal such as `public/*` opens a comment that swallows most of the file.
+ */
+function withoutLineComments(source: string): string {
+   return source.replace(/^\s*\/\/.*$/gmu, "");
 }
 
 describe("every compile and sqlSource route registers the concurrency gate", () => {
@@ -328,22 +353,25 @@ describe("every compile and sqlSource route registers the concurrency gate", () 
          // the verb or the path alone: the first app.put( in the file is a
          // different route, and the path also appears on a GET that is correctly
          // ungated.
-         const start = verb
-            ? source.indexOf(
-                 literal,
-                 source.indexOf(`${verb}\n   \`${literal}`),
-              )
+         // Assert the ANCHOR resolved, not just that some index came back: a
+         // missed verb anchor returns -1, and `indexOf(literal, -1)` restarts at
+         // 0 and silently matches a different registration of the same path --
+         // reporting the wrong route as ungated rather than reporting a broken
+         // matcher.
+         const anchorAt = verb
+            ? source.indexOf(`${verb}\n   \`${literal}`)
             : source.indexOf(literal);
          expect(
-            start,
+            anchorAt,
             `route literal not found in ${file}; if it was renamed, update this list`,
          ).toBeGreaterThan(-1);
+         const start = verb ? source.indexOf(literal, anchorAt) : anchorAt;
          // From the literal to the handler that follows it. The gate is an
          // argument between the two, so a registration that drops it fails here.
          const handlerAt = source.indexOf("async (req, res)", start);
          expect(handlerAt).toBeGreaterThan(start);
          expect(
-            source.slice(start, handlerAt),
+            withoutLineComments(source.slice(start, handlerAt)),
             `${literal} in ${file} registers no queryConcurrency() before its handler`,
          ).toContain("queryConcurrency()");
       });

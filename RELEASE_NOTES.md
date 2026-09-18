@@ -52,7 +52,14 @@ the submitted text and rewrites the package under its lock.
 
 A deployment that finds the cap too tight once authoring traffic counts against
 it can raise `PUBLISHER_MAX_CONCURRENT_QUERIES` -- 64 or 128 -- rather than
-leaving these routes ungated.
+leaving these routes ungated. Raise it knowing what it governs: one pool bounds
+aggregate memory for concurrent warehouse work, so a cap sized to absorb
+authoring pressure also raises the ceiling on concurrent query memory.
+
+What this does not cover, so the entry is not read as a complete list:
+`?reload=true` answers to the memory governor but not to this cap, and the REST
+connection `schemas` and `tables` routes and the MCP `search_database_schema`
+tool take no slot.
 
 ## [Unreleased] - two server defaults now close instead of open
 
