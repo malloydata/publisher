@@ -343,5 +343,68 @@ class ControlsBlock(unittest.TestCase):
         self.assertNotIn('"qid"', self.block(0))
 
 
+class RetrievalMissOnAPassingCase(unittest.TestCase):
+    """A correct answer that never received a required entity is a finding.
+
+    It was silently dropped in three places: `attribute()` short-circuited on
+    `passed`, `summarise()` dropped the empty label, and `diagnose.py` routed
+    `match` to a control group. Measured on one run, 3 of 4 findings sat on
+    passing cases and produced nothing.
+    """
+
+    def case(self, qid="q", required=("measure:m:total",)):
+        return {"qid": qid, "coverage": "covered",
+                "expectedEntities": {"required": list(required)}}
+
+    def events(self, qid, returned, targets):
+        return [
+            {"kind": "attempt", "qid": qid, "sample": None, "phase": "baseline"},
+            {"kind": "score", "qid": qid, "sample": None, "phase": "baseline",
+             "verdict": "match", "reason": "ok"},
+            {"kind": "tool_call", "qid": qid, "sample": None, "phase": "baseline",
+             "tool": "get_context",
+             "rankedSummary": {"entityIds": list(returned)},
+             "target_shapes": [{"type": t, "has_text": True} for t in targets]},
+        ]
+
+    def test_a_pass_that_missed_an_entity_yields_a_finding(self):
+        ev = self.events("q", [], ["source", "dimension"])
+        row = diagnose.retrieval_finding(self.case(), ev,
+                                         ("q", None, "baseline"), "match")
+        self.assertIsNotNone(row)
+        # Deterministic: it needed a measure and sent no measure target.
+        self.assertIn("never asked", row["where_to_fix"])
+        # And the answer is still not a failure.
+        self.assertFalse(row["failed"])
+
+    def test_a_pass_that_received_everything_yields_nothing(self):
+        ev = self.events("q", ["measure:m:total"], ["measure"])
+        self.assertIsNone(diagnose.retrieval_finding(
+            self.case(), ev, ("q", None, "baseline"), "match"))
+
+    def test_it_calls_the_real_scorer_rather_than_restating_the_rule(self):
+        # Two definitions of "a miss" would drift, and the run summary and the
+        # diagnosis would then disagree about what happened.
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("score_retrieval.score_case", src)
+
+    def test_the_prompt_says_the_answer_was_correct(self):
+        # Without it the diagnoser reads the evidence as a wrong answer and
+        # goes looking for a number that is not wrong.
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("THIS ANSWER WAS CORRECT", src)
+        self.assertIn("answered_correctly", src)
+
+    def test_there_is_an_opt_out(self):
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("--no-retrieval-misses", src)
+
+    def test_the_coverage_denominator_excludes_them(self):
+        # They are passes. Counting a diagnosed pass against a non-passing
+        # denominator printed "2 of 1 non-passing case(s) diagnosed (200%)".
+        src = pathlib.Path(diagnose.__file__).read_text()
+        self.assertIn("good_failures", src)
+
+
 if __name__ == "__main__":
     unittest.main()

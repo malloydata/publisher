@@ -23,6 +23,22 @@ repair closes that. Take the stable list `flip_table.py` prints and pass
 `--only <qids> --verdicts near_match`. Never diagnose a one-armed `near_match`;
 that is noise, and it sends an agent to fix a model that is already right.
 
+**A correct answer can still carry a finding.** A case that answered right
+while a required entity never reached it is diagnosed too, for the retrieval
+miss alone, and `diagnose.py` selects it automatically. The answer was right by
+another route, and naming that route is the job: on the run this rule comes
+from it was always the same one, the agent rebuilding the model's own measure
+inline. That held while the measure was `count()` and failed the moment one
+carried a grain rule, producing the run's only wrong answer. Three of the four
+findings in that run sat on passing cases and, before this, produced nothing.
+
+**"It worked anyway" is not a reason to leave the model or the skills
+unfixed.** An answer that is right without the model's own entity is right for
+now, not right by design. Write the issue against the miss, record that the
+answer was correct so nobody reads it as a wrong number, and do not soften the
+finding because the number came out right. `--no-retrieval-misses` opts out for
+a run that only wants answer failures.
+
 Holdout is withheld so the acceptance check keeps something the improve step
 never saw. A **measure-only** run never reaches improve, so it is holding those
 cases back from nothing: pass `--include-holdout` there. The script refuses it

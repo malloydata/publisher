@@ -60,6 +60,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
                            manifest_skills, skills_roots, spawn_agent)
 import ledger  # noqa: E402
+import score_retrieval  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -208,12 +209,25 @@ the analysis inside it is.
 
 
 def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
-                 a: argparse.Namespace, art: pathlib.Path) -> dict[str, Any]:
+                 a: argparse.Namespace, art: pathlib.Path, *,
+                 answered_correctly: bool = False) -> dict[str, Any]:
     d = art / qid
     out = d / "diagnosis.json"
     if out.exists() and not a.force:
         return {**json.loads(out.read_text()), "qid": qid, "_cached": True}
 
+    # Said up front, because the evidence would otherwise read as a wrong
+    # answer and the diagnosis would go looking for one. The finding here is
+    # narrower: a required entity never reached the answerer, and the answer
+    # was right anyway -- by another route, which is worth naming.
+    correct_line = ("\nTHIS ANSWER WAS CORRECT. Diagnose the RETRIEVAL miss "
+                    "only: a required entity never reached the answerer and "
+                    "the answer was right without it. Say by what route it "
+                    "was right (a rebuilt measure, a sibling field, the "
+                    "source docs), and do NOT look for a wrong number. An "
+                    "answer that is right without the model's own entity is "
+                    "right for now, not right by design.\n"
+                    if answered_correctly else "")
     platform = a.target == "platform"
     scope_line = ""
     if platform and a.scope:
@@ -236,7 +250,7 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
         DIAGNOSE_PROMPT.format(
             environment=a.environment, package=a.package,
             tools_name="the hosted platform" if platform else "Publisher",
-            scope_line=scope_line,
+            scope_line=scope_line + correct_line,
             evidence=json.dumps(evidence_for(qid, case, events),
                                 indent=2)[:14000]),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
@@ -339,6 +353,19 @@ def validate(obj: dict[str, Any], codes: set[str]) -> list[str]:
     if not obj.get("probes"):
         bad.append("no probes recorded")
     return bad
+
+
+def retrieval_finding(case: dict[str, Any], events: list[dict[str, Any]],
+                      key: tuple, verdict: str | None) -> dict[str, Any] | None:
+    """The retrieval attribution for one case, when there is one to report.
+
+    Calls the real scorer rather than restating its rule: `where_to_fix` is
+    non-empty exactly when a required entity did not reach the answerer, and
+    `score_retrieval` owns that decision for the run summary too, so the two
+    cannot drift into disagreeing about what counts as a miss.
+    """
+    row = score_retrieval.score_case(case, events, key, verdict)
+    return row if row.get("where_to_fix") else None
 
 
 def behaviour_stats(qid: str, events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -532,6 +559,12 @@ def main(argv: list[str] | None = None) -> int:
                          "will not close it -- take the stable list from "
                          "flip_table.py and pass --verdicts near_match. Never "
                          "diagnose a one-armed near_match; that is noise.")
+    ap.add_argument("--no-retrieval-misses", action="store_true",
+                    help="do not diagnose a case that answered correctly but "
+                         "never received a required entity. Those are real "
+                         "findings -- the answer was right by another route -- "
+                         "so this is an opt-out for a run that only wants "
+                         "answer failures, not a default.")
     ap.add_argument("--include-holdout", action="store_true",
                     help="diagnose holdout cases too. Holdout is normally "
                          "withheld so the acceptance check keeps something "
@@ -641,11 +674,11 @@ def main(argv: list[str] | None = None) -> int:
     # they covered the failures; they covered 44% of them, and nothing said so.
     # Each case lands in exactly one bucket, so the buckets sum to the scored
     # cases and a reader can see what the clusters are silent about.
-    failed, passed = [], []
+    failed, passed, retrieval_only = [], [], []
     excluded: dict[str, list[str]] = {}
 
-    def exclude(why: str, qid: str) -> None:
-        excluded.setdefault(why, []).append(qid)
+    def exclude(why: str, *qids: str) -> None:
+        excluded.setdefault(why, []).extend(qids)
 
     for e in events:
         if e.get("kind") != "score":
@@ -667,6 +700,17 @@ def main(argv: list[str] | None = None) -> int:
                     qid)
         elif verdict == "match":
             passed.append(qid)
+            # A correct answer can still rest on a retrieval miss, and that is
+            # a finding: the answer was right by another route, which on the
+            # run this comes from meant the agent rebuilding the model's own
+            # measure inline. It held while the measure was `count()` and
+            # failed the moment one carried a grain rule. "It worked anyway" is
+            # not a reason to leave the gap, so the case is diagnosed -- with
+            # its correctness recorded, so nobody reads the issue as a wrong
+            # number.
+            key = (qid, e.get("sample"), e.get("phase"))
+            if retrieval_finding(case, events, key, verdict):
+                retrieval_only.append(qid)
         elif case.get("split") == "holdout" and not a.include_holdout:
             exclude("holdout, withheld from diagnosis", qid)
         elif verdict not in want_verdicts:
@@ -674,25 +718,42 @@ def main(argv: list[str] | None = None) -> int:
         else:
             failed.append(qid)
     failed = list(dict.fromkeys(failed))
+    retrieval_only = [q for q in dict.fromkeys(retrieval_only)
+                      if q not in failed]
+    if a.no_retrieval_misses:
+        if retrieval_only:
+            exclude("passed with a retrieval miss (--no-retrieval-misses)",
+                    *retrieval_only)
+        retrieval_only = []
 
     if a.only:
         want = {q.strip() for q in a.only.split(",")}
         failed = [q for q in failed if q in want]
+        retrieval_only = [q for q in retrieval_only if q in want]
     if a.limit:
         failed = failed[:a.limit]
-    if not failed:
+        retrieval_only = retrieval_only[:max(0, a.limit - len(failed))]
+    # Diagnosed together, because the question asked of both is the same one:
+    # why did the model not deliver what the answer needed. They are told
+    # apart on the way in, so the prompt can say the answer was right, and on
+    # the way out, so a reader never mistakes one for a wrong number.
+    to_diagnose = failed + retrieval_only
+    if not to_diagnose:
         print("no diagnosable failures in this run")
         return 0
 
     art = a.run / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
-    print(f"tier 1: {len(failed)} failed dev cases, {a.model}, "
+    extra = (f" + {len(retrieval_only)} that answered correctly without a "
+             f"required entity" if retrieval_only else "")
+    print(f"tier 1: {len(failed)} failed dev cases{extra}, {a.model}, "
           f"{a.parallel} at a time  ({len(codes)} codes in the skill)")
 
     issues: list[dict[str, Any]] = []
     with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
-        fut = {ex.submit(diagnose_one, q, cases[q], events, a, art): q
-               for q in failed}
+        fut = {ex.submit(diagnose_one, q, cases[q], events, a, art,
+                         answered_correctly=q in retrieval_only): q
+               for q in to_diagnose}
         for i, f in enumerate(futures.as_completed(fut), 1):
             q = fut[f]
             try:
@@ -701,11 +762,13 @@ def main(argv: list[str] | None = None) -> int:
                 obj = {"qid": q, "error": f"{type(exc).__name__}: {exc}"[:200]}
             issues.append(obj)
             if obj.get("error"):
-                print(f"  [{i}/{len(failed)}] ! {q} {obj['error']}", flush=True)
+                print(f"  [{i}/{len(to_diagnose)}] ! {q} {obj['error']}",
+                      flush=True)
             else:
                 obj["_invalid"] = validate(obj, codes)
                 tag = "=" if obj.get("_cached") else ("!" if obj["_invalid"] else ".")
-                print(f"  [{i}/{len(failed)}] {tag} {q} "
+                mark = " (answered correctly)" if q in retrieval_only else ""
+                print(f"  [{i}/{len(to_diagnose)}] {tag} {q}{mark} "
                       f"{obj.get('component')}/{obj.get('primary_code')} "
                       f"-> {obj.get('owner')}"
                       + (f"  [{'; '.join(obj['_invalid'])}]"
@@ -818,23 +881,39 @@ def main(argv: list[str] | None = None) -> int:
     invalid = [i for i in good if i.get("_invalid")]
     spend = sum(i.get("cost_usd") or 0 for i in issues) + \
         (clusters.get("_cost_usd") or 0)
-    print(f"\n{len(good)}/{len(failed)} diagnosed, "
+    print(f"\n{len(good)}/{len(to_diagnose)} diagnosed, "
           f"{len(clusters.get('clusters', []))} clusters, "
           f"{len(new) // 2} issues in {ev_path}")
+    if retrieval_only:
+        # Counted apart from the failures on purpose. These answers were
+        # RIGHT; what is wrong is that the model did not deliver what they
+        # needed and they were right by another route. Folding them into a
+        # failure count would misreport the run.
+        print(f"  of those, {len(retrieval_only)} answered correctly and are "
+              f"diagnosed for a retrieval miss only: "
+              f"{', '.join(sorted(retrieval_only))}")
     # What the clusters are silent about. A run that diagnosed 8 of 18
     # non-passing cases reported its six clusters as though they covered the
     # failures, and the exclusions -- five holdout, two near_match, one
     # unparseable diagnoser reply, one lost verdict -- were each individually
     # correct and never added up anywhere. The denominator is every case the
     # run did NOT pass, because that is the number a reader has in mind.
+    # `retrieval_only` cases are PASSES and stay out of this denominator: the
+    # account answers "what did the clusters not cover, of what did not pass".
     not_passing = len(failed) + sum(len(v) for v in excluded.values())
+    # Numerator and denominator must describe the same population. `good` now
+    # includes cases that PASSED and were diagnosed for a retrieval miss, and
+    # counting those against a non-passing denominator printed "2 of 1 (200%)".
+    # They are reported on their own line above instead.
+    good_failures = [i for i in good if i.get("qid") in set(failed)]
     if not_passing:
-        print(f"\ncoverage: {len(good)} of {not_passing} non-passing case(s) "
-              f"diagnosed ({100 * len(good) / not_passing:.0f}%)")
+        print(f"\ncoverage: {len(good_failures)} of {not_passing} "
+              f"non-passing case(s) diagnosed "
+              f"({100 * len(good_failures) / not_passing:.0f}%)")
         for why, qids in sorted(excluded.items(),
                                 key=lambda kv: (-len(kv[1]), kv[0])):
             print(f"  {len(qids):>3} {why}: {', '.join(sorted(qids))}")
-        undiagnosed = len(failed) - len(good)
+        undiagnosed = len(failed) - len(good_failures)
         if undiagnosed:
             print(f"  {undiagnosed:>3} selected but not diagnosed (the "
                   f"diagnoser errored or its reply did not parse)")

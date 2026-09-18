@@ -203,13 +203,17 @@ because a report that omits them makes every failure look like the model's:
 Two numbers here are routinely misread, so qualify them in the report or leave
 them out:
 
-- **Entity precision measures nothing unless the set authored `acceptable`, and
-  it ignores rank either way.** The denominator is everything returned and the
-  numerator is only the strictly required entities, so a model whose answer came
-  back at rank 3 of 51 scores 2%, identically to one that came back at rank 51.
-  Report the RANK instead: "required entities came back at median rank 3, 9 of
-  16 in the top 5" is a statement about retrieval; "precision 3.6%" is a
-  statement about how many fields the package has.
+- **Entity precision is a PAYLOAD number, not a retrieval-quality one.** Report
+  it as what it measures: how much context the agent was handed against how
+  much it needed. 52 entities returned per attempt for the 2 an answer used is
+  a real cost, in tokens and in attention, and it is worth tracking. What it
+  cannot tell you is whether retrieval worked, because the denominator is
+  everything returned and it ignores rank: an entity that came back at rank 3
+  of 51 scores identically to one at rank 51.
+- **For quality, report rank.** "Required entities came back at median rank 3,
+  9 of 16 in the top 5" is a statement about retrieval. Precision alone reads
+  as an indictment of it and is mostly a statement about how many fields the
+  package has.
 - **Read the entities that did NOT come back, and what was asked for.** That is
   where the retrieval signal actually is, and the misses are rarely independent.
   Measured on one run: 5 required entities never came back as ranked results,

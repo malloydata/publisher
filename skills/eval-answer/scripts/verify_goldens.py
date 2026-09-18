@@ -46,6 +46,17 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  is compared with the model's own definition of X. Catches the
                  rubric that goes stale when the model is fixed.
 
+4b. rubric alternatives -- a rubric that accepts an alternative reading
+                 ("either the full name or the nickname is fine") whose
+                 `expectedEntities.required` names one id per concept and no
+                 `requiredAnyOf` group. The two halves of a key are read by
+                 different things -- prose by the judge, ids by retrieval
+                 scoring -- so they can disagree silently, and an answer taking
+                 the other reading then scores CORRECT and loses recall in the
+                 same run. Review items: the phrasing is a heuristic over
+                 prose. Measured over the sets available locally: 3 findings
+                 over 64 rubrics, all three genuine.
+
 5. set names  -- every `required` / `requiredAnyOf` entity id, and every
                  `mustNotUse` name, exists in the model under test (`--model`).
                  An id naming a field this package does not have can never be
@@ -725,6 +736,57 @@ def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+# A rubric that sanctions an alternative reading, in the words sets actually
+# use. Deliberately narrow: these are phrases that grant the ANSWER a choice,
+# not any use of the word "or".
+_ALLOWS_ALT = re.compile(
+    r"\b(either\b[^.]{0,80}\bor\b"
+    r"|or the \w+ is (?:fine|correct|acceptable|also correct)"
+    r"|is (?:also )?(?:fine|correct|acceptable)\b[^.]{0,40}\beither"
+    r"|any of (?:these|the following)"
+    r"|(?:is|are) (?:also )?acceptable)", re.I)
+
+
+def rubric_alternative_findings(cases: list[dict[str, Any]]) -> list[str]:
+    """Rubrics that accept an alternative while `required` demands one id.
+
+    The two halves of an answer key are read by different things and can
+    disagree without anything noticing: the rubric is prose for the judge, and
+    `expectedEntities.required` is ids for retrieval scoring. When the rubric
+    says "either the full carrier name or the nickname is fine" and the
+    required list names only `dimension:carriers:name`, an answer that uses the
+    nickname is scored CORRECT by the judge and loses recall in the same run.
+
+    That is not a retrieval finding, it is the key contradicting itself, and it
+    was mistaken for a retrieval failure on a real run. `requiredAnyOf` is the
+    repair: a group is satisfied when any member is delivered.
+
+    REVIEW, not a hard finding. The phrasing is a heuristic over prose, a set
+    may legitimately allow an alternative that is not an entity choice ("either
+    rounding is fine"), and a false alarm here costs a glance while a missed
+    one costs a wrong attribution.
+    """
+    out = []
+    for case in cases:
+        g = case.get("golden") or {}
+        rubric = g.get("rubric") or ""
+        if not rubric or not _ALLOWS_ALT.search(rubric):
+            continue
+        exp = case.get("expectedEntities") or {}
+        if exp.get("requiredAnyOf"):
+            continue
+        if not exp.get("required"):
+            continue
+        m = _ALLOWS_ALT.search(rubric)
+        out.append(
+            f"review {case['qid']}: the rubric accepts an alternative "
+            f"({m.group(0)[:60].strip()!r}) but expectedEntities.required "
+            f"names one id per concept and no requiredAnyOf group. An answer "
+            f"taking the other reading scores correct and loses recall in the "
+            f"same run")
+    return out
+
+
 def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
     """Set names that do not exist in the model under test.
 
@@ -900,6 +962,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     for c in chosen:
         findings += rubric_number_findings(c)
         findings += axis_findings(c, set_dir)
+    findings += rubric_alternative_findings(chosen)
     findings += stale_rubric_claims(chosen, model_definitions(model))
     findings += unknown_name_findings(chosen, model_text(model))
     findings += question_drift_findings(chosen)
