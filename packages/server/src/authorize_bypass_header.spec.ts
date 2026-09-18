@@ -1,11 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import {
    BYPASS_AUTHORIZE_HEADER,
+   BYPASS_AUTHORIZE_SECRET_ENV,
    readBypassAuthorize,
 } from "./authorize_bypass_header";
 
@@ -15,67 +16,129 @@ const withHeaders = (
    headers,
 });
 
+const SECRET = "s3cret-bypass-value";
+
 describe("readBypassAuthorize", () => {
-   it("reads the bypass from the header", () => {
-      expect(
-         readBypassAuthorize(
-            withHeaders({ [BYPASS_AUTHORIZE_HEADER]: "true" }),
-         ),
-      ).toBe(true);
+   const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+
+   afterEach(() => {
+      if (saved === undefined) {
+         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+      } else {
+         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
+      }
    });
 
-   it("tolerates casing and surrounding whitespace", () => {
-      expect(
-         readBypassAuthorize(
-            withHeaders({ [BYPASS_AUTHORIZE_HEADER]: " True " }),
-         ),
-      ).toBe(true);
-   });
+   describe("with a secret configured", () => {
+      beforeEach(() => {
+         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = SECRET;
+      });
 
-   it("returns undefined when the header is absent", () => {
-      expect(readBypassAuthorize(withHeaders({}))).toBeUndefined();
-   });
-
-   it.each(["false", "1", "yes", "", "TRUEISH"])(
-      "returns undefined for the non-opt-in value %p",
-      (value) => {
+      it("grants the bypass when the header presents the secret", () => {
          expect(
             readBypassAuthorize(
-               withHeaders({ [BYPASS_AUTHORIZE_HEADER]: value }),
+               withHeaders({ [BYPASS_AUTHORIZE_HEADER]: SECRET }),
+            ),
+         ).toBe(true);
+      });
+
+      it("returns undefined when the header is absent", () => {
+         expect(readBypassAuthorize(withHeaders({}))).toBeUndefined();
+      });
+
+      // `"true"` is the value that used to be sufficient on its own. It must
+      // now read as just another wrong secret.
+      it.each(["true", " True ", "false", "1", "yes", "", "TRUEISH"])(
+         "returns undefined for the non-secret value %p",
+         (value) => {
+            expect(
+               readBypassAuthorize(
+                  withHeaders({ [BYPASS_AUTHORIZE_HEADER]: value }),
+               ),
+            ).toBeUndefined();
+         },
+      );
+
+      // A secret is an exact value; a padded variant is not it.
+      it("returns undefined for the secret with surrounding whitespace", () => {
+         expect(
+            readBypassAuthorize(
+               withHeaders({ [BYPASS_AUTHORIZE_HEADER]: ` ${SECRET} ` }),
             ),
          ).toBeUndefined();
-      },
-   );
+      });
 
-   // What Node actually does with a duplicated custom header: joins the values
-   // into one comma-separated string. Not `"true"`, so it denies. (The array arm
-   // below is reachable only for set-cookie, but the type allows it, so pin it
-   // too rather than leave a shape unhandled.)
-   it("returns undefined for a duplicated header, as Node joins it", () => {
-      expect(
-         readBypassAuthorize(
-            withHeaders({ [BYPASS_AUTHORIZE_HEADER]: "true, true" }),
-         ),
-      ).toBeUndefined();
+      // Guards the hash-then-compare: a differing length must deny rather than
+      // throw out of `timingSafeEqual`.
+      it.each([`${SECRET}x`, SECRET.slice(0, -1)])(
+         "returns undefined for the wrong-length value %p without throwing",
+         (value) => {
+            expect(
+               readBypassAuthorize(
+                  withHeaders({ [BYPASS_AUTHORIZE_HEADER]: value }),
+               ),
+            ).toBeUndefined();
+         },
+      );
+
+      // What Node actually does with a duplicated custom header: joins the
+      // values into one comma-separated string, which cannot equal the secret.
+      // (The array arm below is reachable only for set-cookie, but the type
+      // allows it, so pin it too rather than leave a shape unhandled.)
+      it("returns undefined for a duplicated header, as Node joins it", () => {
+         expect(
+            readBypassAuthorize(
+               withHeaders({
+                  [BYPASS_AUTHORIZE_HEADER]: `${SECRET}, ${SECRET}`,
+               }),
+            ),
+         ).toBeUndefined();
+      });
+
+      it("returns undefined for an array-valued header", () => {
+         expect(
+            readBypassAuthorize(
+               withHeaders({ [BYPASS_AUTHORIZE_HEADER]: [SECRET, SECRET] }),
+            ),
+         ).toBeUndefined();
+      });
+
+      // THE safety pin for the whole header design. If this ever returns true,
+      // a gate-disabling control is settable from the router's public
+      // QueryRequest body, which is the `bypassFilters` mistake repeated on
+      // #(authorize).
+      it("ignores a bypassAuthorize field on the request body", () => {
+         const req = {
+            headers: {},
+            body: { bypassAuthorize: true },
+         };
+         expect(readBypassAuthorize(req)).toBeUndefined();
+      });
    });
 
-   it("returns undefined for an array-valued header", () => {
-      expect(
-         readBypassAuthorize(
-            withHeaders({ [BYPASS_AUTHORIZE_HEADER]: ["true", "true"] }),
-         ),
-      ).toBeUndefined();
-   });
-
-   // THE safety pin for the whole header design. If this ever returns true, a
-   // gate-disabling control is settable from the router's public QueryRequest
-   // body, which is the `bypassFilters` mistake repeated on #(authorize).
-   it("ignores a bypassAuthorize field on the request body", () => {
-      const req = {
-         headers: {},
-         body: { bypassAuthorize: true },
-      };
-      expect(readBypassAuthorize(req)).toBeUndefined();
+   // Fail-closed. With no secret configured the bypass is unavailable, so even
+   // a caller that guesses the old `"true"` opt-in is refused.
+   describe("with no secret configured", () => {
+      it.each([undefined, "", "   "])(
+         "refuses the bypass when the secret env is %p",
+         (configured) => {
+            if (configured === undefined) {
+               delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+            } else {
+               process.env[BYPASS_AUTHORIZE_SECRET_ENV] = configured;
+            }
+            expect(
+               readBypassAuthorize(
+                  withHeaders({ [BYPASS_AUTHORIZE_HEADER]: "true" }),
+               ),
+            ).toBeUndefined();
+            expect(
+               readBypassAuthorize(
+                  withHeaders({ [BYPASS_AUTHORIZE_HEADER]: SECRET }),
+               ),
+            ).toBeUndefined();
+         },
+      );
    });
 });
 

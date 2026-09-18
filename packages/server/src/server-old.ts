@@ -401,9 +401,12 @@ export function registerLegacyRoutes(
       },
    );
 
-   // sqlSource (POST), per-project + per-package
+   // sqlSource (POST), per-project + per-package. Runs a live DB introspection,
+   // so it is admission-controlled like the query routes below; without the gate
+   // the legacy surface is an unbounded bypass of the modern one.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(
@@ -423,6 +426,7 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(
@@ -787,6 +791,9 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
+      // Real Malloy compilation; gated like the modern compile route so the
+      // legacy surface is not an unbounded bypass.
+      queryConcurrency(),
       async (req, res) => {
          try {
             const result = await compileController.compile(
