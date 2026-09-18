@@ -1,6 +1,6 @@
 ---
-id: xt-storage-variant
-tags: build-control, incremental, security, known-red
+id: a-merge-key-must-not-match-across-tenants-on-storage
+tags: build-control, incremental, security
 package: xts
 ---
 <!--
@@ -141,12 +141,14 @@ Expect:
 
 ## Note (since=2026-09-18)
 
-> **This one corrupts silently.** The colocated sibling is refused by the target
-> warehouse: Postgres raises `MERGE command cannot affect row a second time` and
-> the build fails, which is unavailable but not wrong. Here the build SUCCEEDS and
-> the rows are wrong afterwards — measured on a real DuckLake: org 1's restated
-> row is gone and org 2's row appears twice, from a refresh whose delta contained
-> nothing of org 2's. No error, and the serve path reports storage as usual.
+> **This is the tier where nothing else would have caught it.** The colocated
+> sibling is refused by its target warehouse: Postgres raises `MERGE command
+> cannot affect row a second time`, so the build fails — unavailable, but not
+> wrong. DuckDB has no such guard. Measured here before the fix: the build
+> SUCCEEDED, org 1's restated row was gone and org 2's row appeared twice, from a
+> refresh whose delta contained nothing of org 2's. No error, and the serve path
+> reported storage as usual.
 >
-> So the guard that makes the colocated case survivable is the target warehouse's,
-> not ours, and it does not hold on the tier this feature exists to enable.
+> So the guard that made the colocated case survivable was never ours, and it does
+> not hold on the tier this feature exists to enable. Both scenarios assert the
+> same rule because only together do they show that.

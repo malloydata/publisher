@@ -206,6 +206,7 @@ export function incrementalLineage(params: {
       watermarkName: watermark.name,
       watermarkType: watermark.malloyType,
       mergeKeys,
+      scopeColumns: d.scopeColumns,
       strategy: d.strategy as IncrementalStrategy,
    };
 }
