@@ -820,9 +820,14 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
                            f"whatever the model holds. Fix: "
                            f"measure:<source>:<name>, or dimension:/view:")
             elif not _id_named(e, text):
-                out.append(f"{qid}: required entity {e} names nothing in the "
-                           f"model under test, so it can only ever score as a "
-                           f"retrieval miss. Fix the id, or make it a "
+                out.append(f"{qid}: required entity {e} does not appear in "
+                           f"the model TEXT. Confirm with check_findable.py "
+                           f"before deleting it: this is a grep and cannot see "
+                           f"a column a source exposes implicitly. Measured, "
+                           f"dimension:airports:own_type appears zero times in "
+                           f"the .malloy and retrieves at relevance 1.0. If it "
+                           f"is not retrievable either, it can only ever score "
+                           f"as a retrieval miss; fix the id, or make it a "
                            f"requiredAnyOf group naming both packages' ids")
         for g in exp.get("requiredAnyOf") or []:
             if isinstance(g, list) and g and not any(_id_named(e, text) for e in g):
