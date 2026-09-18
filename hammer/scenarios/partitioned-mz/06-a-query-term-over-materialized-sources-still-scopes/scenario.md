@@ -23,10 +23,15 @@ refused (`dynamic_joined_where`), and this is what replaces it: the org term
 lives on the persisted sources, where it is stripped and re-applied, and the
 user term lives above them, where it was never in an artifact to begin with.
 
-What makes it work is that the serve shape accepts the same givens the author's
-model does. A shape that declared only the terms its own sources stripped would
-fail to compile a query mentioning `$USER_ID` and quietly serve the whole thing
-live — correct answers, no tier.
+Two properties are needed, and dropping either serves these answers live —
+correct, and unaccelerated.
+
+The shape must accept the same givens the author's model does. One that declared
+only the terms its own sources stripped would fail to compile a query mentioning
+`$USER_ID` and serve the whole thing live. That half holds.
+
+The shape must also carry `visible_orders` itself, over the two virtual bases.
+That half does not hold, for the reason in the note below.
 
 ## Publisher
 
@@ -181,28 +186,40 @@ Expect:
 | --------- |
 | 100       |
 
-## Note (since=2026-09-17)
+## Note (since=2026-09-18)
 
 > **Red on the tier, not on the answers.** Every answer above is correct today —
 > the org and user terms both apply, and no caller sees another's rows. What does
-> not happen is routing, which `servedFrom` reports directly on the first query.
-> The mutate-and-requery at the end corroborates it from the other side: the
-> re-query returns the NEW value, so the rows were recomputed rather than read
-> from a frozen artifact.
+> not happen is routing, which `servedFrom` reports on the first query, and which
+> the mutate-and-requery at the end corroborates from the other side: the
+> re-query returns the NEW value, so the rows were recomputed.
 >
-> The serve shape rebinds materialized sources and only those. For this package it
-> declares `orders_all`, `vis_all` and the model's givens, and nothing named
-> `visible_orders` — so a query naming the entry point cannot compile against the
-> shape and falls back, which is the safe direction and the reason the answers are
-> right anyway.
+> The machinery to close it exists. The serve shape can carry a non-persisted
+> source over materialized bases, reduced to what it adds to its base and refused
+> outright if any join it declares reaches a source that is not materialized.
+> What it may lawfully be applied TO is the open question, and it is a question
+> about `#@ -persist` rather than about givens or partitioning.
 >
-> Closing it means carrying a non-persisted source that derives from materialized
-> ones onto the shape, the way joins and views are already lifted verbatim by
-> location. That is a serve-transform change with its own questions — which
-> derived sources to carry, and failing closed when one reaches a source that is
-> not materialized — rather than anything about givens or partitioning, which is
-> why it is scoped out of the work this suite ships with.
+> A derived source over a persisted base has two states and needs a third.
+> Written plainly it INHERITS `#@ persist`, becomes a build target of its own,
+> and is refused — here as `dynamic_joined_where`, with a message that says to
+> "enter through a non-persisted extension that declares the join instead".
+> Written the way that message advises, with `#@ -persist`, it is documented as
+> recomputing "instead of using the pre-built table", which `opt-out-persist-
+> recomputes` pins. So the refusal directs the author onto the one annotation
+> that forbids the tier they were trying to reach, and the arrangement this
+> scenario describes cannot be both built and served.
 >
-> Until then the arrangement is a correctness pattern without its performance
-> payoff, and this scenario is what notices when that changes: it reports FIXED,
-> and fails the run, the day the shape carries the entry point.
+> Worth knowing which way the opt-out currently holds: it holds BY ACCIDENT. The
+> serve path has no notion of it — bindings are keyed by source name, and every
+> reader of a persisted base picks up the stored table. An opted-out source is
+> served live only because no derived source is ever on the shape at all. The
+> moment one can be, the opt-out needs honoring deliberately, and the lift above
+> excludes `#@ -persist` for exactly that reason.
+>
+> Closing this means settling what `#@ -persist` promises: only that the source
+> is not itself built, or also that its reads bypass its base's table. Malloy's
+> own `findPersistentDependencies` bubbles a persistent dependency up through a
+> non-persistent source, which reads as the base's table still being substituted;
+> the publisher's documentation reads the other way. Until that is settled this
+> scenario stays red, and it is what notices on the day it is not.

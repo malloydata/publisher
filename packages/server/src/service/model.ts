@@ -65,6 +65,7 @@ import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
    buildServeShapeModelForBindings,
+   liftDerivedSources,
    type ServeShapeGiven,
    buildVirtualMap,
    extractJoins,
@@ -76,6 +77,8 @@ import {
    type RollupShapeGroup,
    sliceSourceRange,
    type ServeBinding,
+   type DerivedSourceLift,
+   type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
 } from "./materialization_serve_transform";
@@ -4472,7 +4475,15 @@ export class Model {
                          }
                        : b,
                  );
-         const materializer = this.buildServeShapeMaterializer(shaped, groups);
+         // Derived entry points ride the richest rung only. They are the most
+         // that can be carried, and confining them here is what bounds the blast
+         // radius: every rung below is byte-identical to the shape this package
+         // compiled before lifting existed.
+         const materializer = this.buildServeShapeMaterializer(
+            shaped,
+            groups,
+            tier === 0 ? this.liftedDerivedSources(enriched) : [],
+         );
          // The last tier is virtual bases plus their filters. Unlike the tiers
          // above it, it can fail: a filter that cannot be reproduced (one
          // reaching through a join whose target is not materialized, or over a
@@ -4646,11 +4657,19 @@ export class Model {
    private buildServeShapeMaterializer(
       bindings: ServeBinding[],
       rollupGroups: RollupShapeGroup[] = [],
+      /**
+       * Non-persisted sources to carry over these bindings. Defaulted empty so
+       * every probe path — the per-binding filter probe especially — compiles
+       * the bindings ALONE: a lift failing there would withhold a binding that
+       * serves perfectly well on its own.
+       */
+      derived: DerivedSourceLift[] = [],
    ): ModelMaterializer {
       const { modelText } = buildServeShapeModelForBindings(
          bindings,
          rollupGroups,
          this.serveShapeGivens(),
+         derived,
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -4695,40 +4714,40 @@ export class Model {
     * parsing that text; views are emitted optimistically and pruned by the
     * shape-compile escalation in {@link compileServeShape} if they don't hold.
     */
-   private serveBindingsWithRefinements(
-      // No default. This function resolves a binding back into the AUTHOR's model
-      // — by name, for its field list — which a rollup cannot survive: its source
-      // name names nothing there, so the fields come back undefined and the
-      // binding is dropped. Defaulting to `this.serveBindings` would hand the
-      // whole set, rollups included, to any future caller that omitted the
-      // argument. Every caller states which set it means.
-      bindings: ServeBinding[],
-   ): ServeBinding[] {
-      const contents = (
-         this.modelDef as
-            | {
-                 contents?: Record<
-                    string,
-                    {
-                       sourceID?: unknown;
-                       fields?: unknown[];
-                       filterList?: unknown[];
-                    }
-                 >;
-              }
-            | undefined
-      )?.contents;
-      // sourceID -> author source name, for the join materialization gate.
+   /**
+    * The compiled-model facts the serve shape is assembled from: this model's
+    * `contents`, a sourceID index over it, and a reader that recovers a
+    * declaration's verbatim text from the author's file by location.
+    *
+    * Shared by the refinement extraction and the derived-source lift so the two
+    * read ONE view of the model. The file cache lives per call, which is what
+    * keeps a package's sources from re-reading the same file once each.
+    */
+   private authorModelLift(): {
+      contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
+      sourceNameById: Map<string, string>;
+      liftText: (location: SourceLocation) => string | undefined;
+   } {
+      const contents =
+         (
+            this.modelDef as
+               | {
+                    contents?: Record<
+                       string,
+                       DerivedSourceDef & { sourceID?: unknown }
+                    >;
+                 }
+               | undefined
+         )?.contents ?? {};
+      // sourceID -> author source name, for the join materialization gate and
+      // for resolving what a derived source extends.
       const sourceNameById = new Map<string, string>();
-      for (const [name, def] of Object.entries(contents ?? {})) {
+      for (const [name, def] of Object.entries(contents)) {
          if (typeof def?.sourceID === "string") {
             sourceNameById.set(def.sourceID, name);
          }
       }
-      const materializedSourceNames = new Set(
-         bindings.map((b) => b.sourceName),
-      );
-      // Cache each source file's text (or null when unreadable) across bindings.
+      // Cache each source file's text (or null when unreadable) across lookups.
       const fileCache = new Map<string, string | null>();
       const liftText = (location: SourceLocation): string | undefined => {
          if (!location?.url?.startsWith("file:")) return undefined;
@@ -4745,6 +4764,44 @@ export class Model {
          const text = fileCache.get(location.url);
          return text ? sliceSourceRange(text, location.range) : undefined;
       };
+      return { contents, sourceNameById, liftText };
+   }
+
+   /**
+    * The non-persisted sources that can be carried onto the shape over the
+    * supplied bindings — the entry points a caller's own term lives on.
+    *
+    * Carried at the RICHEST tier only (see {@link compileServeShape}). That is
+    * what makes this strictly additive: a lift that does not compile costs its
+    * own rung and nothing else, and every tier below is the shape this package
+    * already got, so a package serving today serves identically if the lift
+    * fails.
+    */
+   private liftedDerivedSources(
+      bindings: ServeBinding[],
+   ): DerivedSourceLift[] {
+      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      return liftDerivedSources({
+         contents,
+         sourceNameById,
+         shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
+         liftText,
+      });
+   }
+
+   private serveBindingsWithRefinements(
+      // No default. This function resolves a binding back into the AUTHOR's model
+      // — by name, for its field list — which a rollup cannot survive: its source
+      // name names nothing there, so the fields come back undefined and the
+      // binding is dropped. Defaulting to `this.serveBindings` would hand the
+      // whole set, rollups included, to any future caller that omitted the
+      // argument. Every caller states which set it means.
+      bindings: ServeBinding[],
+   ): ServeBinding[] {
+      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      const materializedSourceNames = new Set(
+         bindings.map((b) => b.sourceName),
+      );
       return (
          bindings
             .map((b) => {

@@ -510,7 +510,28 @@ function serveShapeFragment(binding: ServeBinding): string {
    // Everything here references the shape's columns, a sibling virtual source, or
    // an earlier refinement; anything it references that the shape lacks makes the
    // serve shape fail to compile, which safely falls back.
-   const refinements = binding.refinements ?? [];
+   const lines = refinementLines(binding.refinements ?? []);
+   if (lines.length > 0) {
+      source += ` extend {\n${lines.join("\n")}\n}`;
+   }
+   return `type: ${shapeTypeName} is {\n${fields}\n}\n${source}`;
+}
+
+/**
+ * The body of an `extend { … }` block, in the one order that resolves.
+ *
+ * Joins first (a dimension, measure, filter or view may reference a joined
+ * field), then dimensions and measures, then the source's own `where:` clauses
+ * (which may reference either), then views (which may reference any of them).
+ * One line per filter — see {@link FilterRefinement} for why they are never
+ * combined with `and`.
+ *
+ * Shared by the virtual rebind of a materialized source and the lift of a
+ * derived one so the two cannot drift into different orders: a change that
+ * resolved in one and not the other would show up as an unexplained fallback on
+ * whichever was not the case under test.
+ */
+function refinementLines(refinements: readonly SourceRefinement[]): string[] {
    const lines: string[] = [];
    for (const r of refinements) {
       if (r.kind === "join") lines.push(`   ${r.keyword}: ${r.text}`);
@@ -520,20 +541,13 @@ function serveShapeFragment(binding: ServeBinding): string {
          lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
       }
    }
-   // Filters after joins and fields, because a `where:` may reference a joined
-   // alias or a dimension declared above it, and before views for the same
-   // reason a view is emitted last. One line per entry — see
-   // {@link FilterRefinement} for why they are never combined with `and`.
    for (const r of refinements) {
       if (r.kind === "filter") lines.push(`   where: ${r.code}`);
    }
    for (const r of refinements) {
       if (r.kind === "view") lines.push(`   view: ${r.text}`);
    }
-   if (lines.length > 0) {
-      source += ` extend {\n${lines.join("\n")}\n}`;
-   }
-   return `type: ${shapeTypeName} is {\n${fields}\n}\n${source}`;
+   return lines;
 }
 
 /**
@@ -575,6 +589,230 @@ export function serveShapeDiagnostics(
    };
 }
 
+/**
+ * A source the author did NOT persist, carried onto the serve shape because
+ * everything it is built from is.
+ *
+ * Without this a query naming such a source cannot compile against the shape and
+ * is served live — correct answers, no tier — which is the whole cost of the
+ * arrangement the partitioned design recommends for a caller term that does not
+ * belong in an artifact (a term over a joined source's own filter). The term
+ * lives one level above the persisted sources, where it was never in an artifact
+ * to begin with, so serving it needs the entry point on the shape.
+ */
+export interface DerivedSourceLift {
+   /** The source name a query names. */
+   sourceName: string;
+   /** The source it extends. Emitted earlier in the shape, by construction. */
+   base: string;
+   /** Only what this source ADDS to its base — see {@link liftDerivedSources}. */
+   refinements: SourceRefinement[];
+}
+
+/** One lifted source, as `source: X is <base> extend { … }`. */
+function derivedSourceFragment(lift: DerivedSourceLift): string {
+   const lines = refinementLines(lift.refinements);
+   const body = lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
+   return `source: ${lift.sourceName} is ${lift.base}${body}`;
+}
+
+/** The compiled-model facts {@link liftDerivedSources} reads. */
+export interface DerivedLiftContext {
+   /** The model's `contents`, by source name. */
+   contents: Record<string, DerivedSourceDef>;
+   /** sourceID -> author source name. */
+   sourceNameById: Map<string, string>;
+   /** Names already on the shape: the materialized sources it rebinds. */
+   shapeSourceNames: ReadonlySet<string>;
+   liftText: (location: SourceLocation) => string | undefined;
+}
+
+/** The subset of a compiled source definition this reads. */
+export interface DerivedSourceDef {
+   type?: unknown;
+   /** The sourceID of the source this one extends, when it extends one. */
+   extends?: unknown;
+   fields?: unknown[];
+   filterList?: unknown[];
+   /** The compiled model's own annotation record, read for `#@ -persist`. */
+   annotations?: unknown;
+}
+
+/**
+ * Whether a source opts out of the pre-built table with `#@ -persist`.
+ *
+ * Read from the source's OWN block notes, never from the `persistent` flag. A
+ * source extending a persisted one inherits its `#@ persist` and so is
+ * `persistent: true`; writing `#@ -persist` makes it `false` — but so does
+ * simply never having inherited one, and the two mean different things here.
+ * Only the annotation says the AUTHOR asked for this.
+ */
+function optsOutOfPersist(def: DerivedSourceDef): boolean {
+   const notes = (
+      def.annotations as { blockNotes?: { text?: unknown }[] } | undefined
+   )?.blockNotes;
+   return (notes ?? []).some(
+      (note) =>
+         typeof note?.text === "string" && /^\s*#@\s*-persist\b/.test(note.text),
+   );
+}
+
+/**
+ * Choose the non-persisted sources the shape can carry, and reduce each to what
+ * it ADDS to its base.
+ *
+ * Both halves are load-bearing, and the second is the one that is not obvious.
+ * A source that extends another INHERITS every one of its fields — its
+ * dimensions, measures, views and joins are all present again on the extending
+ * source's own field list, and its `where:` clauses are a prefix of the
+ * extending source's `filterList`. Re-emitting any of them on top of a base that
+ * already declares them is `Cannot redefine`, which fails the whole shape and
+ * takes storage serving for every source in the model with it. So each kind is
+ * subtracted against the base: fields by name, filters as a prefix by their
+ * code.
+ *
+ * Selection is a fixpoint rather than one pass, so a chain (a source derived
+ * from a derived source) is carried whole, and append order is emission order —
+ * a base is always written before anything extending it.
+ *
+ * It fails closed twice over, and neither is theoretical:
+ *
+ *  - A source is carried only when its base is ALREADY on the shape. A base that
+ *    is not materialized, or whose binding the freshness gate withheld, leaves
+ *    the source off, and a query naming it falls back live.
+ *  - A source that declares a join this cannot carry is left off ENTIRELY rather
+ *    than emitted without it. Dropping a join silently is safe on a materialized
+ *    source, where an unreferenced join is pruned from the build and a referenced
+ *    one fails to compile; here it is not, because the source's own `where:` may
+ *    read the alias, and a shape that does not compile costs every source in the
+ *    model its tier rather than just this one. Any join not carried — a
+ *    non-materialized target, an inline target with no sourceID, an access-
+ *    restricted one, or a declaration whose text could not be recovered —
+ *    refuses the lift.
+ */
+export function liftDerivedSources(
+   ctx: DerivedLiftContext,
+): DerivedSourceLift[] {
+   const lifts: DerivedSourceLift[] = [];
+   const available = new Set<string>(ctx.shapeSourceNames);
+   // Candidates keep their declaration order, so a fixpoint pass emits a base
+   // before its extenders without a topological sort.
+   const pending = Object.entries(ctx.contents).filter(
+      ([name, def]) =>
+         typeof def?.extends === "string" &&
+         !ctx.shapeSourceNames.has(name) &&
+         // `#@ -persist` is documented as recomputing the query INSTEAD of using
+         // the pre-built table, and `opt-out-persist-recomputes` pins that
+         // reading. Carrying such a source here would serve it from the stored
+         // table, which is the opposite of what its author asked for.
+         //
+         // Today that annotation is the only way to write a derived source over
+         // a materialized base that is not itself a build target, so excluding it
+         // leaves this with nothing to carry. That is deliberate: the alternative
+         // is changing a documented annotation's meaning as a side effect of a
+         // performance change. See the note on
+         // `a-query-term-over-materialized-sources-still-scopes`.
+         !optsOutOfPersist(def),
+   );
+   let progressed = true;
+   while (progressed) {
+      progressed = false;
+      for (let i = 0; i < pending.length; i++) {
+         const entry = pending[i];
+         if (!entry) continue;
+         const [name, def] = entry;
+         const base = ctx.sourceNameById.get(def.extends as string);
+         if (!base || !available.has(base)) continue;
+         const lift = liftOneDerivedSource(name, def, base, available, ctx);
+         // A source whose joins cannot all be carried is refused for good, not
+         // retried: nothing later in the fixpoint can make a join target
+         // materialized.
+         pending[i] = undefined as unknown as (typeof pending)[number];
+         progressed = true;
+         if (!lift) continue;
+         lifts.push(lift);
+         available.add(name);
+      }
+   }
+   return lifts;
+}
+
+/** One candidate, or undefined when it cannot be carried safely. */
+function liftOneDerivedSource(
+   sourceName: string,
+   def: DerivedSourceDef,
+   base: string,
+   available: ReadonlySet<string>,
+   ctx: DerivedLiftContext,
+): DerivedSourceLift | undefined {
+   const baseDef = ctx.contents[base];
+   const baseFieldNames = new Set(
+      (baseDef?.fields ?? []).map((f) => fieldKey(f)).filter(Boolean),
+   );
+   const ownFields = (def.fields ?? []).filter(
+      (f) => !baseFieldNames.has(fieldKey(f)),
+   );
+   // Every join this source declares must be carried, or none of it is.
+   const declaredJoins = ownFields.filter(
+      (f) => typeof (f as { join?: unknown }).join === "string",
+   ).length;
+   const joins = extractJoins(ownFields, {
+      sourceNameById: ctx.sourceNameById,
+      materializedSourceNames: available,
+      liftText: ctx.liftText,
+   });
+   if (joins.length !== declaredJoins) return undefined;
+   return {
+      sourceName,
+      base,
+      refinements: [
+         ...joins,
+         ...extractRefinements(ownFields),
+         ...extractSourceFilters(
+            ownFilterList(def.filterList, baseDef?.filterList),
+         ),
+         ...extractViews(ownFields, ctx.liftText),
+      ],
+   };
+}
+
+/** `as` when the field was renamed, else `name` — how a shape refers to it. */
+function fieldKey(field: unknown): string {
+   const f = field as { as?: unknown; name?: unknown };
+   if (typeof f?.as === "string") return f.as;
+   return typeof f?.name === "string" ? f.name : "";
+}
+
+/**
+ * The filters this source adds, i.e. its `filterList` with the base's stripped
+ * from the front.
+ *
+ * Matched by `code` rather than by identity, and only as a PREFIX: a source's
+ * inherited filters arrive ahead of its own, so anything after the first
+ * mismatch is the source's own even if it happens to repeat the base's text.
+ * Re-applying an inherited filter would in fact be harmless for a deterministic
+ * predicate — the terms are ANDed — but it would put a term in the shape text
+ * that the base beside it already carries, which is a thing a reader has to
+ * work out rather than read.
+ */
+function ownFilterList(
+   filterList: unknown[] | undefined,
+   baseFilterList: unknown[] | undefined,
+): unknown[] {
+   const own = filterList ?? [];
+   const inherited = baseFilterList ?? [];
+   let shared = 0;
+   while (
+      shared < inherited.length &&
+      shared < own.length &&
+      (own[shared] as { code?: unknown })?.code ===
+         (inherited[shared] as { code?: unknown })?.code
+   ) {
+      shared++;
+   }
+   return own.slice(shared);
+}
+
 export function buildServeShapeModelForBindings(
    bindings: ServeBinding[],
    /**
@@ -599,12 +837,21 @@ export function buildServeShapeModelForBindings(
     * a non-persisted extension over materialized sources.
     */
    givens: ServeShapeGiven[] = [],
+   /**
+    * Non-persisted sources built entirely from materialized ones, in dependency
+    * order (see {@link liftDerivedSources}). Emitted after the sources they
+    * extend, which is what makes them resolve.
+    */
+   derived: DerivedSourceLift[] = [],
 ): {
    modelText: string;
 } {
    const fragments = orderBindingsByJoinDeps(bindings)
       .map(serveShapeFragment)
       .join("\n");
+   // After the materialized sources, before the rollup groups: a lift extends a
+   // source emitted above it, and nothing below it can reference one.
+   const lifted = derived.map(derivedSourceFragment).join("\n");
    // Rollup groups last. Nothing above can reference a group's base name — a join
    // is emitted only when its target is itself a bound source, and a rollup's base
    // is not one — so no ordering constraint reaches across this boundary.
@@ -629,11 +876,8 @@ export function buildServeShapeModelForBindings(
    const givenBlock = givens.length
       ? `given:\n${givens.map(serveShapeGivenLine).join("\n")}\n`
       : "";
-   return {
-      modelText: groups
-         ? `${flags}\n${givenBlock}${fragments}\n${groups}\n`
-         : `${flags}\n${givenBlock}${fragments}\n`,
-   };
+   const body = [fragments, lifted, groups].filter(Boolean).join("\n");
+   return { modelText: `${flags}\n${givenBlock}${body}\n` };
 }
 
 /** One base source re-exposed over its rollup members. */
