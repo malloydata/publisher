@@ -2,17 +2,13 @@
 name: malloy
 description: Index of all Malloy skills. Use when user asks "malloy help", "what malloy skills are available", "how do I use malloy", or needs guidance on which Malloy skill to use.
 ---
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
 
 # Malloy Skills Index
 
 ## First-Time Setup
 
-**No .malloy files in workspace?**
-Say "model my data" and the agent will orchestrate the full modeling workflow automatically. Make sure the Malloy Publisher MCP tools are configured first.
+**No .malloy files in workspace?** Say "model my data" and the agent will orchestrate the full modeling workflow automatically. Make sure the Malloy Publisher MCP tools are configured first.
 
 ## Skill Reference
 
@@ -60,6 +56,8 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `eval-answer` | Scoring one answer against a verified golden, and what retrieval delivered |
 | `eval-diagnose` | Deciding why a case failed and which artifact owns the fix |
 | `eval-improve` | The smallest model edit for a diagnosed cluster, with probe receipts |
+| `eval-judge` | Scoring one attempt against its golden, and saying whether the golden itself is believed |
+| `eval-import` | Turning questions that arrived from outside into a set, before the first run against it |
 
 **Writing correct Malloy** (read before writing, not after failing)
 

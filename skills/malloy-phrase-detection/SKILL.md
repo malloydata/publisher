@@ -1,11 +1,8 @@
 ---
 name: malloy-phrase-detection
-description: How to construct search targets for the get_context tool. Covers target-type classification and non-obvious decomposition patterns. Read the tool description for field definitions and the end-to-end workflow.
+description: How to phrase search_text on a get_context call so retrieval returns the fields you need instead of a truncated catalog. Covers target-type classification and decomposition patterns.
 ---
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
 
 # Search Target Construction for `get_context`
 
@@ -17,9 +14,15 @@ The `get_context` tool description defines each field and what a call returns. T
 
 **A note on matching:** `get_context` searches over the model (sources, fields, views, and their descriptions), not the distinct categorical *values* stored in the data. To find which literal values a categorical dimension holds, target the dimension, then query its distinct values with `execute_query` (see the patterns below).
 
+## Always send `search_text`
+
+**Do not enumerate.** Omitting `search_text` lists a catalog rather than searching it. Knowing the package narrows *where* to look; it does not substitute for saying *what* you need: if you know the package, that is a reason to scope, not a reason to skip `search_text`. Enumerated listings are capped per source and per entity type, and with no relevance signal the cap drops the fields your question is about while keeping join-path noise.
+
+A bare listing has two legitimate uses. The first is answering "what data is here?" when the user has named no subject at all. The second is reading a specific entity you already have the exact name of: scope to its source, set `entity_name`, and pass `search_text: null`, which returns that entity's docstring and Malloy code without spending a search. Every other call carries `search_text` on every target.
+
 ## Authoring `search_text` for entity targets
 
-Write `search_text` as a brief semantic **description** of what you're looking for, not an echo of the user's word. This applies even when you already know the entity name from a prior result: still describe it, don't just repeat the name.
+Write `search_text` as a brief semantic **description** of what you're looking for, not an echo of the user's word. This applies even when you already know the entity name from a prior result: still describe it, don't just repeat the name. That is a rule about how to *phrase* a search, and it does not conflict with the exact-entity lookup above: if you want that one entity's code and docstring rather than a ranked set, pin it with `entity_name` and skip the search entirely. Sending its name back as `search_text` is the move this rule forbids, because it searches for a name instead of either describing a concept or asking for the entity.
 
 One target per concept is enough: the tool handles phrasing variants internally. Don't pile up dimension targets that point at the same field. Use multiple targets only when they describe genuinely distinct concepts (see "Non-obvious decomposition patterns" below).
 
@@ -46,6 +49,7 @@ These are the rules you won't apply correctly by default:
 5. **Categorical strings that look numeric are still dimensions.** "18-30", "<5 days", "tier 2" are stored as literal strings on a dimension. Target that dimension, then confirm the exact string with `execute_query`.
 6. **"Top N" without a named measure, add a ranking measure.** "top 6 products" becomes a measure for the ranking concept (`"the performance metric for a product"`) plus a dimension for the entity. If the measure is explicit ("top products by total sales"), use it directly and skip the generic ranking measure.
 7. **Multiple values for one concept, one dimension target.** Several values ("premium and basic") still map to a single dimension target for the parent field; enumerate the exact stored values with `execute_query`.
+8. **A population qualifier is a target, and so is the one the question omits.** Words like "real", "actual", "genuine", "live" or "production" are not filler: they name rows the model marks for exclusion. Target the flag itself (`"the flag marking synthetic, test or monitoring traffic"`), not just the noun they modify. Add one such target even when the question carries no qualifier at all, because a table of events, requests, sessions or logs usually holds test, internal or cancelled rows and nothing in the wording will say so. Resolve it to the model's own flag rather than inventing a filter on an id or a name; a hand-rolled exclusion and the documented one rarely select the same rows.
 
 ## Worked example
 
