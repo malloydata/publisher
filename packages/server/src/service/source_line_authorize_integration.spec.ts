@@ -102,7 +102,7 @@ async function createModel(
 /**
  * Multi-file sibling of `createModel`, for exercising the
  * `location.url !== note.at.url` cross-file half of
- * `considerAuthorizeNoteOwner`'s attribution — `createModel` writes exactly
+ * `considerNoteOwner`'s attribution — `createModel` writes exactly
  * one file, so it can never exercise that comparison. `files` maps each
  * relative filename to its contents; `entryFileName` is the one loaded as the
  * package's model. Caller is responsible for `duckdb.close()` /
@@ -1227,7 +1227,7 @@ source: gated_by_field_ref is field_ref_gated extend {}
 
 // ---------------------------------------------------------------------------
 // Cross-file coverage. Every test above builds a single-file model, so
-// `considerAuthorizeNoteOwner`'s `location.url !== note.at.url` comparison —
+// `considerNoteOwner`'s `location.url !== note.at.url` comparison —
 // the one thing the location heuristic does that a bare presence check
 // doesn't — was previously never exercised anywhere in this suite.
 // ---------------------------------------------------------------------------
@@ -1240,7 +1240,7 @@ describe("source-line #(authorize) — cross-file attribution", () => {
       // `derived`'s own struct carries the SAME note object as `gated_base`
       // by reference (the by-reference-copy mechanism, same as the
       // single-file case) — but `derived.location` is in `m.malloy` while
-      // `note.at.url` names `base.malloy`, so `considerAuthorizeNoteOwner`
+      // `note.at.url` names `base.malloy`, so `considerNoteOwner`
       // never even considers `derived` a candidate. `gated_base` (same file
       // as the note) IS a candidate and is the one `authorizeNoteDeclaredBy`
       // resolves to. This proves the cross-file comparison does real work:

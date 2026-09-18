@@ -62,12 +62,13 @@ const ENV_KEYS = [
 interface GetContextPayload {
    retrieval?: string;
    sources?: Array<{
-      source_info: { resource_id: { source: string } };
+      source_info: { resource_id: { source: string; model_path: string } };
       relevance?: number;
       entities?: Array<{
          entity_type: string;
          name: string;
          relevance?: number;
+         code?: string;
       }>;
    }>;
    error?: string;
@@ -93,6 +94,7 @@ async function callGetContext(target: {
    targetType: string;
    searchText: string;
    source?: string;
+   entityName?: string;
 }): Promise<GetContextPayload> {
    const result = (await mcpClient.callTool({
       name: "get_context",
@@ -105,6 +107,7 @@ async function callGetContext(target: {
                environment: ENVIRONMENT_NAME,
                package: PACKAGE_NAME,
                ...(target.source ? { source: target.source } : {}),
+               ...(target.entityName ? { entity_name: target.entityName } : {}),
             },
          ],
       },
@@ -243,17 +246,53 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
             source: "order_items",
          });
          expect(payload.retrieval).toBe("semantic");
-         // One card, for the source the drill-down named.
-         expect(payload.sources).toHaveLength(1);
-         expect(payload.sources?.[0].source_info.resource_id.source).toBe(
-            "order_items",
-         );
+         // A scope names a SOURCE, not a file, and order_items resolves in
+         // storefront.malloy and in the files importing it -- so the scope
+         // narrows to that source and returns one card per resolving path,
+         // the same set the lexical path returns for the same question.
+         // Pinned as "every card is order_items, paths distinct" rather than
+         // as a count, so adding an importing file does not break this.
+         const cards = payload.sources ?? [];
+         expect(cards.length).toBeGreaterThan(0);
+         const paths = cards.map((c) => c.source_info.resource_id.model_path);
+         expect(new Set(paths).size).toBe(paths.length);
+         for (const card of cards) {
+            expect(card.source_info.resource_id.source).toBe("order_items");
+         }
          const entities = rankedEntities(payload);
          // Non-empty, or the per-entity loop below pins nothing.
          expect(entities.length).toBeGreaterThan(0);
          for (const entity of entities) {
             expect(entity.source).toBe("order_items");
          }
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "narrows semantic retrieval to a pinned entity, with its code",
+      async () => {
+         const payload = await callGetContext({
+            targetType: "measure",
+            searchText: "total sales revenue",
+            source: "order_items",
+            entityName: "total_sales",
+         });
+         expect(payload.retrieval).toBe("semantic");
+
+         const entities = rankedEntities(payload);
+         expect(entities.length).toBeGreaterThan(0);
+         // Every row IS the pinned entity. The scan filters on sourceName
+         // alone, so before the scope was applied to its output a pinned
+         // entity_name narrowed nothing here -- and because pinning also
+         // turns include_code on, the caller who asked for one definition
+         // got the whole ranked set back with every expression attached.
+         for (const entity of entities) {
+            expect(entity.name).toBe("total_sales");
+         }
+         // The other half of the pin: a narrowed call answers with the
+         // definition, which is what turning include_code on is for.
+         expect(entities.some((entity) => entity.code)).toBe(true);
       },
       { timeout: 30000 },
    );
