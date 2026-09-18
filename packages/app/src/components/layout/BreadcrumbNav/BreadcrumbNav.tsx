@@ -23,7 +23,12 @@ function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
          size="small"
          aria-label={`Navigate to ${label}`}
          sx={(theme) => ({
-            backgroundColor: "background.paper",
+            // The page's own ground with a border, not a raised fill: a
+            // breadcrumb is a path, not five objects sitting on the page, and
+            // `background.paper` on a darker page drew each crumb as a lit
+            // box. Same construction the dashboard cards use.
+            backgroundColor: "transparent",
+            border: `1px solid ${theme.palette.divider}`,
             color: "text.primary",
             fontWeight: 500,
             fontSize: "0.875rem",

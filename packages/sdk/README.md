@@ -1006,7 +1006,16 @@ type DocumentType = "dashboard" | "notebook";
 interface Workspace {
    name: string;
    writeable: boolean;
+   /** What this place is, in the backend's own words. The editor shows it. */
    description: string;
+   /**
+    * This workspace holds the package's system of record: the editor opens
+    * what it keeps and writes back to it, and treats the package file as a
+    * deploy of it. Left out, the package file is the record and this is a
+    * place a copy is kept beside it, which is what every host got before the
+    * flag existed. At most one workspace per storage sets it.
+    */
+   authoritative?: boolean;
 }
 
 interface DocumentLocator {
@@ -1027,6 +1036,14 @@ interface DocumentStorage {
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
 }
 ```
+
+`getDocument`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
+when the document is not there, and with anything else when the backend could not be
+asked. The distinction is load-bearing rather than cosmetic: a failed read reported as
+"there is no document" reads as "the package is the only copy", and saving on that
+belief overwrites the copy that was actually there. Use `isDocumentNotFound(error)`
+rather than `instanceof`, since the `es` and `cjs` builds carry their own copy of the
+class.
 
 A document is a string; the `type` on its locator says what kind so a backend can keep kinds apart
 and a listing can ask for one. Every method rejects when the document is not there, so a caller can
@@ -1471,6 +1488,8 @@ function EnvironmentList() {
 | `createEmbeddedQueryResult` | Serialize query config              |
 | `BrowserDocumentStorage`    | localStorage-based document storage |
 | `globalQueryClient`         | Shared React Query client           |
+| `DocumentNotFoundError`     | Absence, not a failed read          |
+| `isDocumentNotFound`        | Absence check across es/cjs builds  |
 
 ### Exported Types
 

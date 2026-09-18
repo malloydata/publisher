@@ -12,8 +12,12 @@
 export type DashboardEvent =
    | {
         type: "dashboard.opened";
-        /** The package file, or a draft the host had saved. */
-        from: "package" | "draft";
+        /**
+         * The package file, a draft the host had saved beside it, or the
+         * host's own copy when that copy is the record. A record open is not a
+         * "draft" open: nothing was resumed and nothing is pending.
+         */
+        from: "package" | "draft" | "record";
         tiles: number;
         durationMs: number;
      }
@@ -24,13 +28,21 @@ export type DashboardEvent =
         /** Whether a tile was added or removed, which moves declarations. */
         structural: boolean;
         /**
-         * Where it went. A save into the package is a change every reader of
-         * that server sees; a browser save is one person's copy on one
-         * machine. Counting them together makes "dashboards are being edited"
-         * unreadable, because a read-only server reports exactly as much
-         * saving as a writable one.
+         * Where it went, named by which storage took the write rather than by
+         * where that storage happens to keep things, since "browser" and
+         * "host" do not divide by English: `package` is the package file on
+         * the server, `browser` is the Console's own browser store, and `host`
+         * is a host storage that holds the record.
+         *
+         * Separate because they are not the same event. A save into the
+         * package or the record is a change every reader sees; a browser save
+         * is one person's copy on one machine. Counting them together makes
+         * "dashboards are being edited" unreadable, because a read-only server
+         * reports exactly as much saving as a writable one.
          */
-        where: "package" | "browser";
+        where: "package" | "browser" | "host";
+        /** The workspace that took the write, so the event says so itself. */
+        workspace?: string;
         durationMs: number;
      }
    | { type: "dashboard.save_refused"; reason: string }

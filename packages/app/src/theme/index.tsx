@@ -155,6 +155,18 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                   "&:hover": {
                      boxShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
                   },
+                  // A disabled filled button defaults to a WHITE wash, which
+                  // on a dark dialog is lighter than the surface it sits on —
+                  // the one control on the page drawing attention to itself is
+                  // the one that cannot be pressed. Recede instead: a fill
+                  // barely off the surface, and a label that reads as
+                  // unavailable rather than as absent.
+                  "&.Mui-disabled": {
+                     backgroundColor: isDark
+                        ? "rgba(255, 255, 255, 0.06)"
+                        : greyScale[200],
+                     color: isDark ? "#64748b" : greyScale[500],
+                  },
                },
                // Outlined buttons take their text + border color from
                // primary.main by default. Our primary.main is a low-key
@@ -209,10 +221,28 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                },
             },
          },
+         MuiPaper: {
+            styleOverrides: {
+               root: {
+                  // MUI lightens `background.paper` in dark mode by painting a
+                  // white gradient over it, scaled by elevation. It makes the
+                  // value of `background.paper` a lie: a Dialog at elevation
+                  // 24 came out several steps lighter than the fields and
+                  // label notches inside it, which paint the honest value —
+                  // so every field read as a hole and every floating label sat
+                  // on a grey chip of its own. Off, so one token means one
+                  // colour wherever it is used.
+                  backgroundImage: "none",
+               },
+            },
+         },
          MuiDialog: {
             styleOverrides: {
                paper: {
                   borderRadius: 4,
+                  // Stated rather than inherited, so a dialog's surface cannot
+                  // drift from the fields drawn on it.
+                  backgroundColor: surface,
                   boxShadow:
                      "0px 20px 25px -5px rgba(0, 0, 0, 0.1), 0px 10px 10px -5px rgba(0, 0, 0, 0.04)",
                },
@@ -248,15 +278,27 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                   border: "none",
                },
                root: {
-                  border: `1px solid ${divider}`,
+                  // The card edge, not `divider`: a field is a box on the page
+                  // the same way a dashboard card is, and it is already the
+                  // construction an outlined Button uses (same two values,
+                  // just above). On `divider` a field rested a full step
+                  // lighter than the card holding it and the button beside it
+                  // — three boxes in a row outlined three different ways.
+                  // Kept in step with the SDK's `theme.cardBorder`
+                  // (#cbd5e1 / #475569), which is these same two points on the
+                  // slate ramp.
+                  border: `1px solid ${isDark ? greyScale[600] : greyScale[300]}`,
                   borderRadius: 8,
                   transition: "border-color 120ms ease-in",
                   backgroundColor: surface,
+                  // Rest darkened, so hover and focus each move up a rung to
+                  // stay told apart from it — a field whose hover state is its
+                  // resting state has no hover state.
                   "&:hover": {
-                     borderColor: isDark ? "#475569" : greyScale[300],
+                     borderColor: isDark ? "#64748b" : greyScale[400],
                   },
                   "&.Mui-focused": {
-                     borderColor: isDark ? "#64748b" : greyScale[400],
+                     borderColor: isDark ? greyScale[400] : greyScale[500],
                      outline: "none",
                   },
                },

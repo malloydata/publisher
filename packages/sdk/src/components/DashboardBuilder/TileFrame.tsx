@@ -132,7 +132,9 @@ export function TileFrame({
                   // will respond to the pointer, told apart
                   // from the ones that will not.
                   "&:hover": {
-                     outlineColor: selected ? theme.drillLink : theme.border,
+                     outlineColor: selected
+                        ? theme.drillLink
+                        : theme.cardBorder,
                      boxShadow: "0 2px 10px rgba(0, 0, 0, 0.10)",
                   },
                }}
@@ -333,7 +335,14 @@ export function GapTarget({ after }: { after: string }) {
                   minHeight: 48,
                   borderRadius: 1,
                   border: `1px dashed ${theme.drillLink}`,
-                  bgcolor: isDropTarget ? theme.tile : "transparent",
+                  // Tinted with the same hue as the dashed edge, so the fill
+                  // and the border read as one affordance lighting up. It was
+                  // `theme.tile`, the CARD colour, which is the one value
+                  // guaranteed to match whatever this sits on: a near-no-op
+                  // before the card went white, and an exact one after.
+                  bgcolor: isDropTarget
+                     ? `color-mix(in srgb, ${theme.drillLink} 12%, transparent)`
+                     : "transparent",
                   opacity: isDropTarget ? 0.95 : 0.4,
                   transition: "opacity 120ms, background-color 120ms",
                }}

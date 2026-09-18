@@ -14,7 +14,7 @@ import type { ResolvedTheme, Theme, ThemeMode } from "./types";
  * (a layer that sets only `palette.tile.dark` doesn't clobber the
  * instance-level `palette.tile.light`).
  *
- * The derived fields on ResolvedTheme (border, pinnedBorder,
+ * The derived fields on ResolvedTheme (border, cardBorder, pinnedBorder,
  * valueColor, foreground, axisFaint) are computed once here from the
  * active mode so the three builders that consume the theme stop
  * recomputing them with duplicated hex literals.
@@ -88,19 +88,25 @@ export function resolveTheme(
       // each mode. If a user later asks to customise them, expose them
       // on the schema and the editor and replace the literals below.
       border: isDark ? "1px solid #334155" : "1px solid #e2e8f0",
+      // A card's edge, one stop darker than a table's gridline on the same
+      // slate ramp. See `cardBorder` on ResolvedTheme for why the two are not
+      // the same value.
+      cardBorder: isDark ? "1px solid #475569" : "1px solid #cbd5e1",
       // Slate, not the teal-cast `#daedf3` this was: a pinned table header
       // outlined in a hue no longer anywhere else on the page.
       pinnedBorder: isDark ? "1px solid #475569" : "1px solid #cbd5e1",
       valueColor: isDark ? "#f1f5f9" : "#0f172a",
       foreground: isDark ? "#e2e8f0" : "#0f172a",
       axisFaint: isDark ? "#475569" : "#cbd5e1",
-      // Dashboard panel background (area BETWEEN tiles). Light keeps
-      // white so the page stays visually unchanged. Dark uses slate so
-      // the panel doesn't read as a bright box against the dark page
-      // chrome. Intentionally NOT tied to `palette.background`: the
-      // panel stays neutral so a bold accent on the chart canvas
-      // doesn't bleed into the surrounding chrome.
-      dashboardRoot: isDark ? "#1e293b" : "#ffffff",
+      // Dashboard panel background (the area BETWEEN tiles). The page's own
+      // ground in both modes, so the panel, the cards on it and the canvases
+      // inside them are one surface that borders divide up — see
+      // `palette.tile`.
+      //
+      // Still NOT tied to `palette.background`, which an operator may set to
+      // a bold accent for the chart canvas. The panel stays the neutral it is
+      // here so that accent cannot bleed into the surrounding chrome.
+      dashboardRoot: isDark ? "#0f172a" : "#ffffff",
       // Drill link hover: the palette's anchor blue, so a drill reads as the
       // same affordance as every other primary action; dark lightens it for
       // contrast on the slate panel.
