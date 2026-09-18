@@ -339,6 +339,48 @@ class JudgePrompt(unittest.TestCase):
         self.assertIn("the rubric's figure is stale prose", rb.JUDGE_PROMPT)
 
 
+class JudgeCostAcrossARebuild(unittest.TestCase):
+    """A rebuild spends nothing on judging and must not erase what judging cost.
+
+    Found by writing a report off a rebuilt run: its cost line read $0.00 judge
+    for verdicts the original arm had paid $0.78 for.
+    """
+
+    def test_a_run_that_judged_records_what_it_spent(self):
+        self.assertEqual(rb.carry_judge_cost(0.78, None), (0.78, False))
+
+    def test_a_rebuild_keeps_the_earlier_figure_and_marks_it(self):
+        self.assertEqual(rb.carry_judge_cost(0.0, 0.78), (0.78, True))
+
+    def test_a_rejudge_wins_over_the_earlier_figure(self):
+        # It really did judge again, so the new spend is this run's own.
+        self.assertEqual(rb.carry_judge_cost(0.91, 0.78), (0.91, False))
+
+    def test_a_first_run_with_nothing_before_it_records_zero(self):
+        self.assertEqual(rb.carry_judge_cost(0.0, None), (0.0, False))
+
+    def test_a_prior_of_zero_is_not_carried(self):
+        # --no-judge then rebuild: there is no earlier spend to protect, and
+        # marking it carried would claim a judging that never happened.
+        self.assertEqual(rb.carry_judge_cost(0.0, 0.0), (0.0, False))
+
+    def test_the_prior_is_read_before_run_json_is_rewritten(self):
+        # The whole defect: read after `run_config` writes, it is always None
+        # and the fix silently does nothing.
+        src = pathlib.Path(rb.__file__).read_text()
+        self.assertLess(src.index("prior_judge = prior_judge_cost(a.out)"),
+                        src.index('(a.out / "run.json").write_text'))
+
+    def test_a_missing_or_unreadable_run_json_is_none(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            self.assertIsNone(rb.prior_judge_cost(tmp))
+            (tmp / "run.json").write_text("{not json")
+            self.assertIsNone(rb.prior_judge_cost(tmp))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TruncatedAttempt(unittest.TestCase):
     """An attempt the turn cap cut off is not judged.
 

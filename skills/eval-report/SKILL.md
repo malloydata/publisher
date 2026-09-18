@@ -17,6 +17,14 @@ score an answer (`skill:eval-answer`), decide who owns a failure
 (`skill:eval-diagnose`), or edit a model (`skill:eval-improve`). If a number is
 not in the ledger, do not put it in the report.
 
+**The report is about THIS RUN, not about the harness.** Defects you find in
+the eval tooling while running it are real and worth filing, and they do not
+belong here: the reader wants to know what their model scored and why, not what
+is wrong with the thing that measured it. File those against the harness. The
+one exception is anything that qualifies THIS run's number -- a truncated
+attempt, a contaminated one, an unestablished answer key -- which the "Eval
+failures" section exists for.
+
 ## Step 1: build the artifacts, before writing a word
 
 ```bash
@@ -120,7 +128,7 @@ these in order and put every one that fires into the list, with its command:
 | a cluster with `owner: model` | `skill:eval-improve`, then the acceptance check |
 | a cluster with `owner: agent-skill` | **edit that skill.** This is NOT a dead end |
 | a cluster with `owner: dataset` | the golden side door in `skill:eval-loop` |
-| only one arm exists | an A/A before any delta is quoted |
+| only one arm exists | note that no noise band has been measured for this set yet |
 
 **An `agent-skill` cluster is work, not an absence of work.** `eval-improve`
 may not touch it, and writing "nothing to do, the model is fine" there is how a
@@ -195,9 +203,21 @@ because a report that omits them makes every failure look like the model's:
 Two numbers here are routinely misread, so qualify them in the report or leave
 them out:
 
-- **Entity precision is breadth unless the set authored `acceptable`.** With no
-  `acceptable` list, every entity beyond the strictly required ones counts as
-  noise, so a precision of 3.6% means the response was broad, not wrong.
+- **Entity precision measures nothing unless the set authored `acceptable`, and
+  it ignores rank either way.** The denominator is everything returned and the
+  numerator is only the strictly required entities, so a model whose answer came
+  back at rank 3 of 51 scores 2%, identically to one that came back at rank 51.
+  Report the RANK instead: "required entities came back at median rank 3, 9 of
+  16 in the top 5" is a statement about retrieval; "precision 3.6%" is a
+  statement about how many fields the package has.
+- **Read the entities that did NOT come back, and what was asked for.** That is
+  where the retrieval signal actually is, and the misses are rarely independent.
+  Measured on one run: 5 required entities never came back as ranked results,
+  and 4 of the 5 had the same cause -- the agent sent only `source` and
+  `dimension` targets, and `target_type` is a hard filter, so no measure could
+  be returned however well the model documents it. One defect, five symptoms,
+  and the same one that produced the run's only wrong answer. A per-case list of
+  misses beside what was asked for would have shown it in a glance.
 - **A PASSING case with recall below 1.0 is usually an expectation defect**, not
   a retrieval miss: the set named one path to an answer the agent reached by
   another. Report the count and read it as a prompt to check `required`.
@@ -245,6 +265,11 @@ Two different things, kept apart.
 Rank by how many cases each would move, and say when the answer is "nothing":
 a 90% run whose one failure is a known fan-out trap may need no action at all.
 
+**Report facts, do not instruct the reader.** "This set has had one arm, so no
+noise band exists for it" is a fact they can act on. "Do not quote 90% until X"
+is a lecture about their own number, and they did not ask for one. State what
+was and was not measured; what to do with it is theirs.
+
 ## Make the links clickable
 
 A report whose evidence cannot be opened is a report nobody checks.
@@ -257,6 +282,13 @@ A report whose evidence cannot be opened is a report nobody checks.
   `artifacts/<qid>/judge.md`, `artifacts/<qid>/answerer.jsonl`. A `file://`
   link to a directory opens nothing in most editors, which is a dead link that
   looks live.
+- **Move the run somewhere durable before you link it.** A run written under a
+  session scratch directory (`/tmp/...`, a host's per-session sandbox) is
+  deleted when the session ends, and many editors will not linkify a path there
+  even while it exists. Copy the run directory, artifacts included, next to the
+  report under the set, then link that. A report whose evidence is in a temp
+  directory is a report with no evidence by next week. This was caught twice by
+  a reader clicking and getting nothing.
 - Write a local path bare, as `/abs/path/to/file`, not as `[text](file:///...)`.
   Terminals and editors linkify a bare absolute path; a `file://` markdown link
   is frequently inert, and an inert link is worse than the path in plain text

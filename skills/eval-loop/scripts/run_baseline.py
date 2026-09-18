@@ -2096,6 +2096,41 @@ def void_contaminated(verdict: dict[str, Any],
     return verdict
 
 
+def prior_judge_cost(out: pathlib.Path) -> float | None:
+    """`judgeCostUsd` already in this run directory, or None.
+
+    Must be read BEFORE `run_config` rewrites run.json. Read afterwards it is
+    always None, which is the version of this that silently does nothing.
+    """
+    f = out / "run.json"
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text()).get("judgeCostUsd")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def carry_judge_cost(judge_cost: float,
+                     prior: float | None) -> tuple[float, bool]:
+    """(what to record, whether it was carried from a previous judging).
+
+    A `--rebuild` reuses saved verdicts, so no judge runs and `judge_cost` is 0.
+    Writing that over the figure the ORIGINAL judging cost loses it, and the run
+    then reports $0.00 for verdicts somebody paid for -- which is how a report
+    written off a rebuilt run ends up disagreeing with the arm that produced its
+    verdicts. Same shape as the answerer cost, opposite direction: there the
+    figure is copied and must be marked, here it is real and must be kept.
+
+    A run that DID judge always wins, so a `--rejudge` records what it spent.
+    """
+    if judge_cost:
+        return judge_cost, False
+    if prior:
+        return prior, True
+    return judge_cost, False
+
+
 def judge_unusable(events: list[dict[str, Any]], text: str) -> bool:
     """Retry the judge when what came back cannot be scored with.
 
@@ -2952,9 +2987,7 @@ def main(argv: list[str] | None = None) -> int:
     # BEFORE the fresh run.json overwrites it: a rebuild reuses saved verdicts
     # and spends nothing on judging, and `run_config` does not carry the
     # previous judging spend forward. Read at the end, this is already gone.
-    _rj = a.out / "run.json"
-    prior_judge = (json.loads(_rj.read_text()).get("judgeCostUsd")
-                   if _rj.exists() else None)
+    prior_judge = prior_judge_cost(a.out)
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
         retrievalGate=retrieval_gate,
         coverageReport=coverage_report,
@@ -3332,11 +3365,10 @@ def main(argv: list[str] | None = None) -> int:
     # rather than overwritten, and `judgeCostCopiedFrom` says it was not spent
     # again. Found by writing a report off a rebuilt run and having the cost
     # line disagree with the arm that produced the verdicts.
-    judge_kept = judge_cost or (prior_judge or 0)
+    judge_kept, judge_carried = carry_judge_cost(judge_cost, prior_judge)
     ledger.update_run(a.out, answererCostUsd=round(cost, 4),
                       answererCostCopiedFrom=copied_from,
-                      judgeCostCopiedFrom=(copied_from if not judge_cost
-                                           and prior_judge else None),
+                      judgeCostCopiedFrom=copied_from if judge_carried else None,
                       judgeCostUsd=round(judge_kept, 4),
                       retrievalMode=mode, retrievalCalls=tally,
                       reExecution=reexecution_summary(
