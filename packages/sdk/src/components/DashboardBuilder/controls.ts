@@ -306,15 +306,17 @@ export interface MappingRow {
 /**
  * Which tiles can take a binding, and why the others cannot.
  *
- * A binding is a `+ { where: … }` refinement on the tile's declaration, so the
- * tile has to BE a declaration this file owns that the reader will read back.
- * That is the `reference` form only: an `inherited` tile is declared on the
- * model's source, and an `inline` tile's body is a query, not a reference, so a
- * refinement written onto it would not come back and the round-trip gate would
- * refuse the whole save. Better to refuse the tick.
+ * A binding is a `where:` the splice writer can locate and own: a `+ {
+ * where: … }` refinement on a `reference` tile, or a `where:` statement in an
+ * `inline` tile's own first stage — `TreeStage.wheres` in `malloyTree`, which
+ * is the parse tree's answer rather than a depth count. Both forms are
+ * declarations this file owns and the reader reads back. An `inherited` tile is declared on the
+ * model's source, which the builder never writes, so it is the one kind this
+ * excludes, and so is an `opaque` one: its body has no single block a binding
+ * belongs in, which the reader can see before a save is ever attempted.
  */
 export const canBind = (tile: DashboardTile) =>
-   tile.declaration.kind === "reference";
+   tile.declaration.kind !== "inherited" && tile.declaration.kind !== "opaque";
 
 /** The mapping a control has NOW, one row per tile, for the dialog to open on. */
 export function mappingOf(

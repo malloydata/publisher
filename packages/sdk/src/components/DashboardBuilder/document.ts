@@ -93,15 +93,24 @@ export interface DashboardDrill {
 /**
  * Where a tile's view is declared, and therefore what the builder may edit.
  *
- * Three forms, all of them found in dashboards that ship in this repository, and
+ * Four forms, all of them found in dashboards that ship in this repository, and
  * the distinction decides which affordances a tile gets:
  *
  * - `reference` — `view: revenue_trend is sales_by_month` in this file. Fully
  *   editable: the layout tags sit above that line and the builder owns them.
  * - `inline` — `view: order_tile is { aggregate: order_count }` in this file.
- *   Its tags are editable for the same reason; its QUERY is not, because
- *   authoring a query body is a separate feature. The projection holds: the body
- *   is never rewritten, so it cannot be damaged.
+ *   Its tags are editable for the same reason, and so is a FILTER: a binding is
+ *   a depth-1 `where:` statement in the body's own first stage rather than a `+
+ *   { … }` refinement, but it is still a declaration this file owns and the
+ *   reader reads back — see {@link DashboardTile.filters} and BINDING_CLAUSE in
+ *   readDocument.ts. The QUERY otherwise is not editable, because authoring a
+ *   query body is a separate feature; the body is never rewritten beyond its
+ *   binding lines, so the rest of it cannot be damaged.
+ * - `opaque` — declared in this file, in a body the builder does not rewrite: a
+ *   `->` pipeline from a named view, or a chained `vx + { … } + { … }` where no
+ *   one block is where a binding belongs. Its TAGS are ordinary `#` lines here,
+ *   so its label, colspan and position are editable like any other tile's; only
+ *   a FILTER has nowhere to go, and `why` says which shape it is.
  * - `inherited` — not declared in this file at all, as in a dashboard whose only
  *   tile is `orders -> by_brand` against an imported source. Nothing about it is
  *   editable here, because its tags live on the model's own view and the builder
@@ -110,6 +119,7 @@ export interface DashboardDrill {
 export type TileDeclaration =
    | { kind: "reference"; from: string }
    | { kind: "inline" }
+   | { kind: "opaque"; why: string }
    | { kind: "inherited" };
 
 /** One tile: a view shown on the page, plus how it is presented. */
@@ -129,7 +139,9 @@ export interface DashboardTile {
    source: string;
    declaration: TileDeclaration;
    /**
-    * Given bindings, emitted as a `+ { where: … }` refinement on the view.
+    * Given bindings: a `+ { where: … }` refinement on a `reference` tile, or a
+    * depth-1 `where:` statement in an `inline` tile's own first stage — see
+    * {@link TileDeclaration}.
     *
     * `op` is the comparison, and absent means `~`, which is how a `filter<…>`
     * given binds. A plain `date` or `number` given is a VALUE, not a filter,

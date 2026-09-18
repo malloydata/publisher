@@ -14,6 +14,7 @@ import {
    type DashboardEventHandler,
 } from "../Dashboard/telemetry";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
+import { parseResourceUri } from "../../utils/formatting";
 import {
    isDocumentNotFound,
    useOptionalDocumentStorage,
@@ -51,11 +52,25 @@ import { sha256Hex } from "../../utils/sha256";
  * editor (its value is written into each tile's query) but reaches the package
  * only when the file is saved into it.
  */
-export interface DashboardEditorProps {
-   environmentName: string;
-   packageName: string;
-   /** The dashboard's slug: `overview`, not `dashboards/overview.malloy`. */
-   dashboardName: string;
+export type DashboardEditorProps = (
+   | {
+        /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
+        resourceUri: string;
+        /** The dashboard's slug, as listed by the dashboards endpoint. */
+        dashboard: string;
+     }
+   | {
+        /** @deprecated Pass `resourceUri` and `dashboard` instead. */
+        environmentName: string;
+        /** @deprecated Pass `resourceUri` and `dashboard` instead. */
+        packageName: string;
+        /**
+         * @deprecated Pass `resourceUri` and `dashboard` instead. The
+         * dashboard's slug: `overview`, not `dashboards/overview.malloy`.
+         */
+        dashboardName: string;
+     }
+) & {
    /** Leave the editor: the host's "Done editing". Absent, no such button. */
    onExit?: () => void;
    /**
@@ -72,7 +87,7 @@ export interface DashboardEditorProps {
     * without this a host cannot tell whether leaving costs anything.
     */
    onDirtyChange?: (dirty: boolean) => void;
-}
+};
 
 /** The Console's key for a dashboard's copy; see the storage seam's locator rule. */
 const dashboardLocator = (
@@ -86,14 +101,40 @@ const dashboardLocator = (
    path: `${environmentName}/${packageName}/${modelPath}`,
 });
 
-export function DashboardEditor({
-   environmentName,
-   packageName,
-   dashboardName,
-   onExit,
-   onEvent,
-   onDirtyChange,
-}: DashboardEditorProps) {
+export function DashboardEditor(props: DashboardEditorProps) {
+   const { onExit, onEvent, onDirtyChange } = props;
+   // Resolved once, so the rest of the body reads these locals and never the
+   // union directly. Degraded, not thrown, on a bad URI: see `Dashboard`'s
+   // note on the same call — a throw in a render body takes the host's whole
+   // tree down, which is a white screen instead of a message. The deprecated
+   // form cannot be malformed the same way, so it always names both.
+   // `parseResourceUri` THROWS on a string that is not a `publisher://` URI at
+   // all, which a render body must not do; only its missing-name case returns.
+   const parsed = (() => {
+      if (!("resourceUri" in props)) return undefined;
+      try {
+         return parseResourceUri(props.resourceUri);
+      } catch {
+         return undefined;
+      }
+   })();
+   const environmentName =
+      "resourceUri" in props
+         ? (parsed?.environmentName ?? "")
+         : props.environmentName;
+   const packageName =
+      "resourceUri" in props ? (parsed?.packageName ?? "") : props.packageName;
+   const dashboardName =
+      "resourceUri" in props ? props.dashboard : props.dashboardName;
+   const versionId = parsed?.versionId;
+   // Keyed on the prop form, not on `parsed`: a URI that failed to parse at all
+   // also leaves `parsed` undefined, and reading that as "no URI to check" would
+   // skip the error display and run the editor against empty names.
+   const uriNamesBoth =
+      "resourceUri" in props
+         ? !!parsed?.environmentName && !!parsed?.packageName
+         : true;
+
    const { apiClients, mutable } = useServer();
    const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
@@ -114,9 +155,16 @@ export function DashboardEditor({
          environmentName,
          packageName,
          modelPath,
+         versionId,
       ],
       queryFn: () =>
-         apiClients.models.getModel(environmentName, packageName, modelPath),
+         apiClients.models.getModel(
+            environmentName,
+            packageName,
+            modelPath,
+            versionId,
+         ),
+      enabled: uriNamesBoth,
    });
    const packageText = (
       modelQuery.data?.data as { sourceText?: string } | undefined
@@ -380,6 +428,7 @@ export function DashboardEditor({
                   environmentName,
                   packageName,
                   modelPath,
+                  versionId,
                ],
             });
             throw new Error(apiErrorMessage(error));
@@ -415,6 +464,7 @@ export function DashboardEditor({
                environmentName,
                packageName,
                modelPath,
+               versionId,
             ],
          });
          for (const key of [
@@ -429,6 +479,7 @@ export function DashboardEditor({
          environmentName,
          packageName,
          modelPath,
+         versionId,
          storage,
          locator,
          queryClient,
@@ -440,15 +491,25 @@ export function DashboardEditor({
    // record instead of the record.
    const savesTo = authoritative ? "host" : mutable ? "package" : "browser";
    const canWriteWorkspace = workspace?.writeable === true;
+   // A version is an immutable checkpoint, and `updateModelSource` cannot be
+   // told to write against one (the server answers 501). Without this guard,
+   // `expectedHash` would be the hash of the pinned text, the server would
+   // refuse every save against the current file, and the catch would refetch
+   // the same pinned text, so the "changed since you opened it" banner would
+   // never fire either: a dead end with no way out. Storage-backed saves are
+   // unaffected, since they never touch the package's compare-and-swap.
+   const pinnedPackageSave = versionId !== undefined && savesTo === "package";
    const writer = authoritative
       ? storage && locator && canWriteWorkspace
          ? saveToStorage
          : undefined
-      : mutable
-        ? saveToPackage
-        : storage && locator && canWriteWorkspace
-          ? saveToStorage
-          : undefined;
+      : pinnedPackageSave
+        ? undefined
+        : mutable
+          ? saveToPackage
+          : storage && locator && canWriteWorkspace
+            ? saveToStorage
+            : undefined;
    // A copy that could not be read is not a copy that is not there. Saving on
    // that belief is what rewinds the record, so Save is off until a reader can
    // be told what actually happened.
@@ -486,6 +547,15 @@ export function DashboardEditor({
       setAccepted(held);
    };
 
+   // After every hook, so the hook order does not depend on the URI. Same
+   // reasoning as `Dashboard`'s own check.
+   if (!uriNamesBoth && "resourceUri" in props)
+      return (
+         <Alert severity="error" sx={{ m: 2 }}>
+            A dashboard resource URI must name an environment and a package.
+            Received: {props.resourceUri}
+         </Alert>
+      );
    if (modelQuery.isError)
       return (
          <ApiErrorDisplay
@@ -570,6 +640,7 @@ export function DashboardEditor({
                packageName={packageName}
                modelPath={modelPath}
                slug={dashboardName}
+               {...(versionId !== undefined ? { versionId } : {})}
                opened={opened}
                onSave={save}
                onDirtyChange={reportDirty}
@@ -587,8 +658,10 @@ export function DashboardEditor({
                note={caption({
                   authoritative,
                   mutable,
+                  pinnedPackageSave,
                   ...(workspace ? { workspace } : {}),
                   ...(readFailure !== undefined ? { readFailure } : {}),
+                  ...(versionId !== undefined ? { versionId } : {}),
                })}
             />
          )}
@@ -605,13 +678,17 @@ export function DashboardEditor({
 function caption({
    authoritative,
    mutable,
+   pinnedPackageSave,
    workspace,
    readFailure,
+   versionId,
 }: {
    authoritative: boolean;
    mutable: boolean;
+   pinnedPackageSave: boolean;
    workspace?: Workspace;
    readFailure?: string;
+   versionId?: string;
 }): string {
    if (readFailure !== undefined)
       return `The saved copy could not be read, so Save is off: ${readFailure}`;
@@ -619,6 +696,8 @@ function caption({
       return workspace.writeable
          ? workspace.description
          : `${workspace.description}: you cannot save into it.`;
+   if (pinnedPackageSave)
+      return `Reading version ${versionId}: a version is a fixed point in history, so Save is off.`;
    if (mutable) return "Save writes the file into the package.";
    if (workspace)
       return `${workspace.description}: this server does not take writes.`;
@@ -641,6 +720,7 @@ function Surface({
    packageName,
    modelPath,
    slug,
+   versionId,
    opened,
    onSave,
    onDirtyChange,
@@ -653,6 +733,7 @@ function Surface({
    packageName: string;
    modelPath: string;
    slug: string;
+   versionId?: string;
    opened: { source: string; document: DashboardDocument; generation: number };
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
@@ -669,25 +750,31 @@ function Surface({
          environmentName,
          packageName,
          slug,
+         versionId,
       ],
       queryFn: () =>
          apiClients.dashboards.getDashboard(
             environmentName,
             packageName,
             slug,
-            undefined,
+            versionId,
          ),
    });
    const manifest = data?.data;
 
    // The package's other dashboards, by slug: where a clicked cell can go.
    const { data: dashboardList } = useQueryWithApiError({
-      queryKey: ["dashboard-editor-dashboards", environmentName, packageName],
+      queryKey: [
+         "dashboard-editor-dashboards",
+         environmentName,
+         packageName,
+         versionId,
+      ],
       queryFn: () =>
          apiClients.dashboards.listDashboards(
             environmentName,
             packageName,
-            undefined,
+            versionId,
          ),
    });
    const otherDashboards = useMemo(
@@ -715,12 +802,13 @@ function Surface({
          environmentName,
          packageName,
          ...importPaths,
+         versionId,
       ],
       queryFn: async () => {
          const models = await Promise.all(
             importPaths.map((path) =>
                apiClients.models
-                  .getModel(environmentName, packageName, path)
+                  .getModel(environmentName, packageName, path, versionId)
                   .then((response) => response.data),
             ),
          );
@@ -749,11 +837,12 @@ function Surface({
       specs,
       loaded: isSuccess,
       startingValues: manifest?.startingGivens,
-      documentKey: `${environmentName}/${packageName}/${slug}/edit`,
+      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${slug}/edit`,
       autorun: manifest?.autorun !== false,
       environmentName,
       packageName,
       modelPath: manifest?.path,
+      versionId,
       documentName: slug,
    });
 
@@ -765,6 +854,7 @@ function Surface({
                <DashboardTile
                   environmentName={environmentName}
                   packageName={packageName}
+                  versionId={versionId}
                   modelPath={modelPath}
                   tile={query.expression}
                   label={
@@ -784,6 +874,7 @@ function Surface({
          runnable,
          environmentName,
          packageName,
+         versionId,
          modelPath,
          applied,
          declaredTypes,
