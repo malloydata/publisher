@@ -92,14 +92,29 @@ from verify_goldens import has_second_derivation, parse_definitions  # noqa: E40
 
 CANNOT_RUN = 3
 
+
+class Collision(Exception):
+    """Two definitions that the ledger's own id cannot tell apart.
+
+    Its own exception rather than a `SystemExit` so `records()` stays callable
+    from a test and from `stale_ids()` without either having to catch an exit.
+    `main()` turns it into CANNOT_RUN, because a ledger that silently dropped
+    one of the two is the thing this refuses to produce.
+    """
+
+
 # Kinds whose correctness is a question at all. A `view` composes measures that
 # are checked on their own, and a `join` is structure rather than a value.
 CHECKABLE_KINDS = ("measure", "dimension")
 
 WORD = re.compile(r"[A-Za-z_]\w*")
-# `prefix.field`: the one place a word in an expression refers to a field of a
-# source OTHER than the one declaring it, so `deps_of` resolves it over there.
-DOTTED = re.compile(r"([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
+# A WHOLE dotted path, however many hops: the one place a word in an expression
+# refers to a field of a source OTHER than the one declaring it. Matched entire
+# rather than pair by pair, because `re.findall` does not overlap: a pairwise
+# `(\w+)\.(\w+)` reads `a.b.c` as one match `(a, b)` and never sees `c`, so the
+# dependency at the END of a two-join path -- the one the chain exists to
+# track -- was silently dropped.
+PATH = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
 # Aggregates that survive uniform duplication, so fanout does not move them.
 # `verify_goldens`' own fanout note lists the same four.
 FANOUT_SAFE = ("avg(", "stddev(", "min(", "max(")
@@ -217,24 +232,32 @@ def records(model: pathlib.Path, recursive: bool,
         `carriers`.
 
         A dotted path is the one place a word refers to another source's
-        field. Its prefix names either a source or a join alias, and a join
-        alias resolves to the source the join targets. The join itself is a
-        dependency too: its `on` clause decides which rows the field sees.
+        field. It is walked segment by segment, each segment resolved in the
+        source the walk has reached so far: a join alias moves the walk to the
+        source that join targets, and every segment that names a definition on
+        the way is itself a dependency, because a join's `on` clause decides
+        which rows the segments after it see. Walking rather than reading the
+        first pair is what makes `a.b.c` reach `c`.
         """
         src, expr = rec["source"], rec["expr"]
         found: set[tuple[str, str]] = set()
-        for prefix, field in DOTTED.findall(expr):
-            if (src, prefix) in by_key:
-                # A join (or a field) of this source, named on the way through.
-                found.add((src, prefix))
-            target = join_target.get((src, prefix),
-                                     prefix if prefix in sources else None)
-            if target and (target, field) in by_key:
-                found.add((target, field))
-        # Dotted paths are blanked before the bare scan, so the field half of
+        for path in PATH.findall(expr):
+            here: str | None = src
+            for seg in path.split("."):
+                if here is None:
+                    break
+                if (here, seg) in by_key:
+                    found.add((here, seg))
+                # Where the next segment resolves: the source this join
+                # targets, or the segment itself when it names a source
+                # directly. Anything else ends the walk -- a raw column or a
+                # method call (`sale_price.sum()`) has nothing to traverse.
+                here = join_target.get((here, seg),
+                                       seg if seg in sources else None)
+        # Whole paths are blanked before the bare scan, so a segment of
         # `source_a.total_sales` is not ALSO read as this source's own
         # `total_sales` when both declare that name.
-        bare = DOTTED.sub(" ", expr)
+        bare = PATH.sub(" ", expr)
         found |= {(src, w) for w in WORD.findall(bare) if (src, w) in by_key}
         found.discard((src, rec["name"]))
         return sorted(found)
@@ -256,6 +279,15 @@ def records(model: pathlib.Path, recursive: bool,
     out = []
     for r in parsed:
         if r["kind"] not in CHECKABLE_KINDS:
+            continue
+        if not r["source"]:
+            # A field the scanner found outside any `source:` block -- an
+            # aggregate inside a `run:` query, which `sample_queries.malloy`
+            # in bigquery-ga4 has seventeen of. It is query-local, not a model
+            # entity: no case can require it, because a required id is
+            # `kind:source:name` and there is no source to name. Kept out of
+            # the ledger rather than given the two-part id `entity_id` mints
+            # for a null source, which `check_findable` reports as malformed.
             continue
         if r.get("passthrough"):
             # A raw column exposed as-is. There is no expression that could be
@@ -297,6 +329,35 @@ def records(model: pathlib.Path, recursive: bool,
             "file": r["file"],
             "line": r["line"],
         })
+    # An entityId must address exactly one definition, because everything
+    # downstream keys on it: `load_ledger` and `stale_ids` both build
+    # `{entityId: record}`, so two definitions sharing an id means one is never
+    # staleness-checked and an authored control written for one silently
+    # re-runs against the other. Two FILES declaring the same source name is
+    # all it takes, and real packages do it -- `auto_recalls` lost 12 of its 24
+    # rows this way, `faa` 1 of 36, because `airports.malloy` and
+    # `flights.malloy` both declare `source: airports`. The id format is a
+    # contract shared with a case's `required` ids, so it cannot grow a file
+    # segment; the honest outcome is a refusal naming the files, not a ledger
+    # quietly missing half its rows.
+    seen: dict[str, dict[str, Any]] = {}
+    clashes: list[str] = []
+    for rec in out:
+        prior = seen.get(rec["entityId"])
+        if prior is None:
+            seen[rec["entityId"]] = rec
+            continue
+        clashes.append(
+            f"  {rec['entityId']}\n"
+            f"      {prior['file']}:{prior['line']}\n"
+            f"      {rec['file']}:{rec['line']}")
+    if clashes:
+        raise Collision(
+            f"{len(clashes)} definition(s) share an entityId with another, so "
+            f"the ledger cannot address them apart:\n" + "\n".join(clashes) +
+            "\n\nAn entityId is `kind:source:name`, so two files declaring the "
+            "same source name collide. Point --model at one file, or rename "
+            "one of the sources. Nothing was written.")
     if existing:
         for rec in out:
             prior = existing.get(rec["entityId"]) or {}
@@ -678,6 +739,11 @@ if __name__ == "__main__":
         sys.exit(main())
     except SystemExit:
         raise
+    except Collision as e:
+        # Its own arm so the message reads as the actionable refusal it is,
+        # rather than a traceback a reader has to interpret.
+        print(f"\n{e}", file=sys.stderr)
+        sys.exit(CANNOT_RUN)
     except Exception:
         traceback.print_exc()
         print("\nverify_definitions could not run, so this says NOTHING about the "

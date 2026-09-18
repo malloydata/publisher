@@ -151,10 +151,131 @@ class DependenciesResolveInTheSourceThatOwnsThem(unittest.TestCase):
         finally:
             shutil.rmtree(p.parent, ignore_errors=True)
 
+    def test_a_path_two_joins_deep_reaches_its_last_segment(self):
+        """`re.findall` does not overlap, so a pairwise `(\\w+)\\.(\\w+)` reads
+        `a.b.c` as the single match `(a, b)` and never sees `c`.
+
+        The dependency at the END of the path is the one the sha chain exists
+        to track: with it dropped, editing the leaf measure left the measure
+        two joins above it reading as current, and `verify_goldens
+        --definitions` would promote against a definition that had moved.
+        """
+        p = write(
+            "source: leaf is duckdb.table('data/l.parquet') extend {\n"
+            "  measure:\n    leaf_measure is count()\n}\n"
+            "source: mid is duckdb.table('data/m.parquet') extend {\n"
+            "  join_one: leaf_alias is leaf with leaf_id\n"
+            "  measure:\n    mid_measure is leaf_alias.leaf_measure\n}\n"
+            "source: top is duckdb.table('data/t.parquet') extend {\n"
+            "  join_one: mid_alias is mid with mid_id\n"
+            "  measure:\n"
+            "    top_measure is mid_alias.leaf_alias.leaf_measure\n}\n")
+        try:
+            recs = {r["entityId"]: r for r in vd.records(p, recursive=False)}
+            self.assertIn("measure:leaf:leaf_measure",
+                          recs["measure:top:top_measure"]["depends"])
+            # Both joins on the way are dependencies too: either one's `on`
+            # clause changes which rows the leaf measure is read over.
+            self.assertIn("join:top:mid_alias",
+                          recs["measure:top:top_measure"]["depends"])
+            self.assertIn("join:mid:leaf_alias",
+                          recs["measure:top:top_measure"]["depends"])
+        finally:
+            shutil.rmtree(p.parent, ignore_errors=True)
+
+    def test_editing_a_leaf_moves_a_measure_two_joins_above_it(self):
+        base = ("source: leaf is duckdb.table('data/l.parquet') extend {\n"
+                "  measure:\n    leaf_measure is count()\n}\n"
+                "source: mid is duckdb.table('data/m.parquet') extend {\n"
+                "  join_one: leaf_alias is leaf with leaf_id\n"
+                "  measure:\n    mid_measure is leaf_alias.leaf_measure\n}\n"
+                "source: top is duckdb.table('data/t.parquet') extend {\n"
+                "  join_one: mid_alias is mid with mid_id\n"
+                "  measure:\n"
+                "    top_measure is mid_alias.leaf_alias.leaf_measure\n}\n")
+
+        def shas(text):
+            p = write(text)
+            try:
+                return {r["entityId"]: r["exprSha"]
+                        for r in vd.records(p, recursive=False)}
+            finally:
+                shutil.rmtree(p.parent, ignore_errors=True)
+
+        before = shas(base)
+        after = shas(base.replace("leaf_measure is count()",
+                                  "leaf_measure is count() * 2"))
+        self.assertNotEqual(before["measure:top:top_measure"],
+                            after["measure:top:top_measure"])
+
+    def test_a_method_call_on_a_column_is_not_a_traversal(self):
+        # `sale_price.sum()` is a path too; the walk must stop at a segment
+        # that names no join and no source, or every method call invents an
+        # edge.
+        p = write("source: s is duckdb.table('data/s.parquet') extend {\n"
+                  "  measure:\n    total is sale_price.sum()\n}\n")
+        try:
+            recs = {r["entityId"]: r for r in vd.records(p, recursive=False)}
+            self.assertEqual(recs["measure:s:total"]["depends"], [])
+        finally:
+            shutil.rmtree(p.parent, ignore_errors=True)
+
     def test_the_two_same_named_measures_hash_apart(self):
         a = self.recs["measure:source_a:total_sales"]["exprSha"]
         b = self.recs["measure:source_b:total_sales"]["exprSha"]
         self.assertNotEqual(a, b)
+
+
+class AnEntityIdAddressesExactlyOneDefinition(unittest.TestCase):
+    """`load_ledger` and `stale_ids` both build `{entityId: record}`, so two
+    definitions sharing an id means one is never staleness-checked and an
+    authored control written for one re-runs against the other. Measured on
+    real packages before this refused: auto_recalls lost 12 of 24 rows, faa 1
+    of 36."""
+
+    def test_two_files_declaring_one_source_name_are_refused(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        try:
+            (d / "a.malloy").write_text(
+                "source: airports is duckdb.table('data/a.parquet') extend {\n"
+                "  measure:\n    airport_count is count()\n}\n")
+            (d / "b.malloy").write_text(
+                "source: airports is duckdb.table('data/a.parquet') extend {\n"
+                "  measure:\n    airport_count is count()\n}\n")
+            with self.assertRaises(vd.Collision) as caught:
+                vd.records(d, recursive=False)
+            msg = str(caught.exception)
+            self.assertIn("measure:airports:airport_count", msg)
+            # Both sites named, so the reader can go fix one of them.
+            self.assertIn("a.malloy", msg)
+            self.assertIn("b.malloy", msg)
+            self.assertIn("Nothing was written", msg)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_one_file_declaring_two_sources_is_fine(self):
+        p = write(TWO_SOURCES)
+        try:
+            self.assertEqual(len(vd.records(p, recursive=False)), 4)
+        finally:
+            shutil.rmtree(p.parent, ignore_errors=True)
+
+    def test_a_field_outside_any_source_is_not_a_ledger_entity(self):
+        # An aggregate inside a `run:` block. It cannot be required by a case,
+        # because a required id is `kind:source:name` and there is no source to
+        # name, and `entity_id` would mint a two-part id that `check_findable`
+        # reports as malformed.
+        p = write("source: s is duckdb.table('data/s.parquet') extend {\n"
+                  "  measure:\n    real_one is count()\n}\n"
+                  "run: s -> {\n  aggregate:\n    query_local is count()\n}\n")
+        try:
+            recs = vd.records(p, recursive=False)
+            ids = [r["entityId"] for r in recs]
+            self.assertIn("measure:s:real_one", ids)
+            self.assertTrue(all(i.count(":") == 2 for i in ids), ids)
+            self.assertNotIn("measure:query_local", ids)
+        finally:
+            shutil.rmtree(p.parent, ignore_errors=True)
 
 
 class TheShaChainInvalidatesDownstream(unittest.TestCase):
