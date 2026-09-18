@@ -73,6 +73,79 @@ def search_terms(tool_input: dict[str, Any]) -> list[str]:
     return terms
 
 
+def entity_hits(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every returned entity with the provenance the response carries.
+
+    `entity_ids` answers "what came back". This answers "how", and the two
+    facts it adds are the ones the scorer needs and never had:
+
+    - `relevance`, the server's own score. On the semantic path it is a cosine
+      and IS comparable across targets, which is exactly why the server
+      publishes it there and withholds it on the lexical path, where a lunr
+      score is relative to its own query.
+    - `matched_targets`, naming WHICH of the caller's search targets matched
+      this entity and how well. Without it a required entity that never came
+      back is indistinguishable from one the agent never asked for -- the
+      distinction between a retrieval defect and a phrase-detection defect,
+      and the whole reason retrieval scoring could not attribute a miss.
+
+    `position` is the entity's index in the flattened response and is NOT a
+    rank. The response is sorted globally by relevance and then bucketed into
+    source cards, so flattening card by card interleaves. The harness used to
+    write `range(1, n+1)` here and call it a rank; read `relevance` instead.
+
+    Entities are the only thing that carries this. A source card's own target
+    attribution is discarded by the server before an entity object exists, so
+    a `source:` hit has none and says so with `matched_targets: None`.
+    """
+    hits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(ident: str, source: str, ent: dict[str, Any] | None,
+            in_card: int | None) -> None:
+        if ident in seen:
+            return
+        seen.add(ident)
+        mt = (ent or {}).get("matched_targets")
+        hits.append({
+            "entity_id": ident,
+            "source": source,
+            "relevance": (ent or {}).get("relevance"),
+            # None and [] are different claims: None is "this path publishes
+            # no attribution" (a source hit, or a lexical run), [] is "the
+            # server attributed it to no target".
+            "matched_targets": ([{"search_text": m.get("search_text"),
+                                  "relevance": m.get("relevance")}
+                                 for m in mt if isinstance(m, dict)]
+                                if isinstance(mt, list) else None),
+            "position": len(hits) + 1,
+            "position_in_source": in_card,
+        })
+
+    for node in payload.get("sources") or []:
+        if not isinstance(node, dict):
+            continue
+        info = node.get("source_info")
+        rid = info.get("resource_id") if isinstance(info, dict) else None
+        src = rid.get("source") if isinstance(rid, dict) else None
+        if not isinstance(src, str) or not src:
+            continue
+        add(f"source:{src}:{src}", src, None, 0)
+        for i, ent in enumerate(node.get("entities") or [], 1):
+            if not isinstance(ent, dict):
+                continue
+            # The same id rule `entity_ids` uses, so the two cannot disagree
+            # about what an entity is called.
+            eid = ent.get("entity_id")
+            if not (isinstance(eid, str) and eid):
+                name, kind = ent.get("name"), ent.get("entity_type")
+                if not (isinstance(name, str) and name and isinstance(kind, str)):
+                    continue
+                eid = f"{kind.lower()}:{src}:{name}"
+            add(eid, src, ent, i)
+    return hits
+
+
 def target_shapes(tool_input: dict[str, Any]) -> list[dict[str, Any]]:
     """Every search target's TYPE, and whether it carried search text.
 

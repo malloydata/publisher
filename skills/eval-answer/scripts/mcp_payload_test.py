@@ -11,7 +11,7 @@ become "documentation" and "query construction" "delivered, wrong".
 """
 import unittest
 
-from mcp_payload import entity_ids, search_terms
+from mcp_payload import entity_hits, entity_ids, search_terms
 
 FLAT = {"results": [
     {"kind": "measure", "name": "total_sales_2022", "source": "order_items",
@@ -214,6 +214,76 @@ class EntityIds(unittest.TestCase):
                 {"entityId": "measure:s:m", "kind": "measure", "name": "m",
                  "source": "s"}]}}}),
             ["measure:s:m"])
+
+
+class EntityHits(unittest.TestCase):
+    """The provenance `entity_ids` throws away.
+
+    Without it, a required entity that never came back is indistinguishable
+    from one the agent never asked for -- a retrieval defect from a phrase
+    detection defect -- which is the reason retrieval scoring could not
+    attribute a miss.
+    """
+
+    PAYLOAD = {"sources": [{
+        "source_info": {"resource_id": {"source": "flights"}},
+        "entities": [
+            {"entity_id": "measure:flights:flight_count", "relevance": 0.81,
+             "matched_targets": [{"search_text": "flight count",
+                                  "relevance": 0.81}]},
+            {"name": "carrier", "entity_type": "dimension", "relevance": 0.44,
+             "matched_targets": [{"search_text": "carrier", "relevance": 0.44}]},
+        ]}]}
+
+    def test_it_agrees_with_entity_ids_about_identity(self):
+        # Two readers of one response that disagree about what an entity is
+        # called would make every comparison meaningless.
+        self.assertEqual([h["entity_id"] for h in entity_hits(self.PAYLOAD)],
+                         entity_ids(self.PAYLOAD))
+
+    def test_it_carries_relevance_and_the_matching_targets(self):
+        h = {x["entity_id"]: x for x in entity_hits(self.PAYLOAD)}
+        m = h["measure:flights:flight_count"]
+        self.assertEqual(m["relevance"], 0.81)
+        self.assertEqual(m["matched_targets"],
+                         [{"search_text": "flight count", "relevance": 0.81}])
+
+    def test_a_source_hit_has_no_attribution_and_says_null(self):
+        # The server discards a source card's target attribution before an
+        # entity object exists, so there is none to report. `null` is that
+        # claim; `[]` would claim the server attributed it to no target.
+        h = {x["entity_id"]: x for x in entity_hits(self.PAYLOAD)}
+        self.assertIsNone(h["source:flights:flights"]["matched_targets"])
+
+    def test_a_lexical_response_reports_no_attribution_not_an_empty_one(self):
+        # The lexical path withholds matched_targets by design: a lunr score is
+        # relative to its own query. Reading that as "matched no target" would
+        # charge the agent for never asking.
+        lex = {"sources": [{"source_info": {"resource_id": {"source": "f"}},
+                            "entities": [{"entity_id": "measure:f:x"}]}]}
+        h = entity_hits(lex)[1]
+        self.assertIsNone(h["matched_targets"])
+        self.assertIsNone(h["relevance"])
+
+    def test_position_is_not_a_rank(self):
+        # Kept because it is occasionally useful for reading a response back,
+        # never because it orders by relevance: the response sorts globally
+        # and then buckets into source cards.
+        hits = entity_hits(self.PAYLOAD)
+        self.assertEqual([h["position"] for h in hits], [1, 2, 3])
+        self.assertEqual([h["position_in_source"] for h in hits], [0, 1, 2])
+
+    def test_a_duplicate_entity_is_taken_once(self):
+        dup = {"sources": [
+            {"source_info": {"resource_id": {"source": "f"}},
+             "entities": [{"entity_id": "measure:f:x", "relevance": 0.9}]},
+            {"source_info": {"resource_id": {"source": "g"}},
+             "entities": [{"entity_id": "measure:f:x", "relevance": 0.1}]}]}
+        ids = [h["entity_id"] for h in entity_hits(dup)]
+        self.assertEqual(ids.count("measure:f:x"), 1)
+
+    def test_an_empty_payload_is_no_hits(self):
+        self.assertEqual(entity_hits({}), [])
 
 
 if __name__ == "__main__":

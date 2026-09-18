@@ -179,8 +179,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
-from mcp_payload import (doc_tokens, entity_ids,  # noqa: E402
-                         search_terms, target_shapes)
+from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
+                         entity_ids, search_terms, target_shapes)
 from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
@@ -1862,7 +1862,16 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                   "retrieval_mode": (payload or {}).get("retrieval"),
                                   "rankedSummary": {
                                       "entityIds": ids,
-                                      "ranks": list(range(1, len(ids) + 1)),
+                                      # `ranks` WAS list(range(1, n+1)) and was
+                                      # called a rank. It is not one: the
+                                      # response is sorted globally by
+                                      # relevance and then bucketed into source
+                                      # cards, so a flattened position
+                                      # interleaves the cards. `hits` carries
+                                      # the server's own `relevance` and the
+                                      # targets that matched, which is what a
+                                      # rank question should be asked of.
+                                      "hits": entity_hits(payload or {}),
                                       "resultCount": len(ids),
                                       # identifiers named in the returned
                                       # sources' docs: an entity there has
