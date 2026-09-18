@@ -495,8 +495,13 @@ describe("Publisher's own parser drops --host=<address>", () => {
                   `not, so bring the two back into line. Log:\n${joinedLog}`,
             );
          }
-         // The MCP listener takes the same flag and is the easier one to forget.
-         expect(await accepts(lan as string, joinedMcpPort)).toBe(true);
+         // The MCP listener no longer follows PUBLISHER_HOST into a wide bind:
+         // it reads MCP_HOST first and defaults to loopback, so a dropped
+         // `--host=` leaves it closed while REST above is still exposed. That
+         // asymmetry is the point -- the REST reachability above is what makes
+         // the joined form unsafe to adopt, and MCP being shut is the fix for
+         // the half of it that used to be the easier one to forget.
+         expect(await accepts(lan as string, joinedMcpPort)).toBe(false);
       },
    );
 

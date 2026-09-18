@@ -31,6 +31,38 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] - two server defaults now close instead of open
+
+Two settings that were open by default are closed. Both are silent until
+something that relied on the old default stops working, so each needs a
+deliberate step if you were depending on it.
+
+**The authorize bypass now requires a secret.** `x-publisher-bypass-authorize`
+disabled every `#(authorize)` gate on the presence of the header alone, with no
+value to know. It now requires `PUBLISHER_BYPASS_AUTHORIZE_SECRET` to be set and
+the header to carry that value; with the variable unset the bypass is refused
+outright rather than allowed. If you relied on the bypass, set the variable and
+send it as the header value, or stop relying on it.
+
+**MCP binds loopback and no longer allows every origin.** The MCP server bound
+`0.0.0.0` with a bare `cors()`, so it accepted connections from the network and
+cross-origin requests from anywhere. It now binds `127.0.0.1` and reads allowed
+origins from `MCP_CORS_ORIGINS`, defaulting to none. A remote MCP client that
+could reach port 4040 can no longer do so: set `MCP_HOST=0.0.0.0` to restore the
+old bind, and put a gateway in front of it (see `docs/security-posture.md`).
+
+Know what widening it exposes before you do. MCP tools take `environmentName`
+and `packageName` as ordinary arguments and the discovery tools treat them as
+optional, so a caller who reaches the endpoint can enumerate every loaded
+environment and the connections on each. Publisher has no tenant model to scope
+that against, so a worker reachable by more than one tenant must not expose MCP.
+
+MCP gets its own host knob rather than reusing `PUBLISHER_HOST`, because that
+variable drove both the REST and MCP listeners -- defaulting it to loopback would
+have moved the REST port to localhost too. Precedence is `MCP_HOST`, then an
+explicit `PUBLISHER_HOST` so `--host` still moves both together, then
+`127.0.0.1`. The REST default is unchanged.
+
 ## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the
