@@ -159,3 +159,84 @@ describe("the Playwright notebook-authorize fixture model", () => {
       }
    });
 });
+
+/**
+ * A `#(secure)` given marks a value the deployment resolves from the caller's
+ * identity rather than accepting from the request. Marking a SCALAR one is an
+ * authoring mistake that fails open: a trusted-name registry only registers
+ * set-valued attributes, because the fail-closed sentinel is the empty list and
+ * a scalar has no empty form, so the marker registers nothing and the value
+ * stays caller-supplied while the author believes otherwise.
+ *
+ * Exercised as a package on disk, the way a tenant publishes one -- a real
+ * `publisher.json`, a real parquet the model reads, and a real DuckDB
+ * connection rooted at the package -- because that is the path the refusal has
+ * to fire on. The unit cases in `authorize.spec.ts` pin the rule itself.
+ */
+const SECURE_GIVEN_PACKAGE_MANIFEST = JSON.stringify(
+   { name: "secure-given-pkg", version: "0.0.1" },
+   null,
+   2,
+);
+
+function secureGivenModel(roleType: string): string {
+   return `##! experimental.givens
+
+given:
+  #(secure)
+  ROLE :: ${roleType}
+
+#(authorize) $ROLE = 'admin'
+source: gated_orders is duckdb.table('orders.parquet') extend {
+  measure: order_count is count()
+}
+`;
+}
+
+async function loadSecureGivenPackage(roleType: string): Promise<Model> {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "secure-given-pkg-"));
+   const duckdb = new DuckDBConnection("duckdb", ":memory:", dir);
+   try {
+      await duckdb.runSQL(
+         `COPY (SELECT 1 AS order_id, 'acme' AS tenant) ` +
+            `TO '${path.join(dir, "orders.parquet")}' (FORMAT PARQUET);`,
+      );
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         SECURE_GIVEN_PACKAGE_MANIFEST,
+      );
+      fs.writeFileSync(
+         path.join(dir, "secured.malloy"),
+         secureGivenModel(roleType),
+      );
+      return await Model.create(
+         "secure-given-pkg",
+         dir,
+         "secured.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+   } finally {
+      await duckdb.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+   }
+}
+
+describe("a published package that marks a scalar given #(secure)", () => {
+   it("refuses to load, naming the given and its declared type", async () => {
+      const model = await loadSecureGivenPackage("string");
+      const error = compilationErrorOf(model) ?? model.getNotebookError();
+      expect(error).toBeDefined();
+      expect(error?.message).toMatch(/`ROLE` declared `string`/);
+      expect(error?.message).toMatch(/must be set-valued/i);
+   });
+
+   it("loads when the same given is declared set-valued", async () => {
+      // The positive half: the refusal must not catch a correctly authored
+      // package. Malloy renders a list given's type as `array` rather than
+      // `string[]`, which a rule written only against the rendered API spelling
+      // would refuse.
+      const model = await loadSecureGivenPackage("string[]");
+      expect(compilationErrorOf(model)).toBeUndefined();
+      expect(model.getNotebookError()).toBeUndefined();
+   });
+});

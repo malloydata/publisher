@@ -3817,3 +3817,54 @@ source: dm_mixed is duckdb.table('customers') extend {
       });
    });
 });
+
+describe("#(secure) givens", () => {
+   it("fails model load when a secure given is declared scalar", async () => {
+      await writeModel(
+         "scalar_secure.malloy",
+         `##! experimental.givens
+
+given:
+  #(secure)
+  ROLE :: string
+
+#(authorize) $ROLE = 'admin'
+source: gated is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "scalar_secure.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      expect(err?.message).toMatch(/`ROLE` declared `string`/);
+      expect(err?.message).toMatch(/must be set-valued/i);
+   });
+
+   it("loads a secure given declared set-valued", async () => {
+      await writeModel(
+         "setvalued_secure.malloy",
+         `##! experimental.givens
+
+given:
+  #(secure)
+  ROLES :: string[]
+
+#(authorize) $ROLES = 'admin'
+source: gated is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "setvalued_secure.malloy",
+         getConnections(),
+      );
+
+      expect(model.getNotebookError()).toBeUndefined();
+   });
+});

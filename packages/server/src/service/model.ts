@@ -99,9 +99,11 @@ import {
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
+   assertNoScalarSecureGivens,
    containsAuthorizeAnnotationTag,
    findLegacyStringGates,
    findMultipleAuthorizeGates,
+   findScalarSecureGivens,
    referencedGivenNames,
    validateAuthorizeProbes,
    type AuthorizeMap,
@@ -2997,6 +2999,27 @@ export class Model {
             // shape, so it should not read as a stranger error from the
             // authorize checks below.
             assertPartitionAnnotationsValid(modelDef);
+
+            // A `#(secure)` marker on a scalar given fails OPEN the same way
+            // a misplaced gate does: a trusted-name registry refuses to
+            // register a scalar, so the marker protects nothing while the
+            // author believes the value is server-controlled. Checked here
+            // with the other load-time authoring mistakes — see
+            // `assertNoScalarSecureGivens`'s doc.
+            assertNoScalarSecureGivens(
+               findScalarSecureGivens(
+                  Object.values(modelDef.givens ?? {}).map((given) => ({
+                     name: given.name,
+                     type:
+                        given.type.type === "filter expression"
+                           ? `filter<${given.type.filterType}>`
+                           : given.type.type,
+                     annotations: (given.annotations?.blockNotes ?? [])
+                        .concat(given.annotations?.notes ?? [])
+                        .map((note) => note.text),
+                  })),
+               ),
+            );
 
             // A `#(authorize)` annotation in a position nothing enforces (a
             // top-level `query:` statement, or a field inside a `source:`

@@ -1116,3 +1116,88 @@ export function assertNoLegacyStringGate(
          `matches what the string form served.`,
    });
 }
+
+// ---------------------------------------------------------------------------
+// `#(secure)` givens
+// ---------------------------------------------------------------------------
+
+/**
+ * A `#(secure)` marker on a given whose declared type is not set-valued.
+ *
+ * `name` is the given as declared; `type` is its rendered Malloy type, carried
+ * so the refusal can name what the author actually wrote.
+ */
+export type ScalarSecureGiven = { name: string; type: string };
+
+/** A `#(secure)` marker, on its own line or leading a block note. */
+const SECURE_ANNOTATION_PATTERN = /^\s*#\(secure\)\s*$/mu;
+
+/**
+ * True when the declared type is set-valued, which is what `#(secure)` requires.
+ *
+ * Both spellings are accepted because the two producers render differently:
+ * Malloy's own type tag for a list is `array`, while the rendered form used in
+ * the API and by the trusted-name registry is `string[]`. Matching only one
+ * would refuse a correctly-declared given from the other producer.
+ */
+function isSetValuedGivenType(type: string): boolean {
+   const rendered = type.trim();
+   return rendered.endsWith("[]") || rendered === "array";
+}
+
+/**
+ * Finds every `#(secure)` given declared with a scalar type.
+ *
+ * Exported for the two load paths to share, and for its own spec: the notes a
+ * given carries are assembled differently in `Model.create` and in the
+ * package-load worker, so both hand their assembled form here rather than each
+ * re-deriving the rule.
+ */
+export function findScalarSecureGivens(
+   givens: Iterable<{ name: string; type: string; annotations: string[] }>,
+): ScalarSecureGiven[] {
+   const found: ScalarSecureGiven[] = [];
+   for (const given of givens) {
+      if (isSetValuedGivenType(given.type)) continue;
+      if (
+         !given.annotations.some((note) => SECURE_ANNOTATION_PATTERN.test(note))
+      )
+         continue;
+      found.push({ name: given.name, type: given.type });
+   }
+   return found;
+}
+
+/**
+ * Refuse a model load that marks a scalar given `#(secure)`.
+ *
+ * A secure given is set-valued by design, and the reason is the fail-closed
+ * sentinel: an unvalued set-valued attribute resolves to the empty list, which
+ * matches nothing, whereas a null scalar is rejected outright and so cannot
+ * fail closed at all. A trusted-name registry therefore refuses to register a
+ * scalar, which leaves the marker doing nothing -- the author believes the
+ * given is server-controlled while a caller can still supply it.
+ *
+ * Same shape and the same reason as {@link assertNoMisplacedAuthorizeAnnotations}:
+ * a marker in a position nothing enforces fails OPEN, so model load refuses it
+ * rather than serving a gate that silently protects nothing. Names every
+ * finding, not just the first, so an author fixes them in one pass.
+ */
+export function assertNoScalarSecureGivens(
+   found: readonly ScalarSecureGiven[],
+): void {
+   if (found.length === 0) return;
+   const declarations = found
+      .map((g) => `  - \`${g.name}\` declared \`${g.type}\``)
+      .join("\n");
+   throw new ModelCompilationError({
+      message:
+         `A \`#(secure)\` given must be set-valued, but these are scalar:\n` +
+         `${declarations}\n` +
+         `A secure given fails closed by resolving to the empty list when the ` +
+         `server has no value for the caller, and a scalar has no empty form ` +
+         `to resolve to. Declare each as a list (for example \`string[]\` ` +
+         `rather than \`string\`), or drop the \`#(secure)\` marker if the ` +
+         `given is not meant to be server-controlled.`,
+   });
+}
