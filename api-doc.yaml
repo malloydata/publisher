@@ -5915,6 +5915,7 @@ components:
             [
               free_parameter,
               given,
+              given_in_persisted_query,
               authorize,
               partition,
               not_duckdb_portable,
@@ -5922,9 +5923,14 @@ components:
             ]
           description: >-
             The bounded refusal reason. Only `free_parameter`, `given`,
-            `authorize` and `partition` can appear here — those are the only
-            reasons the two compile-time eligibility asserts this collection is
-            computed from produce. `not_duckdb_portable` is decided against the
+            `given_in_persisted_query`, `authorize` and `partition` can appear
+            here — those are the only reasons the two compile-time eligibility
+            asserts this collection is computed from produce.
+            `given_in_persisted_query` is the colocated refusal for a given the
+            BUILD would substitute (one inside the persisted query, as opposed
+            to the source's extend block, where it is applied per caller at
+            read); `given` is the storage refusal, which covers either
+            placement. `not_duckdb_portable` is decided against the
             post-build captured schema, which does not exist at compile time,
             and `public_surface_unknown` is raised by the build-time narrowing
             of a stored table to the source's public columns; both are listed

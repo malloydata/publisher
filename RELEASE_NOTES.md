@@ -31,6 +31,101 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
+
+`proxy.ssh.hostKey` pins the bastion's host key. When it was omitted the tunnel
+connected to whatever key the far end presented, which means a
+machine-in-the-middle on the publisher-to-bastion hop could not be detected. That
+was the documented default, so a deployment relying on it is doing what the docs
+told it to.
+
+It now fails closed: a connection whose `ssh.hostKey` is unset is refused when a
+query first uses it. **If you run an SSH-proxy connection without a pinned host
+key, queries through it will start failing after this upgrade.**
+
+Do one of the two below **before** the new image rolls, not after. The refusal
+fires on the first query through an unpinned tunnel, so a deployment that waits
+to react has already failed those queries.
+
+Two ways forward, and the first is the one to prefer:
+
+- Pin the key. Put the bastion's host key in `ssh.hostKey` -- an OpenSSH
+  `known_hosts` line or a bare base64 blob, one per line. A load-balanced bastion
+  presents a different key per backend, so list every backend's key; any listed
+  key is accepted.
+- Or opt out for the deployment. `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`
+  restores the old behaviour and logs a warning on every unpinned connect.
+  `true`, `1`, `yes` and `on` all opt in, case-insensitive; an unrecognised value
+  fails config load rather than leaving verification silently off.
+
+To find the affected connections before upgrading, look for a connection with a
+`proxy.ssh` block and no `ssh.hostKey`. After upgrading, you do not have to wait
+for a failing query either: the tunnel is dialed lazily, and on config load this
+release logs a warning naming each SSH connection that pins no host key while the
+opt-in is off, so the list is in the startup log before anyone runs a query.
+
+## [Unreleased] — compile and sqlSource now count against the concurrency cap
+
+`PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
+flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`,
+but not `compile` or `sqlSource` -- and both of those reach the database too:
+compile resolves a source's schema against the connection, and sqlSource runs a
+live introspection. A burst of either bypassed the cap its sibling routes
+enforce. The legacy `/projects/...` routes and the `compile_model` MCP tool had
+the same gap, so all three surfaces are gated together; leaving one open would
+just move the bypass.
+
+What changes for an operator: the cap now has to be sized for authoring traffic
+as well as query traffic. An agent loop or a notebook that compiles on every edit
+draws on the same pool a query does, so a deployment that sits near its cap may
+start seeing 503s on compile and sqlSource that it did not see before. The cap
+defaults to 32 and `0` still disables it entirely. The dashboard save
+(`PUT /environments/:env/packages/:pkg/models/*?`) admits here too: it compiles
+the submitted text and rewrites the package under its lock.
+
+A deployment that finds the cap too tight once authoring traffic counts against
+it can raise `PUBLISHER_MAX_CONCURRENT_QUERIES` -- 64 or 128 -- rather than
+leaving these routes ungated. Raise it knowing what it governs: one pool bounds
+aggregate memory for concurrent warehouse work, so a cap sized to absorb
+authoring pressure also raises the ceiling on concurrent query memory.
+
+What this does not cover, so the entry is not read as a complete list:
+`?reload=true` answers to the memory governor but not to this cap, and the REST
+connection `schemas` and `tables` routes and the MCP `search_database_schema`
+tool take no slot.
+
+## [Unreleased] - two server defaults now close instead of open
+
+Two settings that were open by default are closed. Both are silent until
+something that relied on the old default stops working, so each needs a
+deliberate step if you were depending on it.
+
+**The authorize bypass now requires a secret.** `x-publisher-bypass-authorize`
+disabled every `#(authorize)` gate on the presence of the header alone, with no
+value to know. It now requires `PUBLISHER_BYPASS_AUTHORIZE_SECRET` to be set and
+the header to carry that value; with the variable unset the bypass is refused
+outright rather than allowed. If you relied on the bypass, set the variable and
+send it as the header value, or stop relying on it.
+
+**MCP binds loopback and no longer allows every origin.** The MCP server bound
+`0.0.0.0` with a bare `cors()`, so it accepted connections from the network and
+cross-origin requests from anywhere. It now binds `127.0.0.1` and reads allowed
+origins from `MCP_CORS_ORIGINS`, defaulting to none. A remote MCP client that
+could reach port 4040 can no longer do so: set `MCP_HOST=0.0.0.0` to restore the
+old bind, and put a gateway in front of it (see `docs/security-posture.md`).
+
+Know what widening it exposes before you do. MCP tools take `environmentName`
+and `packageName` as ordinary arguments and the discovery tools treat them as
+optional, so a caller who reaches the endpoint can enumerate every loaded
+environment and the connections on each. Publisher has no tenant model to scope
+that against, so a worker reachable by more than one tenant must not expose MCP.
+
+MCP gets its own host knob rather than reusing `PUBLISHER_HOST`, because that
+variable drove both the REST and MCP listeners -- defaulting it to loopback would
+have moved the REST port to localhost too. Precedence is `MCP_HOST`, then an
+explicit `PUBLISHER_HOST` so `--host` still moves both together, then
+`127.0.0.1`. The REST default is unchanged.
+
 ## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the
@@ -68,6 +163,28 @@ What this does not add is contention control on the record itself. `saveDocument
 no expected-version slot, so two people editing one authoritative workspace are still
 last writer wins, and the editor cannot detect it. Only the package path is
 compare-and-swap protected.
+
+## [Unreleased] — a colocated persist whose query is built with a given is refused
+
+A given's value is substituted when the compiler compiles. Inside a persisted query the only value available is the declaration default, so it was baked into the relation — and persistence swaps only the source's `FROM`, leaving nothing to re-apply a filter that lives inside that relation. The table held one caller's slice and was served to everyone, whatever value they supplied. That shape is now refused.
+
+**What is still admitted**, and is the documented form ([row-level-access.md](docs/row-level-access.md)): a given applied when the source is READ — a `where:` in the source's extend block, or a dimension, measure or join declared there. It never reaches the build, and binds per caller over the materialized rows. Only a given the persisted query is built with is refused.
+
+```malloy
+#@ persist name="refused"
+source: refused is raw -> { where: org_id = $ORG_ID; select: * }
+
+#@ persist name="admitted"
+source: admitted is raw -> { select: * } extend { where: org_id = $ORG_ID }
+```
+
+**On upgrade**, such a package keeps loading and its source keeps serving — live, correctly, per caller. What changes is that its materialization run now 422s with the refusal, and an artifact built before the upgrade is unbound on the next reload rather than served. Moving the given out of the persisted query restores materialization; the refusal message names the placement.
+
+The `storage=` tier still refuses a given reference in any position, so what it accepts is unchanged. One reported value shifts: a `#@ preaggregate` rollup that also declares `storage=` runs the colocated check first, so a refusal that read `given` now reads `given_in_persisted_query`. Same refusal, different label.
+
+**A new `reason` value.** Refusals are reported on the build plan, and this adds `given_in_persisted_query` to that enum. A consumer generating a strict client from an older copy of the spec can fail to parse a package whose plan carries it — which happens only for a package that actually has the refused shape. Regenerate against this release's `api-doc.yaml`, or expect the value.
+
+---
 
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
