@@ -123,5 +123,60 @@ class KindMap(unittest.TestCase):
                                  f"{kind} should be searched as {target}")
 
 
+class CompiledModel(unittest.TestCase):
+    """The compiled model is the authority on existence AND kind.
+
+    A grep over the `.malloy` text is neither, and is wrong in both directions:
+    it passes a real name under the wrong kind, and it fails a column the
+    source exposes implicitly.
+    """
+
+    DECLARED = {
+        "flights": {"source:flights", "measure:flight_count",
+                    "dimension:distance"},
+        "airports": {"source:airports", "measure:airport_count",
+                     "dimension:state", "dimension:own_type"},
+    }
+
+    def find(self, *ids):
+        cases = [{"qid": "q", "expectedEntities": {"required": list(ids)}}]
+        return check_findable.declared_findings(cases, self.DECLARED)
+
+    def test_a_real_name_under_the_wrong_kind_names_the_real_kind(self):
+        f = self.find("dimension:flights:flight_count")
+        self.assertEqual(len(f), 1)
+        self.assertIn("declared measure, not dimension", f[0])
+        self.assertIn("hard filter", f[0])
+
+    def test_an_implicit_column_is_NOT_a_finding(self):
+        # The grep false positive: `own_type` appears zero times in the
+        # .malloy and is exposed by the source. Acting on that finding deletes
+        # a good entity from the key.
+        self.assertEqual(self.find("dimension:airports:own_type"), [])
+
+    def test_a_field_that_does_not_exist_is_a_finding(self):
+        f = self.find("measure:flights:revenue_per_mile")
+        self.assertIn("declares no field", f[0])
+
+    def test_an_unknown_source_is_a_finding(self):
+        f = self.find("measure:gone:x")
+        self.assertIn("no source", f[0])
+
+    def test_a_correct_id_is_silent(self):
+        self.assertEqual(self.find("measure:flights:flight_count",
+                                   "dimension:airports:state"), [])
+
+    def test_a_malformed_id_is_left_to_the_other_check(self):
+        # `check` reports it before any search; reporting it twice reads as
+        # two defects.
+        self.assertEqual(self.find("flight_count"), [])
+
+    def test_an_unreachable_server_is_not_read_as_an_empty_model(self):
+        # None means "not checked". Treating it as {} would report every id in
+        # the set as missing.
+        self.assertIsNone(check_findable.compiled_entities(
+            "http://127.0.0.1:9", "e", "p"))
+
+
 if __name__ == "__main__":
     unittest.main()

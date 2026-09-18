@@ -149,6 +149,12 @@ def evidence_for(qid: str, case: dict[str, Any],
             continue
         summary = c.get("rankedSummary") or {}
         asked.append({"targets": c.get("targets"),
+                      # Without this a narrow scope is invisible, and a miss it
+                      # fully explains reads as a retrieval failure. One
+                      # diagnosis asserted "a single unscoped get_context call"
+                      # about a call scoped to one source, and charged the miss
+                      # to retrieval on that premise.
+                      "scopes": c.get("scopes"),
                       "returnedInRankOrder": summary.get("entityIds") or [],
                       "resultCount": summary.get("resultCount"),
                       "error": c.get("error")})
@@ -193,8 +199,18 @@ commit to a code -- use them. You may not edit anything.{scope_line}
 EVIDENCE FROM THE RUN
 {evidence}
 
-In `getContextCalls`, `targets` is what the agent searched for and
-`returnedInRankOrder` is what came back, in rank order.
+In `getContextCalls`, `targets` is what the agent searched for, `scopes` is
+the scope it searched UNDER, and `returnedInRankOrder` is what came back.
+
+**Read `scopes` before you blame retrieval for anything.** A call carrying a
+`source` in its scope is pinned to that source and cannot return an entity from
+another one, however well documented that entity is. A miss under a narrow
+scope is the agent's scoping -- `agent-call` -- not `get_context/retrieval`.
+Not hypothetical: a diagnosis asserted "a single unscoped get_context call"
+about a call scoped to `source: flights`, and charged a missing `airports`
+field to retrieval on that premise. The scope was in the request all along and
+was missing from the evidence; it is there now, so calling a scoped call
+unscoped is a checkable error.
 
 Emit the object defined under `## Per case` in `reference/output-contract.md`
 of the eval-diagnose skill as the LAST thing in your reply. Read that file; it

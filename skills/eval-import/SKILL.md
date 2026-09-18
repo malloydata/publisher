@@ -180,9 +180,11 @@ are the ones already stated rather than new ones:
   near-misses.
 
 - **Then prove each one is retrievable, and record what finds it.**
-  `check_findable.py --set <set> --mcp-url <mcp> --environment <env>
-  --package <pkg>` issues a search of each entity's own kind for its own name
-  and reports any that does not come back. It needs no model call.
+  `check_findable.py --set <set> --mcp-url <mcp> --publisher <rest>
+  --environment <env> --package <pkg>` runs two checks and needs no model call.
+  With `--publisher` it reads the COMPILED model and settles whether each field
+  exists and what KIND it is; then it searches for each entity to confirm the
+  index can actually deliver it.
 
   This matters more than it looks, because `required` is what BOTH retrieval
   numbers are computed against: whether the agent asked for the entity, and
@@ -190,10 +192,15 @@ are the ones already stated rather than new ones:
   the case reports a retrieval miss on every run, which reads as a defect in
   the model or the agent rather than in the key.
 
-  It catches what a name check cannot. `dimension:flights:flight_count` names a
-  field the model really has, so grepping the source passes it; the kind is
-  wrong, and `target_type` is a hard filter, so no `dimension` request can ever
-  return it. Check 5 says yes and this says no.
+  **Prefer the compiled model over a grep, and prefer it in both directions.**
+  Measured on one package: `dimension:flights:flight_count` names a field the
+  model really has, so grepping the text passes it, and the compiled model says
+  `flight_count` is a MEASURE, which no `dimension` request can return.
+  Conversely `dimension:airports:own_type` appears zero times in the `.malloy`
+  and the compiled model declares it, because the source exposes it implicitly
+  from the data; the grep calls it missing and acting on that deletes a good
+  entity. `verify_goldens.py` check 5 is the grep, it is free and needs no
+  server, and it is not the authority.
 
   A pass is a floor, not a verdict on the docs: each entity is searched by its
   OWN NAME, the easiest query that could find it. An entity that answers to its

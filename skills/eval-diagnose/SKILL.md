@@ -63,7 +63,7 @@ never "C1" / "C2" / "C3":
 | `dataset` | Bad question, bad or missing golden, or environment drift? |
 | `agent-call` | Did the agent ask for the needed concepts, with the right type and scope? |
 | `get_context/model` | Is the needed entity absent, undocumented, weakly labeled, duplicated, or missing guidance? |
-| `get_context/retrieval` | Was an on-target request against a well-described entity ranked or grouped wrong? |
+| `get_context/retrieval` | Was an on-target, in-scope request against a well-described entity ranked or grouped wrong? **Check the call's `scopes` first**: a call pinned to one source cannot return another source's entity, and that miss is `agent-call`. |
 | `construction` | Did sufficient context arrive, and the agent still built the wrong query? |
 | `model-definition` | Is a measure, join, filter convention, or source semantically wrong? |
 

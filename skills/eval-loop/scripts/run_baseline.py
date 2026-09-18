@@ -1784,6 +1784,14 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         pending[c["id"]] = {
                             "tool": "get_context",
                             "targets": search_terms(c["input"]),
+                            # The SCOPE the call was made under. Decisive and
+                            # absent until now: a call pinned to one source
+                            # cannot return an entity from another, so a miss
+                            # under a narrow scope is the agent's scoping and
+                            # not retrieval's ranking. A diagnoser with no
+                            # scope in its evidence assumed "unscoped" and
+                            # charged exactly that miss to retrieval.
+                            "scopes": c["input"].get("scopes"),
                             # Beside `targets`, not instead of it: that field
                             # is the terms searched for and DROPS a target with
                             # no text, so the bare-target rate -- the whole of

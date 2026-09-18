@@ -52,6 +52,7 @@ import json
 import pathlib
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -100,6 +101,90 @@ def get_context(mcp_url: str, targets: list[dict[str, str]],
     content = d["result"]["content"]
     text = content[0].get("text") or content[0].get("resource", {}).get("text")
     return json.loads(text)
+
+
+def compiled_entities(rest_url: str, environment: str,
+                      package: str) -> dict[str, set[str]] | None:
+    """`{source: {"kind:name", ...}}` from the COMPILED model, or None.
+
+    The authority on whether an entity exists and what kind it is. A grep over
+    the `.malloy` text is neither, and gets it wrong in both directions:
+
+    - it passes `dimension:flights:flight_count`, because `flight_count` is in
+      the file. The model declares it a MEASURE, `target_type` is a hard
+      filter, and no dimension request can ever return it.
+    - it fails `dimension:airports:own_type`, which appears zero times in the
+      file because the source exposes it implicitly from the parquet, and which
+      retrieves at relevance 1.0. Acting on that finding deletes a good entity.
+
+    The compiled model has both: `sourceInfos[].schema.fields[]` carries every
+    field the source actually exposes, each with its `kind`. One request per
+    model path settles every id at once.
+
+    None when the server cannot be reached or answers nothing usable, which is
+    "not checked" and must not read as "nothing exists".
+    """
+    try:
+        base = rest_url.rstrip("/")
+        req = urllib.request.Request(
+            f"{base}/api/v0/environments/{environment}/packages/{package}/models")
+        models = json.load(urllib.request.urlopen(req, timeout=30))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+    out: dict[str, set[str]] = {}
+    for m in models if isinstance(models, list) else []:
+        path = m.get("path") if isinstance(m, dict) else None
+        if not path:
+            continue
+        try:
+            req = urllib.request.Request(
+                f"{base}/api/v0/environments/{environment}/packages/{package}"
+                f"/models/{urllib.parse.quote(path)}")
+            doc = json.load(urllib.request.urlopen(req, timeout=30))
+        except (urllib.error.URLError, OSError, json.JSONDecodeError):
+            continue
+        for si in doc.get("sourceInfos") or []:
+            info = json.loads(si) if isinstance(si, str) else si
+            if not isinstance(info, dict):
+                continue
+            src = info.get("name")
+            fields = (info.get("schema") or {}).get("fields") or []
+            if not src:
+                continue
+            bucket = out.setdefault(src, set())
+            bucket.add(f"source:{src}")
+            for f in fields:
+                if isinstance(f, dict) and f.get("name") and f.get("kind"):
+                    bucket.add(f"{f['kind']}:{f['name']}")
+    return out or None
+
+
+def declared_findings(cases: list[dict[str, Any]],
+                      declared: dict[str, set[str]]) -> list[str]:
+    """Ids the compiled model does not declare, or declares as another kind."""
+    out = []
+    for eid, qids in sorted(required_ids(cases).items()):
+        parts = eid.split(":", 2)
+        if len(parts) < 3:
+            continue          # malformed; `check` reports it on its own
+        kind, src, name = parts
+        if src not in declared:
+            out.append(f"{eid}: the compiled model has no source {src!r} "
+                       f"(required by {', '.join(qids)})")
+            continue
+        if f"{kind}:{name}" in declared[src]:
+            continue
+        other = sorted(k.split(":", 1)[0] for k in declared[src]
+                       if k.split(":", 1)[1] == name)
+        if other:
+            out.append(f"{eid}: {src}.{name} is declared "
+                       f"{'/'.join(other)}, not {kind}. `target_type` is a hard "
+                       f"filter, so no {kind} search can return it "
+                       f"(required by {', '.join(qids)})")
+        else:
+            out.append(f"{eid}: the compiled {src} source declares no field "
+                       f"{name!r} (required by {', '.join(qids)})")
+    return out
 
 
 def required_ids(cases: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -163,6 +248,13 @@ def main(argv: list[str] | None = None) -> int:
                          "truth server")
     ap.add_argument("--environment", required=True)
     ap.add_argument("--package", required=True)
+    ap.add_argument("--publisher", default=None,
+                    help="REST URL of the same server, e.g. "
+                         "http://localhost:4811. With it, each id is also "
+                         "checked against the COMPILED model, which knows both "
+                         "that a field exists and what KIND it is. That is the "
+                         "authority; a grep over the .malloy text is wrong in "
+                         "both directions.")
     ap.add_argument("--out", default=None,
                     help="write the per-entity rows as JSON")
     a = ap.parse_args(argv)
@@ -172,7 +264,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no cases.jsonl in {a.set_dir}", file=sys.stderr)
         return 3
     cases = [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
+
+    declared_out: list[str] = []
+    if a.publisher:
+        declared = compiled_entities(a.publisher, a.environment, a.package)
+        if declared is None:
+            print("! the compiled model could not be read; existence and kind "
+                  "were NOT checked", file=sys.stderr)
+        else:
+            declared_out = declared_findings(cases, declared)
+            print(f"compiled model: {sum(len(v) for v in declared.values())} "
+                  f"entities across {len(declared)} sources")
+
     findings, rows = check(cases, a.mcp_url, a.environment, a.package)
+    # An id the compiled model already rejected is not also reported as
+    # unretrievable: it is the same defect, and saying it twice reads as two.
+    # The compiled message is the useful one, because it names the real kind.
+    already = {f.split(":")[0] for f in declared_out}
+    findings = declared_out + [f for f in findings
+                               if f.split(":")[0] not in already]
 
     if a.out:
         pathlib.Path(a.out).write_text(json.dumps(

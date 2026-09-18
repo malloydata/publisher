@@ -91,8 +91,8 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # searched for and drops a target that carried none. Without it the
         # bare-target rate is not recomputable from a run directory, only from
         # transcripts, and transcripts get pruned.
-        "optional": {"targets", "target_shapes", "rankedSummary", "error",
-                     "traceId",
+        "optional": {"targets", "target_shapes", "scopes", "rankedSummary",
+                     "error", "traceId",
                      "query", "modelPath", "filterParams", "retrieval_mode",
                      "at"},
     },
