@@ -61,6 +61,8 @@ export type EligibilityRefusalReason =
    | "partition_without_storage"
    | "partition_column_unknown"
    | "partition_column_not_public"
+   | "merge_key_scope_unresolved"
+   | "preaggregate_over_dynamic_source"
    | "authorize"
    | "partition"
    | "not_duckdb_portable"

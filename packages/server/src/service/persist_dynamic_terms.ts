@@ -51,6 +51,16 @@ export type DynamicTermRefusal =
 export interface DynamicTerm {
    code: string;
    givens: string[];
+   /**
+    * The source's OWN columns this term constrains — single-segment field paths
+    * only. A term reaching through a join contributes nothing here, which is
+    * what makes an empty list meaningful: it says the term cannot be expressed
+    * as a predicate over the stored table's columns.
+    *
+    * Read by the incremental apply, which must scope a `merge_key=` match by the
+    * columns the stripped terms constrain. Not on the wire.
+    */
+   columns: string[];
 }
 
 export type DynamicTermClassification =
@@ -373,6 +383,33 @@ function classifyFields(
  * and the binding is WITHHELD. The failure is a fallback to live, not an
  * unfiltered read.
  */
+/**
+ * The single-segment field paths a filter entry reads, from its `refSummary`.
+ *
+ * Single-segment ONLY, and the omission is the point: `["vis","user_id"]` is a
+ * joined field, which is not a column of the stored table and so cannot scope a
+ * merge over it. Dropping it leaves the term with fewer columns than it reads,
+ * which a caller must treat as "cannot scope this" rather than as a smaller
+ * scope — scoping by a subset of a term's columns would match rows the term
+ * excludes. See {@link DynamicTerm.columns}.
+ */
+function localFieldNames(entry: unknown): string[] {
+   const usage = (
+      entry as {
+         refSummary?: { fieldUsage?: { path?: unknown }[] };
+      }
+   )?.refSummary?.fieldUsage;
+   if (!Array.isArray(usage)) return [];
+   const names = new Set<string>();
+   for (const use of usage) {
+      const path = use?.path;
+      if (Array.isArray(path) && path.length === 1 && typeof path[0] === "string") {
+         names.add(path[0]);
+      }
+   }
+   return [...names];
+}
+
 function collectDynamicTerms(filterList: unknown): DynamicTerm[] {
    if (!Array.isArray(filterList)) return [];
    const terms: DynamicTerm[] = [];
@@ -383,6 +420,7 @@ function collectDynamicTerms(filterList: unknown): DynamicTerm[] {
       terms.push({
          code: typeof code === "string" ? code : "",
          givens: givenNames(entry),
+         columns: localFieldNames(entry),
       });
    }
    return terms;

@@ -1,6 +1,6 @@
 ---
 id: a-merge-key-must-not-match-rows-outside-the-callers-scope
-tags: build-control, incremental, security, known-red
+tags: build-control, incremental, security
 package: xt
 ---
 <!--
@@ -140,19 +140,15 @@ Expect:
 
 ## Note (since=2026-09-18)
 
-> **Reachable on released code.** The colocated gate deliberately does not refuse
-> a given reference, the colocated build widens the artifact the same way the
-> storage build does, and the incremental path is not given-aware anywhere —
-> `merge_key=`, `watermark=` and the delta apply have no notion of a stripped
-> term. Nothing here depends on `storage=` or on `partition=`.
+> **What closes it.** The merge's MATCH is scoped by the columns the stripped
+> terms constrain, so the effective identity is the author's key plus that scope
+> and the author restates nothing. `merge_key=` keeps meaning what they wrote.
 >
-> The existing guard does not cover it. A merge key that is NARROWED forces a
-> rebuild, because rows the old key separated must not silently merge. Here the
-> key is unchanged and the POPULATION widened underneath it, which is not a case
-> that check was built to see.
+> Scoping is all-or-nothing. A stripped term that contributes no column of this
+> source — one reaching through a join — refuses the source rather than scoping
+> by the remaining terms, which would narrow the match without closing it.
 >
-> The fix that keeps the author's key: scope the MERGE's match rather than asking
-> for a wider key — put the stripped terms' columns in the join condition, so the
-> effective match key is the author's key plus that scope and nothing is asked of
-> the author. That is checkable rather than automatic: it holds only when the
-> scope covers every dimension the key was ambiguous along.
+> Before the fix this build FAILED rather than corrupting: Postgres raises
+> `MERGE command cannot affect row a second time` on the ambiguous match. That
+> guard is the target warehouse's and not ours, which is why the storage sibling
+> exists — DuckDB has no such guard and corrupted both tenants silently.

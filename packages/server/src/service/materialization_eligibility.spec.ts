@@ -145,7 +145,7 @@ source: mz_given_outside is base -> { select: * } extend { where: tenant = $tena
          deriveAnnotationFields(sources.mz_given_outside),
       );
       expect(plan.terms).toEqual([
-         { code: "tenant = $tenant", givens: ["tenant"] },
+         { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
       expect(plan.partitionColumns).toEqual([]);
    });
@@ -427,6 +427,41 @@ source: orders__preagg__category is orders -> {
       expect(message).toMatch(/groups ACROSS the gated column/);
    });
 
+   it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {
+      // The outcome does not change — such a rollup already refused, as a
+      // `given_in_persisted_query`. Two things do. The reason names the rollup
+      // case, so it survives a change to the one it used to ride on; and the
+      // advice is followable. The old message told the author to move the given
+      // into the source's extend block, where for a rollup it ALREADY is: it is
+      // the rollup READING the source that applies that `where:` and bakes the
+      // value.
+      const sources =
+         await persistSources(`##! experimental { persistence composite_sources givens }
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'acme' AS tenant")
+source: scoped is base extend { where: tenant = $tenant }
+
+#@ persist
+source: scoped__preagg__category is scoped -> {
+  group_by: category
+  aggregate: total__partial is amount.sum()
+}`);
+      let err: MaterializationEligibilityError | undefined;
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            sources.scoped__preagg__category,
+            sources.scoped__preagg__category.name,
+            "preaggregate",
+         );
+      } catch (caught) {
+         err = caught as MaterializationEligibilityError;
+      }
+      expect(err?.reason).toBe("preaggregate_over_dynamic_source");
+      // Not the advice that leads nowhere.
+      expect(err?.message).not.toContain("extend block");
+      expect(err?.message).toContain("no read-time re-application");
+   });
+
    it("refuses a given a joined source contributes to the build, and admits one it does not", async () => {
       // A join reaches the build SQL only when the persisted query READS it,
       // and that is exactly when the given-filtered join condition is baked. So
@@ -560,7 +595,7 @@ source: mz_colocated_given is base -> { select: * } extend { where: tenant = $te
          deriveAnnotationFields(sources.mz_colocated_given),
       );
       expect(plan.terms).toEqual([
-         { code: "tenant = $tenant", givens: ["tenant"] },
+         { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
    });
 

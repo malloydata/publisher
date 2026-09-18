@@ -161,6 +161,12 @@ export function assertMaterializationEligible(
       });
    }
 
+   assertMergeKeyScopeResolvable(
+      classified.terms,
+      annotationFields,
+      `Source '${sourceName}'`,
+   );
+
    if (referencesAuthorize(persistSource)) {
       recordEligibilityRefused("authorize");
       throw new MaterializationEligibilityError({
@@ -279,6 +285,45 @@ export function assertMaterializationEligible(
  *   annotation to remove, and the alternative of moving the gate to a source
  *   that is not materialized.
  */
+/**
+ * Refuse a `merge_key=` whose match cannot be scoped to the caller's rows.
+ *
+ * The author chose `merge_key=` against the source as WRITTEN, filtered to one
+ * caller. The artifact is the unfiltered relation, so that key is ambiguous over
+ * it and an unscoped MERGE reaches — and overwrites — other callers' rows. The
+ * apply closes this by folding the stripped terms' own columns into the match.
+ *
+ * It can only do that when every stripped term contributes a column of this
+ * source. A term reaching through a join names no column of the stored table, and
+ * scoping by the REMAINING terms would narrow the match without closing it, which
+ * is the worst of the three outcomes: it looks scoped and is not. So the source is
+ * refused instead, and the refusal is here rather than in the apply because a
+ * publish is where an author can still act on it.
+ */
+function assertMergeKeyScopeResolvable(
+   terms: readonly { code: string; columns: string[] }[],
+   annotationFields: Record<string, string>,
+   what: string,
+): void {
+   if (!annotationFields.merge_key?.trim()) return;
+   const unscopable = terms.filter((term) => term.columns.length === 0);
+   if (unscopable.length === 0) return;
+   recordEligibilityRefused("merge_key_scope_unresolved");
+   throw new MaterializationEligibilityError({
+      reason: "merge_key_scope_unresolved",
+      message:
+         `${what} cannot be materialized: it declares 'merge_key=' and is ` +
+         `scoped by a term this pass cannot express as a predicate over the ` +
+         `stored table's own columns (${unscopable
+            .map((term) => `'${term.code}'`)
+            .join(", ")}). An incremental refresh matches rows by the merge ` +
+         `key, and the stored table holds every caller's rows, so the match ` +
+         `must also carry the scoping columns or it would update rows ` +
+         `belonging to other callers. Scope this source with a term over its ` +
+         `own columns, or drop 'merge_key=' to refresh by watermark range.`,
+   });
+}
+
 export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
@@ -351,11 +396,41 @@ export function assertColocatedPersistNotAuthorizeGated(
    // frozen when a source is DERIVED from a parameterized one, which is a
    // different shape with its own gate.)
    if (buildSubstitutesAGiven(persistSource)) {
+      // A rollup refuses here today, but for a reason aimed at something else,
+      // and the advice that reason carries leads nowhere: it tells the author to
+      // move the given into the source's extend block, where for a rollup it
+      // ALREADY is. A rollup is `source -> { group_by; aggregate }`, so it is the
+      // rollup READING the source that applies the extend-block `where:` and
+      // bakes the value.
+      //
+      // Named separately because nothing else would hold this if the reason it
+      // currently rides on stopped applying. A rollup binding deliberately
+      // bypasses `serveBindingsWithRefinements` — its synthesized name resolves
+      // to nothing in the author's model — so a rollup gets no filter
+      // re-emission, no given declarations, and therefore no fail-closed shape
+      // compile either. If the rollup build ever learned to strip its base's
+      // read-time terms, which reads as an optimization rather than a security
+      // change, a rollup over a caller-scoped source would aggregate across every
+      // caller and serve that to all of them with nothing in the path to notice.
+      // An aggregate over other callers' rows is exactly what a rollup is good at
+      // computing.
+      if (origin === "preaggregate") {
+         recordEligibilityRefused("preaggregate_over_dynamic_source");
+         throw new MaterializationEligibilityError({
+            reason: "preaggregate_over_dynamic_source",
+            message:
+               `Pre-aggregation rollup '${sourceName}' cannot be materialized: ` +
+               `the source it rolls up is scoped by a given. Building the rollup ` +
+               `reads that source, which applies its extend-block \`where:\` and ` +
+               `substitutes the given's default — so the rollup would hold one ` +
+               `caller's aggregate and serve it to everyone. Unlike a persisted ` +
+               `source, a rollup has no read-time re-application to put the term ` +
+               `back. Drop the '#@ preaggregate' from this measure, or roll up a ` +
+               `source that is not caller-scoped.`,
+         });
+      }
       recordEligibilityRefused("given_in_persisted_query");
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}'`
-            : `Source '${sourceName}'`;
+      const what = `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
          reason: "given_in_persisted_query",
          message:
@@ -369,6 +444,25 @@ export function assertColocatedPersistNotAuthorizeGated(
             `there — where it binds per caller over the materialized rows. ` +
             `Otherwise stop persisting this source.`,
       });
+   }
+
+   // The colocated artifact is widened exactly as the storage one is — the build
+   // persists the query alone, so an extend-block `where:` is not in it — and
+   // incremental runs on colocated tables. Same hazard, same rule. The only
+   // difference is that some target warehouses refuse the ambiguous MERGE
+   // themselves (Postgres does; DuckDB does not), which is a property of the
+   // customer's warehouse rather than a guarantee we can offer.
+   {
+      const classified = classifyDynamicTerms(persistSource);
+      if (classified.ok) {
+         assertMergeKeyScopeResolvable(
+            classified.terms,
+            annotationFields,
+            origin === "preaggregate"
+               ? `Pre-aggregation rollup '${sourceName}'`
+               : `Source '${sourceName}'`,
+         );
+      }
    }
 
    if (!referencesAuthorize(persistSource)) return;

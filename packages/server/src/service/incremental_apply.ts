@@ -718,6 +718,12 @@ export function deltaStatements(params: {
    /** Columns to write, as the delta's own output names. */
    columns: string[];
    mergeKeys: string[];
+   /**
+    * Columns the stripped dynamic terms constrain, folded into the merge's match
+    * alongside `mergeKeys`. Empty for a source with no stripped terms, which is
+    * every source that is not caller-scoped.
+    */
+   scopeColumns?: string[];
    watermarkName: string;
    start: WatermarkBound;
    end: WatermarkBound;
@@ -734,13 +740,35 @@ export function deltaStatements(params: {
    const columnList = columns.map(q).join(", ");
 
    if (mergeKeys.length > 0) {
+      // The author chose `merge_key=` against the source AS WRITTEN — filtered to
+      // one caller. The stored table is the unfiltered relation, so that key is
+      // ambiguous over it: one value now occurs once per caller, and a match on
+      // the key alone reaches rows the author's source never contained and
+      // UPDATES them. A cross-caller write, not a read leak, and the target
+      // warehouse is the only thing that might object (Postgres raises "MERGE
+      // command cannot affect row a second time"; DuckDB does not, and silently
+      // corrupts both callers' rows).
+      //
+      // Scoping the MATCH restores the author's relation inside the merge
+      // without asking them to restate a key they already chose correctly: the
+      // effective identity becomes their key plus the columns the stripped terms
+      // constrain. `scopeColumns` is empty for every source that is not
+      // caller-scoped, so this is a no-op for them.
+      //
+      // Scoping is all-or-nothing — a term contributing no column refuses the
+      // source upstream rather than arriving here partially scoped, which would
+      // narrow the match without closing it.
+      const matchNames = [
+         ...mergeKeys,
+         ...(params.scopeColumns ?? []).filter((c) => !mergeKeys.includes(c)),
+      ];
       const keys = new Set(mergeKeys);
       // A NULL-safe match, because SQL equality is not: a NULL identity column
       // would fail `=` against its own copy, so the merge would insert the row
       // again on every run instead of updating it — a silent duplicate in a
       // serving table. The declared identity columns are usually NOT NULL, in
       // which case an engine simplifies this away.
-      const on = mergeKeys
+      const on = matchNames
          .map(
             (k) =>
                `(__t.${q(k)} = __s.${q(k)} OR (__t.${q(k)} IS NULL AND __s.${q(k)} IS NULL))`,
@@ -933,6 +961,12 @@ export interface IncrementalLineage {
    /** The watermark's Malloy type (`date`, `timestamp`, `number`, `string`). */
    watermarkType: string;
    mergeKeys: string[];
+   /**
+    * Columns the source's stripped dynamic terms constrain. Added to a
+    * `merge_key=` match so it cannot reach rows outside the caller's scope —
+    * see {@link deltaStatements}.
+    */
+   scopeColumns: string[];
    strategy: IncrementalStrategy;
 }
 
@@ -1397,6 +1431,7 @@ export async function planIncrementalStep(inputs: {
       deltaSQL: await target.deltaRows(start, end.bound),
       columns: inputs.columns,
       mergeKeys: lineage.mergeKeys,
+      scopeColumns: lineage.scopeColumns,
       watermarkName: lineage.watermarkName,
       start,
       end: end.bound,

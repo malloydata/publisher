@@ -6,6 +6,7 @@ import type { Tag } from "@malloydata/malloy-tag";
 
 import type { IncrementalStrategy } from "../storage/DatabaseInterface";
 import { deriveColumns } from "./build_plan";
+import { classifyDynamicTerms } from "./persist_dynamic_terms";
 
 // The strategy a declaration implies is also what the ledger records, so the
 // type is shared with the store rather than restated here.
@@ -116,6 +117,26 @@ export interface IncrementalDeclaration {
    watermarkOrderable: boolean;
    /** `merge_key=` split on commas, in declared order, each resolved. */
    mergeKeys: ResolvedName[];
+   /**
+    * The source's own columns its stripped dynamic terms constrain — the scope
+    * the artifact was widened past.
+    *
+    * A `merge_key=` is chosen against the source as WRITTEN, filtered to one
+    * caller; the stored table holds every caller's rows, so the key alone is
+    * ambiguous over it. These columns are what restore the author's intended
+    * relation inside the merge's match.
+    */
+   scopeColumns: string[];
+   /**
+    * True when a stripped term contributes no column of this source — it reaches
+    * through a join, or its field usage could not be read.
+    *
+    * Load-bearing rather than informational: scoping by the columns of the OTHER
+    * terms would produce a match that is narrower than the key but still wider
+    * than the author's relation, which is a cross-caller match wearing a scope.
+    * A caller must refuse, never partially scope.
+    */
+   scopeIncomplete: boolean;
    /** True when `merge_key=` repeats the watermark dimension. */
    watermarkInMergeKeys: boolean;
    /**
@@ -261,6 +282,17 @@ export function resolveIncrementalDeclaration(
 ): IncrementalDeclaration {
    const tag = safeTag(source);
    const columns = outputColumnTypes(source);
+   // The terms the build strips and the read puts back. A refusal yields no
+   // terms, which is right: such a source is refused before it can be built at
+   // all, so there is no scope to carry.
+   const classified = classifyDynamicTerms(source);
+   const dynamicTerms = classified.ok ? classified.terms : [];
+   const scopeColumns = [
+      ...new Set(dynamicTerms.flatMap((term) => term.columns)),
+   ];
+   const scopeIncomplete = dynamicTerms.some(
+      (term) => term.columns.length === 0,
+   );
    const { aggregates, analytics } = queryDefinitionFieldKinds(source);
    const malformed: MalformedValue[] = [];
 
@@ -356,6 +388,8 @@ export function resolveIncrementalDeclaration(
       watermark,
       watermarkOrderable,
       mergeKeys,
+      scopeColumns,
+      scopeIncomplete,
       watermarkInMergeKeys,
       strategy,
       malformed,
