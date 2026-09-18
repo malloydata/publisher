@@ -132,7 +132,9 @@ export function TileFrame({
                   // will respond to the pointer, told apart
                   // from the ones that will not.
                   "&:hover": {
-                     outlineColor: selected ? theme.drillLink : theme.border,
+                     outlineColor: selected
+                        ? theme.drillLink
+                        : theme.cardBorder,
                      boxShadow: "0 2px 10px rgba(0, 0, 0, 0.10)",
                   },
                }}
