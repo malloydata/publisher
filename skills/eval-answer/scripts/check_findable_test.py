@@ -94,6 +94,21 @@ class Findable(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(len(rows[0]["requiredBy"]), 6)
 
+    def test_findings_never_outnumber_the_required_ids(self):
+        # `rows` holds only the ids that reached a search; a malformed id is a
+        # finding that never becomes a row. Reporting `len(rows) - len(f)`
+        # subtracted findings that were never in the total and printed
+        # "-1 of 2 required entities are retrievable".
+        cases = [case("q", ["flight_count",                  # malformed
+                            "measure:flights:gone",          # genuine miss
+                            "measure:flights:also_gone"])]   # genuine miss
+        f, rows = self.run_check(cases)
+        total = len(check_findable.required_ids(cases))
+        self.assertEqual(total, 3)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(f), 3)
+        self.assertGreaterEqual(total - len(f), 0)
+
     def test_the_finding_names_every_case_that_would_be_affected(self):
         f, _ = self.run_check([case("q1", ["measure:flights:gone"]),
                                case("q2", ["measure:flights:gone"])])
@@ -170,6 +185,27 @@ class CompiledModel(unittest.TestCase):
         # `check` reports it before any search; reporting it twice reads as
         # two defects.
         self.assertEqual(self.find("flight_count"), [])
+
+    def test_a_finding_is_identified_by_its_whole_entity_id(self):
+        # Splitting on the bare colon returns the KIND, and deduplicating the
+        # search findings against the compiled-model ones on that basis
+        # silently deleted an unrelated entity's genuine finding -- which can
+        # flip the exit code from 1 to 0.
+        self.assertEqual(
+            check_findable.finding_id(
+                "measure:flights:distinct_planes: a `measure` search for "
+                "'distinct planes' does not return it (required by q2)"),
+            "measure:flights:distinct_planes")
+
+    def test_dedup_keeps_a_finding_that_only_shares_a_kind(self):
+        declared = ["measure:orders:total_sales: the compiled model has no "
+                    "source 'orders' (required by q1)"]
+        found = ["measure:flights:distinct_planes: a `measure` search does "
+                 "not return it (required by q2)"]
+        already = {check_findable.finding_id(f) for f in declared}
+        kept = declared + [f for f in found
+                           if check_findable.finding_id(f) not in already]
+        self.assertEqual(len(kept), 2)
 
     def test_an_unreachable_server_is_not_read_as_an_empty_model(self):
         # None means "not checked". Treating it as {} would report every id in

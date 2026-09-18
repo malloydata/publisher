@@ -201,6 +201,19 @@ def required_ids(cases: list[dict[str, Any]]) -> dict[str, list[str]]:
     return out
 
 
+def finding_id(message: str) -> str:
+    """The entity id a finding is about.
+
+    Every finding here and in `declared_findings` is formatted `f"{eid}: ..."`,
+    and an entity id never contains a space, so the id is everything before the
+    first ": ". Splitting on the bare colon instead returns the KIND -- and
+    deduplicating on that silently dropped a genuine finding for
+    `measure:flights:distinct_planes` because an unrelated
+    `measure:orders:total_sales` had already been reported.
+    """
+    return message.split(": ", 1)[0]
+
+
 def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
           package: str) -> tuple[list[str], list[dict[str, Any]]]:
     findings: list[str] = []
@@ -280,17 +293,23 @@ def main(argv: list[str] | None = None) -> int:
     # An id the compiled model already rejected is not also reported as
     # unretrievable: it is the same defect, and saying it twice reads as two.
     # The compiled message is the useful one, because it names the real kind.
-    already = {f.split(":")[0] for f in declared_out}
+    already = {finding_id(f) for f in declared_out}
     findings = declared_out + [f for f in findings
-                               if f.split(":")[0] not in already]
+                               if finding_id(f) not in already]
 
     if a.out:
         pathlib.Path(a.out).write_text(json.dumps(
             {"set": str(a.set_dir), "environment": a.environment,
              "package": a.package, "entities": rows}, indent=2))
 
-    checked = len(rows)
-    print(f"{checked - len(findings)} of {checked} required entities are "
+    # Every distinct required id, not `len(rows)`. `rows` holds only the ids
+    # that reached a search, while `findings` also carries the malformed and
+    # unknown-kind ids that never did, plus the compiled-model ones -- so
+    # subtracting one from the other counted ids that were never in the total
+    # and printed "-1 of 2 required entities are retrievable". Findings are
+    # deduplicated by entity id above, so this can no longer go negative.
+    total = len(required_ids(cases))
+    print(f"{total - len(findings)} of {total} required entities are "
           f"retrievable by a search of their own kind")
     if not findings:
         print("A pass is a floor, not a verdict on the docs: each was searched "
