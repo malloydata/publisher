@@ -83,6 +83,41 @@ describe("service/query_text", () => {
             new Map(),
          );
       });
+
+      it("strips its own input, so raw caller text cannot forge or erase an edge", () => {
+         // The map decides which protected source's filters an ad-hoc query
+         // inherits, and nothing re-checks that downstream, so both misreads
+         // are silent. Asserted against raw text on purpose: the guarantee is
+         // the function's, not the caller's.
+
+         // A declaration inside a literal is not a declaration. Read raw, this
+         // one is last-wins and REPLACES the real base.
+         expect(
+            buildSourceAliasMap(
+               "source: a is protected extend {\n" +
+                  "  dimension: note is 'source: a is unprotected'\n" +
+                  "}",
+            ).get("a"),
+         ).toBe("protected");
+
+         // A comment does not break a declaration the compiler reads around.
+         expect(
+            buildSourceAliasMap("source: a is -- c\n protected").get("a"),
+         ).toBe("protected");
+         expect(
+            buildSourceAliasMap("source: a is /* c */ protected").get("a"),
+         ).toBe("protected");
+      });
+
+      it("is unchanged by a caller that already stripped", () => {
+         // Stripping blanks to spaces, so it is idempotent -- which is what
+         // makes the internal strip free for the caller that already does it.
+         const raw =
+            "source: a is protected extend { dimension: n is 'source: a is x' }";
+         expect(
+            buildSourceAliasMap(stripMalloyCommentsAndLiterals(raw)),
+         ).toEqual(buildSourceAliasMap(raw));
+      });
    });
 
    describe("stripMalloyCommentsAndLiterals", () => {

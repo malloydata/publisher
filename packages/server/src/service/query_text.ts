@@ -54,21 +54,25 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
  *
  * Both misreads are why the query boundary no longer reads this map: a replaced
  * edge re-pointed a name from the hidden base it really derives from to a
- * curated one and bought admission. Use {@link buildDerivationBaseMap} over
- * {@link stripMalloyCommentsAndLiterals} on any path where an edge grants
- * access.
+ * curated one and bought admission. Use {@link buildDerivationBaseMap} on any
+ * path where an edge grants access -- this map stays last-wins and single-valued
+ * because {@link Model.resolveFilterSource} needs ONE source name to inject
+ * filters from.
  *
- * The sole remaining caller, {@link Model.resolveFilterSource}, passes stripped
- * text for the same reason, so neither misread is reachable through it. Keep it
- * that way: this function reads whatever text it is handed, so it is only as
- * sound as its caller's input.
+ * Strips its own input rather than trusting the caller to have done it. A
+ * documented "pass me stripped text" precondition would hold only until the
+ * next caller, and the failure is silent in the unsafe direction -- a missed
+ * edge means no filter is injected, on a path with no post-compile backstop.
+ * {@link stripMalloyCommentsAndLiterals} blanks to spaces, so it is idempotent
+ * and a caller that already stripped pays a second scan and nothing else.
  */
 export function buildSourceAliasMap(query: string): Map<string, string> {
    const aliasOf = new Map<string, string>();
+   const text = stripMalloyCommentsAndLiterals(query);
    const declRe =
       /source\s*:\s*(?:`([^`]+)`|(\w+))\s+is\s+(?:`([^`]+)`|(\w+))/g;
    let match: RegExpExecArray | null;
-   while ((match = declRe.exec(query)) !== null) {
+   while ((match = declRe.exec(text)) !== null) {
       aliasOf.set(match[1] ?? match[2], match[3] ?? match[4]);
    }
    return aliasOf;
