@@ -198,11 +198,47 @@ source: admitted is raw -> { select: * } extend { where: org_id = $ORG_ID }
 
 **On upgrade**, such a package keeps loading and its source keeps serving — live, correctly, per caller. What changes is that its materialization run now 422s with the refusal, and an artifact built before the upgrade is unbound on the next reload rather than served. Moving the given out of the persisted query restores materialization; the refusal message names the placement.
 
-The `storage=` tier still refuses a given reference in any position, so what it accepts is unchanged. One reported value shifts: a `#@ preaggregate` rollup that also declares `storage=` runs the colocated check first, so a refusal that read `given` now reads `given_in_persisted_query`. Same refusal, different label.
+The `storage=` tier applies the same rule, and only that rule — see the storage-tier note below, which ships in this release and replaces its blanket refusal of any given reference. `given_in_persisted_query` is therefore raised by both gates, for the one condition both share: the build would substitute a value.
 
 **A new `reason` value.** Refusals are reported on the build plan, and this adds `given_in_persisted_query` to that enum. A consumer generating a strict client from an older copy of the spec can fail to parse a package whose plan carries it — which happens only for a package that actually has the refused shape. Regenerate against this release's `api-doc.yaml`, or expect the value.
 
 ---
+
+## [Unreleased] — an incremental refresh can no longer write another caller's rows
+
+**This fixes a bug that is reachable today**, on a colocated `#@ persist`. If a source is scoped by a given and also declares `merge_key=`, its incremental refresh could match rows belonging to other callers — and update them.
+
+The key is the reason. `merge_key=` names what makes a row the same row, and an author chooses it against the source **as they wrote it**: filtered to one caller. `order_id` unique within an org is a reasonable identity for a per-tenant relation and reads that way in the model. The stored table is not that relation. A source's extend-block `where:` is not part of what the build persists, so the table holds every caller's rows and the term is re-applied per caller at read. That is the design, and for reads it is sound — but it leaves the author's key ambiguous over what was actually stored, where one `order_id` now occurs once per tenant. The refresh then issues `MERGE INTO <table> ON <the author's key>`, which matches across tenants. A cross-caller WRITE, not a read leak.
+
+Nothing in the incremental path noticed. The existing guard forces a rebuild when a merge key is NARROWED, because rows the old key separated must not silently merge; here the key is unchanged and the POPULATION widened underneath it, which is not a case that check was built to see.
+
+**What you would have seen.** On a colocated table in Postgres, a failed build: `MERGE command cannot affect row a second time`. The warehouse refused the ambiguous match, so the refresh was unavailable rather than wrong. That guard is the target warehouse's, not ours, and DuckDB has none — so the same shape on a `storage=` destination completed and left the rows wrong, with one caller's row destroyed and another's duplicated. No error, and the serve path reporting storage as usual. (A `storage=` destination could not hold a caller-scoped source before this release, so only the colocated case is reachable on 0.4.0.)
+
+**The fix keeps your key.** The merge's match now also carries the columns the source's stripped terms constrain, so the effective identity is the key you declared plus the scope the artifact was widened past. `merge_key=` keeps meaning what you wrote it to mean, and nothing in the model changes.
+
+Scoping is all-or-nothing. A term that names no column of the source — one reaching through a join — refuses the source at publish (`merge_key_scope_unresolved`) rather than scoping by the remaining terms, which would narrow the match without closing it. Scope such a source with a term over its own columns, or drop `merge_key=` to refresh by watermark range.
+
+**A rollup over a caller-scoped source now refuses on its own grounds** (`preaggregate_over_dynamic_source`). Such a rollup already refused, but as a `given_in_persisted_query`, whose advice — move the given into the source's extend block — leads nowhere for a rollup, because that is where it already is: building the rollup reads the source, which applies that `where:` and substitutes the default. Unlike a persisted source, a rollup has no read-time re-application to put the term back, and no shape compile to fail closed if one were expected.
+
+---
+
+## [Unreleased] — a tenant-scoped source can be materialized into a storage destination
+
+A source scoped to the caller — `where: org_id = $ORG_ID` — was refused for `storage=` outright, because any given reference was a refusal. That took the tier away from every multi-tenant model, which is most of the models worth materializing. Such a source now builds **once**, holding every tenant's rows, and is served per caller.
+
+The refusal was aimed at the right danger and drawn in the wrong place. A persist source's build SQL is the persisted relation alone: an extend-block `where:` is not in it, so the given was never frozen into the artifact. What the build DOES substitute is a given the persisted query reads, and only the declaration's default is available then — so those rows are one caller's, and every later caller gets them. That shape is still refused, now as `given_in_persisted_query`, with a message naming the move that fixes it. It fires however the given reaches the query, including through the source the query reads.
+
+**Four positions are refused although the build leaves them out too**: a declared `dimension:`/`measure:` (`dynamic_projection`), a join's `on:` (`dynamic_join`), and a given-scoped source reached through a join (`dynamic_joined_where`). None is in the artifact; each is refused because whether the serve shape reproduces it is a separate question, not yet answered.
+
+**New: `#@ persist partition="org_id"`** lays the stored table out as one directory per value, so an equality term on that column reads only the files it names; `partition="org_id,day"` nests in the order given. It is a layout and carries no isolation — every stripped term is re-applied at read whether or not its column is partitioned, so a list that omits the scoping column costs a scan, never a leak. Each name must be a public column of the source, and `partition=` without `storage=` is refused rather than ignored.
+
+**Serving change:** the transient serve-shape model now declares the author model's givens (defaults included), and a routed query no longer has its given values withheld. That withholding was correct only while the shape was built from given-free sources; a re-emitted `where:` that reads a given needs the value to reach it.
+
+**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely *reached* a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
+
+**A refused `#@ persist` now reaches its author.** A refusal was computed, recorded on the build plan and read by nobody: the package published, the source was served live, and whoever wrote the annotation was told nothing. Each one is now a package warning carrying the gate's own message — the same list the package page's notices surface. It is the one materialization finding the build plan cannot also be read for, since a refused `storage`/`colocated` source is absent from `sources` entirely, so nothing there records that the annotation was written at all.
+
+Refusal reasons added to the eligibility enum: `given_in_persisted_query`, `dynamic_projection`, `dynamic_join`, `dynamic_joined_where`, `partition_without_storage`, `partition_column_unknown`, `partition_column_not_public`, `merge_key_scope_unresolved`, `preaggregate_over_dynamic_source`. A source previously refused as `given` now reports one of these.
 
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 

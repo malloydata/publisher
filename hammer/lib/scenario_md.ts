@@ -175,6 +175,8 @@ type Step =
         expect?: Table;
         givens?: Record<string, string>;
         exactColumns: boolean;
+        /** `servedFrom: storage` — assert which tier produced the answer. */
+        servedFrom?: string;
      }
    | {
         kind: "buildRefusals";
@@ -325,7 +327,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    query: {
       attrs: ["again", "refused", "pkg"],
-      keys: ["cites", "givens", "columns"],
+      keys: ["cites", "givens", "columns", "servedfrom"],
    },
    sql: {},
    operator: {},
@@ -737,6 +739,18 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             const exactColumns = /^exact$/i.test(
                firstKey(sec.body, "columns") ?? "",
             );
+            // `servedFrom: storage` — the only direct evidence a materialized
+            // table was read. Rows cannot supply it: a correct tier and a live
+            // fallback return the same answer by design, so a scenario that
+            // asserts only rows passes whether or not the tier was used.
+            const servedFrom = firstKey(sec.body, "servedfrom")?.trim();
+            if (servedFrom && refused) {
+               throw new Error(
+                  `## Query ${arg.trim()}: "servedFrom:" with "refused" — a ` +
+                     `query that fails produced no answer, so there is no tier ` +
+                     `for it to have come from.`,
+               );
+            }
             if (refused) {
                steps.push({
                   kind: "query",
@@ -751,6 +765,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   cites: firstKey(sec.body, "cites"),
                   givens,
                   exactColumns,
+                  servedFrom,
                });
             } else {
                steps.push({
@@ -766,6 +781,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   expect: requireExpectTable(sec.body, sec.header),
                   givens,
                   exactColumns,
+                  servedFrom,
                });
             }
             break;
@@ -2007,6 +2023,18 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      { query: malloy, givens: step.givens },
                   );
                   compareRows(assert, step.label, step.expect!, out.rows);
+                  if (step.servedFrom) {
+                     // Asserted positively against the declared value, never by
+                     // absence: an answer that never reached the routing
+                     // decision reports nothing, and "nothing" must not read as
+                     // "not the storage tier" — it is the same shape a
+                     // serialization that drops the field would leave behind.
+                     assert.eq(
+                        `${step.label}: servedFrom`,
+                        out.servedFrom ?? "(absent)",
+                        step.servedFrom,
+                     );
+                  }
                   if (step.exactColumns)
                      assertExactColumns(
                         assert,

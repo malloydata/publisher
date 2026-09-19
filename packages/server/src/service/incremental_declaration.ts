@@ -6,6 +6,7 @@ import type { Tag } from "@malloydata/malloy-tag";
 
 import type { IncrementalStrategy } from "../storage/DatabaseInterface";
 import { deriveColumns } from "./build_plan";
+import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 
 // The strategy a declaration implies is also what the ledger records, so the
 // type is shared with the store rather than restated here.
@@ -60,6 +61,7 @@ export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
    "merge_key",
    "freshness",
    "queryMetadata",
+   "partition",
    "sharing",
    "schedule",
 ]);
@@ -115,6 +117,26 @@ export interface IncrementalDeclaration {
    watermarkOrderable: boolean;
    /** `merge_key=` split on commas, in declared order, each resolved. */
    mergeKeys: ResolvedName[];
+   /**
+    * The source's own columns its stripped dynamic terms constrain — the scope
+    * the artifact was widened past.
+    *
+    * A `merge_key=` is chosen against the source as WRITTEN, filtered to one
+    * caller; the stored table holds every caller's rows, so the key alone is
+    * ambiguous over it. These columns are what restore the author's intended
+    * relation inside the merge's match.
+    */
+   scopeColumns: string[];
+   /**
+    * True when a stripped term contributes no column of this source — it reaches
+    * through a join, or its field usage could not be read.
+    *
+    * Load-bearing rather than informational: scoping by the columns of the OTHER
+    * terms would produce a match that is narrower than the key but still wider
+    * than the author's relation, which is a cross-caller match wearing a scope.
+    * A caller must refuse, never partially scope.
+    */
+   scopeIncomplete: boolean;
    /** True when `merge_key=` repeats the watermark dimension. */
    watermarkInMergeKeys: boolean;
    /**
@@ -260,6 +282,28 @@ export function resolveIncrementalDeclaration(
 ): IncrementalDeclaration {
    const tag = safeTag(source);
    const columns = outputColumnTypes(source);
+   // The terms the build strips and the read puts back, read off the source's
+   // own filters rather than off the positional classification. A classification
+   // refusal yields no terms, and an empty scope is indistinguishable here from
+   // "this source is not caller-scoped" — so deriving the scope from it would
+   // emit an unscoped merge for any source a gate admitted while the classifier
+   // refused, which the colocated gate does by design.
+   const dynamicTerms = readTimeDynamicTerms(source);
+   // Resolved against the STORED schema, not taken as written. A term reads a
+   // name as the author wrote it, and an extend-block `dimension:` is read-time
+   // by this module's own premise — so `where: computed_org = $ORG` names
+   // `computed_org`, which the build never materializes. Put into a merge's `ON`
+   // unresolved, that predicate references a column the table does not have and
+   // every refresh fails. `merge_key=` is resolved this way and `partition=` is
+   // checked against the public projection; the scope gets the same treatment.
+   const scopeColumns = [
+      ...new Set(dynamicTerms.flatMap((term) => term.columns)),
+   ].filter((name) => columns.has(name));
+   const scopeIncomplete =
+      dynamicTerms.some((term) => term.columns.length === 0) ||
+      dynamicTerms.some((term) =>
+         term.columns.some((name) => !columns.has(name)),
+      );
    const { aggregates, analytics } = queryDefinitionFieldKinds(source);
    const malformed: MalformedValue[] = [];
 
@@ -355,6 +399,8 @@ export function resolveIncrementalDeclaration(
       watermark,
       watermarkOrderable,
       mergeKeys,
+      scopeColumns,
+      scopeIncomplete,
       watermarkInMergeKeys,
       strategy,
       malformed,

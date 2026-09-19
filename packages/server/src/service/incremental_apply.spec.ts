@@ -666,6 +666,7 @@ const LINEAGE = {
    watermarkName: "order_date",
    watermarkType: "date",
    mergeKeys: [] as string[],
+   scopeColumns: [],
    strategy: "range_replace" as const,
 };
 
