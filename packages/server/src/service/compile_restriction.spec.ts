@@ -194,15 +194,18 @@ describe("compile construct containment", () => {
          ).rejects.toThrow(CompileRefusedError);
       });
 
-      it("names the offending construct and the scope that accepts it", async () => {
+      it("names the offending construct", async () => {
          // Pin the message, not merely that something threw: an author who hits
-         // this needs to know which construct was refused and where it belongs.
+         // this needs to know which construct was refused. The message
+         // deliberately does NOT name a scope that would accept the text --
+         // `scope` is a caller-chosen request field, so spelling out the value
+         // to switch to turns a 400 into instructions for getting past it.
          const error = await refusalFor(
             'run: duckdb.sql("SELECT 1 as x") -> { group_by: x }',
             "append",
          );
          expect(error.message).toContain("raw SQL is not permitted");
-         expect(error.message).toContain('scope "file"');
+         expect(error.message).not.toContain('scope "file"');
       });
    });
 

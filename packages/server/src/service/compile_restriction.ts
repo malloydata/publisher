@@ -17,12 +17,19 @@ import { CompileRefusedError } from "../errors";
  * distinguishes an existing file from a missing one by its error, names the
  * columns of whatever it does read, and `read_csv('https://...')` issues the
  * request. No rows come back, so the exposure is disclosure and SSRF rather
- * than bulk extraction -- which is why it is worth closing at the compiler
- * rather than only at the sandbox.
+ * than bulk extraction.
  *
- * The query path already contains this with Malloy's restricted mode
- * (`loadRestrictedQuery`). This applies the same containment to the one
- * compile scope whose text is a fragment against a curated model.
+ * The query path already refuses these constructs with Malloy's restricted mode
+ * (`loadRestrictedQuery`). This applies the same refusal at `append`, the one
+ * compile scope whose text is a fragment judged against a curated model.
+ *
+ * SCOPE, STATED HONESTLY: `scope` is a request-body field the caller chooses,
+ * and the three scopes carry no authorization difference today, so this keeps
+ * fragment authoring on the model's published surface rather than containing an
+ * adversary who can simply ask for `file`. `file` and `package` are ungated by
+ * design -- there the text IS the model, where declaring sources and imports is
+ * the point -- and that predates this module. Making the refusal a containment
+ * boundary means authorizing the scope, which is a separate change.
  *
  * WHY THE COMPILER AND NOT A PATTERN MATCH: which spellings reach a connection
  * is the compiler's classification, not a list this module could keep current.
@@ -99,8 +106,8 @@ export async function assertNoRestrictedConstructs(
       `This Malloy cannot be compiled at scope "append", which validates a ` +
          `fragment against the model's published surface: ` +
          `${rejected.map((problem) => problem.message).join(" ")} ` +
-         `Fix: reference the model's own sources, or save the file and ` +
-         `compile it at scope "file" or "package", where a model may define ` +
-         `its own sources and imports.`,
+         `Fix: reference the model's own sources. Defining sources and ` +
+         `imports belongs in the model file itself -- see the compile-scope ` +
+         `documentation.`,
    );
 }
