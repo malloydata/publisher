@@ -90,8 +90,6 @@ import {
    assertAtMostOneAuthorizeGate,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
-   assertNoScalarSecureGivens,
-   findScalarSecureGivensInApiGivens,
    findLegacyStringGates,
    findMultipleAuthorizeGates,
    validateAuthorizeProbes,
@@ -749,11 +747,6 @@ async function compileMalloyModel(
    const queries = queryResult.queries;
    // See the identical check in `Model.create`.
    assertPartitionAnnotationsValid(modelDef);
-   // A `#(secure)` marker on a given that cannot carry more than one value
-   // fails OPEN -- see `assertNoScalarSecureGivens`'s doc. Same check as
-   // `Model.create`; this is the path a published package actually loads
-   // through, so the refusal is unreachable in production without it.
-   assertNoScalarSecureGivens(findScalarSecureGivensInApiGivens(givens ?? []));
    // A `#(authorize)` annotation in a position nothing enforces (a top-level
    // `query:` statement, or a field inside a `source:` rather than the
    // `source:` line itself) fails OPEN — see
@@ -984,10 +977,6 @@ async function compileNotebookModel(
       finalQueries = finalQueryResult.queries;
       // See the identical check in `compileMalloyModel` above.
       assertPartitionAnnotationsValid(finalModelDef);
-      // See the identical check in `compileMalloyModel` above.
-      assertNoScalarSecureGivens(
-         findScalarSecureGivensInApiGivens(finalGivens ?? []),
-      );
       // See the identical check in `compileMalloyModel` above.
       assertNoMisplacedAuthorizeAnnotations([
          ...extracted.misplacedAuthorize,

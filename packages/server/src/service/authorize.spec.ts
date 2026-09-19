@@ -7,8 +7,6 @@ import {
    containsAuthorizeAnnotationTag,
    parseAuthorizeAnnotation,
    referencedGivenNames,
-   assertNoScalarSecureGivens,
-   findScalarSecureGivens,
 } from "./authorize";
 
 describe("referencedGivenNames", () => {
@@ -232,84 +230,5 @@ describe("collectAuthorizeExprs", () => {
             `#(authorize)`,
          ]),
       ).toThrow(/empty expression/);
-   });
-});
-
-describe("scalar #(secure) givens", () => {
-   const secure = ["#(secure)\n"];
-
-   it("finds a secure given declared with a scalar type", () => {
-      expect(
-         findScalarSecureGivens([
-            { name: "ROLE", type: "string", annotations: secure },
-         ]),
-      ).toEqual([{ name: "ROLE", type: "string" }]);
-   });
-
-   it("passes a secure given declared filter<string>", () => {
-      // The form the dashboard builder writes and docs/givens.md prescribes for
-      // passing several values: refusing it would stop every secure given in
-      // this repo from loading.
-      expect(
-         findScalarSecureGivens([
-            { name: "CATEGORY", type: "filter<string>", annotations: secure },
-         ]),
-      ).toEqual([]);
-   });
-
-   it.each(["#(secure) keep this server-side", "#(secure)\n", "##(secure)"])(
-      "finds a scalar secure given spelled %p",
-      (note) => {
-         // Malloy routes each of these to `secure`, so the check must too: a
-         // rejecter that accepts LESS than the parser is the dangerous direction.
-         expect(
-            findScalarSecureGivens([
-               { name: "ROLE", type: "string", annotations: [note] },
-            ]),
-         ).toEqual([{ name: "ROLE", type: "string" }]);
-      },
-   );
-
-   it("passes a secure given declared set-valued", () => {
-      expect(
-         findScalarSecureGivens([
-            { name: "ROLES", type: "string[]", annotations: secure },
-         ]),
-      ).toEqual([]);
-   });
-
-   it("ignores a scalar given that is not marked secure", () => {
-      expect(
-         findScalarSecureGivens([
-            {
-               name: "REGION",
-               type: "string",
-               annotations: ["# label=Region\n"],
-            },
-         ]),
-      ).toEqual([]);
-   });
-
-   // The marker is matched on its own line, so a tag that merely contains the
-   // word does not arm a refusal the author never asked for.
-   it("does not match a note that only mentions the word", () => {
-      expect(
-         findScalarSecureGivens([
-            { name: "NOTE", type: "string", annotations: ["# secure data\n"] },
-         ]),
-      ).toEqual([]);
-   });
-
-   it("names every scalar secure given, not just the first", () => {
-      expect(() =>
-         assertNoScalarSecureGivens([
-            { name: "ROLE", type: "string" },
-            { name: "TIER", type: "number" },
-         ]),
-      ).toThrow(/ROLE.*string[\s\S]*TIER.*number/);
-   });
-
-   it("does not throw when nothing is scalar", () => {
-      expect(() => assertNoScalarSecureGivens([])).not.toThrow();
    });
 });

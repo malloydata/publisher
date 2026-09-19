@@ -31,27 +31,6 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] - a scalar `#(secure)` given is refused at package load (ACTION REQUIRED)
-
-`#(secure)` marks a given whose value the deployment resolves from the caller's
-identity rather than accepting from the request. It only means something on a
-given that can carry more than one value: the fail-closed sentinel is an empty
-set, which matches nothing, and a scalar has no empty form. A deployment's
-trusted-name registry therefore refuses to register a scalar, so the marker
-registered nothing, the value stayed caller-supplied, and the only signal was a
-server-side log line.
-
-Package load now refuses it, naming each offending given and its declared type.
-
-**If you have a package with `#(secure)` on a scalar given, it will stop
-loading after this upgrade.** The remedy is to declare it `filter<string>`,
-which is how a caller passes several values (see `docs/givens.md`), or to drop
-the `#(secure)` marker if the given was never meant to be server-controlled.
-Note that a given a gate references may not carry a default, so declare it with
-no `is` clause.
-
-`array`-typed and `string[]`-typed givens are accepted too. Nothing in this
-repository is affected: no shipped example or template carries the marker.
 ## [Unreleased] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
 
 `proxy.ssh.hostKey` pins the bastion's host key. When it was omitted the tunnel
