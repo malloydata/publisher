@@ -198,6 +198,11 @@ export function incrementalLineage(params: {
       .filter((k) => k.kind === "dimension")
       .map((k) => k.name);
    if (mergeKeys.length !== d.mergeKeys.length) return undefined;
+   // Backstop behind the publish-time refusal, not a second opinion on it: a
+   // merge whose scope could not be resolved must never be ISSUED, whatever let
+   // the declaration through. No lineage means the refresh seeds instead —
+   // slower, and correct.
+   if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
    return {
       physicalTableName: params.physicalTableName,
       connectionName: params.connectionName,

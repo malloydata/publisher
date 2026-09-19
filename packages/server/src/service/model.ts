@@ -4782,7 +4782,11 @@ export class Model {
       return liftDerivedSources({
          contents,
          sourceNameById,
+         // Bases a lift may extend: the FRESH bindings it is handed.
          shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
+         // Candidates are excluded against EVERY binding, including the ones
+         // freshness withheld — see `boundSourceNames`.
+         boundSourceNames: new Set(this.serveBindings.map((b) => b.sourceName)),
          liftText,
       });
    }

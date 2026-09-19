@@ -190,36 +190,20 @@ Expect:
 
 > **Red on the tier, not on the answers.** Every answer above is correct today —
 > the org and user terms both apply, and no caller sees another's rows. What does
-> not happen is routing, which `servedFrom` reports on the first query, and which
-> the mutate-and-requery at the end corroborates from the other side: the
-> re-query returns the NEW value, so the rows were recomputed.
+> not happen is routing, which `servedFrom` reports on the first query and which
+> the mutate-and-requery corroborates from the other side.
 >
-> The machinery to close it exists. The serve shape can carry a non-persisted
-> source over materialized bases, reduced to what it adds to its base and refused
-> outright if any join it declares reaches a source that is not materialized.
-> What it may lawfully be applied TO is the open question, and it is a question
-> about `#@ -persist` rather than about givens or partitioning.
+> The shape can carry a non-persisted source over materialized bases. What it
+> cannot carry is THIS one, and the reason is the annotation rather than the
+> mechanism. Persistence is inherited through `extend`, so `visible_orders`
+> written plainly inherits `#@ persist`, becomes a build target of its own, and
+> is refused — here as `dynamic_joined_where`, with a message advising entry
+> "through a non-persisted extension". Written that way, with `#@ -persist`, it
+> opts out of reading the pre-built table, which is what `opt-out-persist-
+> recomputes` pins and what the lift honours by excluding it.
 >
-> A derived source over a persisted base has two states and needs a third.
-> Written plainly it INHERITS `#@ persist`, becomes a build target of its own,
-> and is refused — here as `dynamic_joined_where`, with a message that says to
-> "enter through a non-persisted extension that declares the join instead".
-> Written the way that message advises, with `#@ -persist`, it is documented as
-> recomputing "instead of using the pre-built table", which `opt-out-persist-
-> recomputes` pins. So the refusal directs the author onto the one annotation
-> that forbids the tier they were trying to reach, and the arrangement this
-> scenario describes cannot be both built and served.
->
-> Worth knowing which way the opt-out currently holds: it holds BY ACCIDENT. The
-> serve path has no notion of it — bindings are keyed by source name, and every
-> reader of a persisted base picks up the stored table. An opted-out source is
-> served live only because no derived source is ever on the shape at all. The
-> moment one can be, the opt-out needs honoring deliberately, and the lift above
-> excludes `#@ -persist` for exactly that reason.
->
-> Closing this means settling what `#@ -persist` promises: only that the source
-> is not itself built, or also that its reads bypass its base's table. Malloy's
-> own `findPersistentDependencies` bubbles a persistent dependency up through a
-> non-persistent source, which reads as the base's table still being substituted;
-> the publisher's documentation reads the other way. Until that is settled this
-> scenario stays red, and it is what notices on the day it is not.
+> So the refusal directs the author onto the one annotation that rules out the
+> tier they were reaching for. Closing this means settling what a plain extension
+> should do: Malloy documents it as reading the persisted table, while the
+> publisher treats it as a second build target for the same table. The
+> documentation calls that a present-tense defect rather than design.

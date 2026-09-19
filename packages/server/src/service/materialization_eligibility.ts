@@ -6,7 +6,7 @@ import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
 import type { AnnotationNote } from "./annotations";
 import { parseAuthorizeAnnotation } from "./authorize";
-import type { PersistSourceGateOutcome } from "./build_plan";
+import { deriveColumns, type PersistSourceGateOutcome } from "./build_plan";
 import { containsPartitionAnnotationTag } from "./partition_annotation";
 import {
    buildSubstitutesAGiven,
@@ -163,6 +163,7 @@ export function assertMaterializationEligible(
    }
 
    assertMergeKeyScopeResolvable(
+      persistSource,
       readTimeDynamicTerms(persistSource),
       annotationFields,
       `Source '${sourceName}'`,
@@ -302,12 +303,27 @@ export function assertMaterializationEligible(
  * publish is where an author can still act on it.
  */
 function assertMergeKeyScopeResolvable(
+   persistSource: PersistSource,
    terms: readonly { code: string; columns: string[] }[],
    annotationFields: Record<string, string>,
    what: string,
 ): void {
    if (!annotationFields.merge_key?.trim()) return;
-   const unscopable = terms.filter((term) => term.columns.length === 0);
+   // Resolved against the STORED columns, not taken as written. A term names a
+   // field as the author wrote it, and an extend-block `dimension:` is read-time
+   // — so `where: computed_org = $ORG` names something the build never
+   // materializes. Unresolved, that column reaches the merge's `ON` and every
+   // refresh fails against a table with no such column.
+   const stored = new Set(
+      deriveColumns(persistSource)
+         .map((column) => column.name)
+         .filter((name): name is string => typeof name === "string"),
+   );
+   const unscopable = terms.filter(
+      (term) =>
+         term.columns.length === 0 ||
+         term.columns.some((name) => !stored.has(name)),
+   );
    if (unscopable.length === 0) return;
    recordEligibilityRefused("merge_key_scope_unresolved");
    throw new MaterializationEligibilityError({
@@ -462,6 +478,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    // source that is caller-scoped, and an empty scope reads as "nothing to
    // scope".
    assertMergeKeyScopeResolvable(
+      persistSource,
       readTimeDynamicTerms(persistSource),
       annotationFields,
       origin === "preaggregate"

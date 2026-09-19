@@ -289,12 +289,21 @@ export function resolveIncrementalDeclaration(
    // emit an unscoped merge for any source a gate admitted while the classifier
    // refused, which the colocated gate does by design.
    const dynamicTerms = readTimeDynamicTerms(source);
+   // Resolved against the STORED schema, not taken as written. A term reads a
+   // name as the author wrote it, and an extend-block `dimension:` is read-time
+   // by this module's own premise — so `where: computed_org = $ORG` names
+   // `computed_org`, which the build never materializes. Put into a merge's `ON`
+   // unresolved, that predicate references a column the table does not have and
+   // every refresh fails. `merge_key=` is resolved this way and `partition=` is
+   // checked against the public projection; the scope gets the same treatment.
    const scopeColumns = [
       ...new Set(dynamicTerms.flatMap((term) => term.columns)),
-   ];
-   const scopeIncomplete = dynamicTerms.some(
-      (term) => term.columns.length === 0,
-   );
+   ].filter((name) => columns.has(name));
+   const scopeIncomplete =
+      dynamicTerms.some((term) => term.columns.length === 0) ||
+      dynamicTerms.some((term) =>
+         term.columns.some((name) => !columns.has(name)),
+      );
    const { aggregates, analytics } = queryDefinitionFieldKinds(source);
    const malformed: MalformedValue[] = [];
 

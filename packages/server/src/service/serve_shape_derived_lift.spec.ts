@@ -49,6 +49,8 @@ describe("derived-source lift onto the serve shape", () => {
    async function liftsFor(
       model: string,
       materialized: string[],
+      /** Every source with a binding, fresh or not. Defaults to `materialized`. */
+      bound?: string[],
    ): Promise<DerivedSourceLift[]> {
       const runtime = new Runtime({
          urlReader: new InMemoryURLReader(
@@ -74,6 +76,7 @@ describe("derived-source lift onto the serve shape", () => {
          contents,
          sourceNameById,
          shapeSourceNames: new Set(materialized),
+         boundSourceNames: new Set(bound ?? materialized),
          // The scenarios below assert selection, which never depends on the
          // declaration text; returning it verbatim keeps a join liftable.
          liftText: () => "j is other on 1 = 1",
@@ -170,5 +173,25 @@ source: leaf is mid extend { where: amount < 100 }
       // `mid` is refused (its base is not on the shape), so `leaf` has no base
       // either — the fixpoint must not promote it over a link that was dropped.
       expect(await liftsFor(CHAIN, [])).toEqual([]);
+   });
+
+   it("leaves off a source whose own binding was withheld, rather than serving its base's", async () => {
+      // `entry` has a binding of its own — it is a build target — but freshness
+      // withheld it, so it is absent from the shape's FRESH set while `base` is
+      // present. Lifting it here would answer a query naming `entry` from
+      // `base`'s artifact and report `servedFrom: storage`, which is exactly what
+      // its `freshnessFallback` of `live` or `fail` exists to prevent.
+      //
+      // The candidate test is therefore against every binding, not the fresh
+      // ones: a source with NO binding is still a candidate.
+      expect(await liftsFor(RICH_BASE, ["base"], ["base", "entry"])).toEqual(
+         [],
+      );
+      // Control: with no binding of its own, the same source is carried.
+      expect(
+         (await liftsFor(RICH_BASE, ["base"], ["base"])).map(
+            (l) => l.sourceName,
+         ),
+      ).toEqual(["entry"]);
    });
 });

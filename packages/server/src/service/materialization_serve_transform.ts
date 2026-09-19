@@ -622,8 +622,22 @@ export interface DerivedLiftContext {
    contents: Record<string, DerivedSourceDef>;
    /** sourceID -> author source name. */
    sourceNameById: Map<string, string>;
-   /** Names already on the shape: the materialized sources it rebinds. */
+   /**
+    * Names already on the shape: the materialized sources it rebinds, FRESH
+    * ones only. These are the bases a lift may extend.
+    */
    shapeSourceNames: ReadonlySet<string>;
+   /**
+    * Every source with a serve binding of its own, fresh or not. A candidate is
+    * excluded against this rather than against {@link shapeSourceNames}, and the
+    * two differ by exactly the sources whose bindings were withheld.
+    *
+    * Carrying one of those would serve its base's artifact under its name while
+    * reporting `servedFrom: storage` — which is the outcome a `freshnessFallback`
+    * of `live` or `fail` exists to prevent. A source with no binding at all is
+    * still a candidate; it is the withheld ones that must fall back.
+    */
+   boundSourceNames?: ReadonlySet<string>;
    liftText: (location: SourceLocation) => string | undefined;
 }
 
@@ -636,6 +650,8 @@ export interface DerivedSourceDef {
    filterList?: unknown[];
    /** The compiled model's own annotation record, read for `#@ -persist`. */
    annotations?: unknown;
+   /** Malloy's own flag: this source carries `#@ persist`, inherited or not. */
+   persistent?: unknown;
 }
 
 /**
@@ -701,18 +717,29 @@ export function liftDerivedSources(
    const pending = Object.entries(ctx.contents).filter(
       ([name, def]) =>
          typeof def?.extends === "string" &&
-         !ctx.shapeSourceNames.has(name) &&
+         !(ctx.boundSourceNames ?? ctx.shapeSourceNames).has(name) &&
+         // A source that is itself a build target is never a lift candidate,
+         // however it came to be one — `persistent` is true for a plain
+         // extension of a persisted source, which inherits the annotation.
+         //
+         // `shapeSourceNames` cannot stand in for this. It is the set of bindings
+         // that are present AND FRESH, so a persist target whose binding was
+         // withheld — refused, failed, never run, or stale past its window — is
+         // absent from it and would otherwise be lifted over its base. That
+         // serves the base's artifact under the derived source's name while
+         // reporting `servedFrom: storage`, which is precisely what a
+         // `freshnessFallback` of `live` or `fail` exists to prevent.
+         def?.persistent !== true &&
          // `#@ -persist` is documented as recomputing the query INSTEAD of using
          // the pre-built table, and `opt-out-persist-recomputes` pins that
          // reading. Carrying such a source here would serve it from the stored
          // table, which is the opposite of what its author asked for.
          //
-         // Today that annotation is the only way to write a derived source over
-         // a materialized base that is not itself a build target, so excluding it
-         // leaves this with nothing to carry. That is deliberate: the alternative
-         // is changing a documented annotation's meaning as a side effect of a
-         // performance change. See the note on
-         // `a-query-term-over-materialized-sources-still-scopes`.
+         // This does NOT leave the lift with nothing to carry. Persistence is
+         // inherited through `extend` (Malloy's `src/doc/persist/api.md`), and an
+         // inheriting source is documented as reading the persisted table — which
+         // is what a lift over its base does. `#@ -persist` is the annotation that
+         // opts out of exactly that, so it is the one excluded here.
          !optsOutOfPersist(def),
    );
    let progressed = true;
