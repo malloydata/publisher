@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { GivenValue, LogMessage } from "@malloydata/malloy";
+import type {
+   GivenValue,
+   LogMessage,
+   Model as MalloyModel,
+} from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -19,6 +23,7 @@ import {
 import {
    AccessDeniedError,
    BadRequestError,
+   CompileRefusedError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -28,6 +33,7 @@ import {
    WriteRolledBackError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import { assertNoRestrictedConstructs } from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -926,6 +932,52 @@ export class Environment {
                );
             }
             return { problems };
+         }
+
+         // Containment for caller-submitted fragments. Scope "append" is the
+         // one scope whose text is a FRAGMENT checked against a curated model
+         // rather than a file the author owns, so it has no legitimate need to
+         // define its own data roots -- and Malloy resolves a source's schema
+         // at compile time, so an unrestricted one reaches the connection, the
+         // filesystem and the network without running a query. Scopes "file"
+         // and "package" are deliberately NOT gated: there the source IS the
+         // model file, and `import` plus `connection.table(...)` /
+         // `connection.sql(...)` are how any model declares what it reads.
+         // Gating them would make an ordinary package un-authorable.
+         if (scope === "append") {
+            // The model as saved, WITHOUT the caller's appended text: the
+            // fragment is checked against the surface the author published, so
+            // the caller cannot widen the namespace it is judged against.
+            //
+            // Five of the seven restricted constructs are refused on sight,
+            // but two are not: `name!type(...)` and the `sql_*` family are
+            // classified inside `getExpression(fs)`, which needs a resolved
+            // FieldSpace. With no base model a fragment like
+            // `run: base_source -> { ... }` never resolves `base_source`, so
+            // the expression is never evaluated, the construct is never
+            // classified, and the gate passes text the real compile then runs
+            // for real. So a base model that will not load fails the request
+            // rather than lowering the gate: the caller's own text is not what
+            // failed, and the same argument `assertNoRestrictedConstructs`
+            // makes about its own catch applies here -- an infrastructure
+            // error carries no evidence either way.
+            let baseModel: MalloyModel;
+            try {
+               baseModel = await runtime
+                  .loadModel(pathToFileURL(modelPath))
+                  .getModel();
+            } catch (error) {
+               throw new CompileRefusedError(
+                  `Cannot validate the submitted source: the model at ` +
+                     `"${modelPath}" could not be loaded to check it against ` +
+                     `(${error instanceof Error ? error.message : String(error)}).`,
+               );
+            }
+            await assertNoRestrictedConstructs(
+               runtime,
+               baseModel,
+               source ?? "",
+            );
          }
 
          // Attempt to compile

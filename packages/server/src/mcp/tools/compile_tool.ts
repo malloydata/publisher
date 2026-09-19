@@ -62,7 +62,7 @@ const compileShape = {
 const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use this while authoring instead of a throwaway execute_query.
 
 ## Scopes (the scope parameter)
-- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file.
+- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file. The source is checked against the model's published surface, so it may not declare its own data roots: import, connection.table(...), connection.sql(...) and raw-SQL functions are refused here. Use scope "file" or "package" to validate a model that declares those.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
 - "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and #(authorize) still gates caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
 
