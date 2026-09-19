@@ -342,3 +342,11 @@ how models accumulate scar tissue.
 - `skill:eval-answer`: the score this consumes.
 - `skill:eval-improve`: smallest model edit, `owner: model` only.
 - `skill:eval-loop`: golden hold/repair, the acceptance check, and checkpoint.
+
+## Reference
+
+Paths below are relative to this skill. Read one at the step that calls for it, not up front; your host states where this skill lives.
+
+| Read this | When |
+|---|---|
+| `reference/output-contract.md` | before emitting any event, to get the shape right |

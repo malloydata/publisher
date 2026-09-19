@@ -2,6 +2,15 @@
 
 # Coverage limits
 
+## Contents
+
+- [Measured against a labelled set: the label drifts too](#measured-against-a-labelled-set-the-label-drifts-too)
+- [It stops RUNNING at about 3,500 lines, on Linux only](#it-stops-running-at-about-3500-lines-on-linux-only)
+- [It stops being STABLE at about 100 KB, everywhere](#it-stops-being-stable-at-about-100-kb-everywhere)
+- [What it costs](#what-it-costs)
+- [Do NOT narrow to one file to get under the cap](#do-not-narrow-to-one-file-to-get-under-the-cap)
+- [Where to take it](#where-to-take-it)
+
 `check_coverage.py` was measured against a real labelled set and at a range of
 model sizes. Every number below is measured, and the method is named beside it
 so it can be re-measured when the harness changes. None of it is visible in the

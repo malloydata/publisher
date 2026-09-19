@@ -29,7 +29,7 @@ A package backed by data files (CSV/Parquet/XLSX/JSON) needs **no `connections` 
 Two more facts about how a Publisher server sees the package, both easy to get wrong:
 
 - **A package `location` is treated as local only when it starts with `./`, `../`, `~/`, or `/`.** A bare name like `"spotify"` is silently not local; write `"./spotify"`.
-- **Local authoring means `--watch-env`.** Without `--watch-env <env>`, Publisher **copies** each local package into `publisher_data/` at boot and serves the copy; edits to your source directory are never read, however many times you save. Start the server with `--watch-env <env>` (mounts the package in place and live-reloads), the same command `skill:malloy-html-data-apps` uses:
+- **Local authoring means `--watch-env`.** Without `--watch-env <env>`, Publisher **copies** each local package into `publisher_data/` at boot and serves the copy; edits to your source directory are never read, however many times you save. Start the server with `--watch-env <env>` (mounts the package in place and live-reloads), the same command `skill:malloy-visualization` uses:
 
   ```sh
   npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
@@ -76,7 +76,7 @@ Two optional fields opt the package into curation:
 
 **Why curate here:** declaring `explores` routes agents to the well-documented curated sources instead of raw tables, and `queryableSources: "declared"` keeps them from reaching the hidden sources by name. The two axes compose: list a file in `explores` for its models to be discoverable, and `export` a source within that file for it to be a landing point.
 
-> **Not access control.** `queryableSources` gates the query surface (the query endpoints, REST and MCP alike), not compile and not raw file retrieval by exact path: `/compile` and `compile_model` are deliberately exempt, because compile is the authoring loop and the boundary is discovery curation. It doesn't restrict *who* may query, only *what* is queryable by name. Queryable sources are the union of every `explores`-listed file's `export {}` closure, whichever listed model path a query addresses them through. To gate access by caller-supplied identity/role, use `#(authorize)` on the source, see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and `#(authorize)` are independent layers.
+> **Not access control.** `queryableSources` gates the query surface (the query endpoints, REST and MCP alike), not compile and not raw file retrieval by exact path: `/compile` and `compile_model` are deliberately exempt, because compile is the authoring loop and the boundary is discovery curation. It doesn't restrict *who* may query, only *what* is queryable by name. Queryable sources are the union of every `explores`-listed file's `export {}` closure, whichever listed model path a query addresses them through. To gate access by caller-supplied identity/role, use `#(authorize)` on the source, see `skill:malloy-modeling` § Access Control and `docs/authorize.md`. Discovery curation and `#(authorize)` are independent layers.
 
 The manifest also carries a `scope` field (`"package"` | `"version"`, default `"package"`) controlling whether persisted/materialized artifacts are shared across published versions or owned by a single version, and a `materialization` field configuring that persistence policy (a cron `schedule` or a `freshness` window). Both are unrelated to discovery curation; there is no per-source `sharing` or `schedule` field, that was retired in favor of the single package-level `scope` and `materialization`.
 
@@ -101,7 +101,7 @@ All `.malloy` files must be in the package root (flat layout: the publisher does
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- `.malloynb` files - Notebooks for exploration/documentation (see `skill:malloy-notebooks`)
+- `.malloynb` files - Notebooks for exploration/documentation (see `skill:malloy-visualization`)
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management

@@ -20,7 +20,7 @@ Restate what is being asked: which metric, which breakdown (group-by), which fil
 Find the right entities before writing any query.
 
 - If you do not already know which package to work in, confirm the environment and package with the user before continuing.
-- **Load `skill:malloy-phrase-detection`**, then call `get_context` with entity targets that describe the fields the question needs: a `measure` for the metric, a `dimension` for each breakdown or filter, and a `view` if the question sounds like a canned report. **Every target carries a `search_text`**: a target without one enumerates a capped catalog instead of searching, and the cap is blind to your question. The tool description covers what comes back and how to narrow or browse.
+- **Load ``reference/search-text.md``**, then call `get_context` with entity targets that describe the fields the question needs: a `measure` for the metric, a `dimension` for each breakdown or filter, and a `view` if the question sounds like a canned report. **Every target carries a `search_text`**: a target without one enumerates a capped catalog instead of searching, and the cap is blind to your question. The tool description covers what comes back and how to narrow or browse.
 - Read the documentation on each returned entity: on an entity it is `description`, on a source it is `docs`, often with a short `one_line_summary` and sometimes a longer `summary`. Which of these a server fills varies, so read the ones your response actually carries and do not go hunting for one that is absent. Authors write it as `#(doc)` in the model, but the response never uses that label, so do not go looking for that either. It is where grain, units, null handling, and any source-level filters are described. Confirm the exact field names against the results before using them.
 - **Read the source's own documentation too, not just each field's.** The source-level `docs` often defines the grain, the universe of rows it represents, how joins behave, and source-level filters or assumptions that apply to every query rooted on it. Factor both the source and the field docstrings into how you build and later verify the query.
 - **Do not rebuild a view that already exists from its description.** A description says what a view does, not how; rebuilding the calculation from prose loses what prose does not carry: a denominator, a `partition_by`, an exact filter. Set `entity_name` in the scope to get that entity on its own instead of a ranked sweep across the model. Pinning it also returns the entity's `code`, which for a view is its definition as written, so read that first: it carries the denominator, the `partition_by` and the filters that the description does not. Read the source's `docs` and the entity's `description` too. Then RUN the view and adapt its output, rather than writing a replacement: if you need a different band width or grain, change that one thing and keep everything else as the definition has it. Where a server returns no `code` for a view, the docs plus the view's own output are what you have, and a calculation you cannot see is a reason to reuse the view rather than guess at it.
@@ -38,7 +38,7 @@ A name is a pointer, not confirmation. A field, source, or view name you saw in 
 
 ## 3. Construct the query
 
-Write Malloy using only the model's names. Load `skill:malloy-queries` for syntax (aggregates vs dimensions, joins and field paths, dates, `where:` vs `having:`, counting) and `skill:malloy-gotchas-queries` to avoid the common compile errors. If a model `view:` already matches, run it directly rather than rewriting it.
+Write Malloy using only the model's names. Load ``reference/queries.md`` for syntax (aggregates vs dimensions, joins and field paths, dates, `where:` vs `having:`, counting) and ``reference/query-gotchas.md`` to avoid the common compile errors. If a model `view:` already matches, run it directly rather than rewriting it.
 
 **Check these three before your first `execute_query`** - they account for most first-attempt compile failures, and they are the ones a SQL habit gets wrong:
 
@@ -66,11 +66,11 @@ So when the model's own named view for this question computes a share, the answe
 
 ## 4. Execute
 
-Run the query with `execute_query`. Scope it to the environment, package, and model path from the discovery results, then run either an ad-hoc query (for example `run: order_items -> { group_by: ...; aggregate: ... }`) or a named source plus a view defined in the model. Probe first with small or counting queries to learn the data's shape, then run the query you will present. If it errors, read the message against the error table in `skill:malloy-queries`, fix the most likely cause, and rerun. Never present results from a query you have not actually run.
+Run the query with `execute_query`. Scope it to the environment, package, and model path from the discovery results, then run either an ad-hoc query (for example `run: order_items -> { group_by: ...; aggregate: ... }`) or a named source plus a view defined in the model. Probe first with small or counting queries to learn the data's shape, then run the query you will present. If it errors, read the message against the error table in ``reference/queries.md``, fix the most likely cause, and rerun. Never present results from a query you have not actually run.
 
 ## 5. Verify before trusting
 
-Your first result is a draft, not an answer. The difference between a useful analysis and a misleading one almost always comes down to this step. Load `skill:malloy-analysis-pitfalls` for the full list of traps.
+Your first result is a draft, not an answer. The difference between a useful analysis and a misleading one almost always comes down to this step. Load ``reference/pitfalls.md`` for the full list of traps.
 
 - **Ground it.** Before interpreting any result, query and state the dataset scope: the time range (`min`/`max` of the primary date dimension) and the row or entity count. Every number is meaningless without it.
 - **Ask "what would make this wrong?"** then run the query that would expose that problem. A plausible-looking wrong answer is the most dangerous kind.
@@ -107,6 +107,18 @@ This is different from a genuine ambiguity about WHICH metric they meant; there,
 
 **Careful: aliasing a field drops its documentation and tags.** `rev is net_revenue_amount` returns a field with no `#(doc)`, no `# label` and no render tag: the annotations belong to the original name. If you need an entity's documentation or its display intent, query it under its own name and rename only in your prose.
 
-Answer in plain language, lead with the number that was asked for, and show the supporting rows. State the assumptions you made (filter values, date ranges, any ad-hoc field). Acknowledge caveats the verification step surfaced, and say so if you could not fully verify something. When the result lends itself to a chart, say which Malloy render tag fits and why (load `skill:malloy-charts`), for example `# bar_chart` for a category breakdown or `# line_chart` for a trend over time.
+Answer in plain language, lead with the number that was asked for, and show the supporting rows. State the assumptions you made (filter values, date ranges, any ad-hoc field). Acknowledge caveats the verification step surfaced, and say so if you could not fully verify something. When the result lends itself to a chart, say which Malloy render tag fits and why (load `skill:malloy-visualization`), for example `# bar_chart` for a category breakdown or `# line_chart` for a trend over time.
 
 End with a short **Next steps**: one or two specific deeper analyses the data could support (a finer breakdown, a comparison, a different angle), concrete to what you just found. If a notebook-authoring skill is available to you, you can also offer to capture the analysis as a Malloy notebook so it can be re-run and shared.
+
+## Reference
+
+Paths below are relative to this skill. Read one at the step that calls for it, not up front; your host states where this skill lives.
+
+| Read this | When |
+|---|---|
+| `reference/search-text.md` | before your first `get_context` call, to phrase `search_text` |
+| `reference/queries.md` | before writing or debugging a query |
+| `reference/query-gotchas.md` | a query compiles but the shape is wrong |
+| `reference/pitfalls.md` | before presenting any number |
+| `reference/docs-index.md` | before searching the Malloy docs, to pick a topic |

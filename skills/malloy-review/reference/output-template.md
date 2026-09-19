@@ -5,6 +5,23 @@ SPDX-License-Identifier: MIT
 
 # Review Results File: Template & Assembly Rules
 
+## Contents
+
+- [Canonical skeleton](#canonical-skeleton)
+- [Scope](#scope)
+- [Executive Summary](#executive-summary)
+- [Coverage & Risk Map](#coverage--risk-map)
+- [Cross-Cutting Themes](#cross-cutting-themes)
+- [Top Issues (Blockers & Criticals)](#top-issues-blockers--criticals)
+- [Detailed Findings by File](#detailed-findings-by-file)
+- [Questions for the Author](#questions-for-the-author)
+- [Positive Notes](#positive-notes)
+- [Suggested Follow-ups (non-blocking)](#suggested-follow-ups-non-blocking)
+- [Suggested Split (only if diff > 2000 LOC or >30 files)](#suggested-split-only-if-diff--2000-loc-or-30-files)
+- [Machine-readable findings](#machine-readable-findings)
+- [Assembly rules](#assembly-rules)
+- [What the file does NOT contain](#what-the-file-does-not-contain)
+
 The output of `/malloy-review` is a single Markdown file, written to `./malloy-review-<YYYYMMDD-HHMMSS>.md` unless `--out` overrides. The file is designed as a **triage document**: the user scans the top, expands only what they want, and can treat the JSON tail as a work-queue.
 
 ## Canonical skeleton

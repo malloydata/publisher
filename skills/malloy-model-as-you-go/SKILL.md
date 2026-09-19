@@ -53,7 +53,7 @@ verify it, present it. Two of its rules matter most here:
 
 - **Every number you present comes out of a query.** Adding up the rows of a `limit: 15` table
   by hand drops everything below the cut, and nobody can re-run it.
-- **Your first result is a draft.** Work `skill:malloy-analysis-pitfalls` before presenting.
+- **Your first result is a draft.** Work `skill:malloy-analysis` before presenting.
 
 ### Name the decisions the answer rests on
 
@@ -233,16 +233,16 @@ carry the *why* and the evidence. It is also what lets you resume after losing c
 ### Save the view when a question is worth re-asking
 
 A saved `view:` turns "we answered that once" into "re-run it". A trend wanted again next
-month belongs in the file as a `view:` with its chart tag (`skill:malloy-charts`); views wanted
-side by side belong in a notebook (`skill:malloy-notebooks`), or in a dashboard surface if your
+month belongs in the file as a `view:` with its chart tag (`skill:malloy-visualization`); views wanted
+side by side belong in a notebook (`skill:malloy-visualization`), or in a dashboard surface if your
 host has one. A genuine one-off does not.
 
-> **This departs from `skill:malloy-model` on purpose.** Its "no views in source files" rule
+> **This departs from `skill:malloy-modeling` on purpose.** Its "no views in source files" rule
 > assumes a schema-first model, written before anyone asked a question, so its views would be
 > guesses. Here every view is a question that was asked and verified. Two more of its rules do
 > not apply either: skip access modifiers and curation (there is no discovery surface to curate
 > when every field was paid for by a question), and keep one domain file rather than one file
-> per table until it genuinely gets unwieldy. Everything else in `skill:malloy-model` applies:
+> per table until it genuinely gets unwieldy. Everything else in `skill:malloy-modeling` applies:
 > `#(doc)` on every field, verified join cardinality, `nullif` on division, a `given:` for a
 > runtime parameter.
 
@@ -265,16 +265,16 @@ over:
    moved, something was codified wrong. This is the check that proves reproducibility; do not
    skip it.
 4. **Structure**, only if one file has genuinely become unwieldy: base sources per table plus a
-   joined source per domain, per `skill:malloy-model`. Being shared is not itself a reason.
+   joined source per domain, per `skill:malloy-modeling`. Being shared is not itself a reason.
 
 ## When to do something else
 
 | Situation | Go to |
 |---|---|
-| Porting prior art (LookML, dbt, a metrics doc): the definitions exist and are agreed, the job is translation | `skill:malloy-lookml-review`, then `skill:malloy-model` |
-| The user names the sources they want built outright, before any question | `skill:malloy-model` |
+| Porting prior art (LookML, dbt, a metrics doc): the definitions exist and are agreed, the job is translation | `skill:malloy-lookml-review`, then `skill:malloy-modeling` |
+| The user names the sources they want built outright, before any question | `skill:malloy-modeling` |
 | A model already exists, the question rests on no judgment call, and nothing is worth keeping | `skill:malloy-analysis` alone |
-| Open-ended exploration with no intent to keep anything | `skill:malloy-analyze` |
+| Open-ended exploration with no intent to keep anything | `skill:malloy-visualization` |
 
 ## Anti-patterns
 

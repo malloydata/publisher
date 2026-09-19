@@ -162,3 +162,20 @@ Default `./malloy-review-<YYYYMMDD-HHMMSS>.md`. Tell the user the path and the t
 - **Does not walk above the resolved scope.** Even if a finding would benefit from cross-scope context, scope is fixed once resolved.
 - **Does not guess at multi-package disambiguation.** Always asks.
 - **Does not flag modeling features as hazards.** Source-level `where:` clauses and deliberate `private:` choices are part of how Malloy models work. If something looks unusual, surface it as a "Question for the Author," not a finding.
+
+## Reference
+
+Paths below are relative to this skill. Read one at the step that calls for it, not up front; your host states where this skill lives.
+
+| Read this | When |
+|---|---|
+| `reference/scope-resolution.md` | deciding what is in scope for the review |
+| `reference/severity-taxonomy.md` | grading a finding |
+| `reference/rubric-correctness.md` | checking the model is right |
+| `reference/rubric-structure.md` | checking how the model is organised |
+| `reference/rubric-queries.md` | checking the views and queries |
+| `reference/rubric-rendering.md` | checking render annotations |
+| `reference/rubric-documentation.md` | checking `#(doc)` coverage |
+| `reference/rubric-governance.md` | checking access and visibility |
+| `reference/rubric-style.md` | checking naming and style |
+| `reference/output-template.md` | writing the review file |

@@ -214,3 +214,11 @@ its instructions' mistakes. Report from the files on disk, not from memory.
 - `skill:eval-answer`: scoring after a blind re-answer.
 - The `malloy-gotchas-modeling` skill: mistakes an edit must not introduce.
   It arrives with the `modeling` manifest group, not the `eval` group.
+
+## Reference
+
+Paths below are relative to this skill. Read one at the step that calls for it, not up front; your host states where this skill lives.
+
+| Read this | When |
+|---|---|
+| `reference/output-contract.md` | before emitting any event, to get the shape right |

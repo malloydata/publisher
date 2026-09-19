@@ -5,6 +5,20 @@ SPDX-License-Identifier: MIT
 
 # LookML Derived Table Conversion (Step 5)
 
+## Contents
+
+- [Decision Tree](#decision-tree)
+- [NDT Path (`explore_source:`)](#ndt-path-exploresource)
+  - [Simple Aggregation NDT](#simple-aggregation-ndt)
+  - [NDT with `derived_column:` (Window Functions)](#ndt-with-derivedcolumn-window-functions)
+  - [Chained NDTs](#chained-ndts)
+  - [NDTs with `bind_filters`](#ndts-with-bindfilters)
+- [PDT Path (`sql:`)](#pdt-path-sql)
+  - [Performance-Only PDT](#performance-only-pdt)
+  - [Transformation PDT](#transformation-pdt)
+- [Long→wide entity-values pivot (custom fields)](#longwide-entity-values-pivot-custom-fields)
+- [Examples](#examples)
+
 > Classify LookML derived tables and convert them to Malloy patterns. Reference `_concepts.md` for syntax translation. This runs during Step 5 (BUILD) when the prior-art notes flag derived tables.
 
 ## Decision Tree
@@ -108,7 +122,7 @@ source: entity_custom_fields is conn.table('custom_field_values') -> {
 }
 ```
 
-`field_value.max()` (the `expr.aggregate() { where: … }` filtered-aggregate form, same shape as `x.sum() { where: … }` in `skill:malloy-gotchas-modeling`) collapses the one matching row per attribute to a scalar; `max` is a native Malloy aggregate that works on strings. Do **not** reach for `any_value`/`ANY_VALUE`: that's a warehouse SQL function, not a Malloy aggregate, and would force a raw-SQL escape that (per the median gotcha in `skill:malloy-gotchas-modeling`) doesn't compile in aggregate position anyway.
+`field_value.max()` (the `expr.aggregate() { where: … }` filtered-aggregate form, same shape as `x.sum() { where: … }` in `skill:malloy-modeling`) collapses the one matching row per attribute to a scalar; `max` is a native Malloy aggregate that works on strings. Do **not** reach for `any_value`/`ANY_VALUE`: that's a warehouse SQL function, not a Malloy aggregate, and would force a raw-SQL escape that (per the median gotcha in `skill:malloy-modeling`) doesn't compile in aggregate position anyway.
 
 Then `join_one` this once onto the entity source. This replaces LookML's N self-joins with one grouped scan: fewer joins, one pass, and new attributes are one more `aggregate:` line. (If an attribute can legitimately repeat per entity, that's not a wide column, so model it as a nested/joined detail instead.)
 

@@ -2,6 +2,15 @@
 
 # The golden side door
 
+## Contents
+
+- [Golden side door (not a sixth step)](#golden-side-door-not-a-sixth-step)
+- [A key nobody has derived yet is not a bad golden](#a-key-nobody-has-derived-yet-is-not-a-bad-golden)
+- [Repair a bad golden](#repair-a-bad-golden)
+- [A model fix can invalidate a golden, and nothing will tell you](#a-model-fix-can-invalidate-a-golden-and-nothing-will-tell-you)
+- [A golden must match the state the model is in](#a-golden-must-match-the-state-the-model-is-in)
+- [Hold an ambiguous golden](#hold-an-ambiguous-golden)
+
 ## Golden side door (not a sixth step)
 
 Bad and ambiguous goldens show up immediately. That is not improve. A

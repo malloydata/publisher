@@ -173,3 +173,11 @@ bound on how long a revoked row keeps being served.
 - **Republishing unchanged persist logic reuses the table** - reuse is keyed on the content-addressed `sourceEntityId`, not the `name=`.
 - **Removing a persist source (or a smoke test) does not drop its table** - physical-table cleanup is the caller's responsibility; drop it yourself.
 - **An `#(authorize)`-gated source freezes its gating column when persisted** - the gate still runs live, but a revoked row keeps being served under its old access decision until the next rebuild. `storage=` and `#@ preaggregate` refuse a gated source outright. See **Persisting an `#(authorize)`-gated source**.
+
+## Reference
+
+Paths below are relative to this skill. Read one at the step that calls for it, not up front; your host states where this skill lives.
+
+| Read this | When |
+|---|---|
+| `reference/tuning.md` | deciding what to persist, what to stop persisting, or how to schedule it |
