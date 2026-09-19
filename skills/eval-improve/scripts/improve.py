@@ -343,7 +343,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--retries", type=int, default=1)
     ap.add_argument("--only", default=None, help="comma-separated issue_ids")
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="how many to process; each one spawns a real agent. Omit for no limit. 0 means zero, not unlimited.")
     ap.add_argument("--force", action="store_true",
                     help="redo clusters that already have a result")
     ap.add_argument("--no-isolate", dest="isolate", action="store_false",
@@ -400,7 +401,9 @@ def main(argv: list[str] | None = None) -> int:
         want = {x.strip() for x in a.only.split(",")}
         issues = [i for i in issues if i["issue_id"] in want]
     issues.sort(key=lambda i: -len(i.get("qids", [])))
-    if a.limit:
+    # `is not None`: see diagnose.py's select_cases. 0 means zero issues,
+    # not every issue -- each one spawns a real agent that edits the model.
+    if a.limit is not None:
         issues = issues[:a.limit]
     if not issues:
         print("no open model-owned issues; run diagnose.py first, or every "

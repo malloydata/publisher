@@ -651,7 +651,11 @@ def select_cases(events: list[dict[str, Any]],
             exclude("not named in --only", *dropped)
         failed = [q for q in failed if q in want]
         retrieval_only = [q for q in retrieval_only if q in want]
-    if limit:
+    # `is not None`, not truthiness: `--limit 0` used to read as "no limit" and
+    # diagnose EVERY failure, one billable agent each -- failing open, on the
+    # one axis where failing open costs money. 0 now means zero cases, which is
+    # what it says. Unlimited is the default, spelled by omitting the flag.
+    if limit is not None:
         if failed[limit:]:
             exclude(f"beyond --limit {limit}", *failed[limit:])
         failed = failed[:limit]
@@ -703,7 +707,8 @@ def main(argv: list[str] | None = None) -> int:
                          "run never reaches improve, so it is holding them "
                          "back from nothing. Refused when the run already "
                          "carries a candidate edit.")
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="how many to process; each one spawns a real agent. Omit for no limit. 0 means zero, not unlimited.")
     ap.add_argument("--no-cluster", action="store_true")
     ap.add_argument("--target", choices=("local", "platform"), default="local",
                     help="platform: probe through a hosted MCP server "

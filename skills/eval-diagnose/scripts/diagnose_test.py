@@ -435,6 +435,20 @@ class SelectingWhatToDiagnose(unittest.TestCase):
         self.assertEqual(not_passing, 23)
         self.assertEqual(len(excluded["beyond --limit 5"]), 18)
 
+    def test_limit_zero_selects_nothing_rather_than_everything(self):
+        """`if limit:` read 0 as "no limit" and diagnosed all 23, one billable
+        agent each -- failing OPEN on the one axis where that costs money.
+        0 means zero; unlimited is spelled by omitting the flag."""
+        failed, _, _, excluded = self.select(
+            self.scores(23), self.cases(23), limit=0)
+        self.assertEqual(failed, [])
+        self.assertEqual(len(excluded["beyond --limit 0"]), 23)
+
+    def test_omitting_the_limit_still_means_unlimited(self):
+        failed, _, _, excluded = self.select(self.scores(23), self.cases(23))
+        self.assertEqual(len(failed), 23)
+        self.assertEqual(excluded, {})
+
     def test_only_records_what_it_dropped_as_an_exclusion(self):
         failed, _, _, excluded = self.select(
             self.scores(4), self.cases(4), only="q0,q1")
