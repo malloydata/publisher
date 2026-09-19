@@ -121,6 +121,13 @@ def compiled_entities(rest_url: str, environment: str,
     field the source actually exposes, each with its `kind`. One request per
     model path settles every id at once.
 
+    A model-level named query is NOT a field, and never appears under
+    `sourceInfos`: `FieldInfoType` is dimension/measure/join/view/calculate, so
+    `query` cannot be a field kind even in principle. It arrives in the
+    response's own `queries` array instead, and is read from there. Without
+    that, every `query:` id read as a field the source does not declare -- the
+    same false positive this function exists to end, reintroduced for one kind.
+
     None when the server cannot be reached or answers nothing usable, which is
     "not checked" and must not read as "nothing exists".
     """
@@ -156,7 +163,40 @@ def compiled_entities(rest_url: str, environment: str,
             for f in fields:
                 if isinstance(f, dict) and f.get("name") and f.get("kind"):
                     bucket.add(f"{f['kind']}:{f['name']}")
+        for q in doc.get("queries") or []:
+            if not isinstance(q, dict):
+                continue
+            name, src = q.get("name"), q.get("sourceName")
+            # A query over an inline source has no source name, and the server
+            # excludes it from the index for exactly that reason
+            # (get_context_tool.ts). Leaving it out here keeps a `query:` id
+            # naming one reported as unreachable, which it genuinely is.
+            if name and src:
+                out.setdefault(src, set()).add(f"query:{name}")
     return out or None
+
+
+def stale_packages(rest_url: str, timeout: int = 30) -> set[tuple[str, str]] | None:
+    """`{(environment, package)}` serving a model older than their files.
+
+    A stale package answers every request, and answers from the compile BEFORE
+    its last save. `/api/v0/status`'s `loadErrors` is the only place that is
+    reported: the package's entry under `environments`, and its own package
+    resource, both read as serving. So the models endpoint this module treats
+    as "the authority" reads entirely normal while describing a model that is
+    no longer on disk -- which can fail a good id or pass a deleted one, with
+    nothing to say which happened.
+
+    None when the status could not be read at all, which is "not checked".
+    """
+    try:
+        req = urllib.request.Request(f"{rest_url.rstrip('/')}/api/v0/status")
+        doc = json.load(urllib.request.urlopen(req, timeout=timeout))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+    return {(e.get("environment") or "", e.get("package") or "")
+            for e in doc.get("loadErrors") or []
+            if isinstance(e, dict) and e.get("stale")}
 
 
 def declared_findings(cases: list[dict[str, Any]],
@@ -280,8 +320,26 @@ def main(argv: list[str] | None = None) -> int:
 
     declared_out: list[str] = []
     if a.publisher:
-        declared = compiled_entities(a.publisher, a.environment, a.package)
-        if declared is None:
+        # Staleness first. A stale package answers the models endpoint normally
+        # while describing the compile BEFORE the last save, so reading it as
+        # the authority prints findings nobody can act on: the id may be fine
+        # and the served model simply old. Refusing to check says so; checking
+        # anyway would be one more number the harness had not earned.
+        stale = stale_packages(a.publisher)
+        if stale is None:
+            print("! the server's status could not be read, so staleness is "
+                  "unknown; treating the compiled model as current",
+                  file=sys.stderr)
+        is_stale = bool(stale) and (a.environment, a.package) in stale
+        declared = (None if is_stale
+                    else compiled_entities(a.publisher, a.environment, a.package))
+        if is_stale:
+            print(f"! {a.environment}/{a.package} is serving a STALE model "
+                  f"(its last reload failed to compile), so the compiled model "
+                  f"is not the authority on what exists; existence and kind "
+                  f"were NOT checked. Fix the model and reload, then re-run.",
+                  file=sys.stderr)
+        elif declared is None:
             print("! the compiled model could not be read; existence and kind "
                   "were NOT checked", file=sys.stderr)
         else:

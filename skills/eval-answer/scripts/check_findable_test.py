@@ -214,5 +214,113 @@ class CompiledModel(unittest.TestCase):
             "http://127.0.0.1:9", "e", "p"))
 
 
+def fake_model_doc(queries=(), fields=(("carrier", "dimension"),)):
+    """One model path, one source, with whatever fields and queries are asked
+    for. Mirrors the REST shape: `queries` is a SIBLING of `sourceInfos`."""
+    return {"sourceInfos": [{"name": "flights",
+                             "schema": {"fields": [{"name": n, "kind": k}
+                                                   for n, k in fields]}}],
+            "queries": [dict(q) for q in queries]}
+
+
+class CompiledQueries(unittest.TestCase):
+    """A model-level named query is not a field and never appears under
+    `sourceInfos`; `FieldInfoType` has no `query`. Read from the response's own
+    `queries` array or every `query:` id reads as a field that does not exist --
+    the exact false positive `compiled_entities` exists to end."""
+
+    def declared_from(self, doc):
+        """`compiled_entities`' per-doc walk, with the two HTTP calls stubbed."""
+        import json as _json
+        import urllib.request as _u
+        real = _u.urlopen
+
+        class Resp:
+            def __init__(self, payload): self.payload = payload
+            def read(self): return _json.dumps(self.payload).encode()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake(req, timeout=30):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            return Resp([{"path": "m.malloy"}] if url.endswith("/models")
+                        else doc)
+
+        _u.urlopen = fake
+        try:
+            return check_findable.compiled_entities("http://x", "e", "p")
+        finally:
+            _u.urlopen = real
+
+    def test_a_named_query_is_declared(self):
+        declared = self.declared_from(fake_model_doc(
+            queries=[{"name": "top_carriers", "sourceName": "flights"}]))
+        self.assertIn("query:top_carriers", declared["flights"])
+
+    def test_a_named_query_raises_no_finding(self):
+        declared = self.declared_from(fake_model_doc(
+            queries=[{"name": "top_carriers", "sourceName": "flights"}]))
+        cases = [case("q1", required=["query:flights:top_carriers"])]
+        self.assertEqual(check_findable.declared_findings(cases, declared), [])
+
+    def test_without_the_queries_array_it_would_have_been_a_false_finding(self):
+        # The regression this pins: reading only `sourceInfos` reports a real,
+        # retrievable query as a field the source does not declare, and that
+        # finding survives main()'s dedup and exits 1.
+        declared = self.declared_from(fake_model_doc(queries=[]))
+        cases = [case("q1", required=["query:flights:top_carriers"])]
+        out = check_findable.declared_findings(cases, declared)
+        self.assertEqual(len(out), 1)
+        self.assertIn("declares no field", out[0])
+
+    def test_a_query_over_an_inline_source_stays_undeclared(self):
+        # It has no source name, and the server excludes it from the index for
+        # that reason, so an id naming it is genuinely unreachable.
+        declared = self.declared_from(fake_model_doc(
+            queries=[{"name": "adhoc"}]))
+        self.assertNotIn("query:adhoc", declared["flights"])
+
+
+class Staleness(unittest.TestCase):
+    """A stale package answers the models endpoint normally while describing
+    the compile BEFORE the last save, so the compiled model is not the
+    authority and must not be read as one."""
+
+    def status(self, payload):
+        import json as _json
+        import urllib.request as _u
+        real = _u.urlopen
+
+        class Resp:
+            def read(self): return _json.dumps(payload).encode()
+        _u.urlopen = lambda req, timeout=30: Resp()
+        try:
+            return check_findable.stale_packages("http://x")
+        finally:
+            _u.urlopen = real
+
+    def test_a_stale_package_is_named(self):
+        self.assertEqual(
+            self.status({"loadErrors": [{"environment": "e", "package": "p",
+                                         "stale": True}]}),
+            {("e", "p")})
+
+    def test_an_ordinary_load_failure_is_not_staleness(self):
+        # No `stale` flag: the package did not load at all, which is a
+        # different fact and is visible by the package simply being absent.
+        self.assertEqual(
+            self.status({"loadErrors": [{"environment": "e", "package": "p",
+                                         "message": "boom"}]}),
+            set())
+
+    def test_a_healthy_server_omits_the_field(self):
+        self.assertEqual(self.status({"operationalState": "serving"}), set())
+
+    def test_an_unreadable_status_is_not_read_as_healthy(self):
+        # None means "could not tell", which main() reports rather than
+        # silently treating the model as current.
+        self.assertIsNone(check_findable.stale_packages("http://127.0.0.1:9"))
+
+
 if __name__ == "__main__":
     unittest.main()
