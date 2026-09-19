@@ -4316,3 +4316,120 @@ source: Gated is duckdb.table('parent') extend {
       }
    });
 });
+
+/**
+ * `#(secure)` marks a given whose value a deployment in front of Publisher
+ * resolves from the caller's identity, stripping whatever the request supplied.
+ * Publisher has no identity source of its own, so the marker is a contract with
+ * that deployment rather than something this server enforces.
+ *
+ * The security question is therefore not "does Publisher reject a badly typed
+ * secure given" -- it is "does Publisher still SERVE the marker, so the
+ * deployment in front can act on it." A marker Publisher silently dropped would
+ * be a gate the deployment could never enforce, which is the fail-open that
+ * matters here.
+ *
+ * These run on the real worker-pool path, `Package.create` -> `PackageLoadPool`
+ * -> `Model.fromSerialized`, because that is how a published package loads. A
+ * check wired only into `Model.create` never runs in production, and
+ * `Model.create` swallows its own throws, so a spec reading `getNotebookError()`
+ * cannot tell a wired check from an unwired one.
+ */
+describe("a #(secure) given survives the real package-load path", () => {
+   async function loadThroughPool(givenDecl: string): Promise<Package> {
+      const originalWorkers = process.env.PACKAGE_LOAD_WORKERS;
+      process.env.PACKAGE_LOAD_WORKERS = "1";
+      const pool = new PackageLoadPool(1);
+      await __setPackageLoadPoolForTests(pool);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "secure-given-pool-"));
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      try {
+         fs.writeFileSync(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({ name: "pkg" }),
+         );
+         // Row data travels in the query text: the pool compiles in a separate
+         // worker with its own :memory: DuckDB, so a table seeded here would
+         // 404 there.
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+given:
+${givenDecl}
+
+#(authorize) $ROLE = 'admin'
+source: X is duckdb.sql("select 1 as id") extend {
+   measure: n is count()
+}
+`,
+         );
+         const { MalloyConfig, FixedConnectionMap: FCM } = await import(
+            "@malloydata/malloy"
+         );
+         const connections = new FCM(new Map([["duckdb", duckdb]]), "duckdb");
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(() => connections);
+         return await Package.create("env", "pkg", dir, malloyConfig);
+      } finally {
+         await __setPackageLoadPoolForTests(null);
+         if (originalWorkers === undefined) {
+            delete process.env.PACKAGE_LOAD_WORKERS;
+         } else {
+            process.env.PACKAGE_LOAD_WORKERS = originalWorkers;
+         }
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   }
+
+   /**
+    * The `#(secure)` notes on a loaded package's given, as SERVED -- read off
+    * `getSources()`, which is the shape a deployment in front of Publisher
+    * actually receives, rather than an internal field.
+    */
+   function secureNotesOf(pkg: Package, givenName: string): string[] {
+      const sources = pkg.getModel("m.malloy")?.getSources() ?? [];
+      for (const source of sources) {
+         const givens = (source.givens ?? []) as {
+            name?: string;
+            annotations?: string[];
+         }[];
+         const given = givens.find((g) => g.name === givenName);
+         if (given) {
+            return (given.annotations ?? []).filter((note) =>
+               note.includes("secure"),
+            );
+         }
+      }
+      return [];
+   }
+
+   // THE FINDING: a deployment can only strip a caller-supplied value for a
+   // given it can see is secure. If the marker did not survive package load,
+   // every gate over it would be silently caller-satisfiable.
+   it("serves the marker on a scalar given", async () => {
+      const pkg = await loadThroughPool("  #(secure)\n  ROLE :: string");
+      expect(secureNotesOf(pkg, "ROLE").length).toBeGreaterThan(0);
+   });
+
+   it("serves the marker on a filter-typed given", async () => {
+      const pkg = await loadThroughPool(
+         "  #(secure)\n  ROLE :: filter<string>",
+      );
+      expect(secureNotesOf(pkg, "ROLE").length).toBeGreaterThan(0);
+   });
+
+   // GUARDS: every shape below loads today and must keep loading. A scalar
+   // secure given behind a gate is the exact shape an earlier revision of this
+   // work refused, and it is a working configuration -- the gate evaluates and
+   // the query runs.
+   it.each([
+      ["scalar, marked", "  #(secure)\n  ROLE :: string"],
+      ["scalar, unmarked", "  ROLE :: string"],
+      ["filter-typed, marked", "  #(secure)\n  ROLE :: filter<string>"],
+      ["filter-typed, unmarked", "  ROLE :: filter<string>"],
+   ])("loads a package whose given is %s", async (_label, decl) => {
+      await expect(loadThroughPool(decl)).resolves.toBeDefined();
+   });
+});
