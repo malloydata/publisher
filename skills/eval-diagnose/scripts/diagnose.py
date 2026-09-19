@@ -604,7 +604,18 @@ def select_cases(events: list[dict[str, Any]],
             # `retrieval_only` and on to a diagnosis call, because the holdout
             # test was on a branch it never reached -- so the split leaked on
             # every run and no flag could stop it.
-            exclude("holdout, withheld from diagnosis", qid)
+            #
+            # Which bucket still depends on how it scored, because
+            # `not_passing` sums `excluded` and a pass is not a non-passing
+            # case. Withholding a holdout PASS through `exclude()` printed
+            # "1 of 5 non-passing case(s) diagnosed (20%)" on a run with one
+            # failure and four holdout passes -- the same arithmetic the
+            # retrieval-miss branch below was already fixed for.
+            if verdict == "match":
+                excluded_passes.setdefault(
+                    "holdout, withheld from diagnosis", []).append(qid)
+            else:
+                exclude("holdout, withheld from diagnosis", qid)
         elif verdict == "match":
             passed.append(qid)
             # A correct answer can still rest on a retrieval miss, and that is

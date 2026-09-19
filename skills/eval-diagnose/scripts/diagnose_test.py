@@ -449,6 +449,42 @@ class SelectingWhatToDiagnose(unittest.TestCase):
         self.assertEqual(len(failed), 23)
         self.assertEqual(excluded, {})
 
+    def test_a_holdout_PASS_is_not_a_non_passing_case(self):
+        """The invariant, for the branch that still broke it.
+
+        The holdout test sits above the verdict checks on purpose, so the
+        split cannot depend on the score. That sent a holdout case that
+        PASSED into `excluded`, which `not_passing` sums: a real run with one
+        failure and four holdout passes printed "1 of 5 non-passing case(s)
+        diagnosed (20%)" when it had diagnosed the only failure there was.
+        """
+        events = self.scores(1, verdict="no_match") + [
+            {"kind": "score", "qid": f"h{i}", "sample": None,
+             "phase": "baseline", "verdict": "match", "reason": "r"}
+            for i in range(4)]
+        cases = dict(self.cases(1))
+        for i in range(4):
+            cases[f"h{i}"] = {"qid": f"h{i}", "split": "holdout"}
+        failed, _, _, excluded, excluded_passes = diagnose.select_cases(
+            events, cases, ("no_match",))
+        self.assertEqual(failed, ["q0"])
+        not_passing = len(failed) + sum(len(v) for v in excluded.values())
+        self.assertEqual(not_passing, 1, "four holdout PASSES inflated it to 5")
+        self.assertEqual(
+            len(excluded_passes["holdout, withheld from diagnosis"]), 4)
+
+    def test_a_holdout_FAILURE_is_still_a_non_passing_case(self):
+        events = [{"kind": "score", "qid": "h0", "sample": None,
+                   "phase": "baseline", "verdict": "no_match", "reason": "r"}]
+        cases = {"h0": {"qid": "h0", "split": "holdout"}}
+        failed, _, _, excluded, excluded_passes = diagnose.select_cases(
+            events, cases, ("no_match",))
+        self.assertEqual(failed, [])
+        self.assertEqual(excluded_passes, {})
+        self.assertEqual(
+            len(excluded["holdout, withheld from diagnosis"]), 1,
+            "a holdout failure is still withheld, and still non-passing")
+
     def test_only_records_what_it_dropped_as_an_exclusion(self):
         failed, _, _, excluded = self.select(
             self.scores(4), self.cases(4), only="q0,q1")
@@ -477,11 +513,16 @@ class SelectingWhatToDiagnose(unittest.TestCase):
              "rankedSummary": {"entityIds": []},
              "target_shapes": [{"type": "dimension", "has_text": True}]},
         ]
-        failed, passed, retrieval_only, excluded = self.select(events, cases)
+        (failed, passed, retrieval_only, excluded,
+         excluded_passes) = diagnose.select_cases(events, cases, ("no_match",))
         self.assertEqual(retrieval_only, [])
         self.assertEqual(passed, [])
         self.assertEqual(failed, [])
-        self.assertIn("q0", excluded["holdout, withheld from diagnosis"])
+        # Withheld, which is what this test is about -- and in the PASSES
+        # bucket, because it matched and `not_passing` sums the other one.
+        self.assertIn("q0",
+                      excluded_passes["holdout, withheld from diagnosis"])
+        self.assertEqual(excluded, {})
 
     def test_include_holdout_lets_that_same_case_through(self):
         cases = {"q0": {"qid": "q0", "coverage": "covered", "split": "holdout",
