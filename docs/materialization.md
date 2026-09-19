@@ -111,6 +111,15 @@ What is refused is a given the **build substitutes**, because then the predicate
 rows with one caller's value already in it and nothing downstream can undo it. The only value
 available at build time is the declaration's default, so that is whose rows everyone gets.
 
+**Write the source as a query, not as a filtered table.** Both forms below persist a
+query — `raw -> { select: * }` — and then refine it. That is not stylistic: a source
+written as a plain extension of a table, `source: orders is raw extend { where: org_id =
+$ORG_ID }`, stays type `table`, and only a query-shaped source is treated as a build
+root. `#@ persist` on one is a **silent no-op** — nothing is built, no error is raised,
+and the source is served live exactly as if the annotation were absent. Publisher warns
+on the package when it sees an annotated source missing from the build plan, which is
+the only signal you get, so reach for the `-> { select: * }` form first.
+
 ```malloy
 given:
   ORG_ID :: number is 1
@@ -139,6 +148,37 @@ in the artifact, so none is a leak; they are refused because whether the serve s
 is a separate question from whether the build strips them. To scope by a joined source's own filter,
 enter through a non-persisted extension that declares the join, so the term is part of the query
 rather than of the artifact.
+
+#### Where the per-caller value comes from
+
+Serving per caller is only a boundary if the caller cannot choose their own value. A given
+marked `#(secure)` is resolved by the server and the caller's own value for it is
+discarded; an ordinary given is whatever the request supplies, which is a convenience
+filter rather than an access control.
+
+**A `#(secure)` given must be set-valued**, and the shape that scopes by one is therefore
+`in`, not `=`:
+
+```malloy
+// A boundary: the caller cannot supply ORG_IDS, and an unassigned caller sees nothing.
+#(secure)
+given: ORG_IDS :: number[]
+
+#@ persist name="orders" storage=lake
+source: orders is raw -> { select: * } extend {
+  where: org_id in $ORG_IDS
+}
+```
+
+The reason is that it has to fail closed. A set has an empty list as a natural
+impossible value, so a caller with nothing assigned filters to zero rows whatever
+operator the model uses. A scalar has no equivalent — there is no value of `number` that
+matches nothing — so a caller with nothing assigned cannot be given one.
+
+This matters because a scalar `#(secure)` declaration is **skipped rather than rejected**:
+the name is never registered, nothing is injected, and the caller's own value is honoured
+by a model that reads as though it were gated. Declare the attribute as a set and scope
+with `in`.
 
 ### `partition=`: laying the artifact out
 
@@ -274,6 +314,23 @@ Where the frontier comes from depends on the watermark's type: a `date` or `time
 
 Add `merge_key="col,…"` when a row can be **restated** with a new watermark value — an order that moves to a later day. Publisher then applies the delta as a `MERGE` on the declared identity columns instead of deleting the watermark range and re-inserting it, which is the only strategy that tolerates a row changing which range it belongs to. Without it, a refresh replaces the range wholesale, which is correct exactly when a row's watermark value never changes.
 
+**On a caller-scoped source, the merge matches on more than you declared.** A source whose
+term is stripped and re-applied per caller is stored once holding every caller's rows, so a
+key you chose against the source as you wrote it — `order_id`, unique within one org — is
+ambiguous over what was actually stored, where the same `order_id` appears once per org. A
+merge on that key alone would match another caller's row and update it.
+
+So the match also carries the columns those stripped terms filter on, and the effective
+identity is your key plus that scope. This restores the relation you chose the key against,
+and there is nothing to change in the model: declare `merge_key=` exactly as you would for a
+source that is not scoped.
+
+Scoping is all or nothing. If a stripped term resolves to no column of the source — one
+reaching through a join, say — the source is refused (`merge_key_scope_unresolved`) rather
+than scoped by the terms that do resolve, since a partial scope is narrower than the bare key
+but still wider than your relation, and would look like it works. Scope such a source with a
+term over its own columns, or drop `merge_key=` and refresh by watermark range.
+
 **An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
 
 Details that decide whether a run advances or rebuilds:
@@ -389,3 +446,11 @@ The materialization history (`list` + `get` above) records per-run timings and h
 ## Pre-aggregation
 
 `#@ persist` stores a source you wrote. [Pre-aggregation](preaggregation.md) stores a rollup Publisher derives for you: annotate a measure with a grain, and covered queries read a small pre-grouped table instead of the base, with no change to the queries themselves. Rollups appear in the same build plan (as `origin: "preaggregate"`) and build through the same manifest and scheduler described above.
+
+**A rollup over a caller-scoped source is refused** (`preaggregate_over_dynamic_source`).
+A persisted source may be scoped by a given because the term is left out of the build and
+put back when the rows are read; a rollup has no such read. It is stored pre-grouped and
+answered from directly, so there is no point at which a caller's term could be applied to
+it — and building it reads the base, which applies that base's `where:` with the
+declaration's default, so the rollup would hold one caller's aggregate and serve it to
+everyone. Roll up a source that is not caller-scoped.

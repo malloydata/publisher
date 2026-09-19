@@ -57,7 +57,7 @@ async function buildSQL(source: PersistSource): Promise<string> {
 describe("classifyDynamicTerms: positions that strip", () => {
    it("admits an extend-block where:, and the build carries no trace of it", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
       );
       // The assertion that makes the admission mean something: the value the
@@ -80,7 +80,7 @@ source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
 
    it("admits a filter inherited through extend, which is how a shared scope is written", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is scoped extend { where: s != 'zzz' }`,
       );
       expect(await buildSQL(source)).not.toContain('org_id"=1');
@@ -105,7 +105,7 @@ source: p is scoped extend { where: s != 'zzz' }`,
 
    it("reports no terms for a source with only a static where:", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend { where: s = 'a' }`,
       );
       expect(classifyDynamicTerms(source)).toEqual({ ok: true, terms: [] });
@@ -115,7 +115,7 @@ source: p is raw -> { select: * } extend { where: s = 'a' }`,
 describe("classifyDynamicTerms: positions the build bakes", () => {
    it("refuses a given inside the persisted query, naming the value it baked", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
       );
       // The refusal's justification, asserted rather than assumed: the
@@ -129,7 +129,7 @@ source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
 
    it("refuses a given in a group_by, which lands as a projected column", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is count() }`,
       );
       expect(await buildSQL(source)).toContain('org_id"=1');
@@ -145,7 +145,7 @@ source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is cou
       // filter, so the predicate is in the build and `filterList` is empty —
       // there is nothing left to re-apply at read.
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is scoped -> { group_by: s; aggregate: n is count() }`,
       );
       expect(await buildSQL(source)).toContain('org_id"=1');
@@ -164,7 +164,7 @@ describe("classifyDynamicTerms: read-time positions v1 does not admit", () => {
    // change, and the build-SQL assertions beside them are why it is safe to.
    it("refuses a given in a declared dimension", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }`,
       );
       expect(await buildSQL(source)).not.toContain('org_id"=1');
@@ -179,7 +179,7 @@ source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }
 
    it("refuses a given in a join's on: condition", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend {
   join_one: v is vis on v.user_id = user_id and v.org_id = $ORG_ID
 }`,
@@ -197,7 +197,7 @@ source: p is raw -> { select: * } extend {
 
    it("refuses a given-scoped source reached through a join", async () => {
       const source = await persistSource(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend {
   join_one: v is (vis extend { where: org_id = $ORG_ID }) on v.user_id = user_id
 }`,
