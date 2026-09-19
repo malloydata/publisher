@@ -468,5 +468,47 @@ class TaskToolsAreBlocked(unittest.TestCase):
             self.assertIn(name, ah.ALWAYS_BLOCKED, name)
 
 
+class VerdictScanner(unittest.TestCase):
+    """`last_json_object` is how a diagnosis reaches `diagnose.py`.
+
+    It counted braces by hand, which cannot see that a brace sits inside a
+    string or a comment. `eval-diagnose` asks its agent to READ MALLOY SOURCE
+    and reason over it before emitting the verdict last, so one stray `{` in a
+    quoted snippet left the depth counter above zero for the rest of the reply
+    and a perfectly good trailing verdict read as no object at all. The case
+    then came back `unparseable` and left the denominator. It routes through
+    `json_scan` now, the one scanner in this harness.
+    """
+
+    REPLY = (
+        'Looking at the model:\n\n```malloy\n'
+        'source: orders is duckdb.table(\'o\') extend {\n'
+        '  # a brace in a comment: "{"\n'
+        '  measure: total is sum(amount)\n'
+        '}\n```\n\n'
+        'Verdict:\n{"code": "NOT-RETURNED", "owner": "model"}\n')
+
+    def test_a_brace_in_a_quoted_snippet_does_not_eat_the_verdict(self):
+        self.assertEqual(ah.last_json_object(self.REPLY),
+                         {"code": "NOT-RETURNED", "owner": "model"})
+
+    def test_it_takes_the_LAST_object_because_the_verdict_comes_last(self):
+        text = '{"draft": 1} thinking... {"final": 2}'
+        self.assertEqual(ah.last_json_object(text), {"final": 2})
+
+    def test_prose_with_no_object_is_none(self):
+        self.assertIsNone(ah.last_json_object("no verdict here {not json"))
+
+    def test_a_json_array_is_not_a_verdict(self):
+        self.assertIsNone(ah.last_json_object("[1, 2, 3]"))
+
+    def test_it_is_the_shared_scanner_not_a_second_copy(self):
+        # The drift this harness spent several commits removing. If a local
+        # brace-counter comes back, this is what says so.
+        import json_scan
+        self.assertEqual(ah.last_json_object(self.REPLY),
+                         json_scan.json_objects(self.REPLY)[-1])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
