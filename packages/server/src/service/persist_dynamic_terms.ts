@@ -404,12 +404,18 @@ function localFieldNames(entry: unknown): string[] {
    for (const use of usage) {
       const path = use?.path;
       if (
-         Array.isArray(path) &&
-         path.length === 1 &&
-         typeof path[0] === "string"
+         !Array.isArray(path) ||
+         path.length !== 1 ||
+         typeof path[0] !== "string"
       ) {
-         names.add(path[0]);
+         // A reference this cannot express as a column of THIS source — a joined
+         // path. Reporting the term's OTHER columns would scope by a subset of
+         // what the term constrains, giving a match narrower than the bare key
+         // and still wider than the author's relation. An empty list is how a
+         // term says it cannot be scoped by at all.
+         return [];
       }
+      names.add(path[0]);
    }
    return [...names];
 }

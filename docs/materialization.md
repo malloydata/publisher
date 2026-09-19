@@ -158,7 +158,10 @@ a declared `dimension:` or `measure:` (`dynamic_projection`), a join's `on:` con
 in the artifact, so none is a leak; they are refused because whether the serve shape reproduces them
 is a separate question from whether the build strips them. To scope by a joined source's own filter,
 enter through a non-persisted extension that declares the join, so the term is part of the query
-rather than of the artifact.
+rather than of the artifact. Note what that costs today: such an entry point answers correctly
+but is **served live**, because a plain extension of a persisted source is currently treated as
+a build target of its own and refused, while `#@ -persist` opts out of reading the stored table.
+The arrangement is correct; it does not yet get the tier.
 
 #### Joins between materialized sources
 
@@ -171,10 +174,15 @@ together live, but materialized into the same destination they are siblings, and
 
 #### Where the per-caller value comes from
 
-Serving per caller is only a boundary if the caller cannot choose their own value. A given
-marked `#(secure)` is resolved by the server and the caller's own value for it is
-discarded; an ordinary given is whatever the request supplies, which is a convenience
-filter rather than an access control.
+Serving per caller is only a boundary if the caller cannot choose their own value — and
+**Publisher does not decide that**. A given's value is whatever the request supplies, so on
+a bare Publisher every given is a convenience filter rather than an access control.
+
+`#(secure)` marks a given whose value must come from the HOST rather than the caller. It is
+a contract with whatever fronts Publisher: a gateway that authenticates the caller,
+resolves their assigned values, and replaces anything the request supplied. Publisher does
+not itself strip or resolve it. If nothing in front of Publisher implements that, marking a
+given `#(secure)` changes nothing about who can send what.
 
 **A `#(secure)` given must be set-valued**, and the shape that scopes by one is therefore
 `in`, not `=`:
@@ -195,10 +203,10 @@ impossible value, so a caller with nothing assigned filters to zero rows whateve
 operator the model uses. A scalar has no equivalent — there is no value of `number` that
 matches nothing — so a caller with nothing assigned cannot be given one.
 
-This matters because a scalar `#(secure)` declaration is **skipped rather than rejected**:
-the name is never registered, nothing is injected, and the caller's own value is honoured
-by a model that reads as though it were gated. Declare the attribute as a set and scope
-with `in`.
+This matters because a host implementing the contract has nothing to fail on: a scalar
+declaration is the shape it cannot honour, so the safe outcome is that the given is simply
+never resolved and the caller's own value is honoured — by a model that reads as though it
+were gated. Declare the attribute as a set and scope with `in`.
 
 ### `partition=`: laying the artifact out
 
@@ -215,7 +223,9 @@ at once, buys pruning at the cost of many small files.
 Partitioning by the column a caller is scoped by gives a useful asymmetry: **read cost tracks the
 caller's own partition, while build cost tracks the whole artifact.** A caller's queries do not get
 slower as tenants are added; the build does, since it is one pass over everyone's rows. Pruning
-depends on the scoping term being an equality (`=`, `in`) on a partitioned column.
+depends on the scoping term being an equality (`=`, `in`) on a partitioned column, and
+nothing checks the column's cardinality for you — a partition per caller across very many
+callers is the many-small-files case, and it is your judgement to make.
 
 That asymmetry is the argument for one shared artifact over one per tenant. Both have the same read
 cost; the per-tenant arrangement also has one build, one schedule and one freshness story *per
