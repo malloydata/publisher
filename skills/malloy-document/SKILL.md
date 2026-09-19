@@ -77,7 +77,7 @@ Do not hedge measured facts: `avg_energy is avg(energy)` needs no caveat. Hedge 
 
 ## #(filter): deprecated, see `malloy-model`
 
-`#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters.
+`#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-modeling` § Legacy: Parameterizable Filters.
 
 `#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. The full reference (syntax, filter types, `required` / `implicit` flags, and when each applies) lives in `malloy-model` § Legacy: Parameterizable Filters alongside the other source-authoring constructs, next to the `given:` guidance that replaces it.
 

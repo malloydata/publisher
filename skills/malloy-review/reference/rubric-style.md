@@ -19,7 +19,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (non-blocking) · **Category:** style · LLM-judgment
 - **Detection:** LLM, flag any dimension declared as `` `reserved_word` is `reserved_word` `` (the backticked-passthrough pattern) and suggest a semantic alias
 - **Fix:** move the raw column to `internal:` and add a re-aliased dimension with a business name
-- **See:** `skill:malloy-gotchas-modeling` § Reserved Words, Backtick Them
+- **See:** `skill:malloy-modeling` § Reserved Words, Backtick Them
 
 ---
 
@@ -45,7 +45,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Detection:** flag a `join_one:` only when it deviates from the project's prevailing style (a single `on` form in a file/package that otherwise uses `with`, or vice versa). Skip when both styles are mixed roughly evenly, or when higher-value findings dominate.
 - **Fix:** match the prevailing style. Switching to `with` requires the target to declare `primary_key:` (also S-02's recommendation).
 - **Never promote above `nit`.** Both forms produce equivalent SQL, see the C-07 entry in `rubric-correctness.md`'s "Rules we dropped" section. The actual silent-correctness hazard (declared PK has duplicates) is `rubric-correctness.md` § C-12, not this rule.
-- **See:** `skill:malloy-model` § Join Syntax
+- **See:** `skill:malloy-modeling` § Join Syntax
 
 ---
 

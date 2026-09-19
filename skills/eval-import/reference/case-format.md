@@ -2,6 +2,13 @@
 
 # Reading an arriving question list
 
+## Contents
+
+- [What an import fills in](#what-an-import-fills-in)
+- [Their field names will not be your field names](#their-field-names-will-not-be-your-field-names)
+- [The four formats](#the-four-formats)
+- [A worked line](#a-worked-line)
+
 `reference/ledger-schema.md` in `skill:eval-answer` defines `set.json`,
 `cases.jsonl` and every golden field. This covers two things it does not: what
 an arriving item maps onto, and how the four formats break.

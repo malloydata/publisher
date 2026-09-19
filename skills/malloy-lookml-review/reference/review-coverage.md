@@ -5,6 +5,15 @@ SPDX-License-Identifier: MIT
 
 # LookML Coverage Review (Step 7)
 
+## Contents
+
+- [Data Sources](#data-sources)
+- [1. Source Coverage](#1-source-coverage)
+- [2. Field Coverage (Per Modeled Source)](#2-field-coverage-per-modeled-source)
+- [3. Source/Explore Coverage](#3-sourceexplore-coverage)
+- [4. Skipped Patterns Summary](#4-skipped-patterns-summary)
+- [5. Presentation](#5-presentation)
+
 > Compare the built Malloy model against the original LookML project. Show the user what was modeled, what was skipped, and why. This runs during Step 7 (REVIEW) when prior-art notes exist.
 
 ## Data Sources

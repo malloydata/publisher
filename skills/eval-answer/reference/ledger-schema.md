@@ -1,5 +1,24 @@
 # The eval ledger: files and events
 
+## Contents
+
+- [Layout](#layout)
+- [`set.json`](#setjson)
+- [`cases.jsonl`](#casesjsonl)
+- [Term files (`eval-retrieval` only)](#term-files-eval-retrieval-only)
+- [`run.json`](#runjson)
+- [Events](#events)
+  - [`attempt`](#attempt)
+  - [`tool_call`](#toolcall)
+  - [`score`](#score)
+  - [`retrieval_score` (written by `eval-retrieval`, not by a customer run)](#retrievalscore-written-by-eval-retrieval-not-by-a-customer-run)
+  - [`issue`](#issue)
+  - [`issue_status`](#issuestatus)
+  - [`candidate`](#candidate)
+  - [`acceptance_check`](#acceptancecheck)
+  - [`checkpoint`](#checkpoint)
+- [`judge-regressions.jsonl`](#judge-regressionsjsonl)
+
 The ledger is plain files in the model package's git repository. There is no
 eval API and no eval database. The conductor (`skill:eval-loop`) reads and
 writes these files directly; the stages share them as their contract.

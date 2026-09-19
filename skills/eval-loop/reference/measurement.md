@@ -2,6 +2,14 @@
 
 # Measurement
 
+## Contents
+
+- [Measurement](#measurement)
+- [Calibrate the bar before you trust it](#calibrate-the-bar-before-you-trust-it)
+- [What CALIBRATION.md holds](#what-calibrationmd-holds)
+- [Which retriever answered](#which-retriever-answered)
+- [A targeted fix needs a targeted test](#a-targeted-fix-needs-a-targeted-test)
+
 ## Measurement
 
 **Sample each case once. Spend the budget on more and more varied cases

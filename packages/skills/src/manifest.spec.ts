@@ -35,7 +35,6 @@ const ABSOLUTE_INSTALL_PATH = /\.(?:cursor|credible|claude)\/skills\//;
 /** A same-skill resource reference, which must resolve inside that skill. */
 const RELATIVE_REF = /(?<![\w/.`-])reference\/[\w./-]+\.md/g;
 /** The routing skill an agent reads to find a sibling. */
-const INDEX_SKILL = "malloy";
 
 /**
  * A description is the only text a host reads before deciding whether to load a
@@ -71,13 +70,7 @@ const PACKAGED_DESCRIPTION_BUDGET = 200;
  */
 const PACKAGED_SKILLS = [
    "malloy-analysis",
-   "malloy-analysis-pitfalls",
-   "malloy-charts",
-   "malloy-gotchas-queries",
-   "malloy-gotchas-rendering",
-   "malloy-patterns",
-   "malloy-phrase-detection",
-   "malloy-queries",
+   "malloy-visualization",
 ] as const;
 
 function skillDir(name: string): string {
@@ -295,6 +288,48 @@ describe("shipped skills", () => {
       expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
    });
 
+   it.each(shipped)("%s: indexes every reference file it ships", (name) => {
+      // The other direction from "resolves its own reference/ paths": that one
+      // catches a pointer at a file that is not there, this catches a file that
+      // is there and nothing points at. A reference file no index names is
+      // unreachable -- the agent has no way to learn it exists -- and it fails
+      // silently, exactly the way two eval skills shipped unreachable from the
+      // index for weeks. The index is hand-written on purpose; this is what
+      // keeps hand-written from meaning stale.
+      const body = fs.readFileSync(
+         path.join(skillDir(name), "SKILL.md"),
+         "utf8",
+      );
+      const dir = path.join(skillDir(name), "reference");
+      if (!fs.existsSync(dir)) return;
+      const unlisted = fs
+         .readdirSync(dir)
+         .filter((f) => f.endsWith(".md"))
+         .filter((f) => !body.includes(`reference/${f}`));
+      expect(unlisted).toEqual([]);
+   });
+
+   it.each(shipped)("%s: gives every long reference file a table of contents", (name) => {
+      // A reference file is read mid-task, by an agent that wants one section.
+      // Past roughly a screenful, landing at the top with no map means reading
+      // the whole thing or giving up; both are worse than a list of headings.
+      const dir = path.join(skillDir(name), "reference");
+      if (!fs.existsSync(dir)) return;
+      const missing = fs
+         .readdirSync(dir)
+         .filter((f) => f.endsWith(".md"))
+         .filter((f) => {
+            const text = fs.readFileSync(path.join(dir, f), "utf8");
+            const headings = text.match(/^#{2,3} /gm) ?? [];
+            return (
+               text.split("\n").length > 100 &&
+               headings.length >= 3 &&
+               !text.includes("## Contents")
+            );
+         });
+      expect(missing).toEqual([]);
+   });
+
    it.each(shipped)("%s: resolves its own reference/ paths", (name) => {
       const dangling: string[] = [];
       for (const file of markdownFiles(name)) {
@@ -329,33 +364,14 @@ describe("cross-skill references", () => {
       expect([...new Set(problems)]).toEqual([]);
    });
 
-   it("are complete: the index accounts for every skill that ships", () => {
-      // The closure test above asks that the index point at nothing missing.
-      // This asks the other direction, which nothing else covers: that nothing
-      // shipped is missing FROM the index. The index is how an agent that
-      // already has one skill open finds a sibling, so a skill it never names
-      // is installed and effectively undiscoverable -- and silently, because
-      // the skill loads fine when asked for by name and nothing ever asks.
-      //
-      // A MENTION, not a `skill:` reference, deliberately. A group must be
-      // closed under its own `skill:` references so that excluding it cannot
-      // strand a pointer, and the index sits in `modeling` while some skills
-      // it should still account for sit in `analysis` and `eval`. Naming those
-      // in prose is how the index stays complete without dragging three groups
-      // into one. Requiring the invocable form here instead turns a correct
-      // index into a group-closure failure, which is what happened when this
-      // test was first written.
-      const indexBody = fs.readFileSync(
-         path.join(skillDir(INDEX_SKILL), "SKILL.md"),
-         "utf8",
-      );
-      const unaccounted = shipped.filter(
-         (name) =>
-            name !== INDEX_SKILL &&
-            !new RegExp(`\`(?:skill:)?${name}\``).test(indexBody),
-      );
-      expect(unaccounted).toEqual([]);
-   });
+   // REMOVED: "the index accounts for every skill that ships". It asserted that
+   // the root `malloy` index skill mentioned every sibling. That index is gone:
+   // navigation is now per-entry, each skill carrying an index of its OWN
+   // reference files, because a separate index skill only reaches an agent that
+   // chooses to load it and the measurement said that channel barely fires. The
+   // property it protected -- nothing ships unreachable -- is now carried by
+   // "indexes every reference file it ships" above, at the level where things
+   // can actually go missing, plus the manifest listing every skill.
 
    it("invoke a skill by name, never by subpath", () => {
       // A host resolves `skill:<name>` to that skill's SKILL.md, so a subpath

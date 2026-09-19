@@ -5,6 +5,20 @@ SPDX-License-Identifier: MIT
 
 # LookML Discovery (Step 1)
 
+## Contents
+
+- [1. Locate `.lkml` Files](#1-locate-lkml-files)
+- [2. Categorize by File Type](#2-categorize-by-file-type)
+- [3. Resolve Manifest Constants](#3-resolve-manifest-constants)
+- [4. Extract Connection Info](#4-extract-connection-info)
+- [5. Extract Source Candidates from Views](#5-extract-source-candidates-from-views)
+  - [Identify Refinements](#identify-refinements)
+- [6. Extract Source Candidates from Explores](#6-extract-source-candidates-from-explores)
+- [7. Quality Evaluation: Flag Situations](#7-quality-evaluation-flag-situations)
+- [8. Extract Visibility Seeds](#8-extract-visibility-seeds)
+- [9. Extract Documentation Seeds](#9-extract-documentation-seeds)
+- [10. Capture Prior-Art Notes](#10-capture-prior-art-notes)
+
 > Inventory a LookML project, classify its contents, extract architecture-level candidates, and capture prior-art notes in the conversation. Does NOT extract individual field definitions; that's deferred to `propose-fields.md`.
 
 ## 1. Locate `.lkml` Files

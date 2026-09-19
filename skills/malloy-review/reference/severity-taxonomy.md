@@ -5,6 +5,16 @@ SPDX-License-Identifier: MIT
 
 # Severity, Confidence, Categorization
 
+## Contents
+
+- [A finding](#a-finding)
+- [Severity scale](#severity-scale)
+- [Blocking axis](#blocking-axis)
+- [Category axis](#category-axis)
+- [Confidence](#confidence)
+- [Default severity per rule family](#default-severity-per-rule-family)
+- [ID conventions](#id-conventions)
+
 The shared vocabulary every finding uses. Read this alongside any rubric file.
 
 ## A finding

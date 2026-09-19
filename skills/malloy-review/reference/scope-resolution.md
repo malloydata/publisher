@@ -5,6 +5,17 @@ SPDX-License-Identifier: MIT
 
 # Scope Resolution
 
+## Contents
+
+- [Why scope is always explicit](#why-scope-is-always-explicit)
+- [Resolution order (first match wins)](#resolution-order-first-match-wins)
+- [Detecting `publisher.json` packages](#detecting-publisherjson-packages)
+- [Multi-package disambiguation](#multi-package-disambiguation)
+- [PR-diff intersection](#pr-diff-intersection)
+- [Emitting scope in the output](#emitting-scope-in-the-output)
+- [Excluded-by-default paths](#excluded-by-default-paths)
+- [Stopping the user politely](#stopping-the-user-politely)
+
 Every `/malloy-review` invocation must resolve to a **bounded, explicit scope** before any reviewer runs. This file is the single source of truth for how that resolution happens and why.
 
 ## Why scope is always explicit

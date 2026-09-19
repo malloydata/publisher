@@ -19,7 +19,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** major (non-blocking) · **Category:** structure · LLM-judgment
 - **Detection:** LLM heuristic, a source named after a base table (`customers`, `orders`) that includes cross-table joins, or a file with multiple sources where one clearly joins the others, is a candidate for splitting
 - **Fix:** move the joined source into its own file; leave the base source clean
-- **See:** `skill:malloy-model` § Base vs Joined Sources · `skill:malloy-model` § Joined Source File Template
+- **See:** `skill:malloy-modeling` § Base vs Joined Sources · `skill:malloy-modeling` § Joined Source File Template
 
 ---
 
@@ -32,7 +32,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   - The source is a query-based / computed source (`source: x is t -> {...}` or `source: x is (t -> {...}) extend {...}`) where grain is determined by the `group_by` columns, declaring a `primary_key:` on the result is fine but not required.
   - The source represents an event/log table or a denormalized analytical source where no natural PK exists. Both situations are legitimate; the LLM should recognize them and skip the finding.
 - **Fix (when the source does have a natural PK):** declare it, `primary_key: <col>` inside `extend {}`. When there isn't a natural PK, leave it undeclared; if the absence is non-obvious, a one-line `#(doc)` on the source explaining the grain helps future readers.
-- **See:** `skill:malloy-model` § Key Rules · `rubric-correctness.md` § C-12 (the related correctness rule that checks whether a declared PK is actually unique in the data) · `rubric-style.md` § Y-03 (`join_one:` style consistency, which is the other consequence of declared-vs-undeclared PKs)
+- **See:** `skill:malloy-modeling` § Key Rules · `rubric-correctness.md` § C-12 (the related correctness rule that checks whether a declared PK is actually unique in the data) · `rubric-style.md` § Y-03 (`join_one:` style consistency, which is the other consequence of declared-vs-undeclared PKs)
 
 ---
 
@@ -41,7 +41,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** blocker (blocking) · **Category:** structure · machine-checkable
 - **Detection:** AST, within a single file, for each source reference inside a `join_*:` or `source is <name>`, verify the target source is declared earlier
 - **Fix:** reorder source declarations so dependencies come first. If two sources reference each other, split into separate files with explicit `import` (cross-file declarations don't have this ordering constraint).
-- **See:** `skill:malloy-gotchas-modeling` § Source Order, Define Joined Tables First
+- **See:** `skill:malloy-modeling` § Source Order, Define Joined Tables First
 
 ---
 
@@ -55,7 +55,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   3. `##! experimental.access_modifiers` + `include { public: …, internal: …, private: … }`, full per-column visibility tiers. **Composes with `rename:` in one order only** (the `extend { rename: }` before the `include {}`, which then names the field by its new name) and disallows measures/dimensions whose names shadow `internal:` columns. Use only when the visibility distinction matters (e.g., shared sources joined into multiple consumers).
 
   Most files only need option 1 or 2, for the small set of columns that shouldn't be public, prefer `except:` over the heavier `include {}` machinery. Reach for `include {}` only when per-column tiers are genuinely worth the constraints.
-- **See:** `skill:malloy-gotchas-modeling` § Field Management: `extend {}` and `include {}`, in that order · `skill:malloy-model` § Base Source Templates · `malloy-model/reference/access-modifiers.md`
+- **See:** `skill:malloy-modeling` § Field Management: `extend {}` and `include {}`, in that order · `skill:malloy-modeling` § Base Source Templates · `malloy-model/reference/access-modifiers.md`
 
 ---
 
@@ -64,7 +64,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (non-blocking) · **Category:** structure · machine-checkable
 - **Detection:** count `source: X is conn.table(...)` base-source declarations per file. More than one → flag.
 - **Fix:** split each base source into its own file named after the source
-- **See:** `skill:malloy-model` § Base Source Templates (file convention is implicit; weak counterpart)
+- **See:** `skill:malloy-modeling` § Base Source Templates (file convention is implicit; weak counterpart)
 
 ---
 

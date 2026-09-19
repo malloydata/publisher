@@ -2,6 +2,17 @@
 
 # Auditing an answer key
 
+## Contents
+
+- [Never change the question](#never-change-the-question)
+- [The order to read in](#the-order-to-read-in)
+- [Four ways a key goes wrong](#four-ways-a-key-goes-wrong)
+- [Before you relax a clause](#before-you-relax-a-clause)
+- [Rule out the other owners first](#rule-out-the-other-owners-first)
+- [Record the measurement, not the reasoning](#record-the-measurement-not-the-reasoning)
+- [If the set came from someone else](#if-the-set-came-from-someone-else)
+- [Checklist](#checklist)
+
 `golden-side-door.md` says what to do once you know a key is wrong. This says
 how to know. Read it before a sweep, and before touching a set you did not
 author.
