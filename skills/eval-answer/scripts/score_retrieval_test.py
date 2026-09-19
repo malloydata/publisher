@@ -311,6 +311,41 @@ class Attribution(unittest.TestCase):
         r = score_case(c, calls([]), KEY, "match")
         self.assertEqual(r["where_to_fix"], "")
 
+    def test_a_covered_case_naming_no_entities_is_not_a_refusal(self):
+        """`recall is None` used to mean one thing and now means two.
+
+        A case with no `expectedEntities` reaches the same branch as an
+        `absent`-coverage case, and took its label: a wrong answer to a
+        perfectly ANSWERABLE question was reported as "the model cannot answer
+        this and the answerer did not decline", blaming refusal behaviour for
+        a key the author was told to leave out.
+        """
+        c = {"qid": "q", "coverage": "covered",
+             "expectedEntities": {"required": [], "acceptable": []}}
+        r = score_case(c, calls([M_SALES]), KEY, "no_match")
+        self.assertIsNone(r["recall"])
+        self.assertEqual(r["where_to_fix"], "retrieval not measured")
+        self.assertNotEqual(r["where_to_fix"], "refusal behaviour")
+        self.assertIn("names no required entities", r["why"])
+
+    def test_it_names_no_owner_it_has_not_established(self):
+        # `unknown` yields no lever in LEVER_BY_OWNER, which is the point:
+        # nothing here knows whether this was retrieval, the docs or the agent.
+        c = {"qid": "q", "coverage": "covered", "expectedEntities": {}}
+        r = score_case(c, calls([M_SALES]), KEY, "no_match")
+        self.assertEqual(r["owner"], "unknown")
+
+    def test_an_absent_case_still_reads_as_a_refusal(self):
+        # The branch that was always right keeps its label.
+        c = {"qid": "q", "coverage": "absent", "expectedEntities": {}}
+        r = score_case(c, calls([]), KEY, "no_match")
+        self.assertEqual(r["where_to_fix"], "refusal behaviour")
+
+    def test_a_covered_case_naming_no_entities_passes_unattributed(self):
+        c = {"qid": "q", "coverage": "covered", "expectedEntities": {}}
+        r = score_case(c, calls([M_SALES]), KEY, "match")
+        self.assertEqual(r["where_to_fix"], "")
+
 
 class MeasuredCoverage(unittest.TestCase):
     """check_coverage.py's verdict reaches attribution, and beats the label.
@@ -402,7 +437,8 @@ class Cascade(unittest.TestCase):
     # `passed_not_covered` and `passed_not_retrieved` OVERLAY the rungs: they
     # re-count rows already counted by "not covered" and "not retrieved". They
     # are not rungs and must never be added to them.
-    OVERLAY = ("total", "passed_not_covered", "passed_not_retrieved")
+    OVERLAY = ("total", "passed_not_covered", "passed_not_retrieved",
+               "passed_unmeasured", "passed_no_entities_named")
 
     def test_every_row_lands_on_exactly_one_rung(self):
         c = cascade(self.rows())
@@ -432,12 +468,69 @@ class Cascade(unittest.TestCase):
             score_case(case(), calls([M_SALES]), KEY, "no_match"),
         ]
         c = cascade(rows)
-        passes = (c["delivered, right"] + c["passed_not_covered"]
-                  + c["passed_not_retrieved"])
+        passes = self.passes(c)
         self.assertEqual(passes, 4, "four of the five rows matched")
         self.assertEqual(c["delivered, right"], 1)
         self.assertNotEqual(c["delivered, right"], passes,
                             "the last rung alone must not be read as the score")
+
+    @staticmethod
+    def passes(c):
+        """The identity, spelled once. EVERY rung that can hold a pass is a
+        term; a rung without one silently drops the passes that land there."""
+        return (c["delivered, right"] + c["passed_not_covered"]
+                + c["passed_not_retrieved"] + c["passed_unmeasured"]
+                + c["passed_no_entities_named"])
+
+    def test_the_identity_holds_for_the_ORDINARY_case_shape(self):
+        """The shape the first version of this test never built.
+
+        `expectedEntities` is "almost never present" (case-format.md), so a
+        case with no required entities and a case with no coverage label are
+        not edge shapes -- they are what most of a real set looks like. Both
+        landed on rungs that had no pass counter, so every pass on them left
+        the identity and the funnel under-reconciled against a correct
+        headline pass rate.
+        """
+        no_entities = {"qid": "q", "coverage": "covered"}
+        no_coverage = {"qid": "q", "expectedEntities": {"required": []}}
+        rows = [
+            score_case(no_entities, calls([M_SALES]), KEY, "match"),
+            score_case(no_coverage, calls([M_SALES]), KEY, "match"),
+            score_case(case(), calls([M_SALES]), KEY, "match"),
+        ]
+        c = cascade(rows)
+        self.assertEqual(c["no entities named"], 1)
+        self.assertEqual(c["unmeasured"], 1)
+        self.assertEqual(c["delivered, right"], 1)
+        self.assertEqual(self.passes(c), 3, "all three matched")
+
+    def test_every_rung_that_can_hold_a_pass_has_a_counter(self):
+        """Structural, so a rung added later cannot repeat this.
+
+        A passing row is built for each rung in turn and the identity must
+        account for it. Without the two new counters this fails on the two
+        rungs that had none.
+        """
+        for label, c in [
+            ("not covered", cascade([score_case(
+                case(coverage="derivable"), calls([M_SALES]), KEY, "match")])),
+            ("unmeasured", cascade([score_case(
+                {"qid": "q", "expectedEntities": {"required": []}},
+                calls([M_SALES]), KEY, "match")])),
+            ("no entities named", cascade([score_case(
+                {"qid": "q", "coverage": "covered"}, calls([M_SALES]), KEY,
+                "match")])),
+            ("not retrieved", cascade([score_case(
+                case(required=(M_SALES, M_COUNT)), calls([M_SALES]), KEY,
+                "match")])),
+            ("delivered, right", cascade([score_case(
+                case(), calls([M_SALES]), KEY, "match")])),
+        ]:
+            with self.subTest(rung=label):
+                self.assertEqual(c[label], 1)
+                self.assertEqual(self.passes(c), 1,
+                                 f"the pass on {label!r} left the identity")
 
     def test_the_rungs(self):
         c = cascade(self.rows())

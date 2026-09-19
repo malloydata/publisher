@@ -141,6 +141,16 @@ MEASURED_OK = "ok"
 # conservative reading is eval-diagnose's own convention for `sufficiency`; it
 # is not a new owner, it is the absence of one.
 UNMEASURED = ("get_context", "unknown", "coverage not measured")
+# A case whose coverage was measured as fine and which names no required
+# entities, so retrieval was never measured for it. Its own label because both
+# neighbours assert something this row has no evidence for: REFUSAL says the
+# question was unanswerable, DELIVERED says every required entity arrived. It
+# used to take REFUSAL, which blamed the answerer for "not declining" a
+# perfectly answerable question purely because `expectedEntities` was left out
+# -- and case-format.md says to leave it out, so that was the ordinary case.
+# Owner `unknown` on purpose: LEVER_BY_OWNER yields no lever for it, which is
+# the point. Nothing here knows whose fix this is.
+NO_ENTITIES = ("undecided", "unknown", "retrieval not measured")
 
 PASSING = {"match", "near_match"}
 # Verdicts the acceptance check counts as neither a pass nor a failure.
@@ -293,13 +303,27 @@ def attribute(recall: float | None, coverage: str, passed: bool | None,
         # be attributed -- doing so would inflate whichever bucket it landed in.
         return (*UNATTRIBUTED, "not scored")
     if recall is None:
-        # No required entities, which in this set means coverage is `absent`.
+        # Two different shapes reach here, and they were conflated. `absent`
+        # coverage means the model genuinely cannot answer, so declining is the
+        # pass and answering is the answerer's fault. A case that simply names
+        # no required entities is NOT that: the question may be perfectly
+        # answerable, and all that is true is that retrieval went unmeasured.
+        if coverage == "absent":
+            if passed:
+                # It declined a question the model cannot answer, which is the
+                # right behaviour and the pass. Nothing to attribute.
+                return (*UNATTRIBUTED, "declined an unanswerable question")
+            return (*REFUSAL,
+                    "the model cannot answer this and the answerer did not decline")
         if passed:
-            # It declined a question the model cannot answer, which is the
-            # right behaviour and the pass. Nothing to attribute.
-            return (*UNATTRIBUTED, "declined an unanswerable question")
-        return (*REFUSAL,
-                "the model cannot answer this and the answerer did not decline")
+            return (*UNATTRIBUTED,
+                    "correct; the case names no required entities, so retrieval "
+                    "was not measured for it")
+        return (*NO_ENTITIES,
+                "the answer was wrong and the case names no required entities, "
+                "so nothing here can say whether retrieval delivered. Add "
+                "`expectedEntities.required` to measure it, or diagnose the "
+                "failure directly")
     if recall >= 1.0:
         if passed:
             # Everything arrived and the answer was right. The only shape with
@@ -494,7 +518,17 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
          # read "correct? 6 yes" because two passed despite a coverage gap and
          # incomplete retrieval, and 6 is exactly the number a reader would
          # mistake for the score.
-         "passed_not_covered": 0, "passed_not_retrieved": 0}
+         #
+         # EVERY rung that can hold a pass carries one. The two below were
+         # missing, and they are the rungs the ordinary case lands on:
+         # `expectedEntities` is "almost never present" per case-format.md, so
+         # a passing case with no entities named went into `no entities named`,
+         # which had no counter, and vanished from the identity
+         # `passes = delivered_right + the passed_* overlays`. The test that
+         # pins that identity never caught it because every row it builds
+         # supplies a required entity.
+         "passed_not_covered": 0, "passed_not_retrieved": 0,
+         "passed_unmeasured": 0, "passed_no_entities_named": 0}
     for r in rows:
         cov = r["coverage"]
         passed = not r["failed"] and r["verdict"] not in UNSCORED
@@ -503,8 +537,10 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
             c["passed_not_covered"] += passed
         elif cov not in ("covered", MEASURED_OK):
             c["unmeasured"] += 1
+            c["passed_unmeasured"] += passed
         elif r["recall"] is None:
             c["no entities named"] += 1
+            c["passed_no_entities_named"] += passed
         elif r["recall"] < 1.0:
             c["not retrieved"] += 1
             c["passed_not_retrieved"] += passed
