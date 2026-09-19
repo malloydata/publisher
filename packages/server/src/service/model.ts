@@ -3008,7 +3008,8 @@ export class Model {
             // authorize checks below.
             assertPartitionAnnotationsValid(modelDef);
 
-            // A `#(secure)` marker on a scalar given fails OPEN the same way
+            // A `#(secure)` marker on a given that cannot carry more than one
+            // value fails OPEN the same way
             // a misplaced gate does: a trusted-name registry refuses to
             // register a scalar, so the marker protects nothing while the
             // author believes the value is server-controlled. Checked here

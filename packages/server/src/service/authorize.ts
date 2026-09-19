@@ -1122,7 +1122,8 @@ export function assertNoLegacyStringGate(
 // ---------------------------------------------------------------------------
 
 /**
- * A `#(secure)` marker on a given whose declared type is not set-valued.
+ * A `#(secure)` marker on a given whose declared type cannot carry more than
+ * one value.
  *
  * `name` is the given as declared; `type` is its rendered Malloy type, carried
  * so the refusal can name what the author actually wrote.
@@ -1211,12 +1212,13 @@ export function findScalarSecureGivens(
 }
 
 /**
- * Refuse a model load that marks a scalar given `#(secure)`.
+ * Refuse a model load that marks `#(secure)` a given which cannot carry more
+ * than one value.
  *
- * A secure given is set-valued by design, and the reason is the fail-closed
- * sentinel: an unvalued set-valued attribute resolves to the empty list, which
- * matches nothing, whereas a null scalar is rejected outright and so cannot
- * fail closed at all. A trusted-name registry therefore refuses to register a
+ * A secure given must be multi-valued, and the reason is the fail-closed
+ * sentinel: an attribute the deployment resolves no value for becomes an empty
+ * set, which matches nothing, whereas a null scalar is rejected outright and so
+ * cannot fail closed at all. A trusted-name registry therefore refuses to register a
  * scalar, which leaves the marker doing nothing -- the author believes the
  * given is server-controlled while a caller can still supply it.
  *
