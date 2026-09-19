@@ -4,8 +4,10 @@ credited with, which retriever answered, what was actually re-executed, and
 when an attempt is unjudgeable."""
 import argparse
 import json
+import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1428,6 +1430,68 @@ class ContaminatedAttemptsLeaveTheAggregates(unittest.TestCase):
                    if v.get("verdict") in ("match", "no_match")]
         self.assertEqual(len(decided), 0,
                          "a run with no clean attempt reported a score")
+
+class GitSha(unittest.TestCase):
+    """The pin has to mark a dirty model repo, and it did not.
+
+    The path is used BOTH as git's working directory (`-C`) and as its
+    pathspec. A relative one means different things in those two positions:
+    git runs IN the directory and then resolves the pathspec against it, so
+    `--model-repo sub` looks for `sub/sub`, matches nothing, and every tree
+    reads clean. The sibling in `ledger.skills_git_sha` was fixed for exactly
+    this; `git_sha` was not, and had no test at all.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = pathlib.Path(self.tmp) / "repo"
+        (self.repo / "sub").mkdir(parents=True)
+        (self.repo / "sub" / "model.malloy").write_text("source: a is x\n")
+        run = lambda *a: subprocess.run(a, cwd=self.repo, capture_output=True)
+        run("git", "init", "-q")
+        run("git", "config", "user.email", "t@t")
+        run("git", "config", "user.name", "t")
+        run("git", "add", "-A")
+        run("git", "commit", "-qm", "init")
+        self.cwd = os.getcwd()
+        os.chdir(self.repo)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def dirty(self):
+        (self.repo / "sub" / "model.malloy").write_text("source: a is CHANGED\n")
+
+    def test_a_clean_tree_has_no_marker(self):
+        self.assertFalse(
+            rb.git_sha(pathlib.Path("sub"), scope=pathlib.Path("sub"))
+            .endswith("-dirty"))
+
+    def test_a_relative_path_still_marks_dirt(self):
+        self.dirty()
+        self.assertTrue(
+            rb.git_sha(pathlib.Path("sub"), scope=pathlib.Path("sub"))
+            .endswith("-dirty"),
+            "a relative --model-repo silently reported a dirty model as clean")
+
+    def test_an_absolute_path_agrees_with_the_relative_one(self):
+        self.dirty()
+        rel = rb.git_sha(pathlib.Path("sub"), scope=pathlib.Path("sub"))
+        abs_ = rb.git_sha(self.repo / "sub", scope=self.repo / "sub")
+        self.assertEqual(rel, abs_, "the pin depends on how it was spelled")
+
+    def test_the_scope_still_narrows(self):
+        # Dirt OUTSIDE the scope is not the model's, which is the whole reason
+        # the scope exists. This must not regress into "any dirt anywhere".
+        (self.repo / "scratch.txt").write_text("unrelated")
+        self.assertFalse(
+            rb.git_sha(pathlib.Path("sub"), scope=pathlib.Path("sub"))
+            .endswith("-dirty"))
+
+    def test_not_a_repo_is_none(self):
+        self.assertIsNone(rb.git_sha(pathlib.Path(self.tmp)))
+
 
 if __name__ == "__main__":
     unittest.main()

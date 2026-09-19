@@ -279,6 +279,14 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
     MODEL bytes match the commit. Scoped to the package directory the answerer
     was served from, the marker means what a reader takes it to mean.
     """
+    # Resolved, always, for the same reason `ledger.skills_git_sha` resolves:
+    # the path is used BOTH as git's working directory and as its pathspec, and
+    # a relative one means different things in those two positions. Given
+    # `--model-repo ../samples/ecommerce`, git ran IN that directory and then
+    # looked for `../samples/ecommerce` relative to it, which matches nothing --
+    # so a dirty model repo read clean and the pin silently stopped pinning.
+    path = path.resolve()
+    scope = scope.resolve() if scope is not None else None
     try:
         d = path if path.is_dir() else path.parent
         head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
@@ -1217,15 +1225,22 @@ def cascade_lines(c: dict | None) -> list[str]:
     covered = (c["total"] - c["not covered"] - c["unmeasured"]
                - c["no entities named"])
     retrieved = covered - c["not retrieved"]
-    covered_tail = ""
-    if c["unmeasured"]:
-        covered_tail += f", {c['unmeasured']} unmeasured"
-    if c["no entities named"]:
-        covered_tail += f", {c['no entities named']} name no entities"
-    scored_tail = f", {c['not scored']} not scored" if c["not scored"] else ""
     # A pass that stops on an earlier rung is reported there. Otherwise the
     # last rung reads as the pass count and disagrees with the headline.
     anyway = lambda n: f"; {n} answered correctly anyway" if n else ""
+    anyway_bare = lambda n: f" ({n} correct anyway)" if n else ""
+    # Both side rungs carry their own pass count, for the same reason the two
+    # main ones do: these are where an ordinary case lands (`expectedEntities`
+    # is optional by design), so without them the passes on them appeared in no
+    # number on this block and the rungs did not reconcile with the headline.
+    covered_tail = ""
+    if c["unmeasured"]:
+        covered_tail += (f", {c['unmeasured']} unmeasured"
+                         f"{anyway_bare(c.get('passed_unmeasured', 0))}")
+    if c["no entities named"]:
+        covered_tail += (f", {c['no entities named']} name no entities"
+                         f"{anyway_bare(c.get('passed_no_entities_named', 0))}")
+    scored_tail = f", {c['not scored']} not scored" if c["not scored"] else ""
     lines = [f"  cascade       {c['total']} cases",
              f"    covered?      {covered} yes, {c['not covered']} no (model "
              f"gap{anyway(c.get('passed_not_covered', 0))})" + covered_tail,
@@ -1236,7 +1251,9 @@ def cascade_lines(c: dict | None) -> list[str]:
              f"    correct?      {c['delivered, right']} yes, "
              f"{c['delivered, wrong']} no (delivered, wrong: agent or docs; "
              f"diagnose decides)" + scored_tail]
-    early = c.get("passed_not_covered", 0) + c.get("passed_not_retrieved", 0)
+    early = (c.get("passed_not_covered", 0) + c.get("passed_not_retrieved", 0)
+             + c.get("passed_unmeasured", 0)
+             + c.get("passed_no_entities_named", 0))
     if early:
         lines.append(f"                the last rung counts {c['delivered, right']}, "
                      f"not the pass rate: {early} more passed on a rung above it")
@@ -2630,7 +2647,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="how many to process; each one spawns a real agent. Omit for no limit. 0 means zero, not unlimited.")
     ap.add_argument("--only", default=None, help="comma-separated qids")
     ap.add_argument("--phase", default="baseline")
     ap.add_argument("--no-judge", action="store_true")
@@ -2786,7 +2804,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  rebuild: {len(have)} of {len(cases)} cases have a transcript "
                   f"here; the other {len(missing_t)} were not part of this run")
         cases = [c for c in cases if c["qid"] in have]
-    if a.limit:
+    # `is not None`: see diagnose.py's select_cases. 0 means zero cases,
+    # not every case -- this one spawns a fresh answerer per case, so the
+    # fail-open reading was the most expensive of the three.
+    if a.limit is not None:
         cases = cases[:a.limit]
     if not cases:
         raise SystemExit("no cases selected")
