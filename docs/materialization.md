@@ -102,6 +102,9 @@ A source scoped to the caller — `where: org_id = $ORG_ID` — can be materiali
 destination and served per caller. It is built **once**, holding every tenant's rows, and each
 caller's term is applied when they read it.
 
+Without this the options are one artifact per tenant, each with its own build, schedule and
+freshness, or no materialization at all. One shared artifact replaces both.
+
 That works because of how Malloy builds a persist source: the build SQL is the persisted relation
 **alone**. The source's own extend-block `where:` is not in it — it refines the relation when the
 relation is read. So the given was never frozen into the artifact, and the serve path re-applies the
@@ -110,6 +113,14 @@ term with the value that caller supplied.
 What is refused is a given the **build substitutes**, because then the predicate is inside the frozen
 rows with one caller's value already in it and nothing downstream can undo it. The only value
 available at build time is the declaration's default, so that is whose rows everyone gets.
+
+Put the other way round: a predicate that varies per caller is part of the **question**, not part of
+the relation being stored. Materialization stores relations, so such a predicate was never a
+candidate for freezing in the first place.
+
+That gives you a rule you can apply to a shape not listed below. **If changing a caller's value would
+change the SQL the build runs, the predicate is in the artifact, and the source is refused. If it
+would not, the predicate is read-time and is re-applied per caller.**
 
 **Write the source as a query, not as a filtered table.** Both forms below persist a
 query — `raw -> { select: * }` — and then refine it. That is not stylistic: a source
@@ -148,6 +159,15 @@ in the artifact, so none is a leak; they are refused because whether the serve s
 is a separate question from whether the build strips them. To scope by a joined source's own filter,
 enter through a non-persisted extension that declares the join, so the term is part of the query
 rather than of the artifact.
+
+#### Joins between materialized sources
+
+A join is served from storage only when the joined source is **also** materialized. So persisting a
+caller-scoped dimension table is what makes a join to it servable at all: without it, a query using
+the join does not simply lose the join, it loses the tier and is answered live.
+
+This is also how two sources on different connections become joinable. They cannot be queried
+together live, but materialized into the same destination they are siblings, and the join compiles.
 
 #### Where the per-caller value comes from
 
@@ -191,6 +211,19 @@ its column is partitioned, so a partition list that omits the column a caller is
 full scan, never a leak — which is why the list is the author's free choice rather than something
 derived from the source's filters. Partitioning by a high-cardinality column, or by several columns
 at once, buys pruning at the cost of many small files.
+
+Partitioning by the column a caller is scoped by gives a useful asymmetry: **read cost tracks the
+caller's own partition, while build cost tracks the whole artifact.** A caller's queries do not get
+slower as tenants are added; the build does, since it is one pass over everyone's rows. Pruning
+depends on the scoping term being an equality (`=`, `in`) on a partitioned column.
+
+That asymmetry is the argument for one shared artifact over one per tenant. Both have the same read
+cost; the per-tenant arrangement also has one build, one schedule and one freshness story *per
+tenant*, all of which can drift apart.
+
+`partition=` is part of the source's content address, so changing it rebuilds the table. A source
+that declares none addresses exactly as it did before the key existed, so nothing already
+materialized is disturbed by this feature.
 
 Each name must be a column of the source's **public** projection: the stored table is narrowed to
 that surface, so a hidden or `except:`-ed column is not there to partition by
