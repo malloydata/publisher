@@ -59,7 +59,7 @@ describe("parsePartitionValue", () => {
 describe("resolvePartitionColumns", () => {
    it("resolves a declared column off the persist tag", async () => {
       const result = await resolve(
-         `#@ persist name="p" storage=credible partition="org_id"
+         `#@ persist name="p" storage=lake partition="org_id"
 source: p is raw -> { select: * }`,
       );
       expect(result).toEqual({ ok: true, columns: ["org_id"] });
@@ -67,7 +67,7 @@ source: p is raw -> { select: * }`,
 
    it("resolves a composite list in the declared order", async () => {
       const result = await resolve(
-         `#@ persist name="p" storage=credible partition="org_id,s"
+         `#@ persist name="p" storage=lake partition="org_id,s"
 source: p is raw -> { select: * }`,
       );
       expect(result).toEqual({ ok: true, columns: ["org_id", "s"] });
@@ -75,7 +75,7 @@ source: p is raw -> { select: * }`,
 
    it("is absent for a source that declares none", async () => {
       const result = await resolve(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { select: * }`,
       );
       expect(result).toEqual({ ok: true, columns: [] });
@@ -83,7 +83,7 @@ source: p is raw -> { select: * }`,
 
    it("refuses a column the source does not project", async () => {
       const result = await resolve(
-         `#@ persist name="p" storage=credible partition="nope"
+         `#@ persist name="p" storage=lake partition="nope"
 source: p is raw -> { select: * }`,
       );
       expect(result.ok).toBe(false);
@@ -97,7 +97,7 @@ source: p is raw -> { select: * }`,
       // The fix differs — make it public, versus partition by something else —
       // so the two refusals stay distinct rather than collapsing into "unknown".
       const result = await resolve(
-         `#@ persist name="p" storage=credible partition="tenant"
+         `#@ persist name="p" storage=lake partition="tenant"
 source: p is raw -> { select: * } extend { private dimension: tenant is org_id }`,
       );
       expect(result.ok).toBe(false);
@@ -130,16 +130,16 @@ describe("partition= and the content address", () => {
       return computeSourceEntityId(sources["p"], { duckdb: "dig-1" });
    }
 
-   const UNPARTITIONED = `#@ persist name="p" storage=credible
+   const UNPARTITIONED = `#@ persist name="p" storage=lake
 source: p is raw -> { select: * }`;
 
    it("re-addresses when the declared partition changes, so the table is rebuilt", async () => {
       const byOrg = await addressOf(
-         `#@ persist name="p" storage=credible partition="org_id"
+         `#@ persist name="p" storage=lake partition="org_id"
 source: p is raw -> { select: * }`,
       );
       const byS = await addressOf(
-         `#@ persist name="p" storage=credible partition="s"
+         `#@ persist name="p" storage=lake partition="s"
 source: p is raw -> { select: * }`,
       );
       expect(byOrg).not.toBe(byS);
@@ -149,11 +149,11 @@ source: p is raw -> { select: * }`,
 
    it("re-addresses when the partition ORDER changes, which is a different layout", async () => {
       const a = await addressOf(
-         `#@ persist name="p" storage=credible partition="org_id,s"
+         `#@ persist name="p" storage=lake partition="org_id,s"
 source: p is raw -> { select: * }`,
       );
       const b = await addressOf(
-         `#@ persist name="p" storage=credible partition="s,org_id"
+         `#@ persist name="p" storage=lake partition="s,org_id"
 source: p is raw -> { select: * }`,
       );
       expect(a).not.toBe(b);
@@ -194,7 +194,7 @@ describe("the wire plan reports what the build and the read need", () => {
 
    it("reports the resolved partition columns in the author's order", async () => {
       const { partition } = await planFor(
-         `#@ persist name="p" storage=credible partition="org_id,s"
+         `#@ persist name="p" storage=lake partition="org_id,s"
 source: p is raw -> { select: * }`,
       );
       expect(partition).toEqual({ ok: true, columns: ["org_id", "s"] });
@@ -202,7 +202,7 @@ source: p is raw -> { select: * }`,
 
    it("reports nothing for a source that declares no layout", async () => {
       const { partition } = await planFor(
-         `#@ persist name="p" storage=credible
+         `#@ persist name="p" storage=lake
 source: p is raw -> { select: * }`,
       );
       expect(partition).toEqual({ ok: true, columns: [] });
@@ -210,11 +210,11 @@ source: p is raw -> { select: * }`,
 });
 
 describe("partition= is a recognized persist key", () => {
-   // Found by publishing through a real control plane rather than by any unit
-   // test: the eligibility gate and the build both honoured `partition=`, while
-   // the publish-time unknown-key warning still called it unrecognized and told
-   // the author it was "passed through untouched". Every correct use of the key
-   // drew a warning saying it did nothing.
+   // The key has to be recognized in THREE places, and the publish-time warning
+   // is the one with no other signal: the eligibility gate and the build can both
+   // honour `partition=` while the unknown-key check still reports it as
+   // unrecognized and tells the author it was "passed through untouched", so
+   // every correct use of the key draws a warning saying it does nothing.
    //
    // Asserted against the exported set rather than by publishing, because the
    // set is what the warning reads and a key absent from it cannot be warned

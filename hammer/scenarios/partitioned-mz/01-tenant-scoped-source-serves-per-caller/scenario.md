@@ -18,7 +18,7 @@ term with the value that caller supplied.
 
 Before this, the storage tier refused the source outright: any given reference
 was a refusal, which took the tier away from every tenant-scoped model, i.e.
-every model a multi-tenant customer would want materialized.
+every multi-tenant model worth materializing.
 
 The refusal was aimed at the right danger and drawn in the wrong place. A given
 whose value the BUILD substitutes really is frozen into the artifact and served

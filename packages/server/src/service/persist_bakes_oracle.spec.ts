@@ -57,42 +57,42 @@ source: pp(x::number is 0) is raw extend { where: org_id = x }
 }
 
 const CASES: Record<string, string> = {
-   "extend-block where:": `#@ persist name="p" storage=credible
+   "extend-block where:": `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
 
-   "inside the persisted query": `#@ persist name="p" storage=credible
+   "inside the persisted query": `#@ persist name="p" storage=lake
 source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
 
-   "in a group_by": `#@ persist name="p" storage=credible
+   "in a group_by": `#@ persist name="p" storage=lake
 source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is count() }`,
 
-   "inherited and read by the query": `#@ persist name="p" storage=credible
+   "inherited and read by the query": `#@ persist name="p" storage=lake
 source: p is scoped -> { group_by: s; aggregate: n is count() }`,
 
-   "inherited through extend": `#@ persist name="p" storage=credible
+   "inherited through extend": `#@ persist name="p" storage=lake
 source: p is scoped extend { where: s != 'zzz' }`,
 
-   "a declared dimension": `#@ persist name="p" storage=credible
+   "a declared dimension": `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }`,
 
-   "a join's on: condition": `#@ persist name="p" storage=credible
+   "a join's on: condition": `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend {
   join_one: v is vis on v.user_id = user_id and v.org_id = $ORG_ID
 }`,
 
-   "a joined source's own where:": `#@ persist name="p" storage=credible
+   "a joined source's own where:": `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend {
   join_one: v is (vis extend { where: org_id = $ORG_ID }) on v.user_id = user_id
 }`,
 
    // The pair that decides the gate's one narrowing: the same join, read and
    // unread by the persisted query.
-   "a given-scoped join the query does not read": `#@ persist name="p" storage=credible
+   "a given-scoped join the query does not read": `#@ persist name="p" storage=lake
 source: p is raw extend { join_one: g is scoped on g.user_id = user_id } -> {
   aggregate: c is count()
 }`,
 
-   "a given-scoped join the query reads": `#@ persist name="p" storage=credible
+   "a given-scoped join the query reads": `#@ persist name="p" storage=lake
 source: p is raw extend { join_one: g is scoped on g.user_id = user_id } -> {
   group_by: gs is g.s
   aggregate: c is count()
@@ -100,10 +100,10 @@ source: p is raw extend { join_one: g is scoped on g.user_id = user_id } -> {
 
    // The shape that made the marker empirical: bound as a source argument, so
    // substituted without ever being referenced.
-   "bound as a source argument": `#@ persist name="p" storage=credible
+   "bound as a source argument": `#@ persist name="p" storage=lake
 source: p is pp(x is $ORG_ID) -> { select: * }`,
 
-   "no given at all": `#@ persist name="p" storage=credible
+   "no given at all": `#@ persist name="p" storage=lake
 source: p is raw -> { select: * } extend { where: s = 'a' }`,
 };
 
