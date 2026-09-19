@@ -6,7 +6,7 @@ import type { Tag } from "@malloydata/malloy-tag";
 
 import type { IncrementalStrategy } from "../storage/DatabaseInterface";
 import { deriveColumns } from "./build_plan";
-import { classifyDynamicTerms } from "./persist_dynamic_terms";
+import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 
 // The strategy a declaration implies is also what the ledger records, so the
 // type is shared with the store rather than restated here.
@@ -282,11 +282,13 @@ export function resolveIncrementalDeclaration(
 ): IncrementalDeclaration {
    const tag = safeTag(source);
    const columns = outputColumnTypes(source);
-   // The terms the build strips and the read puts back. A refusal yields no
-   // terms, which is right: such a source is refused before it can be built at
-   // all, so there is no scope to carry.
-   const classified = classifyDynamicTerms(source);
-   const dynamicTerms = classified.ok ? classified.terms : [];
+   // The terms the build strips and the read puts back, read off the source's
+   // own filters rather than off the positional classification. A classification
+   // refusal yields no terms, and an empty scope is indistinguishable here from
+   // "this source is not caller-scoped" — so deriving the scope from it would
+   // emit an unscoped merge for any source a gate admitted while the classifier
+   // refused, which the colocated gate does by design.
+   const dynamicTerms = readTimeDynamicTerms(source);
    const scopeColumns = [
       ...new Set(dynamicTerms.flatMap((term) => term.columns)),
    ];

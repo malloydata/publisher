@@ -21,6 +21,10 @@ import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
 } from "./materialization_eligibility";
+import {
+   classifyDynamicTerms,
+   readTimeDynamicTerms,
+} from "./persist_dynamic_terms";
 
 const ROOT = "file:///elig/";
 let connections: FixedConnectionMap;
@@ -425,6 +429,31 @@ source: orders__preagg__category is orders -> {
       expect(message).not.toContain("Drop '#@ persist'");
       // The reason a rollup is a sharper case than an ordinary persist.
       expect(message).toMatch(/groups ACROSS the gated column/);
+   });
+
+   it("scopes a merge off the source's own terms, not off the classification", async () => {
+      // The two gates refuse different sets: the colocated one deliberately
+      // admits the positional cases (a given in a declared `dimension:`, a
+      // join's `on:`, a given-scoped join) that the storage gate refuses. A
+      // merge scope taken from the classification is therefore EMPTY for a
+      // source one gate admitted while the classifier refused it for an
+      // unrelated position — and an empty scope is indistinguishable from "this
+      // source is not caller-scoped", so the merge would go out unscoped.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 as org_id, 2 as amount")
+
+#@ persist name="t"
+source: mixed is raw -> { select: * } extend {
+  where: org_id = $ORG_ID
+  dimension: flagged is org_id = $ORG_ID
+}`);
+      expect(classifyDynamicTerms(sources.mixed).ok).toBe(false);
+      // Still names the column the source is actually scoped by.
+      expect(
+         readTimeDynamicTerms(sources.mixed).flatMap((t) => t.columns),
+      ).toEqual(["org_id"]);
    });
 
    it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {

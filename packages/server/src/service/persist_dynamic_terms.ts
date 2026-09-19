@@ -414,6 +414,38 @@ function localFieldNames(entry: unknown): string[] {
    return [...names];
 }
 
+/**
+ * The source's own read-time dynamic terms, INDEPENDENT of whether the positional
+ * classification admits the source.
+ *
+ * {@link classifyDynamicTerms} answers "may this source be materialized", and
+ * returns no terms when the answer is no. That is the right shape for a gate and
+ * the wrong shape for anything that has to be correct about a source the gate
+ * did not refuse — and the two gates refuse different sets. The colocated gate
+ * does not refuse the positional cases (`dynamic_projection`, `dynamic_join`,
+ * `dynamic_joined_where`), so reading terms off the classification there yields
+ * an empty scope for a source that is nonetheless caller-scoped, and an empty
+ * scope silently means "no scoping needed".
+ *
+ * Callers that must not fail open — the incremental merge scope — read this
+ * instead, so their correctness does not depend on which gate ran or on what it
+ * happened to refuse for an unrelated reason.
+ */
+export function readTimeDynamicTerms(
+   persistSource: PersistSource,
+): DynamicTerm[] {
+   try {
+      const def = persistSource._sourceDef as unknown as {
+         filterList?: unknown;
+      };
+      return collectDynamicTerms(def?.filterList);
+   } catch {
+      // Unreadable is not "none": a caller that cannot see the terms must treat
+      // the source as unscopable, which one empty-column term expresses.
+      return [{ code: "<unreadable>", givens: [], columns: [] }];
+   }
+}
+
 function collectDynamicTerms(filterList: unknown): DynamicTerm[] {
    if (!Array.isArray(filterList)) return [];
    const terms: DynamicTerm[] = [];

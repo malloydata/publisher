@@ -11,6 +11,7 @@ import { containsPartitionAnnotationTag } from "./partition_annotation";
 import {
    buildSubstitutesAGiven,
    classifyDynamicTerms,
+   readTimeDynamicTerms,
    type DynamicTerm,
 } from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
@@ -162,7 +163,7 @@ export function assertMaterializationEligible(
    }
 
    assertMergeKeyScopeResolvable(
-      classified.terms,
+      readTimeDynamicTerms(persistSource),
       annotationFields,
       `Source '${sourceName}'`,
    );
@@ -452,18 +453,21 @@ export function assertColocatedPersistNotAuthorizeGated(
    // difference is that some target warehouses refuse the ambiguous MERGE
    // themselves (Postgres does; DuckDB does not), which is a property of the
    // customer's warehouse rather than a guarantee we can offer.
-   {
-      const classified = classifyDynamicTerms(persistSource);
-      if (classified.ok) {
-         assertMergeKeyScopeResolvable(
-            classified.terms,
-            annotationFields,
-            origin === "preaggregate"
-               ? `Pre-aggregation rollup '${sourceName}'`
-               : `Source '${sourceName}'`,
-         );
-      }
-   }
+   //
+   // Read off the source's own filters rather than off the classification. The
+   // classification answers whether this source may be materialized and returns
+   // no terms when the answer is no — but the two gates refuse different sets,
+   // and this one deliberately admits the positional cases the storage gate
+   // refuses. Taking terms from it here would hand back an empty scope for a
+   // source that is caller-scoped, and an empty scope reads as "nothing to
+   // scope".
+   assertMergeKeyScopeResolvable(
+      readTimeDynamicTerms(persistSource),
+      annotationFields,
+      origin === "preaggregate"
+         ? `Pre-aggregation rollup '${sourceName}'`
+         : `Source '${sourceName}'`,
+   );
 
    if (!referencesAuthorize(persistSource)) return;
 
