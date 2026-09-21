@@ -1702,6 +1702,12 @@ def parse_scope(scope: str, target_version: str | None
     return env.strip(), pkg.strip(), version, notes
 
 
+# The transcript line a rebuilt transcript carries to declare what its source
+# could and could not record. Absent from anything the CLI produces, so its
+# absence is the spawned case and needs no flag.
+PROVENANCE = "provenance"
+
+
 # A server that never answered. Returned instead of an attempt so the caller can
 # tell "the environment failed" from "the agent answered badly", which is the
 # distinction `skill:eval-loop` stops a run over.
@@ -1796,6 +1802,15 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
     qid = case["qid"]
     d = art / qid
     d.mkdir(parents=True, exist_ok=True)
+
+    # A transcript this harness spawned carries no provenance line, and the
+    # defaults below are its defaults: the CLI's stream can carry prose, and a
+    # host-side tool log existed, so contamination is decidable. A transcript
+    # rebuilt from a host's request logs says otherwise on this line, and
+    # saying it IN the transcript is what keeps `derive_attempt` pure over its
+    # input and keeps `--rebuild` deriving the same ledger a year later.
+    prov = next((e for e in events
+                 if e.get("type") == PROVENANCE), {})
 
     calls, answer, queries = [], [], []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
@@ -1973,6 +1988,12 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
         + [f"invoked a skill outside the manifest: {sk}"
            for sk in sorted(set(foreign_skills))],
         "transcriptPath": str((d / "answerer.jsonl").relative_to(art.parent)),
+        # Facts about the SOURCE, not about the agent. Kept apart from
+        # `answer_text` and `breaches` because an empty answer and an
+        # unrecorded one are different claims, and so are a clean host log and
+        # no host log at all.
+        "answer_captured": bool(prov.get("answer_captured", True)),
+        "host_log": bool(prov.get("host_log", True)),
     }
 
 
@@ -2484,6 +2505,23 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     if att.get("error"):
         return {"verdict": None,
                 "reason": f"environment_failure: {att['error']}"[:200],
+                "confidence": None}
+
+    # The SOURCE of this attempt could not carry the agent's prose. A
+    # transcript rebuilt from a host's request logs holds the tool calls and
+    # nothing else, so there is no answer to compare against the golden and
+    # there never will be for this attempt -- re-running the judge cannot
+    # help. Distinct from `not_submitted`, which says the agent produced
+    # nothing: here the agent may have answered perfectly and the logs simply
+    # did not record it.
+    #
+    # Checked BEFORE the golden refusal because it is the more fundamental
+    # blocker: establishing the key would not make this attempt judgeable.
+    # What such an attempt still supports is retrieval scoring, which reads
+    # the tool calls alone and takes a null verdict without complaint
+    # (`score_retrieval.UNSCORED`). What it does NOT support is a pass rate.
+    if att.get("answer_captured") is False:
+        return {"verdict": None, "reason": "no_answer_captured",
                 "confidence": None}
 
     # `not_submitted` means the attempt produced NOTHING to judge: no prose and
@@ -3240,8 +3278,15 @@ def main(argv: list[str] | None = None) -> int:
                       mcp_tool_uses=att.get("mcp_tool_uses"),
                       skills_invoked=att.get("skills_invoked") or [],
                       reported_calls=att["n_get_context"] + att["n_execute"],
-                      contaminated=bool(att.get("breaches")),
+                      # "unknown" is the contract's word for "no host log
+                      # exists", which is exactly a transcript rebuilt from
+                      # request logs: the server saw the MCP calls and could
+                      # not have seen a Read of a gold CSV. Writing False
+                      # there would claim a check that never ran.
+                      contaminated=(bool(att.get("breaches"))
+                                    if att.get("host_log", True) else "unknown"),
                       contamination_reasons=att.get("breaches") or [],
+                      answer_captured=att.get("answer_captured", True),
                       input_tokens=att.get("input_tokens"),
                       output_tokens=att.get("output_tokens"),
                       cache_read_tokens=att.get("cache_read_tokens"),
@@ -3456,7 +3501,8 @@ def main(argv: list[str] | None = None) -> int:
     # read as corrupt artifacts.
     judged_qids = {q for q, v in verdicts.items()
                    if not (v.get("reason") or "").startswith("golden_")
-                   and v.get("reason") != "not_submitted"}
+                   and v.get("reason") not in ("not_submitted",
+                                               "no_answer_captured")}
     # Whose money `answererCostUsd` is. A re-judge and a `--from` copy the
     # source run's attempt events verbatim, `cost_usd` included, so the new run
     # reports answerer spend for a run in which no answerer executed -- one
