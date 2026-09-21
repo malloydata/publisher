@@ -164,10 +164,18 @@ export interface GraftScope {
  */
 export interface GateClassificationDeps {
    /**
-    * Row-level shape memo, keyed `${cacheScope}\u0000${graftTarget}\u0000${filterText}`
+    * Shape memo, keyed
+    * `${cacheScope}\u0000${route}\u0000${graftTarget}\u0000${filterText}`
     * — see `Model.gateShapeCache`'s doc for why the key must include
     * `cacheScope` and why this is safe to cache for the life of whatever
     * scope the caller keys it to.
+    *
+    * `route` is in the key because the two routes synthesize the SAME
+    * fail-closed `["false"]` sentinel for the same struct, and the walk visits
+    * them in a fixed order: without it the row walk's entry is what a lock
+    * lookup finds, and the lock is grafted as `where: false` — 200 with zero
+    * rows on a base nobody can read — instead of being refused. Reversing
+    * `CANONICAL_AUTHORIZE_ROUTES` must leave every lock test green.
     */
    gateShapeCache: Map<
       string,
@@ -549,7 +557,7 @@ function collectEntryPointGatesForRoute(
  * request, so folding a given-only conjunct into the same filter text changes
  * nothing about what rows it admits.
  *
- * Classification is memoized per `(cacheScope, graftTarget, filterText)` in
+ * Classification is memoized per `(cacheScope, route, graftTarget, filterText)` in
  * `deps.gateShapeCache` — see {@link GateClassificationDeps}'s doc for why
  * the cache is an explicit input, and `Model.gateShapeCache`'s doc for why
  * caching on the MODEL INSTANCE is what makes this correct across a package

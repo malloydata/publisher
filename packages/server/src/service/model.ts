@@ -1719,11 +1719,15 @@ export class Model {
     * therefore not "storage routing attempted and then undone" — it is
     * "storage routing attempted and never undone."
     *
-    * Every gate is a row filter now (see `authorize.ts`'s module doc), so
-    * every gate found here blocks routing — there is no shape left that is
-    * safe to route around a `#(authorize)` annotation. Collecting the gate
-    * list is therefore the whole check: unlike before, nothing here needs to
-    * classify or resolve a graft for any of them.
+    * ROUTE-BLIND ON PURPOSE, and this is the invariant to protect: `gates`
+    * is tested for LENGTH, never for which route wrote each one. Both routes
+    * have to block routing, for different reasons that arrive at the same
+    * answer — an `#(access_filter)` would otherwise serve frozen rows with no
+    * `where:` grafted onto them, and an `#(authorize)` lock would never be
+    * decided at all, because the serve shape carries no annotation bytes for
+    * either. Narrowing this to one route is the bypass, not an optimization.
+    * Collecting the gate list is therefore the whole check: nothing here
+    * needs to classify or resolve a graft for any of them.
     *
     * Deliberately does NOT call `assertAuthorized`: this must never itself
     * evaluate or deny a gate (a routing decision must
