@@ -122,11 +122,16 @@ a returned source's documentation -- text the answerer reads and acts on. Only
 `missing` is a retrieval miss; the route per entity is recorded so the strict
 count is still there.
 
-Recall 1.0 with a wrong answer exonerates retrieval: the failure is in the query.
+Recall 1.0 with a wrong answer exonerates retrieval: everything arrived. Whether
+the agent misused it or the docs never said how to use it is `eval-diagnose`'s
+call, sufficiency first, so the row reads `delivered, wrong` and names no owner.
 Recall below 1.0 and `coverage: covered` means the entity existed and search did
-not surface it; `derivable` or `absent` means there was nothing to surface. Those
-look identical in an answer score and have opposite owners, which is what makes
-this number worth having. It uses the search terms the answerer chose, so it
+not surface it -- a documentation finding, because the retrieval algorithm is
+fixed (semantic search over doc strings) and an entity that exists and does not
+come back is one whose docs do not say what people ask; `eval-diagnose` calls it
+`NOT-RETURNED`, owner model. `derivable` or `absent` means there was nothing to
+surface. Those look identical in an answer score and have different owners,
+which is what makes this number worth having. It uses the search terms the answerer chose, so it
 attributes a failure *within* an arm and does not compare retrieval across arms
 -- that is the engine-side `eval-retrieval` skill, which does not ship here.
 
@@ -153,6 +158,13 @@ How to invoke it. Either `--model <file-or-dir>` for a local package or
 ```
 python3 check_coverage.py --set evals/ecommerce --model model.malloy --version 0.0.58
 ```
+
+Then hand the report back to the run: `run_baseline.py --coverage <report>`.
+Its per-case verdict beats the case's authored `coverage` label in retrieval
+attribution, `run.json` records which report was read, and each retrieval row
+says whether `measured`, `authored` or `none` charged the failure. Without a
+report, a case with no label is attributed to nobody rather than to the model,
+which is what used to happen.
 
 Two flags change what the number means, so choose them rather than inheriting
 them. `--repeat N` samples each case N times and takes the majority; it defaults
@@ -187,6 +199,34 @@ few thousand lines it stops running on Linux and above about 100 KB the verdict
 stops being stable. Do not take the over-size message's advice to narrow
 `--model` to one file, which drops every imported source and manufactures
 `COVERAGE` verdicts.
+
+## Validate the definitions, not every answer
+
+A golden must not be derived through the definitions the question TESTS. It may
+reuse everything the question does not turn on -- joins, base sources, date
+handling -- because circularity only bites where the key and the answer share the
+step under measurement. That is what makes this affordable on a model too large
+to reimplement.
+
+`scripts/verify_definitions.py` checks each definition once against the layer
+directly beneath it, and every case depending on it inherits the result. A golden
+is trustworthy if it was derived independently, OR if every definition it tests
+has itself been validated.
+
+Two things it will not do, and both matter more than what it does. It never
+reports a definition reaching through a join as validated, because fanout
+inflates the measure and the control expression equally and the comparison stays
+green on a broken join. And building the ledger without a server exits 3, not 0:
+nothing was checked, and a caller must not read that as a pass.
+
+A raw check -- a definition that reaches through a join -- is an authored
+control: a person writes the population down as a query on the ledger record and
+the tool re-runs it every time. It is not found unaided, and the docs say so.
+`verify_goldens.py --definitions <ledger>` then applies the composition rule at
+the gate: a set with no truth package exits 0 when every value-bearing case's
+tested definitions are validated, and names the cases that are not.
+
+**Read `reference/definition-ledger.md` before building or quoting one.**
 
 ## Step 5: Distrust the golden
 

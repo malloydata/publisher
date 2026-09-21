@@ -404,5 +404,27 @@ class TheComparisonSurvivesTheArtifactWrite(unittest.TestCase):
         # The console report still reads the tuple-keyed original.
         self.assertIn("covered", cc.label_report(cmp))
 
+class ModelIdentity(unittest.TestCase):
+    """Coverage is sold as a per-version trend, and a trend needs each point
+    tied to the bytes behind it. A `--model <dir>` run stamped `version: null`
+    and named no path, so two runs reading 38% and 62% could not afterwards be
+    told apart -- the numbers became unciteable."""
+
+    SRC = (pathlib.Path(__file__).resolve().parent / "check_coverage.py").read_text()
+
+    def test_the_report_carries_the_model_source_and_sha(self):
+        self.assertIn('"modelSource": model_source', self.SRC)
+        self.assertIn('"modelSha256": model_sha', self.SRC)
+
+    def test_the_sha_is_over_the_text_the_agent_was_shown(self):
+        self.assertIn("hashlib.sha256(model.encode()).hexdigest()", self.SRC)
+
+    def test_a_local_run_names_the_resolved_path(self):
+        self.assertIn("str(a.model_path.resolve()) if a.model_path", self.SRC)
+
+    def test_a_served_run_names_the_publisher_and_package(self):
+        self.assertIn('f"{a.publisher} {a.environment}/{a.package}"', self.SRC)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,35 @@ repair closes that. Take the stable list `flip_table.py` prints and pass
 `--only <qids> --verdicts near_match`. Never diagnose a one-armed `near_match`;
 that is noise, and it sends an agent to fix a model that is already right.
 
+**A correct answer can still carry a finding.** A case that answered right
+while a required entity never reached it is diagnosed too, for the retrieval
+miss alone, and `diagnose.py` selects it automatically. The answer was right by
+another route, and naming that route is the job: on the run this rule comes
+from it was always the same one, the agent rebuilding the model's own measure
+inline. That held while the measure was `count()` and failed the moment one
+carried a grain rule, producing the run's only wrong answer. Three of the four
+findings in that run sat on passing cases and, before this, produced nothing.
+
+**"It worked anyway" is not a reason to leave the model or the skills
+unfixed.** An answer that is right without the model's own entity is right for
+now, not right by design. Write the issue against the miss, record that the
+answer was correct so nobody reads it as a wrong number, and do not soften the
+finding because the number came out right. `--no-retrieval-misses` opts out for
+a run that only wants answer failures.
+
+Holdout is withheld so the acceptance check keeps something the improve step
+never saw. A **measure-only** run never reaches improve, so it is holding those
+cases back from nothing: pass `--include-holdout` there. The script refuses it
+on a run that already carries a `candidate`, because that run's holdout is the
+only thing left that can falsify the edit.
+
+**Say what the clusters do not cover.** `diagnose.py` prints a coverage account
+of every non-passing case and which bucket it fell in -- holdout, contaminated,
+a verdict outside `--verdicts`, unscored, or selected and not diagnosed. Quote
+it whenever you report clusters. One run's six clusters were read as covering
+its failures; they covered 8 of 18, and each individual exclusion had been
+correct and added up nowhere.
+
 ## Components, in order
 
 Walk **in this order** and stop at the first with positive evidence. A later
@@ -34,7 +63,7 @@ never "C1" / "C2" / "C3":
 | `dataset` | Bad question, bad or missing golden, or environment drift? |
 | `agent-call` | Did the agent ask for the needed concepts, with the right type and scope? |
 | `get_context/model` | Is the needed entity absent, undocumented, weakly labeled, duplicated, or missing guidance? |
-| `get_context/retrieval` | Was an on-target request against a well-described entity ranked or grouped wrong? |
+| `get_context/retrieval` | Was an on-target, in-scope request against a well-described entity ranked or grouped wrong? **Check the call's `scopes` first**: a call pinned to one source cannot return another source's entity, and that miss is `agent-call`. |
 | `construction` | Did sufficient context arrive, and the agent still built the wrong query? |
 | `model-definition` | Is a measure, join, filter convention, or source semantically wrong? |
 
@@ -314,6 +343,22 @@ but keep them separate, because only `owner: model` may proceed to an edit.
 Say what you considered merging and chose not to. A cluster is a claim that one
 change fixes N cases, and the near-misses are what a reviewer needs to falsify
 it.
+
+**Falsify a behavioural cluster against the passes.** This skill reads failures
+only, so any behaviour common to the whole run looks causal from inside it.
+`diagnose.py` hands the clustering step a `CONTROLS` block: the same
+measurements -- retrieval calls, targets carrying no `search_text`, queries,
+skills opened, turns -- taken on the cases that PASSED. Before claiming a
+behaviour explains a cluster, compare it there. If it occurs at a similar rate
+in the passes it does not separate the groups: mark the cluster `contributing`
+rather than `primary` and do not route it to an edit as the root cause.
+Measured, on the run this comes from: the largest cluster said the agent
+"substitutes broad enumeration for targeted retrieval", and bare targets were
+25% of all targets in the failures against 26% in the passes. What actually
+separated them was volume -- failures made about 50% more retrieval calls --
+and question difficulty explains that at least as well as call style does. With
+no controls at all, a behavioural cluster is unfalsified, which is a different
+claim from confirmed.
 
 Still no patch. Naming the shared root cause precisely enough that someone else
 can design the edit is the whole job here; the edit itself is
