@@ -42,12 +42,15 @@ import {
 import { Model } from "./model";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
+import { classifyDynamicTerms } from "./persist_dynamic_terms";
+import { resolvePartitionColumns } from "./persist_partition";
 import { quoteIdentifier } from "./quoting";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireColumn = components["schemas"]["Column"];
+type WireStrippedTerm = components["schemas"]["StrippedTerm"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
 export type WirePackageMaterialization =
@@ -176,6 +179,35 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
       });
       return [];
    }
+}
+
+/**
+ * The plan's `partition` and `strippedTerms` for one source.
+ *
+ * Degrades to omitting a field rather than reporting a wrong one: a refusal here
+ * cannot occur for a source that reached this projection (the gate refuses it
+ * first), and if one somehow does, reporting nothing says "unpartitioned /
+ * nothing stripped", which is what every source built before these fields
+ * existed also says. The build does not read these — it re-resolves — so a gap
+ * here misinforms a consumer without changing what is written.
+ */
+function planDynamicFields(
+   source: PersistSource,
+   annotationFields: Record<string, string>,
+): { partition?: string[]; strippedTerms?: WireStrippedTerm[] } {
+   const out: { partition?: string[]; strippedTerms?: WireStrippedTerm[] } = {};
+   const partition = resolvePartitionColumns(source, annotationFields);
+   if (partition.ok && partition.columns.length > 0) {
+      out.partition = partition.columns;
+   }
+   const classified = classifyDynamicTerms(source);
+   if (classified.ok && classified.terms.length > 0) {
+      out.strippedTerms = classified.terms.map((term) => ({
+         code: term.code,
+         givens: term.givens,
+      }));
+   }
+   return out;
 }
 
 /**
@@ -592,8 +624,45 @@ export function computeSourceEntityId(
    // pinned as fact 1 in incremental_compiler_contract.spec.ts.
    return source.makeBuildId(
       connectionDigests[source.connectionName],
-      source.getSQL(),
+      addressPartitionLayout(source, source.getSQL()),
    );
+}
+
+/**
+ * Fold a source's `partition=` into the text its address is computed from.
+ *
+ * The layout is part of what the stored artifact IS, and `getSQL()` deliberately
+ * carries no annotation bytes — so without this, changing `partition=` leaves
+ * the address identical, the build is skipped as unchanged, and the table keeps
+ * a layout the author has stopped declaring.
+ *
+ * Derived from the source here rather than taken as an argument so every caller
+ * gets the same answer: `build_targets_address_equality` pins that a plan
+ * target's `buildId` equals what this function returns, and a parameter one
+ * caller could omit is a way for those two to disagree.
+ *
+ * A source with no `partition=` appends nothing, so its address is byte-identical
+ * to what it was — existing artifacts do not re-address on upgrade. Unlike the
+ * boundary values the doc above warns off, this is a declaration: it moves the
+ * address ONCE when the author changes it, which is the rebuild they asked for,
+ * rather than on every refresh.
+ */
+function addressPartitionLayout(source: PersistSource, sql: string): string {
+   let columns: string[] = [];
+   try {
+      const resolved = resolvePartitionColumns(
+         source,
+         deriveAnnotationFields(source),
+      );
+      // A refusal contributes nothing: the source cannot build at all, so its
+      // address is never used to decide whether one was skipped.
+      if (resolved.ok) columns = resolved.columns;
+   } catch {
+      // An unreadable annotation addresses as unpartitioned — the same answer
+      // the source had before it declared one.
+   }
+   if (columns.length === 0) return sql;
+   return `${sql}\n-- partitioned by: ${columns.join(", ")}`;
 }
 
 /**
@@ -1029,13 +1098,17 @@ export function deriveBuildPlan(
          if (!rollup) {
             try {
                if (declaresStorage) {
-                  assertMaterializationEligible(source);
+                  assertMaterializationEligible(
+                     source,
+                     deriveAnnotationFields(source),
+                  );
                } else {
                   assertColocatedPersistNotAuthorizeGated(
                      source,
                      source.name,
                      "persist",
                      options?.sourceGateOutcomes?.[sourceID],
+                     annotationFields,
                   );
                }
             } catch (err) {
@@ -1083,10 +1156,14 @@ export function deriveBuildPlan(
                   source.name,
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
+                  annotationFields,
                );
                if (declaresStorage) {
                   storageRefused = true;
-                  assertMaterializationEligible(source);
+                  assertMaterializationEligible(
+                     source,
+                     deriveAnnotationFields(source),
+                  );
                   storageRefused = false;
                }
             } catch (err) {
@@ -1167,6 +1244,12 @@ export function deriveBuildPlan(
             // annotationFields map.
             queryMetadata: resolveQueryMetadata(source, packageMaterialization),
             columns: deriveColumns(source),
+            // The layout the build writes and the terms the read must put back.
+            // Both are resolved rather than passed through: `partition` is
+            // checked against the source's public projection, and the terms are
+            // classified by the position their givens sit in. A source that
+            // fails either is not here at all — it is in `refusedSources`.
+            ...planDynamicFields(source, annotationFields),
             annotationFields,
             modelPath: sourceModelPaths?.[sourceID],
          };
@@ -1295,7 +1378,7 @@ function collectSourceEligibility(
    const refused: Record<string, string> = {};
    for (const source of Object.values(sources)) {
       try {
-         assertMaterializationEligible(source);
+         assertMaterializationEligible(source, deriveAnnotationFields(source));
          eligible.push(source.name);
       } catch (err) {
          refused[source.name] = errMessage(err);
@@ -1352,6 +1435,7 @@ function collectColocatedSourceEligibility(
             source.name,
             origin,
             compiled.sourceGateOutcomes?.[sourceID],
+            deriveAnnotationFields(source),
          );
       } catch (err) {
          // Gate BEFORE computeSourceEntityId, matching the build path's own
