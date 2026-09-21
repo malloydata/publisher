@@ -95,16 +95,23 @@ describe("Explore Visibility via worker pool", () => {
       );
    }
 
-   // A base module (never an explore) plus a curated index that imports it,
+   // A base module (never an explore) plus a curated surface that imports it,
    // joins through it, and re-exports only `customers`. `helper` is a second
-   // local source the index does NOT export — used to prove within-file curation.
-   function writeLayeredModels(): void {
+   // local source the surface does NOT export — used to prove within-file
+   // curation.
+   //
+   // The curated file's NAME is a parameter because "index.malloy" is no longer
+   // an arbitrary choice: a root file with that name IS the discovery surface
+   // when the manifest declares no `explores`. A test whose subject is the
+   // uncurated default has to name the file something else, or it is testing
+   // the convention instead.
+   function writeLayeredModels(curatedFile = "index.malloy"): void {
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
          `source: base_source is duckdb.sql("select 1 as id, 'x' as label")`,
       );
       fs.writeFileSync(
-         path.join(tempDir, "index.malloy"),
+         path.join(tempDir, curatedFile),
          `import "base.malloy"
 source: helper is duckdb.sql("select 1 as id")
 source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
@@ -204,25 +211,82 @@ export { customers }`,
       }
    });
 
-   it("lists every model and full sources when explores is absent (backward compatible)", async () => {
+   it("lists every model and full sources when nothing curates (backward compatible)", async () => {
       writeManifest();
-      writeLayeredModels();
+      // Deliberately NOT index.malloy: a package is uncurated only when it has
+      // neither an `explores` key nor a root index.malloy.
+      writeLayeredModels("surface.malloy");
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(await listedModelPaths(pkg)).toEqual([
             "base.malloy",
-            "index.malloy",
+            "surface.malloy",
          ]);
 
-         // No `explores` ⇒ export{} curation off; non-exported `helper` listed.
-         const apiModel = (await pkg.getModel("index.malloy")!.getModel()) as {
+         // Nothing curates ⇒ export{} curation off; non-exported `helper` listed.
+         const apiModel = (await pkg
+            .getModel("surface.malloy")!
+            .getModel()) as {
             sources?: { name?: string }[];
          };
          const names = (apiModel.sources ?? []).map((s) => s.name).sort();
          expect(names).toContain("customers");
          expect(names).toContain("helper");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("defaults the surface to a root index.malloy when explores is absent", async () => {
+      writeManifest(); // no explores at all
+      writeLayeredModels(); // writes index.malloy
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+
+         // Same listing the explicit `explores: ["index.malloy"]` produces in
+         // the first test of this file, from no manifest key at all.
+         expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
+
+         // And within-file curation is on, so `helper` is dropped exactly as
+         // it is under a declared surface.
+         const apiModel = (await pkg.getModel("index.malloy")!.getModel()) as {
+            sources?: { name?: string }[];
+         };
+         expect((apiModel.sources ?? []).map((s) => s.name).sort()).toEqual([
+            "customers",
+         ]);
+
+         // The derived entry always resolves, so it can never be an invalid
+         // explores entry -- getInvalidExplores has nothing to report.
+         expect(pkg.getInvalidExplores()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("prefers an explicit explores over the convention, and says so", async () => {
+      writeManifest({ explores: ["base.malloy"] });
+      writeLayeredModels(); // index.malloy exists but is not declared
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(await listedModelPaths(pkg)).toEqual(["base.malloy"]);
+
+         // The author wrote a file the convention would have used and a key
+         // that leaves it out. The key wins; nothing else would tell them.
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(
+            warnings.some(
+               (w) =>
+                  w.message.includes("index.malloy") &&
+                  w.message.includes("does not list it"),
+            ),
+         ).toBe(true);
       } finally {
          await duckdb.close();
       }

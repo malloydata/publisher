@@ -102,11 +102,17 @@ describe("Query Boundary (queryableSources) via worker pool", () => {
       );
    }
 
-   // base.malloy (a building block, never an explore) + index.malloy (the
-   // explore) which imports/joins it, exports only `customers`, and keeps a
-   // local `helper` source it does NOT export. Each runnable source carries a
-   // view so it can actually be queried.
-   function writeLayeredModels(): void {
+   // base.malloy (a building block, never an explore) + a curated surface file
+   // which imports/joins it, exports only `customers`, and keeps a local
+   // `helper` source it does NOT export. Each runnable source carries a view so
+   // it can actually be queried.
+   //
+   // The surface file's NAME is a parameter because a root "index.malloy" IS
+   // the discovery surface when the manifest declares no `explores` — and the
+   // surface is the boundary. A test whose subject is the inert, uncurated
+   // default must name the file something else, or the convention arms the
+   // boundary underneath it and the test measures the opposite of its title.
+   function writeLayeredModels(curatedFile = "index.malloy"): void {
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
          `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
@@ -115,7 +121,7 @@ describe("Query Boundary (queryableSources) via worker pool", () => {
 }`,
       );
       fs.writeFileSync(
-         path.join(tempDir, "index.malloy"),
+         path.join(tempDir, curatedFile),
          `import "base.malloy"
 source: helper is duckdb.sql("select 1 as id") extend {
   measure: c is count()
@@ -1006,7 +1012,9 @@ export { \`customer-orders\` }`,
 
    it("declared default + no explores: everything stays queryable (backward compatible)", async () => {
       writeManifest(); // no explores → no curated surface to enforce
-      writeLayeredModels();
+      // ...and no index.malloy either, which is the other half of "nothing
+      // curates" now that the convention exists.
+      writeLayeredModels("surface.malloy");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
@@ -1014,9 +1022,9 @@ export { \`customer-orders\` }`,
             .getModel("base.malloy")!
             .getQueryResults("base_source", "v", undefined);
          expect(base.result.data).toBeDefined();
-         // `helper` is non-exported, but with no explores there is no boundary.
+         // `helper` is non-exported, but nothing curates so there is no boundary.
          const helper = await pkg
-            .getModel("index.malloy")!
+            .getModel("surface.malloy")!
             .getQueryResults("helper", "hv", undefined);
          expect(helper.result.data).toBeDefined();
       } finally {
@@ -1031,13 +1039,13 @@ export { \`customer-orders\` }`,
       // this mode — it is that a request naming ONE source must not run a
       // statement naming another.
       writeManifest(); // no explores → boundary inert
-      writeLayeredModels();
+      writeLayeredModels("surface.malloy"); // and no index.malloy to arm it
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("index.malloy")!;
+         const model = pkg.getModel("surface.malloy")!;
 
-         // Control: with no explores, `helper` really is queryable by name…
+         // Control: with nothing curating, `helper` really is queryable by name…
          const helper = await model.getQueryResults("helper", "hv");
          expect(helper.result.data).toBeDefined();
 
@@ -1048,6 +1056,39 @@ export { \`customer-orders\` }`,
             "v\nrun: helper -> { aggregate: c }",
          );
          await expectNamedRejected(model, "customers -> v\nrun: helper", "hv");
+      } finally {
+         await duckdb.close();
+      }
+   });
+   it("a surface derived from index.malloy arms the boundary exactly like a declared one", async () => {
+      // The single most important assertion in the convention: a package that
+      // declares NOTHING gets the same enforcement as `explores:
+      // ["index.malloy"]`. If this ever weakens to listings-only, an author who
+      // curated their package still serves every hidden source by name.
+      writeManifest(); // no explores, no queryableSources
+      writeLayeredModels(); // writes index.malloy, exporting only `customers`
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+
+         // The exported source is queryable, join-through and all.
+         const { result } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("customers", "v", undefined);
+         expect(result.data).toBeDefined();
+
+         // A whole file off the surface is refused...
+         await expect(
+            pkg
+               .getModel("base.malloy")!
+               .getQueryResults("base_source", "v", undefined),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // ...and so is a source inside the surface file that it does not
+         // export, which is the within-file half of the same rule.
+         await expect(
+            pkg.getModel("index.malloy")!.getQueryResults("helper", "hv"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
       }
