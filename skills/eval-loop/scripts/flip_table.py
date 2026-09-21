@@ -83,10 +83,19 @@ def counts_toward_score(gold_status: str | None) -> bool:
 def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     """qid -> the scored outcome, for cases this run actually scored."""
     out: dict[str, dict[str, Any]] = {}
+    queries: dict[str, str | None] = {}
     for line in (run / "events.jsonl").read_text().splitlines():
         if not line.strip():
             continue
         e = json.loads(line)
+        if e.get("kind") == "attempt":
+            # The query the arm actually ran. A flip is a matched pair -- same
+            # question, same model, one right answer and one wrong one -- and
+            # the diff between the two queries is what isolates the cause. It
+            # was not read here, so the richest evidence in the run was the one
+            # thing the flip table did not print.
+            queries[e["qid"]] = e.get("final_query")
+            continue
         if e.get("kind") != "score":
             continue
         v = e.get("verdict")
@@ -94,6 +103,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "verdict": v,
             "confidence": e.get("confidence"),
             "reason": (e.get("reason") or "")[:200],
+            "final_query": queries.get(e["qid"]),
             # near_match and needs_human are neither: counting either as a fail
             # would manufacture a flip every time the judge hedged in one run
             # and not the other.
@@ -101,6 +111,30 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "passed": {"pass": True, "fail": False}.get(outcome(v)),
         }
     return out
+
+
+def query_diff(a: dict[str, Any], b: dict[str, Any], la: str, lb: str) -> str:
+    """The two queries a flipped case ran, side by side.
+
+    The count says a case moved; this says what moved it. On a real set five
+    flips over 28 cases read as an 18% churn rate, and the five turned out to
+    be one question asked two ways -- two discrete query idioms, one returning
+    443 rows and the other 2. Reading the diff would have handed over the
+    finding; averaging the five hid it. The queries were already in the ledger
+    and this table had never printed them.
+
+    Identical queries are worth saying too: then the flip is downstream of the
+    query, in the judge or in the data, and that is a different search.
+    """
+    qa, qb = (a.get("final_query") or "").strip(), (b.get("final_query") or "").strip()
+    if not qa and not qb:
+        return "     (neither arm recorded a final query)"
+    if qa == qb:
+        return ("     both arms ran the SAME query, so the flip is downstream "
+                "of it:\n     the judge, the rubric, or non-determinism in the "
+                "data.")
+    return (f"     {la} ran:\n       " + qa.replace("\n", "\n       ") +
+            f"\n     {lb} ran:\n       " + qb.replace("\n", "\n       "))
 
 
 def cost(run: Path) -> dict[str, float]:
@@ -464,13 +498,21 @@ def main() -> int:
               f"  ({', '.join(f'{v} {k}' for k, v in sorted(tally.items()))})")
 
     if a_only or b_only:
-        print(f"\nthe flips\n---------")
+        print(f"\nthe disagreement set\n--------------------")
+        print("  Read these before averaging them. A flip is a case where the "
+              "agent found\n  two paths and the model did not make one of them "
+              "obviously right, which is\n  a model-quality signal and a "
+              "matched pair: same question, same model, one\n  right answer "
+              "and one wrong one. The band says how much movement there is;\n"
+              "  these say what it IS.\n")
         for q in a_only:
             print(f"  {q}\n     {la}: {A[q]['verdict']}  ->  "
                   f"{lb}: {B[q]['verdict']}\n     {B[q]['reason'][:150]}")
+            print(query_diff(A[q], B[q], la, lb))
         for q in b_only:
             print(f"  {q}\n     {la}: {A[q]['verdict']}  ->  "
-                  f"{lb}: {B[q]['verdict']}\n     {B[q]['reason'][:150]}")
+                  f"{lb}: {B[q]['verdict']}\n     {A[q]['reason'][:150]}")
+            print(query_diff(A[q], B[q], la, lb))
 
     if a_args.targets:
         targeted_report(a_args, A, B, la, lb,

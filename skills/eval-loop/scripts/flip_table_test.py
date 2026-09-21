@@ -267,5 +267,57 @@ class CountsTowardScore(unittest.TestCase):
         # Written as a string because flatten() serialises a bool that way.
         self.assertIn("public: counts", malloy)
 
+class DisagreementSet(unittest.TestCase):
+    """A flip is a matched pair, and the table has to print the pair.
+
+    The count says a case moved; the two queries say what moved it. On a real
+    set five flips over 28 cases read as an 18% churn rate and were one
+    question asked two ways, the wrong idiom returning 2 rows against 443.
+    That took a day of transcript reading because this table printed only the
+    verdicts.
+    """
+
+    def test_it_prints_both_queries(self):
+        out = ft.query_diff({"final_query": "run: a -> { x }"},
+                            {"final_query": "run: b -> { y }"}, "arm1", "arm2")
+        self.assertIn("run: a -> { x }", out)
+        self.assertIn("run: b -> { y }", out)
+        self.assertIn("arm1", out)
+        self.assertIn("arm2", out)
+
+    def test_an_identical_query_is_called_out_as_a_different_finding(self):
+        q = "run: same -> { x }"
+        out = ft.query_diff({"final_query": q}, {"final_query": q}, "a", "b")
+        self.assertIn("SAME query", out)
+        self.assertIn("downstream", out)
+
+    def test_a_missing_query_says_so_rather_than_printing_nothing(self):
+        out = ft.query_diff({}, {}, "a", "b")
+        self.assertIn("neither arm recorded", out)
+
+    def test_one_side_missing_still_shows_the_other(self):
+        out = ft.query_diff({"final_query": "run: a"}, {}, "a", "b")
+        self.assertIn("run: a", out)
+
+    def test_verdicts_carries_the_final_query(self):
+        run = pathlib.Path(tempfile.mkdtemp()) / "r"
+        run.mkdir()
+        (run / "events.jsonl").write_text(
+            json.dumps({"kind": "attempt", "qid": "q1",
+                        "final_query": "run: flights -> { x }"}) + "\n" +
+            json.dumps({"kind": "score", "qid": "q1", "verdict": "match"}) + "\n")
+        v = ft.verdicts(run)
+        self.assertEqual(v["q1"]["final_query"], "run: flights -> { x }")
+
+    def test_a_run_with_no_attempt_event_still_scores(self):
+        # Older runs, and a --rebuild that wrote scores only.
+        run = pathlib.Path(tempfile.mkdtemp()) / "r"
+        run.mkdir()
+        (run / "events.jsonl").write_text(
+            json.dumps({"kind": "score", "qid": "q1", "verdict": "match"}) + "\n")
+        v = ft.verdicts(run)
+        self.assertTrue(v["q1"]["passed"])
+        self.assertIsNone(v["q1"]["final_query"])
+
 if __name__ == "__main__":
     unittest.main()
