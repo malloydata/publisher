@@ -831,7 +831,7 @@ source: X is duckdb.table('accounts') extend {}
       );
    });
 
-   it("`#(authorize) true` alongside a row-level `#(authorize)` is LEGAL and the row filter still runs", async () => {
+   it("`#(authorize) true` alongside a row-level `#(access_filter)` is LEGAL and the row filter still runs", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]

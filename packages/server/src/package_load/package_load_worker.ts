@@ -627,7 +627,7 @@ function authorizeWarningCollector(): {
       warnings,
       onRowLevelGateUnexpressible: (sourceName, detail) => {
          warnings.push(
-            `Row-level #(authorize) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
+            `Row-level #(access_filter) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
          );
       },
    };
@@ -787,9 +787,9 @@ async function compileMalloyModel(
       attributedAuthorizeOwnNotes,
    );
    const authorizeWarningCollection = authorizeWarningCollector();
-   // Validate #(authorize) at compile time (shared with Model.create). Throws
-   // on an unknown given / source-field reference or a rejected row-level
-   // shape; compileOneModel's catch turns it into this model's
+   // Validate both gate routes at compile time (shared with Model.create).
+   // Throws on an unknown given / source-field reference or a rejected
+   // row-level shape; compileOneModel's catch turns it into this model's
    // compilationError. A gate INHERITED at an entry point that can't express
    // it does not throw — see `validateAuthorizeProbes`'s doc comment for what
    // it validates.
@@ -819,7 +819,7 @@ async function compileMalloyModel(
             (cause, detail) => {
                recordRowLevelGateRejected(cause);
                authorizeWarningCollection.warnings.push(
-                  `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                  `Row-level #(access_filter) gate warning on "${sourceName}" (${cause}): ${detail}`,
                );
             },
          );
@@ -1042,7 +1042,7 @@ async function compileNotebookModel(
                (cause, detail) => {
                   recordRowLevelGateRejected(cause);
                   authorizeWarningCollection.warnings.push(
-                     `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                     `Row-level #(access_filter) gate warning on "${sourceName}" (${cause}): ${detail}`,
                   );
                },
             );

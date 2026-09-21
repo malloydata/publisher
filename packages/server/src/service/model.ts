@@ -839,7 +839,7 @@ export class Model {
    }
 
    /**
-    * Retain the runtime a row-level `#(authorize)` gate grafts through — see
+    * Retain the runtime a row-level `#(access_filter)` gate grafts through — see
     * {@link gateRuntime}. Called once by each construction path
     * (`Model.create`, `fromSerialized`) right after `new Model(...)`, rather
     * than threaded as a constructor parameter: the constructor already has
@@ -1631,7 +1631,7 @@ export class Model {
 
    /**
     * Whether `runnable` (a value {@link authorizeAndBindRunnable} returned) has
-    * a row-level `#(authorize)` filter attached. Object-identity keyed
+    * a row-level `#(access_filter)` filter attached. Object-identity keyed
     * ({@link rowLevelFilteredRunnables}) rather than a field on `Model`, which
     * is shared across concurrently in-flight requests. Consulted by the query
     * and notebook paths to keep a filtered query off the storage-serve tier
@@ -3046,7 +3046,7 @@ export class Model {
                // losing it silently.
                onRowLevelGateUnexpressible: (sourceName, detail) =>
                   logger.warn(
-                     "Row-level #(authorize) gate not expressible at this entry point; every query against it will be denied",
+                     "Row-level #(access_filter) gate not expressible at this entry point; every query against it will be denied",
                      { packageName, modelPath, sourceName, detail },
                   ),
                // G4/W1/W2 for the SOURCE-LINE form, run at EVERY entry
@@ -3067,7 +3067,7 @@ export class Model {
                      compiledModelDef,
                      (cause, detail) => {
                         recordRowLevelGateRejected(cause);
-                        logger.warn("Row-level #(authorize) gate warning", {
+                        logger.warn("Row-level #(access_filter) gate warning", {
                            packageName,
                            modelPath,
                            sourceName,

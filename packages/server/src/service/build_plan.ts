@@ -142,13 +142,20 @@ export interface CompiledBuildPlan {
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
 }
 
-/** {@link CompiledBuildPlan.sourceGateOutcomes}'s per-source classification. */
+/** {@link CompiledBuildPlan.sourceGateOutcomes}'s per-source classification:
+ *  whether every gate on the entry point RESOLVED, not which route it was
+ *  written on. `"row_level"` is the name the colocated relaxation was built
+ *  under and is kept so a stored plan still reads; an `#(authorize)` lock
+ *  lands there too. That is deliberate — this decides whether a source may be
+ *  BUILT, and the lock is decided per request at serve time, where
+ *  `Model.queryEntryPointHasRowLevelGate` blocks routing to frozen rows on ANY
+ *  collected gate regardless of route. */
 export type PersistSourceGateClassification = "row_level" | "rejected";
 
 /**
- * `classification` is the entry-point gate's enforcement shape, per
- * `gate_classification.ts`'s vocabulary (every `#(authorize)` gate is a row
- * predicate). `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
+ * `classification` is whether the entry point's gates resolved to something
+ * enforceable, per `gate_classification.ts`'s vocabulary.
+ * `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
  * deep walk finds a note reachable only through a join — see that function's
  * doc for why that must gate the relaxation independently of
  * `classification`: `collectEntryPointGates` does not trace joins, so a
@@ -1015,7 +1022,7 @@ export function deriveBuildPlan(
          // executeInstructedBuild): a declared `storage=` gets the full,
          // unconditional storage-destination gate; a plain `#@ persist` gets the
          // colocated gate, which — unlike the storage one — admits a proven
-         // row-level, fully-attributed `#(authorize)` gate. Using the storage
+         // resolved, fully-attributed gate. Using the storage
          // gate for every source regardless of declared tier (the existing
          // `SourceEligibility.refused`, kept for its own serve-binding purpose)
          // would misreport a now-buildable colocated source as refused.

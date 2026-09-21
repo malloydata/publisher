@@ -233,10 +233,10 @@ function malformedAuthorizeAttemptPattern(route: string): RegExp {
 }
 
 /**
- * The gate payload on ONE annotation note, or `undefined` if the note is not
- * routed to `authorize` OR `authorize`. Malloy's own routing decides —
- * see {@link noteRoute}. A malformed prefix routes to `undefined`, so it is
- * never a gate here.
+ * The gate payload on ONE annotation note, or `undefined` if the note is
+ * routed to neither `#(authorize)` nor `#(access_filter)`. Malloy's own
+ * routing decides — see {@link noteRoute}. A malformed prefix routes to
+ * `undefined`, so it is never a gate here.
  *
  * Widened to accept EVERY recognized route so `containsAuthorizeAnnotationTag`
  * / `parseAuthorizeAnnotation` (and everything built on them —
@@ -246,16 +246,6 @@ function malformedAuthorizeAttemptPattern(route: string): RegExp {
  * re-deriving its own route test. The route itself is still reported, so a
  * caller that needs to tell them apart (`parseAuthorizeAnnotation`,
  * `collectAuthorizeExprs`) can.
- *
- * This is also the ONE choke point where the deprecated `#(authorize)`
- * spelling becomes {@link ACCESS_FILTER_ROUTE}. Canonicalizing here rather
- * than adding the alias to {@link CANONICAL_AUTHORIZE_ROUTES} is what makes it
- * an alias instead of a third route — see that constant's doc for the silent
- * breakage a third route causes. Every downstream consumer (own-wins, the
- * ancestor walk, per-route grouping, coherence bucketing, the wire split,
- * `authorizeOwnNotes` keying) inherits the right answer with no change of its
- * own, and two spellings on one source behave exactly as two notes of one
- * spelling do.
  */
 function authorizeNoteContent(
    text: string,

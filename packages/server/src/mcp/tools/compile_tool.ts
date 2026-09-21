@@ -67,7 +67,7 @@ const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use t
 - "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and authorize gates still apply to caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
 
 ## Parameters
-- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and authorize-gate values. Caller source may not declare an authorize gate — #(access_filter), #(authorize), or the deprecated #(authorize).
+- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and authorize-gate values. Caller source may not declare an access-control gate — neither #(authorize) nor #(access_filter).
 
 ## Response
 { status: "success"|"error", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file the diagnostic points at (which can be pre-existing content, not your source). status is "error" only when an error-severity diagnostic exists; errors are also stated in a plain text block.`;

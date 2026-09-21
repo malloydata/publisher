@@ -1217,7 +1217,7 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
       "does NOT report a colocated gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
       async () => {
          // Plain `#@ persist` (no `storage=`): the entry point's own
-         // `#(authorize)` gate classifies row_level + attributed, so the
+         // `#(access_filter)` gate classifies row_level + attributed, so the
          // colocated relaxation admits it. The OLD `SourceEligibility.refused`
          // (computed with the unconditional storage-tier assert) would report
          // this same source as `refused: authorize` — refusedSources must not

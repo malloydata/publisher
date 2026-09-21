@@ -1510,13 +1510,13 @@ source: m_src is mid_src extend {}
 // model compiled, keeping "warned" distinct from "refused".
 // ---------------------------------------------------------------------------
 
-/** The `cause` values `logger.warn("Row-level #(authorize) gate warning", …)`
+/** The `cause` values `logger.warn("Row-level #(access_filter) gate warning", …)`
  *  carried during this model load, in call order. */
 function gateWarningCauses(
    warnSpy: ReturnType<typeof spyOn<typeof logger, "warn">>,
 ): string[] {
    return warnSpy.mock.calls
-      .filter((c) => String(c[0]) === "Row-level #(authorize) gate warning")
+      .filter((c) => String(c[0]) === "Row-level #(access_filter) gate warning")
       .map((c) =>
          String(
             (c as unknown as [string, { cause?: string }?])[1]?.cause ?? "",

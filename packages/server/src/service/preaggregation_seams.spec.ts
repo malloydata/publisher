@@ -550,7 +550,7 @@ source: regions is duckdb.sql("""
 });
 
 // ---------------------------------------------------------------------------
-// Pre-aggregation x row-level `#(authorize)`. Nothing covered the combination,
+// Pre-aggregation x row-level `#(access_filter)`. Nothing covered the combination,
 // and the two tiers guard differently: `routingBlockedByRowLevelGate` was
 // `&&`-ed with `storageRoutingPossible` and guarded only the storage branch,
 // while the pre-aggregation branch had no gate check and `preaggRouted` is never

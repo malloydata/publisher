@@ -128,7 +128,7 @@ async function buildAndBindColocated(
    });
 }
 
-describe("colocated persist + row-level #(authorize): compose end to end", () => {
+describe("colocated persist + row-level #(access_filter): compose end to end", () => {
    it(
       "a direct entry-point gate: two principals see DIFFERENT rows from the SAME bound artifact",
       async () => {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Verification suite for row-level `#(authorize)`.
+ * Verification suite for row-level `#(access_filter)`.
  *
  * ## Load-time validation — read this before the rest of the file
  *
@@ -4337,7 +4337,7 @@ source: reopened is base extend {}
       }
    });
 
-   it("an extension's own `#(authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(authorize)` still filters rows", async () => {
+   it("an extension's own `#(authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(access_filter)` still filters rows", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: number[]
@@ -4360,9 +4360,9 @@ source: reopened is base extend {}
       }
    });
 
-   it("an inherited `#(authorize) true` alongside the SAME source's own row-level `#(authorize)` — rows are still filtered", async () => {
+   it("an inherited `#(authorize) true` alongside the SAME source's own row-level `#(access_filter)` — rows are still filtered", async () => {
       // `#(authorize) true` here is inherited from `base`, not owned
-      // by `X`, while `X` owns its row-level `#(authorize)`. Own-wins-over-
+      // by `X`, while `X` owns its row-level `#(access_filter)`. Own-wins-over-
       // ancestor is decided PER ROUTE, so the two coexist.
       const { model, duckdb, dir } = await createModel(`
 given:

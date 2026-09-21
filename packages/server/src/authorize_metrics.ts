@@ -106,7 +106,7 @@ export function recordAuthorizeBypass(
 }
 
 /**
- * How a row-level `#(authorize)` gate resolved a request.
+ * How a row-level `#(access_filter)` gate resolved a request.
  *
  * `denied_by_gate` is the fail-closed path: a row-level gate is a filter, not
  * a boolean, so there is no whole-source admission decision left to fall back
@@ -132,7 +132,7 @@ export function recordAuthorizeBypass(
 export type RowLevelGateDecision = "denied_by_gate" | "empty_after_filter";
 
 /**
- * Record how one row-level `#(authorize)` gate resolved a request.
+ * Record how one row-level `#(access_filter)` gate resolved a request.
  */
 export function recordRowLevelGateDecision(
    decision: RowLevelGateDecision,
@@ -141,14 +141,14 @@ export function recordRowLevelGateDecision(
       "publisher_authorize_row_level_total",
       {
          description:
-            "How a row-level `#(authorize)` gate resolved a request. Label: decision ('denied_by_gate'|'empty_after_filter'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error.",
+            "How a row-level `#(access_filter)` gate resolved a request. Label: decision ('denied_by_gate'|'empty_after_filter'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error.",
       },
    );
    rowLevelDecisionCounter.add(1, { decision });
 }
 
 /**
- * Record one row-level `#(authorize)` gate refused because its compiled
+ * Record one row-level `#(access_filter)` gate refused because its compiled
  * condition is not one of the allowed shapes (see
  * {@link RowLevelGateRejectionCause} and the walk in `./service/authorize`).
  *
@@ -157,7 +157,7 @@ export function recordRowLevelGateDecision(
  * swallows the error must not also lose the metric.
  *
  * Fires at package LOAD for a refused gate — `validateAuthorizeProbes`
- * classifies every row-level `#(authorize)` gate's compiled shape at each
+ * classifies every row-level `#(access_filter)` gate's compiled shape at each
  * entry point before the package is servable, so a rejection blocks the whole
  * load and this is a step function on deploy, not a request-rate signal.
  * That is the expected, and by far the more common, call site: the right
@@ -239,13 +239,19 @@ export function recordRowLevelGateRejected(
  * Labelled by `route` only. Org / package / model / source are
  * unbounded-cardinality and belong in the model text an investigation reads
  * once the number moves, not on the counter.
+ *
+ * The label is constant today: the sentinels are legal only on
+ * the lock route, so nothing can emit the filter route here. It stays
+ * because it is already on the wire, and because a series that silently merged
+ * two routes would be the harder thing to unpick later than a series with one
+ * value in it.
  */
 export function recordAuthorizeAdmitAllGate(route: string): void {
    admitAllCounter ??= publisherMeter().createCounter(
       "publisher_authorize_admit_all_total",
       {
          description:
-            "Sources declaring their OWN unconditional admit-all gate (`#(access_filter) true` / `#(authorize) true`), counted once each at package load. Label: route (" +
+            "Sources declaring their OWN unconditional admit-all gate (`#(authorize) true`), counted once each at package load. Label: route (" +
             // Derived from the canonical routes, not retyped beside them —
             // this file already shipped one description that drifted from the
             // values it documented.

@@ -543,8 +543,8 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
          ]),
       ).not.toThrow();
 
-      // The mirror: an own `#(authorize) true` beside an own row-level
-      // `#(authorize)` opens the caller route while the row filter still runs.
+      // The mirror: an own `#(authorize) true` beside an own
+      // `#(access_filter)` opens the lock while the row filter still runs.
       const [rowTerm] = parseAuthorizeGrammarBody(
          "X",
          "region = $REGION",
