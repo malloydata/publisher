@@ -7,11 +7,92 @@ import {
    parsePackageMaterialization,
    parsePackageScope,
    queryMetadataParseWarnings,
+   resolveExplores,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "./package_manifest";
 
 describe("service/package_manifest", () => {
+   describe("resolveExplores", () => {
+      const resolve = (
+         declaredExplores: unknown,
+         modelPaths: readonly string[],
+         declaredQueryableSources?: unknown,
+      ) =>
+         resolveExplores({
+            declaredExplores,
+            declaredQueryableSources,
+            modelPaths,
+         });
+
+      it("defaults the surface to a root index.malloy when no explores is declared", () => {
+         expect(
+            resolve(undefined, ["index.malloy", "orders.malloy"]).explores,
+         ).toEqual(["index.malloy"]);
+      });
+
+      it("leaves a package with no index.malloy uncurated", () => {
+         expect(
+            resolve(undefined, ["orders.malloy", "internal.malloy"]).explores,
+         ).toBeUndefined();
+      });
+
+      it("prefers an explicit explores and says the index file is left out", () => {
+         const { explores, warnings } = resolve(
+            ["orders.malloy"],
+            ["index.malloy", "orders.malloy"],
+         );
+         expect(explores).toEqual(["orders.malloy"]);
+         // Names the file and the declared set, so the author can see which of
+         // the two they wrote is actually in force.
+         const omission = warnings.find((w) =>
+            w.startsWith("This package has an"),
+         );
+         expect(omission).toContain("index.malloy");
+         expect(omission).toContain('["orders.malloy"]');
+      });
+
+      it("treats an empty explores as a deliberate opt-out that suppresses the convention", () => {
+         const { explores, warnings } = resolve([], ["index.malloy"]);
+         expect(explores).toEqual([]);
+         // Nothing is hidden by an empty surface, so there is no disagreement
+         // to report -- only the key's own deprecation.
+         expect(warnings.some((w) => w.startsWith("This package has an"))).toBe(
+            false,
+         );
+      });
+
+      it("only counts a root index.malloy, not a nested one", () => {
+         expect(
+            resolve(undefined, ["reports/index.malloy", "orders.malloy"])
+               .explores,
+         ).toBeUndefined();
+      });
+
+      it("ignores a malformed explores rather than coercing it into a surface", () => {
+         // A bare string is the usual typo of the array form, and a non-string
+         // element used to throw out of normalizeModelPath and fail the load.
+         expect(
+            resolve("orders.malloy", ["orders.malloy"]).explores,
+         ).toBeUndefined();
+         expect(resolve([null], ["orders.malloy"]).explores).toBeUndefined();
+      });
+
+      it("tells a queryableSources author to delete it, but never tells the 'all' author that", () => {
+         const declared = resolve(undefined, ["index.malloy"], "declared");
+         expect(declared.warnings.join("\n")).toContain("Delete it.");
+
+         // "all" is the one thing the convention cannot express: it curates
+         // listings without refusing queries. Advising this author to switch
+         // would start returning 404s, so the message must say the opposite.
+         const all = resolve(["orders.malloy"], ["orders.malloy"], "all");
+         const allText = all.warnings.join("\n");
+         expect(allText).toContain("does NOT replace it");
+         expect(allText).toContain("keep an explicit");
+         expect(allText).not.toContain("Delete it.");
+      });
+   });
+
    describe("resolvePackageScope", () => {
       it("reads the canonical materialization.scope with no warning", () => {
          expect(resolvePackageScope(undefined, { scope: "version" })).toEqual({
