@@ -1493,5 +1493,39 @@ class GitSha(unittest.TestCase):
         self.assertIsNone(rb.git_sha(pathlib.Path(self.tmp)))
 
 
+class GoldenCheckScope(unittest.TestCase):
+    """The pre-arm audit covers the cases the arm RUNS, not the whole file.
+
+    A set is built incrementally, so one un-derivable golden elsewhere in
+    cases.jsonl blocked an arm over a subset that did not include it. The only
+    way past was --skip-golden-check, which switches the audit off for the
+    cases that would have passed and stamps "skipped" into run.json.
+    """
+
+    SRC = (pathlib.Path(__file__).resolve().parent / "run_baseline.py").read_text()
+
+    def test_the_call_passes_the_selected_qids(self):
+        # A source pin, like test_kinds_by_target_matches_the_server: the call
+        # sits inside main() between a server probe and an arm, so the cheap
+        # way to stop it silently losing the argument again is to read it.
+        call = self.SRC.split("verify_goldens.verify(")[1][:400]
+        self.assertIn("qids=checked_qids", call,
+                      "the golden check audits the whole set again")
+
+    def test_the_qids_come_from_the_narrowed_case_list(self):
+        self.assertIn('checked_qids = {c["qid"] for c in cases}', self.SRC)
+
+    def test_verify_actually_filters_on_qids(self):
+        # The other half: the argument has to mean something.
+        import inspect
+        import sys as _sys
+        _sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                                / "eval-answer" / "scripts"))
+        import verify_goldens
+        src = inspect.getsource(verify_goldens.verify)
+        self.assertIn("qids", src)
+        self.assertIn('c["qid"] in qids', src)
+
+
 if __name__ == "__main__":
     unittest.main()

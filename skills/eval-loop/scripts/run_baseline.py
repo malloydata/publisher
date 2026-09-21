@@ -2788,6 +2788,7 @@ def main(argv: list[str] | None = None) -> int:
              if a.answerer_skills else "NONE -- measuring the model, not the product"))
 
     cases = read_jsonl(a.set_dir / "cases.jsonl")
+    total_cases = len(cases)
     if a.only:
         want = {q.strip() for q in a.only.split(",")}
         cases = [c for c in cases if c["qid"] in want]
@@ -2831,8 +2832,18 @@ def main(argv: list[str] | None = None) -> int:
         # named in no schema and present on no set, so the guard that catches a
         # "truth" server also serving the package under test had never once
         # fired. This caller knows the package, so it says so.
+        # Audit the cases this arm is about to RUN, not the whole file. A set
+        # is built incrementally, so one un-derivable golden elsewhere in
+        # cases.jsonl blocked an arm over a subset that did not include it,
+        # and the only way past was --skip-golden-check -- which switches the
+        # audit off for the cases that would have passed and stamps
+        # "skipped" into run.json, so the run cannot show it verified
+        # anything. `cases` is already narrowed by --only, --limit and
+        # --rebuild above.
+        checked_qids = {c["qid"] for c in cases}
         r = verify_goldens.verify(a.set_dir, truth,
                                   a.truth_environment or a.environment,
+                                  qids=checked_qids,
                                   target_package=a.package,
                                   quiet=True,
                                   definitions=(pathlib.Path(a.definitions)
@@ -2849,8 +2860,18 @@ def main(argv: list[str] | None = None) -> int:
             golden_check = f"{r['skipped']}{via} ({len(hard)} other finding(s))"
             print(f"  ! {golden_check}")
         else:
+            # Say WHAT was checked, not just how it went: "12 ok" over a
+            # 100-case set means something different depending on whether the
+            # arm ran 12 cases or 100, and run.json is where that is settled
+            # months later.
+            scope = ("the whole set" if len(checked_qids) == total_cases
+                     else f"the {len(checked_qids)} case(s) this arm runs, "
+                          f"of {total_cases} in the set")
+            unrederivable = r["tally"].get("unrederivable", 0)
             golden_check = (f"{r['tally'].get('ok', 0)} ok, {r['drifted']} drifted, "
-                            f"{len(hard)} other finding(s)")
+                            + (f"{unrederivable} not yet re-derivable, "
+                               if unrederivable else "")
+                            + f"{len(hard)} other finding(s), over {scope}")
             print(f"  {golden_check}")
         if r["drifted"] or hard:
             for f in r["findings"]:
