@@ -952,5 +952,39 @@ class ScalarValueShape(unittest.TestCase):
         self.assertEqual(status, "ok")
 
 
+class YoungGoldens(unittest.TestCase):
+    """`eval-import` produces "a number alone" as a legitimate outcome, and
+    the audit called it a hard finding -- so the import skill's own output
+    refused the check that runs before every arm."""
+
+    def args(self):
+        return argparse.Namespace(
+            publisher="http://x", environment="truth", truth_package="t",
+            truth_model="truth.malloy", rewrite=False)
+
+    def check(self, status_in):
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": {"n": 1},
+                                    "status": status_in}}
+        return check_value(c, self.args())
+
+    def test_provisional_with_no_query_is_not_a_finding(self):
+        status, detail, _ = self.check("provisional")
+        self.assertEqual(status, "unrederivable")
+        self.assertIn("no canonicalQuery yet", detail)
+
+    def test_an_absent_status_reads_as_provisional(self):
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": {"n": 1}}}
+        self.assertEqual(check_value(c, self.args())[0], "unrederivable")
+
+    def test_VERIFIED_with_no_query_is_still_an_error(self):
+        # `verified` is a claim that it re-derived. That claim needs the query.
+        status, detail, _ = self.check("verified")
+        self.assertEqual(status, "error")
+        self.assertIn("cannot be re-derived", detail)
+
+    def test_unrederivable_does_not_count_as_drift(self):
+        # `drifted` sums diff + error, and the arm gate reads `drifted`.
+        self.assertNotIn("unrederivable", ("diff", "error"))
+
 if __name__ == "__main__":
     unittest.main()

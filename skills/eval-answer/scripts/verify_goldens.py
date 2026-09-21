@@ -193,6 +193,23 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
         # golden failed its own audit with exit 1.
         return "skipped", "criteria: the clauses are the key, nothing to re-derive", None
     if not q:
+        # A PROVISIONAL golden with no query is young, not wrong, and it is
+        # exactly what `eval-import` produces from a set that arrived as
+        # values: "100 provisional (0 with their query, 100 a number alone)".
+        # Calling that a hard finding made the import skill's own output
+        # refuse the audit that runs before every arm, and the only way past
+        # was --skip-golden-check, which throws away the receipt for whatever
+        # DID verify. It cannot be scored either way: a provisional golden
+        # takes `verdict: null` and stays out of the pass rate, so the arm it
+        # was blocking would have measured coverage and nothing else.
+        #
+        # A VERIFIED golden with no query is still an error. `verified` is a
+        # claim that it re-derived, and that claim needs the query.
+        if (g.get("status") or "provisional") == "provisional":
+            return ("unrederivable",
+                    "provisional, holds a value, no canonicalQuery yet: not "
+                    "re-derivable, so not verifiable. `--promote` after you "
+                    "add one", None)
         return "error", "no canonicalQuery: this golden cannot be re-derived", None
     if a.rewrite:
         q = rewrite_table_refs(q)
