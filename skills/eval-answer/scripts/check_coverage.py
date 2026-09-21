@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as futures
+import hashlib
 import json
 import pathlib
 import re
@@ -668,6 +669,15 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raise SystemExit("pass --model <path>, or --publisher with --package")
 
+    # What was measured, pinned by content. Coverage is sold as a per-version
+    # trend, and a trend needs each point tied to the bytes behind it: a
+    # `--model <dir>` run stamped `version: null` and named no path, so two
+    # runs reading 38% and 62% could not afterwards be told apart. The sha is
+    # over the same text the agent is shown, which is already in memory.
+    model_source = (str(a.model_path.resolve()) if a.model_path
+                    else f"{a.publisher} {a.environment}/{a.package}")
+    model_sha = hashlib.sha256(model.encode()).hexdigest()
+
     cases = [json.loads(l) for l in (a.set_dir / "cases.jsonl").read_text()
              .splitlines() if l.strip()]
     if a.only:
@@ -695,6 +705,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.out:
         a.out.write_text(json.dumps(
             {"version": a.version, "set": str(a.set_dir),
+             "modelSource": model_source, "modelSha256": model_sha,
              "agentModel": a.agent_model, **s, "cases_detail": rows,
              **({"labelComparison": serialisable(cmp)} if cmp else {})},
             indent=2))
