@@ -1157,6 +1157,77 @@ source: ext is base extend {}
       }
    });
 
+   // A `duckdb.sql(...)` source is a `sql_select` struct, not a table, and the
+   // filter has to graft a `where:` onto it the same way. Worth its own case
+   // because the two routes reach it differently: the lock is DECIDED and never
+   // needs a graft target at all, so a lock over an inline-SQL source would pass
+   // even if the graft were broken for this struct kind.
+   it("an `#(access_filter)` grafts onto an inline-SQL source, not just a table", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ORGS :: string[]
+
+#(access_filter) org_id in $ORGS
+source: inline_src is duckdb.sql("select id, org_id from accounts") extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const one = await rowsFor(
+            model,
+            "inline_src",
+            { ORGS: ["org1"] },
+            "id, org_id",
+         );
+         const both = await rowsFor(
+            model,
+            "inline_src",
+            { ORGS: ["org1", "org2"] },
+            "id, org_id",
+         );
+         const none = await rowsFor(
+            model,
+            "inline_src",
+            { ORGS: [] },
+            "id, org_id",
+         );
+         expect(ids(one)).toEqual([1, 2, 3]);
+         expect(ids(both)).toEqual([1, 2, 3, 4, 5, 6]);
+         // The filter's own denial shape, on this struct kind too: an empty
+         // answer rather than a refusal.
+         expect(none).toHaveLength(0);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a lock and a filter together on an inline-SQL source: refused first, then narrowed", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: string[]
+  ORGS :: string[]
+
+#(authorize) 'finance' in $GROUPS
+#(access_filter) org_id in $ORGS
+source: inline_src is duckdb.sql("select id, org_id from accounts") extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expectRefused(model, "inline_src", {
+            GROUPS: [],
+            ORGS: ["org1"],
+         });
+         const rows = await rowsFor(
+            model,
+            "inline_src",
+            { GROUPS: ["finance"], ORGS: ["org1"] },
+            "id, org_id",
+         );
+         expect(ids(rows)).toEqual([1, 2, 3]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
    it("the same given may be reused across the two routes — scoping is per route", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
