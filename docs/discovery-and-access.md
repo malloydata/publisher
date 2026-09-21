@@ -118,7 +118,9 @@ declaring either gets a load-time warning naming the replacement.
 
 Declaring `"explores": []` is a third, explicit state: an empty array means "do not curate", and it
 suppresses the convention. A package is uncurated by default only when it has no `explores` key
-**and** no `index.malloy`.
+**and** no `index.malloy`. Beside an `index.malloy` that empty array is the supported way to keep a
+package open, and it is the one use of the key that is not deprecated — its load-time message says
+so and tells you not to delete it.
 
 ## Validation
 

@@ -56,10 +56,25 @@ describe("service/package_manifest", () => {
          const { explores, warnings } = resolve([], ["index.malloy"]);
          expect(explores).toEqual([]);
          // Nothing is hidden by an empty surface, so there is no disagreement
-         // to report -- only the key's own deprecation.
+         // to report.
          expect(warnings.some((w) => w.startsWith("This package has an"))).toBe(
             false,
          );
+         // And this author must NOT be told to delete the key: beside an
+         // index.malloy the empty array is the documented opt-out, so deleting
+         // it would curate and bound the package they asked to leave open.
+         const text = warnings.join("\n");
+         expect(text).toContain("keeping this package uncurated");
+         expect(text).toContain("do NOT delete the key");
+         expect(text).not.toContain("then delete the key");
+      });
+
+      it("still deprecates an empty explores when there is no index.malloy to suppress", () => {
+         // Without the file the key suppresses nothing, so it is ordinary
+         // legacy and the ordinary advice applies.
+         const text = resolve([], ["orders.malloy"]).warnings.join("\n");
+         expect(text).toContain("then delete the key");
+         expect(text).not.toContain("keeping this package uncurated");
       });
 
       it("only counts a root index.malloy, not a nested one", () => {

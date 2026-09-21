@@ -454,7 +454,16 @@ export function resolveExplores(input: {
    }
 
    if (declared !== undefined) {
-      warnings.push(EXPLORES_DEPRECATION);
+      if (declared.length === 0 && hasIndexModel) {
+         // The one case where the key is load-bearing rather than legacy.
+         // `explores: []` beside an index.malloy is the documented way to keep
+         // a package uncurated, so the ordinary "delete the key" advice is
+         // exactly backwards here: deleting it hands the surface to the file
+         // the author opted out of. Say what it is doing instead.
+         warnings.push(EXPLORES_EMPTY_SUPPRESSES_CONVENTION);
+      } else {
+         warnings.push(EXPLORES_DEPRECATION);
+      }
       // Only worth reporting a disagreement when there is one to report. An
       // empty array curates nothing, so every model including the index file
       // is still listed and nothing is hidden.
@@ -498,6 +507,23 @@ const EXPLORES_DEPRECATION =
    `exactly as the key does. The key still works and is not going away in this ` +
    `release. Keep it for the one thing the convention cannot express: a ` +
    `surface spanning several files.`;
+
+/**
+ * Said for `"explores": []` in a package that HAS a root index.malloy.
+ *
+ * Not a deprecation. The empty array is the supported way to say "do not
+ * curate", and beside an index.malloy it is the only way, so this author is
+ * using the key for the one job it keeps. Telling them to delete it would
+ * silently curate and bound their package -- the opposite of what they asked
+ * for -- so this says what the key is doing and leaves it alone.
+ */
+const EXPLORES_EMPTY_SUPPRESSES_CONVENTION =
+   `"explores": [] in publisher.json is keeping this package uncurated. It has ` +
+   `an "${INDEX_MODEL_NAME}", which would otherwise be its published surface: ` +
+   `only that file would be listed, and sources it does not export would stop ` +
+   `answering by name. The empty array suppresses that, so every model stays ` +
+   `listed and queryable. This is supported and is the intended way to opt out ` +
+   `-- do NOT delete the key unless you want the convention to take effect.`;
 
 const QUERYABLE_SOURCES_DEPRECATION =
    `"queryableSources" in publisher.json is deprecated. "declared" is already ` +
