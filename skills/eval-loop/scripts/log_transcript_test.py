@@ -309,8 +309,14 @@ class RoundTrip(unittest.TestCase):
 
         differ = {k for k in spawned
                   if k != "transcriptPath" and spawned[k] != rebuilt[k]}
+        # `breaches` differs because a T1 source has no host log to check, so
+        # the isolation checks do not run and contamination is recorded as
+        # "unknown" rather than as clean. `num_turns` because this fixture
+        # passes no turn rows. Everything else is identical, and that is the
+        # claim: what a logged run loses is the prose and the contamination
+        # check, not the tool calls.
         self.assertEqual(differ, {"answer_text", "answer_captured",
-                                  "host_log", "num_turns"})
+                                  "host_log", "num_turns", "breaches"})
 
 
 class Writing(unittest.TestCase):
