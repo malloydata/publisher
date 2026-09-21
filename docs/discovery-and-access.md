@@ -24,7 +24,9 @@ sales/
 ```
 
 `orders_staging` is now a building block: it still compiles, and other models can import, join and
-extend it, but it is not listed and a direct query against it is refused. A package with no
+extend it by importing `orders.malloy`, but it is not listed and a direct query against it is
+refused. A source reached through a join is read as normal — hiding a source does not hide the
+fields a published source joins in. A package with no
 `index.malloy` and no `explores` publishes everything, which is the behavior every package had
 before this convention existed.
 
@@ -38,6 +40,14 @@ before this convention existed.
   closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` expose. A model
   with **no** `export { … }` exports all of its locally-declared top-level sources; declaring
   `export { customers }` lists only `customers` and keeps imported and internal helpers out.
+
+  `export { … }` also decides what an **importing file** can see, which is Malloy's rule rather than
+  Publisher's, and it is the one that surprises people. A file that declares no `export` hands an
+  importer everything it declares, so a hidden source stays importable and joinable from the file
+  that declares it. A file that _does_ declare one hands over exactly that list: importing a model
+  whose `export` omits a source and then referencing it fails to compile with
+  `Reference to undefined object`. So "hidden, not out of reach" means reachable **through a file
+  that exports it, or that exports nothing** — not through any file that happens to mention it.
 
 The two compose: the surface decides which files are listed, and `export { … }` decides which
 sources within a listed file are shown.

@@ -1093,4 +1093,106 @@ export { \`customer-orders\` }`,
          await duckdb.close();
       }
    });
+   it("admits a source re-exported through a CHAIN of files, not just one hop", async () => {
+      // The package-wide union is keyed on definition identity -- the file and
+      // position that DECLARES a name. A re-export chain never moves the
+      // declaration, so admission has to survive any number of hops. One hop is
+      // what every other fixture here exercises; this is the shape a real
+      // package grows into, where index.malloy fronts a layer that fronts a
+      // layer.
+      writeManifest(); // no explores: the convention drives this
+      fs.writeFileSync(
+         path.join(tempDir, "leaf.malloy"),
+         `source: leaf_orders is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+  view: v is { aggregate: total }
+}
+source: leaf_hidden is duckdb.sql("select 1 as id, 5 as n") extend {
+  measure: hn is n.sum()
+  view: hv is { aggregate: hn }
+}`,
+      );
+      // Four hops, each re-exporting only leaf_orders.
+      for (const [file, from] of [
+         ["mid1.malloy", "leaf.malloy"],
+         ["mid2.malloy", "mid1.malloy"],
+         ["mid3.malloy", "mid2.malloy"],
+         ["index.malloy", "mid3.malloy"],
+      ]) {
+         fs.writeFileSync(
+            path.join(tempDir, file),
+            `import "${from}"\n\nexport { leaf_orders }`,
+         );
+      }
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(
+            (await pkg.listModels()).map((m) => m.path as string).sort(),
+         ).toEqual(["index.malloy"]);
+
+         // Declared four files away, still queryable through the surface.
+         const { result } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("leaf_orders", "v", undefined);
+         expect(result.data).toBeDefined();
+
+         // Dropped at the first hop, so it never reaches the surface.
+         await expect(
+            pkg.getModel("index.malloy")!.getQueryResults("leaf_hidden", "hv"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("keeps a hidden source JOINABLE, and its fields readable through the join", async () => {
+      // The promise the docs and the scaffolded template both make: leaving a
+      // source off the surface hides it, it does not put it out of reach. A
+      // published source may still join it, and a query grouping by a joined
+      // field has to return that field's values -- otherwise "still joinable"
+      // is true only in the sense that the package compiles.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "leaf.malloy"),
+         `source: orders is duckdb.sql("select 1 as id, 'acme' as cust, 100 as amt") extend {
+  measure: total is amt.sum()
+}
+source: customers is duckdb.sql("select 'acme' as cid, 'ent' as tier") extend {
+  measure: cn is count()
+  view: by_tier is { group_by: tier; aggregate: cn }
+}`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "leaf.malloy"
+
+source: enriched is orders extend {
+  join_one: c is customers on cust = c.cid
+  view: by_tier is { group_by: c.tier; aggregate: total }
+}
+
+export { enriched }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const { compactResult } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("enriched", "by_tier", undefined);
+         // The value comes from the source that is NOT on the surface.
+         expect(compactResult).toEqual([{ tier: "ent", total: 100 }]);
+
+         // And it is still not queryable in its own right.
+         await expect(
+            pkg
+               .getModel("index.malloy")!
+               .getQueryResults("customers", "by_tier"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
 });
