@@ -200,5 +200,33 @@ class VerifierContract(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
 
 
+class TruthEnvironment(unittest.TestCase):
+    """The truth server is separate and names its environments independently.
+
+    Passing the MODEL server's environment to the audit 404'd every case, the
+    audit exited non-zero, and the acceptance check read that as "this edit
+    may have invalidated a golden" -- so it BLOCKED every cluster and no edit
+    could ever be accepted. run_baseline.py grew --truth-environment for
+    exactly this; this caller had not.
+    """
+
+    SRC = (pathlib.Path(__file__).resolve().parent / "improve.py").read_text()
+
+    def test_the_flag_exists(self):
+        self.assertIn('ap.add_argument("--truth-environment"', self.SRC)
+
+    def test_the_audit_is_given_the_truth_environment(self):
+        self.assertIn('getattr(a, "truth_environment", None) or a.environment',
+                      self.SRC)
+
+    def test_it_falls_back_to_the_model_environment(self):
+        # One server serving both is the ordinary local case, and it must keep
+        # working without the new flag.
+        import argparse as _a
+        ns = _a.Namespace(environment="samples", truth_environment=None)
+        self.assertEqual(
+            getattr(ns, "truth_environment", None) or ns.environment, "samples")
+
+
 if __name__ == "__main__":
     unittest.main()

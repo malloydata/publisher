@@ -175,9 +175,17 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     # and its failure was indistinguishable from a golden the edit really did
     # invalidate. `--environment` too: the verifier's own default is `samples`,
     # which silently verified against the wrong environment on any other set.
+    # The TRUTH server's environment, which is not the model server's. It is a
+    # separate server and names its environments however it likes, so passing
+    # `--environment` here 404'd every case ("Environment 'local' could not be
+    # resolved to a path"), the audit exited non-zero, and the acceptance
+    # check read that as "this edit may have invalidated a golden" and BLOCKED
+    # every cluster. No edit could ever be accepted. `run_baseline.py` grew
+    # `--truth-environment` for exactly this; this caller had not.
     cmd = [sys.executable, str(script.resolve()),
            "--set", str(a.set_dir.resolve()),
-           "--environment", a.environment]
+           "--environment",
+           getattr(a, "truth_environment", None) or a.environment]
     # Appended only when set: passing None here is a TypeError inside
     # subprocess.run, and the two excepts below catch OSError and a timeout,
     # not that -- so it would have crashed improve.py AFTER the model edit,
@@ -334,6 +342,13 @@ def main(argv: list[str] | None = None) -> int:
                          "whole point of the second server. Without it the "
                          "value check does not run and the acceptance check "
                          "blocks")
+    ap.add_argument("--truth-environment", default=None,
+                    help="the environment name on the TRUTH server, when it "
+                         "differs from --environment. That server is separate "
+                         "and names its environments independently; without "
+                         "this the audit 404s on every case and the "
+                         "acceptance check blocks every cluster. Same flag, "
+                         "same reason, as run_baseline.py")
     ap.add_argument("--definitions", type=pathlib.Path, default=None,
                     help="a definition ledger (verify_definitions.py). Passed to "
                          "the golden audit so a set with no truth package can "
