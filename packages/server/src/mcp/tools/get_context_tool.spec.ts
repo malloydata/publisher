@@ -88,7 +88,7 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
       expect(docOnlyText(["# bar_chart"])).toBe("");
       expect(
          docOnlyText([
-            "#(accessFilter) \"$ROLE = 'admin'\"",
+            "#(access_filter) \"$ROLE = 'admin'\"",
             "#(malloy) drillable",
          ]),
       ).toBe("");
@@ -97,18 +97,18 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
    it("keeps only the #(doc) line when mixed with predicate annotations", () => {
       expect(
          docOnlyText([
-            "#(accessFilter) \"$TENANT = 'acme'\"",
+            "#(access_filter) \"$TENANT = 'acme'\"",
             "#(doc) Secured orders.",
          ]),
       ).toBe("Secured orders.");
    });
 
-   it("an #(accessFilter)-only entity produces no embedding text beyond its name", () => {
+   it("an #(access_filter)-only entity produces no embedding text beyond its name", () => {
       // End-to-end: what embeddingText actually sends for a governed,
       // undocumented entity is the humanized name only, never the predicate.
       const embedDoc = docOnlyText([
-         "#(accessFilter) \"$ROLE = 'admin'\"",
-         "#(accessFilter) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
+         "#(access_filter) \"$ROLE = 'admin'\"",
+         "#(access_filter) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
       ]);
       const text = embeddingText({
          kind: "source",
@@ -2909,7 +2909,7 @@ describe("get_context source governance and field types", () => {
       expect("one_line_summary" in customers.source_info).toBe(false);
    });
 
-   it("reports a source's accessFilter gates alongside accessFilter", async () => {
+   it("reports a source's filters and its locks, each under its own field", async () => {
       const model = {
          getSourceInfos: () => [
             {
@@ -2952,8 +2952,8 @@ describe("get_context source governance and field types", () => {
 });
 
 /**
- * A source gated by an unconditional `#(accessFilter) false` / `#(accessFilter)
- * false` needs no caller-supplied given to know nobody is admitted — that is
+ * A source carrying an unconditional `false` on either route needs no
+ * caller-supplied given to know nobody is admitted — that is
  * decidable without trusting anything the caller sent, unlike a real rule
  * (execute_query_tool.ts's `givens` are untrusted MCP-path input). So this
  * source is dropped from the results entirely rather than listed with a gate
@@ -2996,7 +2996,7 @@ describe("get_context accessFilter deny-all drop", () => {
       return payload.sources as SourceCardShape[];
    }
 
-   it("drops a source gated by an unconditional `#(accessFilter) false`", async () => {
+   it("drops a source gated by an unconditional `#(access_filter) false`", async () => {
       const sources = await sourcesFor({
          name: "locked",
          accessFilter: ["false"],
@@ -3004,7 +3004,7 @@ describe("get_context accessFilter deny-all drop", () => {
       expect(sources).toEqual([]);
    });
 
-   it("drops a source gated by an unconditional `#(accessFilter) false`", async () => {
+   it("drops a source gated by an unconditional `#(authorize) false`", async () => {
       const sources = await sourcesFor({
          name: "locked",
          authorize: ["false"],
@@ -3012,13 +3012,13 @@ describe("get_context accessFilter deny-all drop", () => {
       expect(sources).toEqual([]);
    });
 
-   it("drops the case variant `#(accessFilter) FALSE` too — the wire can carry it uppercase", async () => {
+   it("drops the case variant `#(authorize) FALSE` too — the wire can carry it uppercase", async () => {
       // The grammar parser lowercases only for its OWN comparison
       // (authorize_grammar.ts); the effective text it reports back can still
       // be the author's original casing/whitespace.
       const sources = await sourcesFor({
          name: "locked",
-         accessFilter: [" FALSE "],
+         authorize: [" FALSE "],
       });
       expect(sources).toEqual([]);
    });
@@ -3044,14 +3044,14 @@ describe("get_context accessFilter deny-all drop", () => {
    // `isUnconditionalDenyAuthorize` compares against `"false"` only — `true`
    // is a real (if unconditional) gate, not a deny, so it is reported like
    // any other rule rather than dropped.
-   it("does NOT drop a source gated by `#(accessFilter) true` — reports it like an ordinary gate", async () => {
+   it("does NOT drop a source gated by `#(authorize) true` — reports it like an ordinary gate", async () => {
       const sources = await sourcesFor({
          name: "reopened",
-         accessFilter: ["true"],
+         authorize: ["true"],
       });
       expect(sources).toHaveLength(1);
       expect(sources[0].source_info.resource_id.source).toBe("reopened");
-      expect(sources[0].source_info.accessFilter).toEqual([
+      expect(sources[0].source_info.authorize).toEqual([
          { expression: "true", given_names: [] },
       ]);
    });
@@ -3155,7 +3155,7 @@ describe("get_context accessFilter deny-all drop", () => {
       return payload.sources as SourceCardShape[];
    }
 
-   it("drops neither a query entity nor a source card for a query over an `#(accessFilter) false` source", async () => {
+   it("drops neither a query entity nor a source card for a query over an `#(access_filter) false` source", async () => {
       const sources = await viewSourcesFor(
          { name: "locked", accessFilter: ["false"] },
          { name: "q", sourceName: "locked" },
@@ -3163,7 +3163,7 @@ describe("get_context accessFilter deny-all drop", () => {
       expect(sources).toEqual([]);
    });
 
-   it("drops neither a query entity nor a source card for a query over a `#(accessFilter) false` source", async () => {
+   it("drops neither a query entity nor a source card for a query over an `#(authorize) false` source", async () => {
       const sources = await viewSourcesFor(
          { name: "locked", authorize: ["false"] },
          { name: "q", sourceName: "locked" },

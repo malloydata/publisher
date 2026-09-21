@@ -569,7 +569,7 @@ interface ApiSourceWire {
    filters?: unknown[];
    givens?: unknown[];
    authorize?: string[];
-   sourceAuthorize?: string[];
+   accessFilter?: string[];
 }
 interface ApiQueryWire {
    name: string;

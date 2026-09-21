@@ -212,24 +212,25 @@ interface SourceContextEntry {
     */
    givens?: SourceContextGiven[];
    /**
-    * The `#(accessFilter)` gates in force on this source, and the givens each one
-    * reads. Retrieval that offered a gated source without saying so spent a
-    * slot on an entity the caller could not query, and the agent learned that
-    * only from the denial.
+    * The `#(access_filter)` gates in force on this source, and the givens each
+    * one reads. Retrieval that offered a gated source without saying so spent
+    * a slot on an entity the caller could not query, and the agent learned
+    * that only from the denial.
     *
     * Report-only, and never a predicate to evaluate caller-side: the list
     * flattens gates carried in from elsewhere, they are AND-ed rather than
     * OR-ed, and an unattributable gate reports the fail-closed placeholder
     * "false" that no author wrote. Read it as "this source is gated, and these
-    * are the givens to supply". See docs/accessFilter.md.
+    * are the givens to supply". See docs/authorize.md.
     */
    accessFilter?: SourceContextAuthorize[];
    /**
-    * The `#(accessFilter)` route's own gates, reported separately from
-    * `accessFilter` above — a rule about the CALLER rather than the row, ANDed
-    * with any `accessFilter` gate rather than bypassing it. Same report-only
-    * caveats apply. A source gated ONLY by an unconditional deny on either
-    * route never reaches this card at all — see the collector's drop.
+    * The `#(authorize)` locks in force on this source, reported separately
+    * from `accessFilter` above — they decide whether the caller may reach the
+    * source at all, and answer 403 rather than an empty result. Same
+    * report-only caveats apply. A source gated ONLY by an unconditional deny
+    * on either route never reaches this card at all — see the collector's
+    * drop.
     */
    authorize?: SourceContextAuthorize[];
    /** Filters the source declares via `#(filter)`. */
@@ -258,7 +259,7 @@ interface SourceContextFilter {
    required?: boolean;
 }
 
-/** One accessFilter gate, with the givens its expression reads. */
+/** One gate, on either route, with the givens its expression reads. */
 interface SourceContextAuthorize {
    expression: string;
    given_names: string[];
@@ -346,7 +347,7 @@ interface SourceCardInfo {
    docs?: string;
    givens?: SourceContextGiven[];
    accessFilter?: SourceContextAuthorize[];
-   /** The `#(accessFilter)` route's own gates — see `SourceContextEntry.authorize`. */
+   /** The `#(authorize)` locks — see `SourceContextEntry.authorize`. */
    authorize?: SourceContextAuthorize[];
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
@@ -993,7 +994,7 @@ function scopeKeysFor(
 /**
  * Extract ONLY `#(doc)` annotation text, empty when there is none. This is
  * the safe input for embedding: unlike docText it never falls back to the
- * raw annotation lines, so predicate-bearing annotations (`#(accessFilter)`
+ * raw annotation lines, so predicate-bearing annotations (`#(access_filter)`
  * row-level-security rules, tenant lists, `#(malloy)` internals) are never
  * sent to an external embedding provider.
  */
@@ -1348,14 +1349,15 @@ function collectJoinedFields(args: {
 }
 
 /**
- * Whether `apiSource` is gated by an unconditional `#(accessFilter) false` / or
- * `#(accessFilter) false` — on EITHER route, since the two routes AND
- * together and one bare-`false` conjunct denies every caller regardless of
- * the other route or any given supplied. Keys on the deny, not the route, so
- * `#(accessFilter) false` and `#(accessFilter) false` are treated
- * identically. Case- and whitespace-insensitive: the grammar parser
- * lowercases `FALSE` only for its own comparison, so the wire payload can
- * still carry it uppercase (`authorize_grammar.ts`).
+ * Whether `apiSource` is denied unconditionally — on EITHER route, since the
+ * two routes AND together and one bare-`false` conjunct denies every caller
+ * regardless of the other route or any given supplied. Only `#(authorize)`
+ * accepts a `false` an author wrote; the filter route can still carry one as
+ * the fail-closed placeholder for an unattributable gate, which denies just
+ * as absolutely, so this keys on the deny rather than the route. Case- and
+ * whitespace-insensitive: the grammar parser lowercases `FALSE` only for its
+ * own comparison, so the wire payload can still carry it uppercase
+ * (`authorize_grammar.ts`).
  */
 function isUnconditionalDenyAuthorize(apiSource: {
    accessFilter?: string[];
@@ -1411,7 +1413,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       const sourceInfos = model.getSourceInfos() ?? [];
       const queries = model.getQueries() ?? [];
       // The compiled ApiSource carries what SourceInfo does not: the givens in
-      // scope and the accessFilter gates in force. Keyed by name so the card can
+      // scope and the gates in force. Keyed by name so the card can
       // pick up its own, and read defensively because a spec's model stand-in
       // implements only the two accessors above.
       const apiSources = model.getSources?.() ?? [];
@@ -1430,8 +1432,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
-         // An unconditional `#(access_filter) false` / `#(accessFilter) false`
-         // (either route, any case/whitespace — see isUnconditionalDenyAuthorize)
+         // An unconditional `false` on either route (any case/whitespace —
+         // see isUnconditionalDenyAuthorize)
          // denies every caller with no given able to change that, so there is
          // nothing this card can offer an agent that queries it. Drop the
          // source entirely rather than list it and let the agent learn only

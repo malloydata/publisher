@@ -777,7 +777,7 @@ export class Model {
          this.entryPointGatesBySource = new Map();
       }
       // Make introspection agree with enforcement. `sources[].authorize` and
-      // `sources[].sourceAuthorize` are serialized to the API and read by
+      // `sources[].accessFilter` are serialized to the API and read by
       // downstream enforcers, so leaving the narrower extraction-time value
       // there reports a gated source as unrestricted — the more dangerous of
       // the two possible errors. Mutating in place (rather than at the API
