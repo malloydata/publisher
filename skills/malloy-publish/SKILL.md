@@ -69,7 +69,13 @@ export { orders, customers }
 
 What it exports is what agents discover **and** what may be queried. Everything else still compiles, and other models can import, join and extend it, but a direct query against it is refused with a 404 - indistinguishable from a source that does not exist. Reach for this when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on, or querying, them directly.
 
-**Address queries to the surface.** Once a package has an `index.malloy`, `.../models/staging.malloy/query` is no longer a query entry point. Use `.../models/index.malloy/query`.
+**Address queries to the surface.** Once a package has an `index.malloy`, `.../models/staging.malloy/query` is no longer a query entry point, *even for a source that file declares itself*. Use `.../models/index.malloy/query`. If you are debugging a refusal rather than authoring, `skill:malloy-source-unreachable` covers the three ways a source can be out of reach and how to tell them apart.
+
+**A surface can be layered.** An `index.malloy` may front a file that fronts another. A source re-exported through a chain of files stays queryable through the surface at any depth, because admission follows the declaration rather than the path taken to it.
+
+**Curation hides a landing point, not a column.** A published source may `join` an unpublished one, and a query grouping by a joined field returns that field's values normally. If a column must not be readable, do not join it into something you publish; gate it with `#(authorize)` instead.
+
+**Leaving a source out does not put it out of reach, but there is a condition.** `export { ... }` also decides what an *importing* file may see, which is Malloy's rule rather than Publisher's. A file that declares no `export` hands an importer everything it declares, so an unpublished source stays importable and joinable from the file that declares it. A file that *does* declare one hands over exactly that list: importing a file whose `export` omits a source and then naming it fails to compile with `Reference to undefined object`. Put an `export` on a mid-layer file only when you mean to narrow what its importers can build on, not just what Publisher lists.
 
 **About `export { … }`:** the surface filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, and the two compose. You usually don't write it in a leaf model: a file with **no** `export` exposes all of its own top-level sources. It must appear after the definitions it names. See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
 

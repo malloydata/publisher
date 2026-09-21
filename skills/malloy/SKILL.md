@@ -45,6 +45,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
 | `skill:malloy-analysis-report` | Combining validated queries into a notebook report or dashboard |
 | `skill:malloy-analysis-pitfalls` | Checking a query and its results before presenting an answer |
+| `skill:malloy-source-unreachable` | A source is missing from discovery, or a query was refused with a 404 or 403 |
 | `malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells. Ships in `analysis`. |
 | `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |
 
