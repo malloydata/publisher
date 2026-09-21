@@ -328,6 +328,32 @@ export class Package {
       return !!(explores && explores.length > 0);
    }
 
+   /**
+    * True when this package's surface is its `index.malloy`, which is what the
+    * convention produces when the manifest declares no `explores`.
+    *
+    * Derived from the tree and the resolved surface rather than from a stored
+    * origin, deliberately: nothing records where a surface came from, and
+    * nothing should. The question this answers is not "who wrote it" but "is
+    * there an index.malloy the author is looking at", and that has the same
+    * answer either way -- an author who wrote `explores: ["index.malloy"]`
+    * edits the same file.
+    *
+    * Used ONLY to pick the wording of a warning's remedy. Every message that
+    * says "add it to 'explores'" is advice with no target for a package that
+    * has no such key, and a dashboard file cannot be exported from an
+    * index.malloy at all. It must never gate behavior: the surface behaves
+    * identically whichever source produced it.
+    */
+   private surfaceIsIndexModel(): boolean {
+      const explores = this.packageMetadata.explores;
+      return (
+         this.models.has(INDEX_MODEL_NAME) &&
+         explores?.length === 1 &&
+         explores[0] === INDEX_MODEL_NAME
+      );
+   }
+
    /** The declared explore set, or null when discovery is uncurated. */
    private exploreSet(): Set<string> | null {
       const explores = this.packageMetadata.explores;
@@ -2024,12 +2050,16 @@ export class Package {
             warnings.push({
                model: modelPath,
                message:
-                  `Model "${modelPath}" is listed in explores but exposes ` +
-                  `nothing: its export closure surfaces no sources or named ` +
-                  `queries (typically an import-only file, or an export {} ` +
-                  `that filters everything out). Add e.g. ` +
-                  `'export { source_name }' to surface sources on this ` +
-                  `model, or remove it from explores.`,
+                  `Model "${modelPath}" is on this package's discovery ` +
+                  `surface but exposes nothing: its export closure surfaces ` +
+                  `no sources or named queries (typically an import-only ` +
+                  `file, or an export {} that filters everything out). Add ` +
+                  `e.g. 'export { source_name }' to surface sources on this ` +
+                  `model, or ` +
+                  (this.surfaceIsIndexModel()
+                     ? `delete the file, which returns the package to ` +
+                       `listing every model.`
+                     : `remove it from explores.`),
             });
          }
       }
@@ -2800,11 +2830,7 @@ export class Package {
             // question is whether there is an index.malloy the author is
             // looking at, and that is the same answer whether they wrote the
             // key or the server derived it.
-            const surfaceIsIndexModel =
-               this.models.has(INDEX_MODEL_NAME) &&
-               this.packageMetadata.explores?.length === 1 &&
-               this.packageMetadata.explores[0] === INDEX_MODEL_NAME;
-            const remedy = surfaceIsIndexModel
+            const remedy = this.surfaceIsIndexModel()
                ? `This package's surface is "${INDEX_MODEL_NAME}", and a ` +
                  `dashboard file cannot be exported from it -- dashboards are ` +
                  `files, not sources. To serve this one, declare an ` +

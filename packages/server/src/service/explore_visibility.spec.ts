@@ -436,9 +436,12 @@ export { customers }`,
          expect(warnings.length).toBe(1);
          expect(warnings[0].model).toBe("consumer.malloy");
          expect(warnings[0].message).toContain(
-            `Model "consumer.malloy" is listed in explores but exposes nothing`,
+            `Model "consumer.malloy" is on this package's discovery surface but exposes nothing`,
          );
          expect(warnings[0].message).toContain("export { source_name }");
+         // This package DECLARES its surface, so the remedy names the key.
+         // A convention package has none, and gets "delete the file" instead.
+         expect(warnings[0].message).toContain("remove it from explores");
          // Advisory warnings also ride the package metadata (the QA gap:
          // exploresWarnings said none while a listed file surfaced nothing).
          expect(
