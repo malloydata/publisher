@@ -39,7 +39,6 @@ import {
 import {
    assertNoAuthorizeNearMisses,
    authorizeAnnotationRoute,
-   authorizeAnnotationSpellingAsWritten,
    collectAuthorizeExprsForRoute,
    collectAuthorizeNearMissesAllRoutes,
    containsAuthorizeAnnotationTag,
@@ -575,7 +574,7 @@ export function extractSourcesFromModelDef(
             kind: "file",
             route:
                fileNoteTexts
-                  .map((text) => authorizeAnnotationSpellingAsWritten(text))
+                  .map((text) => authorizeAnnotationRoute(text))
                   .find((r): r is string => r !== undefined) ??
                ACCESS_FILTER_ROUTE,
          });
@@ -836,7 +835,7 @@ export function extractSourcesFromModelDef(
                   route:
                      fieldAuthorizeNotes
                         .map((note) =>
-                           authorizeAnnotationSpellingAsWritten(note.text),
+                           authorizeAnnotationRoute(note.text),
                         )
                         .find((r): r is string => r !== undefined) ??
                      ACCESS_FILTER_ROUTE,
@@ -857,7 +856,7 @@ export function extractSourcesFromModelDef(
                route:
                   fieldAuthorizeNotes
                      .map((note) =>
-                        authorizeAnnotationSpellingAsWritten(note.text),
+                        authorizeAnnotationRoute(note.text),
                      )
                      .find((r): r is string => r !== undefined) ??
                   ACCESS_FILTER_ROUTE,
@@ -909,7 +908,7 @@ export function extractQueriesFromModelDef(modelDef: ModelDef): {
          name: queryObj.as || queryObj.name,
          route:
             ownLevelNoteTexts(queryObj.annotations)
-               .map((text) => authorizeAnnotationSpellingAsWritten(text))
+               .map((text) => authorizeAnnotationRoute(text))
                .find((r): r is string => r !== undefined) ??
             ACCESS_FILTER_ROUTE,
       }));

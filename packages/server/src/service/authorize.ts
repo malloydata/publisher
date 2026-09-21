@@ -270,26 +270,9 @@ function authorizeNoteContent(
  *  all. A throw-free way to ask "which route" for a note already known to
  *  pass {@link containsAuthorizeAnnotationTag} — unlike
  *  {@link parseAuthorizeAnnotation}, this never throws on an empty body.
- *  A `#(authorize)` note reports `access_filter`; for the spelling as the
- *  author wrote it, see {@link authorizeAnnotationSpellingAsWritten}. */
+ */
 export function authorizeAnnotationRoute(text: string): string | undefined {
    return authorizeNoteContent(text)?.route;
-}
-
-/**
- * The route spelling as the author WROTE it, PRE-canonicalization — so
- * `#(authorize)` reports `authorize`, not `access_filter`.
- *
- * Named loudly because it must never back a decision: everything that groups,
- * walks, keys or enforces goes through {@link authorizeAnnotationRoute}. Its
- * one job is telling an author which spelling THEY used, for the deprecation
- * notice `package_load_worker.ts` emits.
- */
-export function authorizeAnnotationSpellingAsWritten(
-   text: string,
-): string | undefined {
-   const written = noteRoute(text);
-   return canonicalAuthorizeRoute(written) === undefined ? undefined : written;
 }
 
 /**
@@ -1279,14 +1262,12 @@ export function collectAuthorizeExprsForRoute(
  *  quotes). `gates` is the parsed body of each such annotation the source
  *  declares OWN (not inherited), in declaration order — quotes and all, as
  *  authored, which is what {@link assertNoLegacyStringGate} names as the
- *  offending text before emitting its unquoted rewrite. Each gate carries two
- *  routes: `writtenRoute` is the tag as it appears in the author's file, which
- *  is what the quoted-back offending line must use, and `route` is the
- *  canonical one the rewrite should be written in — so a `#(authorize)` author
- *  is shown their own line and moved to `#(access_filter)` in one step. */
+ *  offending text before emitting its unquoted rewrite. One route per gate:
+ *  every recognized spelling is canonical, so the tag in the author's file and
+ *  the tag the rewrite should be written in are the same tag. */
 export interface LegacyStringGateFinding {
    sourceName: string;
-   gates: { route: string; writtenRoute: string; expr: string }[];
+   gates: { route: string; expr: string }[];
 }
 
 /**
@@ -1323,17 +1304,8 @@ export function findLegacyStringGates(
          return content !== undefined && isLegacyQuotedPayload(content.content);
       });
       if (legacyNotes.length === 0) continue;
-      // Per note, so each gate keeps the spelling its own note was written in
-      // alongside the canonical route — a bulk call would only report the
-      // canonical one, and the offending line quoted back to the author has to
-      // be the line that is actually in their file.
       const gates = legacyNotes.flatMap((note) =>
-         collectAuthorizeExprs([note.text]).map(({ route, expr }) => ({
-            route,
-            writtenRoute:
-               authorizeAnnotationSpellingAsWritten(note.text) ?? route,
-            expr,
-         })),
+         collectAuthorizeExprs([note.text]),
       );
       if (gates.length > 0) {
          found.push({ sourceName, gates });
@@ -1380,8 +1352,8 @@ export function assertNoLegacyStringGate(
    const rewrites = found
       .flatMap(({ sourceName, gates }) =>
          gates.map(
-            ({ route, writtenRoute, expr }) =>
-               `  - source "${sourceName}": replace \`#(${writtenRoute}) ${expr}\`` +
+            ({ route, expr }) =>
+               `  - source "${sourceName}": replace \`#(${route}) ${expr}\`` +
                ` with\n      #(${route}) ${unquoteLegacyGatePayload(expr)}`,
          ),
       )
