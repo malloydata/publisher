@@ -40,6 +40,8 @@ function declaration(
       declaredMergeKey: false,
       watermarkOrderable: false,
       mergeKeys: [],
+      scopeColumns: [],
+      scopeIncomplete: false,
       watermarkInMergeKeys: false,
       malformed: [],
       unknownKeys: [],

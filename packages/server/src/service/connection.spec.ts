@@ -24,6 +24,7 @@ import {
    resolveProxiedTls,
    testConnectionConfig,
    isExpiredCredentialError,
+   redactTestFailure,
 } from "./connection";
 import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
@@ -3117,5 +3118,59 @@ describe("isExpiredCredentialError", () => {
       expect(isExpiredCredentialError("ExpiredToken as a bare string")).toBe(
          true,
       );
+   });
+});
+
+/**
+ * The connection test resolves every failure into a ConnectionStatus rather than
+ * throwing, so this function -- not the controller's catch -- is what decides
+ * whether a credential reaches the caller. Pinned here for that reason.
+ *
+ * Driven with the driver text rather than through a live attempt: which message
+ * a driver produces depends on how far it gets, and the ones reachable against
+ * an unroutable host fail before they embed anything. A test that asserted on
+ * those would pass whether or not the redaction ran.
+ *
+ * Values below are generated fixtures, never real credentials.
+ */
+describe("redactTestFailure", () => {
+   const PG_PASSWORD = "pg-password-sentinel-9ty9u5";
+   const SSH_KEY = "ssh-private-key-sentinel-0uz0v6";
+
+   const config = {
+      name: "analytics",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.internal",
+         userName: "analytics_ro",
+         password: PG_PASSWORD,
+      },
+      proxy: { type: "ssh", ssh: { host: "bastion", privateKey: SSH_KEY } },
+   };
+
+   it("removes the exact credential values this request supplied", () => {
+      const msg =
+         `connection failed for postgres://analytics_ro:${PG_PASSWORD}@db.internal:5432/a` +
+         ` using key ${SSH_KEY}`;
+      const out = redactTestFailure(msg, config);
+      expect(out).not.toContain(PG_PASSWORD);
+      expect(out).not.toContain(SSH_KEY);
+      // The non-secret half is what makes the failure diagnosable.
+      expect(out).toContain("db.internal");
+      expect(out).toContain("analytics_ro");
+   });
+
+   it("still redacts a credential the config did not carry", () => {
+      // The value pass cannot see this one; the shape pass is the backstop.
+      const out = redactTestFailure(
+         'auth failed: {"accessToken":"token-sentinel-1va1w7"}',
+         config,
+      );
+      expect(out).not.toContain("token-sentinel-1va1w7");
+   });
+
+   it("leaves a failure carrying no credential untouched", () => {
+      const msg = "getaddrinfo ENOTFOUND db.internal";
+      expect(redactTestFailure(msg, config)).toBe(msg);
    });
 });

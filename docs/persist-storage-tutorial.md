@@ -637,7 +637,14 @@ refuses them at build time rather than producing a subtly wrong table. In the
 **auto-run** flow shown here the refusal surfaces as a **failed materialization**
 (`status: FAILED`, reason in `error`); the **orchestrated** build path (a
 caller-supplied `buildInstructions`) returns the same refusal synchronously as
-**HTTP 422**. Add a given-filtered persist source and materialize it:
+**HTTP 422**.
+
+A given is refused when the **build** would substitute its value — here, because
+the persisted query itself reads it. A given in the source's extend block is a
+different matter: it is left out of the build and applied per caller when the
+artifact is read, so such a source materializes and serves normally (see
+[materialization.md § Tenant-scoped sources](materialization.md#tenant-scoped-sources-where-a-given-may-sit)).
+Add the refused form and materialize it:
 
 ```bash
 cat > "$ENVDIR/persist-tutorial/givens.malloy" <<'MALLOY'
@@ -662,12 +669,15 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 ```json
 {
   "status": "FAILED",
-  "error": "Source 'secret_rollup' cannot be materialized into a storage destination: it references a given. Givens bind per query and are used for row-level access control, so a materialized-once table served to everyone would leak filtered rows across tenants. This is refused for safety. Serve this source live (drop 'storage=')."
+  "error": "Source 'secret_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read."
 }
 ```
 
 The build fails with a clear, actionable message — and the package keeps
-serving. Remove `givens.malloy` and reload to continue.
+serving. The message names the move that fixes it: writing the source as
+`orders_g -> { aggregate: … } extend { where: region = $region_filter }` puts the
+term where the build leaves it out, and the source materializes. Remove
+`givens.malloy` and reload to continue.
 
 The other refusal is an **unbound (free) parameter** — a source with a free
 parameter is a template with no single relation to freeze:

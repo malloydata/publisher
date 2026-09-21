@@ -198,11 +198,47 @@ source: admitted is raw -> { select: * } extend { where: org_id = $ORG_ID }
 
 **On upgrade**, such a package keeps loading and its source keeps serving — live, correctly, per caller. What changes is that its materialization run now 422s with the refusal, and an artifact built before the upgrade is unbound on the next reload rather than served. Moving the given out of the persisted query restores materialization; the refusal message names the placement.
 
-The `storage=` tier still refuses a given reference in any position, so what it accepts is unchanged. One reported value shifts: a `#@ preaggregate` rollup that also declares `storage=` runs the colocated check first, so a refusal that read `given` now reads `given_in_persisted_query`. Same refusal, different label.
+The `storage=` tier applies the same rule, and only that rule — see the storage-tier note below, which ships in this release and replaces its blanket refusal of any given reference. `given_in_persisted_query` is therefore raised by both gates, for the one condition both share: the build would substitute a value.
 
 **A new `reason` value.** Refusals are reported on the build plan, and this adds `given_in_persisted_query` to that enum. A consumer generating a strict client from an older copy of the spec can fail to parse a package whose plan carries it — which happens only for a package that actually has the refused shape. Regenerate against this release's `api-doc.yaml`, or expect the value.
 
 ---
+
+## [Unreleased] — an incremental refresh can no longer write another caller's rows
+
+**This fixes a bug that is reachable today**, on a colocated `#@ persist`. If a source is scoped by a given and also declares `merge_key=`, its incremental refresh could match rows belonging to other callers — and update them.
+
+The key is the reason. `merge_key=` names what makes a row the same row, and an author chooses it against the source **as they wrote it**: filtered to one caller. `order_id` unique within an org is a reasonable identity for a per-tenant relation and reads that way in the model. The stored table is not that relation. A source's extend-block `where:` is not part of what the build persists, so the table holds every caller's rows and the term is re-applied per caller at read. That is the design, and for reads it is sound — but it leaves the author's key ambiguous over what was actually stored, where one `order_id` now occurs once per tenant. The refresh then issues `MERGE INTO <table> ON <the author's key>`, which matches across tenants. A cross-caller WRITE, not a read leak.
+
+Nothing in the incremental path noticed. The existing guard forces a rebuild when a merge key is NARROWED, because rows the old key separated must not silently merge; here the key is unchanged and the POPULATION widened underneath it, which is not a case that check was built to see.
+
+**What you would have seen.** On a colocated table in Postgres, a failed build: `MERGE command cannot affect row a second time`. The warehouse refused the ambiguous match, so the refresh was unavailable rather than wrong. That guard is the target warehouse's, not ours, and DuckDB has none — so the same shape on a `storage=` destination completed and left the rows wrong, with one caller's row destroyed and another's duplicated. No error, and the serve path reporting storage as usual. (A `storage=` destination could not hold a caller-scoped source before this release, so only the colocated case is reachable on 0.4.0.)
+
+**The fix keeps your key.** The merge's match now also carries the columns the source's stripped terms constrain, so the effective identity is the key you declared plus the scope the artifact was widened past. `merge_key=` keeps meaning what you wrote it to mean, and nothing in the model changes.
+
+Scoping is all-or-nothing. A term that names no column of the source — one reaching through a join — refuses the source at publish (`merge_key_scope_unresolved`) rather than scoping by the remaining terms, which would narrow the match without closing it. Scope such a source with a term over its own columns, or drop `merge_key=` to refresh by watermark range.
+
+**A rollup over a caller-scoped source now refuses on its own grounds** (`preaggregate_over_dynamic_source`). Such a rollup already refused, but as a `given_in_persisted_query`, whose advice — move the given into the source's extend block — leads nowhere for a rollup, because that is where it already is: building the rollup reads the source, which applies that `where:` and substitutes the default. Unlike a persisted source, a rollup has no read-time re-application to put the term back, and no shape compile to fail closed if one were expected.
+
+---
+
+## [Unreleased] — a tenant-scoped source can be materialized into a storage destination
+
+A source scoped to the caller — `where: org_id = $ORG_ID` — was refused for `storage=` outright, because any given reference was a refusal. That took the tier away from every multi-tenant model, which is most of the models worth materializing. Such a source now builds **once**, holding every tenant's rows, and is served per caller.
+
+The refusal was aimed at the right danger and drawn in the wrong place. A persist source's build SQL is the persisted relation alone: an extend-block `where:` is not in it, so the given was never frozen into the artifact. What the build DOES substitute is a given the persisted query reads, and only the declaration's default is available then — so those rows are one caller's, and every later caller gets them. That shape is still refused, now as `given_in_persisted_query`, with a message naming the move that fixes it. It fires however the given reaches the query, including through the source the query reads.
+
+**Three positions are refused although the build leaves them out too**: a declared `dimension:`/`measure:` (`dynamic_projection`), a join's `on:` (`dynamic_join`), and a given-scoped source reached through a join (`dynamic_joined_where`). None is in the artifact; each is refused because whether the serve shape reproduces it is a separate question, not yet answered.
+
+**New: `#@ persist partition="org_id"`** lays the stored table out as one directory per value, so an equality term on that column reads only the files it names; `partition="org_id,day"` nests in the order given. It is a layout and carries no isolation — every stripped term is re-applied at read whether or not its column is partitioned, so a list that omits the scoping column costs a scan, never a leak. Each name must be a public column of the source, and `partition=` without `storage=` is refused rather than ignored.
+
+**Serving change:** the transient serve-shape model now declares the author model's givens (defaults included), and a routed query no longer has its given values withheld. That withholding was correct only while the shape was built from given-free sources; a re-emitted `where:` that reads a given needs the value to reach it.
+
+**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely *reached* a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
+
+**A refused `#@ persist` now reaches its author.** A refusal was computed, recorded on the build plan and read by nobody: the package published, the source was served live, and whoever wrote the annotation was told nothing. Each one is now a package warning carrying the gate's own message — the same list the package page's notices surface. It is the one materialization finding the build plan cannot also be read for, since a refused `storage`/`colocated` source is absent from `sources` entirely, so nothing there records that the annotation was written at all.
+
+Refusal reasons added to the eligibility enum: `given_in_persisted_query`, `dynamic_projection`, `dynamic_join`, `dynamic_joined_where`, `partition_without_storage`, `partition_column_unknown`, `partition_column_not_public`, `merge_key_scope_unresolved`, `preaggregate_over_dynamic_source`. A source previously refused as `given` now reports one of these.
 
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
@@ -216,9 +252,9 @@ A materialization is a run of one package's persist sources: `package_name` is N
 
 The dashboard builder shipped in 0.3.1 with an Export button: it handed back a copy of the file for someone to put in the package by hand. The Console now closes the loop instead.
 
-**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled *as the file* and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
+**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled _as the file_ and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
 
-The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means *create*, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
+The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means _create_, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
 
 **Like every write on this server it is unauthenticated** and belongs behind the gateway; `frozenConfig` turns it off. It opens no door that was shut — a caller who can reach it can already register a package — and it is recorded in [docs/security-posture.md](docs/security-posture.md).
 
@@ -380,14 +416,14 @@ height says which rule it took.
 
 The bundled examples, the dashboards doc and the `malloy-dashboards` skill all named the givens a
 dashboard uses (`import { CATEGORY, BRAND, … } from '../givens.malloy'`). They import the file whole
-now. A control renders for a given the tiles actually *reference*, not for every one in scope, so
+now. A control renders for a given the tiles actually _reference_, not for every one in scope, so
 the whole-file form brings no controls you did not ask for, and a named list only gives an author
 something to forget — with a missing control, not an error, as the result. It is also what Malloyyo
 documents for the same format, so a repo written for either side reads the same. Sources are
 unchanged and still named individually, which is the right form where a file wants a few specific
 things.
 
-Nothing about where a given is *declared* changes: that is the model, and `givens.malloy` is where a
+Nothing about where a given is _declared_ changes: that is the model, and `givens.malloy` is where a
 package keeps it, because the MCP surface, row-level access and `#(authorize)` all read it. The doc
 now also records that declaring one in a dashboard file works — the control renders and the tile
 filters — for a page that owns its own knob. That is the exception, not the convention.
@@ -514,6 +550,107 @@ it comes out: when the extension exposes the options
 ([iqea-ai/duckdb-snowflake#66](https://github.com/iqea-ai/duckdb-snowflake/issues/66))
 or the driver bounds its read-ahead by consumption as its documentation already
 implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/issues/197)).
+
+---
+
+## [Unreleased] — the dashboard editor can now filter a tile whose view is written inline
+
+A dashboard tile's filter control used to refuse to bind on an `inline` tile — `view: x
+is { aggregate: … }` — because the only write path was a `+ { where: … }` refinement
+after the view reference, which does not exist to append to when there is no reference.
+That excluded the majority of real dashboards: writing a view's body inline, rather than
+as a named reference, is the common way people write one, and the bundled
+`tiled.malloy` fixture is entirely inline tiles.
+
+The fix is a second write path, not a workaround: a binding on an inline tile is now a
+depth-1 `where:` statement inside the body's own first stage, which is valid Malloy and
+reads back exactly like a reference tile's refinement does. Only that shape is
+recognized — a nested `where:` inside a `nest:`, a compound predicate such as `where: a
+~ $A and c = 1`, and a source-level `where:` outside any view are all left exactly as
+written, never touched and never reported as a binding. Where a body has more than one
+stage, only the first is the tile's own: `{ … } -> { … }` takes its binding in stage one
+and nothing is ever written into a later stage, while a body with no single first stage
+-- a `{ … } + { … }` compound refinement, or a pipeline starting from a named view --
+refuses a filter change with a reason naming the shape.
+
+Recognizing that shape is a question about statements, and every scan here reads a line
+at a time, so the two can disagree: a clause list or a predicate carried onto a second
+line (`where: a ~ $A,` then `b ~ $B`) is only half-visible to a line-oriented reader.
+Such a `where:` is now unmodeled Malloy on both write paths -- read past, written around,
+never rewritten -- because rewriting the half that was read would strand the half that
+was not. The same isolation rule now governs a `+ { where: … }` refinement, which
+previously matched binding clauses anywhere in the refinement with no such check.
+
+Two guards back that up. A given already filtered on by a `where:` the builder does not
+manage cannot also be bound as a managed clause, because the two would filter on the same
+control while only one could ever be unbound again; that is refused with a reason naming
+the given. And every rewrite is now parsed by Malloy before it is written: a file that
+parsed before the edit must still parse after it, or nothing is written. That check sees
+the whole file, which the existing read-back gate cannot -- the gate compares tiles, tags
+and filters, so text stranded beside a clause it rewrote is invisible to it.
+
+**What the live editor shows while you work:** adding a filter to an inline tile previews
+correctly. Removing or changing one does not take effect in the preview until the file is
+saved, because the tile's preview runs the saved view, whose body already holds the saved
+`where:`, and the builder has no way to name that view unbound. A reference tile is exact
+either way, because it refines its base view. The saved result is correct in every case;
+this is the preview only.
+
+**Consequence for an existing file:** an author's own `where: x = $Y` written at depth 1
+of an inline view's first stage is now builder-managed the same way a reference tile's
+refinement already was. Once that filter's control is touched through the builder and
+the file is saved, that `where:` is regenerated from the control's bindings rather than
+preserved verbatim — the same contract a reference tile's refinement already had, now
+extended to the more common inline shape.
+
+**Comments, in all three spellings Malloy accepts.** `//`, `--` and `/* … */` are all comments
+to Malloy's lexer, and the builder knew only about `//`. Two consequences are fixed. A
+`/* … */` was absent from the comment index, so it was invisible to every guard that asks
+whether a range about to be deleted holds one: removing a filter across a block comment deleted
+it and reported success. And a `--` or `/* … */` line written between a `#` tag and the
+declaration it annotates stopped the walk that finds a tile's tags, while the parser read
+straight past it — so a retag wrote a **second** `# colspan` below the comment, the reader read
+the lower one back, and the read-back gate was satisfied by a file now carrying two. That
+hand-written walk is gone; where a tag block begins now comes from the lexer, which also
+means a line inside a `/* … */` that happens to begin `#` is read as the prose it is rather
+than as a tag to report or rewrite.
+
+**A tile the builder cannot bind is no longer described as somebody else's.** A `->` pipeline
+from a named view, or a chained `vx + { … } + { … }` where no one block is where a binding
+belongs, is declared right there in the dashboard file — but the tile menu said it was declared
+on its source, which is untrue and hid the fact that its tags are the builder's to write. Such a
+tile now reads as declared here, with the shape named; its label, subtitle, colspan and position
+stay editable like any other tile's, only the filter control is off, and the reason a filter
+change gives points at the body rather than sending you to the model file.
+
+**One rule for the three removal paths.** Removing every clause of a `where:` used to delete a
+comment written inside it, or leave one trailing it stranded above the closing brace, while
+collapsing a refinement over a comment refused. All three now answer the same question the same
+way: a comment goes only with a declaration you asked to delete outright — removing a **tile**
+still takes its own comments with it, and the builder shows that diff before a structural save
+— while a filter edit, which rewrites a declaration that stays, refuses rather than destroying
+or stranding a comment it was not asked about, and names the comment in the reason.
+
+---
+
+## [Unreleased] — `DashboardEditor` takes a `resourceUri`, and can now open a pinned version
+
+`DashboardEditor` was the only resource-addressed component in the SDK still taking loose
+`environmentName` / `packageName` props, under a `dashboardName` that disagreed with
+`Dashboard`'s own `dashboard` for the same slug, and with no way to pin a `versionId` the
+way every other resource-addressed component can. It now takes `resourceUri` + `dashboard`,
+matching `Dashboard` exactly; the old `environmentName` / `packageName` / `dashboardName`
+form still works, deprecated rather than removed, so an existing integration is unaffected.
+
+A `versionId` on the URI pins every read the editor makes — the file, the manifest, the
+dashboard list, the catalog behind the filter window's field search, and, through the live
+surface it renders, each tile's query and each control's suggest query — the same as it
+already does for `Dashboard`. It never reaches the write: Publisher answers `501 Not
+Implemented` to a `versionId` on `updateModelSource`, and a version is a fixed point in
+history regardless, so a pin against a package that would otherwise take the editor's
+writes now turns Save off instead, with the toolbar caption saying why. A save into a
+host's own document store or a browser draft is unaffected, since neither goes through
+that endpoint.
 
 ---
 

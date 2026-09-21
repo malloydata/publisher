@@ -6,7 +6,9 @@ import { describe, expect, it } from "bun:test";
 import {
    readGivenControlSpec,
    attachSuggestGivenNames,
+   malloyGivenToApi,
    suggestGivenLookup,
+   type MalloyGiven,
    type MalloyGivenApi,
 } from "./given";
 import {
@@ -831,5 +833,60 @@ describe("suggestGivenLookup", () => {
       );
       expect(givens[0].suggest?.givenNames).toEqual(["REGION"]);
       expect(givens[1].suggest?.givenNames).toBeUndefined();
+   });
+});
+
+describe("malloyGivenToApi: array type rendering", () => {
+   // A set-valued given is how a `#(secure)` attribute is declared — a scalar
+   // cannot be one, because it has no value that fails closed. So this is the
+   // shape every row-level access boundary uses.
+   //
+   // `type.type` for an array is the bare discriminator `array`, with the
+   // element type in `elementTypeDef`. Rendering the discriminator alone loses
+   // it and produces text that is not valid Malloy, which breaks any consumer
+   // that re-DECLARES a given from this field rather than merely displaying it.
+   it("renders the element type, not the bare discriminator", () => {
+      const given = {
+         name: "ORG_IDS",
+         type: { type: "array", elementTypeDef: { type: "number" } },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(given).type).toBe("number[]");
+   });
+
+   it("renders a string set", () => {
+      const given = {
+         name: "REGIONS",
+         type: { type: "array", elementTypeDef: { type: "string" } },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(given).type).toBe("string[]");
+   });
+
+   it("leaves a scalar and a filter alone", () => {
+      const scalar = {
+         name: "N",
+         type: { type: "number" },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(scalar).type).toBe("number");
+      const filter = {
+         name: "F",
+         type: { type: "filter expression", filterType: "string" },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(filter).type).toBe("filter<string>");
+   });
+
+   it("falls back to the discriminator when element info is missing", () => {
+      // A future record given, or an array whose element type cannot be read:
+      // rendering something invented would be worse than rendering the type's
+      // own name.
+      const rec = {
+         name: "R",
+         type: { type: "record" },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(rec).type).toBe("record");
    });
 });

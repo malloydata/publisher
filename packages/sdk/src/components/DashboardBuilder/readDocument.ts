@@ -10,11 +10,13 @@ import type {
    LocalGiven,
 } from "./document";
 import {
-   type DeclarationAt,
-   declarationsUnder,
-   givenDeclarations,
-   tileSteps,
-} from "./malloyText";
+   parseMalloy,
+   parseRefused,
+   type ParsedMalloy,
+   type TreeStage,
+   type TreeView,
+} from "./malloyTree";
+import { tileSteps } from "./malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -24,10 +26,10 @@ import {
  * in the browser and in a unit test alike, which is what lets the suite open
  * every dashboard in the repository as a regression gate.
  *
- * Structure comes from the parser's symbol tree, which covers imports (including
- * the items of a named list), sources, views and dimensions, each with a source
- * RANGE. Content comes from the text inside those ranges, and tags from
- * `parseAnnotation` over the block above each declaration.
+ * Structure comes from Malloy's own parse tree, through `malloyTree`: imports,
+ * sources, views, dimensions, givens and every `where:` clause, each with an
+ * exact span. Tags come from `parseAnnotation` over the `#` block above a
+ * declaration, which is `malloy-tag`'s grammar rather than Malloy's.
  *
  * Reading tags from the text rather than from the server, which serves them
  * already attached, is deliberate. The splice writer has to LOCATE a tag in
@@ -64,7 +66,7 @@ export type ReadResult =
 export const readFailed = (result: ReadResult): result is ReadFailure =>
    result.ok === false;
 
-/** A `#`/`//` block above a declaration, and where it sits. */
+/** A `#`/comment block above a declaration, and where it sits. */
 export interface Block {
    /** 0-based line of the first line in the block. */
    start: number;
@@ -76,27 +78,32 @@ export interface Block {
 }
 
 /**
- * The comment-and-tag block immediately above `declLine`.
+ * The comment-and-tag block immediately above `declLine`, up to the blank line
+ * that is the author's own separator. Validated against the bundled dashboard,
+ * where it collects `revenue_trend`'s three tags and the fourteen-line comment
+ * explaining its colspan, then stops at the blank line above — which is the
+ * right unit to carry when that tile moves.
  *
- * Scans upward while lines are `#` tags or `//` comments and STOPS AT A BLANK
- * LINE. Validated against the bundled dashboard, where it collects
- * `revenue_trend`'s three tags and the fourteen-line comment explaining its
- * colspan, then stops at the blank line above — which is the right unit to carry
- * when that tile moves.
- *
- * A blank line is the author's own separator, which is why it is the boundary
- * rather than a count or a heuristic about comment content.
+ * WHERE the block starts comes from `parsed`, which takes its comments from the
+ * lexer, and not from a scan for `//` here. Malloy spells a comment three ways
+ * — `//`, `--` and `/* … *\/` — and this walked upward looking only for the
+ * first. The other two stopped it early while the parser read straight past
+ * them, so a `#` tag above one was visible to the reader and invisible to the
+ * writer, which then wrote a SECOND copy of the tag below the comment. The
+ * reader picks the lower one up and the read-back gate is satisfied, so the
+ * file quietly ends up carrying two.
  */
-export function blockAbove(lines: string[], declLine: number): Block {
-   let start = declLine;
-   for (let i = declLine - 1; i >= 0; i--) {
-      const text = lines[i].trim();
-      if (text === "") break;
-      if (text.startsWith("#") || text.startsWith("//")) start = i;
-      else break;
-   }
+export function blockAbove(
+   parsed: ParsedMalloy,
+   lines: string[],
+   declLine: number,
+): Block {
+   const start = parsed.blockStart(declLine);
    const tags: Array<{ line: number; text: string }> = [];
    for (let i = start; i < declLine; i++) {
+      // Inside a `/* … */`, where a line beginning `#` is prose. Rewriting one
+      // would put an edit inside a comment.
+      if (parsed.commentLine(i)) continue;
       const text = lines[i].trim();
       // `##` at this indent level is a MODEL annotation and never belongs to a
       // declaration; only single-`#` object tags do.
@@ -128,53 +135,26 @@ function modelLines(lines: string[]): {
    };
 }
 
-/** `source: overview is scoped_orders extend {` -> `scoped_orders`. */
-function sourceBase(text: string, name: string): string | undefined {
-   const m = new RegExp(
-      `source:\\s*${name}\\s+is\\s+([A-Za-z_][A-Za-z0-9_.]*)`,
-   ).exec(text);
-   return m?.[1];
-}
-
 /**
- * `view: revenue_trend is sales_by_month + { where: … }` -> base and filters,
- * or `inline` for `view: order_tile is { aggregate: … }`, which is a query body
- * rather than a reference and is read but never rewritten.
+ * The builder-managed filters of a `{ … }` block: every clause the tree says
+ * is exactly `field <op> $GIVEN`.
+ *
+ * A clause that is anything else — a compound predicate, a literal comparison
+ * — is not a binding and is left exactly as written. That is a STRUCTURAL
+ * test now, so the isolation heuristics this used to need are gone along with
+ * the shapes that defeated them.
  */
-function viewBody(
-   text: string,
-   name: string,
-):
-   | { kind: "reference"; from: string; refinement?: string }
-   | { kind: "inline" }
-   | undefined {
-   const ref = new RegExp(
-      `view:\\s*${name}\\s+is\\s+([A-Za-z_][A-Za-z0-9_.]*)\\s*(\\+\\s*\\{[\\s\\S]*\\})?`,
-   ).exec(text);
-   if (ref)
-      return { kind: "reference", from: ref[1], refinement: ref[2]?.trim() };
-   if (new RegExp(`view:\\s*${name}\\s+is\\s*\\{`).test(text))
-      return { kind: "inline" };
-   return undefined;
-}
-
-/**
- * One `where: <field> <op> $<GIVEN>` clause. Exported for the writer, which
- * has to find the same clauses in order to replace them and nothing else.
- */
-export const BINDING_CLAUSE =
-   /where:\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(~|>=|<=|!=|=|>|<)\s*\$([A-Za-z_][A-Za-z0-9_]*)/g;
-
-/** `where: products.brand ~ $BRAND`, `where: created_at >= $SINCE` … */
-function filtersOf(refinement: string | undefined) {
-   if (!refinement) return undefined;
+function filtersOf(
+   stage: TreeStage | undefined,
+): Array<{ field: string; given: string; op?: string }> | undefined {
+   if (!stage) return undefined;
    const out: Array<{ field: string; given: string; op?: string }> = [];
-   for (const m of refinement.matchAll(BINDING_CLAUSE))
-      out.push({
-         field: m[1],
-         given: m[3],
-         ...(m[2] === "~" ? {} : { op: m[2] }),
-      });
+   for (const where of stage.wheres)
+      for (const clause of where.clauses) {
+         if (!clause.binding) continue;
+         const { field, op, given } = clause.binding;
+         out.push({ field, given, ...(op === "~" ? {} : { op }) });
+      }
    return out.length > 0 ? out : undefined;
 }
 
@@ -189,10 +169,7 @@ type TagLike = {
 type ParseTags = (lines: string[]) => { tag?: TagLike | null };
 
 /**
- * `given:` declarations, which the parser's symbol tree does not cover at all —
- * its types are query, unnamed_query, explore, field, join, import and
- * import_item. So these are read as text, in BOTH spellings Malloy accepts and
- * this repository uses:
+ * `given:` declarations, in BOTH spellings Malloy accepts:
  *
  *     given: CATEGORY :: filter<string> is f''      // one per line
  *
@@ -200,18 +177,17 @@ type ParseTags = (lines: string[]) => { tag?: TagLike | null };
  *       CATEGORY :: filter<string> is f''
  *       SINCE :: date is @2023-01-01
  *
- * The one-line form is what `givens.malloy` and the docs write and what the
- * builder emits; the block form is read so a file written the other way still
- * opens. Either way the tags above a declaration are its control contract.
+ * Either way the `#` tags above a declaration are its control contract.
  */
 export function localGivens(
+   parsed: ParsedMalloy,
    lines: string[],
    parse: ParseTags,
 ): LocalGiven[] | undefined {
    const out: LocalGiven[] = [];
-   for (const at of givenDeclarations(lines).values()) {
-      const m = /^([A-Z_][A-Z0-9_]*)\s*::\s*(\S+)\s+is\s+(.+)$/.exec(
-         at.declaration,
+   for (const given of parsed.givens) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*::\s*(\S+)\s+is\s+([\s\S]+)$/.exec(
+         given.declaration,
       );
       if (!m) continue;
       out.push({
@@ -219,7 +195,7 @@ export function localGivens(
          type: m[2],
          default: m[3].trim(),
          ...readControlTags(
-            parse(tagText(blockAbove(lines, at.line).tags)).tag,
+            parse(tagText(blockAbove(parsed, lines, given.line).tags)).tag,
          ),
       });
    }
@@ -273,16 +249,17 @@ function tileEntries(artifactLine: string): string[] {
 export async function readDashboardDocument(
    sourceText: string,
 ): Promise<ReadResult> {
-   const { Malloy } = await import("@malloydata/malloy");
    const { parseAnnotation } = await import("@malloydata/malloy-tag");
    const lines = sourceText.split("\n");
 
-   let symbols;
-   try {
-      symbols = Malloy.parse({ source: sourceText }).symbols;
-   } catch (error) {
-      return { ok: false, reason: `This file is not valid Malloy: ${error}` };
-   }
+   const parse = await parseMalloy(sourceText);
+   if (parseRefused(parse))
+      return {
+         ok: false,
+         reason: parse.reason,
+         ...(parse.line ? { line: parse.line } : {}),
+      };
+   const parsed = parse.parsed;
 
    const { description, artifact } = modelLines(lines);
    const artifactLine = artifact.find((l) => l.includes("artifact"));
@@ -305,75 +282,47 @@ export async function readDashboardDocument(
       };
    }
 
-   const imports: DashboardImport[] = [];
+   const imports: DashboardImport[] = parsed.imports.map((i) =>
+      i.names
+         ? { kind: "names", names: i.names, from: i.from }
+         : { kind: "all", from: i.from },
+   );
    const sources: DashboardSource[] = [];
    const drills: DashboardDrill[] = [];
-   const viewsBySource = new Map<string, Map<string, DeclarationAt>>();
+   const viewsBySource = new Map<string, Map<string, TreeView>>();
 
-   for (const symbol of symbols) {
-      if (symbol.type === "import") {
-         const names = (symbol.children ?? [])
-            .filter((c) => c.type === "import_item")
-            .map((c) => String(c.name));
-         imports.push(
-            names.length > 0
-               ? { kind: "names", names, from: String(symbol.name) }
-               : { kind: "all", from: String(symbol.name) },
-         );
-         continue;
-      }
-      if (symbol.type !== "explore") continue;
+   for (const source of parsed.sources) {
+      const entry: DashboardSource = { name: source.name, base: source.base };
+      if (source.dimensions.length > 0)
+         entry.dimensions = source.dimensions.map((d) => ({
+            name: d.name,
+            expression: d.expression,
+         }));
+      sources.push(entry);
 
-      const name = String(symbol.name);
-      const head = lines[symbol.range.start.line] ?? "";
-      const base = sourceBase(head, name);
-      if (base === undefined) {
-         return {
-            ok: false,
-            reason: `Could not read what source \`${name}\` extends.`,
-            line: symbol.range.start.line + 1,
-         };
-      }
-      sources.push({ name, base });
-
-      // The VIEWS are found in the TEXT, attributed to the nearest `source:`
-      // above them, and not taken from the symbol tree. The tree is reliable
-      // about which sources and imports exist and unreliable about what is
-      // inside a source: measured, a refinement spelled `+ { limit: 5, where: … }`
-      // — which compiles — makes it report the refined view's BASE as a child
-      // view, end the source early, and drop the next declaration altogether,
-      // so the tile that named it read back as "inherited" and lost its tags.
-      // A `view: <name> is` line under a `source: <name> is` line is
-      // unambiguous, and Malloy has no nested sources to confuse it.
-      const views = declarationsUnder(lines, name, "view");
-      // Dimensions the same way, and drills off THEIR tag blocks: a `# drill`
-      // is a tag on a dimension's declaration, so the dimensions this file
-      // declares are exactly where one can be authored.
-      const dimensions = declarationsUnder(lines, name, "dimension");
-      if (dimensions.size > 0) {
-         sources[sources.length - 1].dimensions = [...dimensions].map(
-            ([dimensionName, at]) => ({
-               name: dimensionName,
-               expression: at.rest,
-            }),
-         );
-      }
-      for (const [dimensionName, at] of dimensions) {
-         const { tags } = blockAbove(lines, at.line);
-         const drillTag = parseAnnotation(tagText(tags)).tag?.tag("drill");
+      // A `# drill` is a tag on a dimension's declaration, so the dimensions
+      // this file declares are exactly where one can be authored.
+      for (const dimension of source.dimensions) {
+         const drillTag = parseAnnotation(
+            tagText(blockAbove(parsed, lines, dimension.line).tags),
+         ).tag?.tag("drill");
          if (!drillTag) continue;
          const to = drillTag.textArray("to") ?? [drillTag.text("to") ?? ""];
          drills.push({
-            source: name,
-            name: dimensionName,
-            expression: at.rest,
+            source: source.name,
+            name: dimension.name,
+            expression: dimension.expression,
             to: to.filter(Boolean),
             ...(drillTag.text("given")
                ? { given: drillTag.text("given") as string }
                : {}),
          });
       }
-      viewsBySource.set(name, views);
+
+      viewsBySource.set(
+         source.name,
+         new Map(source.views.map((v) => [v.name, v])),
+      );
    }
 
    const tiles: DashboardTile[] = [];
@@ -388,14 +337,14 @@ export async function readDashboardDocument(
          };
       }
       const { source: sourceName, view: viewName } = steps;
-      const declLine = viewsBySource.get(sourceName)?.get(viewName)?.line;
+      const view = viewsBySource.get(sourceName)?.get(viewName);
 
       // Not declared here: the view belongs to an imported source, which is a
       // complete dashboard in itself — `tiles=["orders -> by_brand"]` over an
       // imported `orders` needs nothing else in the file. Shown, not editable:
       // its tags live on the model's view, and the builder does not write model
       // files.
-      if (declLine === undefined) {
+      if (view === undefined) {
          tiles.push({
             name: viewName,
             source: sourceName,
@@ -404,25 +353,55 @@ export async function readDashboardDocument(
          continue;
       }
 
-      const body = viewBody(lines[declLine], viewName);
-      if (body === undefined) {
-         return {
-            ok: false,
-            reason: `Could not read what view \`${viewName}\` is declared from.`,
-            line: declLine + 1,
-         };
+      const t = parseAnnotation(tagText(view.tags)).tag;
+      const declaration:
+         | { kind: "reference"; from: string }
+         | { kind: "inline" }
+         | undefined =
+         view.body.kind === "reference"
+            ? { kind: "reference" as const, from: view.body.from }
+            : view.body.kind === "inline"
+              ? { kind: "inline" as const }
+              : undefined;
+      if (declaration === undefined) {
+         // Declared here, in a body the builder does not rewrite. Its tags are
+         // still `#` lines in this file, so they come with it: only a filter
+         // has nowhere to go.
+         tiles.push({
+            name: viewName,
+            source: sourceName,
+            declaration: {
+               kind: "opaque",
+               why:
+                  view.body.kind === "unsupported"
+                     ? view.body.why
+                     : "unreadable",
+            },
+            ...(t?.text("label") ? { label: t.text("label") as string } : {}),
+            ...(t?.text("subtitle")
+               ? { subtitle: t.text("subtitle") as string }
+               : {}),
+            ...(t?.numeric("colspan") !== undefined
+               ? { colspan: t.numeric("colspan") as number }
+               : {}),
+            ...(t?.has("break") ? { break: true } : {}),
+            ...(t?.has("borderless") ? { borderless: true } : {}),
+         });
+         continue;
       }
-      const { tags } = blockAbove(lines, declLine);
-      const t = parseAnnotation(tagText(tags)).tag;
-      const filters =
-         body.kind === "reference" ? filtersOf(body.refinement) : undefined;
+      // A refinement's filters, or an inline body's own — the same clauses
+      // either way, located by the tree rather than by depth in the text.
+      const filters = filtersOf(
+         view.body.kind === "reference"
+            ? view.body.refinement
+            : view.body.kind === "inline"
+              ? view.body.stage
+              : undefined,
+      );
       tiles.push({
          name: viewName,
          source: sourceName,
-         declaration:
-            body.kind === "reference"
-               ? { kind: "reference", from: body.from }
-               : { kind: "inline" },
+         declaration,
          ...(filters ? { filters } : {}),
          ...(t?.text("label") ? { label: t.text("label") as string } : {}),
          ...(t?.text("subtitle")
@@ -436,7 +415,7 @@ export async function readDashboardDocument(
       });
    }
 
-   const givens = localGivens(lines, parseAnnotation as ParseTags);
+   const givens = localGivens(parsed, lines, parseAnnotation as ParseTags);
 
    const startingGivens: Record<string, string> = {};
    const givensTag = artifactTag?.tag("givens");
