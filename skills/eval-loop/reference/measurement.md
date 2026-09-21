@@ -1,4 +1,4 @@
-<!-- Sampling, the flip-count bar, the A/A noise band, and targeted fixes. Read this before quoting any number. -->
+<!-- Sampling, the flip-count bar, the A/A band, reading the disagreement set, and targeted fixes. Read this before quoting any number. -->
 
 # Measurement
 
@@ -33,9 +33,49 @@ measure a baseline and diagnose failures but cannot defend an edit.
 This table was asserted, not measured, and the number it needs is a property of
 your harness and your set -- not of this skill. Measure it with an **A/A run**:
 the same model, same config, same set, twice, compared with
-`scripts/flip_table.py`. Every flip it reports is noise by construction, since
-nothing changed. Record the result with the set, in `CALIBRATION.md`, and cite
-that file when you quote a band.
+`scripts/flip_table.py`. Record the result with the set, in `CALIBRATION.md`,
+and cite that file when you quote a band.
+
+An A/A flip is unattributable to a CHANGE, because there was no change. That
+is not the same as saying it carries no information, and reading it as "noise
+by construction" throws away the most useful evidence in the run. See below.
+
+## Read the disagreement set before you average it
+
+**First move on a flip set: read the flipping cases. Second move: establish
+the band.** Both, in that order. The band alone is half the information.
+
+A case that flips is a case where the agent found two paths and the model did
+not make one of them obviously right. That is a MODEL-quality signal, and
+often a cheaper one than a stable failure, because two runs hand you a matched
+pair: same question, same model, one right answer and one wrong one, with the
+diff between them isolating the cause.
+
+Measured, on a real set. Two arms of one model over 28 cases disagreed on
+five. Read as a floor, that is "this set has 18% churn, plan around it". Read
+as evidence, it was a single named model defect:
+
+- all five were the same question -- does a blank field on a fee rule match
+  every value?
+- the two arms produced two discrete query idioms, not scattered answers
+- the wrong idiom returned 2 fee IDs where the answer has 443, and 1 where it
+  has 390
+- the two runs swapped: run 1 was right on one case and wrong on the other,
+  run 2 the reverse
+
+A model that documents a rule in prose while leaving an inviting wrong path
+reachable produces exactly this: a bimodal coin flip that averages to "noise".
+The variance WAS the finding. Averaging the five would have hidden it, and
+reading them took a day of manual transcript work that the table now does --
+`flip_table.py` prints the two final queries side by side for every flipped
+case, and `diagnose.py --compare-run <other arm>` hands the pair to the
+diagnosing agent.
+
+Some flips really are noise, and a set with no band cannot tell an improvement
+from a wobble, so keep the band. What changes is which you do first, and what
+you call the thing before you have looked at it. Prefer **disagreement set**
+or **unstable cases** to "churn": the first two name a question, the last
+names an answer you have not earned yet.
 
 Re-measure whenever the model, judge, or set changes. This is not a formality:
 observed bands have moved by a factor of three across a fortnight of ordinary
