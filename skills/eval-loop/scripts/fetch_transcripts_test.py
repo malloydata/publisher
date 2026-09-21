@@ -92,6 +92,55 @@ class Normalise(unittest.TestCase):
         self.assertNotIn("input_tokens", got[0])
 
 
+class TierDowngrade(unittest.TestCase):
+    """A T2 fetch that came back with no prose did not get T2."""
+
+    def setUp(self):
+        self.calls = []
+
+    def fake(self, rows_by_source):
+        def _fetch(a, source, session_id):
+            self.calls.append(source)
+            return rows_by_source.get(source, [])
+        return _fetch
+
+    def args(self, tier):
+        import argparse
+        return argparse.Namespace(
+            tier=tier, source_get_context="gc", source_execute="ex",
+            source_messages="msg", source_turns="turn")
+
+    def run_with(self, tier, rows):
+        original = ft.fetch_rows
+        ft.fetch_rows = self.fake(rows)
+        try:
+            return ft.fetch_session(self.args(tier), "s1")
+        finally:
+            ft.fetch_rows = original
+
+    def test_t2_with_no_message_rows_is_written_as_t1(self):
+        # Claiming answer_captured over an empty answer is the exact failure
+        # the tier exists to prevent: the judge would score a real agent as
+        # having said nothing.
+        events, counts = self.run_with("T2", {"gc": [{"request_id": "r"}]})
+        self.assertEqual(counts["tier"], "T1")
+        self.assertFalse(events[0]["answer_captured"])
+
+    def test_t2_with_prose_stays_t2(self):
+        events, counts = self.run_with("T2", {
+            "gc": [{"request_id": "r"}],
+            "msg": [{"role": "assistant", "text": "42", "seq": 1,
+                     "turn_started_ms": 1, "chunk": 0}]})
+        self.assertEqual(counts["tier"], "T2")
+        self.assertTrue(events[0]["answer_captured"])
+
+    def test_t1_never_asks_the_host_for_the_prose_tables(self):
+        # Asking for a table the host has not shipped returns an error per
+        # case, which reads like a broken fetch rather than a chosen tier.
+        self.run_with("T1", {"gc": [{"request_id": "r"}]})
+        self.assertEqual(self.calls, ["gc", "ex"])
+
+
 class ScopeParsing(unittest.TestCase):
     def args(self, scope):
         return ["--set", "s", "--out", "o", "--mcp-url", "u",
