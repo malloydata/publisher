@@ -443,9 +443,7 @@ function toSourceResults(
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
                ...(ctx?.accessFilter ? { accessFilter: ctx.accessFilter } : {}),
-               ...(ctx?.authorize
-                  ? { authorize: ctx.authorize }
-                  : {}),
+               ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
                ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
                joins: ctx?.joins ?? [],
             },
@@ -1472,16 +1470,16 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                           ]
                         : [],
                   ),
-                  accessFilter: (apiSource.accessFilter ?? []).map((expression) => ({
-                     expression,
-                     given_names: referencedGivenNames(expression),
-                  })),
-                  authorize: (apiSource.authorize ?? []).map(
+                  accessFilter: (apiSource.accessFilter ?? []).map(
                      (expression) => ({
                         expression,
                         given_names: referencedGivenNames(expression),
                      }),
                   ),
+                  authorize: (apiSource.authorize ?? []).map((expression) => ({
+                     expression,
+                     given_names: referencedGivenNames(expression),
+                  })),
                   filters: (apiSource.filters ?? []).flatMap((filter) =>
                      filter.name && filter.type
                         ? [
@@ -1876,10 +1874,10 @@ function buildSourceContext(
          joins: [],
          ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),
-         ...(gates?.accessFilter.length ? { accessFilter: gates.accessFilter } : {}),
-         ...(gates?.authorize.length
-            ? { authorize: gates.authorize }
+         ...(gates?.accessFilter.length
+            ? { accessFilter: gates.accessFilter }
             : {}),
+         ...(gates?.authorize.length ? { authorize: gates.authorize } : {}),
          ...(gates?.filters.length ? { filters: gates.filters } : {}),
       });
    }

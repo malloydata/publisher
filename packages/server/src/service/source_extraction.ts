@@ -834,9 +834,7 @@ export function extractSourcesFromModelDef(
                   fieldName,
                   route:
                      fieldAuthorizeNotes
-                        .map((note) =>
-                           authorizeAnnotationRoute(note.text),
-                        )
+                        .map((note) => authorizeAnnotationRoute(note.text))
                         .find((r): r is string => r !== undefined) ??
                      ACCESS_FILTER_ROUTE,
                });
@@ -855,9 +853,7 @@ export function extractSourcesFromModelDef(
                fieldName,
                route:
                   fieldAuthorizeNotes
-                     .map((note) =>
-                        authorizeAnnotationRoute(note.text),
-                     )
+                     .map((note) => authorizeAnnotationRoute(note.text))
                      .find((r): r is string => r !== undefined) ??
                   ACCESS_FILTER_ROUTE,
             });

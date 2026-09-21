@@ -211,9 +211,7 @@ source: plain is duckdb.table('customers')
       // The finding's own bullet must name the route actually written, not a
       // hardcoded ##(authorize) — the message's shared explanatory prose
       // mentions both tags generically, so this pins the specific bullet line.
-      expect(err?.message).toMatch(
-         /at the file level \(`##\(authorize\)`\)/,
-      );
+      expect(err?.message).toMatch(/at the file level \(`##\(authorize\)`\)/);
       expect(err?.message).not.toMatch(
          /at the file level \(`##\(access_filter\)`\)/,
       );
@@ -388,9 +386,7 @@ source: derived is base -> { select: id, region }
       // a single un-split `exprs.flat()` would have let authorize
       // text leak into `authorize` or vice versa.
       expect(model.getAccessFilter("derived")).toEqual(["id in $DENY"]);
-      expect(model.getAuthorize("derived")).toEqual([
-         "'finance' in $ROLE",
-      ]);
+      expect(model.getAuthorize("derived")).toEqual(["'finance' in $ROLE"]);
    });
 });
 
@@ -961,9 +957,16 @@ query: secret is gated -> { aggregate: c }
       // Named query, no sourceName — must still resolve to `gated` and gate
       // it. The gate is a lock, so a mismatched given is a 403.
       await expect(
-         model.getQueryResults(undefined, "secret", undefined, undefined, false, {
-            ROLE: "intern",
-         }),
+         model.getQueryResults(
+            undefined,
+            "secret",
+            undefined,
+            undefined,
+            false,
+            {
+               ROLE: "intern",
+            },
+         ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
       // And it runs when the gate passes.
       const { result } = await model.getQueryResults(
@@ -2902,7 +2905,6 @@ source: route_locked is duckdb.table('customers') extend {
             { SENTINEL: -1 },
          );
       });
-
    }
 
    for (const tag of ALL_GATE_SPELLINGS) {
@@ -3099,7 +3101,9 @@ source: rep_ext is rep_locked extend {}
          "rep.malloy",
          getConnections(),
       );
-      expect(sourceNamed(model, "rep_ext")?.accessFilter).toEqual(["id in $DENY"]);
+      expect(sourceNamed(model, "rep_ext")?.accessFilter).toEqual([
+         "id in $DENY",
+      ]);
       expect(model.getAccessFilter("rep_ext")).toEqual(["id in $DENY"]);
       // The base is unchanged — this is not double-counting.
       expect(model.getAccessFilter("rep_locked")).toEqual(["id in $DENY"]);
@@ -3667,7 +3671,9 @@ source:
       // it precedes. Without this, an off-by-one that attributed a block item's
       // note to the PREVIOUS definition would still satisfy the assertions
       // above while leaving nothing gated at all.
-      expect(model.getAccessFilter("bf_sibling_locked")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("bf_sibling_locked")).toEqual([
+         "id in $DENY",
+      ]);
       const { result } = await runGated(
          "block_sibling.malloy",
          "run: bf_open -> { aggregate: c }",

@@ -424,7 +424,12 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
    it("`true`, `TRUE`, and a padded ` true ` all parse to the admit_all sentinel", () => {
       for (const spelling of ["true", "TRUE", "  true  "]) {
          expect(
-            parseAuthorizeGrammarBody("X", spelling, new Map(), AUTHORIZE_ROUTE),
+            parseAuthorizeGrammarBody(
+               "X",
+               spelling,
+               new Map(),
+               AUTHORIZE_ROUTE,
+            ),
          ).toEqual([{ scope: "admit_all" }]);
       }
    });

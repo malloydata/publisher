@@ -78,7 +78,8 @@ function admits(
          );
       case "=": {
          const { left, right } = n.kids ?? {};
-         const pair = givenAndLiteral(left, right) ?? givenAndLiteral(right, left);
+         const pair =
+            givenAndLiteral(left, right) ?? givenAndLiteral(right, left);
          if (!pair) return false;
          const value = resolve(pair.given, givenNameOf, givens);
          // `=` is the SCALAR operator: a list-typed given is `in`, refused at
@@ -92,9 +93,7 @@ function admits(
          const literal = asStringLiteral(n.e);
          if (!given || literal === undefined) return false;
          const value = resolve(given, givenNameOf, givens);
-         return (
-            Array.isArray(value) && value.some((item) => item === literal)
-         );
+         return Array.isArray(value) && value.some((item) => item === literal);
       }
       default:
          return false;

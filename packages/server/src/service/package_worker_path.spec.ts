@@ -194,7 +194,9 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          };
          // The worker validated the gate (no throw) and surfaced the effective
          // expression list — proves worker-path validation runs.
-         expect(apiModel.sources?.[0]?.authorize).toEqual(["'analyst' = $ROLE"]);
+         expect(apiModel.sources?.[0]?.authorize).toEqual([
+            "'analyst' = $ROLE",
+         ]);
          expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
       } finally {
          await duckdb.close();
@@ -258,9 +260,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
             "'finance' in $ROLE",
          ]);
          expect(model!.getAccessFilter("gated")).toEqual(["id in $DENY"]);
-         expect(model!.getAuthorize("gated")).toEqual([
-            "'finance' in $ROLE",
-         ]);
+         expect(model!.getAuthorize("gated")).toEqual(["'finance' in $ROLE"]);
       } finally {
          await duckdb.close();
       }

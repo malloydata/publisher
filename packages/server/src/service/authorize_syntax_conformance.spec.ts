@@ -1058,10 +1058,7 @@ source: X is duckdb.table('accounts') extend {}
       ["sourceauthorize", "#(sourceauthorize) 'finance' in $ROLE"],
       ["authorize-source", "#(authorize-source) 'finance' in $ROLE"],
       ["SOURCE_AUTHORIZE (case)", "#(SOURCE_AUTHORIZE) 'finance' in $ROLE"],
-      [
-         "# (authorize) (motly)",
-         "# (authorize) 'finance' in $ROLE",
-      ],
+      ["# (authorize) (motly)", "# (authorize) 'finance' in $ROLE"],
    ];
 
    for (const [label, annotation] of TYPO_SPELLINGS) {

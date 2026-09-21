@@ -276,7 +276,10 @@ export function recordAuthorizeAdmitAllGate(route: string): void {
  * gate's shape or its givens could not be resolved, so it could not be
  * decided. Split because only the second is a signal something is wrong.
  */
-export type LockDecision = "admitted" | "denied_by_lock" | "denied_unresolvable";
+export type LockDecision =
+   | "admitted"
+   | "denied_by_lock"
+   | "denied_unresolvable";
 
 /** Record how one `#(authorize)` lock resolved a request. */
 export function recordLockDecision(decision: LockDecision): void {

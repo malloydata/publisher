@@ -107,10 +107,7 @@ import {
    type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
-import {
-   ACCESS_FILTER_ROUTE,
-   AUTHORIZE_ROUTE,
-} from "./authorize_routes";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
    validateSourceLineGateGivenUsage,

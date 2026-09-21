@@ -47,10 +47,7 @@ import {
 } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
-import {
-   ACCESS_FILTER_ROUTE,
-   AUTHORIZE_ROUTE,
-} from "./authorize_routes";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import * as fs from "fs";
 
 const ROOT = "file:///malloy-annotation-invariants-tests/";

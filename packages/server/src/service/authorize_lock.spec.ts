@@ -96,9 +96,9 @@ describe("decideLock — everything else denies", () => {
       expect(decide(expr, { GROUPS: null as unknown as GivenValue })).toBe(
          "deny",
       );
-      expect(
-         decide(expr, { GROUPS: undefined as unknown as GivenValue }),
-      ).toBe("deny");
+      expect(decide(expr, { GROUPS: undefined as unknown as GivenValue })).toBe(
+         "deny",
+      );
    });
 
    it("a given id that resolves to no name on this model denies", () => {
@@ -110,7 +110,15 @@ describe("decideLock — everything else denies", () => {
    });
 
    it("an unknown node kind denies — the allowlist is positive", () => {
-      expect(decide(paren({ node: "or", kids: { left: { node: "true" }, right: { node: "true" } } }), {})).toBe("deny");
+      expect(
+         decide(
+            paren({
+               node: "or",
+               kids: { left: { node: "true" }, right: { node: "true" } },
+            }),
+            {},
+         ),
+      ).toBe("deny");
       expect(decide(paren({ node: "not", e: { node: "false" } }), {})).toBe(
          "deny",
       );

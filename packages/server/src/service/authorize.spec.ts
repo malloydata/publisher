@@ -348,7 +348,9 @@ describe("assertNoCallerAuthorizeAnnotation — every route-name stem", () => {
 
    it("still rejects ordinary #(authorize) (no regression from the widening)", () => {
       expect(() =>
-         assertNoCallerAuthorizeAnnotation(`#(access_filter) org_id in $GROUPS`),
+         assertNoCallerAuthorizeAnnotation(
+            `#(access_filter) org_id in $GROUPS`,
+         ),
       ).toThrow(/not permitted in caller-submitted/);
    });
 });

@@ -77,10 +77,7 @@
 
 import { routeOf } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
-import {
-   ACCESS_FILTER_ROUTE,
-   AUTHORIZE_ROUTE,
-} from "./authorize_routes";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 
 /** Malloy's own routing for ONE note — see `authorize.ts`'s identical helper. */
 function noteRoute(text: string): string | undefined {
@@ -762,7 +759,9 @@ export function parseAuthorizeGrammarBody(
       reject(
          sourceName,
          trimmedBody,
-         inLock ? "row_level_term_in_authorize" : "source_level_term_in_access_filter",
+         inLock
+            ? "row_level_term_in_authorize"
+            : "source_level_term_in_access_filter",
          inLock
             ? "a row-level term (field on the left) is not allowed in " +
                  "`#(authorize)`, which decides whether the caller may reach " +
