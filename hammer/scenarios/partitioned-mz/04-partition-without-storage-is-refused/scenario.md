@@ -43,3 +43,15 @@ source: orders is raw -> { select: * }
 ## Build refused
 
 cites: partition
+
+## Build refusals
+
+Pinned by REASON, not by the message. All three `partition=` refusals quote the
+key in their text, so a `cites:` on it alone passes just as happily on a mistyped
+column as on the missing `storage=` this scenario is named for.
+
+Expect:
+
+| source | tier      | reason                    |
+| ------ | --------- | ------------------------- |
+| orders | colocated | partition_without_storage |

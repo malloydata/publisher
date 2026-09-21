@@ -592,16 +592,55 @@ describe("deltaStatements: range replace", () => {
 });
 
 describe("deltaStatements: merge", () => {
-   const merge = (columns: string[], mergeKeys: string[]) =>
+   const merge = (
+      columns: string[],
+      mergeKeys: string[],
+      scopeColumns: string[] = [],
+   ) =>
       deltaStatements({
          dialect: "postgres",
          quotedTablePath: `"daily"`,
          deltaSQL: "SELECT 1",
          columns,
          mergeKeys,
+         scopeColumns,
          watermarkName: "order_date",
          ...RANGE,
       });
+
+   // The scope is the highest-severity behaviour here: without it the MERGE
+   // matches a row belonging to another caller and UPDATES it. These assert the
+   // emitted text, so they hold without a live warehouse.
+   describe("caller scope", () => {
+      it("carries the stripped terms' columns into the match", () => {
+         const [sql] = merge(
+            ["order_id", "org_id", "revenue"],
+            ["order_id"],
+            ["org_id"],
+         );
+         expect(sql).toContain(
+            `ON (__t."order_id" = __s."order_id" OR (__t."order_id" IS NULL AND __s."order_id" IS NULL)) AND (__t."org_id" = __s."org_id" OR (__t."org_id" IS NULL AND __s."org_id" IS NULL))`,
+         );
+      });
+
+      it("leaves the match untouched when there is no scope", () => {
+         // Every source that is not caller-scoped, which is most of them: the
+         // emitted merge must be byte-identical to the one before scoping existed.
+         const [scoped] = merge(["order_id", "revenue"], ["order_id"], []);
+         const [plain] = merge(["order_id", "revenue"], ["order_id"]);
+         expect(scoped).toBe(plain);
+         expect(scoped).not.toContain("AND (__t.");
+      });
+
+      it("does not repeat a scope column that is already a merge key", () => {
+         const [sql] = merge(
+            ["order_id", "org_id", "revenue"],
+            ["order_id", "org_id"],
+            ["org_id"],
+         );
+         expect(sql.match(/__t\."org_id" = __s\."org_id"/g)).toHaveLength(1);
+      });
+   });
 
    it("is a single statement: MERGE is atomic on its own", () => {
       expect(merge(["order_id", "revenue"], ["order_id"])).toHaveLength(1);

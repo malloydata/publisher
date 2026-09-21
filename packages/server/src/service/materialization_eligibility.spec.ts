@@ -456,6 +456,59 @@ source: mixed is raw -> { select: * } extend {
       ).toEqual(["org_id"]);
    });
 
+   it("refuses a merge_key whose scope cannot be fully resolved, on BOTH gates", async () => {
+      // One term resolves to a column of the source, one does not: `vis.user_id`
+      // is a joined field and names no column of the stored table. Scoping by the
+      // half that resolves would give a match narrower than the bare key and
+      // still wider than the author's relation, so the source is refused instead.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given:
+  ORG_ID  :: number is 1
+  USER_ID :: number is 7
+source: raw is duckdb.sql("SELECT 1 as org_id, 1 as list_id, 2 as amount")
+source: vis is duckdb.sql("SELECT 1 as list_id, 7 as user_id")
+
+#@ persist name="t" storage=lake refresh="incremental" watermark="amount" merge_key="org_id"
+source: mixed is raw -> { select: * } extend {
+  join_one: v is vis on v.list_id = list_id
+  where: org_id = $ORG_ID
+  where: v.user_id = $USER_ID
+}`);
+      const fields = {
+         merge_key: "org_id",
+         refresh: "incremental",
+         watermark: "amount",
+         storage: "lake",
+      };
+      // Storage gate.
+      let storageReason = "";
+      try {
+         assertMaterializationEligible(sources.mixed, fields);
+      } catch (err) {
+         storageReason = (err as MaterializationEligibilityError).reason ?? "";
+      }
+      // Colocated gate, which does not refuse the positional cases and so is the
+      // one that would otherwise let this through.
+      let colocatedReason = "";
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            sources.mixed,
+            "mixed",
+            "persist",
+            undefined,
+            fields,
+         );
+      } catch (err) {
+         colocatedReason =
+            (err as MaterializationEligibilityError).reason ?? "";
+      }
+      expect([storageReason, colocatedReason]).toEqual([
+         "merge_key_scope_unresolved",
+         "merge_key_scope_unresolved",
+      ]);
+   });
+
    it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {
       // The outcome does not change — such a rollup already refused, as a
       // `given_in_persisted_query`. Two things do. The reason names the rollup

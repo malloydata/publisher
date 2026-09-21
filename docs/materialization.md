@@ -152,7 +152,7 @@ it. It fires however the given reaches the query — including through the sourc
 `#@ persist source: r is scoped -> { … }` is refused too: the query reads `scoped`'s filter, so the
 value is substituted just the same.
 
-Four positions carry a given that this version does not admit even though the build leaves them out:
+Three positions carry a given that this version does not admit even though the build leaves them out:
 a declared `dimension:` or `measure:` (`dynamic_projection`), a join's `on:` condition
 (`dynamic_join`), and a given-scoped source reached through a join (`dynamic_joined_where`). None is
 in the artifact, so none is a leak; they are refused because whether the serve shape reproduces them
@@ -162,6 +162,11 @@ rather than of the artifact. Note what that costs today: such an entry point ans
 but is **served live**, because a plain extension of a persisted source is currently treated as
 a build target of its own and refused, while `#@ -persist` opts out of reading the stored table.
 The arrangement is correct; it does not yet get the tier.
+
+A source that reaches a given-scoped source only through a join its persisted query never
+reads is admitted. That rests on the COMPILER: Malloy prunes an unread join out of the build
+SQL, so nothing given-derived reaches the artifact. It is a property of Malloy's pruning
+rather than of the gate, and worth knowing for anyone changing the compiler version.
 
 #### Joins between materialized sources
 
@@ -373,6 +378,14 @@ reaching through a join, say — the source is refused (`merge_key_scope_unresol
 than scoped by the terms that do resolve, since a partial scope is narrower than the bare key
 but still wider than your relation, and would look like it works. Scope such a source with a
 term over its own columns, or drop `merge_key=` and refresh by watermark range.
+
+Two things to know about the narrowed match. A row whose **scope column value changes**
+between refreshes no longer matches its stored copy, so it is inserted beside it rather than
+updated — a duplicate. The same happens with a term whose columns are combined with `or`
+(`where: org_id = $ORG_ID or user_id = $USER_ID`), because the match carries both columns and
+is therefore narrower than the disjunction you wrote. Both fail in the same direction: a
+duplicated row, never a row belonging to another caller. If either applies to your source,
+rebuild it rather than refreshing.
 
 **An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
 

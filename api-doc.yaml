@@ -5992,11 +5992,15 @@ components:
             appear here — `free_parameter`, `authorize`, `partition`, the four
             that name where a given the build could not strip sits
             (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`), and the three that name an unusable
+            `dynamic_joined_where`), the three that name an unusable
             `partition=` (`partition_without_storage`,
-            `partition_column_unknown`, `partition_column_not_public`) — those
-            being the only reasons the two compile-time eligibility asserts this
-            collection is computed from produce.
+            `partition_column_unknown`, `partition_column_not_public`),
+            `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
+            cannot be expressed over the stored table's own columns), and
+            `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
+            a given, which has no read-time re-application to put the term back)
+            — those being the only reasons the two compile-time eligibility
+            asserts this collection is computed from produce.
 
 
             `given_in_persisted_query` is raised by BOTH gates, for one

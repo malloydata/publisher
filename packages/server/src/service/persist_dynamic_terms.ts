@@ -372,9 +372,16 @@ function classifyFields(
  *
  * `filterList` entries are conjunctive and each is re-emitted as its own
  * `where:` line, so a term is classified whole: an `or`-composition or a range
- * is a dynamic term like any other, and re-applies whole. Only whether it
- * PRUNES depends on its shape, and that is the partition list's question, not
- * this one.
+ * is a dynamic term like any other, and re-applies whole.
+ *
+ * That holds for the READ, which is what this classification is for. It does not
+ * hold for {@link DynamicTerm.columns}, which the merge scope reads: the columns
+ * are collected from the term's field usage without regard to how they compose,
+ * so `a = $X or b = $Y` contributes BOTH. A merge then matches on
+ * `key AND a AND b`, which is narrower than the disjunction the author wrote —
+ * the error direction is a row that fails to match its stored copy and is
+ * inserted beside it, never a row belonging to another caller. Safe, and a
+ * duplicate; see the incremental section of `docs/materialization.md`.
  *
  * A term whose given references cannot be read is still returned, with no
  * names. That is deliberate and safe: the term is re-emitted onto the serve
