@@ -158,11 +158,37 @@ def rewrite_table_refs(malloy: str) -> str:
     return _TABLE_REF.sub(lambda m: m.group(1), malloy)
 
 
+def as_number(v: Any) -> float | None:
+    """`v` as a float when it IS one, including as a plain numeric string.
+
+    Not a general parser: a bool is not a number here (`True == 1` in Python
+    and a boolean golden compared numerically would match `1`), and a string
+    with anything else in it stays a string.
+    """
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.strip().replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
 def close_enough(want: Any, got: Any, places: int | None) -> bool:
-    if isinstance(want, (int, float)) and isinstance(got, (int, float)):
+    # Numerically whenever both sides ARE numbers, including when one or both
+    # arrived as strings. Malloy renders a number in its shortest form, so a
+    # golden stated to two decimals comes back as `75.7` and a string compare
+    # called it drift -- which blocks the arm, and whose only workaround was
+    # padding expressions in the truth queries whose sole purpose was to make
+    # one string look like the other.
+    w, g = as_number(want), as_number(got)
+    if w is not None and g is not None:
         # Compare at the precision the golden is stated to, not float exactness.
-        tol = 10 ** -places / 2 if places is not None else max(abs(want) * 1e-9, 1e-9)
-        return abs(float(want) - float(got)) <= max(tol, 0.011)
+        tol = 10 ** -places / 2 if places is not None else max(abs(w) * 1e-9, 1e-9)
+        return abs(w - g) <= max(tol, 0.011)
     return want == got
 
 

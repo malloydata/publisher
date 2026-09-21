@@ -986,5 +986,38 @@ class YoungGoldens(unittest.TestCase):
         # `drifted` sums diff + error, and the arm gate reads `drifted`.
         self.assertNotIn("unrederivable", ("diff", "error"))
 
+
+class NumericRendering(unittest.TestCase):
+    """Malloy renders a number in its shortest form, so a golden stated to two
+    decimals comes back as `75.7`. Comparing the rendered strings called that
+    drift, which blocks an arm -- and the workaround was padding expressions
+    in the truth queries whose only job was to make one string look like the
+    other."""
+
+    def test_numeric_strings_compare_as_numbers(self):
+        self.assertTrue(close_enough("75.70", "75.7", None))
+
+    def test_a_number_against_its_string_matches(self):
+        self.assertTrue(close_enough(75.70, "75.7", None))
+
+    def test_a_thousands_separator_is_read(self):
+        self.assertTrue(close_enough("1,234", "1234", None))
+
+    def test_genuine_text_still_compares_exactly(self):
+        self.assertTrue(close_enough("Ecommerce", "Ecommerce", None))
+        self.assertFalse(close_enough("Ecommerce", "Retail", None))
+
+    def test_a_bool_is_not_the_number_one(self):
+        # `True == 1` in Python, and a boolean golden must not match "1".
+        self.assertFalse(close_enough(True, "1", None))
+
+    def test_a_real_difference_is_still_drift(self):
+        self.assertFalse(close_enough("75.70", "76.1", None))
+
+    def test_a_compound_string_is_left_alone(self):
+        # Out of scope on purpose: it parses as no single number, so it stays
+        # an exact compare rather than being guessed at.
+        self.assertFalse(close_enough("C: 75.70", "C: 75.7", None))
+
 if __name__ == "__main__":
     unittest.main()
