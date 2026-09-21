@@ -1702,11 +1702,28 @@ def parse_scope(scope: str, target_version: str | None
     return env.strip(), pkg.strip(), version, notes
 
 
-def run_answerer(case: dict[str, Any], a: argparse.Namespace,
-                 art: pathlib.Path) -> dict[str, Any]:
+# A server that never answered. Returned instead of an attempt so the caller can
+# tell "the environment failed" from "the agent answered badly", which is the
+# distinction `skill:eval-loop` stops a run over.
+SERVER_DEAD = "server_dead"
+
+
+def capture_answerer(case: dict[str, Any], a: argparse.Namespace,
+                     d: pathlib.Path) -> tuple[list[dict[str, Any]], float | None]:
+    """The answerer's transcript, either spawned fresh or read back from disk.
+
+    Split from `derive_attempt` so that a transcript this harness did NOT
+    produce can be scored by the same code. `--rebuild` already proved the two
+    halves separate; this only names the seam, so that a transcript synthesised
+    from a host's request logs (`fetch_transcripts.py`) enters at exactly the
+    point a spawned one does and every consumer downstream is unchanged.
+
+    Raises `RuntimeError(SERVER_DEAD)` rather than returning a sentinel: there
+    is no transcript in that case, and a caller that forgot to check would
+    otherwise derive an attempt from an empty event list and record it as an
+    agent that said nothing.
+    """
     qid = case["qid"]
-    d = art / qid
-    d.mkdir(parents=True, exist_ok=True)
 
     if a.rebuild:
         # Re-derive the ledger from a transcript already on disk. The parser is
@@ -1723,11 +1740,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         if not wait_alive(a):
             # No spawn: a refusal produced by a dead server is not evidence
             # about the model, and it would still cost a model call.
-            return {"qid": qid, "submitted": False, "final_query": None,
-                    "answer_text": "", "calls": [], "error": "server_dead",
-                    "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
-                    "host_tool_uses": 0, "transcriptPath": None,
-                    "breaches": ["server unreachable before the attempt"]}
+            raise RuntimeError(SERVER_DEAD)
         platform = a.target == "platform"
         server = a.hosted_mcp_server if platform else "publisher"
         # The workspace holds the answerer's skills and nothing else, and it is
@@ -1765,6 +1778,24 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         (d / "answerer.jsonl").write_text(
             "".join(json.dumps(e) + "\n" for e in events))
         shutil.rmtree(work, ignore_errors=True)
+
+    return events, elapsed
+
+
+def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
+                   a: argparse.Namespace, art: pathlib.Path,
+                   elapsed: float | None) -> dict[str, Any]:
+    """One attempt, derived from a transcript. Calls no model and no server.
+
+    Pure with respect to the transcript: everything it reports is read out of
+    `events`, which is what lets `--rebuild` re-derive a run for free and lets a
+    log-sourced transcript be scored identically. Where a source cannot supply a
+    field the transcript would have carried, the answer is a null the ledger
+    already understands, never a zero.
+    """
+    qid = case["qid"]
+    d = art / qid
+    d.mkdir(parents=True, exist_ok=True)
 
     calls, answer, queries = [], [], []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
@@ -1943,6 +1974,25 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
            for sk in sorted(set(foreign_skills))],
         "transcriptPath": str((d / "answerer.jsonl").relative_to(art.parent)),
     }
+
+
+def run_answerer(case: dict[str, Any], a: argparse.Namespace,
+                 art: pathlib.Path) -> dict[str, Any]:
+    """Answer one case and derive its attempt. The composition of the two above."""
+    qid = case["qid"]
+    d = art / qid
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        events, elapsed = capture_answerer(case, a, d)
+    except RuntimeError as exc:
+        if str(exc) != SERVER_DEAD:
+            raise
+        return {"qid": qid, "submitted": False, "final_query": None,
+                "answer_text": "", "calls": [], "error": SERVER_DEAD,
+                "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
+                "host_tool_uses": 0, "transcriptPath": None,
+                "breaches": ["server unreachable before the attempt"]}
+    return derive_attempt(events, case, a, art, elapsed)
 
 
 JUDGE_PROMPT = """/eval-judge
