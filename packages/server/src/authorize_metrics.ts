@@ -49,6 +49,7 @@ let bypassCounter: Counter | null = null;
 let rowLevelDecisionCounter: Counter | null = null;
 let rowLevelRejectionCounter: Counter | null = null;
 let admitAllCounter: Counter | null = null;
+let lockDecisionCounter: Counter | null = null;
 
 /**
  * Record one caller-declared-authorize rejection. Call BEFORE throwing, for the
@@ -256,6 +257,34 @@ export function recordAuthorizeAdmitAllGate(route: string): void {
 }
 
 /**
+ * How a `#(authorize)` LOCK resolved a request.
+ *
+ * On its own counter rather than as a third `decision` value on
+ * `publisher_authorize_row_level_total`: that counter's `denied_by_gate` is
+ * documented as the fail-closed "could not apply the gate" case operators
+ * alert on, and folding an ordinary "this caller is not admitted" 403 into it
+ * would make an existing alert fire on routine traffic.
+ *
+ * `denied_by_lock` is the caller failing the gate's own rule — a 403 that is
+ * the feature working. `denied_unresolvable` is the fail-closed side: the
+ * gate's shape or its givens could not be resolved, so it could not be
+ * decided. Split because only the second is a signal something is wrong.
+ */
+export type LockDecision = "admitted" | "denied_by_lock" | "denied_unresolvable";
+
+/** Record how one `#(authorize)` lock resolved a request. */
+export function recordLockDecision(decision: LockDecision): void {
+   lockDecisionCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_lock_total",
+      {
+         description:
+            "How a `#(authorize)` lock resolved a request. Label: decision ('admitted'|'denied_by_lock'|'denied_unresolvable'). Both denials are a 403; 'denied_by_lock' is the gate refusing a caller it does not admit (routine), 'denied_unresolvable' is the fail-closed refusal when the gate could not be decided at all.",
+      },
+   );
+   lockDecisionCounter.add(1, { decision });
+}
+
+/**
  * Visible for tests. Drops the cached instrument so a fresh `MeterProvider` can
  * capture future emissions. Do NOT call from production code.
  */
@@ -263,6 +292,7 @@ export function resetAuthorizeGuardTelemetryForTesting(): void {
    guardRejectionCounter = null;
    bypassCounter = null;
    rowLevelDecisionCounter = null;
+   lockDecisionCounter = null;
    rowLevelRejectionCounter = null;
    admitAllCounter = null;
 }

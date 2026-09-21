@@ -660,6 +660,23 @@ async function expectDeniedByFilter(
    expect(rows).toEqual([{ c: 0 }]);
 }
 
+/**
+ * The other denial shape: a `#(authorize)` LOCK refuses the caller outright.
+ * Distinct from {@link expectDeniedByFilter} on purpose — the whole point of
+ * the lock is that an aggregate over a source the caller may not reach is a
+ * 403, never a fabricated `0`.
+ */
+async function expectDeniedByLock(
+   modelFile: string,
+   query: string,
+   givens?: Record<string, GivenValue>,
+   bypassFilters?: boolean,
+): Promise<void> {
+   await expect(
+      runGated(modelFile, query, givens, bypassFilters),
+   ).rejects.toBeInstanceOf(AccessDeniedError);
+}
+
 describe("the legacy quoted-string #(authorize) form", () => {
    it("still refuses to load a genuinely top-level gate, naming the expression as authored", async () => {
       // Unlike this file's other `#(authorize) "false"` fixtures (reached
@@ -781,9 +798,9 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
       );
       expect(admitted as unknown as { c: number }[]).toEqual([{ c: 2 }]);
 
-      // A non-matching ROLE is a gate-verdict denial — zero rows, not a
-      // structural rejection.
-      await expectDeniedByFilter(
+      // A non-matching ROLE is the lock refusing the caller: a 403, not a
+      // fabricated zero.
+      await expectDeniedByLock(
          "quoted_prefix.malloy",
          "run: gated -> { aggregate: c }",
          { ROLE: "someone_else" },
@@ -813,9 +830,9 @@ source: gated is duckdb.table('customers') extend {
       expect(result.data).toBeDefined();
    });
 
-   it("denies (zero rows) when no given satisfies the gate", async () => {
+   it("denies (403) when no given satisfies the gate", async () => {
       await writeModel("rt_single.malloy", SINGLE_GATE);
-      await expectDeniedByFilter(
+      await expectDeniedByLock(
          "rt_single.malloy",
          "run: gated -> { aggregate: c }",
          { ROLE: "intern" },
@@ -840,7 +857,7 @@ source: gated is duckdb.table('customers') extend {
 
    it("still enforces the gate when bypassFilters is true (authorize is not a filter)", async () => {
       await writeModel("rt_single.malloy", SINGLE_GATE);
-      await expectDeniedByFilter(
+      await expectDeniedByLock(
          "rt_single.malloy",
          "run: gated -> { aggregate: c }",
          { ROLE: "intern" },
@@ -942,19 +959,12 @@ query: secret is gated -> { aggregate: c }
          getConnections(),
       );
       // Named query, no sourceName — must still resolve to `gated` and gate
-      // it. A mismatched given is a filter-verdict denial now (zero rows),
-      // not a 403 — see `expectDeniedByFilter`'s doc.
-      const denied = await model.getQueryResults(
-         undefined,
-         "secret",
-         undefined,
-         undefined,
-         false,
-         {
+      // it. The gate is a lock, so a mismatched given is a 403.
+      await expect(
+         model.getQueryResults(undefined, "secret", undefined, undefined, false, {
             ROLE: "intern",
-         },
-      );
-      expect(denied.compactResult).toEqual([{ c: 0 }]);
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
       // And it runs when the gate passes.
       const { result } = await model.getQueryResults(
          undefined,
@@ -976,17 +986,17 @@ query: secret is gated -> { aggregate: c }
          getConnections(),
       );
       // Blank sourceName must not skip the gate while the query-builder treats
-      // it as absent and runs the ad-hoc query. A mismatched given is a
-      // filter-verdict denial now (zero rows), not a 403.
-      const denied = await model.getQueryResults(
-         "",
-         undefined,
-         "run: gated -> { aggregate: c }",
-         undefined,
-         false,
-         { ROLE: "intern" },
-      );
-      expect(denied.compactResult).toEqual([{ c: 0 }]);
+      // it as absent and runs the ad-hoc query.
+      await expect(
+         model.getQueryResults(
+            "",
+            undefined,
+            "run: gated -> { aggregate: c }",
+            undefined,
+            false,
+            { ROLE: "intern" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("gates the source the query actually RUNS, not a decoy leading statement", async () => {
@@ -1008,7 +1018,7 @@ source: gated is duckdb.table('customers') extend {
 }
 `,
       );
-      await expectDeniedByFilter(
+      await expectDeniedByLock(
          "rt_multi.malloy",
          "run: ungated -> { aggregate: c }\nrun: gated -> { aggregate: c }",
          { ROLE: "intern" },
@@ -1069,25 +1079,21 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
       expect(result.data).toBeDefined();
    });
 
-   it("recognizes a quoted-identifier source in the early gate (identifier resolution, not the schema-oracle guarantee)", async () => {
-      // A gated source whose Malloy name must be quoted (here, a hyphen) must
-      // still be recognized by the early gate — `extractRunTargetSourceName`
-      // resolving `` `gated-source` `` correctly is what this pins.
+   it("recognizes a quoted-identifier source in the early gate, and denies it before compiling (no schema oracle)", async () => {
+      // Two claims in one. A gated source whose Malloy name must be quoted
+      // (here, a hyphen) must still be recognized by the early gate —
+      // `extractRunTargetSourceName` resolving `` `gated-source` ``
+      // correctly is what pins the first.
       //
-      // The no-schema-oracle guarantee this test used to assert (a denied
-      // caller probing a non-existent field gets a clean 403, not a Malloy
-      // field error) held only for the PRE-EXISTING given-only fast path,
-      // which could evaluate a whole-source boolean synchronously with no
-      // compile at all. Every gate is a row filter now — enforcement is
-      // deferred until the caller's own query compiles and a graft can be
-      // attempted — so a field that does not exist fails to compile before
-      // the gate ever gets a chance to run, the same as it already did for a
-      // genuinely row-level gate before this change (see
-      // `row_level_authorize.integration.spec.ts`'s "self-triggering" case).
-      // This is a real, accepted narrowing of that guarantee, not a bug: no
-      // query ever executes either way, so no ROW data leaks — only the
-      // fact that the field name is unrecognized, which is not gate-specific
-      // information.
+      // The second is the no-schema-oracle guarantee, which the lock brings
+      // back. `assertAuthorized` runs BEFORE the caller's query compiles, so
+      // a caller the lock does not admit is refused without Malloy ever
+      // reporting whether `no_such_field` exists. While every gate was a row
+      // filter this could not hold — enforcement was deferred until a graft
+      // could be attempted, so an unrecognized field failed compilation
+      // first and the field error was the answer. The assertion below is
+      // therefore load-bearing in both directions: it must be the 403, and
+      // it must NOT mention the field.
       await writeModel(
          "rt_quoted.malloy",
          `##! experimental.givens
@@ -1101,13 +1107,16 @@ source: \`gated-source\` is duckdb.table('customers') extend {
 }
 `,
       );
-      await expect(
-         runGated(
-            "rt_quoted.malloy",
-            "run: `gated-source` -> { group_by: no_such_field }",
-            { ROLE: "viewer" },
-         ),
-      ).rejects.toThrow(/no_such_field/);
+      const err = await runGated(
+         "rt_quoted.malloy",
+         "run: `gated-source` -> { group_by: no_such_field }",
+         { ROLE: "viewer" },
+      ).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
    });
 
    it("gates a notebook cell that runs a NAMED QUERY targeting a gated source", async () => {
@@ -1137,14 +1146,10 @@ run: secret
          "rt_nb.malloynb",
          getConnections(),
       );
-      // Cell 1 is `run: secret` — a mismatched given is a filter-verdict
-      // denial now (zero-count aggregate), not a rejected cell.
-      const denied = await model.executeNotebookCell(1, undefined, false, {
-         ROLE: "intern",
-      });
-      const deniedRow = JSON.parse(denied.result!)?.data?.array_value?.[0]
-         ?.record_value?.[0];
-      expect(deniedRow?.number_value).toBe(0);
+      // Cell 1 is `run: secret` — the lock refuses a mismatched given.
+      await expect(
+         model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
       // ...and allowed when the gate passes.
       const ok = await model.executeNotebookCell(1, undefined, false, {
          ROLE: "analyst",
@@ -1560,15 +1565,11 @@ run: mine -> { aggregate: cc }
          ROLE: "analyst",
       });
       expect(ok.result).toBeDefined();
-      // ...and still DENIES (zero rows) on a non-satisfying one. The cell's
-      // gate is really enforced, not merely tolerated — this is a gate, not
-      // a hole.
-      const denied = await model.executeNotebookCell(1, undefined, false, {
-         ROLE: "nobody",
-      });
-      const deniedRow = JSON.parse(denied.result!)?.data?.array_value?.[0]
-         ?.record_value?.[0];
-      expect(deniedRow?.number_value).toBe(0);
+      // ...and still DENIES on a non-satisfying one. The cell's gate is
+      // really enforced, not merely tolerated — this is a gate, not a hole.
+      await expect(
+         model.executeNotebookCell(1, undefined, false, { ROLE: "nobody" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("allows a query joining only an inline duckdb.table(...) source (no annotations to gate)", async () => {
@@ -2018,23 +2019,30 @@ source: cp_joiner is duckdb.table('customers') extend {
       return Model.create("test-pkg", TEST_PKG_DIR, file, getConnections());
    }
 
-   it("assertAuthorizedForText defers a row-level gate's verdict to the authoritative backstop", async () => {
-      // `assertAuthorizedForText` is a best-effort PRE-compile check (see
-      // `Model.assertAuthorized`'s doc): it denies a gate it cannot even
-      // classify/graft, but a gate that CAN be expressed as a row filter is
-      // deferred rather than evaluated here — it has no whole-source
-      // admit/deny answer on its own. Both calls resolve regardless of
-      // whether the given actually satisfies `'analyst' = $ROLE`; the
-      // authoritative backstop (`authorizeAndBindRunnable`, exercised via
-      // `assertAuthorizedForRunnable` below) is what actually enforces it.
-      const model = await cpModel("cp_gate.malloy", CP_GATE);
+   it("assertAuthorizedForText decides a lock up front and defers a row filter to the backstop", async () => {
+      // `assertAuthorizedForText` is the PRE-compile check (see
+      // `Model.assertAuthorized`'s doc). The two routes part company here: a
+      // `#(authorize)` lock has a whole-source answer, so it is decided
+      // BEFORE the caller's query compiles — which is what keeps a denied
+      // caller's compile errors from being a schema oracle. A
+      // `#(access_filter)` has no such answer and is deferred to
+      // `authorizeAndBindRunnable`, which is where a graft can be attempted.
+      const locked = await cpModel("cp_gate.malloy", CP_GATE);
       await expect(
-         model.assertAuthorizedForText("run: gated -> { aggregate: c }", {}),
-      ).resolves.toBeUndefined();
+         locked.assertAuthorizedForText("run: gated -> { aggregate: c }", {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
       await expect(
-         model.assertAuthorizedForText("run: gated -> { aggregate: c }", {
+         locked.assertAuthorizedForText("run: gated -> { aggregate: c }", {
             ROLE: "analyst",
          }),
+      ).resolves.toBeUndefined();
+
+      const filtered = await cpModel("cp_join.malloy", CP_JOIN);
+      await expect(
+         filtered.assertAuthorizedForText(
+            "run: cp_locked -> { aggregate: c }",
+            {},
+         ),
       ).resolves.toBeUndefined();
    });
 
@@ -2248,7 +2256,7 @@ source: g_top is duckdb.table('customers') extend {
          { ROLE: "analyst" },
       );
       expect(result.data).toBeDefined();
-      await expectDeniedByFilter(
+      await expectDeniedByLock(
          "g_base.malloy",
          "run: base_gated -> { aggregate: c }",
          { ROLE: "intern" },
@@ -3344,38 +3352,34 @@ source: headcount_by_dept is duckdb.table('departments') extend {
    ];
 
    for (const [name, query] of denied) {
-      it(`denies (zero rows) ${name} regardless of givens`, async () => {
+      it(`refuses ${name} regardless of givens`, async () => {
          await writeModel("doc_example.malloy", DOC_EXAMPLE);
-         // DENY is a real, always-empty array — a genuine live-filter deny
-         // (WHERE id IN ()), not an unbound-given opaque one, matching the
-         // doc's "denies (zero rows)" claim regardless of ROLE.
-         const { compactResult } = await runGated("doc_example.malloy", query, {
-            ROLE: "hr",
-            DENY: [],
-         });
-         const rows = compactResult as unknown as Record<string, number>[];
-         expect(Object.values(rows[0])[0]).toBe(0);
+         // DENY is a real, always-empty array, so the lock is genuinely
+         // evaluated and genuinely says no — not an unbound-given
+         // fail-closed refusal, which would pass whatever the gate said.
+         await expect(
+            runGated("doc_example.malloy", query, { ROLE: "hr", DENY: [] }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       });
    }
 
-   it("denies (zero rows) salaries_derived regardless of givens — matches the doc's worked example again", async () => {
+   it("refuses salaries_derived regardless of givens — the derivation carries the lock", async () => {
       // `salaries_derived is salaries -> { group_by: department }` is a
-      // query-source derivation of `salaries`. The source-line form's note
-      // is struct-level, not a droppable field — it is carried onto the
+      // query-source derivation of `salaries`. The source-line form's note is
+      // struct-level, not a droppable field — it is carried onto the
       // derivation by the same by-reference note-copy mechanism the STRING
-      // form always relied on (MEASURED), so this shape matches the doc's
-      // original "denies (zero rows)" claim, same as its siblings above.
+      // form always relied on (MEASURED), so the derivation is locked too.
       await writeModel("doc_example.malloy", DOC_EXAMPLE);
-      const { compactResult } = await runGated(
-         "doc_example.malloy",
-         "run: salaries_derived -> { aggregate: n is count() }",
-         { ROLE: "hr", DENY: [] },
-      );
-      const rows = compactResult as unknown as Record<string, number>[];
-      expect(Object.values(rows[0])[0]).toBe(0);
+      await expect(
+         runGated(
+            "doc_example.malloy",
+            "run: salaries_derived -> { aggregate: n is count() }",
+            { ROLE: "hr", DENY: [] },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("gates salaries_hr on its OWN gate, not the base's", async () => {
+   it("gates salaries_hr on its OWN gate, not the base's — and an aggregate is refused, not fabricated", async () => {
       await writeModel("doc_example.malloy", DOC_EXAMPLE);
       const { result } = await runGated(
          "doc_example.malloy",
@@ -3383,15 +3387,18 @@ source: headcount_by_dept is duckdb.table('departments') extend {
          { ROLE: "hr" },
       );
       expect(result.data).toBeDefined();
-      // `avg_salary` on zero rows: the base's own gate denies (zero rows),
-      // not an AccessDeniedError — salaries_hr's gate is a row filter now.
-      const { compactResult } = await runGated(
+      // THE case this whole change exists for. `avg_salary` over a source the
+      // caller may not reach is a 403 — not a 200 carrying `NULL`, which is
+      // an answer about data they were refused.
+      const err = await runGated(
          "doc_example.malloy",
          "run: salaries_hr -> { aggregate: avg_salary }",
          { ROLE: "intern" },
+      ).then(
+         () => undefined,
+         (e: Error) => e,
       );
-      const rows = compactResult as unknown as { avg_salary: number | null }[];
-      expect(rows[0].avg_salary == null).toBe(true);
+      expect(err).toBeInstanceOf(AccessDeniedError);
    });
 
    it("returns rows for headcount_by_dept — the join is not traced", async () => {
@@ -3453,18 +3460,21 @@ source: laundered is locked_src -> { group_by: region }
       expect(sourceNamed(model, "laundered")?.authorize).toEqual([
          "'x' in $DENY",
       ]);
-      // `laundered`'s own projection (`-> { group_by: region }`) does not
-      // select `no_such_field` either, so the caller's bad field reference
-      // still surfaces as a compile error before the gate is ever reached —
-      // the same accepted schema-oracle narrowing this describe block's
-      // header documents, and unaffected by which form declared the gate.
-      await expect(
-         runGated(
-            "oracle_derived.malloy",
-            "run: laundered -> { group_by: no_such_field }",
-            {},
-         ),
-      ).rejects.toThrow(/no_such_field/);
+      // The lock is decided before the caller's query compiles, so a denied
+      // caller probing a field that does not exist learns only that they are
+      // denied — this describe block's whole subject. The narrowing recorded
+      // here while every gate was a row filter (the field error arriving
+      // first) is closed again for the lock route.
+      const err = await runGated(
+         "oracle_derived.malloy",
+         "run: laundered -> { group_by: no_such_field }",
+         {},
+      ).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
    });
 
    // A prior version of this suite pinned "refuses an inherited gate whose
@@ -3803,7 +3813,7 @@ source:
          { ROLE: "analyst" },
       );
       expect(result.data).toBeDefined();
-      await expectDeniedByFilter(
+      await expectDeniedByLock(
          "block_given.malloy",
          "run: bf_given -> { aggregate: c }",
          { ROLE: "intern" },

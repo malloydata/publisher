@@ -65,7 +65,10 @@ import {
    RETIRED_ROUTES,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
-import { CANONICAL_AUTHORIZE_ROUTES } from "./authorize_routes";
+import {
+   AUTHORIZE_ROUTE,
+   CANONICAL_AUTHORIZE_ROUTES,
+} from "./authorize_routes";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
@@ -88,14 +91,15 @@ export type GateEntry = {
     */
    selfContained: boolean;
    /**
-    * The annotation route this gate was collected under (`CANONICAL_AUTHORIZE_ROUTES`)
-    * — `"authorize"` (row-level) or `"authorize"` (a rule about the
-    * caller that ANDs with the row-level gate). Enforcement treats every
-    * entry identically regardless of route (both graft/probe the same way);
-    * `route` exists so the collection walk can keep own-wins-over-ancestor
-    * scoped PER ROUTE — see {@link collectEntryPointGates}'s doc — and so a
-    * dedup key that folds two entries together never conflates one route's
-    * gate with the other's.
+    * The annotation route this gate was collected under
+    * (`CANONICAL_AUTHORIZE_ROUTES`) — `"access_filter"` (which rows) or
+    * `"authorize"` (may this caller reach the source at all). Enforcement
+    * turns on it: {@link resolveGateShape} classifies an `authorize` entry as
+    * a `lock`, which is DECIDED and answers 403, and an `access_filter` entry
+    * as `row_level`, which is grafted as a filter. It also keeps the
+    * collection walk's own-wins-over-ancestor rule scoped PER ROUTE — see
+    * {@link collectEntryPointGates}'s doc — and keeps a dedup key that folds
+    * two entries together from conflating one route's gate with the other's.
     */
    route: string;
    /**
@@ -592,6 +596,15 @@ export async function resolveGateShape(
         /** The givens the gate compares. */
         givenNames: readonly string[];
      }
+   | {
+        shape: "lock";
+        /** The compiled condition {@link decideLock} evaluates. */
+        condition: FilterCondition;
+        /** The givens the gate compares. */
+        givenNames: readonly string[];
+        /** Given id → name, resolved against the model the lift ran through. */
+        givenNamesById: ReadonlyMap<string, string>;
+     }
    | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
 > {
    if (!entry.struct) return { shape: "rejected" };
@@ -627,7 +640,18 @@ export async function resolveGateShape(
       return { shape: "rejected" };
    }
    const filterText = gateFilterText(entry.exprs);
-   const cacheKey = `${graftScope.cacheScope}\u0000${graftTarget}\u0000${filterText}`;
+   // `entry.route` is in the key although the classification below never reads
+   // it: the route is applied AFTER the memo, at the return, so a shared entry
+   // cannot currently produce the wrong shape (pinned by
+   // `row_level_authorize.integration.spec.ts`'s "the two ROUTES do not
+   // collide"). It is here because the fail-closed `["false"]` sentinel is
+   // synthesized on BOTH routes for the same struct, so the two routes really
+   // do present identical (scope, target, text) — and the day any part of the
+   // classification starts reading the route, a shared entry would hand the
+   // lock the filter's answer, which is 200 with zero rows on a source nothing
+   // confirmed the caller may read. One key segment is cheaper than that
+   // depending on nobody noticing.
+   const cacheKey = `${graftScope.cacheScope}\u0000${entry.route}\u0000${graftTarget}\u0000${filterText}`;
 
    let cached = deps.gateShapeCache.get(cacheKey);
    if (!cached) {
@@ -701,7 +725,11 @@ export async function resolveGateShape(
       } else if (
          isBareFalseLiteral(condition.e as { node: string; e?: unknown })
       ) {
-         classification = { shape: "row_level", givenNames: [] };
+         classification = {
+            shape: "row_level",
+            givenNames: [],
+            givenNamesById: new Map(),
+         };
       } else {
          // The source-line form: `condition` is a genuine compiled predicate
          // tree (a comparison, `in`, `and`/`or`, …), not a bare field
@@ -754,9 +782,12 @@ export async function resolveGateShape(
                   detail: `this gate references \`${expansion.unresolvedPath}\`, which could not be resolved on the graft target`,
                };
             } else {
-               const givenNames = Array.from(expansion.givenIds)
-                  .map((id) => graftScope.modelDef.givens?.[id]?.name)
-                  .filter((name): name is string => !!name);
+               const givenNamesById = new Map<string, string>();
+               for (const id of expansion.givenIds) {
+                  const name = graftScope.modelDef.givens?.[id]?.name;
+                  if (name) givenNamesById.set(id, name);
+               }
+               const givenNames = Array.from(givenNamesById.values());
                // Belt-and-braces: every `$NAME` literally present in the
                // filter text the IR walk started from must appear among the
                // resolved names — a mismatch means the walk missed something
@@ -779,7 +810,11 @@ export async function resolveGateShape(
                         "this gate references a given id that does not resolve to a name on this model",
                   };
                } else {
-                  classification = { shape: "row_level", givenNames };
+                  classification = {
+                     shape: "row_level",
+                     givenNames,
+                     givenNamesById,
+                  };
                }
             }
          }
@@ -814,6 +849,17 @@ export async function resolveGateShape(
 
    if (cached.classification.shape === "rejected") {
       return { shape: "rejected", cause: cached.classification.cause };
+   }
+   // Everything above — the lift, the given-id expansion, the model-surface
+   // re-check — is the same work for both routes; only the ANSWER differs, so
+   // the split is here rather than a second pass through any of it.
+   if (entry.route === AUTHORIZE_ROUTE) {
+      return {
+         shape: "lock",
+         condition: cached.condition,
+         givenNames: cached.classification.givenNames,
+         givenNamesById: cached.classification.givenNamesById,
+      };
    }
    return {
       shape: "row_level",

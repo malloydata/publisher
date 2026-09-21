@@ -1838,7 +1838,7 @@ source: X is duckdb.table('parent') extend {
             label: "X",
             exprs: ["org_id in $GROUPS"],
             selfContained: false,
-            route: "authorize",
+            route: "access_filter",
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -1873,6 +1873,70 @@ source: X is duckdb.table('parent') extend {
          if (rejected.shape === "rejected") {
             expect(rejected.cause).toBe("unreachable_given");
          }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("CRITICAL — the two ROUTES do not collide on a cached entry", async () => {
+      // The fail-closed `["false"]` sentinel (`gate_registry_walk`'s
+      // `ancestorGateExprs`) is synthesized on BOTH routes for the SAME
+      // struct, so the two routes really do present the identical
+      // (cacheScope, graftTarget, filterText), and the walk runs filter-first
+      // (`CANONICAL_AUTHORIZE_ROUTES`). What this pins is that the SHAPE
+      // comes from `entry.route` and not from whatever the memo happens to
+      // hold: the lock must come back a lock even when the filter's entry got
+      // there first. A `row_level` here means the lock grafts `where: false`
+      // and the caller gets 200 with zero rows on a source nothing confirmed
+      // they may read.
+      //
+      // Pinned at this level rather than end to end because no model TEXT
+      // reaches that sentinel — it needs unreadable IR or an exhausted
+      // registry walk, and a plain 40-deep `extend` chain resolves cleanly
+      // (measured). A test that cannot reach the shape is worse than none.
+      const { internals, duckdb } = await buildGatedModel(`
+#(authorize) false
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         const modelDef = internals.modelDef as ModelDef;
+         const graftScope = {
+            modelDef,
+            materializer: (
+               internals as unknown as { modelMaterializer: ModelMaterializer }
+            ).modelMaterializer,
+            cacheScope: "model",
+         };
+         const deps = createGateClassificationDeps([]);
+         const base = {
+            label: "X",
+            exprs: ["false"],
+            selfContained: true,
+            struct: modelDef.contents["X"] as unknown as SourceDef,
+         };
+
+         // Filter route first, exactly as the walk orders them: it populates
+         // the memo.
+         const filter = await resolveGateShape(
+            { ...base, route: "access_filter" },
+            modelDef,
+            graftScope,
+            deps,
+         );
+         expect(filter.shape).toBe("row_level");
+
+         // Same scope, same graft target, same filter text, other route. It
+         // must come back as a LOCK — a `row_level` here is the memo leaking
+         // across routes.
+         const lock = await resolveGateShape(
+            { ...base, route: "authorize" },
+            modelDef,
+            graftScope,
+            deps,
+         );
+         expect(lock.shape).toBe("lock");
       } finally {
          await duckdb.close();
       }
@@ -2220,11 +2284,14 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("/compile ADMITS a constant-FALSE gate too — a no-given gate is decidable regardless of which way it resolves, same as a supplied-but-wrong given elsewhere in this file", async () => {
-      // `/compile` decides on PRESENCE, not the value: the deny-everyone
-      // kill switch is a QUERY-path guarantee (a real run grafts `where:
-      // false` and gets zero rows), not a `/compile` one — `/compile` never
-      // runs the query, so there is no row-truth to check here either way.
+   it("/compile REFUSES a constant-FALSE lock — the lock is truth-evaluated here, not merely present", async () => {
+      // The two routes part company on `/compile`. A `#(access_filter)` is
+      // still decided on PRESENCE, not value — it has no whole-source answer
+      // and `/compile` runs nothing, so there is no row-truth to check. A
+      // `#(authorize)` does have one, and reading a source's SQL is reaching
+      // it, so the lock is evaluated. The cost is real and deliberate: an
+      // author outside the group can no longer compile-check a locked
+      // source.
       const { model, duckdb } = await buildGatedModel(`
 #(authorize) false
 source: X is duckdb.table('parent') extend {
@@ -2237,7 +2304,7 @@ source: X is duckdb.table('parent') extend {
          };
          await expect(
             model.assertAuthorizedForRunnable(stubRunnable, {}),
-         ).resolves.toBeUndefined();
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }
@@ -2753,19 +2820,14 @@ run: gated -> { aggregate: n is count() }
          // filterParams supplies a value for the `nonexistent_field` filter,
          // so the `#(filter)` refinement rebuild appends
          // `+ {where: nonexistent_field = 'x'}` to the cell's text — which
-         // fails to compile, since `gated` has no such field. Every gate is a
-         // row filter now (there is no more given-only fast path), so the
-         // PRE-refinement gate call can only reject a structurally invalid
-         // gate synchronously — a `$ROLE = 'admin'` mismatch is DEFERRED to
-         // the post-refinement authoritative bind, same as any other
-         // row-level gate. That authoritative step never runs here: the
-         // broken refinement fails to compile first. Nothing leaks either
-         // way — no query ever executes — so what this pins is that the
-         // refinement's own compile failure surfaces cleanly, not that it is
-         // reclassified as a 403.
+         // fails to compile, since `gated` has no such field. The caller is
+         // given the ADMITTING role deliberately: this pins that a broken
+         // refinement surfaces its own compile failure rather than silently
+         // admitting unfiltered rows, and a denied caller would short-circuit
+         // on the lock's 403 before reaching that question at all.
          await expect(
             model.executeNotebookCell(0, { nonexistent_field: "x" }, false, {
-               ROLE: "analyst",
+               ROLE: "admin",
             }),
          ).rejects.toThrow(/nonexistent_field/);
       } finally {
@@ -3525,7 +3587,7 @@ source: X is duckdb.table('parent') extend {
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — constant gate expressions are refused by the grammar", () => {
-   it("`#(authorize) false` loads clean as a deny-all and denies every request with a live empty-result filter", async () => {
+   it("`#(authorize) false` loads clean as a deny-all and REFUSES every request — an aggregate is a 403, not a fabricated zero", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-const-false-"));
       try {
@@ -3547,22 +3609,19 @@ source: X is duckdb.table('parent') extend {
             (model as unknown as { compilationError?: Error }).compilationError,
          ).toBeUndefined();
          expect(model.getAuthorize("X")).toEqual(["false"]);
-         // A real query: the `where: false` graft is dispatched and the
-         // warehouse counts zero matching rows — a 200 with n=0, not an
-         // opaque denial, exactly like every other row-level gate's
-         // zero-match case. `aggregate: count()` always returns one row, so
-         // the assertion is on the counted value, not the row count.
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            {},
-         );
-         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
-            0,
-         );
+         // THE case the route split exists for. Grafted as `where: false`,
+         // `SELECT count(*) ... WHERE FALSE` is one row reading `0` — an
+         // answer about data the caller was refused. The lock refuses instead.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: X -> { aggregate: n is count() }",
+               {},
+               true,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -4220,7 +4279,18 @@ describe("row-level authorize — the `true` admit-all sentinel", () => {
          .sort((a, b) => a - b);
    }
 
-   it("a `#(authorize) false` base plus a `#(authorize) true` extension — the base still denies every caller, the extension admits all", async () => {
+   /** The lock's denial: a 403, not a 200 with zero rows. */
+   async function refused(
+      model: Model,
+      sourceName: string,
+      givens: Record<string, unknown>,
+   ): Promise<void> {
+      await expect(ids(model, sourceName, givens)).rejects.toBeInstanceOf(
+         AccessDeniedError,
+      );
+   }
+
+   it("a `#(authorize) false` base plus a `#(authorize) true` extension — the base refuses every caller, the extension admits all", async () => {
       const { model, duckdb, dir } = await createModel(`
 #(authorize) false
 source: base is duckdb.table('parent') extend {}
@@ -4230,7 +4300,7 @@ source: reopened is base extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         expect(await ids(model, "base", {})).toEqual([]);
+         await refused(model, "base", {});
          expect(await ids(model, "reopened", {})).toEqual([1, 2, 3, 4]);
       } finally {
          await duckdb.close();
@@ -4333,7 +4403,7 @@ source: reopened is base extend {}
          expect(compilationErrorOf(model)).toBeUndefined();
          // The base denies everyone; the extension's own `true` sheds that
          // lock, and only its own row filter remains.
-         expect(await ids(model, "base", { ORGS: [1] })).toEqual([]);
+         await refused(model, "base", { ORGS: [1] });
          expect(await ids(model, "reopened", { ORGS: [1] })).toEqual([1, 2]);
          expect(await ids(model, "reopened", { ORGS: [999] })).toEqual([]);
       } finally {
@@ -4359,7 +4429,7 @@ source: derived is base -> { select: id }
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          expect(await ids(model, "reopened", {})).toEqual([1, 2, 3, 4]);
-         expect(await ids(model, "derived", {})).toEqual([]);
+         await refused(model, "derived", {});
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });

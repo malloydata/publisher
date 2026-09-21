@@ -547,8 +547,8 @@ source:
 // still enforces.
 // ---------------------------------------------------------------------------
 
-describe("source-line #(authorize)/#(authorize) — own-wins is per route", () => {
-   it("a child's own #(authorize) replaces only the row-level gate — the inherited #(authorize) still ANDs in", async () => {
+describe("source-line #(authorize)/#(access_filter) — own-wins is per route", () => {
+   it("a child's own #(access_filter) replaces only the row filter — the inherited #(authorize) lock still decides", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -583,20 +583,19 @@ source: child_own_authorize is dual_gated_parent extend {}
          ).toBe(2);
 
          // Same row-level condition satisfiable, but the caller fails the
-         // INHERITED authorize gate — proves it is still being read
-         // off `child_own_authorize`'s `annotations.inherits`, not dropped
-         // when the child's own #(authorize) note demoted it there.
-         const roleDenied = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: child_own_authorize -> { aggregate: n is count() }",
-            {},
-            true,
-            { NEVER: [1], ROLE: ["sales"] },
-         );
-         expect(
-            (roleDenied.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(0);
+         // INHERITED lock — a 403, proving it is still being read off
+         // `child_own_authorize`'s `annotations.inherits` and not dropped
+         // when the child's own `#(access_filter)` note demoted it there.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: child_own_authorize -> { aggregate: n is count() }",
+               {},
+               true,
+               { NEVER: [1], ROLE: ["sales"] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
 
          // The base's ORIGINAL row-level gate (org_id in $GROUPS) must NOT
          // still be active as an OR alongside the child's own #(authorize) —
@@ -619,7 +618,7 @@ source: child_own_authorize is dual_gated_parent extend {}
       }
    });
 
-   it("a child's own #(authorize) replaces only the caller gate — the inherited #(authorize) row filter still applies", async () => {
+   it("a child's own #(authorize) replaces only the lock — the inherited #(access_filter) row filter still applies", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -665,19 +664,18 @@ source: child_own_source_authorize is gated_parent2 extend {}
             (rowDenied.compactResult as unknown as { n: number }[])[0].n,
          ).toBe(0);
 
-         // The child's OWN caller check still applies: a caller failing it
-         // gets zero rows even though the inherited row filter would admit.
-         const callerDenied = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: child_own_source_authorize -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1], ROLE: ["sales"] },
-         );
-         expect(
-            (callerDenied.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(0);
+         // The child's OWN lock still applies: a caller failing it is refused
+         // even though the inherited row filter would have admitted rows.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: child_own_source_authorize -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1], ROLE: ["sales"] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup(duckdb, dir);
       }
@@ -1131,7 +1129,7 @@ source: open_source is duckdb.table('orgtable') extend {
       }
    });
 
-   it("`#(authorize) false` loads clean as a deny-all — the locked-base idiom still parses", async () => {
+   it("`#(authorize) false` loads clean as a deny-all and refuses every caller", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -1145,19 +1143,18 @@ source: locked_out is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          expect(model.getAuthorize("locked_out")).toEqual(["false"]);
-         // `aggregate: count()` always returns one row — the `where: false`
-         // graft filters the rows it counts, not the result row itself.
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: locked_out -> { aggregate: n is count() }",
-            {},
-            true,
-            {},
-         );
-         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
-            0,
-         );
+         // Not a `where: false` graft returning a one-row `0` — that is an
+         // answer about data the caller was refused. The lock refuses.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: locked_out -> { aggregate: n is count() }",
+               {},
+               true,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup(duckdb, dir);
       }

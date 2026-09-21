@@ -22,7 +22,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { ModelCompilationError } from "../errors";
+import { AccessDeniedError, ModelCompilationError } from "../errors";
 import { AuthorizeGrammarError } from "./authorize_grammar";
 import { Model } from "./model";
 
@@ -106,6 +106,18 @@ async function rowsFor(
 
 function ids(rows: ReadonlyArray<Record<string, unknown>>): number[] {
    return rows.map((r) => Number(r.id)).sort((a, b) => a - b);
+}
+
+/** The lock's denial: a 403, never a 200 carrying zero rows. */
+async function expectRefused(
+   model: Model,
+   sourceName: string,
+   givens: Record<string, unknown>,
+   selectCols = SELECT_COLS,
+): Promise<void> {
+   await expect(
+      rowsFor(model, sourceName, givens, selectCols),
+   ).rejects.toBeInstanceOf(AccessDeniedError);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +213,7 @@ source: X is duckdb.table('accounts') extend {
       }
    });
 
-   it("source-level `'literal' = $GIVEN` — scalar given, admits all or none", async () => {
+   it("source-level `'literal' = $GIVEN` — scalar given, admits every row or refuses outright", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   ROLE :: string
@@ -212,15 +224,14 @@ source: X is duckdb.table('accounts') extend {}
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const admin = await rowsFor(model, "X", { ROLE: "admin" });
-         const user = await rowsFor(model, "X", { ROLE: "user" });
          expect(ids(admin)).toEqual([1, 2, 3, 4, 5, 6]);
-         expect(ids(user)).toEqual([]);
+         await expectRefused(model, "X", { ROLE: "user" });
       } finally {
          await cleanup(duckdb, dir);
       }
    });
 
-   it("source-level `'literal' in $GIVEN` — list given, admits when the literal is a member", async () => {
+   it("source-level `'literal' in $GIVEN` — list given, admits when the literal is a member and refuses otherwise", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   ROLES :: string[]
@@ -231,9 +242,8 @@ source: X is duckdb.table('accounts') extend {}
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const admin = await rowsFor(model, "X", { ROLES: ["admin", "user"] });
-         const user = await rowsFor(model, "X", { ROLES: ["user"] });
          expect(ids(admin)).toEqual([1, 2, 3, 4, 5, 6]);
-         expect(ids(user)).toEqual([]);
+         await expectRefused(model, "X", { ROLES: ["user"] });
       } finally {
          await cleanup(duckdb, dir);
       }
@@ -702,11 +712,10 @@ source: qs is combo -> { group_by: id, region }
 });
 
 // ---------------------------------------------------------------------------
-// Group E — `#(authorize)`: a rule about the CALLER rather than the
-// row, that ANDs with any row-level `#(authorize)` gate rather than
-// bypassing it. Same load path (`Model.create`), same enforcement mechanism
-// (a graft) as `#(authorize)` — the only new machinery is the second route
-// and its body restriction.
+// Group E — `#(authorize)`: the LOCK. It answers "may this caller reach this
+// source at all", so its denial is a 403 and it is decided BEFORE the
+// caller's query compiles. It composes with `#(access_filter)` by running
+// first: pass the lock, then see your rows.
 // ---------------------------------------------------------------------------
 
 async function expectModelCompilationError(
@@ -737,15 +746,14 @@ source: mine is base extend {}
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const admitted = await rowsFor(model, "mine", { ROLE: ["finance"] });
-         const denied = await rowsFor(model, "mine", { ROLE: ["sales"] });
          expect(ids(admitted)).toEqual([1, 2, 3, 4, 5, 6]);
-         expect(ids(denied)).toEqual([]);
+         await expectRefused(model, "mine", { ROLE: ["sales"] });
       } finally {
          await cleanup(duckdb, dir);
       }
    });
 
-   it("grafts as its own entry and ANDs with a row-level #(authorize) gate — a caller it does not admit gets 200 with ZERO ROWS", async () => {
+   it("runs before the #(access_filter) on the same source — a caller it does not admit gets 403, and never the filter's zero rows", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]
@@ -764,17 +772,14 @@ source: X is duckdb.table('accounts') extend {}
             ROLE: ["finance"],
          });
          expect(ids(both)).toEqual([1, 2, 3]);
-         // Row-level gate satisfied, authorize NOT satisfied — 200,
-         // zero rows, not an error. Asserted on the ACTUAL ROWS, not filter
-         // text, since the whole point is that the AND is enforced, not
-         // merely declared.
-         const roleDenied = await rowsFor(model, "X", {
+         // Filter satisfied, lock NOT satisfied — 403. The two denials are
+         // deliberately different responses, which is the whole point of
+         // splitting the routes.
+         await expectRefused(model, "X", {
             GROUPS: ["org1"],
             ROLE: ["sales"],
          });
-         expect(ids(roleDenied)).toEqual([]);
-         // Source-authorize satisfied, row-level gate NOT satisfied — also
-         // zero rows.
+         // Lock satisfied, filter matches nothing — 200 with zero rows.
          const orgDenied = await rowsFor(model, "X", {
             GROUPS: ["org-nowhere"],
             ROLE: ["finance"],
@@ -785,29 +790,16 @@ source: X is duckdb.table('accounts') extend {}
       }
    });
 
-   it("`#(authorize) false` is accepted and behaves identically to `#(authorize) false`", async () => {
-      const sourceAuthorizeFalse = await createModel(`
-#(authorize) false
-source: X is duckdb.table('accounts') extend {}
-`);
-      const authorizeFalse = await createModel(`
+   it("`#(authorize) false` loads clean and refuses every caller", async () => {
+      const { model, duckdb, dir } = await createModel(`
 #(authorize) false
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
-         expect(compilationErrorOf(sourceAuthorizeFalse.model)).toBeUndefined();
-         expect(compilationErrorOf(authorizeFalse.model)).toBeUndefined();
-         const viaSourceAuthorize = await rowsFor(
-            sourceAuthorizeFalse.model,
-            "X",
-            {},
-         );
-         const viaAuthorize = await rowsFor(authorizeFalse.model, "X", {});
-         expect(ids(viaSourceAuthorize)).toEqual([]);
-         expect(ids(viaSourceAuthorize)).toEqual(ids(viaAuthorize));
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expectRefused(model, "X", {});
       } finally {
-         await cleanup(sourceAuthorizeFalse.duckdb, sourceAuthorizeFalse.dir);
-         await cleanup(authorizeFalse.duckdb, authorizeFalse.dir);
+         await cleanup(duckdb, dir);
       }
    });
 
@@ -1179,6 +1171,172 @@ source: base is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Group F — the lock's RESPONSE, end to end. Every assertion here is on rows
+// or on the thrown error, never on a parse: the whole subject of the route
+// split is what a denied caller receives, and a test that asserts the parse
+// passes just as happily when the gate grafts a filter instead.
+// ---------------------------------------------------------------------------
+
+describe("authorize syntax conformance — Group F (the lock answers 403)", () => {
+   it("an AGGREGATE over a locked source is refused, not answered with a fabricated zero", async () => {
+      // The case the route split exists for. Grafted as `where: false`,
+      // `SELECT sum(amount) ... WHERE FALSE` is one row of NULL and
+      // `count()` is `0` — an answer about data the caller was refused.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string
+
+#(authorize) 'admin' = $ROLE
+source: X is duckdb.table('accounts') extend {
+   measure: total is amount.sum()
+   measure: n is count()
+}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         for (const q of ["aggregate: total", "aggregate: n"]) {
+            await expect(
+               model.getQueryResults(
+                  undefined,
+                  undefined,
+                  `run: X -> { ${q} }`,
+                  {},
+                  true,
+                  { ROLE: "user" } as never,
+               ),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         }
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("the lock runs first: a caller it refuses never sees the filter's zero rows", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string
+  ORGS :: string[]
+
+#(authorize) 'admin' = $ROLE
+#(access_filter) org_id in $ORGS
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(
+            ids(await rowsFor(model, "X", { ROLE: "admin", ORGS: ["org1"] })),
+         ).toEqual([1, 2, 3]);
+         // Lock passes, filter matches nothing: 200 with zero rows.
+         expect(
+            ids(await rowsFor(model, "X", { ROLE: "admin", ORGS: ["nope"] })),
+         ).toEqual([]);
+         // Lock fails: 403, whatever the filter would have done.
+         await expectRefused(model, "X", { ROLE: "user", ORGS: ["org1"] });
+         await expectRefused(model, "X", { ROLE: "user", ORGS: ["nope"] });
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("`$GIVEN = 'literal'` and `'literal' = $GIVEN` decide identically", async () => {
+      // The graft compiles the author's own text, so both operand orders
+      // reach the decision.
+      for (const body of ["'admin' = $ROLE", "$ROLE = 'admin'"]) {
+         const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string
+
+#(authorize) ${body}
+source: X is duckdb.table('accounts') extend {}
+`);
+         try {
+            expect(compilationErrorOf(model)).toBeUndefined();
+            expect(ids(await rowsFor(model, "X", { ROLE: "admin" }))).toEqual([
+               1, 2, 3, 4, 5, 6,
+            ]);
+            await expectRefused(model, "X", { ROLE: "user" });
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      }
+   });
+
+   it("a null given binding is a 403, not a 500", async () => {
+      // `null` reaches the decision as a real value rather than an absent
+      // one, so an unguarded `(null).some(...)` would be a TypeError — and a
+      // TypeError is a 500, which is a different response class entirely.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: string[]
+
+#(authorize) 'finance' in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expectRefused(model, "X", { GROUPS: null });
+         await expectRefused(model, "X", {});
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("comparison does not case-fold — `'Finance'` is not `'finance'`", async () => {
+      // A source-shaped gate on the pre-flip row route was compared with
+      // warehouse collation, and MySQL's default is case-insensitive. The
+      // decision is exact-match TypeScript now, which is a real behavior
+      // change for those tenants and fails closed.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: string[]
+
+#(authorize) 'finance' in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expectRefused(model, "X", { GROUPS: ["Finance"] });
+         expect(
+            ids(await rowsFor(model, "X", { GROUPS: ["finance"] })),
+         ).toEqual([1, 2, 3, 4, 5, 6]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a lock on a source whose base is unreadable is refused, never served empty", async () => {
+      // B1: the fail-closed `["false"]` sentinel is synthesized on BOTH
+      // routes for the same struct, and the two routes are walked
+      // filter-first. Without the route in `resolveGateShape`'s cache key the
+      // filter walk's `row_level` entry answers the lock's lookup, the lock
+      // grafts `where: false`, and the caller gets 200 with zero rows on a
+      // source they may not reach. Reversing CANONICAL_AUTHORIZE_ROUTES must
+      // leave this green.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string
+  ORGS :: string[]
+
+#(authorize) 'admin' = $ROLE
+#(access_filter) org_id in $ORGS
+source: base is duckdb.table('accounts') extend {}
+
+source: derived is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expectRefused(model, "derived", {
+            ROLE: "user",
+            ORGS: ["org1"],
+         });
+         await expectRefused(model, "base", { ROLE: "user", ORGS: ["org1"] });
       } finally {
          await cleanup(duckdb, dir);
       }

@@ -120,27 +120,32 @@ describe("compile-path authorize gate (compileSource)", () => {
       expect(problems).toEqual([]);
    });
 
-   it("ADMITS at APPEND scope even when the given does NOT satisfy the gate — /compile decides on PRESENCE, not the value", async () => {
-      // The `checkOnly` decidable escape only asks whether the caller
-      // engaged with the gate (supplied SOME value for every given it
-      // reads), not whether that value would pass — the real row filter is
-      // evaluated against the actual value at RUN time, never here. `/compile`
-      // returns a schema, not rows, so admitting on presence alone reveals
-      // nothing a query wouldn't already answer with (possibly empty)
-      // filtered rows.
+   it("REFUSES at APPEND scope when the LOCK's given does not satisfy it — the lock is truth-evaluated on /compile", async () => {
+      // If "may this caller reach this source at all" is what `#(authorize)`
+      // means, then reading the source's SQL is reaching it. So the lock is
+      // evaluated here, not merely checked for presence. The accepted cost:
+      // an author outside the group can no longer compile-check a locked
+      // source.
+      await expect(
+         compile("run: gated -> { aggregate: c }", { ROLE: "nobody" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("ADMITS at APPEND scope once the LOCK's given satisfies it", async () => {
       const { problems } = await compile("run: gated -> { aggregate: c }", {
-         ROLE: "nobody",
+         ROLE: "analyst",
       });
       expect(problems).toEqual([]);
    });
 
-   it("ADMITS a row-field gate (`org_id`) at APPEND scope once its given is supplied", async () => {
-      // `row_gated`'s condition reads `org_id`, a real column — the fold-in
-      // still resolves the on-disk twin for it exactly as it does for the
-      // given-only "gated" case above, so the same decidable escape applies:
-      // `GROUPS` was supplied, so this compiles without running the query.
+   it("ADMITS a row-field #(access_filter) at APPEND scope on PRESENCE, not value", async () => {
+      // The other route keeps the `checkOnly` decidable escape: a filter has
+      // no whole-source answer to evaluate, and `/compile` returns a schema
+      // rather than rows, so admitting once the caller has engaged with the
+      // gate reveals nothing a query would not already answer with (possibly
+      // empty) filtered rows. `GROUPS: [-1]` matches nothing, and compiles.
       const { problems } = await compile("run: row_gated -> { aggregate: c }", {
-         GROUPS: [1],
+         GROUPS: [-1],
       });
       expect(problems).toEqual([]);
    });
@@ -528,23 +533,22 @@ export { customers, visible_gated }`,
       expect(sql).toBeUndefined();
    });
 
-   it("with includeSql AND a non-satisfying given, returns the hidden source's UNGRAFTED SQL — the widest point of the accepted trade", async () => {
-      // Same admission as above (presence, not value, decides), but now with
-      // `includeSql: true` and `ROLE: "nobody"` — a value that would fail the
-      // gate at run time. `/compile` never runs the query, so there is no row
-      // filter to apply here even for a value that would have failed one:
-      // the returned SQL is the plain compiled query, with no `$ROLE`
-      // reference at all. This is the actual shape of the residual the
-      // product owner accepted, not just that some string was returned.
-      const { problems, sql } = await env.compileSource(
-         "pkg",
-         "secret.malloy",
-         "run: hidden_gated -> { aggregate: c }",
-         true,
-         { ROLE: "nobody" },
-      );
-      expect(problems).toEqual([]);
-      expect(sql).toContain("FROM (SELECT 1 as x) as base");
-      expect(sql).not.toMatch(/ROLE|analyst|nobody/i);
+   it("with includeSql AND a non-satisfying given, returns NOTHING — the lock closed the widest point of the accepted trade", async () => {
+      // This test used to record the residual exposure: `includeSql: true`
+      // plus `ROLE: "nobody"` returned the hidden source's plain compiled SQL,
+      // because `/compile` admitted on the PRESENCE of a given rather than
+      // its value. Truth-evaluating the lock closes it. The refusal is the
+      // boundary's 404 rather than a 403 because the source is also hidden —
+      // a lock thrown outside `denyHiddenAsNotQueryable` would be an
+      // existence oracle, which is this describe block's whole subject.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "secret.malloy",
+            "run: hidden_gated -> { aggregate: c }",
+            true,
+            { ROLE: "nobody" },
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });

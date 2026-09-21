@@ -187,12 +187,61 @@ import {
    recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
+   recordLockDecision,
    recordRowLevelGateDecision,
    recordRowLevelGateRejected,
    type AuthorizeBypassEntryPoint,
    type AuthorizeGuardField,
 } from "../authorize_metrics";
+import { decideLock } from "./authorize_lock";
 import { safeJoinUnderRoot } from "../path_safety";
+
+/**
+ * The shared tail of every gate resolution that is not a row filter: a
+ * `#(authorize)` lock is DECIDED, and anything else — or a lock that does not
+ * admit this caller — is a 403 naming only the source.
+ *
+ * One helper rather than a copy at each call site because the two callers
+ * (`assertAuthorized`'s pre-compile gate and `probeEntryPointGates`' walk) are
+ * not two decisions: the early gate exists to reach the SAME answer the
+ * compiled backstop reaches, and a divergence between them is a schema
+ * oracle, not an inconsistency.
+ */
+function denyUnlessAdmitted(
+   resolution:
+      | {
+           shape: "lock";
+           condition: { e?: unknown };
+           givenNamesById: ReadonlyMap<string, string>;
+        }
+      | { shape: "rejected"; cause?: RowLevelGateRejectionCause },
+   givens: Record<string, GivenValue>,
+   label: string,
+): void {
+   if (resolution.shape === "lock") {
+      if (
+         decideLock(
+            resolution.condition.e,
+            (id) => resolution.givenNamesById.get(id),
+            givens,
+         ) === "admit"
+      ) {
+         recordLockDecision("admitted");
+         return;
+      }
+      recordLockDecision("denied_by_lock");
+      throw new AccessDeniedError(`Access denied for source "${label}".`);
+   }
+   recordLockDecision("denied_unresolvable");
+   // Also booked on the row-level counter: a gate refused at SHAPE resolution
+   // is a fail-closed rejection wherever it was resolved, and an operator
+   // reading `publisher_authorize_row_level_total{decision="denied_by_gate"}`
+   // must not have a whole class of them silently missing. `cause` is the
+   // separate, finer rejection label, not a substitute for it.
+   recordRowLevelGateDecision("denied_by_gate");
+   if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
+   throw new AccessDeniedError(`Access denied for source "${label}".`);
+}
 
 /**
  * What a request boundary contributes to a model query's per-query metadata: the
@@ -1221,7 +1270,7 @@ export class Model {
     */
    public async assertAuthorized(
       sourceName: string | undefined,
-      _givens: Record<string, GivenValue>,
+      givens: Record<string, GivenValue>,
       bypassAuthorize = false,
       /**
        * The graft scope a row-level gate found here would classify/lift
@@ -1270,18 +1319,7 @@ export class Model {
                ? await this.resolveGateShape(entry, this.modelDef, graftScope)
                : ({ shape: "rejected", cause: undefined } as const);
             if (resolution.shape === "row_level") continue;
-            // Same decision counter `authorizeAndBindRunnable` books for its
-            // own fail-closed refusals: a rejection is a rejection wherever
-            // the gate was resolved, and an operator reading
-            // `publisher_authorize_row_level_total{decision=
-            // "denied_by_gate"}` must not have a whole class of them (every
-            // gate refused at SHAPE resolution) silently missing. `cause` is
-            // the separate, finer rejection label, not a substitute for it.
-            recordRowLevelGateDecision("denied_by_gate");
-            if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-            throw new AccessDeniedError(
-               `Access denied for source "${entry.label}".`,
-            );
+            denyUnlessAdmitted(resolution, givens, entry.label);
          }
          return;
       }
@@ -1661,15 +1699,7 @@ export class Model {
             });
             continue;
          }
-         // Booked here as well as in `authorizeAndBindRunnable` — see the
-         // identical call in `assertAuthorized`: a gate refused at SHAPE
-         // resolution is still a fail-closed rejection, and leaving it out
-         // would make the decision counter under-report every one of them.
-         recordRowLevelGateDecision("denied_by_gate");
-         if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-         throw new AccessDeniedError(
-            `Access denied for source "${entry.label}".`,
-         );
+         denyUnlessAdmitted(resolution, givens, entry.label);
       }
       return rowLevel;
    }
@@ -2310,6 +2340,12 @@ export class Model {
            condition: FilterCondition;
            givenNames: readonly string[];
         }
+      | {
+           shape: "lock";
+           condition: FilterCondition;
+           givenNames: readonly string[];
+           givenNamesById: ReadonlyMap<string, string>;
+        }
       | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
    > {
       const result = await resolveGateShapeImpl(
@@ -2331,7 +2367,7 @@ export class Model {
       // instead. Additive and idempotent (a `Set`), and always runs BEFORE
       // the graft this same request builds is ever executed, cache hit or
       // miss — safe to widen unconditionally.
-      if (result.shape === "row_level") {
+      if (result.shape !== "rejected") {
          for (const name of result.givenNames) {
             this.authorizeReferencedGivenNames.add(name);
          }

@@ -788,7 +788,12 @@ export const ROW_LEVEL_GATE_REJECTION_CAUSES =
  * to graft it / it referenced a given off the surface (`rejected`).
  */
 export type RowLevelGateClassification =
-   | { shape: "row_level"; givenNames: string[] }
+   | {
+        shape: "row_level";
+        givenNames: string[];
+        /** Given id → name, for the lock's own evaluation of this condition. */
+        givenNamesById: ReadonlyMap<string, string>;
+     }
    | { shape: "rejected"; cause: RowLevelGateRejectionCause; detail: string };
 
 /**
