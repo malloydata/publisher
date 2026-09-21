@@ -85,7 +85,6 @@ import {
 } from "../constants";
 import {
    recordAuthorizeAdmitAllGate,
-   recordDeprecatedAuthorizeSpelling,
    recordRowLevelGateRejected,
 } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
@@ -93,9 +92,7 @@ import { ModelCompilationError } from "../errors";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
-   deprecatedAuthorizeSpellingWarning,
    findLegacyStringGates,
-   sourcesWithDeprecatedAuthorizeSpelling,
    validateAuthorizeProbes,
    type AuthorizeMap,
    type AuthorizeOwnNotesMap,
@@ -748,7 +745,7 @@ async function compileMalloyModel(
    //
    // `source.authorize` is scoped to the `authorize` route only (see
    // `ExtractedSource.authorize`'s doc), so a given referenced only by a
-   // `#(source_authorize)` term is not suggested — a known, accepted gap.
+   // `#(authorize)` term is not suggested — a known, accepted gap.
    attachSuggestGivenNames(
       givens,
       suggestGivenLookup(
@@ -790,18 +787,6 @@ async function compileMalloyModel(
       attributedAuthorizeOwnNotes,
    );
    const authorizeWarningCollection = authorizeWarningCollector();
-   // `#(authorize)` still loads and still behaves as `#(row_authorize)`; this
-   // is the only thing that tells its author it has a newer name. Own-level
-   // notes only — see `sourcesWithDeprecatedAuthorizeSpelling`'s doc for why an
-   // inheritance-walking source would blame models that cannot fix it.
-   for (const sourceName of sourcesWithDeprecatedAuthorizeSpelling(
-      attributedAuthorizeOwnNotes,
-   )) {
-      recordDeprecatedAuthorizeSpelling();
-      authorizeWarningCollection.warnings.push(
-         deprecatedAuthorizeSpellingWarning(sourceName),
-      );
-   }
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
    // shape; compileOneModel's catch turns it into this model's
@@ -1032,15 +1017,6 @@ async function compileNotebookModel(
          (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
          extracted.attributedAuthorizeOwnNotes,
       );
-      // See the identical notice in `compileMalloyModel` above.
-      for (const sourceName of sourcesWithDeprecatedAuthorizeSpelling(
-         extracted.attributedAuthorizeOwnNotes,
-      )) {
-         recordDeprecatedAuthorizeSpelling();
-         authorizeWarningCollection.warnings.push(
-            deprecatedAuthorizeSpellingWarning(sourceName),
-         );
-      }
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
       //

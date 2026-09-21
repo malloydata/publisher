@@ -89,7 +89,7 @@ export type GateEntry = {
    selfContained: boolean;
    /**
     * The annotation route this gate was collected under (`CANONICAL_AUTHORIZE_ROUTES`)
-    * — `"authorize"` (row-level) or `"source_authorize"` (a rule about the
+    * — `"authorize"` (row-level) or `"authorize"` (a rule about the
     * caller that ANDs with the row-level gate). Enforcement treats every
     * entry identically regardless of route (both graft/probe the same way);
     * `route` exists so the collection walk can keep own-wins-over-ancestor
@@ -236,14 +236,14 @@ export function createGateClassificationDeps(
  * `route` scopes both the own-notes read and the ancestor walk to ONE
  * annotation route (`CANONICAL_AUTHORIZE_ROUTES`) — this is what makes
  * own-wins-over-ancestor PER ROUTE rather than shared: an own
- * `#(source_authorize)` note does not satisfy (and does not shed) an
+ * `#(authorize)` note does not satisfy (and does not shed) an
  * ancestor's `#(authorize)` gate, because the caller invokes this function
  * once per route and each call only ever sees that route's own notes. The
  * `["false"]` fail-closed sentinel in the `catch` below is synthesized on
- * EITHER route, not only `ROW_AUTHORIZE_ROUTE`: because own-wins-over-ancestor is
+ * EITHER route, not only `ACCESS_FILTER_ROUTE`: because own-wins-over-ancestor is
  * decided per route, the two routes' calls over the same struct can diverge
  * before either reaches the unreadable branch (e.g. `struct` owns a real
- * `#(authorize)` note and returns early, while its `#(source_authorize)` call
+ * `#(authorize)` note and returns early, while its `#(authorize)` call
  * falls through to an ancestor whose IR is unreadable) — one route's success
  * is never a guarantee the other took the same path, so a route cannot rely
  * on its sibling to have already denied. See `gate_registry_walk.ts`'s
@@ -351,12 +351,12 @@ function gateExprsForOwnAnnotations(
  * `queryEntryPointHasRowLevelGate`, `build_plan.ts`'s
  * `classifyPersistSourceGate`, `probeEntryPointGates`), and a sibling
  * collector any ONE of them forgot to also call would fail open for
- * `source_authorize` alone. The route enters by running the ENTIRE walk once
+ * `authorize` alone. The route enters by running the ENTIRE walk once
  * per route ({@link collectEntryPointGatesForRoute}), each with its own fresh
  * `seen` set (struct-identity cycle guards must not be shared across routes —
  * a struct legitimately visited under `authorize` must still be visited under
- * `source_authorize`) and its own independent own-wins-over-ancestor decision
- * (`gateExprsForOwnAnnotations`) — an own `#(source_authorize)` note on
+ * `authorize`) and its own independent own-wins-over-ancestor decision
+ * (`gateExprsForOwnAnnotations`) — an own `#(authorize)` note on
  * `struct` never sheds an ancestor's `#(authorize)` gate, or vice versa,
  * because the two routes' walks never share state.
  */
@@ -534,7 +534,7 @@ function collectEntryPointGatesForRoute(
  * `filterText` folds the entry's whole conjunction into ONE expression:
  * `exprs.map(e => "(" + e + ")").join(" and ")`. This is deliberate, not
  * incidental — it is what keeps a repeated `#(authorize)` enforced as ONE row
- * filter. `#(authorize) org_id = $ORG` followed by `#(authorize) team_id in
+ * filter. `#(access_filter) org_id = $ORG` followed by `#(authorize) team_id in
  * $TEAMS` becomes `(org_id = $ORG) and (team_id in $TEAMS)`, ONE filter that
  * preserves AND semantics exactly: every term must admit a row for it to
  * survive. An admin override is instead two extension sources over the same
@@ -1153,10 +1153,10 @@ export type RowLevelGraftEntry = {
  * the coherence check would refuse a legal model the instant the two sources
  * happened to share a given name or mix row/source scope. But when `struct`
  * itself owns groups on BOTH routes (its own `#(authorize)` and its own
- * `#(source_authorize)`), they are the SAME declaring source and must be
+ * `#(authorize)`), they are the SAME declaring source and must be
  * checked together — that is the only way `deny_all_with_sibling` can catch
- * `#(source_authorize) false` alongside this source's own
- * `#(authorize) org_id in $GROUPS`, since each is otherwise a single-route
+ * `#(authorize) false` alongside this source's own
+ * `#(access_filter) org_id in $GROUPS`, since each is otherwise a single-route
  * group with nothing else in it to conflict with.
  */
 export function assertAuthorizeGrammarValid(

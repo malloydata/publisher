@@ -103,14 +103,14 @@ describe("gate walk fail-closed branches", () => {
          new Set(),
          true,
       );
-      // The walk runs once per route (`authorize`, `source_authorize`), each
+      // The walk runs once per route (`authorize`, `authorize`), each
       // with its own `seen` set, and the sentinel is synthesized on BOTH —
       // own-wins-over-ancestor is decided per route, so neither route's call
       // can rely on the other having already denied here.
       expect(gates.map((g) => g.exprs)).toEqual([["false"], ["false"]]);
       expect(gates.map((g) => g.route).sort()).toEqual([
-         "row_authorize",
-         "source_authorize",
+         "access_filter",
+         "authorize",
       ]);
    });
 
@@ -145,8 +145,8 @@ describe("gate walk fail-closed branches", () => {
       expect(gates.map((g) => g.exprs)).toEqual([["false"], ["false"]]);
       expect(gates).toHaveLength(2);
       expect(gates.map((g) => g.route).sort()).toEqual([
-         "row_authorize",
-         "source_authorize",
+         "access_filter",
+         "authorize",
       ]);
    });
 

@@ -192,11 +192,9 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          const apiModel = (await model!.getModel()) as {
             sources?: { name?: string; authorize?: string[] }[];
          };
-         // The worker compiled the authorize probe (no throw) and surfaced the
-         // effective expression list — proves worker-path validation runs.
-         expect(apiModel.sources?.[0]?.authorize).toEqual([
-            "'analyst' = $ROLE",
-         ]);
+         // The worker validated the gate (no throw) and surfaced the effective
+         // expression list — proves worker-path validation runs.
+         expect(apiModel.sources?.[0]?.authorize).toEqual(["'analyst' = $ROLE"]);
          expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
       } finally {
          await duckdb.close();
@@ -226,7 +224,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
       }
    });
 
-   it("splits #(authorize) and #(source_authorize) into separate wire fields through the worker", async () => {
+   it("splits #(authorize) and #(access_filter) into separate wire fields through the worker", async () => {
       writeManifest();
       fs.writeFileSync(
          path.join(tempDir, "split.malloy"),
@@ -236,8 +234,8 @@ given:
   DENY :: number[]
   ROLE :: string[]
 
-#(authorize) id in $DENY
-#(source_authorize) 'finance' in $ROLE
+#(access_filter) id in $DENY
+#(authorize) 'finance' in $ROLE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
@@ -249,73 +247,21 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
             sources?: {
                name?: string;
                authorize?: string[];
-               sourceAuthorize?: string[];
+               accessFilter?: string[];
             }[];
          };
          // Each route's own text lands under its OWN wire field — neither
          // leaks into the other, on the worker path exactly as it does
          // in-process (Model.create).
-         expect(apiModel.sources?.[0]?.authorize).toEqual(["id in $DENY"]);
-         expect(apiModel.sources?.[0]?.sourceAuthorize).toEqual([
+         expect(apiModel.sources?.[0]?.accessFilter).toEqual(["id in $DENY"]);
+         expect(apiModel.sources?.[0]?.authorize).toEqual([
             "'finance' in $ROLE",
          ]);
-         expect(model!.getAuthorize("gated")).toEqual(["id in $DENY"]);
-         expect(model!.getSourceAuthorize("gated")).toEqual([
+         expect(model!.getAccessFilter("gated")).toEqual(["id in $DENY"]);
+         expect(model!.getAuthorize("gated")).toEqual([
             "'finance' in $ROLE",
          ]);
       } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("warns once per source that still spells its gate `#(authorize)`, and not for an extension that inherits it", async () => {
-      writeManifest();
-      // `mine` declares no gate of its own — it INHERITS the deprecated one.
-      // It must not be named: its author cannot fix a tag they did not write,
-      // and the log line carries THIS model's packageName/modelPath.
-      fs.writeFileSync(
-         path.join(tempDir, "deprecated.malloy"),
-         `##! experimental.givens
-
-given:
-  DENY :: number[]
-
-#(authorize) id in $DENY
-source: legacy is duckdb.sql("select 1 as id") extend {}
-
-source: mine is legacy extend {}
-
-#(row_authorize) id in $DENY
-source: migrated is duckdb.sql("select 2 as id") extend {}`,
-      );
-
-      const warnSpy = spyOn(logger, "warn");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         expect(pkg.getModelPaths()).toEqual(["deprecated.malloy"]);
-         // The gate still loads and still enforces — this is a notice, not a
-         // refusal.
-         expect(
-            pkg.getModel("deprecated.malloy")!.getAuthorize("legacy"),
-         ).toEqual(["id in $DENY"]);
-
-         // Scoped to THIS model's source names: models loaded by earlier cases
-         // in this file hydrate lazily, so the shared logger spy also sees
-         // their notices.
-         const deprecationWarnings = warnSpy.mock.calls
-            .map((c) => String(c[0]))
-            .filter(
-               (m) =>
-                  m.includes("is deprecated; rename to") &&
-                  /Source "(legacy|mine|migrated)"/.test(m),
-            );
-         expect(deprecationWarnings).toEqual([
-            'Source "legacy": `#(authorize)` is deprecated; rename to ' +
-               "`#(row_authorize)` — same behavior, no other change.",
-         ]);
-      } finally {
-         warnSpy.mockRestore();
          await duckdb.close();
       }
    });

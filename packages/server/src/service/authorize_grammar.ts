@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(authorize)` / `#(source_authorize)` body grammar.
+ * `#(authorize)` / `#(authorize)` body grammar.
  *
  * `#(authorize)` no longer accepts an arbitrary Malloy boolean handed
  * verbatim to the compiler. Its body is a narrow grammar publisher parses
@@ -15,8 +15,8 @@
  * `like`, `is not null`, no function calls, no literal on the right of a
  * row-level term.
  *
- * `#(source_authorize)` is a second annotation route ({@link
- * SOURCE_AUTHORIZE_ROUTE}) declared on a `source:` line exactly like
+ * `#(authorize)` is a second annotation route ({@link
+ * AUTHORIZE_ROUTE}) declared on a `source:` line exactly like
  * `#(authorize)`, and parsed by this same grammar — but every term its body
  * declares must be SOURCE-LEVEL (the whole-body `false`/`true` sentinels
  * below are the carve-outs): it is a rule about the CALLER, not the row, and
@@ -75,8 +75,8 @@
 import { routeOf } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
 import {
-   ROW_AUTHORIZE_ROUTE,
-   SOURCE_AUTHORIZE_ROUTE,
+   ACCESS_FILTER_ROUTE,
+   AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 
 /** Malloy's own routing for ONE note — see `authorize.ts`'s identical helper. */
@@ -100,25 +100,30 @@ export type AuthorizeGrammarRejectionCause =
    | "malformed_body"
    | "duplicate_given"
    | "duplicate_field_path"
-   | "mixed_scope_body"
    | "deny_all_with_sibling"
-   // The admit-all `true` sentinel alongside another note ON THE SAME ROUTE.
-   // A route's notes AND into one body, so `true and x` reduces to `x` and
-   // the sentinel is dead text there. Route-scoped, unlike
-   // `deny_all_with_sibling`: `true` sheds only its own route's inherited
-   // gate, so it is live beside a note on the OTHER route. Raised by
+   // The admit-all `true` sentinel alongside another note. Both sentinels live
+   // on the lock alone, and that route's notes AND into one body, so `true and
+   // x` reduces to `x` and the sentinel is dead text. Raised by
    // {@link assertAuthorizeGrammarTermsCoherent}, after
-   // `deny_all_with_sibling`, which is the fail-closed reading when one
-   // route carries both sentinels.
+   // `deny_all_with_sibling`, which is the fail-closed reading when the lock
+   // carries both sentinels.
    | "admit_all_with_sibling"
+   // A bare `true`/`false` written under `#(access_filter)`. Both sentinels
+   // answer "may this caller reach this source", which is the lock's question;
+   // `false` there would serve a refused caller zero rows instead of refusing
+   // them. Raised by `parseAuthorizeGrammarBody`.
+   | "sentinel_in_access_filter"
    | "operator_arity_mismatch"
    | "fanout_path"
-   // A row-level term (field on the left) inside a `#(source_authorize)`
-   // body — that route is a rule about the CALLER, not the row, so every
-   // term must be `source_level` (the `deny_all` sentinel is the one carved
-   // out, since it names no row at all). Raised by
-   // `parseAuthorizeGrammarBody` when `route` is the source_authorize route.
-   | "row_level_term_in_source_authorize"
+   // A row-level term (field on the left) inside `#(authorize)`: that route is
+   // a rule about the CALLER, not the row.
+   | "row_level_term_in_authorize"
+   // A source-level term (literal on the left) inside `#(access_filter)`: it
+   // names no row, so it grafts as a constant predicate and answers a caller
+   // it excludes with zero rows rather than a refusal. The mirror of
+   // `row_level_term_in_authorize`; both are raised from the one scope table
+   // in `parseAuthorizeGrammarBody`, so neither can be added without the other.
+   | "source_level_term_in_access_filter"
    // `$GIVEN in 'literal'`: unlike `=`, `in` is not reversible — the graft
    // compiles the author's ORIGINAL text unchanged, and Malloy rejects array-
    // in-string membership, so this would pass validation and then fail at
@@ -524,11 +529,11 @@ export type AuthorizeGrammarRoutedTerm = {
 
 /**
  * Cross-term coherence for an `#(authorize)` gate assembled from MORE THAN
- * ONE note — `duplicate_given`, `duplicate_field_path`, `mixed_scope_body`,
- * and the `false` deny-all sentinel all used to be safe checking WITHIN one
- * body, because a source could declare at most one `#(authorize)`. Now that
- * repeats are legal (and AND together — see this module's doc), the same
- * four mistakes can be spread across notes instead of terms in one body, so
+ * ONE note — `duplicate_given`, `duplicate_field_path` and the `false`
+ * deny-all sentinel all used to be safe checking WITHIN one body, because a
+ * source could declare at most one gate. Now that repeats are legal (and AND
+ * together — see this module's doc), the same mistakes can be spread across
+ * notes instead of terms in one body, so
  * this checks the SET of terms a declaring source contributes rather than
  * one note's own list. {@link parseAuthorizeGrammarBody} calls this on its
  * own single-body terms (trivially a no-op for one note); a caller
@@ -537,14 +542,13 @@ export type AuthorizeGrammarRoutedTerm = {
  * groups an `AuthorizeMap` entry carries across BOTH routes) calls it again
  * over the concatenation.
  *
- * `duplicate_given`, `duplicate_field_path`, and `mixed_scope_body` are
- * scoped PER ROUTE (`route` on each entry), never across routes: a term
- * declared under `#(authorize)` and one declared under `#(source_authorize)`
- * on the SAME source are meant to AND, not agree on scope or given — e.g.
- * `#(authorize) org_id in $GROUPS` alongside
- * `#(source_authorize) 'finance' in $GROUPS` is the intended design, and
- * must stay legal even though it reuses `$GROUPS` and mixes scope. Two
- * routes exist today (`ROW_AUTHORIZE_ROUTE`, `SOURCE_AUTHORIZE_ROUTE`); a further
+ * `duplicate_given` and `duplicate_field_path` are scoped PER ROUTE (`route`
+ * on each entry), never across routes: a term declared under `#(authorize)`
+ * and one declared under `#(access_filter)` on the SAME source are meant to
+ * AND, not agree on given — `#(access_filter) org_id in $GROUPS` alongside
+ * `#(authorize) 'finance' in $GROUPS` is the intended design, and must stay
+ * legal even though it reuses `$GROUPS` across the two routes. Two
+ * routes exist today (`ACCESS_FILTER_ROUTE`, `AUTHORIZE_ROUTE`); a further
  * route would slot in the same way, by tagging its own terms with its own
  * route string and calling this same function — nothing here needs to
  * change.
@@ -557,12 +561,11 @@ export type AuthorizeGrammarRoutedTerm = {
  * before the per-route split below.
  *
  * `admit_all_with_sibling` is route-scoped, and the asymmetry is the point.
- * `true` sheds only its OWN route's inherited gate, so `#(authorize) true`
- * beside `#(source_authorize) 'finance' in $GROUPS` is a live combination —
- * open every row of a base that locked them, still gate the caller — not
- * dead text. WITHIN one route the notes AND into a single body, where `true
- * and x` really does reduce to `x` and the sentinel is dead, which is what
- * that cause names.
+ * `true` sheds only the LOCK's inherited gate, so `#(authorize) true` beside
+ * `#(access_filter) org_id in $GROUPS` is a live combination — unlock a base
+ * that refused this caller, still filter their rows — not dead text. Within
+ * the lock's own notes `true and x` really does reduce to `x` and the
+ * sentinel is dead, which is what that cause names.
  *
  * Deny is checked first, so a source carrying both sentinels on one route is
  * reported as `deny_all_with_sibling` — the fail-closed reading.
@@ -610,10 +613,10 @@ export function assertAuthorizeGrammarTermsCoherent(
             sourceName,
             "admit_all_with_sibling",
             "an unconditional `true` admit-all cannot be combined with " +
-               "another note on the same route — that route's notes AND " +
+               "another `#(authorize)` note — the lock's notes AND " +
                "together, so `true and x` reduces to `x` and the admit-all " +
-               "is dead text. To open one route while another still gates, " +
-               "declare the `true` on its own route only.",
+               "is dead text. To unlock a base while its rows stay " +
+               "filtered, pair the `true` with `#(access_filter)` instead.",
          );
       }
       // Both sentinels named, not just `admit_all`: `deny_all` is already
@@ -623,18 +626,6 @@ export function assertAuthorizeGrammarTermsCoherent(
          (t): t is AuthorizeGrammarParsedTerm =>
             t.scope !== "admit_all" && t.scope !== "deny_all",
       );
-      const rowLevel = routeTerms.filter((t) => t.scope === "row_level");
-      const sourceLevel = routeTerms.filter((t) => t.scope === "source_level");
-      if (rowLevel.length > 0 && sourceLevel.length > 0) {
-         rejectCoherence(
-            sourceName,
-            "mixed_scope_body",
-            "a row-level term (field on the left) may not be combined with " +
-               "a source-level term (`'literal' in/= $GIVEN`) on the same " +
-               "route.",
-         );
-      }
-
       const seenGivens = new Set<string>();
       const seenFieldPaths = new Set<string>();
       for (const t of routeTerms) {
@@ -686,20 +677,17 @@ export function assertAuthorizeGrammarTermsCoherent(
  * {@link assertAuthorizeGrammarTermsCoherent}, called here on this body's
  * own terms so a single-note source is refused exactly as before.
  *
- * `route` defaults to {@link ROW_AUTHORIZE_ROUTE} so every existing caller keeps
- * its exact prior behavior. Passed {@link SOURCE_AUTHORIZE_ROUTE}, every
- * parsed term must be `scope: "source_level"` — the two whole-body
- * sentinels are the carve-outs, since neither `false` nor `true` names a row
- * at all and both are accepted identically on both routes (each returns
- * before the route check below; see this module's doc). A `row_level` term
- * reaching here under that route is refused as
- * `row_level_term_in_source_authorize`, the mirror of `mixed_scope_body`.
+ * `route` is required, not defaulted: a caller that omitted it would validate a
+ * lock body under the filter's rules. It decides which scope the body may use —
+ * {@link AUTHORIZE_ROUTE} admits `source_level` terms and the two whole-body
+ * sentinels, {@link ACCESS_FILTER_ROUTE} admits `row_level` terms and nothing
+ * else — and the wrong scope is refused naming the other annotation.
  */
 export function parseAuthorizeGrammarBody(
    sourceName: string,
    body: string,
    givenDeclaredTypes: ReadonlyMap<string, string>,
-   route: string = ROW_AUTHORIZE_ROUTE,
+   route: string,
 ): AuthorizeGrammarTerm[] {
    const trimmedBody = body.trim();
    if (trimmedBody.length === 0) {
@@ -717,11 +705,28 @@ export function parseAuthorizeGrammarBody(
    // not a deny-all, it is a two-term body whose first term is malformed,
    // and falls through to the ordinary per-term errors below. `true and
    // org_id = $A` is read the same way.
-   if (trimmedBody.toLowerCase() === "false") {
-      return [{ scope: "deny_all" }];
-   }
-   if (trimmedBody.toLowerCase() === "true") {
-      return [{ scope: "admit_all" }];
+   //
+   // Both answer "may this caller reach this source at all", so both belong to
+   // the lock, and the route is checked BEFORE the sentinel is returned:
+   // returning it first would hand `#(access_filter) false` back as a deny-all
+   // with nothing left to refuse it, and that is the shape that answers a
+   // refused caller with a fabricated zero-row result instead of a refusal.
+   const sentinel = trimmedBody.toLowerCase();
+   if (sentinel === "false" || sentinel === "true") {
+      if (route !== AUTHORIZE_ROUTE) {
+         reject(
+            sourceName,
+            trimmedBody,
+            "sentinel_in_access_filter",
+            `a bare \`${sentinel}\` is not allowed in \`#(access_filter)\` — ` +
+               (sentinel === "false"
+                  ? "write `#(authorize) false`, which refuses the caller " +
+                    "rather than serving them zero rows."
+                  : "it filters nothing; delete the annotation, or write " +
+                    "`#(authorize) true` to re-open a locked base."),
+         );
+      }
+      return [{ scope: sentinel === "false" ? "deny_all" : "admit_all" }];
    }
 
    const { terms: rawTerms, compoundTokens } = splitTerms(trimmedBody);
@@ -739,17 +744,31 @@ export function parseAuthorizeGrammarBody(
       parseTerm(sourceName, trimmedBody, term, givenDeclaredTypes),
    );
 
-   if (route === SOURCE_AUTHORIZE_ROUTE) {
-      const rowLevelTerm = parsed.find((t) => t.scope === "row_level");
-      if (rowLevelTerm) {
-         reject(
-            sourceName,
-            trimmedBody,
-            "row_level_term_in_source_authorize",
-            "a row-level term (field on the left) is not allowed in " +
-               "`#(source_authorize)` — move the term to `#(row_authorize)`.",
-         );
-      }
+   // The name declares the scope and the body must conform. Written as ONE
+   // table over (route, scope) rather than a check per route, so a third route
+   // cannot be added carrying only half the pair — the half that is missing is
+   // always the one that loads inert and serves everything.
+   const ADMITTED_SCOPE: Record<string, AuthorizeGrammarParsedTerm["scope"]> = {
+      [AUTHORIZE_ROUTE]: "source_level",
+      [ACCESS_FILTER_ROUTE]: "row_level",
+   };
+   const admitted = ADMITTED_SCOPE[route];
+   const offending = parsed.find((t) => t.scope !== admitted);
+   if (offending) {
+      const inLock = route === AUTHORIZE_ROUTE;
+      reject(
+         sourceName,
+         trimmedBody,
+         inLock ? "row_level_term_in_authorize" : "source_level_term_in_access_filter",
+         inLock
+            ? "a row-level term (field on the left) is not allowed in " +
+                 "`#(authorize)`, which decides whether the caller may reach " +
+                 "the source at all — move the term to `#(access_filter)`."
+            : "a source-level term (literal on the left) is not allowed in " +
+                 "`#(access_filter)`, which decides which rows a caller may " +
+                 "see — move the term to `#(authorize)`, which refuses a " +
+                 "caller it does not admit rather than serving them zero rows.",
+      );
    }
 
    assertAuthorizeGrammarTermsCoherent(

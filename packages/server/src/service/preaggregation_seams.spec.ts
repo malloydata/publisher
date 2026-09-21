@@ -562,7 +562,7 @@ describe("pre-aggregation and a row-level gate", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),
@@ -689,7 +689,7 @@ source: orders is duckdb.sql("""
 });
 
 // ---------------------------------------------------------------------------
-// A `#(source_authorize)`-only gate must block routing exactly like
+// A `#(authorize)`-only gate must block routing exactly like
 // `#(authorize)` does — `hasAnyAuthorizeNote`'s sweep is widened to recognize
 // either route (see `authorize.ts`'s `authorizeNoteContent`), so a model
 // carrying ONLY the caller-identity route must not fall through to the
@@ -697,13 +697,13 @@ source: orders is duckdb.sql("""
 // annotation bytes at all and so could never enforce it downstream.
 // ---------------------------------------------------------------------------
 
-describe("pre-aggregation and a source_authorize gate", () => {
+describe("pre-aggregation and a authorize gate", () => {
    const SOURCE_AUTHORIZE_GATED = `##! experimental { persistence composite_sources givens }
 
 given:
   ROLE :: string[]
 
-#(source_authorize) 'finance' in $ROLE
+#(authorize) 'finance' in $ROLE
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),
@@ -747,7 +747,7 @@ source: orders is duckdb.sql("""
    );
 
    it(
-      "meters blocked_by_row_level_gate for a source_authorize-only entry point",
+      "meters blocked_by_row_level_gate for a authorize-only entry point",
       async () => {
          const harness = await startMetricsHarness();
          resetMaterializationTelemetryForTesting();
@@ -794,7 +794,7 @@ describe("a gate reached only through a derivation hop", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),

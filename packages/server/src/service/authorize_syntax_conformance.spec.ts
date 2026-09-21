@@ -118,7 +118,7 @@ describe("authorize syntax conformance — Group A (accepted shapes)", () => {
 given:
   GROUPS :: string[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -137,7 +137,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) \`cost center\` in $GROUPS
+#(access_filter) \`cost center\` in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -156,7 +156,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string
 
-#(authorize) region = $REGION
+#(access_filter) region = $REGION
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -175,7 +175,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) child.name in $GROUPS
+#(access_filter) child.name in $GROUPS
 source: X is duckdb.table('accounts') extend {
    join_one: child is duckdb.table('child') on child_id = child.id
 }
@@ -245,7 +245,7 @@ given:
   GROUPS :: string[]
   REGION :: string
 
-#(authorize) org_id in $GROUPS and region = $REGION
+#(access_filter) org_id in $GROUPS and region = $REGION
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -270,7 +270,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 
 source: Y is X extend {}
@@ -308,7 +308,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -365,7 +365,7 @@ given:
   GROUPS :: string[]
   REGION :: string
 
-#(authorize) org_id in $GROUPS or region = $REGION
+#(access_filter) org_id in $GROUPS or region = $REGION
 source: X is duckdb.table('accounts') extend {}
 `,
          "compound_boolean",
@@ -378,7 +378,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string
 
-#(authorize) region != $REGION
+#(access_filter) region != $REGION
 source: X is duckdb.table('accounts') extend {}
 `,
          "negated_operator",
@@ -391,7 +391,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   AMOUNTMIN :: number
 
-#(authorize) amount > $AMOUNTMIN
+#(access_filter) amount > $AMOUNTMIN
 source: X is duckdb.table('accounts') extend {}
 `,
          "comparison_operator",
@@ -404,7 +404,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) org_id = $GROUPS
+#(access_filter) org_id = $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `,
          "operator_arity_mismatch",
@@ -417,7 +417,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   ROLE :: string
 
-#(authorize) owner in $ROLE
+#(access_filter) owner in $ROLE
 source: X is duckdb.table('accounts') extend {}
 `,
          "operator_arity_mismatch",
@@ -512,7 +512,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string is 'east'
 
-#(authorize) region = $REGION
+#(access_filter) region = $REGION
 source: X is duckdb.table('accounts') extend {
 }
 `);
@@ -536,13 +536,13 @@ given:
   GROUPS :: string[]
   REGION :: string
 
-#(authorize) org_id in $GROUPS
-#(authorize) region = $REGION
+#(access_filter) org_id in $GROUPS
+#(access_filter) region = $REGION
 source: X is duckdb.table('accounts') extend {}
 `;
 
 const TWO_NOTES_AND_EQUIVALENT = `${TWO_NOTES}
-#(authorize) org_id in $GROUPS and region = $REGION
+#(access_filter) org_id in $GROUPS and region = $REGION
 source: Y is duckdb.table('accounts') extend {}
 `;
 
@@ -631,8 +631,8 @@ describe("authorize syntax conformance — Group D (cross-note coherence)", () =
 given:
   G :: string
 
-#(authorize) a = $G
-#(authorize) b = $G
+#(access_filter) a = $G
+#(access_filter) b = $G
 source: X is duckdb.table('accounts') extend {}
 `,
          "duplicate_given",
@@ -646,26 +646,11 @@ given:
   A :: string
   B :: string
 
-#(authorize) region = $A
-#(authorize) region = $B
+#(access_filter) region = $A
+#(access_filter) region = $B
 source: X is duckdb.table('accounts') extend {}
 `,
          "duplicate_field_path",
-      );
-   });
-
-   it("mixed_scope_body across two notes — a row-level note and a source-level note on the same source", async () => {
-      await expectRejectionCause(
-         `
-given:
-  REGION :: string
-  ROLE :: string
-
-#(authorize) region = $REGION
-#(authorize) 'admin' = $ROLE
-source: X is duckdb.table('accounts') extend {}
-`,
-         "mixed_scope_body",
       );
    });
 
@@ -676,7 +661,7 @@ given:
   REGION :: string
 
 #(authorize) false
-#(authorize) region = $REGION
+#(access_filter) region = $REGION
 source: X is duckdb.table('accounts') extend {}
 `,
          "deny_all_with_sibling",
@@ -698,12 +683,12 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) region in $GROUPS
+#(access_filter) region in $GROUPS
 source: member_a is duckdb.table('accounts') extend {}
 
 source: member_b is duckdb.sql("select id, org_id from accounts") extend {}
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: id, region }
@@ -717,7 +702,7 @@ source: qs is combo -> { group_by: id, region }
 });
 
 // ---------------------------------------------------------------------------
-// Group E — `#(source_authorize)`: a rule about the CALLER rather than the
+// Group E — `#(authorize)`: a rule about the CALLER rather than the
 // row, that ANDs with any row-level `#(authorize)` gate rather than
 // bypassing it. Same load path (`Model.create`), same enforcement mechanism
 // (a graft) as `#(authorize)` — the only new machinery is the second route
@@ -738,13 +723,13 @@ async function expectModelCompilationError(
    }
 }
 
-describe("authorize syntax conformance — Group E (#(source_authorize))", () => {
+describe("authorize syntax conformance — Group E (#(authorize))", () => {
    it("survives `source: mine is base extend {}` — inherits through extend", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   ROLE :: string[]
 
-#(source_authorize) 'finance' in $ROLE
+#(authorize) 'finance' in $ROLE
 source: base is duckdb.table('accounts') extend {}
 
 source: mine is base extend {}
@@ -766,8 +751,8 @@ given:
   GROUPS :: string[]
   ROLE :: string[]
 
-#(authorize) org_id in $GROUPS
-#(source_authorize) 'finance' in $ROLE
+#(access_filter) org_id in $GROUPS
+#(authorize) 'finance' in $ROLE
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -779,7 +764,7 @@ source: X is duckdb.table('accounts') extend {}
             ROLE: ["finance"],
          });
          expect(ids(both)).toEqual([1, 2, 3]);
-         // Row-level gate satisfied, source_authorize NOT satisfied — 200,
+         // Row-level gate satisfied, authorize NOT satisfied — 200,
          // zero rows, not an error. Asserted on the ACTUAL ROWS, not filter
          // text, since the whole point is that the AND is enforced, not
          // merely declared.
@@ -800,9 +785,9 @@ source: X is duckdb.table('accounts') extend {}
       }
    });
 
-   it("`#(source_authorize) false` is accepted and behaves identically to `#(authorize) false`", async () => {
+   it("`#(authorize) false` is accepted and behaves identically to `#(authorize) false`", async () => {
       const sourceAuthorizeFalse = await createModel(`
-#(source_authorize) false
+#(authorize) false
 source: X is duckdb.table('accounts') extend {}
 `);
       const authorizeFalse = await createModel(`
@@ -826,9 +811,9 @@ source: X is duckdb.table('accounts') extend {}
       }
    });
 
-   it("`#(source_authorize) true` loads and admits every caller", async () => {
+   it("`#(authorize) true` loads and admits every caller", async () => {
       const { model, duckdb, dir } = await createModel(`
-#(source_authorize) true
+#(authorize) true
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -847,42 +832,20 @@ given:
   GROUPS :: string[]
 
 #(authorize) true
-#(authorize) org_id in $GROUPS
+#(authorize) 'finance' in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `,
          "admit_all_with_sibling",
       );
    });
 
-   it("`#(authorize) true` alongside a `#(source_authorize)` term is LEGAL and both apply — the admit-all guard is route-scoped", async () => {
-      // `true` sheds only the `authorize` route's inherited gate, so the
-      // caller rule on the other route is live, not dead text.
+   it("`#(authorize) true` alongside a row-level `#(authorize)` is LEGAL and the row filter still runs", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]
 
 #(authorize) true
-#(source_authorize) 'finance' in $GROUPS
-source: X is duckdb.table('accounts') extend {}
-`);
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const admitted = await rowsFor(model, "X", { GROUPS: ["finance"] });
-         const refused = await rowsFor(model, "X", { GROUPS: ["sales"] });
-         expect(ids(admitted)).toEqual([1, 2, 3, 4, 5, 6]);
-         expect(ids(refused)).toEqual([]);
-      } finally {
-         await cleanup(duckdb, dir);
-      }
-   });
-
-   it("`#(source_authorize) true` alongside a row-level `#(authorize)` is LEGAL and the row filter still runs", async () => {
-      const { model, duckdb, dir } = await createModel(`
-given:
-  GROUPS :: string[]
-
-#(source_authorize) true
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -896,62 +859,90 @@ source: X is duckdb.table('accounts') extend {}
       }
    });
 
-   it("`#(source_authorize) false` alongside `#(authorize) org_id in $GROUPS` is refused (deny_all_with_sibling)", async () => {
+   it("`#(authorize) false` alongside `#(authorize) org_id in $GROUPS` is refused (deny_all_with_sibling)", async () => {
       await expectRejectionCause(
          `
 given:
   GROUPS :: string[]
 
-#(source_authorize) false
-#(authorize) org_id in $GROUPS
+#(authorize) false
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `,
          "deny_all_with_sibling",
       );
    });
 
-   it("a row-level term in a #(source_authorize) body is refused (row_level_term_in_source_authorize)", async () => {
+   it("a row-level term in a #(authorize) body is refused (row_level_term_in_authorize)", async () => {
       await expectRejectionCause(
          `
 given:
   REGION :: string
 
-#(source_authorize) region = $REGION
+#(authorize) region = $REGION
 source: X is duckdb.table('accounts') extend {}
 `,
-         "row_level_term_in_source_authorize",
+         "row_level_term_in_authorize",
       );
    });
 
-   it('`#(source_authorize) "x"` draws the same legacy-string refusal as `#(authorize) "x"`', async () => {
+   // The mirror. Without it a source-level body on the filter route grafts as
+   // a constant predicate, and a caller it excludes is served zero rows
+   // instead of being refused.
+   it("a source-level term in a #(access_filter) body is refused (source_level_term_in_access_filter)", async () => {
+      await expectRejectionCause(
+         `
+given:
+  GROUPS :: string[]
+
+#(access_filter) 'finance' in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`,
+         "source_level_term_in_access_filter",
+      );
+   });
+
+   it("both sentinels are refused on #(access_filter), each naming the lock form", async () => {
+      for (const spelling of ["false", "true"]) {
+         await expectRejectionCause(
+            `
+#(access_filter) ${spelling}
+source: X is duckdb.table('accounts') extend {}
+`,
+            "sentinel_in_access_filter",
+         );
+      }
+   });
+
+   it('`#(authorize) "x"` draws the same legacy-string refusal as `#(authorize) "x"`', async () => {
       await expectModelCompilationError(
          `
 given:
   ROLE :: string
 
-#(source_authorize) "$ROLE = 'admin'"
+#(authorize) "$ROLE = 'admin'"
 source: X is duckdb.table('accounts') extend {}
 `,
          /string form.*no longer accepted/is,
       );
    });
 
-   it("`#(source_authorize)` on a field is refused as misplaced", async () => {
+   it("`#(authorize)` on a field is refused as misplaced", async () => {
       await expectModelCompilationError(
          `
 given:
   ROLE :: string[]
 
 source: X is duckdb.table('accounts') extend {
-   #(source_authorize) 'finance' in $ROLE
+   #(authorize) 'finance' in $ROLE
    dimension: d is org_id
 }
 `,
-         /never enforced.*#\(source_authorize\)/is,
+         /never enforced.*#\(authorize\)/is,
       );
    });
 
-   it("`#(source_authorize)` on a `query:` statement is refused as misplaced", async () => {
+   it("`#(authorize)` on a `query:` statement is refused as misplaced", async () => {
       await expectModelCompilationError(
          `
 given:
@@ -959,20 +950,20 @@ given:
 
 source: X is duckdb.table('accounts') extend {}
 
-#(source_authorize) 'finance' in $ROLE
+#(authorize) 'finance' in $ROLE
 query: q is X -> { select: id }
 `,
-         /never enforced.*#\(source_authorize\)/is,
+         /never enforced.*#\(authorize\)/is,
       );
    });
 
-   it("file-level `##(source_authorize)` is refused as misplaced", async () => {
+   it("file-level `##(authorize)` is refused as misplaced", async () => {
       await expectModelCompilationError(
          `
 given:
   ROLE :: string[]
 
-##(source_authorize) 'finance' in $ROLE
+##(authorize) 'finance' in $ROLE
 
 source: X is duckdb.table('accounts') extend {}
 `,
@@ -985,7 +976,7 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -994,7 +985,7 @@ source: X is duckdb.table('accounts') extend {}
             model.getQueryResults(
                undefined,
                undefined,
-               `#(source_authorize) 'x' in $GROUPS\nrun: X -> { select: id }`,
+               `#(authorize) 'x' in $GROUPS\nrun: X -> { select: id }`,
                {},
                true,
                { GROUPS: ["org1"] } as never,
@@ -1005,12 +996,12 @@ source: X is duckdb.table('accounts') extend {}
       }
    });
 
-   it("a caller-submitted `#(source_authorize) true` is rejected too — the highest-value forgery in the system, since `true` is the one spelling that turns a gate OFF", async () => {
+   it("a caller-submitted `#(authorize) true` is rejected too — the highest-value forgery in the system, since `true` is the one spelling that turns a gate OFF", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `);
       try {
@@ -1019,7 +1010,7 @@ source: X is duckdb.table('accounts') extend {}
             model.getQueryResults(
                undefined,
                undefined,
-               `#(source_authorize) true\nrun: X -> { select: id }`,
+               `#(authorize) true\nrun: X -> { select: id }`,
                {},
                true,
                { GROUPS: ["org1"] } as never,
@@ -1031,17 +1022,17 @@ source: X is duckdb.table('accounts') extend {}
    });
 
    // Through the REAL query path, not the rejecter in isolation: a caller who
-   // mints `#(row_authorize) true` over a gated source would otherwise replace
+   // mints `#(access_filter) true` over a gated source would otherwise replace
    // the author's gate under per-route own-wins. The forgery pattern is
    // stem-based, so it had to move in the same commit as the route names.
-   it.each(["row_authorize", "source_authorize", "authorize"])(
+   it.each(["access_filter", "authorize", "authorize"])(
       "a caller query minting #(%s) is refused before it reaches the compiler",
       async (route) => {
          const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]
 
-#(row_authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `);
          try {
@@ -1066,19 +1057,18 @@ source: X is duckdb.table('accounts') extend {}
       },
    );
 
-   // Each of these five spellings reads as an attempt at `#(source_authorize)`
+   // Each of these five spellings reads as an attempt at `#(authorize)`
    // but Malloy does not route it there — a naive implementation loads clean
    // and serves every row. See `authorize.spec.ts`'s
    // `collectAuthorizeNearMisses` unit tests for the per-spelling routing
    // table this end-to-end sweep exercises.
    const TYPO_SPELLINGS: ReadonlyArray<[string, string]> = [
-      ["source-authorize", "#(source-authorize) 'finance' in $ROLE"],
       ["sourceauthorize", "#(sourceauthorize) 'finance' in $ROLE"],
       ["authorize-source", "#(authorize-source) 'finance' in $ROLE"],
       ["SOURCE_AUTHORIZE (case)", "#(SOURCE_AUTHORIZE) 'finance' in $ROLE"],
       [
-         "# (source_authorize) (motly)",
-         "# (source_authorize) 'finance' in $ROLE",
+         "# (authorize) (motly)",
+         "# (authorize) 'finance' in $ROLE",
       ],
    ];
 
@@ -1099,7 +1089,7 @@ source: X is duckdb.table('accounts') extend {}
             // instance check alone stays green even if the wrong path fired.
             expect(err).not.toBeInstanceOf(AuthorizeGrammarError);
             expect(err?.message).toMatch(/never enforced/i);
-            expect(err?.message).toContain("#(source_authorize)");
+            expect(err?.message).toContain("#(authorize)");
          } finally {
             await cleanup(duckdb, dir);
          }
@@ -1108,202 +1098,89 @@ source: X is duckdb.table('accounts') extend {}
 });
 
 // ---------------------------------------------------------------------------
-// Group F — the deprecated `#(authorize)` alias
+// Group F — the two routes side by side
 // ---------------------------------------------------------------------------
 
 /**
- * `#(authorize)` is a spelling of `#(row_authorize)`, not a route of its own.
- * Everything here would still pass if it were a third route EXCEPT the two
- * override tests, which are the whole reason this group exists: under a
- * three-route design the alias and the canonical name are collected
- * independently, so an extension's own note on one spelling would not displace
- * an ancestor's on the other — the two would AND, the deliberate re-open would
- * become dead text, and nothing would say so. Rows, not parse success, are what
- * catch that.
+ * The lock and the filter answer different questions, so a source may carry
+ * both and neither sheds the other. The per-route scoping that lets them share
+ * a given is what makes the pair usable at all. Rows, not parse success, are
+ * what catch a regression here.
  */
-describe("authorize syntax conformance — Group F (the deprecated #(authorize) alias)", () => {
-   it("an extension's own `#(row_authorize) true` sheds a base's `#(authorize)` lock — every row serves", async () => {
+describe("authorize syntax conformance — Group F (lock and filter together)", () => {
+   it("a lock and a filter on one source both apply", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]
+  ORGS :: string[]
 
-#(authorize) org_id in $GROUPS
+#(authorize) 'finance' in $GROUPS
+#(access_filter) org_id in $ORGS
 source: base is duckdb.table('accounts') extend {}
-
-#(row_authorize) true
-source: ext is base extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         // The base admits only org1 for this caller. If the alias were its own
-         // route the `true` walk would find an own note and stop, while the
-         // `authorize` walk found none of ITS OWN and inherited the lock — so
-         // the effective gate would be `true and org_id in $GROUPS` and this
-         // would come back [1, 2, 3].
-         const rows = await rowsFor(model, "ext", { GROUPS: ["org1"] });
-         expect(ids(rows)).toEqual([1, 2, 3, 4, 5, 6]);
-      } finally {
-         await cleanup(duckdb, dir);
-      }
-   });
-
-   it("the mirror: an extension's own `#(authorize) true` sheds a base's `#(row_authorize)` lock", async () => {
-      const { model, duckdb, dir } = await createModel(`
-given:
-  GROUPS :: string[]
-
-#(row_authorize) org_id in $GROUPS
-source: base is duckdb.table('accounts') extend {}
-
-#(authorize) true
-source: ext is base extend {}
-`);
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const rows = await rowsFor(model, "ext", { GROUPS: ["org1"] });
-         expect(ids(rows)).toEqual([1, 2, 3, 4, 5, 6]);
-      } finally {
-         await cleanup(duckdb, dir);
-      }
-   });
-
-   it("both spellings on ONE source conjoin, and the wire reports both under the single `authorize` field", async () => {
-      const { model, duckdb, dir } = await createModel(`
-given:
-  GROUPS :: string[]
-  REGION :: string
-
-#(authorize) org_id in $GROUPS
-#(row_authorize) region = $REGION
-source: X is duckdb.table('accounts') extend {}
-`);
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         // `org_id in $GROUPS` alone admits [1, 2, 3]; `region = $REGION` alone
-         // admits [3, 5, 6]. Only [3] satisfies both, so this is AND across the
-         // two spellings rather than either one winning.
-         const rows = await rowsFor(model, "X", {
-            GROUPS: ["org1"],
-            REGION: "west",
+         const rows = await rowsFor(model, "base", {
+            GROUPS: ["finance"],
+            ORGS: ["org1"],
          });
-         expect(ids(rows)).toEqual([3]);
-
-         // ONE wire field, carrying both expressions — a third field would
-         // force every consumer to union two, and one that forgot would read a
-         // `#(row_authorize)`-gated source as ungated.
-         const source = model
-            .getSources()
-            ?.find((s) => (s as { name?: string }).name === "X") as
-            | { authorize?: string[]; sourceAuthorize?: string[] }
-            | undefined;
-         expect(source?.authorize?.length).toBe(2);
-         expect(source?.sourceAuthorize).toBeUndefined();
+         const widened = await rowsFor(model, "base", {
+            GROUPS: ["finance"],
+            ORGS: ["org1", "org2"],
+         });
+         // Admitted by the lock, then narrowed by the filter.
+         expect(ids(rows).length).toBeGreaterThan(0);
+         expect(ids(widened).length).toBeGreaterThan(ids(rows).length);
       } finally {
          await cleanup(duckdb, dir);
       }
    });
 
-   // The coherence checks bucket by route. Each of these three pairs would
-   // land in two different buckets under a three-route design and load clean,
-   // with the conflict undetected.
-   it("`#(authorize) true` beside `#(row_authorize) <term>` is refused as admit_all_with_sibling", async () => {
-      await expectRejectionCause(
-         `
+   it("an extension's own `#(authorize) true` sheds the base's LOCK and leaves the inherited filter standing", async () => {
+      const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]
+  ORGS :: string[]
+
+#(authorize) 'finance' in $GROUPS
+#(access_filter) org_id in $ORGS
+source: base is duckdb.table('accounts') extend {}
 
 #(authorize) true
-#(row_authorize) org_id in $GROUPS
-source: X is duckdb.table('accounts') extend {}
-`,
-         "admit_all_with_sibling",
-      );
+source: ext is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // Not in `finance`: the base's lock would refuse, the `true` opens it.
+         // The inherited filter still narrows, so this is not every row.
+         const rows = await rowsFor(model, "ext", {
+            GROUPS: [],
+            ORGS: ["org1"],
+         });
+         const widened = await rowsFor(model, "ext", {
+            GROUPS: [],
+            ORGS: ["org1", "org2"],
+         });
+         expect(ids(rows).length).toBeGreaterThan(0);
+         expect(ids(widened).length).toBeGreaterThan(ids(rows).length);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
    });
 
-   it("the same given used across the two spellings is refused as duplicate_given", async () => {
-      await expectRejectionCause(
-         `
-given:
-  GROUPS :: string[]
-
-#(authorize) org_id in $GROUPS
-#(row_authorize) owner in $GROUPS
-source: X is duckdb.table('accounts') extend {}
-`,
-         "duplicate_given",
-      );
-   });
-
-   it("a row-level term and a source-level term split across the two spellings is refused as mixed_scope_body", async () => {
-      await expectRejectionCause(
-         `
-given:
-  GROUPS :: string[]
-  ROLE :: string
-
-#(authorize) org_id in $GROUPS
-#(row_authorize) 'admin' = $ROLE
-source: X is duckdb.table('accounts') extend {}
-`,
-         "mixed_scope_body",
-      );
-   });
-
-   it("a source declaring ONLY `#(authorize)` loads clean, filters, and reports — the alias is never a near miss", async () => {
+   it("the same given may be reused across the two routes — scoping is per route", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: string[]
 
-#(authorize) org_id in $GROUPS
-source: X is duckdb.table('accounts') extend {}
+#(authorize) 'finance' in $GROUPS
+#(access_filter) org_id in $GROUPS
+source: base is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         expect(ids(await rowsFor(model, "X", { GROUPS: ["org2"] }))).toEqual([
-            4, 5, 6,
-         ]);
-         const source = model
-            .getSources()
-            ?.find((s) => (s as { name?: string }).name === "X") as
-            | { authorize?: string[] }
-            | undefined;
-         expect(source?.authorize).toEqual(["org_id in $GROUPS"]);
       } finally {
          await cleanup(duckdb, dir);
-      }
-   });
-
-   it("`#(row_authorize)` and `#(authorize)` filter identically for every caller", async () => {
-      const canonical = await createModel(`
-given:
-  GROUPS :: string[]
-
-#(row_authorize) org_id in $GROUPS
-source: X is duckdb.table('accounts') extend {}
-`);
-      const alias = await createModel(`
-given:
-  GROUPS :: string[]
-
-#(authorize) org_id in $GROUPS
-source: X is duckdb.table('accounts') extend {}
-`);
-      try {
-         expect(compilationErrorOf(canonical.model)).toBeUndefined();
-         expect(compilationErrorOf(alias.model)).toBeUndefined();
-         for (const GROUPS of [
-            ["org1"],
-            ["org2"],
-            ["org1", "org2"],
-            ["orgX"],
-         ]) {
-            expect(ids(await rowsFor(alias.model, "X", { GROUPS }))).toEqual(
-               ids(await rowsFor(canonical.model, "X", { GROUPS })),
-            );
-         }
-      } finally {
-         await cleanup(canonical.duckdb, canonical.dir);
-         await cleanup(alias.duckdb, alias.dir);
       }
    });
 });

@@ -50,8 +50,8 @@ import {
 } from "./authorize";
 import {
    CANONICAL_AUTHORIZE_ROUTES,
-   ROW_AUTHORIZE_ROUTE,
-   SOURCE_AUTHORIZE_ROUTE,
+   ACCESS_FILTER_ROUTE,
+   AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 import { parseFilters, type FilterDefinition } from "./filter";
 import {
@@ -97,21 +97,21 @@ export interface ExtractedSource {
     * any stray annotation.
     *
     * Scoped to the `authorize` ROUTE only — a source gated solely by
-    * `#(source_authorize)` reports `undefined` here even though it is
+    * `#(authorize)` reports `undefined` here even though it is
     * enforced (via the internal `authorizeMap`, which carries both routes).
-    * The `source_authorize` route's own effective texts are reported
-    * separately, in `sourceAuthorize` below.
+    * The `authorize` route's own effective texts are reported
+    * separately, in `accessFilter` below.
     */
    authorize: string[] | undefined;
    /**
-    * Effective `#(source_authorize)` expressions gating this source, mirroring
-    * `authorize` above but for the `source_authorize` route ONLY — a
+    * Effective `#(authorize)` expressions gating this source, mirroring
+    * `authorize` above but for the `authorize` route ONLY — a
     * convenience-form `#(authorize)` body (a pure source-level predicate
     * written on the `authorize` route) reports under `authorize`, not here.
     * Undefined when nothing on this route gates the source, even if
     * `authorize` is present.
     */
-   sourceAuthorize: string[] | undefined;
+   accessFilter: string[] | undefined;
 }
 
 export interface ExtractedQuery {
@@ -395,7 +395,7 @@ export function extractSourcesFromModelDef(
     * `source_line_authorize_integration.spec.ts`). Keyed per route so
     * `gate_classification.ts`'s `assertAuthorizeGrammarValid` can decide
     * own-vs-inherited PER ROUTE — a source may own `#(authorize)` but only
-    * inherit `#(source_authorize)`, or vice versa.
+    * inherit `#(authorize)`, or vice versa.
     */
    authorizeOwnNotes: AuthorizeOwnNotesMap;
    /**
@@ -577,7 +577,7 @@ export function extractSourcesFromModelDef(
                fileNoteTexts
                   .map((text) => authorizeAnnotationSpellingAsWritten(text))
                   .find((r): r is string => r !== undefined) ??
-               ROW_AUTHORIZE_ROUTE,
+               ACCESS_FILTER_ROUTE,
          });
       }
    }
@@ -631,8 +631,8 @@ export function extractSourcesFromModelDef(
          // rather than silently dropping the gate.
          //
          // Computed PER ROUTE (`CANONICAL_AUTHORIZE_ROUTES`: `authorize`,
-         // `source_authorize`) and independently own-wins-or-inherits per
-         // route — an own `#(source_authorize)` note never sheds an
+         // `authorize`) and independently own-wins-or-inherits per
+         // route — an own `#(authorize)` note never sheds an
          // inherited `#(authorize)` gate, or vice versa, because each route's
          // own-notes read and ancestor walk run as their own separate call.
          const ownNotes = ownLevelNoteTexts(struct.annotations);
@@ -688,7 +688,7 @@ export function extractSourcesFromModelDef(
          // different declaring sources.
          const groupsForSource: AuthorizeMapGroup[] = [];
          // Each route's OWN groups, held separately per route so the two WIRE
-         // fields (`authorize`, `sourceAuthorize`) can each report only their
+         // fields (`authorize`, `accessFilter`) can each report only their
          // own route's effective texts, even though `authorizeMap` (internal)
          // carries both.
          const routeGroupsByRoute = new Map<string, string[][]>();
@@ -717,7 +717,7 @@ export function extractSourcesFromModelDef(
          // introspection. `suggestGivenLookup`'s consumers
          // (`package_load_worker.ts`, `model.ts`'s `getDashboardModelFacts`)
          // read only `authorize`, so a given referenced solely by a
-         // `#(source_authorize)` term is still not suggested; a known,
+         // `#(authorize)` term is still not suggested; a known,
          // accepted gap, not a fail-open — the gate itself still enforces via
          // `authorizeMap`.
          const routeGroupsToFlatWire = (
@@ -725,10 +725,10 @@ export function extractSourcesFromModelDef(
          ): string[] | undefined =>
             groups && groups.length > 0 ? groups.flat() : undefined;
          const authorize = routeGroupsToFlatWire(
-            routeGroupsByRoute.get(ROW_AUTHORIZE_ROUTE),
+            routeGroupsByRoute.get(AUTHORIZE_ROUTE),
          );
-         const sourceAuthorize = routeGroupsToFlatWire(
-            routeGroupsByRoute.get(SOURCE_AUTHORIZE_ROUTE),
+         const accessFilter = routeGroupsToFlatWire(
+            routeGroupsByRoute.get(ACCESS_FILTER_ROUTE),
          );
          const views: ExtractedView[] = struct.fields
             .filter((field) => field.type === "turtle")
@@ -839,7 +839,7 @@ export function extractSourcesFromModelDef(
                            authorizeAnnotationSpellingAsWritten(note.text),
                         )
                         .find((r): r is string => r !== undefined) ??
-                     ROW_AUTHORIZE_ROUTE,
+                     ACCESS_FILTER_ROUTE,
                });
                continue;
             }
@@ -860,7 +860,7 @@ export function extractSourcesFromModelDef(
                         authorizeAnnotationSpellingAsWritten(note.text),
                      )
                      .find((r): r is string => r !== undefined) ??
-                  ROW_AUTHORIZE_ROUTE,
+                  ACCESS_FILTER_ROUTE,
             });
          }
 
@@ -871,7 +871,7 @@ export function extractSourcesFromModelDef(
             filters,
             givens,
             authorize,
-            sourceAuthorize,
+            accessFilter,
          };
       });
 
@@ -911,7 +911,7 @@ export function extractQueriesFromModelDef(modelDef: ModelDef): {
             ownLevelNoteTexts(queryObj.annotations)
                .map((text) => authorizeAnnotationSpellingAsWritten(text))
                .find((r): r is string => r !== undefined) ??
-            ROW_AUTHORIZE_ROUTE,
+            ACCESS_FILTER_ROUTE,
       }));
    const queries: ExtractedQuery[] = namedQueries.map((queryObj) => ({
       name: queryObj.as || queryObj.name,

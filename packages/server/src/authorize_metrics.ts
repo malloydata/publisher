@@ -48,7 +48,6 @@ let guardRejectionCounter: Counter | null = null;
 let bypassCounter: Counter | null = null;
 let rowLevelDecisionCounter: Counter | null = null;
 let rowLevelRejectionCounter: Counter | null = null;
-let deprecatedSpellingCounter: Counter | null = null;
 let admitAllCounter: Counter | null = null;
 
 /**
@@ -218,7 +217,7 @@ export function recordRowLevelGateRejected(
 
 /**
  * Record one source that declares its OWN unconditional admit-all gate
- * (`#(authorize) true` / `#(source_authorize) true`).
+ * (`#(authorize) true` / `#(authorize) true`).
  *
  * `true` is the only body in the gate grammar that turns a gate OFF, and
  * because a source with no gate of its own inherits its ancestor's, one such
@@ -245,38 +244,15 @@ export function recordAuthorizeAdmitAllGate(route: string): void {
       "publisher_authorize_admit_all_total",
       {
          description:
-            "Sources declaring their OWN unconditional admit-all gate (`#(row_authorize) true` / `#(source_authorize) true`), counted once each at package load. Label: route (" +
+            "Sources declaring their OWN unconditional admit-all gate (`#(access_filter) true` / `#(authorize) true`), counted once each at package load. Label: route (" +
             // Derived from the canonical routes, not retyped beside them —
             // this file already shipped one description that drifted from the
             // values it documented.
             CANONICAL_AUTHORIZE_ROUTES.map((r) => `'${r}'`).join("|") +
-            "). A gate written in the deprecated `#(authorize)` spelling reports as 'row_authorize', so one gate never splits across two label values. Not an error — `true` is the only spelling for an extension that deliberately re-opens a gated base — but it is the one declaration that turns a gate off, so a jump since the last publish is worth a look.",
+            "). Not an error — `true` is the only spelling for an extension that deliberately re-opens a gated base — but it is the one declaration that turns a gate off, so a jump since the last publish is worth a look.",
       },
    );
    admitAllCounter.add(1, { route });
-}
-
-/**
- * One source declaring an OWN gate in the deprecated `#(authorize)` spelling,
- * counted once per source at package load — so "how much of the corpus still
- * uses the old spelling" is answerable without reading logs.
- *
- * UNLABELLED. Org / package / model / source are unbounded-cardinality and
- * belong in the log line an investigation reads once the number moves — the
- * worker emits exactly that over `SerializedModel.authorizeWarnings` — not on
- * the counter. Like the admit-all counter this is a step function on publish,
- * not a request-rate signal: the useful read is the trend across releases as
- * models migrate.
- */
-export function recordDeprecatedAuthorizeSpelling(): void {
-   deprecatedSpellingCounter ??= publisherMeter().createCounter(
-      "publisher_authorize_deprecated_spelling_total",
-      {
-         description:
-            "Sources declaring an OWN gate in the deprecated `#(authorize)` spelling rather than `#(row_authorize)`, counted once each at package load. No labels — the load-time warning names the source. `#(authorize)` still loads and still behaves identically; this counts how much of the corpus has yet to migrate.",
-      },
-   );
-   deprecatedSpellingCounter.add(1);
 }
 
 /**
@@ -288,6 +264,5 @@ export function resetAuthorizeGuardTelemetryForTesting(): void {
    bypassCounter = null;
    rowLevelDecisionCounter = null;
    rowLevelRejectionCounter = null;
-   deprecatedSpellingCounter = null;
    admitAllCounter = null;
 }

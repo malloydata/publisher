@@ -44,7 +44,7 @@ interface Entity {
    // Human-facing doc for the response (may fall back to raw annotations).
    doc: string;
    // #(doc)-only text used as embedding input; never carries predicate
-   // annotations (#(authorize) etc.) that must not leave the machine.
+   // annotations (#(access_filter) etc.) that must not leave the machine.
    embedDoc: string;
    // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
    // traversing the join fans out (many) before it writes a query against it.
@@ -212,7 +212,7 @@ interface SourceContextEntry {
     */
    givens?: SourceContextGiven[];
    /**
-    * The `#(authorize)` gates in force on this source, and the givens each one
+    * The `#(accessFilter)` gates in force on this source, and the givens each one
     * reads. Retrieval that offered a gated source without saying so spent a
     * slot on an entity the caller could not query, and the agent learned that
     * only from the denial.
@@ -221,17 +221,17 @@ interface SourceContextEntry {
     * flattens gates carried in from elsewhere, they are AND-ed rather than
     * OR-ed, and an unattributable gate reports the fail-closed placeholder
     * "false" that no author wrote. Read it as "this source is gated, and these
-    * are the givens to supply". See docs/authorize.md.
+    * are the givens to supply". See docs/accessFilter.md.
     */
-   authorize?: SourceContextAuthorize[];
+   accessFilter?: SourceContextAuthorize[];
    /**
-    * The `#(source_authorize)` route's own gates, reported separately from
-    * `authorize` above — a rule about the CALLER rather than the row, ANDed
-    * with any `authorize` gate rather than bypassing it. Same report-only
+    * The `#(accessFilter)` route's own gates, reported separately from
+    * `accessFilter` above — a rule about the CALLER rather than the row, ANDed
+    * with any `accessFilter` gate rather than bypassing it. Same report-only
     * caveats apply. A source gated ONLY by an unconditional deny on either
     * route never reaches this card at all — see the collector's drop.
     */
-   sourceAuthorize?: SourceContextAuthorize[];
+   authorize?: SourceContextAuthorize[];
    /** Filters the source declares via `#(filter)`. */
    filters?: SourceContextFilter[];
 }
@@ -258,7 +258,7 @@ interface SourceContextFilter {
    required?: boolean;
 }
 
-/** One authorize gate, with the givens its expression reads. */
+/** One accessFilter gate, with the givens its expression reads. */
 interface SourceContextAuthorize {
    expression: string;
    given_names: string[];
@@ -345,9 +345,9 @@ interface SourceCardInfo {
    one_line_summary?: string;
    docs?: string;
    givens?: SourceContextGiven[];
+   accessFilter?: SourceContextAuthorize[];
+   /** The `#(accessFilter)` route's own gates — see `SourceContextEntry.authorize`. */
    authorize?: SourceContextAuthorize[];
-   /** The `#(source_authorize)` route's own gates — see `SourceContextEntry.sourceAuthorize`. */
-   sourceAuthorize?: SourceContextAuthorize[];
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
@@ -441,9 +441,9 @@ function toSourceResults(
                   : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
-               ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
-               ...(ctx?.sourceAuthorize
-                  ? { sourceAuthorize: ctx.sourceAuthorize }
+               ...(ctx?.accessFilter ? { accessFilter: ctx.accessFilter } : {}),
+               ...(ctx?.authorize
+                  ? { authorize: ctx.authorize }
                   : {}),
                ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
                joins: ctx?.joins ?? [],
@@ -993,7 +993,7 @@ function scopeKeysFor(
 /**
  * Extract ONLY `#(doc)` annotation text, empty when there is none. This is
  * the safe input for embedding: unlike docText it never falls back to the
- * raw annotation lines, so predicate-bearing annotations (`#(authorize)`
+ * raw annotation lines, so predicate-bearing annotations (`#(accessFilter)`
  * row-level-security rules, tenant lists, `#(malloy)` internals) are never
  * sent to an external embedding provider.
  */
@@ -1348,23 +1348,23 @@ function collectJoinedFields(args: {
 }
 
 /**
- * Whether `apiSource` is gated by an unconditional `#(authorize) false` / or
- * `#(source_authorize) false` — on EITHER route, since the two routes AND
+ * Whether `apiSource` is gated by an unconditional `#(accessFilter) false` / or
+ * `#(accessFilter) false` — on EITHER route, since the two routes AND
  * together and one bare-`false` conjunct denies every caller regardless of
  * the other route or any given supplied. Keys on the deny, not the route, so
- * `#(authorize) false` and `#(source_authorize) false` are treated
+ * `#(accessFilter) false` and `#(accessFilter) false` are treated
  * identically. Case- and whitespace-insensitive: the grammar parser
  * lowercases `FALSE` only for its own comparison, so the wire payload can
  * still carry it uppercase (`authorize_grammar.ts`).
  */
 function isUnconditionalDenyAuthorize(apiSource: {
+   accessFilter?: string[];
    authorize?: string[];
-   sourceAuthorize?: string[];
 }): boolean {
    const isDeny = (expr: string) => expr.trim().toLowerCase() === "false";
    return (
-      (apiSource.authorize ?? []).some(isDeny) ||
-      (apiSource.sourceAuthorize ?? []).some(isDeny)
+      (apiSource.accessFilter ?? []).some(isDeny) ||
+      (apiSource.authorize ?? []).some(isDeny)
    );
 }
 
@@ -1411,7 +1411,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       const sourceInfos = model.getSourceInfos() ?? [];
       const queries = model.getQueries() ?? [];
       // The compiled ApiSource carries what SourceInfo does not: the givens in
-      // scope and the authorize gates in force. Keyed by name so the card can
+      // scope and the accessFilter gates in force. Keyed by name so the card can
       // pick up its own, and read defensively because a spec's model stand-in
       // implements only the two accessors above.
       const apiSources = model.getSources?.() ?? [];
@@ -1430,7 +1430,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
-         // An unconditional `#(row_authorize) false` / `#(source_authorize) false`
+         // An unconditional `#(access_filter) false` / `#(accessFilter) false`
          // (either route, any case/whitespace — see isUnconditionalDenyAuthorize)
          // denies every caller with no given able to change that, so there is
          // nothing this card can offer an agent that queries it. Drop the
@@ -1470,11 +1470,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                           ]
                         : [],
                   ),
-                  authorize: (apiSource.authorize ?? []).map((expression) => ({
+                  accessFilter: (apiSource.accessFilter ?? []).map((expression) => ({
                      expression,
                      given_names: referencedGivenNames(expression),
                   })),
-                  sourceAuthorize: (apiSource.sourceAuthorize ?? []).map(
+                  authorize: (apiSource.authorize ?? []).map(
                      (expression) => ({
                         expression,
                         given_names: referencedGivenNames(expression),
@@ -1628,8 +1628,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 interface SourceGovernance {
    givens: SourceContextGiven[];
    filters: SourceContextFilter[];
+   accessFilter: SourceContextAuthorize[];
    authorize: SourceContextAuthorize[];
-   sourceAuthorize: SourceContextAuthorize[];
 }
 
 /** The entities of a package, plus the per-source governance beside them. */
@@ -1874,9 +1874,9 @@ function buildSourceContext(
          joins: [],
          ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),
-         ...(gates?.authorize.length ? { authorize: gates.authorize } : {}),
-         ...(gates?.sourceAuthorize.length
-            ? { sourceAuthorize: gates.sourceAuthorize }
+         ...(gates?.accessFilter.length ? { accessFilter: gates.accessFilter } : {}),
+         ...(gates?.authorize.length
+            ? { authorize: gates.authorize }
             : {}),
          ...(gates?.filters.length ? { filters: gates.filters } : {}),
       });
@@ -1964,13 +1964,13 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Read warnings and any error/stale field before trusting a number.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
-- authorize/sourceAuthorize mean gated; a deny-all source never appears here.
+- accessFilter/authorize mean gated; a deny-all source never appears here.
 
 ## Parameters
 search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150, counted as cards). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize/sourceAuthorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 

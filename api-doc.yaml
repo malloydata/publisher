@@ -4271,75 +4271,64 @@ components:
         authorize:
           type: array
           description: >-
-            Effective row-level authorize expression gating this source:
-            normally the author's `#(row_authorize)` expression as written,
-            whether declared on this source itself or carried in from
-            elsewhere (the source it extends, a query-source base, a composite
-            member). The deprecated `#(authorize)` spelling is the SAME route
-            and reports here too — there is deliberately no third field, since
-            a consumer that forgot to union one would read a gated source as
-            ungated. Enforced at
-            query time as a row filter grafted onto the source the query
-            enters through. An empty or absent list means unrestricted. Where
-            the gate registry cannot attribute an expression to a declaring
-            source it reports `"false"` instead — a fail-closed placeholder,
-            not something the author wrote, and one more reason to read this
-            list only as "gated" rather than as a predicate.
+            Effective `#(authorize)` expressions locking this source: a rule
+            about the CALLER (`'literal' <op> $GIVEN`), or a whole-body
+            `"true"`/`"false"` sentinel. It answers whether the caller may
+            reach the source at all, so **a caller it does not admit is
+            refused with HTTP 403** — not served zero rows. An empty or absent
+            list means no lock.
 
-            Every gate is enforced as a row filter, whether or not its
-            expression reads a row field. A caller the gate admits nowhere
-            therefore gets HTTP 200 with zero rows, not a 403. Do not treat a
-            200 with zero rows as "no gate applied". A 403 means the gate
-            could not be applied at all: the entry point renamed or dropped a
-            field the gate reads, or a given the gate names was not supplied.
-            Both are denials, but only one is visible as a status code.
+            Reported whether the gate is declared on this source itself or
+            carried in from elsewhere (the source it extends, a query-source
+            base, a composite member). Where the gate registry cannot
+            attribute an expression to a declaring source it reports `"false"`
+            instead — a fail-closed placeholder, not something the author
+            wrote, and one more reason to read this list only as "locked"
+            rather than as a predicate.
 
             IMPORTANT for anything re-implementing the decision: this flat
             list is not a predicate you can evaluate, and it is not a count of
             one. A source may declare more than one gate of its OWN — repeats
             AND together — and the list also flattens every gate carried in,
-            so several elements are normal — a query source over a composite
+            so several elements are normal; a query source over a composite
             reports the same authored gate twice, once from its base and once
             from the resolved member. Expressions from different declaring
             sources are likewise AND-ed rather than OR-ed. Treat the list as
-            "at least these constraints apply": use it to decide THAT a
-            source is gated, not to recompute WHETHER a given caller passes.
-            Reading it as a pure disjunction grants where Publisher denies.
+            "at least these constraints apply": use it to decide THAT a source
+            is locked, not to recompute WHETHER a given caller passes. Reading
+            it as a pure disjunction grants where Publisher denies.
 
-            Two whole-body sentinels name no given: `"false"` admits nobody,
-            and `"true"` admits everybody — the latter is how an author
-            declares an extension of a locked base deliberately open, since a
-            source declaring no gate of its own inherits its ancestor's. Read
-            them ELEMENT-WISE, never as a verdict on the list: a list is
-            unrestricted only when `"true"` is its SOLE element, because gates
-            from different declaring sources are flattened in here and AND
-            together, so `["true", "org_id in $GROUPS"]` is a real shape and is
-            gated. `"false"` needs no such care — anywhere in the list it
-            denies.
+            Read the sentinels ELEMENT-WISE, never as a verdict on the list: a
+            list is unlocked only when `"true"` is its SOLE element, because
+            gates from different declaring sources are flattened in here and
+            AND together, so `["true", "'finance' in $GROUPS"]` is a real shape
+            and is locked. `"false"` needs no such care — anywhere in the list
+            it denies.
 
             Givens are caller-asserted, so this is a boundary only behind a
             trusted tier — see docs/authorize.md.
           items:
             type: string
-        sourceAuthorize:
+        accessFilter:
           type: array
           description: >-
-            Effective `#(source_authorize)` expression gating this source: a
-            rule about the CALLER (e.g. `'literal' in $GROUPS`) rather than
-            the row, ANDed with any `authorize` gate above rather than
-            bypassing it. Reports the `source_authorize` route's own
-            expressions ONLY — a convenience-form source-level predicate
-            written on the row route (`#(row_authorize)`, or its deprecated
-            `#(authorize)` spelling) is reported under `authorize`, not
-            here. An empty or absent list
-            means nothing on this route gates the source, even if `authorize`
-            is present.
+            Effective `#(access_filter)` expressions filtering this source's
+            rows: `field_path <op> $GIVEN`, grafted onto the source the query
+            enters through. It answers which rows the caller may see, so **a
+            caller it admits nowhere gets HTTP 200 with zero rows**, not a 403.
+            An empty or absent list means no row filter.
 
-            Same flattening, AND-not-OR and `"false"`/`"true"` sentinel
-            caveats as `authorize` apply, element-wise reading included: this
-            is not a predicate to re-evaluate, only a signal that the source is
-            gated. Givens are caller-asserted, so this is a boundary only
-            behind a trusted tier — see docs/authorize.md.
+            Do not read a 200 with zero rows as "no filter applied", and do not
+            read a non-empty result as proof rows got through: an ungrouped
+            aggregate is row-count-preserving over empty input, so `count()`
+            returns one row reading 0 even when the filter admitted nothing.
+
+            Same flattening, AND-not-OR and attribution caveats as `authorize`
+            apply — this is a signal that the source is filtered, not a
+            predicate to re-evaluate. There are no sentinels on this route:
+            `true` and `false` belong to `authorize`. Givens are
+            caller-asserted, so this is a boundary only behind a trusted tier —
+            see docs/authorize.md.
           items:
             type: string
 

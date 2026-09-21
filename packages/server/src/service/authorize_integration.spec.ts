@@ -115,18 +115,18 @@ describe("authorize annotation introspection", () => {
          `##! experimental.givens
 
 given:
-  ROLE :: string
+  ALLOW :: number[]
   DENY :: number[]
 
-// Locked base.
-#(authorize) id in $DENY
+// Filtered base.
+#(access_filter) id in $DENY
 source: customers_raw is duckdb.table('customers') extend {}
 
-// Extension with its own gate — must NOT pick up the base's lock. Its own
-// \`#(authorize)\` note is a distinct object from the base's, so the
+// Extension with its own gate — must NOT pick up the base's. Its own
+// \`#(access_filter)\` note is a distinct object from the base's, so the
 // own-vs-inherited check (\`validateAuthorizeProbes\`) reads it as authored
 // here, replacing rather than joining the inherited one.
-#(authorize) 'analyst' = $ROLE
+#(access_filter) id in $ALLOW
 source: customers_marketing is customers_raw extend {
   measure: customer_count is count()
 }
@@ -139,11 +139,11 @@ source: customers_marketing is customers_raw extend {
          getConnections(),
       );
 
-      // Base keeps its own lock.
-      expect(model.getAuthorize("customers_raw")).toEqual(["id in $DENY"]);
-      // Extension is governed ONLY by its own gate — the base lock is gone.
-      expect(model.getAuthorize("customers_marketing")).toEqual([
-         "'analyst' = $ROLE",
+      // Base keeps its own filter.
+      expect(model.getAccessFilter("customers_raw")).toEqual(["id in $DENY"]);
+      // Extension is governed ONLY by its own gate — the base's is gone.
+      expect(model.getAccessFilter("customers_marketing")).toEqual([
+         "id in $ALLOW",
       ]);
    });
 
@@ -175,15 +175,15 @@ source: plain is duckdb.table('customers')
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toMatch(/file level/i);
       // Names the actual tag written, not a hardcoded assumption — see the
-      // ##(source_authorize) sibling test below, which pins the opposite case.
+      // ##(authorize) sibling test below, which pins the opposite case.
       expect(err?.message).toMatch(/at the file level \(`##\(authorize\)`\)/);
       expect(err?.message).toMatch(/source:/);
       expect(model.getSources()).toBeUndefined();
    });
 
-   it("refuses a file-level ##(source_authorize) annotation, naming THAT route rather than ##(authorize)", async () => {
+   it("refuses a file-level ##(authorize) annotation, naming THAT route rather than ##(access_filter)", async () => {
       // Regression for a route hardcoded into the misplacement message: an
-      // author who misplaced ##(source_authorize) at the file level must be
+      // author who misplaced ##(authorize) at the file level must be
       // told to move that tag, not a different route with different body
       // rules.
       await writeModel(
@@ -193,7 +193,7 @@ source: plain is duckdb.table('customers')
 given:
   ROLE :: string
 
-##(source_authorize) 'admin' = $ROLE
+##(authorize) 'admin' = $ROLE
 
 source: plain is duckdb.table('customers')
 `,
@@ -212,15 +212,15 @@ source: plain is duckdb.table('customers')
       // hardcoded ##(authorize) — the message's shared explanatory prose
       // mentions both tags generically, so this pins the specific bullet line.
       expect(err?.message).toMatch(
-         /at the file level \(`##\(source_authorize\)`\)/,
+         /at the file level \(`##\(authorize\)`\)/,
       );
       expect(err?.message).not.toMatch(
-         /at the file level \(`##\(authorize\)`\)/,
+         /at the file level \(`##\(access_filter\)`\)/,
       );
       expect(model.getSources()).toBeUndefined();
    });
 
-   it("refuses a ##(authorize) declared in an IMPORTED model too, not just the local file", async () => {
+   it("refuses a ##(access_filter) declared in an IMPORTED model too, not just the local file", async () => {
       // Regression for the hand-rolled model-annotation fold (malloy 0.0.405+
       // removed ModelDef.annotation): the fold still has to surface an
       // imported file's `##(authorize)` to the importing file's refusal check
@@ -321,13 +321,13 @@ source: broken is duckdb.table('customers')
          getConnections(),
       );
 
-      expect(model.getAuthorize("open_source")).toEqual([]);
-      expect(sourceNamed(model, "open_source")?.authorize).toBeUndefined();
+      expect(model.getAccessFilter("open_source")).toEqual([]);
+      expect(sourceNamed(model, "open_source")?.accessFilter).toBeUndefined();
    });
 });
 
-describe("the sourceAuthorize wire field mirrors #(source_authorize)", () => {
-   it("reports #(source_authorize)'s own text under sourceAuthorize, not authorize", async () => {
+describe("the authorize wire field mirrors #(authorize)", () => {
+   it("reports #(authorize)'s own text under authorize, not authorize", async () => {
       await writeModel(
          "route_split.malloy",
          `##! experimental.givens
@@ -335,7 +335,7 @@ describe("the sourceAuthorize wire field mirrors #(source_authorize)", () => {
 given:
   ROLE :: string[]
 
-#(source_authorize) 'finance' in $ROLE
+#(authorize) 'finance' in $ROLE
 source: fin is duckdb.table('customers') extend {}
 `,
       );
@@ -346,43 +346,16 @@ source: fin is duckdb.table('customers') extend {}
          getConnections(),
       );
 
-      expect(model.getAuthorize("fin")).toEqual([]);
-      expect(model.getSourceAuthorize("fin")).toEqual(["'finance' in $ROLE"]);
-      expect(sourceNamed(model, "fin")?.authorize).toBeUndefined();
-      expect(sourceNamed(model, "fin")?.sourceAuthorize).toEqual([
+      expect(model.getAccessFilter("fin")).toEqual([]);
+      expect(model.getAuthorize("fin")).toEqual(["'finance' in $ROLE"]);
+      expect(sourceNamed(model, "fin")?.accessFilter).toBeUndefined();
+      expect(sourceNamed(model, "fin")?.authorize).toEqual([
          "'finance' in $ROLE",
       ]);
    });
 
-   it("a convenience-form #(authorize) body reports under authorize, never sourceAuthorize", async () => {
-      // A pure source-level predicate is legal written on the `authorize`
-      // route itself (not just `source_authorize`) — see this route's own
-      // module doc. That convenience form must stay under `authorize`.
-      await writeModel(
-         "convenience.malloy",
-         `##! experimental.givens
-
-given:
-  GROUPS :: string[]
-
-#(authorize) 'x' in $GROUPS
-source: conv is duckdb.table('customers') extend {}
-`,
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "convenience.malloy",
-         getConnections(),
-      );
-
-      expect(model.getAuthorize("conv")).toEqual(["'x' in $GROUPS"]);
-      expect(model.getSourceAuthorize("conv")).toEqual([]);
-      expect(sourceNamed(model, "conv")?.sourceAuthorize).toBeUndefined();
-   });
-
    it("both routes agree between the two producers: extraction and the constructor override", async () => {
-      // model.ts's constructor mutates `sources[].authorize`/`sourceAuthorize`
+      // model.ts's constructor mutates `sources[].accessFilter`/`authorize`
       // in place from `entryPointGatesBySource` to "make introspection agree
       // with enforcement" (see model.ts). A query-source derivation is the
       // shape that historically diverged between the extractor's narrower
@@ -395,8 +368,8 @@ given:
   DENY :: number[]
   ROLE :: string[]
 
-#(authorize) id in $DENY
-#(source_authorize) 'finance' in $ROLE
+#(access_filter) id in $DENY
+#(authorize) 'finance' in $ROLE
 source: base is duckdb.table('customers') extend {}
 
 source: derived is base -> { select: id, region }
@@ -412,10 +385,10 @@ source: derived is base -> { select: id, region }
       // The constructor-side and extraction-side answers are the same
       // object on `Model.create`'s path (the constructor mutates in place),
       // so this is really pinning that BOTH fields were split by route —
-      // a single un-split `exprs.flat()` would have let source_authorize
+      // a single un-split `exprs.flat()` would have let authorize
       // text leak into `authorize` or vice versa.
-      expect(model.getAuthorize("derived")).toEqual(["id in $DENY"]);
-      expect(model.getSourceAuthorize("derived")).toEqual([
+      expect(model.getAccessFilter("derived")).toEqual(["id in $DENY"]);
+      expect(model.getAuthorize("derived")).toEqual([
          "'finance' in $ROLE",
       ]);
    });
@@ -556,7 +529,7 @@ source: gated is duckdb.table('customers') extend {}
    it("fails model load when an expression references a source field", async () => {
       await writeModel(
          "field_ref.malloy",
-         `#(authorize) some_field = 1
+         `#(access_filter) some_field = 1
 source: gated is duckdb.table('customers') extend {}
 `,
       );
@@ -583,7 +556,7 @@ source: gated is duckdb.table('customers') extend {}
 given:
   NUM :: number
 
-#(authorize) region = $NUM
+#(access_filter) region = $NUM
 source: gated is duckdb.table('customers') extend {}
 `,
       );
@@ -608,7 +581,7 @@ given:
 
 // A source may declare at most one gate dimension (G1), so both givens are
 // exercised in one expression rather than the string form's two OR'd notes.
-#(authorize) age = $AGE and region in $ALLOWED
+#(access_filter) age = $AGE and region in $ALLOWED
 source: gated is duckdb.table('customers') extend {
   dimension: age is id + 10
 }
@@ -622,7 +595,7 @@ source: gated is duckdb.table('customers') extend {
       );
 
       expect(model.getNotebookError()).toBeUndefined();
-      expect(model.getAuthorize("gated")).toEqual([
+      expect(model.getAccessFilter("gated")).toEqual([
          "age = $AGE and region in $ALLOWED",
       ]);
    });
@@ -716,7 +689,7 @@ source: locked is duckdb.table('customers') extend { measure: c is count() }
       // verbatim once emitted `#(authorize) "org_id = 999"` as the remedy for
       // `#(authorize) "org_id = 999"` — byte-identical to what it refused —
       // and `toContain('"org_id = 999"')` was satisfied by that too.
-      expect(err?.message).toContain("#(row_authorize) org_id = 999");
+      expect(err?.message).toContain("#(authorize) org_id = 999");
       // Still names the offending annotation as authored, quotes and all, so
       // the author can find the line.
       expect(err?.message).toContain('replace `#(authorize) "org_id = 999"`');
@@ -744,7 +717,7 @@ source: locked_sq is duckdb.table('customers') extend { measure: c is count() }
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toContain("no longer accepted");
       // The rewrite line, not a substring a broken message would also carry.
-      expect(err?.message).toContain("#(row_authorize) org_id = 999");
+      expect(err?.message).toContain("#(authorize) org_id = 999");
       // Names the annotation as authored, single quotes included.
       expect(err?.message).toContain("replace `#(authorize) 'org_id = 999'`");
    });
@@ -769,7 +742,7 @@ source: locked is duckdb.table('customers') extend { measure: c is count() }
       );
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
-      expect(err?.message).toContain('#(row_authorize) region = "east"');
+      expect(err?.message).toContain('#(authorize) region = "east"');
    });
 
    it("'\"admin\" = $ROLE' is a LEGAL current-form gate, not the legacy form — loads and filters", async () => {
@@ -889,7 +862,7 @@ given:
   NAME :: string
   REGION :: string
 
-#(authorize) name = $NAME and region = $REGION
+#(access_filter) name = $NAME and region = $REGION
 source: regional is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -1183,9 +1156,9 @@ run: secret
 
 given:
   ROLE :: string
-  DENY :: number[]
+  DENY :: string[]
 
-#(authorize) id in $DENY
+#(authorize) 'x' in $DENY
 source: base_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -1234,10 +1207,9 @@ source: top_join is duckdb.table('customers') extend {
 `;
 
    it("denies (opaquely) a direct query against a base locked with an unbound given", async () => {
-      // The authorize grammar has no constant deny-everyone idiom (every
-      // term must reference a given) — `LOCKED_BASE` locks `base_locked` by
-      // referencing a given no caller ever supplies, which denies opaquely
-      // (`AccessDeniedError`) rather than compiling a live zero-row filter.
+      // `LOCKED_BASE` locks `base_locked` by referencing a given no caller
+      // ever supplies, which denies opaquely (`AccessDeniedError`) rather
+      // than compiling a live zero-row filter.
       await writeModel("rt_locked.malloy", LOCKED_BASE);
       await expect(
          runGated("rt_locked.malloy", "run: base_locked -> { aggregate: c }", {
@@ -1506,9 +1478,9 @@ source: top_join is duckdb.table('customers') extend {
 
 given:
   ROLE :: string
-  DENY :: number[]
+  DENY :: string[]
 
-#(authorize) id in $DENY
+#(authorize) 'x' in $DENY
 source: base_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -1805,7 +1777,7 @@ source: open_src is duckdb.table('customers') extend {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_flag is 1
@@ -1889,7 +1861,7 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -1944,7 +1916,7 @@ source: combo_locked_first is compose(locked_src, open_src)
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: member_a is duckdb.sql("select 7 as org_id, 1 as amount") extend {}
 
 source: member_b is duckdb.sql("select 99 as org_id, 2 as amount")
@@ -1961,12 +1933,12 @@ source: qs is combo -> { group_by: org_id }
          getConnections(),
       );
       expect(model.getNotebookError()).toBeUndefined();
-      expect(model.getAuthorize("qs")).toEqual(["org_id in $GROUPS"]);
-      expect(sourceNamed(model, "qs")?.authorize).toEqual([
+      expect(model.getAccessFilter("qs")).toEqual(["org_id in $GROUPS"]);
+      expect(sourceNamed(model, "qs")?.accessFilter).toEqual([
          "org_id in $GROUPS",
       ]);
       // The source that DECLARED the gate still reports the authored text.
-      expect(sourceNamed(model, "member_a")?.authorize).toEqual([
+      expect(sourceNamed(model, "member_a")?.accessFilter).toEqual([
          "org_id in $GROUPS",
       ]);
    });
@@ -1989,7 +1961,7 @@ describe("a query-local join to a locked source is not gated (Q16)", () => {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
@@ -2032,7 +2004,7 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: cp_locked is duckdb.table('customers') extend { measure: c is count() }
 
 source: cp_joiner is duckdb.table('customers') extend {
@@ -2119,8 +2091,8 @@ source: cp_joiner is duckdb.table('customers') extend {
       // all would satisfy the assertion below just as well) and must NOT
       // reach `cp_joiner`, which declares none of its own. Same entry-point
       // rule as the query path.
-      expect(model.getAuthorize("cp_locked")).not.toEqual([]);
-      expect(model.getAuthorize("cp_joiner")).toEqual([]);
+      expect(model.getAccessFilter("cp_locked")).not.toEqual([]);
+      expect(model.getAccessFilter("cp_joiner")).toEqual([]);
       const joinerRunnable = {
          getPreparedQuery: async () => ({
             _query: { structRef: "cp_joiner" },
@@ -2300,7 +2272,7 @@ describe("authorize query-source derivation enforcement (BLOCKING-5)", () => {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
@@ -2386,7 +2358,7 @@ describe("a query-source's own inner-pipeline join is not gated (Q16)", () => {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: locked9 is duckdb.table('customers') extend {
   dimension: secret is name
 }
@@ -2538,7 +2510,7 @@ source: open_src is duckdb.table('customers') extend {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: locked is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_region is region
@@ -2620,7 +2592,7 @@ source: open_src is duckdb.table('customers') extend {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: locked is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_region is region
@@ -2717,7 +2689,7 @@ describe("authorize allows a givens-free joined gate (MUST-FIX 2)", () => {
 given:
   ID :: number
 
-#(authorize) id = $ID
+#(access_filter) id = $ID
 source: pub_gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -2750,7 +2722,7 @@ describe("the caller-text guard covers sourceName/queryName too", () => {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: inj_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -2838,13 +2810,27 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
 // publisher assigning meaning inside that namespace, and silently starting to
 // enforce a filter on packages that served every row yesterday.
 describe("authorize is classified by Malloy's annotation route", () => {
-   // Source-level (`#`): routed to `authorize` AND enforced on the source below.
+   // Source-level (`#`): routed AND enforced on the source below. The filter
+   // word, because the body is row-level and what is under test is which
+   // bracket forms reach a route at all, not gate content.
    const GATE_SPELLINGS = [
-      "#(authorize)",
-      // The block form. Malloy routes it to `authorize`, and the deprecated
+      "#(access_filter)",
+      // The block form. Malloy routes it like the rest, and the deprecated
       // RegExp readers cannot see it at all — its own type docs say so.
-      "#|(authorize)",
+      "#|(access_filter)",
       // Malloy's bracket pairs are `()`, `<>`, `[]`, `{}`, all equivalent.
+      "#[access_filter]",
+      "#<access_filter>",
+      "#{access_filter}",
+   ];
+
+   // The forgery rejecter must cover BOTH words in every bracket form: it reads
+   // raw pre-compile text where no route exists yet, so a word it misses is a
+   // gate a caller can mint.
+   const ALL_GATE_SPELLINGS = [
+      ...GATE_SPELLINGS,
+      "#(authorize)",
+      "#|(authorize)",
       "#[authorize]",
       "#<authorize>",
       "#{authorize}",
@@ -2909,6 +2895,9 @@ source: route_locked is duckdb.table('customers') extend {
          );
       });
 
+   }
+
+   for (const tag of ALL_GATE_SPELLINGS) {
       it(`rejects ${tag} in caller-submitted text`, async () => {
          // The rejecter reads raw pre-compile text where no route exists yet, so
          // it stays a regex — and it must be a SUPERSET of the spellings the
@@ -2982,9 +2971,10 @@ source: near_locked is duckdb.table('customers') extend { measure: c is count() 
          );
          const err = model.getNotebookError();
          expect(err).toBeInstanceOf(ModelCompilationError);
-         // Names the spelling, and what to write instead.
+         // Names the spelling, and what to write instead. Every spelling here
+         // is a variant of the lock's own word, so that is the tag it names.
          expect(err?.message).toContain(tag);
-         expect(err?.message).toContain("(meant `#(row_authorize)`?)");
+         expect(err?.message).toContain("(meant `#(authorize)`?)");
          // Refused, never silently enforced as if it had been spelled right.
          expect(model.getSources()).toBeUndefined();
       });
@@ -3039,7 +3029,7 @@ source: near_qs is near_base_gated -> { select: * }
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toContain("# (authorize)");
-      expect(err?.message).toContain("(meant `#(row_authorize)`?)");
+      expect(err?.message).toContain("(meant `#(authorize)`?)");
    });
 
    // The other side of the near-miss detector: it is anchored at each note's own
@@ -3064,15 +3054,15 @@ source: other_routes is duckdb.table('customers') extend { measure: c is count()
          getConnections(),
       );
       expect(model.getNotebookError()).toBeUndefined();
-      expect(sourceNamed(model, "other_routes")?.authorize).toBeUndefined();
+      expect(sourceNamed(model, "other_routes")?.accessFilter).toBeUndefined();
    });
 });
 
 // The IR walk is what ENFORCES an inherited gate, and has since
-// `ancestorGateExprs` landed. `sources[].authorize` is the separate question of
+// `ancestorGateExprs` landed. `sources[].accessFilter` is the separate question of
 // what the server SAYS about a source, and it read own-blockNotes only — so a
 // locked-by-inheritance source introspected as ungated. Two things follow from
-// fixing it, and the second is the security half: `getAuthorize` feeds the EARLY
+// fixing it, and the second is the security half: `getAccessFilter` feeds the EARLY
 // gate, which runs before compilation specifically so a denied caller cannot read
 // a gated source's schema out of compile diagnostics.
 describe("an inherited gate is reported, not just enforced", () => {
@@ -3082,7 +3072,7 @@ given:
   ROLE :: string
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: rep_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -3101,10 +3091,10 @@ source: rep_ext is rep_locked extend {}
          "rep.malloy",
          getConnections(),
       );
-      expect(sourceNamed(model, "rep_ext")?.authorize).toEqual(["id in $DENY"]);
-      expect(model.getAuthorize("rep_ext")).toEqual(["id in $DENY"]);
+      expect(sourceNamed(model, "rep_ext")?.accessFilter).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("rep_ext")).toEqual(["id in $DENY"]);
       // The base is unchanged — this is not double-counting.
-      expect(model.getAuthorize("rep_locked")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("rep_locked")).toEqual(["id in $DENY"]);
    });
 
    it("surfaces the caller's own compile error, not a schema oracle bypass", async () => {
@@ -3132,15 +3122,15 @@ source: rep_ext is rep_locked extend {}
          `##! experimental.givens
 
 given:
-  ROLE :: string
+  ONE :: number
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: ro_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
 
-#(authorize) 'analyst' = $ROLE
+#(access_filter) id = $ONE
 source: ro_ext is ro_locked extend {}
 `,
       );
@@ -3150,11 +3140,13 @@ source: ro_ext is ro_locked extend {}
          "rep_override.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("ro_ext")).toEqual(["'analyst' = $ROLE"]);
+      expect(model.getAccessFilter("ro_ext")).toEqual(["id = $ONE"]);
+      // DENY is never supplied: had the base's gate been inherited too, this
+      // would deny rather than return rows.
       const { result } = await runGated(
          "rep_override.malloy",
          "run: ro_ext -> { aggregate: c }",
-         { ROLE: "analyst" },
+         { ONE: 1 },
       );
       expect(result.data).toBeDefined();
    });
@@ -3493,7 +3485,7 @@ describe("run-target expressions do not skip the early gate", () => {
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: rt_locked is duckdb.table('customers') extend {
   measure: cc is count()
 }
@@ -3579,7 +3571,7 @@ given:
   DENY :: number[]
 
 source:
-  #(authorize) id in $DENY
+  #(access_filter) id in $DENY
   bf_locked is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3591,10 +3583,10 @@ source:
          "block.malloy",
          getConnections(),
       );
-      expect(sourceNamed(model, "bf_locked")?.authorize).toEqual([
+      expect(sourceNamed(model, "bf_locked")?.accessFilter).toEqual([
          "id in $DENY",
       ]);
-      expect(model.getAuthorize("bf_locked")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("bf_locked")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block.malloy",
          "run: bf_locked -> { aggregate: c }",
@@ -3612,13 +3604,13 @@ source:
 given:
   DENY :: number[]
 
-#(authorize) id in $DENY
+#(access_filter) id in $DENY
 source: bf_above is duckdb.table('customers') extend {
   measure: c is count()
 }
 
 source:
-  #(authorize) id in $DENY
+  #(access_filter) id in $DENY
   bf_block is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3630,8 +3622,8 @@ source:
          "block_mixed.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_above")).toEqual(["id in $DENY"]);
-      expect(model.getAuthorize("bf_block")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("bf_above")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("bf_block")).toEqual(["id in $DENY"]);
    });
 
    it("does not over-gate a sibling in the same block that declares no annotation", async () => {
@@ -3647,7 +3639,7 @@ given:
 
 source:
   bf_open is duckdb.table('customers') extend { measure: c is count() }
-  #(authorize) id in $DENY
+  #(access_filter) id in $DENY
   bf_sibling_locked is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3659,13 +3651,13 @@ source:
          "block_sibling.malloy",
          getConnections(),
       );
-      expect(sourceNamed(model, "bf_open")?.authorize).toBeUndefined();
-      expect(model.getAuthorize("bf_open")).toEqual([]);
+      expect(sourceNamed(model, "bf_open")?.accessFilter).toBeUndefined();
+      expect(model.getAccessFilter("bf_open")).toEqual([]);
       // Positive half of the control: the gate has to have landed on the item
       // it precedes. Without this, an off-by-one that attributed a block item's
       // note to the PREVIOUS definition would still satisfy the assertions
       // above while leaving nothing gated at all.
-      expect(model.getAuthorize("bf_sibling_locked")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("bf_sibling_locked")).toEqual(["id in $DENY"]);
       const { result } = await runGated(
          "block_sibling.malloy",
          "run: bf_open -> { aggregate: c }",
@@ -3719,7 +3711,7 @@ given:
   DENY :: number[]
 
 source:
-  #(authorize) id in $DENY
+  #(access_filter) id in $DENY
   bf_base is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3734,7 +3726,7 @@ source: bf_ext is bf_base extend {}
          "block_inherit.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_ext")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("bf_ext")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block_inherit.malloy",
          "run: bf_ext -> { aggregate: c }",
@@ -3758,7 +3750,7 @@ given:
   DENY :: number[]
 
 source:
-  #(authorize) id in $DENY
+  #(access_filter) id in $DENY
   bf_reg_base is duckdb.table('customers') extend {
     measure: c is count()
     dimension: secret is name
@@ -3830,7 +3822,7 @@ given:
   DENY :: number[]
 
 source: bf_afteris is
-  #(authorize) id in $DENY
+  #(access_filter) id in $DENY
   duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3842,7 +3834,7 @@ source: bf_afteris is
          "block_afteris.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_afteris")).toEqual(["id in $DENY"]);
+      expect(model.getAccessFilter("bf_afteris")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block_afteris.malloy",
          "run: bf_afteris -> { aggregate: c }",
@@ -3853,7 +3845,7 @@ source: bf_afteris is
    it("fails model load for a block-form gate naming an undeclared given", async () => {
       // The `source_extraction.ts` half of the read, isolated. Load-time
       // validation works from the extractor's `authorizeMap`, and the Model
-      // constructor later overwrites `sources[].authorize` from the
+      // constructor later overwrites `sources[].accessFilter` from the
       // enforcement walk in model.ts — so this test is what pins the reporting
       // half: with a `blockNotes`-only extractor the bad gate is invisible at
       // load and the model compiles clean.

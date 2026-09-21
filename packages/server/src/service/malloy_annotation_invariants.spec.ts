@@ -48,8 +48,8 @@ import {
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
 import {
-   ROW_AUTHORIZE_ROUTE,
-   SOURCE_AUTHORIZE_ROUTE,
+   ACCESS_FILTER_ROUTE,
+   AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 import * as fs from "fs";
 
@@ -173,12 +173,12 @@ describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", (
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) region = 'us'
+#(access_filter) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -223,12 +223,12 @@ source: qs is combo -> { group_by: org_id }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) region = 'us'
+#(access_filter) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -266,7 +266,7 @@ source: qs is combo -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("extend {}: a trivial derivation shares the base's own note object by reference, at the TOP level (no .inherits demotion)", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: base is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: derived is base extend {}
@@ -296,10 +296,10 @@ source: derived is base extend {}
    // text. See the report for the pasted failing run.
    it("extend {}: two independently-declared sources with identical gate text are DISTINCT note objects (not shared)", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: indepA is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
 `);
       const indepA = modelDef.contents["indepA"] as StructDef;
@@ -331,10 +331,10 @@ source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
    // -------------------------------------------------------------------
    it("extend with its OWN #(authorize): the authored note is a distinct object, and the base's own note is demoted to .inherits", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: base3 is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) org_id > 5
+#(access_filter) org_id > 5
 source: derived3 is base3 extend {}
 `);
       const base3 = modelDef.contents["base3"] as StructDef;
@@ -373,7 +373,7 @@ source: derived3 is base3 extend {}
    // -------------------------------------------------------------------
    it("query_source: the struct itself carries no annotations at all", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: base4 is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: z4 is base4 -> { group_by: org_id }
@@ -410,7 +410,7 @@ source: z4 is base4 -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("join_one: an unannotated join copies the joined source's own gate note onto the join field, by reference", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: salaries is duckdb.sql("SELECT 7 as org_id, 1 as id") extend {}
 
 source: emp is duckdb.sql("SELECT 1 as id") extend {
@@ -532,9 +532,9 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
 
    // Same claim about Malloy's routing, for the two canonical route names. A
    // rename only holds if the compiler actually routes the new spellings, and
-   // only those — `#(row_authorize)` silently not routing would turn a locked
+   // only those — `#(access_filter)` silently not routing would turn a locked
    // source into one that serves every row, load-clean.
-   it.each([ROW_AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE])(
+   it.each([ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE])(
       "annotation routing: exactly these spellings reach the `%s` route",
       (route) => {
          const at = {
@@ -564,6 +564,9 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
          // refuses rather than aliases, and the case variant — both are
          // DIFFERENT routes as far as the compiler is concerned, which is
          // exactly why publisher has to refuse them rather than ignore them.
+         // The sibling route is in here too: the two names must not collide.
+         const sibling =
+            route === AUTHORIZE_ROUTE ? ACCESS_FILTER_ROUTE : AUTHORIZE_ROUTE;
          for (const text of [
             `# (${route}) "x=1"`,
             `## (${route}) "x=1"`,
@@ -573,8 +576,10 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
             `#${route} "x=1"`,
             `#(${route.toUpperCase()}) "x=1"`,
             `#(${route}d) "x=1"`,
-            `#(${route.replace("_", "-")}) "x=1"`,
-            `#(authorize) "x=1"`,
+            ...(route.includes("_")
+               ? [`#(${route.replaceAll("_", "-")}) "x=1"`]
+               : []),
+            `#(${sibling}) "x=1"`,
             "# bar_chart",
          ]) {
             expect(routesTo(text)).toBe(false);

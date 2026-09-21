@@ -13,15 +13,15 @@ import {
    referencedGivenNames,
 } from "./authorize";
 import {
-   DEPRECATED_AUTHORIZE_ROUTE,
    RECOGNIZED_AUTHORIZE_SPELLINGS,
-   ROW_AUTHORIZE_ROUTE,
-   SOURCE_AUTHORIZE_ROUTE,
+   ACCESS_FILTER_ROUTE,
+   AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 
 /** A parsed row-level route result, for `.toEqual` against
  *  `parseAuthorizeAnnotation`'s `{route, expr}` shape. */
-const authorized = (expr: string) => ({ route: ROW_AUTHORIZE_ROUTE, expr });
+const authorized = (expr: string) => ({ route: AUTHORIZE_ROUTE, expr });
+const filtered = (expr: string) => ({ route: ACCESS_FILTER_ROUTE, expr });
 
 describe("referencedGivenNames", () => {
    it("returns the $NAME tokens deduped in first-seen order", () => {
@@ -117,8 +117,8 @@ describe("parseAuthorizeAnnotation", () => {
          parseAuthorizeAnnotation(`#(authorize) $ROLE = 'analyst'`),
       ).toEqual(authorized(`$ROLE = 'analyst'`));
       expect(
-         parseAuthorizeAnnotation(`#(authorize) org_id in $GROUPS`),
-      ).toEqual(authorized("org_id in $GROUPS"));
+         parseAuthorizeAnnotation(`#(access_filter) org_id in $GROUPS`),
+      ).toEqual(filtered("org_id in $GROUPS"));
    });
 
    it("an unterminated leading quote is returned verbatim, not thrown on here", () => {
@@ -238,10 +238,10 @@ describe("collectAuthorizeExprs", () => {
    it("keeps duplicate gates (no dedup — every term joins the AND conjunction)", () => {
       expect(
          collectAuthorizeExprs([
-            `#(authorize) role = 'admin'`,
-            `#(authorize) role = 'admin'`,
+            `#(access_filter) role = 'admin'`,
+            `#(access_filter) role = 'admin'`,
          ]),
-      ).toEqual([authorized(`role = 'admin'`), authorized(`role = 'admin'`)]);
+      ).toEqual([filtered(`role = 'admin'`), filtered(`role = 'admin'`)]);
    });
 
    it("propagates the throw from a malformed authorize annotation", () => {
@@ -348,7 +348,7 @@ describe("assertNoCallerAuthorizeAnnotation — every route-name stem", () => {
 
    it("still rejects ordinary #(authorize) (no regression from the widening)", () => {
       expect(() =>
-         assertNoCallerAuthorizeAnnotation(`#(authorize) org_id in $GROUPS`),
+         assertNoCallerAuthorizeAnnotation(`#(access_filter) org_id in $GROUPS`),
       ).toThrow(/not permitted in caller-submitted/);
    });
 });
@@ -372,9 +372,9 @@ describe("collectAuthorizeNearMisses — per route", () => {
    it.each(SOURCE_TYPO_SPELLINGS)(
       "flags %s as a source_authorize near miss",
       (text) => {
-         expect(
-            collectAuthorizeNearMisses([text], SOURCE_AUTHORIZE_ROUTE),
-         ).toEqual([text]);
+         expect(collectAuthorizeNearMisses([text], AUTHORIZE_ROUTE)).toEqual([
+            text,
+         ]);
       },
    );
 
@@ -390,7 +390,7 @@ describe("collectAuthorizeNearMisses — per route", () => {
       "flags %s as a row_authorize near miss",
       (text) => {
          expect(
-            collectAuthorizeNearMisses([text], ROW_AUTHORIZE_ROUTE),
+            collectAuthorizeNearMisses([text], ACCESS_FILTER_ROUTE),
          ).toEqual([text]);
       },
    );
@@ -398,16 +398,33 @@ describe("collectAuthorizeNearMisses — per route", () => {
    it("does not flag either real spelling as a near miss for its own route", () => {
       expect(
          collectAuthorizeNearMisses(
-            [`#(source_authorize) 'fin' in $GROUPS`],
-            SOURCE_AUTHORIZE_ROUTE,
+            [`#(authorize) 'fin' in $GROUPS`],
+            AUTHORIZE_ROUTE,
          ),
       ).toEqual([]);
       expect(
          collectAuthorizeNearMisses(
-            [`#(row_authorize) org_id in $GROUPS`],
-            ROW_AUTHORIZE_ROUTE,
+            [`#(access_filter) org_id in $GROUPS`],
+            ACCESS_FILTER_ROUTE,
          ),
       ).toEqual([]);
+   });
+
+   // The retired names are near misses of the routes that replaced them, so a
+   // model written against them fails the load rather than loading inert.
+   it("flags the retired spellings as near misses of their successors", () => {
+      expect(
+         collectAuthorizeNearMisses(
+            [`#(source_authorize) 'fin' in $GROUPS`],
+            AUTHORIZE_ROUTE,
+         ),
+      ).toEqual([`#(source_authorize) 'fin' in $GROUPS`]);
+      expect(
+         collectAuthorizeNearMisses(
+            [`#(row_authorize) org_id in $GROUPS`],
+            ACCESS_FILTER_ROUTE,
+         ),
+      ).toEqual([`#(row_authorize) org_id in $GROUPS`]);
    });
 
    it("does not flag a source_authorize typo against the row route (each route's sweep is its own)", () => {
@@ -417,32 +434,24 @@ describe("collectAuthorizeNearMisses — per route", () => {
       expect(
          collectAuthorizeNearMisses(
             [`#(sourceauthorize) 'fin' in $GROUPS`],
-            ROW_AUTHORIZE_ROUTE,
+            ACCESS_FILTER_ROUTE,
          ),
       ).toEqual([]);
    });
 
-   it("still refuses the deprecated alias's own near misses", () => {
-      // The whole reason the all-routes sweep iterates the WRITTEN spellings
-      // rather than the canonical two: `# (authorize)` and `#(AUTHORIZE)` are
-      // refused today, and the rename must not quietly stop refusing them.
+   it("refuses the lock's case and spacing near misses", () => {
+      // `# (authorize)` and `#(AUTHORIZE)` are distinct routes to Malloy and
+      // are caught only because the lock's near-miss set carries the bare word
+      // and is matched case-insensitively. They were refused before the rename
+      // via a deprecated alias entry; this pins that they still are.
       expect(
-         collectAuthorizeNearMisses(
-            [`# (authorize) x = 1`],
-            DEPRECATED_AUTHORIZE_ROUTE,
-         ),
+         collectAuthorizeNearMisses([`# (authorize) x = 1`], AUTHORIZE_ROUTE),
       ).toEqual([`# (authorize) x = 1`]);
       expect(
-         collectAuthorizeNearMisses(
-            [`#(AUTHORIZE) x = 1`],
-            DEPRECATED_AUTHORIZE_ROUTE,
-         ),
+         collectAuthorizeNearMisses([`#(AUTHORIZE) x = 1`], AUTHORIZE_ROUTE),
       ).toEqual([`#(AUTHORIZE) x = 1`]);
       expect(
-         collectAuthorizeNearMisses(
-            [`#(authorize-v2) x = 1`],
-            DEPRECATED_AUTHORIZE_ROUTE,
-         ),
+         collectAuthorizeNearMisses([`#(authorize-v2) x = 1`], AUTHORIZE_ROUTE),
       ).toEqual([]);
    });
 

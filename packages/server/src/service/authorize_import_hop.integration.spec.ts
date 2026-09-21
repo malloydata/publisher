@@ -83,7 +83,7 @@ const ROW_FIELD_GATE = `##! experimental.givens
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('orgtable') extend {
   measure: c is count()
 }

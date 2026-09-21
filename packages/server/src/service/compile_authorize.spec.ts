@@ -34,14 +34,14 @@ source: gated is duckdb.sql("SELECT 1 as x") extend {
 
 source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend {
   measure: c is count()
 }
 `;
 
 /**
- * MODEL with every `#(authorize)` line removed.
+ * MODEL with every gate line removed, on BOTH routes.
  *
  * The tests below submit a caller edit that has dropped the author's gate, and
  * assert the on-disk gate denies anyway. They must drop ALL of them: a leftover
@@ -52,7 +52,11 @@ source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend {
 const withoutGates = (model: string): string =>
    model
       .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#(authorize)"))
+      .filter(
+         (line) =>
+            !line.trimStart().startsWith("#(authorize)") &&
+            !line.trimStart().startsWith("#(access_filter)"),
+      )
       .join("\n");
 
 describe("compile-path authorize gate (compileSource)", () => {

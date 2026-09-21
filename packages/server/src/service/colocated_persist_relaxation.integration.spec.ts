@@ -142,7 +142,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (1, 20), (2, 30), (2, 40)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="orders"
 source: orders is base -> { select: org_id, amount } extend {}
 `,
@@ -199,7 +199,7 @@ source: orders is base -> { select: org_id, amount } extend {}
 
 given: ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: locked is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """) extend {}
@@ -259,7 +259,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 #@ persist name="locked_out"
 source: locked_out is base -> { select: org_id, amount } extend {}
 `,
@@ -294,7 +294,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="orders"
 source: orders is base -> { select: org_id, amount } extend {}
 `,
@@ -351,7 +351,7 @@ source: raw is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="base_orders"
 source: base_orders is raw -> { select: org_id, amount }
 
@@ -406,7 +406,7 @@ given:
 // Members carry DISTINGUISHABLE amounts so the assertion can tell WHICH
 // member the composite resolved to; identical member data would pass even
 // if the ungated member_b won.
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: member_a is duckdb.sql("""
   SELECT * FROM (VALUES (7, 1), (8, 2)) AS t(org_id, amount)
 """) extend {}
@@ -466,7 +466,7 @@ source: base is duckdb.sql("""
 """)
 
 #@ persist name="orders"
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: orders is base -> { select: id, org_id, amount } extend {
 }
 `,
@@ -510,7 +510,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 'org1', 10), (2, 'org2', 20)) AS t(id, org_id, amount)
 """)
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 #@ persist name="orders"
 source: orders is base -> { select: id, org_id, amount }
 `,
@@ -562,7 +562,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="orders"
 source: orders is base -> { select: amount }
 `,

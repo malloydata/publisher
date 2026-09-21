@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Access control, built on the givens mechanism.
 //
-//   #(row_authorize)  decides WHICH rows this caller may read. Enforced as a
+//   #(access_filter)  decides WHICH rows this caller may read. Enforced as a
 //                     row filter, so a caller it admits nowhere gets 200 with
 //                     zero rows, not a 403 — row-level access on its own here,
 //                     with no separate `where:` needed since the gate's own
@@ -28,7 +28,7 @@ given:
 
 // Authorization: the caller may read only the tenants their identity was
 // resolved to. See docs/authorize.md.
-#(row_authorize) tenant in $TENANTS
+#(access_filter) tenant in $TENANTS
 source: orders_secured is orders_base extend {
   measure:
     #(doc) Number of orders visible to this caller

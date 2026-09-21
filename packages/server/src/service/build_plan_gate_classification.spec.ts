@@ -80,7 +80,7 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `,
@@ -116,10 +116,10 @@ given:
   ORG :: number
   REGION :: string
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: base is duckdb.sql("select 1 as org_id, 'x' as region") extend {}
 
-#(authorize) region = $REGION
+#(access_filter) region = $REGION
 #@ persist name="derived"
 source: derived is base -> { select: org_id, region } extend {}
 `,
@@ -151,7 +151,7 @@ source: derived is base -> { select: org_id, region } extend {}
 given:
   ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: base is duckdb.sql("select 1 as org_id") extend {}
 
 #@ persist name="derived"
@@ -181,7 +181,7 @@ source: derived is base extend {}
 given:
   ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: locked is duckdb.sql("select 1 as org_id")
 
 #@ persist name="joiner"
@@ -216,10 +216,10 @@ given:
   ORG :: number
   DEPT :: number
 
-#(authorize) dept_id = $DEPT
+#(access_filter) dept_id = $DEPT
 source: locked is duckdb.sql("select 1 as dept_id") extend {}
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="joiner"
 source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
    join_one: locked on x = locked.dept_id
@@ -275,7 +275,7 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
 given:
   ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: locked is duckdb.sql("select 1 as org_id, 1 as x") extend {}
 
 #@ persist name="derived"
@@ -315,7 +315,7 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `,

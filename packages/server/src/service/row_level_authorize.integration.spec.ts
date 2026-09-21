@@ -355,7 +355,7 @@ const ENTRY = `##! experimental.givens
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -386,7 +386,7 @@ describe("row-field #(authorize) gate — load-time validation", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -439,7 +439,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.sql("select 1 as id, 1 as org_id") extend {
    measure: n is count()
 }
@@ -737,12 +737,12 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: A is duckdb.table('parent') extend {
    measure: n is count()
 }
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: B is duckdb.table('childtable') extend {
    measure: n is count()
 }
@@ -761,7 +761,7 @@ source: B is duckdb.table('childtable') extend {
 
 // ---------------------------------------------------------------------------
 // Task C false positive (fix1) — an unannotated join_one:/join_many: of a
-// gated source must not be reported as a misplaced #(authorize) annotation.
+// gated source must not be reported as a misplaced #(access_filter) annotation.
 // Malloy embeds the joined source as a nested StructDef on the join field and
 // copies that source's own annotation note object onto the join field's own
 // annotations BY REFERENCE whenever the join line adds none of its own — the
@@ -780,7 +780,7 @@ describe("row-level authorize — misplaced-annotation scan (Task C)", () => {
 given:
   ID :: number
 
-#(authorize) id = $ID
+#(access_filter) id = $ID
 source: salaries is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -837,7 +837,7 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
 given:
   ID :: number
 
-#(authorize) id = $ID
+#(access_filter) id = $ID
 source: salaries is duckdb.sql("select 1 as id") extend {
    measure: n is count()
 }
@@ -1210,7 +1210,7 @@ given:
   BOB :: string
 
 source: childtable is duckdb.table('childtable') extend {}
-#(authorize) childtable.name = $BOB
+#(access_filter) childtable.name = $BOB
 source: parent is duckdb.table('parent') extend {
    join_one: childtable on child_id = childtable.id
    measure: n is count()
@@ -1239,14 +1239,14 @@ given:
   GROUPS :: number[]
   VAL :: string
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 
 source: Y is X extend {}
 
-#(authorize) val = $VAL
+#(access_filter) val = $VAL
 source: Z is X extend {}
 `;
 
@@ -1321,7 +1321,7 @@ describe("row-level authorize — entry-point matrix", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -1553,7 +1553,7 @@ describe("row-level authorize — fail-closed (CRITICAL)", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -1582,7 +1582,7 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
       const files = new Map<string, string>([
          [
             `${ROOT}deep.malloy`,
-            `##! experimental.givens\n\ngiven:\n  FAR :: number[]\n\n#(authorize) org_id in $FAR\nsource: Deep is duckdb.table('parent') extend {\n   measure: n is count()\n}\n`,
+            `##! experimental.givens\n\ngiven:\n  FAR :: number[]\n\n#(access_filter) org_id in $FAR\nsource: Deep is duckdb.table('parent') extend {\n   measure: n is count()\n}\n`,
          ],
          [
             `${ROOT}mid.malloy`,
@@ -1657,7 +1657,7 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -1697,7 +1697,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -1753,7 +1753,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -1820,7 +1820,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -1896,7 +1896,7 @@ describe("row-level authorize — runnable identity (CRITICAL)", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    where: val != 'd'
    measure: n is count()
@@ -1932,7 +1932,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -1977,7 +1977,7 @@ describe("row-level authorize — posture", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2000,7 +2000,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2032,7 +2032,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2093,7 +2093,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2156,7 +2156,7 @@ source: solo is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2254,7 +2254,7 @@ describe("row-level authorize — state (no shared-state mutation)", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2290,7 +2290,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2324,7 +2324,7 @@ describe("row-level authorize — givens", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2352,7 +2352,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2409,7 +2409,7 @@ describe("row-level authorize — grammar (the authorize grammar closes the STRI
 given:
   ${givenDecl}
 
-#(authorize) ${gate}
+#(access_filter) ${gate}
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2517,7 +2517,7 @@ describe("row-level authorize — other", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2545,7 +2545,7 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2591,7 +2591,7 @@ given:
   GROUPS :: number[]
   VAL :: string
 
-#(authorize) org_id in $GROUPS and val = $VAL
+#(access_filter) org_id in $GROUPS and val = $VAL
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2618,7 +2618,7 @@ given:
   GROUPS :: number[]
   VAL :: string
 
-#(authorize) org_id in $GROUPS and val = $VAL
+#(access_filter) org_id in $GROUPS and val = $VAL
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2675,7 +2675,7 @@ describe("row-level authorize — notebook cells", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2786,7 +2786,7 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2829,7 +2829,7 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2873,7 +2873,7 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2917,7 +2917,7 @@ source: unrelated is duckdb.table('childtable') extend { primary_key: id }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2958,7 +2958,7 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -2999,7 +2999,7 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
    measure: n is count()
    view: byorg is { aggregate: n is count() }
@@ -3043,7 +3043,7 @@ given:
 
 source: childtable is duckdb.table('childtable') extend { primary_key: id }
 
-#(authorize) childtable.name in $GROUPS
+#(access_filter) childtable.name in $GROUPS
 source: gated is duckdb.table('parent') extend {
    join_one: childtable with child_id
    measure: n is count()
@@ -3097,7 +3097,7 @@ run: gated -> { group_by: id, org_id, childtable.name }
 given:
   ID :: number
 
-#(authorize) id = $ID
+#(access_filter) id = $ID
 source: childtable is duckdb.table('childtable') extend {
 }
 
@@ -3165,7 +3165,7 @@ describe("row-level authorize — storage routing", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3249,7 +3249,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3326,7 +3326,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3411,7 +3411,7 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3612,7 +3612,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3726,7 +3726,7 @@ given:
   ROLE :: string is ''
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS or $ROLE != 'admin'
+#(access_filter) org_id in $GROUPS or $ROLE != 'admin'
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3826,7 +3826,7 @@ describe("row-level authorize — field comparison against a defaulted given", (
 given:
   FLOOR :: number is 0
 
-#(authorize) amount = $FLOOR
+#(access_filter) amount = $FLOOR
 source: X is duckdb.table('parent') extend {
    dimension: amount is id
    measure: n is count()
@@ -3851,7 +3851,7 @@ source: X is duckdb.table('parent') extend {
 given:
   EXCLUDED :: string is ''
 
-#(authorize) tenant = $EXCLUDED
+#(access_filter) tenant = $EXCLUDED
 source: X is duckdb.table('parent') extend {
    dimension: tenant is val
    measure: n is count()
@@ -3874,7 +3874,7 @@ source: X is duckdb.table('parent') extend {
 given:
   MAXLVL :: number[]
 
-#(authorize) clearance in $MAXLVL
+#(access_filter) clearance in $MAXLVL
 source: X is duckdb.table('parent') extend {
    dimension: clearance is org_id
    measure: n is count()
@@ -3925,7 +3925,7 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -3963,7 +3963,7 @@ describe("row-level authorize — grafted materializer cache is bounded", () => 
 
 given: GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
   measure: c is count()
 }
@@ -4144,7 +4144,7 @@ source: Gated is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id = $GROUPS
+#(access_filter) org_id = $GROUPS
 source: Gated is duckdb.table('parent') extend {
    measure: n is count()
 }
@@ -4238,12 +4238,14 @@ source: reopened is base extend {}
       }
    });
 
-   it("an extension's own `#(authorize) true` sheds only the ROW-LEVEL inherited gate — an inherited `#(source_authorize)` still ANDs in", async () => {
+   it("an extension's own `#(authorize) true` sheds the inherited LOCK — an inherited `#(access_filter)` still ANDs in", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   ROLE :: string[]
+  GROUPS :: number[]
 
-#(source_authorize) 'finance' in $ROLE
+#(authorize) 'finance' in $ROLE
+#(access_filter) org_id in $GROUPS
 source: base is duckdb.table('parent') extend {}
 
 #(authorize) true
@@ -4251,27 +4253,29 @@ source: reopened is base extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         // The row-level gate is shed (own `true`), but the INHERITED
-         // source_authorize gate still denies a caller it excludes.
-         expect(await ids(model, "reopened", { ROLE: ["sales"] })).toEqual([]);
-         expect(await ids(model, "reopened", { ROLE: ["finance"] })).toEqual([
-            1, 2, 3, 4,
-         ]);
+         // Not in `finance`, so the base's lock would refuse — the own `true`
+         // sheds it. The inherited row filter is untouched and still narrows.
+         expect(
+            await ids(model, "reopened", { ROLE: ["sales"], GROUPS: [999] }),
+         ).toEqual([]);
+         expect(
+            await ids(model, "reopened", { ROLE: ["sales"], GROUPS: [1] }),
+         ).toEqual([1, 2]);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("an extension's own `#(source_authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(authorize)` still filters rows", async () => {
+   it("an extension's own `#(authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(authorize)` still filters rows", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: base is duckdb.table('parent') extend {}
 
-#(source_authorize) true
+#(authorize) true
 source: reopened is base extend {}
 `);
       try {
@@ -4286,18 +4290,18 @@ source: reopened is base extend {}
       }
    });
 
-   it("an inherited `#(source_authorize) true` alongside the SAME source's own row-level `#(authorize)` — rows are still filtered", async () => {
-      // `#(source_authorize) true` here is inherited from `base`, not owned
+   it("an inherited `#(authorize) true` alongside the SAME source's own row-level `#(authorize)` — rows are still filtered", async () => {
+      // `#(authorize) true` here is inherited from `base`, not owned
       // by `X`, while `X` owns its row-level `#(authorize)`. Own-wins-over-
       // ancestor is decided PER ROUTE, so the two coexist.
       const { model, duckdb, dir } = await createModel(`
 given:
   GROUPS :: number[]
 
-#(source_authorize) true
+#(authorize) true
 source: base is duckdb.table('parent') extend {}
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: X is base extend {}
 `);
       try {
@@ -4310,30 +4314,28 @@ source: X is base extend {}
       }
    });
 
-   it("a source's OWN `#(authorize) true` alongside its OWN `#(source_authorize)` term — the row lock is lifted, the caller check still decides", async () => {
-      // The admit-all guard is ROUTE-scoped: `true` sheds only the
-      // `authorize` route's inherited gate, so the caller rule on the other
-      // route is live and both notes are legal on one source.
+   it("a source's OWN `#(authorize) true` alongside its OWN `#(access_filter)` term — the lock is lifted, the row filter still decides", async () => {
+      // The admit-all guard is ROUTE-scoped: `true` sheds only the lock's
+      // inherited gate, so a filter on the other route is live and both notes
+      // are legal on one source.
       const { model, duckdb, dir } = await createModel(`
 given:
-  ROLE :: string[]
+  ORGS :: number[]
 
 #(authorize) false
 source: base is duckdb.table('parent') extend {}
 
 #(authorize) true
-#(source_authorize) 'finance' in $ROLE
+#(access_filter) org_id in $ORGS
 source: reopened is base extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         // The base still denies everyone; the extension's own `true`
-         // replaced that lock, and only the caller check remains.
-         expect(await ids(model, "base", { ROLE: ["finance"] })).toEqual([]);
-         expect(await ids(model, "reopened", { ROLE: ["finance"] })).toEqual([
-            1, 2, 3, 4,
-         ]);
-         expect(await ids(model, "reopened", { ROLE: ["sales"] })).toEqual([]);
+         // The base denies everyone; the extension's own `true` sheds that
+         // lock, and only its own row filter remains.
+         expect(await ids(model, "base", { ORGS: [1] })).toEqual([]);
+         expect(await ids(model, "reopened", { ORGS: [1] })).toEqual([1, 2]);
+         expect(await ids(model, "reopened", { ORGS: [999] })).toEqual([]);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -4367,10 +4369,10 @@ source: derived is base -> { select: id }
    it("a source's OWN `#(authorize) true` alongside another note ON THE SAME ROUTE is refused (admit_all_with_sibling)", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
-  GROUPS :: number[]
+  ROLE :: string[]
 
 #(authorize) true
-#(authorize) org_id in $GROUPS
+#(authorize) 'finance' in $ROLE
 source: X is duckdb.table('parent') extend {}
 `);
       try {
@@ -4441,12 +4443,10 @@ source: leaf is mid extend {}
          expect(
             (model as unknown as { compilationError?: Error }).compilationError,
          ).toBeUndefined();
-         // `row_authorize`, not `authorize`: the deprecated spelling
-         // canonicalizes before anything keys on it, so the counter never
-         // splits one gate across two label values.
+         // Both sentinels live on the lock, so that is the label they book.
          expect(
             await harness.collectCounter(COUNTER, {
-               route: "row_authorize",
+               route: "authorize",
             }),
          ).toBe(1);
       } finally {
@@ -4458,10 +4458,10 @@ source: leaf is mid extend {}
    it("a model refused as admit_all_with_sibling ticks nothing — the callback runs after coherence", async () => {
       const { model, duckdb, dir } = await loadModel(`
 given:
-  GROUPS :: number[]
+  ROLE :: string[]
 
 #(authorize) true
-#(authorize) org_id in $GROUPS
+#(authorize) 'finance' in $ROLE
 source: X is duckdb.table('parent') extend {}
 `);
       try {

@@ -22,10 +22,7 @@ import {
    parseAuthorizeGrammarBody,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
-import {
-   ROW_AUTHORIZE_ROUTE,
-   SOURCE_AUTHORIZE_ROUTE,
-} from "./authorize_routes";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
    assertNoFanoutFieldPath,
    assertNoRetiredRouteMarkers,
@@ -41,11 +38,11 @@ const MIXED_GIVENS = new Map([
 
 describe("parseAuthorizeGrammarBody — rejection causes", () => {
    it("empty_body", () => {
-      expect(() => parseAuthorizeGrammarBody("X", "   ", new Map())).toThrow(
-         AuthorizeGrammarError,
-      );
+      expect(() =>
+         parseAuthorizeGrammarBody("X", "   ", new Map(), ACCESS_FILTER_ROUTE),
+      ).toThrow(AuthorizeGrammarError);
       try {
-         parseAuthorizeGrammarBody("X", "", new Map());
+         parseAuthorizeGrammarBody("X", "", new Map(), ACCESS_FILTER_ROUTE);
          throw new Error("expected a throw");
       } catch (err) {
          expect((err as AuthorizeGrammarError).rejectionCause).toBe(
@@ -58,9 +55,10 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
       body: string,
       givens: ReadonlyMap<string, string>,
       cause: string,
+      route: string = ACCESS_FILTER_ROUTE,
    ): void {
       try {
-         parseAuthorizeGrammarBody("X", body, givens);
+         parseAuthorizeGrammarBody("X", body, givens, route);
          throw new Error(`expected a throw for \`${body}\``);
       } catch (err) {
          expect(err).toBeInstanceOf(AuthorizeGrammarError);
@@ -154,11 +152,15 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
          "X",
          "region = $A and org.region = $B",
          givens,
+         ACCESS_FILTER_ROUTE,
       );
       expect(terms.length).toBe(2);
    });
 
-   it("mixed_scope_body — a row-level term and a source-level term together", () => {
+   // A mixed-scope body needs no cause of its own: each route admits exactly
+   // one scope, so whichever term is the wrong one for the route the author
+   // wrote is what gets named.
+   it("a mixed-scope body is refused by the scope its route does not admit", () => {
       const givens = new Map([
          ["REGION", "string"],
          ["ROLE", "string"],
@@ -166,7 +168,13 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
       expectCause(
          "region = $REGION and 'admin' = $ROLE",
          givens,
-         "mixed_scope_body",
+         "source_level_term_in_access_filter",
+      );
+      expectCause(
+         "region = $REGION and 'admin' = $ROLE",
+         givens,
+         "row_level_term_in_authorize",
+         AUTHORIZE_ROUTE,
       );
    });
 
@@ -183,20 +191,40 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
    });
 });
 
-describe("parseAuthorizeGrammarBody — #(source_authorize) route", () => {
-   it("row_level_term_in_source_authorize — a field-on-the-left term is refused", () => {
+describe("parseAuthorizeGrammarBody — #(authorize) route", () => {
+   it("row_level_term_in_authorize — a field-on-the-left term is refused", () => {
       try {
          parseAuthorizeGrammarBody(
             "X",
             "region = $REGION",
             SCALAR_GIVENS,
-            SOURCE_AUTHORIZE_ROUTE,
+            AUTHORIZE_ROUTE,
          );
          throw new Error("expected a throw");
       } catch (err) {
          expect(err).toBeInstanceOf(AuthorizeGrammarError);
          expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "row_level_term_in_source_authorize" as never,
+            "row_level_term_in_authorize" as never,
+         );
+      }
+   });
+
+   // The mirror, which did not exist before the flip: a source-level body on
+   // the filter route grafts as a constant predicate, so a caller it excludes
+   // is served zero rows instead of being refused.
+   it("source_level_term_in_access_filter — a literal-on-the-left term is refused", () => {
+      try {
+         parseAuthorizeGrammarBody(
+            "X",
+            "'finance' in $GROUPS",
+            LIST_GIVENS,
+            ACCESS_FILTER_ROUTE,
+         );
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "source_level_term_in_access_filter" as never,
          );
       }
    });
@@ -206,7 +234,7 @@ describe("parseAuthorizeGrammarBody — #(source_authorize) route", () => {
          "X",
          "'admin' = $ROLE",
          new Map([["ROLE", "string"]]),
-         SOURCE_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       expect(term).toEqual({
          scope: "source_level",
@@ -222,19 +250,19 @@ describe("parseAuthorizeGrammarBody — #(source_authorize) route", () => {
          "X",
          "false",
          new Map(),
-         ROW_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       const [onSourceAuthorize] = parseAuthorizeGrammarBody(
          "X",
          "false",
          new Map(),
-         SOURCE_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       expect(onSourceAuthorize).toEqual(onAuthorize);
       expect(onSourceAuthorize).toEqual({ scope: "deny_all" });
    });
 
-   it("a row-level term alongside a sibling still refuses as row_level_term_in_source_authorize, not compound_boolean", () => {
+   it("a row-level term alongside a sibling still refuses as row_level_term_in_authorize, not compound_boolean", () => {
       try {
          parseAuthorizeGrammarBody(
             "X",
@@ -243,13 +271,13 @@ describe("parseAuthorizeGrammarBody — #(source_authorize) route", () => {
                ["REGION", "string"],
                ["ROLE", "string"],
             ]),
-            SOURCE_AUTHORIZE_ROUTE,
+            AUTHORIZE_ROUTE,
          );
          throw new Error("expected a throw");
       } catch (err) {
          expect(err).toBeInstanceOf(AuthorizeGrammarError);
          expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "row_level_term_in_source_authorize" as never,
+            "row_level_term_in_authorize" as never,
          );
       }
    });
@@ -263,7 +291,7 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
    function routed(
       terms: readonly AuthorizeGrammarRoutedTerm["term"][],
    ): AuthorizeGrammarRoutedTerm[] {
-      return terms.map((term) => ({ term, route: ROW_AUTHORIZE_ROUTE }));
+      return terms.map((term) => ({ term, route: ACCESS_FILTER_ROUTE }));
    }
 
    function expectCoherenceCause(
@@ -282,8 +310,18 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
    }
 
    it("duplicate_given across two notes", () => {
-      const [a] = parseAuthorizeGrammarBody("X", "a = $G", SCALAR_GIVENS);
-      const [b] = parseAuthorizeGrammarBody("X", "b = $G", SCALAR_GIVENS);
+      const [a] = parseAuthorizeGrammarBody(
+         "X",
+         "a = $G",
+         SCALAR_GIVENS,
+         ACCESS_FILTER_ROUTE,
+      );
+      const [b] = parseAuthorizeGrammarBody(
+         "X",
+         "b = $G",
+         SCALAR_GIVENS,
+         ACCESS_FILTER_ROUTE,
+      );
       expectCoherenceCause([a, b], "duplicate_given");
    });
 
@@ -292,8 +330,18 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
          ["A", "string"],
          ["B", "string"],
       ]);
-      const [a] = parseAuthorizeGrammarBody("X", "region = $A", givens);
-      const [b] = parseAuthorizeGrammarBody("X", "region = $B", givens);
+      const [a] = parseAuthorizeGrammarBody(
+         "X",
+         "region = $A",
+         givens,
+         ACCESS_FILTER_ROUTE,
+      );
+      const [b] = parseAuthorizeGrammarBody(
+         "X",
+         "region = $B",
+         givens,
+         ACCESS_FILTER_ROUTE,
+      );
       expectCoherenceCause([a, b], "duplicate_field_path");
    });
 
@@ -302,33 +350,44 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
          ["A", "string"],
          ["B", "string"],
       ]);
-      const [a] = parseAuthorizeGrammarBody("X", "`region` = $A", givens);
-      const [b] = parseAuthorizeGrammarBody("X", "region = $B", givens);
+      const [a] = parseAuthorizeGrammarBody(
+         "X",
+         "`region` = $A",
+         givens,
+         ACCESS_FILTER_ROUTE,
+      );
+      const [b] = parseAuthorizeGrammarBody(
+         "X",
+         "region = $B",
+         givens,
+         ACCESS_FILTER_ROUTE,
+      );
       expectCoherenceCause([a, b], "duplicate_field_path");
    });
 
-   it("mixed_scope_body across two notes — a row-level note and a source-level note on the same source", () => {
-      const givens = new Map([
-         ["REGION", "string"],
-         ["ROLE", "string"],
-      ]);
-      const [a] = parseAuthorizeGrammarBody("X", "region = $REGION", givens);
-      const [b] = parseAuthorizeGrammarBody("X", "'admin' = $ROLE", givens);
-      expectCoherenceCause([a, b], "mixed_scope_body");
-   });
-
    it("deny_all_with_sibling — a bare `false` note plus any other note is refused", () => {
-      const [denyAll] = parseAuthorizeGrammarBody("X", "false", new Map());
+      const [denyAll] = parseAuthorizeGrammarBody(
+         "X",
+         "false",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
       const [sibling] = parseAuthorizeGrammarBody(
          "X",
          "region = $REGION",
          SCALAR_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       expectCoherenceCause([denyAll, sibling], "deny_all_with_sibling");
    });
 
    it("a lone deny_all (no sibling) does not throw", () => {
-      const [denyAll] = parseAuthorizeGrammarBody("X", "false", new Map());
+      const [denyAll] = parseAuthorizeGrammarBody(
+         "X",
+         "false",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", routed([denyAll])),
       ).not.toThrow();
@@ -339,29 +398,53 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
       // under one route and a term declared under a different route are
       // meant to AND, not agree on given or scope — see
       // `assertAuthorizeGrammarTermsCoherent`'s doc. Exercises the actual
-      // second route this module implements, `#(source_authorize)`.
-      const [a] = parseAuthorizeGrammarBody("X", "org_id in $G", LIST_GIVENS);
+      // second route this module implements, `#(authorize)`.
+      const [a] = parseAuthorizeGrammarBody(
+         "X",
+         "org_id in $G",
+         LIST_GIVENS,
+         ACCESS_FILTER_ROUTE,
+      );
       const [b] = parseAuthorizeGrammarBody(
          "X",
          "'finance' in $G",
          LIST_GIVENS,
+         AUTHORIZE_ROUTE,
       );
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: a, route: ROW_AUTHORIZE_ROUTE },
-            { term: b, route: SOURCE_AUTHORIZE_ROUTE },
+            { term: a, route: ACCESS_FILTER_ROUTE },
+            { term: b, route: AUTHORIZE_ROUTE },
          ]),
       ).not.toThrow();
    });
 });
 
 describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
-   it("`true`, `TRUE`, and a padded ` true ` all parse to the admit_all sentinel, on both routes", () => {
+   it("`true`, `TRUE`, and a padded ` true ` all parse to the admit_all sentinel", () => {
       for (const spelling of ["true", "TRUE", "  true  "]) {
-         for (const route of [ROW_AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE]) {
-            expect(
-               parseAuthorizeGrammarBody("X", spelling, new Map(), route),
-            ).toEqual([{ scope: "admit_all" }]);
+         expect(
+            parseAuthorizeGrammarBody("X", spelling, new Map(), AUTHORIZE_ROUTE),
+         ).toEqual([{ scope: "admit_all" }]);
+      }
+   });
+
+   it("both sentinels are refused on #(access_filter), naming the lock form", () => {
+      for (const spelling of ["true", "false"]) {
+         try {
+            parseAuthorizeGrammarBody(
+               "X",
+               spelling,
+               new Map(),
+               ACCESS_FILTER_ROUTE,
+            );
+            throw new Error(`expected a throw for \`${spelling}\``);
+         } catch (err) {
+            expect(err).toBeInstanceOf(AuthorizeGrammarError);
+            expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+               "sentinel_in_access_filter" as never,
+            );
+            expect((err as Error).message).toContain("#(authorize)");
          }
       }
    });
@@ -376,6 +459,7 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
             "X",
             "true and org_id = $A",
             new Map([["A", "string"]]),
+            ACCESS_FILTER_ROUTE,
          );
          throw new Error("expected a throw");
       } catch (err) {
@@ -387,16 +471,22 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
    });
 
    it("admit_all plus a sibling term — same route — is refused as admit_all_with_sibling", () => {
-      const [admitAll] = parseAuthorizeGrammarBody("X", "true", new Map());
+      const [admitAll] = parseAuthorizeGrammarBody(
+         "X",
+         "true",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
       const [sibling] = parseAuthorizeGrammarBody(
          "X",
          "region = $REGION",
          SCALAR_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       try {
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
-            { term: sibling, route: ROW_AUTHORIZE_ROUTE },
+            { term: admitAll, route: ACCESS_FILTER_ROUTE },
+            { term: sibling, route: ACCESS_FILTER_ROUTE },
          ]);
          throw new Error("expected a throw");
       } catch (err) {
@@ -407,23 +497,23 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
       }
    });
 
-   it("an own `#(source_authorize) true` plus a term on that same route is refused as admit_all_with_sibling", () => {
+   it("an own `#(authorize) true` plus a term on that same route is refused as admit_all_with_sibling", () => {
       const [admitAll] = parseAuthorizeGrammarBody(
          "X",
          "true",
          new Map(),
-         SOURCE_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       const [sibling] = parseAuthorizeGrammarBody(
          "X",
          "'finance' in $G",
          LIST_GIVENS,
-         SOURCE_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       try {
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: SOURCE_AUTHORIZE_ROUTE },
-            { term: sibling, route: SOURCE_AUTHORIZE_ROUTE },
+            { term: admitAll, route: AUTHORIZE_ROUTE },
+            { term: sibling, route: AUTHORIZE_ROUTE },
          ]);
          throw new Error("expected a throw");
       } catch (err) {
@@ -438,49 +528,60 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
          "X",
          "true",
          new Map(),
-         ROW_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       const [callerTerm] = parseAuthorizeGrammarBody(
          "X",
          "'finance' in $G",
          LIST_GIVENS,
-         SOURCE_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
-            { term: callerTerm, route: SOURCE_AUTHORIZE_ROUTE },
+            { term: admitAll, route: ACCESS_FILTER_ROUTE },
+            { term: callerTerm, route: AUTHORIZE_ROUTE },
          ]),
       ).not.toThrow();
 
-      // The mirror: an own `#(source_authorize) true` beside an own row-level
+      // The mirror: an own `#(authorize) true` beside an own row-level
       // `#(authorize)` opens the caller route while the row filter still runs.
       const [rowTerm] = parseAuthorizeGrammarBody(
          "X",
          "region = $REGION",
          SCALAR_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       const [callerAdmitAll] = parseAuthorizeGrammarBody(
          "X",
          "true",
          new Map(),
-         SOURCE_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: rowTerm, route: ROW_AUTHORIZE_ROUTE },
-            { term: callerAdmitAll, route: SOURCE_AUTHORIZE_ROUTE },
+            { term: rowTerm, route: ACCESS_FILTER_ROUTE },
+            { term: callerAdmitAll, route: AUTHORIZE_ROUTE },
          ]),
       ).not.toThrow();
    });
 
    it("THE ORDER PIN — admit_all and deny_all on ONE route resolve to deny_all_with_sibling, the deliberate fail-closed reading of the contradiction", () => {
-      const [admitAll] = parseAuthorizeGrammarBody("X", "true", new Map());
-      const [denyAll] = parseAuthorizeGrammarBody("X", "false", new Map());
+      const [admitAll] = parseAuthorizeGrammarBody(
+         "X",
+         "true",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
+      const [denyAll] = parseAuthorizeGrammarBody(
+         "X",
+         "false",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
       try {
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
-            { term: denyAll, route: ROW_AUTHORIZE_ROUTE },
+            { term: admitAll, route: ACCESS_FILTER_ROUTE },
+            { term: denyAll, route: ACCESS_FILTER_ROUTE },
          ]);
          throw new Error("expected a throw");
       } catch (err) {
@@ -495,18 +596,18 @@ describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
          "X",
          "true",
          new Map(),
-         ROW_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       const [denyAll] = parseAuthorizeGrammarBody(
          "X",
          "false",
          new Map(),
-         SOURCE_AUTHORIZE_ROUTE,
+         AUTHORIZE_ROUTE,
       );
       try {
          assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ROW_AUTHORIZE_ROUTE },
-            { term: denyAll, route: SOURCE_AUTHORIZE_ROUTE },
+            { term: admitAll, route: ACCESS_FILTER_ROUTE },
+            { term: denyAll, route: AUTHORIZE_ROUTE },
          ]);
          throw new Error("expected a throw");
       } catch (err) {
@@ -523,6 +624,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "'research and development' in $GROUPS",
          LIST_GIVENS,
+         AUTHORIZE_ROUTE,
       );
       expect(terms).toEqual([
          {
@@ -538,6 +640,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "'rock or roll' in $GROUPS",
          LIST_GIVENS,
+         AUTHORIZE_ROUTE,
       );
       expect(terms).toEqual([
          { scope: "source_level", literal: "'rock or roll'", given: "GROUPS" },
@@ -549,6 +652,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "region = $REGION and org_id in $GROUPS",
          MIXED_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       expect(terms).toEqual([
          {
@@ -573,6 +677,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "child.name in $GROUPS",
          LIST_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       expect(terms).toEqual([
          {
@@ -593,6 +698,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "$REGION = 'analyst'",
          SCALAR_GIVENS,
+         AUTHORIZE_ROUTE,
       );
       expect(terms).toEqual([
          { scope: "source_level", literal: "'analyst'", given: "REGION" },
@@ -605,7 +711,12 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
       // membership, so silently swapping here would validate a body that
       // then fails at model compilation.
       try {
-         parseAuthorizeGrammarBody("X", "$GROUPS in 'finance'", LIST_GIVENS);
+         parseAuthorizeGrammarBody(
+            "X",
+            "$GROUPS in 'finance'",
+            LIST_GIVENS,
+            ACCESS_FILTER_ROUTE,
+         );
          throw new Error("expected a throw");
       } catch (err) {
          expect(err).toBeInstanceOf(AuthorizeGrammarError);
@@ -618,13 +729,13 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
       }
    });
 
-   it("a reversed `in` is refused the same way on #(source_authorize)", () => {
+   it("a reversed `in` is refused the same way on #(authorize)", () => {
       try {
          parseAuthorizeGrammarBody(
             "X",
             "$GROUPS in 'finance'",
             LIST_GIVENS,
-            SOURCE_AUTHORIZE_ROUTE,
+            ACCESS_FILTER_ROUTE,
          );
          throw new Error("expected a throw");
       } catch (err) {
@@ -640,6 +751,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "'finance' in $GROUPS",
          LIST_GIVENS,
+         AUTHORIZE_ROUTE,
       );
       expect(terms).toEqual([
          { scope: "source_level", literal: "'finance'", given: "GROUPS" },
@@ -651,6 +763,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "$ROLE = 'admin'",
          new Map([["ROLE", "string"]]),
+         AUTHORIZE_ROUTE,
       );
       expect(terms).toEqual([
          { scope: "source_level", literal: "'admin'", given: "ROLE" },
@@ -661,7 +774,12 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
       // The field path is what the build scan groups by and what the graft
       // filters on, so a flipped row-level term is a different statement.
       try {
-         parseAuthorizeGrammarBody("X", "$GROUPS = org_id", LIST_GIVENS);
+         parseAuthorizeGrammarBody(
+            "X",
+            "$GROUPS = org_id",
+            LIST_GIVENS,
+            ACCESS_FILTER_ROUTE,
+         );
          throw new Error("expected a throw");
       } catch (err) {
          expect(err).toBeInstanceOf(AuthorizeGrammarError);
@@ -676,6 +794,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "'a>b' in $GROUPS",
          LIST_GIVENS,
+         AUTHORIZE_ROUTE,
       );
       expect(terms).toEqual([
          { scope: "source_level", literal: "'a>b'", given: "GROUPS" },
@@ -687,6 +806,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "'a!=b' in $GROUPS",
          LIST_GIVENS,
+         AUTHORIZE_ROUTE,
       );
       expect(terms).toEqual([
          { scope: "source_level", literal: "'a!=b'", given: "GROUPS" },
@@ -698,6 +818,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "`org in region` = $REGION",
          SCALAR_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       expect(terms).toEqual([
          {
@@ -715,6 +836,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "`research and development` in $GROUPS",
          LIST_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       expect(terms).toEqual([
          {
@@ -732,6 +854,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "`cost.center`.name in $GROUPS",
          LIST_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       expect(terms).toEqual([
          {
@@ -749,6 +872,7 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
          "X",
          "region = $UNKNOWN",
          new Map(),
+         ACCESS_FILTER_ROUTE,
       );
       expect(terms).toEqual([
          {
@@ -890,6 +1014,7 @@ source: parent is duckdb.sql("select 1 as id") extend {
          "parent",
          "`cost center`.name in $GROUPS",
          LIST_GIVENS,
+         ACCESS_FILTER_ROUTE,
       );
       const term = terms[0];
       if (term.scope !== "row_level") throw new Error("expected row_level");

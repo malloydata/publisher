@@ -108,8 +108,8 @@ import {
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import {
-   ROW_AUTHORIZE_ROUTE,
-   SOURCE_AUTHORIZE_ROUTE,
+   ACCESS_FILTER_ROUTE,
+   AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
@@ -734,8 +734,8 @@ export class Model {
       // the two possible errors. Mutating in place (rather than at the API
       // boundary) keeps getSources()/getAuthorize()/the early gate on one
       // answer instead of three. Split BY ROUTE — `authorize` gets only
-      // `ROW_AUTHORIZE_ROUTE` entries and `sourceAuthorize` only
-      // `SOURCE_AUTHORIZE_ROUTE` ones — so the two wire fields cannot
+      // `AUTHORIZE_ROUTE` entries and `accessFilter` only
+      // `ACCESS_FILTER_ROUTE` ones — so the two wire fields cannot
       // disagree with each other the way a single flattened list would.
       for (const source of this.sources ?? []) {
          if (!source.name) continue;
@@ -746,11 +746,10 @@ export class Model {
                .flatMap((g) => g.exprs);
             return exprs && exprs.length > 0 ? exprs : undefined;
          };
-         const authorizeExprs = exprsForRoute(ROW_AUTHORIZE_ROUTE);
-         if (authorizeExprs) source.authorize = authorizeExprs;
-         const sourceAuthorizeExprs = exprsForRoute(SOURCE_AUTHORIZE_ROUTE);
-         if (sourceAuthorizeExprs)
-            source.sourceAuthorize = sourceAuthorizeExprs;
+         const lockExprs = exprsForRoute(AUTHORIZE_ROUTE);
+         if (lockExprs) source.authorize = lockExprs;
+         const filterExprs = exprsForRoute(ACCESS_FILTER_ROUTE);
+         if (filterExprs) source.accessFilter = filterExprs;
       }
       // Guarded defensively: a malformed gate reachable only through a
       // join/derivation must not throw out of the constructor
@@ -986,14 +985,14 @@ export class Model {
    }
 
    /**
-    * Effective `#(source_authorize)` expressions gating a source — the mirror
-    * of {@link getAuthorize} for the `source_authorize` route ONLY. Same
+    * Effective `#(access_filter)` expressions filtering a source's rows — the
+    * mirror of {@link getAuthorize} for the filter route ONLY. Same
     * introspection-only caveats apply.
     */
-   public getSourceAuthorize(sourceName: string): string[] {
+   public getAccessFilter(sourceName: string): string[] {
       return (
          this.sources?.find((source) => source.name === sourceName)
-            ?.sourceAuthorize ?? []
+            ?.accessFilter ?? []
       );
    }
 
@@ -3508,7 +3507,7 @@ export class Model {
          // extraction, so a suggest over a gated source learns which givens its
          // gate reads. `source.authorize` is scoped to the `authorize` route
          // only (see `ExtractedSource.authorize`'s doc), so a given
-         // referenced only by a `#(source_authorize)` term is not suggested
+         // referenced only by a `#(authorize)` term is not suggested
          // — a known, accepted gap.
          new Map(
             (this.sources ?? []).flatMap((source) =>

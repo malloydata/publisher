@@ -131,7 +131,7 @@ source: mz_authz is base -> { aggregate: c is count() }`);
       // given check first and never reach the authorize path this test
       // exists to exercise.
       const sources = await persistSources(`##! experimental.persistence
-#(authorize) org_id = 999
+#(access_filter) org_id = 999
 source: base is duckdb.sql("SELECT 1 AS org_id") extend {}
 #@ persist name="mz_dim_authz"
 source: mz_dim_authz is base -> { aggregate: c is count() }`);
@@ -163,10 +163,10 @@ source: mz_admit_all is base -> { aggregate: c is count() }`);
       );
    });
 
-   it("refuses a source protected ONLY by its own #(source_authorize) gate", async () => {
-      // A source carrying no #(authorize) at all, only #(source_authorize) —
+   it("refuses a source protected ONLY by its own #(authorize) gate", async () => {
+      // A source carrying no #(authorize) at all, only #(authorize) —
       // this must draw the same materialization refusal as an ordinary
-      // row-level gate, otherwise a source_authorize-only source freezes
+      // row-level gate, otherwise a authorize-only source freezes
       // into a materialized artifact served to everyone. `isAuthorizeAnnotation`
       // (via `parseAuthorizeAnnotation`) is widened to recognize both routes,
       // so this is automatic rather than a special case.
@@ -174,7 +174,7 @@ source: mz_admit_all is base -> { aggregate: c is count() }`);
 ##! experimental.givens
 given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(source_authorize) 'finance' = $role
+#(authorize) 'finance' = $role
 #@ persist name="mz_source_authz"
 source: mz_source_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_source_authz).toBeDefined();
@@ -268,7 +268,7 @@ source: mz_authz_annotated_join is joiner extend {
       const sources =
          await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
@@ -296,7 +296,7 @@ source: orders__preagg__category is orders -> {
       // gate would refuse on `referencesGiven` first.
       const sources =
          await persistSources(`##! experimental { persistence composite_sources }
-#(authorize) org_id = 999
+#(access_filter) org_id = 999
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id") extend {}
 
 #@ persist
@@ -324,7 +324,7 @@ source: orders__preagg__dim_category is orders -> {
       const sources =
          await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
@@ -487,7 +487,7 @@ source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
          const sources =
             await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
