@@ -195,11 +195,21 @@ def fetch_session(a: argparse.Namespace, session_id: str
                          MESSAGE_COLUMNS)
         turns = normalise(fetch_rows(a, a.source_turns, session_id),
                           TURN_COLUMNS)
+    # A T2 fetch that came back with no prose did not get T2. Either the host
+    # does not serve that table yet or this session has none, and in both
+    # cases claiming `answer_captured: true` over an empty answer is the exact
+    # failure this tier exists to prevent: the judge would compare "" against
+    # the golden and score a real agent as having said nothing. Downgrade the
+    # SESSION rather than the run, so a set where only some sessions kept
+    # their prose still scores the ones that did.
+    tier = a.tier
+    if tier == "T2" and not msgs:
+        tier = "T1"
     counts = {"get_context": len(gc), "execute": len(ex),
-              "messages": len(msgs), "turns": len(turns)}
+              "messages": len(msgs), "turns": len(turns), "tier": tier}
     return lt.build_transcript(get_context=gc, execute=ex, messages=msgs,
                                turns=turns, session_id=session_id,
-                               tier=a.tier), counts
+                               tier=tier), counts
 
 
 def read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -258,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                          "session or request id there on a log scrape.")
 
     art = a.out / "artifacts"
-    fetched, empty = 0, []
+    fetched, empty, downgraded = 0, [], []
     for c in cases:
         qid, session = c["qid"], str(c["source"])
         print(f"  {qid}  <- {session}")
@@ -268,9 +278,12 @@ def main(argv: list[str] | None = None) -> int:
             empty.append(qid)
         else:
             fetched += 1
+        if counts["tier"] != a.tier:
+            downgraded.append(qid)
         print(f"    {counts['get_context']} get_context, "
               f"{counts['execute']} execute, {counts['messages']} message "
-              f"rows, {counts['turns']} turn(s)")
+              f"rows, {counts['turns']} turn(s)"
+              + (f"  [{counts['tier']}]" if counts["tier"] != a.tier else ""))
 
     print(f"\n{fetched} of {len(cases)} session(s) had logged calls -> "
           f"{art}")
@@ -281,6 +294,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"! {len(empty)} session(s) returned no calls at all: "
               f"{', '.join(empty[:6])}. Check the id and the window before "
               f"scoring them; an empty transcript is not a wrong answer.")
+    if downgraded:
+        print(f"! {len(downgraded)} session(s) asked for {a.tier} and kept no "
+              f"prose, so they were written as T1 and will take no verdict: "
+              f"{', '.join(downgraded[:6])}. If that is all of them, the host "
+              f"is not serving --source-messages ({a.source_messages}).")
     print(f"\nNext: python3 run_baseline.py --set {a.set_dir} --out {a.out} "
           f"--rebuild --target platform ...")
     return 0
