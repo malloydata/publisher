@@ -22,6 +22,7 @@ import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
    API_PREFIX,
+   INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
@@ -2790,20 +2791,43 @@ export class Package {
                   });
                }
             }
+            // The remedy has to name a key the author can actually edit. A
+            // package whose surface came from the index.malloy convention has
+            // no 'explores' to add to, and a dashboard file is not something
+            // an index.malloy can export -- dashboards are files, not sources
+            // -- so "add it to 'explores'" is advice with no target there.
+            // Detected from the tree rather than from a stored origin: the
+            // question is whether there is an index.malloy the author is
+            // looking at, and that is the same answer whether they wrote the
+            // key or the server derived it.
+            const surfaceIsIndexModel =
+               this.models.has(INDEX_MODEL_NAME) &&
+               this.packageMetadata.explores?.length === 1 &&
+               this.packageMetadata.explores[0] === INDEX_MODEL_NAME;
+            const remedy = surfaceIsIndexModel
+               ? `This package's surface is "${INDEX_MODEL_NAME}", and a ` +
+                 `dashboard file cannot be exported from it -- dashboards are ` +
+                 `files, not sources. To serve this one, declare an ` +
+                 `'explores' in publisher.json listing both ` +
+                 `"${INDEX_MODEL_NAME}" and "${modelPath}"; an explicit key ` +
+                 `overrides the convention. Or set ` +
+                 `queryableSources: "all" to keep the curated surface for ` +
+                 `discovery only.`
+               : `Add it to 'explores', or set queryableSources: "all" to ` +
+                 `keep the curated surface for discovery only.`;
             warnings.push({
                model: modelPath,
                subject: name,
                message:
-                  `is a dashboard, but "${modelPath}" is not listed in ` +
-                  `'explores' and this package sets ` +
+                  `is a dashboard, but "${modelPath}" is not part of this ` +
+                  `package's discovery surface and this package sets ` +
                   `queryableSources: "declared", so its query would be ` +
-                  `refused. It is not served. Add it to 'explores', or set ` +
-                  `queryableSources: "all" to keep the curated surface for ` +
-                  `discovery only. Listing it is not always sufficient on its ` +
-                  `own: the queryable sources are the union of every listed ` +
-                  `file's export closure, so a tile reading a source that only ` +
-                  `an UNLISTED file exports is still refused. List that file ` +
-                  `too, or re-export the source from one already listed.`,
+                  `refused. It is not served. ${remedy} Listing it is not ` +
+                  `always sufficient on its own: the queryable sources are ` +
+                  `the union of every listed file's export closure, so a tile ` +
+                  `reading a source that only an UNLISTED file exports is ` +
+                  `still refused. List that file too, or re-export the source ` +
+                  `from one already listed.`,
                severity: "warn",
             });
          }

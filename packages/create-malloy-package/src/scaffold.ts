@@ -713,9 +713,7 @@ function forceDescription(name: string, modelFile: string, host: Host): string {
    return (
       `--force does not empty the directory. It rewrites ${name}/publisher.json, ` +
       `${name}/malloy-config.json, ${name}/${modelFile}, ` +
-      (modelFile === INDEX_MODEL_NAME
-         ? ``
-         : `${name}/${INDEX_MODEL_NAME} `) +
+      (modelFile === INDEX_MODEL_NAME ? `` : `${name}/${INDEX_MODEL_NAME} `) +
       `and the data file it ` +
       `copies into ${name}/data/, and leaves anything else in there alone. ` +
       `It also refreshes .claude/skills/ ` +

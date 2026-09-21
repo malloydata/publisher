@@ -31,6 +31,89 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a package's `index.malloy` is its published surface
+
+Put an `index.malloy` at a package root, `import` your models, and `export { … }` the sources you
+publish. What it exports is what Publisher lists **and** what callers may query. `publisher.json`
+needs no key at all.
+
+```
+sales/
+  publisher.json     { "name": "sales" }
+  index.malloy       import "orders.malloy"
+                     export { orders }
+  orders.malloy      declares `orders` and `orders_staging`
+```
+
+`orders_staging` still compiles, and other models can import, join and extend it, but it is not
+listed and a direct query against it answers 404. `create-malloy-package` now scaffolds the file, so
+a new package is curated from its first boot, and `examples/governed-analytics` has been converted:
+it is the package that proved the convention can express a surface that used to need two manifest
+keys.
+
+**If you already have a package with a root `index.malloy` and no `explores`, this changes what it
+serves.** That file becomes the surface, so your other models drop out of listings, `export { … }`
+curation starts applying inside it, and **sources it does not export stop answering by name** — with
+a 404 that is deliberately indistinguishable from "does not exist", because a 403 would confirm a
+hidden name. Take an inventory before upgrading:
+
+```bash
+API=http://localhost:4000/api/v0
+for env in $(curl -s $API/environments | jq -r '.[].name'); do
+  for pkg in $(curl -s "$API/environments/$env/packages" | jq -r '.[].name'); do
+    curl -s "$API/environments/$env/packages/$pkg/models" \
+      | jq -e 'map(.path) | index("index.malloy")' >/dev/null \
+      && echo "$env/$pkg has a root index.malloy"
+  done
+done
+```
+
+**To keep a package exactly as it was, add `"explores": []` to its own `publisher.json`.** An empty
+array is read as a deliberate "do not curate" and suppresses the convention, so listings, `export {}`
+filtering and query access are all unchanged. It has to go in the package source: setting it through
+the API writes into the server's `publisher_data/` copy, which `--init`, a fresh server root, or a
+replica that re-copies the package all revert, and a deployment with `"frozenConfig": true` refuses
+the call outright.
+
+Two shapes to watch for:
+
+- **An aggregator index.** If your `index.malloy` is all `import`s and no `export { … }`, it exports
+  nothing, so the package lists one model with no sources and looks empty. Add an `export { … }`
+  naming what you publish, or take the `"explores": []` route.
+- **A package with `dashboards/`.** A dashboard is served only when its file is a query entry point,
+  and a dashboard file is not something an `index.malloy` can export — dashboards are files, not
+  sources. So adding an `index.malloy` to a package that has dashboards **withholds every one of
+  them**. The load warning now says so and names the fix, which is to declare an explicit `explores`
+  listing both `index.malloy` and each dashboard file. None of the bundled examples is affected.
+
+Do **not** rename the file to opt out. Renaming changes the model's identity, so
+`…/models/index.malloy` starts returning 404, and if any sibling `import`s `"index.malloy"` the
+dangling import fails the compile, which takes the **whole package** out of service rather than just
+that file. Declaring `explores` with your old file list is not an opt-out either: it turns on
+`export {}` filtering, which is a larger change than the one you are undoing.
+
+### `explores` and `queryableSources` are deprecated, and still work
+
+Nothing is removed. Both keys behave exactly as before, both are now marked `deprecated` in the
+OpenAPI spec, and a package declaring either gets a load-time warning naming the replacement.
+
+Keep `explores` for the one thing the convention cannot express: a surface spanning **several**
+files. An explicit `explores` always wins, and a package with both an `index.malloy` and an
+`explores` that omits it carries a warning rather than the server guessing.
+
+**`index.malloy` does not replace `queryableSources: "all"`**, and its warning says so rather than
+advising a switch. `"all"` is the only way to curate listings *without* refusing queries, and a
+surface derived from an `index.malloy` always enforces the boundary, because `queryableSources`
+defaults to `"declared"`. If you want listings-only curation, keep both keys.
+
+The `explores` field in a package response may now be a value the server derived rather than one the
+author wrote, and the response does not distinguish the two — deliberately, because nothing
+downstream treats them differently. One consequence: a client that GETs a whole package object,
+edits a field and PATCHes the object back re-sends the derived list, which materializes it into
+`publisher.json`. That is inert — an explicit `["index.malloy"]` and a derived one behave
+identically — but the package will start reporting the `explores` deprecation afterwards. A PATCH
+that does not carry `explores` writes nothing and leaves the convention alone.
+
 ## [Unreleased] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
 
 **Two annotations, one question each, and two different answers when they say no.**

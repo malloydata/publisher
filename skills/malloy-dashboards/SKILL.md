@@ -437,8 +437,8 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
 Findings carry a `severity`, but `warn` is the ordinary default and tells you nothing about how bad
 one is. Read the text, not the severity and not the count. One message is worth recognising because
 it changes what the rest of the list means: **"Dashboard lint stopped early, so this list is
-incomplete"**. A dashboard withheld from `explores` also loses its own findings, so a short list for a
-withheld file is not a clean bill of health.
+incomplete"**. A dashboard withheld from the package's surface also loses its own findings, so a
+short list for a withheld file is not a clean bill of health.
 
 **Read the status the reload itself returns, not the listing.** One dashboard that fails to compile
 fails the whole package load, and the reload answers **424** with the compile error. A package that
@@ -453,11 +453,19 @@ at all appears there too, without `stale`, and is absent from the listing entire
 
 If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
 usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
-an untagged shared include. There is a second cause if the package's `publisher.json` carries an
-`explores` list: a dashboard whose file is missing from it is withheld rather than served, and the
-warning says so and names the fix. The list is what matters, not the `queryableSources` setting, which
-is `declared` by default; a package with no `explores` list withholds nothing. Where there is one, a
-`suggest` source has to be queryable as well as resolvable, so it needs to be on the list too.
+an untagged shared include. There is a second cause whenever the package has a curated surface: a
+dashboard whose file is off it is withheld rather than served, and the warning says so and names the
+fix. A package has a surface in two ways, and the second is easy to miss because no manifest field
+records it:
+
+- the package's `publisher.json` carries an `explores` list, and the dashboard's file is not on it;
+- the package root holds an **`index.malloy`**, which IS the surface. Adding that file to a package
+  that has dashboards withholds every one of them, because a dashboard's file is not something an
+  `index.malloy` exports.
+
+Either way the surface is what matters, not the `queryableSources` setting, which is `declared` by
+default; a package with neither withholds nothing. Where there is a surface, a `suggest` source has
+to be queryable as well as resolvable, so it needs to be reachable through it too.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
 separate warning for a tag that does not _parse_ is syntax only: it carries no

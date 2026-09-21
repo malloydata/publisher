@@ -3078,17 +3078,27 @@ components:
             loaded; defaults to `package` when the manifest omits it.
         explores:
           type: array
+          deprecated: true
           items:
             type: string
           description: >-
-            Optional opt-in for curated discovery. When present, only these
-            model file paths (relative to the package root) are listed via
-            `listModels()`, and within-file discovery is filtered to each
-            model's `export {}` closure. When absent or empty, every model is
-            listed with its full source set (backward-compatible). Every other
-            .malloy file still compiles for import/join resolution but is
-            hidden from listings once `explores` is declared. Notebooks are
+            The package's discovery surface and query boundary: model file
+            paths relative to the package root. Only these models are listed
+            via `listModels()`, and within-file discovery is filtered to each
+            model's `export {}` closure. Every other .malloy file still
+            compiles for import/join resolution but is hidden. Notebooks are
             always listed regardless of this field.
+            DEPRECATED, still honored: a root `index.malloy` is the surface
+            when this key is absent, and gives the same listing and the same
+            boundary with no manifest field. Keep the key only for a surface
+            spanning several files, which the convention cannot express.
+            This value MAY have been derived by the server from a root
+            `index.malloy` rather than written by the package author, and the
+            response does not distinguish the two — deliberately, because
+            nothing downstream treats them differently. An explicit key always
+            wins over the convention, and an explicit empty array means
+            "do not curate" and suppresses it. A package is uncurated only when
+            it has neither this key nor a root `index.malloy`.
         exploresWarnings:
           type: array
           readOnly: true
@@ -3256,6 +3266,7 @@ components:
                   never reached are exactly what it cannot report.
         queryableSources:
           type: string
+          deprecated: true
           enum:
             - declared
             - all
@@ -3284,6 +3295,13 @@ components:
             equivalent (everything queryable). Invalid values fall back to
             `"declared"`. Identity-based access is a separate concern — see
             `#(authorize)` and `#(access_filter)`.
+            DEPRECATED, still honored. `"declared"` is already the default, so
+            the key changes nothing and a root `index.malloy` gives the same
+            curated-and-enforced surface with no manifest field.
+            `"all"` is the exception: `index.malloy` does NOT replace it,
+            because a surface derived from one always enforces the boundary.
+            To curate listings without refusing queries, keep both this key and
+            an explicit `explores`.
         manifestLocation:
           type: ["string", "null"]
           description: |

@@ -283,8 +283,8 @@ export { customers }`,
          expect(
             warnings.some(
                (w) =>
-                  w.message.includes("index.malloy") &&
-                  w.message.includes("does not list it"),
+                  (w.message ?? "").includes("index.malloy") &&
+                  (w.message ?? "").includes("does not list it"),
             ),
          ).toBe(true);
       } finally {

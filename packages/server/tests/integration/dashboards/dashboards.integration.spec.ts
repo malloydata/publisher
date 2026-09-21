@@ -41,6 +41,10 @@ const CURATED_PACKAGE = "dashboards-curated";
 // query boundary is inert. Its composite dashboard is import-only, which under
 // "declared" would mean every tile 404s, and here means nothing of the sort.
 const OPEN_PACKAGE = "dashboards-open";
+// A sixth package whose surface comes from an index.malloy rather than a key.
+// Its dashboard is withheld for the same reason the curated package's is, but
+// the author has no 'explores' to fix it in, so the remedy must differ.
+const CONVENTION_PACKAGE = "dashboards-convention";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
 const noDashboardsFixtureDir = path.resolve(
@@ -58,6 +62,10 @@ const curatedFixtureDir = path.resolve(
 const openFixtureDir = path.resolve(
    __dirname,
    "../../fixtures/dashboards-open",
+);
+const conventionFixtureDir = path.resolve(
+   __dirname,
+   "../../fixtures/dashboards-convention",
 );
 
 interface DashboardItem {
@@ -120,6 +128,7 @@ describe("Dashboard discovery (E2E)", () => {
                },
                { name: LINT_PACKAGE, location: lintFixtureDir },
                { name: CURATED_PACKAGE, location: curatedFixtureDir },
+               { name: CONVENTION_PACKAGE, location: conventionFixtureDir },
                { name: OPEN_PACKAGE, location: openFixtureDir },
             ],
             connections: [],
@@ -1122,6 +1131,8 @@ describe("Dashboard discovery (E2E)", () => {
    describe("a package that curates its query surface", () => {
       const curatedUrl = (sub: string) =>
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CURATED_PACKAGE}${sub}`;
+      const conventionUrl = (sub: string) =>
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CONVENTION_PACKAGE}${sub}`;
 
       it("serves only the dashboards whose entry files are in explores", async () => {
          const res = await fetch(curatedUrl("/dashboards"));
@@ -1346,7 +1357,35 @@ describe("Dashboard discovery (E2E)", () => {
          const warning = (body.warnings ?? []).find((w) =>
             (w.model ?? "").includes("unlisted"),
          );
-         expect(warning?.message ?? "").toContain("not listed in 'explores'");
+         expect(warning?.message ?? "").toContain(
+            "not part of this package's discovery surface",
+         );
+         // This package DECLARES its surface, so the remedy is the plain one.
+         // The convention case gets different advice -- see below.
+         expect(warning?.message ?? "").toContain("Add it to 'explores'");
+      });
+
+      /**
+       * The same withholding, reached the other way. A package that curates
+       * through an index.malloy has no 'explores' to add the dashboard to, and
+       * a dashboard file is not something an index.malloy can export, so the
+       * generic remedy names a key that does not exist and a mechanism that
+       * cannot work. The advice has to change with the cause.
+       */
+      it("names a remedy that exists when the surface came from index.malloy", async () => {
+         const res = await fetch(conventionUrl(""));
+         const body = (await res.json()) as {
+            warnings?: { model?: string; message?: string }[];
+         };
+         const warning = (body.warnings ?? []).find((w) =>
+            (w.message ?? "").includes("is a dashboard"),
+         );
+         expect(warning).toBeDefined();
+         const message = warning?.message ?? "";
+         expect(message).toContain('This package\'s surface is "index.malloy"');
+         expect(message).toContain("declare an 'explores' in publisher.json");
+         // The generic advice would be a dead end here.
+         expect(message).not.toContain("Add it to 'explores',");
       });
    });
 });
