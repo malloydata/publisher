@@ -221,7 +221,18 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     if not rows:
         return "diff", "query returned no rows", rows
     got = rows[0]
-    scalars = {k: v for k, v in (want or {}).items() if k not in ("currency", "round")}
+    # Type-check before dereferencing, the way the `kind: rows` branch above
+    # already does. A bare string here -- `"value": "Ecommerce"` instead of
+    # `{"answer": "Ecommerce"}` -- is the obvious authoring mistake for a
+    # benchmark whose answers ARE strings, and it used to raise
+    # AttributeError out of `verify()`, killing the whole sweep. One bad case
+    # is one finding; the other thirty-nine still get audited.
+    if not isinstance(want, dict):
+        return ("error",
+                f"kind=scalar but value is {type(want).__name__}, not an "
+                f"object mapping the query's column name to its expected "
+                f'value (e.g. {{"answer": {json.dumps(want)}}})', rows)
+    scalars = {k: v for k, v in want.items() if k not in ("currency", "round")}
     for k, v in scalars.items():
         if k not in got:
             return "diff", f"golden names {k!r}, query returned {sorted(got)}", rows

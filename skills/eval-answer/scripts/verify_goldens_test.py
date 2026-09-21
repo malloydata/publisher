@@ -16,8 +16,9 @@ import unittest.mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import verify_goldens  # noqa: E402
 from verify_goldens import (  # noqa: E402
-    model_text, promotion_blocker, question_drift_findings,
-    truth_isolation_findings, unknown_name_findings, verify)
+    check_value, close_enough, model_text, promotion_blocker,
+    question_drift_findings, truth_isolation_findings,
+    unknown_name_findings, verify)
 
 MODEL = """
 source: order_items is duckdb.table('data/order_items.parquet') extend {
@@ -906,6 +907,50 @@ class RubricFigures(unittest.TestCase):
         f = verify_goldens.rubric_number_findings(self.case(
             "Right: 747 page views.", views=747))
         self.assertEqual(f, [])
+
+
+
+class ScalarValueShape(unittest.TestCase):
+    """A bare string where an object belongs is one finding, not a blackout.
+
+    `"value": "Ecommerce"` instead of `{"answer": "Ecommerce"}` is the obvious
+    authoring mistake for a benchmark whose answers ARE strings. It raised
+    AttributeError out of `verify()` and killed the sweep, so the other
+    thirty-nine cases went unaudited and the script's own closing line --
+    "this says NOTHING about the goldens" -- was right.
+    """
+
+    def args(self):
+        return argparse.Namespace(
+            publisher="http://x", environment="truth", truth_package="t",
+            truth_model="truth.malloy", rewrite=False)
+
+    def check(self, value, rows):
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": value,
+                                    "canonicalQuery": "run: t -> { ... }"}}
+        with unittest.mock.patch("verify_goldens.try_query",
+                                 return_value=(rows, None)):
+            return check_value(c, self.args())
+
+    def test_a_bare_string_is_an_error_not_a_crash(self):
+        status, detail, _ = self.check("Ecommerce", [{"answer": "Ecommerce"}])
+        self.assertEqual(status, "error")
+        self.assertIn("value is str", detail)
+
+    def test_the_error_shows_the_shape_it_wanted(self):
+        _, detail, _ = self.check("Ecommerce", [{"answer": "Ecommerce"}])
+        self.assertIn('{"answer": "Ecommerce"}', detail)
+
+    def test_a_list_under_scalar_is_also_caught(self):
+        status, detail, _ = self.check([1, 2], [{"answer": 1}])
+        self.assertEqual(status, "error")
+        self.assertIn("value is list", detail)
+
+    def test_the_proper_shape_still_works(self):
+        status, _, _ = self.check({"answer": "Ecommerce"},
+                                  [{"answer": "Ecommerce"}])
+        self.assertEqual(status, "ok")
+
 
 if __name__ == "__main__":
     unittest.main()
