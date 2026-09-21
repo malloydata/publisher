@@ -360,9 +360,9 @@ A materialization is a run of one package's persist sources: `package_name` is N
 
 The dashboard builder shipped in 0.3.1 with an Export button: it handed back a copy of the file for someone to put in the package by hand. The Console now closes the loop instead.
 
-**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled *as the file* and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
+**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled _as the file_ and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
 
-The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means *create*, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
+The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means _create_, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
 
 **Like every write on this server it is unauthenticated** and belongs behind the gateway; `frozenConfig` turns it off. It opens no door that was shut — a caller who can reach it can already register a package — and it is recorded in [docs/security-posture.md](docs/security-posture.md).
 
@@ -524,14 +524,14 @@ height says which rule it took.
 
 The bundled examples, the dashboards doc and the `malloy-dashboards` skill all named the givens a
 dashboard uses (`import { CATEGORY, BRAND, … } from '../givens.malloy'`). They import the file whole
-now. A control renders for a given the tiles actually *reference*, not for every one in scope, so
+now. A control renders for a given the tiles actually _reference_, not for every one in scope, so
 the whole-file form brings no controls you did not ask for, and a named list only gives an author
 something to forget — with a missing control, not an error, as the result. It is also what Malloyyo
 documents for the same format, so a repo written for either side reads the same. Sources are
 unchanged and still named individually, which is the right form where a file wants a few specific
 things.
 
-Nothing about where a given is *declared* changes: that is the model, and `givens.malloy` is where a
+Nothing about where a given is _declared_ changes: that is the model, and `givens.malloy` is where a
 package keeps it, because the MCP surface, row-level access and `#(authorize)` all read it. The doc
 now also records that declaring one in a dashboard file works — the control renders and the tile
 filters — for a page that owns its own knob. That is the exception, not the convention.
@@ -658,6 +658,107 @@ it comes out: when the extension exposes the options
 ([iqea-ai/duckdb-snowflake#66](https://github.com/iqea-ai/duckdb-snowflake/issues/66))
 or the driver bounds its read-ahead by consumption as its documentation already
 implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/issues/197)).
+
+---
+
+## [Unreleased] — the dashboard editor can now filter a tile whose view is written inline
+
+A dashboard tile's filter control used to refuse to bind on an `inline` tile — `view: x
+is { aggregate: … }` — because the only write path was a `+ { where: … }` refinement
+after the view reference, which does not exist to append to when there is no reference.
+That excluded the majority of real dashboards: writing a view's body inline, rather than
+as a named reference, is the common way people write one, and the bundled
+`tiled.malloy` fixture is entirely inline tiles.
+
+The fix is a second write path, not a workaround: a binding on an inline tile is now a
+depth-1 `where:` statement inside the body's own first stage, which is valid Malloy and
+reads back exactly like a reference tile's refinement does. Only that shape is
+recognized — a nested `where:` inside a `nest:`, a compound predicate such as `where: a
+~ $A and c = 1`, and a source-level `where:` outside any view are all left exactly as
+written, never touched and never reported as a binding. Where a body has more than one
+stage, only the first is the tile's own: `{ … } -> { … }` takes its binding in stage one
+and nothing is ever written into a later stage, while a body with no single first stage
+-- a `{ … } + { … }` compound refinement, or a pipeline starting from a named view --
+refuses a filter change with a reason naming the shape.
+
+Recognizing that shape is a question about statements, and every scan here reads a line
+at a time, so the two can disagree: a clause list or a predicate carried onto a second
+line (`where: a ~ $A,` then `b ~ $B`) is only half-visible to a line-oriented reader.
+Such a `where:` is now unmodeled Malloy on both write paths -- read past, written around,
+never rewritten -- because rewriting the half that was read would strand the half that
+was not. The same isolation rule now governs a `+ { where: … }` refinement, which
+previously matched binding clauses anywhere in the refinement with no such check.
+
+Two guards back that up. A given already filtered on by a `where:` the builder does not
+manage cannot also be bound as a managed clause, because the two would filter on the same
+control while only one could ever be unbound again; that is refused with a reason naming
+the given. And every rewrite is now parsed by Malloy before it is written: a file that
+parsed before the edit must still parse after it, or nothing is written. That check sees
+the whole file, which the existing read-back gate cannot -- the gate compares tiles, tags
+and filters, so text stranded beside a clause it rewrote is invisible to it.
+
+**What the live editor shows while you work:** adding a filter to an inline tile previews
+correctly. Removing or changing one does not take effect in the preview until the file is
+saved, because the tile's preview runs the saved view, whose body already holds the saved
+`where:`, and the builder has no way to name that view unbound. A reference tile is exact
+either way, because it refines its base view. The saved result is correct in every case;
+this is the preview only.
+
+**Consequence for an existing file:** an author's own `where: x = $Y` written at depth 1
+of an inline view's first stage is now builder-managed the same way a reference tile's
+refinement already was. Once that filter's control is touched through the builder and
+the file is saved, that `where:` is regenerated from the control's bindings rather than
+preserved verbatim — the same contract a reference tile's refinement already had, now
+extended to the more common inline shape.
+
+**Comments, in all three spellings Malloy accepts.** `//`, `--` and `/* … */` are all comments
+to Malloy's lexer, and the builder knew only about `//`. Two consequences are fixed. A
+`/* … */` was absent from the comment index, so it was invisible to every guard that asks
+whether a range about to be deleted holds one: removing a filter across a block comment deleted
+it and reported success. And a `--` or `/* … */` line written between a `#` tag and the
+declaration it annotates stopped the walk that finds a tile's tags, while the parser read
+straight past it — so a retag wrote a **second** `# colspan` below the comment, the reader read
+the lower one back, and the read-back gate was satisfied by a file now carrying two. That
+hand-written walk is gone; where a tag block begins now comes from the lexer, which also
+means a line inside a `/* … */` that happens to begin `#` is read as the prose it is rather
+than as a tag to report or rewrite.
+
+**A tile the builder cannot bind is no longer described as somebody else's.** A `->` pipeline
+from a named view, or a chained `vx + { … } + { … }` where no one block is where a binding
+belongs, is declared right there in the dashboard file — but the tile menu said it was declared
+on its source, which is untrue and hid the fact that its tags are the builder's to write. Such a
+tile now reads as declared here, with the shape named; its label, subtitle, colspan and position
+stay editable like any other tile's, only the filter control is off, and the reason a filter
+change gives points at the body rather than sending you to the model file.
+
+**One rule for the three removal paths.** Removing every clause of a `where:` used to delete a
+comment written inside it, or leave one trailing it stranded above the closing brace, while
+collapsing a refinement over a comment refused. All three now answer the same question the same
+way: a comment goes only with a declaration you asked to delete outright — removing a **tile**
+still takes its own comments with it, and the builder shows that diff before a structural save
+— while a filter edit, which rewrites a declaration that stays, refuses rather than destroying
+or stranding a comment it was not asked about, and names the comment in the reason.
+
+---
+
+## [Unreleased] — `DashboardEditor` takes a `resourceUri`, and can now open a pinned version
+
+`DashboardEditor` was the only resource-addressed component in the SDK still taking loose
+`environmentName` / `packageName` props, under a `dashboardName` that disagreed with
+`Dashboard`'s own `dashboard` for the same slug, and with no way to pin a `versionId` the
+way every other resource-addressed component can. It now takes `resourceUri` + `dashboard`,
+matching `Dashboard` exactly; the old `environmentName` / `packageName` / `dashboardName`
+form still works, deprecated rather than removed, so an existing integration is unaffected.
+
+A `versionId` on the URI pins every read the editor makes — the file, the manifest, the
+dashboard list, the catalog behind the filter window's field search, and, through the live
+surface it renders, each tile's query and each control's suggest query — the same as it
+already does for `Dashboard`. It never reaches the write: Publisher answers `501 Not
+Implemented` to a `versionId` on `updateModelSource`, and a version is a fixed point in
+history regardless, so a pin against a package that would otherwise take the editor's
+writes now turns Save off instead, with the toolbar caption saying why. A save into a
+host's own document store or a browser draft is unaffected, since neither goes through
+that endpoint.
 
 ---
 
