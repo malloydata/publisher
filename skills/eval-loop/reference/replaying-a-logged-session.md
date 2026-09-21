@@ -57,6 +57,38 @@ look complete.
    an agent that did nothing; scoring it records the second when the truth is
    the first.
 
+## Pass the per-call error, or the judge gets the wrong query
+
+The attempt's final query is chosen as the last call the server ANSWERED. A
+transcript in which every call looks successful therefore hands the judge
+whatever ran LAST, and for an agent that made a syntax error and then fixed it
+that is the broken one.
+
+Measured, replaying a real 8-case arm through the log path with no per-call
+outcomes: 4 of 8 attempts changed their final query, 3 lost their error counts,
+and only 1 of 8 tool-call streams matched the spawned run. One attempt was
+handed a query whose aggregate list was semicolon-separated and had errored.
+
+Hosts help here by accident: the common pattern is to log a query's COMPILE
+ERROR and nothing at all for a success, and that asymmetry is exactly what is
+needed. Map it to the row's `error` field. With errors carried and the calls in
+observed order, the same replay matched the spawned arm on 8 of 8 tool-call
+streams, 0 of 8 error counts, and 7 of 8 final queries.
+
+## What the last one costs, and why it cannot be fixed
+
+The single attempt that still differs is the shape of the whole tier. Its
+baseline `final_query_source` was `declared`: the agent PRINTED its final query
+in the answer, and that beats any guess from the call log. At T1 there is no
+prose, so the choice falls back to the last answered call, which in that
+attempt was a broad exploratory probe rather than the narrow query the answer
+actually rested on.
+
+This is the concrete form of "the log cannot see what the agent did after the
+rows came back". It is not a bug to fix; it is what `sourceTier` is for. Read a
+T1 `final_query` as the last thing that ran, not as the answer's query, and do
+not build a construction argument on it alone.
+
 ## Re-execution: do not build one
 
 The answerer and the conductor must hit the same target, and for a logged
