@@ -127,7 +127,8 @@ def skill_codes() -> set[str]:
 
 
 def evidence_for(qid: str, case: dict[str, Any],
-                 events: list[dict[str, Any]]) -> dict[str, Any]:
+                 events: list[dict[str, Any]],
+                 passed_elsewhere: dict[str, Any] | None = None) -> dict[str, Any]:
     """Everything the ladder's Step 1 asks for: asked, returned, used.
 
     Assembled here rather than letting the agent read the ledger, for two
@@ -174,6 +175,12 @@ def evidence_for(qid: str, case: dict[str, Any],
         "answerText": (attempt.get("answer_text") or "")[:4000],
         "queriesRun": attempt.get("queries") or
         ([attempt["final_query"]] if attempt.get("final_query") else []),
+        # The matched pair, when another arm of the SAME model answered this
+        # question correctly. Same question, same model, one right answer and
+        # one wrong one: the diff between the two queries isolates the cause,
+        # and it is the cheapest evidence in the whole run. Absent unless
+        # --compare-run named an arm.
+        "passedInAnotherArm": passed_elsewhere,
         "getContextCalls": asked,
         "nGetContext": attempt.get("n_get_context"),
         "nExecute": attempt.get("n_execute"),
@@ -201,6 +208,22 @@ EVIDENCE FROM THE RUN
 In `getContextCalls`, `targets` is what the agent searched for, `scopes` is
 the scope it searched UNDER, and `returnedInRankOrder` is what came back.
 
+**If `passedInAnotherArm` is present, start there.** Another run of the SAME
+model answered this question correctly. That is a matched pair: same question,
+same model, one right answer and one wrong one, and the diff between the two
+queries usually names the cause outright. Read `finalQuery` there against
+`queriesRun` here and say what the passing arm did differently.
+
+A case that flips is not noise to be averaged away. It is a case where the
+agent found two paths and the model did not make one of them obviously right,
+which is a MODEL-quality finding: the fix is usually a doc or a name that
+makes the wrong path unattractive, not a change to the agent. On one real set
+five flips over 28 cases read as an 18% churn rate and turned out to be one
+question asked two ways, where the wrong idiom returned 2 rows against the
+right one's 443. If both arms ran the SAME query, the flip is downstream of it
+-- the judge, the rubric, or non-determinism in the data -- and that is a
+different finding, worth saying plainly.
+
 **Read `scopes` before you blame retrieval for anything.** A call carrying a
 `source` in its scope is pinned to that source and cannot return an entity from
 another one, however well documented that entity is. A miss under a narrow
@@ -225,7 +248,8 @@ the analysis inside it is.
 
 def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
                  a: argparse.Namespace, art: pathlib.Path, *,
-                 answered_correctly: bool = False) -> dict[str, Any]:
+                 answered_correctly: bool = False,
+                 passed_elsewhere: dict[str, Any] | None = None) -> dict[str, Any]:
     d = art / qid
     out = d / "diagnosis.json"
     if out.exists() and not a.force:
@@ -266,7 +290,8 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
             environment=a.environment, package=a.package,
             tools_name="the hosted platform" if platform else "Publisher",
             scope_line=scope_line + correct_line,
-            evidence=json.dumps(evidence_for(qid, case, events),
+            evidence=json.dumps(evidence_for(qid, case, events,
+                                             passed_elsewhere),
                                 indent=2)[:14000]),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.model,
@@ -718,6 +743,14 @@ def main(argv: list[str] | None = None) -> int:
                          "run never reaches improve, so it is holding them "
                          "back from nothing. Refused when the run already "
                          "carries a candidate edit.")
+    ap.add_argument("--compare-run", type=pathlib.Path, default=None,
+                    help="another arm of the SAME model. A case this run "
+                         "failed and that arm PASSED is a matched pair -- same "
+                         "question, same model, one right answer and one wrong "
+                         "one -- and the diff between the two queries usually "
+                         "names the cause outright. Without it a flipped case "
+                         "is diagnosed from one side only, which is the "
+                         "richest evidence in the run going unread")
     ap.add_argument("--limit", type=int, default=None,
                     help="how many to process; each one spawns a real agent. Omit for no limit. 0 means zero, not unlimited.")
     ap.add_argument("--no-cluster", action="store_true")
@@ -837,10 +870,34 @@ def main(argv: list[str] | None = None) -> int:
     print(f"tier 1: {len(failed)} failed dev cases{extra}, {a.model}, "
           f"{a.parallel} at a time  ({len(codes)} codes in the skill)")
 
+    # The matched pairs, if another arm was named. A case this run failed and
+    # that arm passed hands the diagnosing agent the one comparison it can
+    # never make from a single run: same question, same model, two outcomes.
+    other_arm: dict[str, dict[str, Any]] = {}
+    if a.compare_run:
+        try:
+            import flip_table
+            theirs = flip_table.verdicts(a.compare_run)
+        except Exception as exc:                                # noqa: BLE001
+            raise SystemExit(f"--compare-run: could not read "
+                             f"{a.compare_run}: {exc}")
+        label = (json.loads((a.compare_run / "run.json").read_text())
+                 .get("label") if (a.compare_run / "run.json").exists()
+                 else a.compare_run.name)
+        for q in to_diagnose:
+            v = theirs.get(q)
+            if v and v.get("passed"):
+                other_arm[q] = {"arm": label, "verdict": v["verdict"],
+                                "finalQuery": v.get("final_query")}
+        print(f"  --compare-run {label}: {len(other_arm)} of "
+              f"{len(to_diagnose)} case(s) passed there, so they are "
+              f"diagnosed as matched pairs")
+
     issues: list[dict[str, Any]] = []
     with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
         fut = {ex.submit(diagnose_one, q, cases[q], events, a, art,
-                         answered_correctly=q in retrieval_only): q
+                         answered_correctly=q in retrieval_only,
+                         passed_elsewhere=other_arm.get(q)): q
                for q in to_diagnose}
         for i, f in enumerate(futures.as_completed(fut), 1):
             q = fut[f]

@@ -590,6 +590,47 @@ class SelectingWhatToDiagnose(unittest.TestCase):
         self.assertIn("contaminated", excluded)
         self.assertNotIn("holdout, withheld from diagnosis", excluded)
 
+class MatchedPair(unittest.TestCase):
+    """A case that passed in another arm is the richest evidence in the run,
+    and it was the one thing the diagnoser never saw.
+
+    diagnose.py reads one run. A flip lives across two, so a case that passed
+    once and failed once was diagnosed from the failing side alone -- with the
+    matched pair, same question and same model, sitting unread in the other
+    run directory.
+    """
+
+    def evidence(self, passed_elsewhere=None):
+        events = [
+            {"kind": "attempt", "qid": "q1",
+             "final_query": "run: wrong -> { x }", "answer_text": "2 rows"},
+            {"kind": "score", "qid": "q1", "verdict": "no_match",
+             "reason": "expected 443"},
+        ]
+        return diagnose.evidence_for("q1", {"question": "how many?"}, events,
+                                     passed_elsewhere)
+
+    def test_absent_by_default(self):
+        self.assertIsNone(self.evidence()["passedInAnotherArm"])
+
+    def test_the_other_arms_query_reaches_the_agent(self):
+        e = self.evidence({"arm": "aa-2", "verdict": "match",
+                           "finalQuery": "run: right -> { y }"})
+        self.assertEqual(e["passedInAnotherArm"]["finalQuery"],
+                         "run: right -> { y }")
+        self.assertEqual(e["passedInAnotherArm"]["arm"], "aa-2")
+
+    def test_this_arms_query_is_still_there_to_diff_against(self):
+        e = self.evidence({"arm": "aa-2", "finalQuery": "run: right -> { y }"})
+        self.assertIn("run: wrong -> { x }", e["queriesRun"])
+
+    def test_the_prompt_tells_the_agent_what_to_do_with_it(self):
+        self.assertIn("passedInAnotherArm", diagnose.DIAGNOSE_PROMPT)
+        self.assertIn("matched pair", diagnose.DIAGNOSE_PROMPT)
+
+    def test_the_prompt_says_a_flip_is_not_noise(self):
+        # The doctrine change, pinned: a flip is a model-quality finding.
+        self.assertIn("not noise", diagnose.DIAGNOSE_PROMPT)
 
 if __name__ == "__main__":
     unittest.main()
