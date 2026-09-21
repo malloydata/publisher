@@ -281,6 +281,25 @@ class DeriveAttemptFromATranscript(unittest.TestCase):
         self.assertEqual(att["final_model_path"], "m.malloy")
         self.assertEqual(att["n_execute"], 1)
 
+    def test_no_host_log_means_no_breaches_rather_than_a_clean_bill(self):
+        # Running the isolation checks over a transcript that has no init
+        # event reported "no init event: cannot verify what the answerer held"
+        # as a BREACH -- which is the opposite of what it says. It landed in
+        # the contamination histogram beside real breaches, voided the verdict
+        # with reason `contaminated`, and printed "isolation breached" about a
+        # session where nothing was breached and nothing was checked.
+        att = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": False,
+                  "host_log": False}, text=""))
+        self.assertEqual(att["breaches"], [])
+        self.assertFalse(att["host_log"])
+
+    def test_a_spawned_transcript_still_reports_a_missing_init_event(self):
+        # The check above must not weaken the spawned case, where an absent
+        # init event really does mean the granted toolset is unverifiable.
+        att = self.derive(self.transcript())
+        self.assertTrue(any("init event" in b for b in att["breaches"]))
+
     def test_the_provenance_line_is_not_counted_as_a_turn(self):
         with_prov = self.derive(self.transcript(
             prov={"type": "provenance", "answer_captured": True,
@@ -288,6 +307,36 @@ class DeriveAttemptFromATranscript(unittest.TestCase):
         without = self.derive(self.transcript())
         self.assertEqual(with_prov["host_tool_uses"],
                          without["host_tool_uses"])
+
+
+class RunProvenance(unittest.TestCase):
+    """A run is only as quotable as its poorest source."""
+
+    def test_all_spawned_is_spawned_t3(self):
+        self.assertEqual(rb.run_provenance([{}, {}]), ("spawned", "T3"))
+
+    def test_one_logged_attempt_makes_the_run_logs(self):
+        # A mixed run cannot be read as a spawned one.
+        src, tier = rb.run_provenance(
+            [{}, {"host_log": False, "answer_captured": True}])
+        self.assertEqual(src, "logs")
+
+    def test_the_tier_is_the_weakest_not_the_most_common(self):
+        # Reporting T2 for a set where one session kept no prose puts a pass
+        # rate on a denominator that silently excluded it.
+        _src, tier = rb.run_provenance([
+            {"host_log": False, "answer_captured": True},
+            {"host_log": False, "answer_captured": True},
+            {"host_log": False, "answer_captured": False}])
+        self.assertEqual(tier, "T1")
+
+    def test_logged_with_prose_throughout_is_t2(self):
+        _src, tier = rb.run_provenance([
+            {"host_log": False, "answer_captured": True}])
+        self.assertEqual(tier, "T2")
+
+    def test_no_attempts_at_all_does_not_claim_a_logged_run(self):
+        self.assertEqual(rb.run_provenance([]), ("spawned", "T3"))
 
 
 class JudgeGate(unittest.TestCase):

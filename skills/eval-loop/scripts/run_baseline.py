@@ -1811,6 +1811,7 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
     # input and keeps `--rebuild` deriving the same ledger a year later.
     prov = next((e for e in events
                  if e.get("type") == PROVENANCE), {})
+    host_log = bool(prov.get("host_log", True))
 
     calls, answer, queries = [], [], []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
@@ -1982,18 +1983,29 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
         "wall_seconds": elapsed,
         "error": res.get("subtype") if res.get("is_error") else None,
         "calls": calls,
-        "breaches": isolation_breaches(
-            events, a.hosted_tools if a.target == "platform" else ANSWER_TOOLS)
-        + path_breaches(events, a.set_dir)
-        + [f"invoked a skill outside the manifest: {sk}"
-           for sk in sorted(set(foreign_skills))],
+        # Empty when there was no host log to check, which is NOT the same as
+        # a clean one and must not be recorded as one: `contaminated` becomes
+        # "unknown" instead, from `host_log` below. Running the checks anyway
+        # reported "no init event: cannot verify what the answerer held" as a
+        # BREACH, which is the opposite of what it says -- it lands in the
+        # contamination histogram beside real ones, voids the verdict with
+        # reason `contaminated`, and prints "isolation breached" about a
+        # session where nothing was breached and nothing was checked.
+        "breaches": ([] if not host_log else
+                     isolation_breaches(
+                         events,
+                         a.hosted_tools if a.target == "platform"
+                         else ANSWER_TOOLS)
+                     + path_breaches(events, a.set_dir)
+                     + [f"invoked a skill outside the manifest: {sk}"
+                        for sk in sorted(set(foreign_skills))]),
         "transcriptPath": str((d / "answerer.jsonl").relative_to(art.parent)),
         # Facts about the SOURCE, not about the agent. Kept apart from
         # `answer_text` and `breaches` because an empty answer and an
         # unrecorded one are different claims, and so are a clean host log and
         # no host log at all.
         "answer_captured": bool(prov.get("answer_captured", True)),
-        "host_log": bool(prov.get("host_log", True)),
+        "host_log": host_log,
     }
 
 
@@ -2101,6 +2113,25 @@ AGREEMENT = (
     r"identical to the golden",
     r"correct filter and value",
 )
+
+
+def run_provenance(attempts) -> tuple[str, str]:
+    """`source` and `sourceTier` for a whole run, from its attempts.
+
+    The tier is the WEAKEST any attempt had, not the best or the most common: a
+    run is only as quotable as its poorest source, and reporting T2 for a set
+    where half the sessions kept no prose would put a pass rate on a
+    denominator that silently excluded them. One logged attempt likewise makes
+    the run `logs`, because a mixed run cannot be read as a spawned one.
+    """
+    rows = list(attempts)
+    if not rows:
+        return "spawned", "T3"
+    logged = [r for r in rows if not r.get("host_log", True)]
+    if not logged:
+        return "spawned", "T3"
+    return "logs", ("T1" if any(not r.get("answer_captured", True)
+                                for r in rows) else "T2")
 
 
 def contradicts(reason: str, verdict: str | None) -> bool:
@@ -3519,7 +3550,14 @@ def main(argv: list[str] | None = None) -> int:
     # again. Found by writing a report off a rebuilt run and having the cost
     # line disagree with the arm that produced the verdicts.
     judge_kept, judge_carried = carry_judge_cost(judge_cost, prior_judge)
-    ledger.update_run(a.out, answererCostUsd=round(cost, 4),
+    # Where the answers came from, read off the attempts rather than taken from
+    # a flag, so it describes what was actually scored. Written here and not
+    # with the opening pins because it is not knowable until the transcripts
+    # have been read: a `--rebuild` over a directory somebody else filled does
+    # not know what filled it.
+    source, tier = run_provenance(attempts.values())
+    ledger.update_run(a.out, source=source, sourceTier=tier,
+                      answererCostUsd=round(cost, 4),
                       answererCostCopiedFrom=copied_from,
                       judgeCostCopiedFrom=copied_from if judge_carried else None,
                       judgeCostUsd=round(judge_kept, 4),
