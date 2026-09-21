@@ -48,7 +48,7 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
   ([README.md § Point your agent at it](README.md#point-your-agent-at-it),
   [docs/ai-agents.md](docs/ai-agents.md)). The supported posture is loopback for local use, an
   authenticating gateway in front for anything wider.
-- `givens`, `#(row_authorize)`, and row-level access being caller-asserted, including the gaps in
+- `givens`, `#(access_filter)`, and row-level access being caller-asserted, including the gaps in
   [docs/authorize.md § Security model](docs/authorize.md#security-model) and
   [§ Known limitations](docs/authorize.md#known-limitations), and in
   [docs/row-level-access.md](docs/row-level-access.md).
@@ -75,7 +75,7 @@ Anything that breaks a boundary Publisher does claim, including:
 - A direct query succeeding against a source the package never exported — past the
   **queryable == discoverable** boundary in
   [docs/discovery-and-access.md](docs/discovery-and-access.md).
-- A `#(row_authorize)` gate granting access its expression should deny for the givens actually sent,
+- A `#(access_filter)` gate granting access its expression should deny for the givens actually sent,
   including none — absent the documented bypass header above.
 - The bypass applying where it should not: honoured on a notebook cell or `/compile` request,
   reachable from the request body rather than the header, surviving onto a subsequent request, or

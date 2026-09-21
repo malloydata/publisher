@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 # Row-level access
 
 > What this is: how to restrict **which rows** a caller sees, using [givens](givens.md). This is one
-> application of givens; for gating access with `#(row_authorize)` see [authorize.md](authorize.md), and
+> application of givens; for gating access with `#(access_filter)` see [authorize.md](authorize.md), and
 > for the base mechanism see [givens.md](givens.md).
 
 Three related but distinct things live here — keep them apart:
@@ -15,7 +15,7 @@ Three related but distinct things live here — keep them apart:
   convenience and a performance/UX tool (each caller sees only their slice). It is *not*, by itself,
   a security boundary: a caller who omits the given may see everything.
 - **Row-level access control** — the same row scoping, made **mandatory** and validated with an
-  `#(row_authorize)` gate, behind a trusted tier. Now a caller *cannot* opt out of their slice, and the
+  `#(access_filter)` gate, behind a trusted tier. Now a caller *cannot* opt out of their slice, and the
   scoping value is one the trusted tier asserts from verified identity.
 - **Row-level authorize** — the gate itself does the row scoping, instead of pairing it with a
   separate `where:`. See [Row-level authorize](#row-level-authorize) below.
@@ -51,10 +51,12 @@ To make the scoping a boundary, add a gate.
 
 ## Row-level access control
 
-Pair the scoping `where:` with an [`#(row_authorize)`](authorize.md) gate so the source is queryable only
+Pair the scoping `where:` with an [`#(access_filter)`](authorize.md) gate so the source is queryable only
 when a valid scoping value is asserted, and there is no "unscoped" path. An **unset** `TENANT` is a
 **403** (a gate-referenced given may carry no default, so there is nothing to fall back to); a
-**recognized-but-unlisted** tenant is admitted nowhere and gets **200 with zero rows**:
+**recognized-but-unlisted** tenant matches no row and gets **200 with zero rows**. Reach for
+[`#(authorize)`](authorize.md) instead when an unlisted tenant should be refused rather than served
+an empty result:
 
 ```malloy
 ##! experimental.givens
@@ -62,14 +64,14 @@ when a valid scoping value is asserted, and there is no "unscoped" path. An **un
 given: TENANTS :: string[]
 
 // Deny unless the caller asserts a tenant on the allow-list.
-#(row_authorize) tenant in $TENANTS
+#(access_filter) tenant in $TENANTS
 source: orders is duckdb.table('orders.parquet') extend {
   where: tenant in $TENANTS
   measure: order_count is count()
 }
 ```
 
-- `#(row_authorize)` decides **whether** the caller may query `orders` at all.
+- `#(access_filter)` decides **whether** the caller may query `orders` at all.
 - `where: tenant in $TENANTS` decides **which rows** they get once allowed.
 
 Used together, callers can only reach `orders` with a recognized tenant, and only ever see that
@@ -77,7 +79,7 @@ tenant's rows.
 
 ## Row-level authorize
 
-The pairing above uses two expressions: `#(row_authorize)` decides **whether** the caller may enter the
+The pairing above uses two expressions: `#(access_filter)` decides **whether** the caller may enter the
 source at all, and `where:` decides **which rows** they get once admitted. A gate that references a
 row field (see [authorize.md § Row-level gates](authorize.md#row-level-gates)) folds both jobs into
 one: instead of an all-or-nothing admit decision, the gate itself becomes the row filter.
@@ -87,7 +89,7 @@ one: instead of an all-or-nothing admit decision, the gate itself becomes the ro
 
 given: GROUPS :: string[]
 
-#(row_authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.table('orders.parquet') extend {
   measure: order_count is count()
 }
@@ -101,14 +103,14 @@ write or to keep in sync.
 
 - **`where: field in $GIVEN` alone** — a convenience filter, not access control. A caller who omits
   the given sees everything. Use it when scoping is a UX nicety, not a boundary.
-- **`where:` paired with `#(row_authorize)`** (the pattern above) — reach for this when the row scope
+- **`where:` paired with `#(access_filter)`** (the pattern above) — reach for this when the row scope
   needs more than a single gate term can hold (a `filter<T>`, a range, a join-based lookup composed
   across several fields, an `and` of terms over more givens than the gate references): a gate's body
   is a narrow grammar of `and`-joined terms (see [authorize.md § Expression
   Language](authorize.md#expression-language)), so anything needing its own named intermediate steps
   or a comparison the grammar does not accept belongs in `where:` instead, with the gate covering
   only the admit/deny decision.
-- **A row-level `#(row_authorize)` gate alone** — when the access decision and the row scope are
+- **A row-level `#(access_filter)` gate alone** — when the access decision and the row scope are
   the *same* comparison (`org_id in $GROUPS` is both "may they enter" and "which rows"), write it
   once as a gate. An unset or empty given fails closed to zero rows, with no matching pair of
   expressions that could drift apart.
@@ -128,7 +130,7 @@ expression language `where:` accepts.
 
 [`examples/governed-analytics`](../examples/governed-analytics) implements the row-level authorize
 pattern above in [`secured.malloy`](../examples/governed-analytics/secured.malloy): the
-`#(row_authorize) tenant in $TENANTS` gate on `orders_secured` is both the admit decision and the row
+`#(access_filter) tenant in $TENANTS` gate on `orders_secured` is both the admit decision and the row
 scope, with no separate `where:`. It ships in the default `examples` environment, so against the
 running example the same query returns different rows per caller:
 
@@ -151,14 +153,14 @@ curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
 
 ## Locking the base source
 
-Neither `where:` nor `#(row_authorize)` is walked through joins — both apply to the source a query
+Neither `where:` nor `#(access_filter)` is walked through joins — both apply to the source a query
 enters through. (A row-level gate on the entry point may *reference* a field on a joined source —
 see [authorize.md § entry point](authorize.md#the-entry-point-and-only-the-entry-point) — but that
-is not the same as a joined source's own gate firing; the rule here is unchanged.) `#(row_authorize)`
+is not the same as a joined source's own gate firing; the rule here is unchanged.) `#(access_filter)`
 _is_ carried to an extension that declares no gate of its own, but an extension declaring its OWN
 gate replaces it. So two things are yours to get right: which sources a
 caller can enter through (anything ungated that joins the base hands the base over), and what each
-extension re-exposes. Lock the base with `#(row_authorize) false`, re-expose curated, separately-gated
+extension re-exposes. Lock the base with `#(access_filter) false`, re-expose curated, separately-gated
 extensions with [access modifiers](https://docs.malloydata.dev/documentation/experiments/include),
 and do not rely on a join to carry the lock. See
 [authorize.md § The entry point, and only the entry point](authorize.md#the-entry-point-and-only-the-entry-point)

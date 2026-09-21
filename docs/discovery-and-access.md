@@ -62,9 +62,9 @@ For gradual migration, use `explores` with `queryableSources: "all"` to curate l
 every source queryable by name; switch to `"declared"` when ready to enforce the boundary.
 
 > **`explores`/`export {}` are a discovery filter; `queryableSources` decides if they also gate
-> queries; `#(row_authorize)` is the identity gate.** With `queryableSources: "all"`, hiding a source
+> queries; `#(access_filter)` is the identity gate.** With `queryableSources: "all"`, hiding a source
 > only removes it from listings — it stays queryable by name. To restrict *who* can query (as opposed
-> to *what* is queryable), gate the source with `#(row_authorize)` (see [authorize.md](authorize.md));
+> to *what* is queryable), gate the source with `#(access_filter)` (see [authorize.md](authorize.md));
 > those gates are enforced against the complete source set and are never weakened by listing or
 > boundary curation.
 >
@@ -73,9 +73,9 @@ every source queryable by name; switch to `"declared"` when ready to enforce the
 > curated package stays authorable, and the boundary is discovery curation rather than access
 > control. The consequence is that `/compile` can reveal a hidden source's schema, and with
 > `includeSql` its SQL. It does **not** cover raw retrieval by exact path either — a hidden model's
-> file text and its compiled metadata are still fetchable by path — by design; use `#(row_authorize)`
+> file text and its compiled metadata are still fetchable by path — by design; use `#(access_filter)`
 > when the contents themselves must be protected, not just removed from discovery. A source that is
-> both hidden and `#(row_authorize)`-gated still answers `/compile` with the boundary's generic `404`, so
+> both hidden and `#(access_filter)`-gated still answers `/compile` with the boundary's generic `404`, so
 > the exemption cannot be used to enumerate gated names.
 
 ## Runnable example

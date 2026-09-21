@@ -224,7 +224,7 @@ A given is **declared bare** but **referenced with a `$` sigil** in expressions 
 - **Givens don't auto-inject a `where:`.** Unlike `#(filter)`, you write the filter expression that references the given yourself (e.g. `where: dimension ~ $given_name`).
 - **Not every filter maps cleanly.** A filter with no neutral match-all literal default - e.g. a scalar date/number range like `> @2020-01-01` - is not a good `given:`; keep those on `#(filter)`. Two more cases keep using `#(filter)`: mandatory scoping filters (`required`) and system-injected row-level filters (`implicit`), both below.
 
-Givens are also the substrate for access control - see "Access Control: Source Gating with `#(access_filter)`" below.
+Givens are also the substrate for access control - see "Access Control: `#(authorize)` and `#(access_filter)`" below.
 
 ## Legacy: Parameterizable Filters with `#(filter)`
 
@@ -295,56 +295,72 @@ Publisher formats values based on the dimension's data type, `string` → `'valu
 
 Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip filter injection entirely. Use sparingly, required-filter governance only works if bypass is restricted to trusted callers.
 
-## Access Control: Source Gating with `#(access_filter)`
+## Access Control: `#(authorize)` and `#(access_filter)`
 
-Gate query access to a source with `#(access_filter)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). A gate is a `#(access_filter)` annotation on its own line directly above the `source:` line, carrying a **narrow grammar publisher parses itself, not an arbitrary Malloy expression**: one or more terms joined only by `and`, each a row-level term (`field_path <op> $GIVEN`) or a source-level term (`'literal' <op> $GIVEN`), with `<op>` fixed by the given's declared arity (`in` for a list, `=` for a scalar). Publisher grafts the parsed gate onto the source as a row filter before running the query, so a caller it admits nowhere gets **200 with zero rows**, not a 403. A **403** means only that the gate could not be attached at all. A source with no `#(access_filter)` annotation of its own or inherited is unrestricted. `#(authorize)` is a deprecated alias for `#(access_filter)` that still works.
+Gate query access to a source over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). **Two annotations, one question each, and the name tells you which:**
+
+| Annotation | The question | Body it takes | A denial is |
+| --- | --- | --- | --- |
+| `#(authorize)` | may this caller reach this source at all? | `'literal' <op> $GIVEN`, plus the `true`/`false` sentinels | **403** |
+| `#(access_filter)` | which rows may they see, once they may? | `field_path <op> $GIVEN` | **200**, with their rows |
+
+Either is an annotation on its own line directly above the `source:` line, carrying a **narrow grammar publisher parses itself, not an arbitrary Malloy expression**: one or more terms joined only by `and`, with `<op>` fixed by the given's declared arity (`in` for a list, `=` for a scalar).
+
+**Nothing is inferred from the body.** The annotation you write declares which question you are answering, and a body that does not fit is refused at load naming the other annotation. A source with no annotation of either kind, own or inherited, is unrestricted.
+
+The lock is DECIDED, before the caller's query compiles: a caller it does not admit gets a 403, never a row count or a `NULL` aggregate over data they were refused. The filter is GRAFTED onto the query as a `where:`, so a caller it matches nowhere gets a 200 with an empty result. The lock runs first; a caller it refuses never reaches the filter. A 403 also covers either gate failing to apply at all (a field the entry point dropped, a given nobody supplied).
 
 ```malloy
 ##! experimental.givens
 
 given:
   ROLE :: string
+  ORG_IDS :: string[]
 
-#(access_filter) 'analyst' = $ROLE
+#(authorize) 'analyst' = $ROLE
+#(access_filter) org_id in $ORG_IDS
 source: orders is duckdb.table('orders.parquet') extend {
   measure: order_count is count()
 }
 ```
 
 - **Nothing outside the two term shapes above parses.** No `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`, function calls, bare field/boolean references, or a literal on the right of a row-level term. `org_id in $GROUPS` and `region = $REGION and org_id in $GROUPS` are legal; `upper(region) = $REGION`, `(org_id in $GROUPS or region = $REGION)`, and a bare `#(access_filter) authorized` are all refused at load with a named cause (see your deployment's reference documentation for the full list).
-- **A source may declare more than one `#(access_filter)` annotation: repeats AND together.** `#(access_filter) region = $REGION` stacked with a second `#(access_filter) org_id in $GROUPS` on the same source both apply, and a caller must satisfy every term across every note. `or` is still refused wherever it appears, so there is still no way to spell "admit if either" inside one gate, or across gates on one source; use two extension sources instead, one per admitted population, each with its own conjunctive gate (see the admin pattern below). **Two exceptions to "every term references a given": a body that is exactly `false`, and one that is exactly `true`.** `false` is a deny-all, so lock a source with `#(access_filter) false`. `true` is an admit-all, and it is what an extension of a locked base needs in order to be open: a source declaring no gate of its own **inherits** its ancestor's, so leaving the annotation off an extension of a `false` base inherits the lock rather than lifting it. Both are legal on either route. `false` may not share a source with another note at all; `true` may not share its own route with one, but is live beside a note on the other route (`#(access_filter) true` with `#(authorize) 'finance' in $GROUPS` opens every row while still gating the caller). Neither is a term: `true and org_id in $GROUPS` is read as an ordinary two-term body whose first term is malformed, not as an admit-all.
-- **`#(authorize)` is a second annotation route for a rule about the CALLER, not the row.** It takes the same source-level term shape (`'literal' <op> $GIVEN`), declared on its own line above `source:`, and it ANDs with any `#(access_filter)` gate on the same source rather than replacing or bypassing it: there is no spelling anywhere in the grammar for "admit and skip the row filter". It inherits through `extend` the same way `#(access_filter)` does, own wins over ancestor per route, so a source can be "own" for one route and "inherited" for the other. A row-level term (a field on the left) inside a `#(authorize)` body is refused at load, naming the rewrite (move it to `#(access_filter)`). The API reports it separately: `Source.sourceAuthorize` carries this route's own effective texts, while a source-level term written under plain `#(access_filter)` (the convenience form above) keeps reporting under `authorize`.
-- **Generate the admin escape hatch as another extension over the locked base, never as a bypass.** When a model needs an ordinary population plus a wider one, add a second extension whose gate is a source-level convenience term:
+- **Writing a term on the wrong annotation is refused, both ways.** `#(authorize) org_id in $GROUPS` is refused naming `#(access_filter)`; `#(access_filter) 'finance' in $GROUPS` is refused naming `#(authorize)`. The second matters: a constant predicate grafted as a row filter would serve a refused caller 200 with zero rows, which is the answer the lock exists to replace.
+- **A source may declare more than one note on a route: repeats AND together.** `#(access_filter) region = $REGION` stacked with a second `#(access_filter) org_id in $GROUPS` both apply, and a caller must satisfy every term across every note. `or` is still refused wherever it appears, so there is no way to spell "admit if either" inside one gate or across a source's gates; use two extension sources instead, one per admitted population (see the admin pattern below).
+- **Two exceptions to "every term references a given", and both live on the lock.** `#(authorize) false` is a deny-all: that is how you lock a base. `#(authorize) true` is an admit-all, and it is what an extension of a locked base needs in order to be open: a source declaring no gate of its own **inherits** its ancestor's, so leaving the annotation off an extension of a `false` base inherits the lock rather than lifting it. Neither sentinel is legal on `#(access_filter)`. `false` may not share a source with another note at all; `true` may not share the lock route with one, but is live beside an `#(access_filter)` (`#(authorize) true` with `#(access_filter) org_id in $GROUPS` re-opens a locked base while still scoping the rows). Neither is a term: `true and org_id in $GROUPS` is read as an ordinary two-term body whose first term is malformed.
+- **Inheritance is per route.** Both inherit through `extend` the same way, own wins over ancestor on that route only, so a source can be "own" for one and "inherited" for the other. The API reports them separately, each under the field named for its own annotation: `Source.authorize` and `Source.accessFilter`.
+- **Generate the admin escape hatch as another extension over the locked base, never as a bypass.** When a model needs an ordinary population plus a wider one, add a second extension whose rule is a lock on the caller:
 
 ```malloy
 given:
   ORG_IDS :: string[]
   GROUPS  :: string[]
 
-#(access_filter) false
+#(authorize) false
 source: orders_base is duckdb.table('orders.parquet') extend {}
 
+#(authorize) true
 #(access_filter) org_id in $ORG_IDS
 source: orders is orders_base extend {}
 
-#(access_filter) 'admin' in $GROUPS
+#(authorize) 'admin' in $GROUPS
 source: orders_admin is orders_base extend {}
 ```
 
-  Each extension replaces the base's `false` with its own gate. `orders_admin`'s gate is evaluated exactly the same way as `orders`'s, it just restricts nothing per row (a source-level term is constant across every row). This is the shape to generate whenever an author wants a role to see everything: another extension source, not a flag that skips the gate.
-- **`#(access_filter)` only gates from the `source:` line.** The same annotation on a `dimension:`/`measure:`/`join_*:`/`view:` line, or on a top-level `query:`, is refused at load naming the position rather than silently protecting nothing.
+  Each extension replaces the base's `false` on the lock route with its own rule. `orders` is open to everyone and scoped per row; `orders_admin` is locked to the admin group and, carrying no filter, serves every row to whoever passes. This is the shape to generate whenever an author wants a role to see everything: another extension source, not a flag that skips the gate.
+- **Both only gate from the `source:` line.** The same annotation on a `dimension:`/`measure:`/`join_*:`/`view:` line, or on a top-level `query:`, is refused at load naming the position rather than silently protecting nothing.
 - **Every given the gate references must be declared on the entry model's own surface, and must carry no default.** A given the model cannot resolve is refused at load. So is a referenced given declared *with* a default: a caller who supplies nothing would get that default and be admitted or excluded by a value the gate's own line never shows, so it is refused rather than reasoned about case by case.
 - **A scalar/array mismatch between the operator and the given's declared type is a load-time refusal**, not a request-time warehouse error: `org_id in $GROUPS` requires `GROUPS` to be array-typed, `region = $REGION` requires `REGION` scalar. Negation is likewise refused outright, so there is no empty-given inversion surprise to warn about.
 - **Entry point only: not joined, but inherited through `extend`.** The gate applies to the source a query enters through. A gate on a source reached only via `join_*` **never fires**, at any depth, so anything ungated that joins a locked base hands the base's rows to every caller. A source that `extend`s a locked base and declares no gate of its own **does** carry the base's gate; declaring its own annotation replaces it. A source derived from a locked base via a query (`source: z is locked -> { … }`) instead **always carries the base's gate in addition to its own**: the derivation recurses into the base unconditionally, so an own gate does not replace it, and the two combine as separate AND'd entries. Pair a locked base with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface, and keep sensitive sources out of ungated joins.
 - **A derivation that drops a column the gate reads fails CLOSED.** `extend { except: org_id }`, or an `accept:` that omits it, leaves the grafted filter unable to compile, so the request is denied rather than served ungated. The one hole to know: dropping the gated column and then `rename:`-ing a *different* column onto that exact name grafts successfully and binds the gate to the wrong column. Narrow, but real, so don't recycle a gated column's name. If a derivation's own projection needs to drop the column a row-level term would read, use a source-level term (`'literal' in/= $GIVEN`) instead, since it never depends on any projected column.
-- **The quoted-string and file-level forms are refused at load and no longer exist.** `#(access_filter) "<expr>"` on the `source:` line, in either quote (`'...'` is refused the same way), a file-level `##(access_filter) "<expr>"` applying to every source in the file, and the earlier `internal dimension: authorized is <expr>` form are all retired; the load names the rewrite. Every `.malloy` file in a package compiles at load and any failure aborts the package, so a retired-form gate anywhere in the package is refused. Only a declaring file *outside* the package escapes that: it loads and denies every request instead, with no compile-time hint. See your deployment's reference documentation.
+- **The quoted-string and file-level forms are refused at load and no longer exist.** A quoted expression on the `source:` line, in either quote, a file-level `##(…) "<expr>"` applying to every source in the file, and the earlier `internal dimension: authorized is <expr>` form are all retired; the load names the rewrite. Every `.malloy` file in a package compiles at load and any failure aborts the package, so a retired-form gate anywhere in the package is refused. Only a declaring file *outside* the package escapes that: it loads and denies every request instead, with no compile-time hint. See your deployment's reference documentation.
 - **A gated source can be persisted, but the gating column freezes.** `storage=` and `#@ preaggregate` refuse a gated source outright; a colocated `#@ persist` is admitted when the gate is provably the entry point's own row filter. The gate still runs live on every query, so rows come back filtered - but the column it filters ON is frozen at build time, so a row whose access decision changes keeps being served under the old decision until the next rebuild. Pair `#@ persist` on a gated source with a freshness window (`fallback="live"`), which is the only control that bounds that - and read `skill:malloy-materialization` for where that window binds, because on a standalone Publisher it does not.
 
-> **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(access_filter)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
+> **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. Neither annotation is a real boundary unless it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. Neither is, on its own, end-user authentication.
 >
-> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** - reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override - turning `#(access_filter)` into a standalone boundary. Model access on `given:` + `#(access_filter)` now; it is the surface that carries forward.
+> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** - reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override - turning these gates into a standalone boundary. Model access on `given:` + these two annotations now; it is the surface that carries forward.
 
-Full syntax, inheritance rules, validation, and the error contract are covered in your deployment's `#(access_filter)` reference documentation.
+Full syntax, inheritance rules, validation, and the error contract are covered in your deployment's authorize reference documentation.
 
 ## Join Syntax
 

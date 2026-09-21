@@ -2,37 +2,40 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(authorize)` / `#(authorize)` body grammar.
+ * `#(authorize)` / `#(access_filter)` body grammar.
  *
- * `#(authorize)` no longer accepts an arbitrary Malloy boolean handed
- * verbatim to the compiler. Its body is a narrow grammar publisher parses
- * itself: one or more terms joined by `and`, each either a ROW-LEVEL term
- * (`field_path <op> $GIVEN`, field path on the left) or a SOURCE-LEVEL term
- * (`'<literal>' in $GIVEN`), whose literal and given may be written in either
- * order since neither side is a column. The operator is fixed by
- * the given's declared arity — `in` for a list-typed given, `=` for a
- * scalar one. Nothing else parses: no `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`,
- * `like`, `is not null`, no function calls, no literal on the right of a
- * row-level term.
+ * Neither accepts an arbitrary Malloy boolean handed verbatim to the
+ * compiler. A body is a narrow grammar publisher parses itself: one or more
+ * terms joined by `and`, with the operator fixed by the given's declared
+ * arity — `in` for a list-typed given, `=` for a scalar one. Nothing else
+ * parses: no `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`, `like`, `is not null`, no
+ * function calls, no literal on the right of a row-level term.
  *
- * `#(authorize)` is a second annotation route ({@link
- * AUTHORIZE_ROUTE}) declared on a `source:` line exactly like
- * `#(authorize)`, and parsed by this same grammar — but every term its body
- * declares must be SOURCE-LEVEL (the whole-body `false`/`true` sentinels
- * below are the carve-outs): it is a rule about the CALLER, not the row, and
- * ANDs with the row-level `#(authorize)` gate rather than replacing or
- * bypassing it.
- * There is deliberately no spelling anywhere in this grammar for "admit and
- * skip the row filter". See `gate_classification.ts`'s `collectEntryPointGates`
- * for how the two routes' gates are collected (independently, so an own
- * declaration on one route never sheds the other's inherited gate) and
- * combined (AND, identically to two `#(authorize)` notes).
+ * **The annotation declares the scope, and nothing is inferred from the
+ * body.** {@link AUTHORIZE_ROUTE} takes SOURCE-LEVEL terms only
+ * (`'<literal>' <op> $GIVEN`, either order since neither side is a column) —
+ * it is a rule about the CALLER — plus the whole-body sentinels below.
+ * {@link ACCESS_FILTER_ROUTE} takes ROW-LEVEL terms only (`field_path <op>
+ * $GIVEN`, field path on the left). A term on the wrong route is refused,
+ * both ways, naming the other annotation. So the scope classification in
+ * {@link parseTerm} is a VALIDATION rule, never a routing one.
  *
- * Two exceptions, deliberately narrow: a body that is EXACTLY (trimmed,
- * case-insensitive) `false` or `true` — never a term inside an `and` —
- * parses as an unconditional deny or an unconditional admit. Every other
- * term references a caller-suppliable given, so without `false` there is no
- * gate a caller cannot eventually satisfy.
+ * The mirror matters as much as the original: a source-level term on the
+ * filter route grafts as a constant predicate, which answers a refused
+ * caller 200 with zero rows — the fabricated answer the route split exists
+ * to remove. There is likewise no spelling anywhere in this grammar for
+ * "admit and skip the row filter". See `gate_classification.ts`'s
+ * `collectEntryPointGates` for how the two routes' gates are collected
+ * (independently, so an own declaration on one route never sheds the
+ * other's inherited gate).
+ *
+ * Two exceptions, deliberately narrow, and both on the LOCK: a body that is
+ * EXACTLY (trimmed, case-insensitive) `false` or `true` — never a term
+ * inside an `and` — parses as an unconditional deny or an unconditional
+ * admit. Every other term references a caller-suppliable given, so without
+ * `false` there is no gate a caller cannot eventually satisfy. Neither is
+ * legal on the filter route: `false` there is the silent total deny this
+ * design replaces, and `true` there is a no-op.
  *
  * `true` is legal because of INHERITANCE, not because of how the annotation
  * reads on its own. `gate_classification.ts`'s `collectEntryPointGates`

@@ -1315,7 +1315,7 @@ function fanoutSegment(
 }
 
 /**
- * Refuse a row-level `#(authorize)` term whose field path reaches through a
+ * Refuse a row-level `#(access_filter)` term whose field path reaches through a
  * fan-out join before its final segment — the entry row has many values for
  * what follows, so there is no single key to compare against a given — or
  * whose path this walk could not resolve against the struct at all, which

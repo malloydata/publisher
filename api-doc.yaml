@@ -3274,7 +3274,7 @@ components:
             directly queryable (denied with 404).
             The `/compile` endpoint is exempt (compile is the authoring loop;
             the boundary is discovery curation, not access control — for
-            confidentiality use `#(row_authorize)`, which gates compile too).
+            confidentiality use `#(authorize)`, which gates compile too).
             A source that is both hidden and authorize-gated still answers
             `/compile` with the generic 404, so the exemption cannot be used to
             enumerate gated names.
@@ -3283,7 +3283,7 @@ components:
             `explores` is absent there is no curated surface, so both modes are
             equivalent (everything queryable). Invalid values fall back to
             `"declared"`. Identity-based access is a separate concern — see
-            `#(row_authorize)`.
+            `#(authorize)` and `#(access_filter)`.
         manifestLocation:
           type: ["string", "null"]
           description: |

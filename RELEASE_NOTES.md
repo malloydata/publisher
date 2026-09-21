@@ -31,92 +31,149 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] (BREAKING) — the gate is now `#(row_authorize)` / `#(source_authorize)`, it accepts a narrow grammar, and `#(partition)` is gone
+## [Unreleased] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
 
-**The annotation has two names now, one per question it answers.** `#(row_authorize)` answers *which
-rows may this caller see?* — it is the new canonical spelling for what `#(authorize)` has always done,
-a row filter grafted onto the source the query enters through. `#(source_authorize)` answers *may this
-caller reach this source at all?* — a rule about the CALLER (a `'literal' <op> $GIVEN` term) rather
-than the row. The old name said nothing about rows, which is why authors kept reaching for it wanting
-the second question.
+**Two annotations, one question each, and two different answers when they say no.**
 
-**`#(authorize)` is deprecated but keeps working, unchanged.** It is an alias for `#(row_authorize)`,
-not a route of its own: the two spellings are interchangeable on one source, a source's own note in
-either spelling replaces an ancestor's in either spelling, and the wire keeps reporting both under the
-single `Source.authorize` field. Nothing to migrate on upgrade. A load-time warning names each source
-that still uses it, and `publisher_authorize_deprecated_spelling_total` counts them.
+| Annotation | The question | A denial is |
+| --- | --- | --- |
+| `#(authorize)` | may this caller reach this source at all? | **403** |
+| `#(access_filter)` | which rows may they see, once they may? | **200**, with their rows |
 
-Both new names are snake_case, matching Malloy's own multi-word tag names (`bar_chart`, `shape_map`,
-`url_template`). The hyphenated spellings — `#(row-authorize)`, `#(source-authorize)` — are refused at
-load with an error naming the snake one, deliberately rather than aliased, so exactly one spelling
-reaches a model and an audit of "which sources are gated" cannot under-report by grepping the wrong
-string.
+**This is a semantic flip, not a rename.** `#(authorize)` shipped as the row filter in every
+release from 0.2.0 through 0.4.1. It now means the lock. There is no alias, no deprecation period
+and no fallback: read this section before upgrading, because a model that keeps loading can still
+change what it serves.
 
-The gate body was, until now, any Malloy boolean expression handed to the compiler
-unmodified — including shapes that only failed at request time (a scalar/array mismatch against a
-warehouse conversion error) or that loaded with a warning instead of a refusal (a negated membership
-test). It now parses its own narrow grammar before any of that: one or more terms joined only by
-`and`, each a row-level term (`field_path <op> $GIVEN`) or a source-level term (`'literal' <op>
-$GIVEN`), with `<op>` fixed by the given's declared arity (`in` for a list, `=` for a scalar).
-Anything else — `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`, a function call, a bare field reference, a
-literal on the right of a row-level term, a scalar/array mismatch — is refused at load with a named
-cause instead of surfacing as a request-time surprise or a load warning. See
-[docs/authorize.md](docs/authorize.md) for the full grammar and every refusal.
+**Why the plain word moved.** A filter denies by matching no rows, which is honest — there really
+are none for that caller. A gate that decides whether they may reach the source at all cannot deny
+that way: `#(authorize) false` grafted as `where: false` makes `SELECT sum(salary) … WHERE FALSE`
+one row of `NULL`, and `count()` zero. That is a fabricated answer about data the caller was
+refused. The lock is decided instead, before their query is compiled, and returns a 403. The row
+filter takes the name the surrounding world already uses — Looker and Omni both say
+`access_filter`, and Spring Security splits `@PreAuthorize` from `@PreFilter`.
 
-This closes real gaps while keeping the locked-base-plus-curated-extensions pattern spellable at
-full strength: **`#(row_authorize) false` parses as an unconditional deny, and `#(row_authorize) true` as an
-unconditional admit.** Both are whole-body sentinels on either route, never a term inside an `and`,
-`false` may not share a source with another note at all (`deny_all_with_sibling`); `true` may not share
-its own route with one (`admit_all_with_sibling`), but is live beside a note on the other route, since
-it sheds only its own route's inherited gate. One route carrying both sentinels reports the deny, which
-is the fail-closed reading. `true` is what an
-extension of a locked base needs in order to be open — a source declaring no gate of its own inherits
-its ancestor's, so omitting the annotation over a `false` base inherits the lock. Every own
-declaration of it is counted at load on `publisher_authorize_admit_all_total`. Every ORDINARY term
-must still reference a given, so `#(row_authorize) 1 = 1` is refused; and combine what used to be one
-`or`-joined gate into two extension sources, each with its own conjunctive gate — see
+### What to do before upgrading
+
+Both migrations are mechanical, and the second is the one that does not announce itself.
+
+1. **A row-shaped gate must move to `#(access_filter)`.** `#(authorize) org_id in $GROUPS` is
+   **refused at load** with a message naming the rewrite. Loud, and safe: the package does not
+   serve until it is fixed.
+2. **A caller-shaped gate keeps loading and starts answering 403.** `#(authorize) 'finance' in
+   $GROUPS` is already a lock by shape, so nothing refuses it — but a non-member who used to get
+   200 with zero rows now gets a 403. **Anything keying on the status code — an alert, a retry
+   rule, a client branch, a dashboard panel, a notebook cell — sees a different answer after
+   upgrade.** This is the change to audit for, and there is no load error to find it for you:
+   `grep` for `#(authorize)` bodies whose left side is a quoted literal.
+
+Both names are snake_case, matching Malloy's own multi-word tags (`bar_chart`, `shape_map`). The
+hyphenated spellings are refused at load naming the snake one, deliberately rather than aliased, so
+exactly one spelling reaches a model and an audit that greps for gates cannot under-report.
+
+**Rolling back is only safe if models roll back first.** No release before this one knows
+`#(access_filter)`, and an unknown annotation route loads clean and serves every row. Downgrade
+below this version with `#(access_filter)` in a published model and that gate silently stops
+existing. Roll the models back first.
+
+### The name declares the scope; nothing is inferred
+
+The annotation you write says which question you are answering, and the body must conform or the
+model does not load:
+
+- `#(authorize)` takes `'<literal>' <op> $GIVEN`, plus the `true`/`false` sentinels. A field path on
+  the left is refused (`row_level_term_in_authorize`).
+- `#(access_filter)` takes `field_path <op> $GIVEN`. A literal on the left is refused
+  (`source_level_term_in_access_filter`), and so is either sentinel (`sentinel_in_access_filter`).
+
+**The mirror refusal is a security fix, not tidiness.** Until now the check ran one way only: a row
+term on the caller route was refused, but a caller-shaped body on the ROW route was legal and
+grafted as a constant predicate. So `#(authorize) 'finance' in $GROUPS` — the released spelling —
+answered a non-member with 200 and zero rows. That is the fabricated answer this whole change
+exists to remove, and it was reachable on the route nobody was looking at.
+
+Both sentinels now live on the lock alone. `#(authorize) false` is how you lock a base;
+`#(authorize) true` is how an extension re-opens one, since a source declaring no gate inherits its
+ancestor's. `#(access_filter) false` is refused naming `#(authorize) false` — a total deny that
+answers 200 with zero rows is exactly what the split removes. **The locked-base idiom is therefore
+rewritten, not renamed:** every `false` base moves to the lock, and every re-opening extension to
+`#(authorize) true`. See [docs/authorize.md](docs/authorize.md).
+
+### The gate body parses a narrow grammar
+
+The body was, until now, any Malloy boolean expression handed to the compiler unmodified —
+including shapes that only failed at request time (a scalar/array mismatch against a warehouse
+conversion error) or that loaded with a warning instead of a refusal (a negated membership test).
+It now parses one or more terms joined only by `and`, with `<op>` fixed by the given's declared
+arity (`in` for a list, `=` for a scalar). Anything else — `or`, `not`, `!=`, ordering comparisons,
+a function call, a bare field reference, a literal on the right of a row-level term, an arity
+mismatch — is refused at load with a named cause. Every ordinary term must reference a given, so
+`#(access_filter) 1 = 1` is refused; combine what used to be one `or`-joined gate into two
+extension sources, each with its own conjunctive gate — see
 [docs/authorize.md § OR semantics](docs/authorize.md#or-semantics).
 
-**A source may now declare more than one row-level note, and repeats AND together instead of
+**A source may now declare more than one note on a route, and repeats AND together instead of
 failing the load.** `assertAtMostOneAuthorizeGate` refused a second note outright in every released
 version from 0.2.0 through 0.4.1, so no model that loads on a released version already has two of a
-source's own notes to reinterpret; this is new capability, not a reinterpretation of an existing one.
-Separately, and more consequential: **a two-note declaring ancestor two or more `import` hops away
-now ANDs both notes where it previously did not.** That case moves served rows silently, with no
-load error to flag it, so it is the one part of this change worth auditing for rather than trusting
-to surface on its own — look for any ancestor reached through more than one `import` hop that
-declares more than one row-level note.
+source's own notes to reinterpret; this is new capability, not a reinterpretation. Separately, and
+more consequential: **a two-note declaring ancestor two or more `import` hops away now ANDs both
+notes where it previously did not.** That case moves served rows silently, with no load error, so
+it is worth auditing for rather than trusting to surface on its own.
 
-`#(source_authorize)` is a new annotation route. It shares the grammar and inheritance rules above,
-and it **ANDs with the row-level gate on the same source — it is not a bypass**, and there is
-deliberately no spelling anywhere in the grammar for admitting a caller while skipping the row
-filter. It reports separately on the wire, under `Source.sourceAuthorize`. See
-[docs/authorize.md § The `#(source_authorize)` route](docs/authorize.md#the-source_authorize-route).
+### Three more behaviour changes the flip carries
 
-`get_context` now drops a source whose gate is an unconditional `false`, on either route, from its
-listing entirely, rather than reporting it as queryable and letting an agent learn only from the
-403/empty result. Every other gate keeps being reported as before, because a caller's givens over
-that MCP path are untrusted and evaluating a real (non-constant) rule there would be forgeable.
+**`/compile` evaluates the lock.** If reaching a source is what the word means, reading its SQL is
+reaching it — so a caller the lock refuses cannot compile against that source, and `includeSql`
+returns nothing. This closes a documented exposure (a gate referencing no given was admitted on
+`/compile` whichever way it resolved, and returned the source's ungrafted SQL). The cost is real:
+an author outside the group can no longer compile-check a locked source. `#(access_filter)` keeps
+deciding on presence rather than value.
 
-`#(partition)` is removed entirely. It predated `given:`/`#(row_authorize)` as Publisher's own
-tenant-scoping annotation and has been redundant with a row-level gate since that
-landed; a model still carrying it — on a `source:` line, on a field inside one, reached through a
-join, on a top-level `query:` statement, or as a file-level `##(partition)` — fails to load, naming
-it, with no fallback interpretation. Migrate a `#(partition)` source to an equivalent
-`#(row_authorize)` gate (or a scoping `where:`, if the intent was convenience rather than a boundary — see
-[docs/row-level-access.md](docs/row-level-access.md)) before upgrading.
+**The lock does not use the warehouse's collation.** It is decided in publisher, so `'Finance'` no
+longer matches `['finance']`. On a MySQL tenant, whose default collation is case-insensitive, a
+gate of this shape used to admit that caller. Fail-closed, but a real change — normalize case where
+you resolve identity into givens.
 
-**One dashboard-breaking change.** `publisher_authorize_admit_all_total`'s `route` label now reports
-`row_authorize` / `source_authorize` rather than `authorize` / `source-authorize`; a query matching
-`route="authorize"` returns nothing after upgrade. A gate written in the deprecated spelling reports
-as `row_authorize`, so one gate never splits across two label values.
+**A denied caller's compile errors are no longer a schema oracle.** The lock is decided before the
+caller's query compiles, so probing a locked source with a non-existent field returns the 403
+rather than "field is not defined".
 
-One risk worth flagging for anyone who kept a retired-form `#(authorize)` gate declared outside a
+### Metrics
+
+`publisher_authorize_lock_total` is new, labelled `decision` (`admitted`, `denied_by_lock`,
+`denied_unresolvable`). Only the last is a signal something is wrong; the middle one is the feature
+working. It is a separate counter rather than a third value on
+`publisher_authorize_row_level_total`, whose `denied_by_gate` is documented as the fail-closed
+"could not apply the gate" case operators alert on — folding routine 403s in would fire that alert
+on ordinary traffic.
+
+**One dashboard-breaking change, and it is a change of MEANING rather than a disappearance.**
+`publisher_authorize_admit_all_total`'s `route` label still reports `authorize`, but in 0.4.1 that
+value meant the ROW route's admit-all and now means the LOCK's. A query matching
+`route="authorize"` keeps returning data and is counting something different.
+
+### `#(partition)` is removed
+
+It predated `given:`/`#(access_filter)` as Publisher's own tenant-scoping annotation and has been
+redundant with a row-level gate since that landed. A model still carrying it — on a `source:` line,
+on a field inside one, reached through a join, on a top-level `query:`, or as a file-level
+`##(partition)` — fails to load, naming it, with no fallback interpretation. Migrate it to an
+equivalent `#(access_filter)` gate (or a scoping `where:`, if the intent was convenience rather
+than a boundary — see [docs/row-level-access.md](docs/row-level-access.md)) before upgrading.
+
+### Also
+
+`get_context` drops a source whose gate is an unconditional `false` from its listing entirely,
+rather than reporting it as queryable and letting an agent learn only from the refusal. Every other
+gate keeps being reported as before, because a caller's givens over that MCP path are untrusted and
+evaluating a real rule there would be forgeable.
+
+One risk worth flagging for anyone who kept a retired-form quoted-string gate declared outside a
 package's own tree (see [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates)):
-that gate was already denying every request with no compile-time hint, and the grammar restriction
-does not change that — a leftover marker of that shape stays inert rather than becoming newly
-enforced, so it will not surface as a load failure on upgrade. Search for it explicitly rather than
-relying on the release to find it.
+that gate was already denying every request with no compile-time hint, and nothing here changes it
+— a leftover marker of that shape stays inert rather than becoming newly enforced, so it will not
+surface as a load failure on upgrade. Search for it explicitly rather than relying on the release
+to find it.
 
 ## [Unreleased] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
 

@@ -26,7 +26,7 @@ A manifest can name such a source without anyone being careless: a source that w
 given-free when it was built acquires a `given` on the next model edit, and the old
 manifest still points at a real, correct table until convergence catches up.
 
-Givens are the shape that needs this. `#(row_authorize)` does not: it is evaluated on the
+Givens are the shape that needs this. `#(access_filter)` does not: it is evaluated on the
 original model surface before routing is chosen (`model.ts` `assertAuthorized`, then
 `assertAuthorizedForAllSources`), and a non-portable shape self-corrects through the
 fallback ladder. The serve transform has no `given` handling at all, and the storage

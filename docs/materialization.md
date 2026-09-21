@@ -53,9 +53,9 @@ source: summary_fresh is order_summary extend {
 
 Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
 
-### `#(row_authorize)`-gated sources and materialization
+### `#(access_filter)`-gated sources and materialization
 
-A source protected by a `#(row_authorize)` gate — its own, or one carried from a joined or derived
+A source protected by a `#(access_filter)` gate — its own, or one carried from a joined or derived
 source — is refused for `storage=` and for pre-aggregation, unconditionally. A **colocated**
 `#@ persist` (no `storage=`) is different: it is admitted when the gate is _proven_ to be the entry
 point's own row filter, and refused otherwise.
@@ -73,7 +73,7 @@ point's own row filter, and refused otherwise.
   and is the documented form (see [row-level-access.md](row-level-access.md)).
 
 - **A colocated `#@ persist`** is not served frozen with respect to the gate at all: persistence
-  changes only where the rows are read FROM, never whether the entry point's own `#(row_authorize)` is
+  changes only where the rows are read FROM, never whether the entry point's own `#(access_filter)` is
   re-evaluated — the substitution swaps only the source's relation SQL, and the gate applies as the
   reading query's own `WHERE` on top of it, so filtered rows come back filtered. When the compiler can
   _prove_ the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
@@ -84,7 +84,7 @@ point's own row filter, and refused otherwise.
   condition is the entry point's own proven row-level gate.
 - **`#@ preaggregate`** refuses unconditionally, regardless of the gate's classification. A rollup
   synthesizes a colocated `#@ persist` over an import of the annotated base, and none of the
-  pre-aggregation modules has any `#(row_authorize)` awareness of its own — so this refusal is the only
+  pre-aggregation modules has any `#(access_filter)` awareness of its own — so this refusal is the only
   thing standing between a gated source and the pre-aggregation tier. It also groups _across_ the
   gated column, so the column is not even present in the rolled-up result to filter afterwards, even
   in principle. A refused rollup names `#@ preaggregate` and the gated source rather than the
@@ -98,7 +98,7 @@ everyone.
 
 Admitting a proven row-level gate applies unconditionally. The refusal it relaxes never fired at
 _load_: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
-package with a colocated `#@ persist` on a `#(row_authorize)`-gated source already loads, appears in
+package with a colocated `#@ persist` on a `#(access_filter)`-gated source already loads, appears in
 `plan.sources`, and serves live — what 422'd was its _materialization run_, not the package.
 
 **So such packages already exist.** On upgrade, a run that used to fail succeeds when the gate proves
@@ -141,7 +141,7 @@ on. An incremental source needs `reseed` to do the same.
 **`refresh="incremental"` does not bound revocation.** The [delta](#incremental-refresh) wraps the
 seed's own SQL in a predicate over `[covered_through, frontier)`, so a row whose access decision
 changes _without its watermark advancing_ falls outside every future delta and is never re-read.
-Take `orders`, gated with `#(row_authorize) org_id = $ORG` and declared
+Take `orders`, gated with `#(access_filter) org_id = $ORG` and declared
 `refresh="incremental" watermark="order_date"`: order 7 (`order_date` 2026-01-02) moves from org 1 to
 org 2, every later run advances past that date, and principal `ORG: 1` keeps reading it
 indefinitely — while the entry

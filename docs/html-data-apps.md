@@ -259,7 +259,7 @@ hook a host application uses to pass a signed token into an embedded page (see
 
 What the Publisher server enforces on these routes is the package's own model
 governance: filter and runtime-parameter (given) rules, access modifiers, and
-`#(row_authorize)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
+`#(access_filter)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
 events routes themselves are open; treat anything you put under `public/` as
 world-readable to anyone who can reach the server, and keep secrets in the models
 and the database, behind the query API, not in the page.
