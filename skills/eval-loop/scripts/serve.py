@@ -53,8 +53,16 @@ reload. On such a build, `ready` here is necessary but not sufficient.
 Two flags name the two things a run needs that are off by default:
 --allow-proxy sets PUBLISHER_ALLOW_PROXY_CONNECTIONS=true (a `publisher`-type
 connection is refused without it, and the server still reports `serving` with
-load_errors=1); --trace-retrieval sets PUBLISHER_MCP_TRACE=retrieval, without
-which failures cannot be attributed.
+load_errors=1); --trace-retrieval sets PUBLISHER_MCP_TRACE=retrieval.
+
+That second one is currently a no-op against open-source Publisher, and the
+flag is kept rather than removed because a host that reads the variable is the
+thing it is for. The trace store was written and never merged: there is no
+`mcp_traces` table and no trace tool at HEAD, so `traceId` is null on every
+local attempt. Nothing in the loop breaks over it, because `rankedSummary` is
+copied onto each `tool_call` event at capture and does not depend on a trace
+surviving anywhere. Do not read a null `traceId` as a run that lost its
+evidence.
 """
 from __future__ import annotations
 
@@ -237,7 +245,10 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=4811)
     ap.add_argument("--mcp-port", type=int, default=4040)
     ap.add_argument("--allow-proxy", action="store_true")
-    ap.add_argument("--trace-retrieval", action="store_true")
+    ap.add_argument("--trace-retrieval", action="store_true",
+                    help="set PUBLISHER_MCP_TRACE=retrieval. A no-op on "
+                         "open-source Publisher, which has no trace store; "
+                         "see the module docstring")
     ap.add_argument("--reinit", action="store_true",
                     help="drop the store and re-read publisher.config.json. "
                          "Needed after a config edit -- a new environment or a "

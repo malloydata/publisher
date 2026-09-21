@@ -37,6 +37,8 @@ all of them for every run is how a skill stops being read.
 | When | Read |
 |---|---|
 | about to run one | `reference/running-a-run.md` |
+| scraping cases out of production traffic | `reference/log-scrape.md` |
+| scoring a session that ran on another host | `reference/replaying-a-logged-session.md` |
 | a golden is wrong, doubted, or out of step with the model | `reference/golden-side-door.md` |
 | auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
 | deciding whether an edit stays | `reference/acceptance-check.md` |
@@ -92,9 +94,15 @@ questions came from outside, which is most of the time. While importing:
 Scraping from production logs (chat transcripts, retrieval traces) is the
 other supported source, and usually the better one: real traffic asks what
 people actually ask. Where your logs physically live is a host concern; look
-for a host-specific log-fetching skill. `skill:eval-import` takes over once
-you have the text, and its `reference/case-format.md` covers what a log pull
-needs that a question list does not.
+for a host-specific log-fetching skill. `reference/log-scrape.md` is the
+adapter contract, and `skill:eval-import` takes over once you have the text;
+its `reference/case-format.md` covers what a log pull needs that a question
+list does not.
+
+Scraping is not the only thing logs are good for. Where the agent ALREADY ran
+on another host, its session can be scored by this loop rather than re-asked:
+`reference/replaying-a-logged-session.md` covers that, and what a run may
+claim depends on what the source recorded.
 
 Prefer variety over volume when you sample, from either source. Cases that
 differ in grain, source, filter shape, and phrasing are what move a
@@ -327,11 +335,18 @@ the run measure something other than what it names:
    first time somebody tidies up; the set, the run directory and the write-up
    belong in git beside the model.
 
-2. The server must be up with retrieval tracing on, so a call's ranked results
-   can be recovered afterwards (open-source Publisher: `PUBLISHER_MCP_TRACE=retrieval`).
-   Confirm a trace lookup is available (absent means tracing is off).
-   Refuse to start a scored run without it: failures without traces cannot be
-   attributed.
+2. The server must be up. Where your host offers retrieval tracing, turn it on
+   and confirm a trace lookup answers, so a call's ranked results can be
+   recovered afterwards.
+
+   **Open-source Publisher has none.** `PUBLISHER_MCP_TRACE=retrieval` is set
+   by `serve.py` and read by nothing: the store was written and never merged,
+   so there is no `mcp_traces` table, no trace tool, and `traceId` is null on
+   every local attempt. This does not block a scored run, because the harness
+   never depended on it: `rankedSummary` is copied onto the `tool_call` event
+   at capture, precisely so the evidence survives without a trace store. So do
+   not refuse a local run for want of tracing. Refuse one whose `tool_call`
+   events carry no `rankedSummary`, which is what attribution actually reads.
 
 3. Health-check: your host's status check until it reports serving, and inspect
    `loadErrors`. A dead database that still answers HTTP is an environment
