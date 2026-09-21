@@ -1440,6 +1440,7 @@ export async function createTableAndDescribe(
    const columns = partitionColumns
       .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
       .join(", ");
+   let schema: WireColumn[];
    await session.runSQL("BEGIN TRANSACTION");
    try {
       await session.runSQL(
@@ -1449,6 +1450,15 @@ export async function createTableAndDescribe(
          `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
       );
       await session.runSQL(`INSERT INTO ${quotedTablePath} (${selectSQL})`);
+      // Read back INSIDE the transaction, and this is the reason rather than
+      // tidiness. `describeOrDrop` DROPS the table when the read-back fails, and
+      // the physical name is stable across generations — so after a COMMIT that
+      // drop deletes the generation the previous manifest still names, which is
+      // the same defect the transaction above exists to prevent, one statement
+      // later. Inside, a failed read-back rolls back like any other statement
+      // and the previous generation survives. A DESCRIBE resolves against the
+      // uncommitted table, so nothing is given up by asking here.
+      schema = await describeTable(session, quotedTablePath);
       await session.runSQL("COMMIT");
    } catch (buildErr) {
       // Restores the previous generation rather than deleting it. Best-effort:
@@ -1468,7 +1478,7 @@ export async function createTableAndDescribe(
       }
       throw buildErr;
    }
-   return await describeOrDrop(session, quotedTablePath);
+   return schema;
 }
 
 /** Read the built table's schema back, dropping the table if that fails. */

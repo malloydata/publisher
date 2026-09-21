@@ -49,8 +49,11 @@ describe("createTableAndDescribe: statements issued", () => {
          `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS}) WITH NO DATA`,
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id")',
          `INSERT INTO "lake"."t" (${ROWS})`,
-         "COMMIT",
+         // The read-back is INSIDE, before COMMIT: a failed DESCRIBE drops the
+         // table, and after a commit that would delete the generation the
+         // previous manifest still names.
          'DESCRIBE "lake"."t"',
+         "COMMIT",
       ]);
    });
 
@@ -161,17 +164,34 @@ describe("createTableAndDescribe: against a real DuckLake", () => {
       };
       expect(await rows()).toBe(3);
 
-      // A rebuild whose INSERT cannot run — the select names nothing.
+      // The select must BIND and then fail while running, which is the whole
+      // point: a select that fails to bind takes the first statement with it,
+      // and a failed `CREATE OR REPLACE` leaves the old table alone whether or
+      // not there is a transaction — so it would assert nothing. This one types
+      // cleanly and raises a conversion error partway through, once the INSERT
+      // has already written files.
+      const FAILS_MIDWAY =
+         "SELECT i AS org_id, " +
+         "CASE WHEN i < 900000 THEN 'a' ELSE CAST(CAST('zz' AS INT) AS VARCHAR) END AS s " +
+         "FROM range(1000000) t(i)";
       await expect(
-         createTableAndDescribe(
-            conn,
-            "lake2.t",
-            "SELECT * FROM no_such_source",
-            ["org_id"],
-         ),
+         createTableAndDescribe(conn, "lake2.t", FAILS_MIDWAY, ["org_id"]),
       ).rejects.toThrow();
 
       // Still serving the previous generation's rows, not zero and not absent.
       expect(await rows()).toBe(3);
+
+      // And the LAYOUT reverted with them: a later write goes back to flat
+      // files, so the rollback did not leave the table partitioned by a column
+      // the surviving generation was never written under.
+      await conn.runSQL(`INSERT INTO lake2.t (${ROWS})`);
+      const after = await conn.runSQL(
+         `SELECT data_file FROM ducklake_list_files('lake2', 't')`,
+      );
+      expect(
+         (after.rows as { data_file: string }[]).every(
+            (r) => !r.data_file.replaceAll("\\", "/").includes("/org_id="),
+         ),
+      ).toBe(true);
    }, 120000);
 });
