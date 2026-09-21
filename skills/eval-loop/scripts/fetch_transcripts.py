@@ -165,9 +165,14 @@ GET_CONTEXT_COLUMNS = {"request_id": "request_id", "session_id": "session_id",
                        "timestamp": "timestamp",
                        "request_payload": "request_payload",
                        "response": "response_body"}
+# `error` is mapped from the response body because that is the only thing hosts
+# tend to capture for this tool: a compile error is logged, a successful result
+# is not. Which is exactly the asymmetry the final-query choice needs, since it
+# picks the last call the server ANSWERED.
 EXECUTE_COLUMNS = {"request_id": "request_id", "session_id": "session_id",
                    "timestamp": "timestamp",
-                   "request_payload": "request_payload"}
+                   "request_payload": "request_payload",
+                   "error": "response_body"}
 MESSAGE_COLUMNS = {"request_id": "request_id",
                    "turn_started_ms": "turn_started_ms", "seq": "seq",
                    "chunk": "chunk", "role": "role", "text": "text"}

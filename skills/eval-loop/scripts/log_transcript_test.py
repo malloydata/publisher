@@ -96,6 +96,48 @@ class Payloads(unittest.TestCase):
         self.assertEqual(names, [lt.EXECUTE_QUERY, lt.GET_CONTEXT])
 
 
+class CallErrors(unittest.TestCase):
+    """Whether a call FAILED decides which query the judge is shown."""
+
+    def test_an_error_row_marks_the_result_as_an_error(self):
+        ev = lt.build_transcript(execute=[
+            {"request_id": "r1", "timestamp": "t",
+             "request_payload": {"query": "run: bad"},
+             "error": "compile error: no such field"}])
+        result = ev[2]["message"]["content"][0]
+        self.assertTrue(result["is_error"])
+        self.assertIn("compile error", result["content"][0]["text"])
+
+    def test_a_row_with_no_error_is_not_marked(self):
+        ev = lt.build_transcript(execute=[
+            {"request_id": "r1", "timestamp": "t",
+             "request_payload": {"query": "run: ok"}}])
+        self.assertNotIn("is_error", ev[2]["message"]["content"][0])
+
+    def test_the_final_query_skips_one_the_server_refused(self):
+        # The measured failure: an agent makes a syntax error and then fixes
+        # it. Without per-call outcomes every call looks answered, so the
+        # BROKEN query is handed to the judge as the attempt's answer.
+        import argparse, tempfile, shutil as _sh
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            a = argparse.Namespace(target="local", hosted_tools=(),
+                                   set_dir=tmp / "set", answerer_skills=[])
+            ev = lt.build_transcript(execute=[
+                {"request_id": "r1", "timestamp": "0001",
+                 "request_payload": {"query": "run: orders -> { aggregate: a, b }"}},
+                {"request_id": "r2", "timestamp": "0002",
+                 "request_payload": {"query": "run: orders -> { aggregate: a; b }"},
+                 "error": "compile error"}])
+            att = rb.derive_attempt(ev, {"qid": "q"}, a, tmp, None)
+            self.assertEqual(att["final_query"],
+                             "run: orders -> { aggregate: a, b }")
+            self.assertEqual(att["final_query_source"], "last_ok")
+            self.assertEqual(att["n_execute_errors"], 1)
+        finally:
+            _sh.rmtree(tmp, ignore_errors=True)
+
+
 class ResultEvent(unittest.TestCase):
     def test_token_counts_sum_across_the_sessions_turns(self):
         ev = lt.build_transcript(turns=[
