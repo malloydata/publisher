@@ -43,7 +43,7 @@ first, so no vendor's table names reach this module and a second host needs a
 new caller rather than a new branch here.
 
   get_context : {request_id, session_id, timestamp, request_payload, response}
-  execute     : {request_id, session_id, timestamp, request_payload}
+  execute     : {request_id, session_id, timestamp, request_payload, error}
   message     : {request_id, turn_started_ms, seq, chunk, role, text}
   turn        : {request_id, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, round_trips, cost_usd, outcome}
@@ -52,6 +52,12 @@ new caller rather than a new branch here.
 `response` is the retrieval response body verbatim. Both are passed through
 untouched: `mcp_payload` already reads the hosted `get_context` shape, and
 re-encoding here would be a second place for that knowledge to live.
+
+`error` is the one field worth arguing for. Hosts commonly log a query's
+COMPILE ERROR while logging nothing for a successful one, and that asymmetry is
+enough: it is precisely the failures that have to be known, because the final
+query is chosen as the last call the server answered. Pass it whenever the host
+has it.
 """
 from __future__ import annotations
 
@@ -103,14 +109,32 @@ def _tool_use(call_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any
         {"type": "tool_use", "id": call_id, "name": name, "input": payload}]}}
 
 
-def _tool_result(call_id: str, body: Any) -> dict[str, Any]:
+def _tool_result(call_id: str, body: Any,
+                 error: str | None = None) -> dict[str, Any]:
+    """One tool result. `error` marks the call as having FAILED.
+
+    Whether a call succeeded is not cosmetic. `pick_final_query` chooses the
+    attempt's final query as the last one the server ANSWERED, so a transcript
+    in which every call looks successful hands the judge whatever ran last --
+    which, for an agent that made a syntax error and then fixed it, is the
+    BROKEN query. Measured on a real 8-case arm replayed without per-call
+    outcomes: 4 of 8 attempts changed their final query, and one was handed a
+    query whose aggregate list was semicolon-separated and had errored.
+
+    So a host that logs an error for a call must pass it here, and one that
+    logs nothing at all gets `final_query_source: last` and should read it as
+    the warning it already is.
+    """
     # Serialised as the bare JSON body a hosted MCP returns. `resource_json`
     # already accepts that form alongside Publisher's "[Resource from ...]"
     # preamble, so no wrapper is invented here.
-    text = body if isinstance(body, str) else json.dumps(body or {})
-    return {"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": call_id,
-         "content": [{"type": "text", "text": text}]}]}}
+    text = (error if error is not None
+            else body if isinstance(body, str) else json.dumps(body or {}))
+    block: dict[str, Any] = {"type": "tool_result", "tool_use_id": call_id,
+                             "content": [{"type": "text", "text": text}]}
+    if error is not None:
+        block["is_error"] = True
+    return {"type": "user", "message": {"content": [block]}}
 
 
 def assistant_text(messages: Iterable[dict[str, Any]]) -> str:
@@ -184,7 +208,8 @@ def build_transcript(*, get_context: Iterable[dict[str, Any]] = (),
         call_id = f"{row.get('request_id') or 'req'}-{i}"
         events.append(_tool_use(call_id, row["_tool"],
                                 _as_dict(row.get("request_payload"))))
-        events.append(_tool_result(call_id, row.get("response")))
+        events.append(_tool_result(call_id, row.get("response"),
+                                   row.get("error")))
 
     if text:
         events.append({"type": "assistant", "message": {
