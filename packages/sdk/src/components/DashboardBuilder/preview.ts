@@ -121,6 +121,23 @@ export interface PreviewTileQuery {
  * `where: brand ~ f'Nike'`, from `values` and the declaration's type; with no
  * value yet it is left out, which is what an empty filter means. A binding to
  * a given neither side knows is left out too.
+ *
+ * An inline tile takes the SAME path as a reference: `view: x is { … }` names
+ * a view on the extension exactly as `view: x is base_view` does, so
+ * `source -> x + { where: … }` runs it refined. Without this, a bound control
+ * on an inline tile — most tiles in practice — looked like it did nothing in
+ * the live editor, and sent no given at all once saved.
+ *
+ * ADDITIVE, though, where a reference is exact. A reference tile refines its
+ * BASE view, which carries no bindings, so the preview is what the writer is
+ * about to produce. An inline tile has no base to name: `x` is the saved view,
+ * whose body already holds whatever bindings were saved into it, and this runs
+ * against the package's own model rather than the edited text. So adding a
+ * binding previews correctly, while REMOVING one leaves the saved `where:`
+ * filtering and CHANGING one applies the old and the new together, until the
+ * file is saved. Previewing those exactly would need the body re-emitted
+ * without its bindings, which this builder deliberately does not do: it
+ * splices, and never writes a view's body out from the document.
  */
 export function previewTileQuery(
    document: DashboardDocument,
@@ -128,12 +145,12 @@ export function previewTileQuery(
    runnable: ReadonlySet<string>,
    values: ReadonlyMap<string, GivenValue> = new Map(),
 ): PreviewTileQuery {
-   if (tile.declaration.kind !== "reference") {
-      // Inherited: the model's view, bindings in the model. Inline: this file's
-      // query body, which the document does not model and cannot rebind.
+   if (tile.declaration.kind === "inherited") {
+      // Declared in the model; bindings live there too, out of this
+      // document's reach, so the server is sent the whole row as it does.
       return {
          expression: `${tile.source} -> ${tile.name}`,
-         givenNames: tile.declaration.kind === "inherited" ? undefined : [],
+         givenNames: undefined,
       };
    }
    // Run on the dashboard's OWN extension, not the model source it extends.
@@ -143,6 +160,8 @@ export function previewTileQuery(
    // Running on the base showed unscoped numbers for a dashboard that scopes
    // its source, and the saved page then differed from what the author watched.
    const on = tile.source;
+   const baseView =
+      tile.declaration.kind === "reference" ? tile.declaration.from : tile.name;
    const localTypes = new Map(
       (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
@@ -165,8 +184,7 @@ export function previewTileQuery(
    const refinement = clauses.join(", ");
    return {
       expression:
-         `${on} -> ${tile.declaration.from}` +
-         (refinement ? ` + { ${refinement} }` : ""),
+         `${on} -> ${baseView}` + (refinement ? ` + { ${refinement} }` : ""),
       givenNames: sent,
    };
 }

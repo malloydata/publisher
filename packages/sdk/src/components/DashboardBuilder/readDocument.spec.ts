@@ -6,6 +6,7 @@ import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import { parseMalloy, parseRefused } from "./malloyTree";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -27,39 +28,109 @@ source: a is scoped_orders extend {
 }`;
 
 describe("blockAbove", () => {
+   // Real sources, parsed: where the block STARTS comes from the lexer's own
+   // comments now, and a synthetic array of lines could not exercise that.
+   const block = async (source: string, declLine: number) => {
+      const parse = await parseMalloy(source);
+      if (parseRefused(parse)) throw new Error(parse.reason);
+      return blockAbove(parse.parsed, source.split("\n"), declLine);
+   };
+
    // The boundary is a blank line, because that is the author's own separator.
    // Validated against the bundled dashboard, where the block above
    // `revenue_trend` is fourteen lines of comment plus three tags.
-   it("collects tags and comments up to the blank line", () => {
-      const lines = [
-         "  }",
-         "",
-         "  // why this row is six and six",
-         "  # colspan=6",
-         '  # label="Revenue"',
-         "  view: revenue is sales",
-      ];
-      const block = blockAbove(lines, 5);
-      expect(block.start).toBe(2);
-      expect(block.tags.map((t) => t.text)).toEqual([
+   it("collects tags and comments up to the blank line", async () => {
+      const at = await block(
+         [
+            "source: s is a extend {",
+            "",
+            "  // why this row is six and six",
+            "  # colspan=6",
+            '  # label="Revenue"',
+            "  view: revenue is sales",
+            "}",
+         ].join("\n"),
+         5,
+      );
+      expect(at.start).toBe(2);
+      expect(at.tags.map((t) => t.text)).toEqual([
          "# colspan=6",
          '# label="Revenue"',
       ]);
       // The writer patches a tag in place, so the line number is load-bearing.
-      expect(block.tags.map((t) => t.line)).toEqual([3, 4]);
+      expect(at.tags.map((t) => t.line)).toEqual([3, 4]);
    });
 
-   it("stops at the blank line rather than running into the tile above", () => {
-      const lines = ["  # colspan=12", "  view: a is x", "", "  view: b is y"];
-      expect(blockAbove(lines, 3).start).toBe(3);
-      expect(blockAbove(lines, 3).tags).toEqual([]);
+   it("stops at the blank line rather than running into the tile above", async () => {
+      const at = await block(
+         [
+            "source: s is a extend {",
+            "  # colspan=12",
+            "  view: a is x",
+            "",
+            "  view: b is y",
+            "}",
+         ].join("\n"),
+         4,
+      );
+      expect(at.start).toBe(4);
+      expect(at.tags).toEqual([]);
    });
 
    // `##` is a MODEL annotation and never belongs to a declaration below it.
-   it("ignores model-level annotations", () => {
-      const lines = ['## artifact { title="T" }', "source: a is b extend {"];
-      expect(blockAbove(lines, 1).tags).toEqual([]);
+   it("ignores model-level annotations", async () => {
+      const at = await block(
+         '## artifact { title="T" }\nsource: a is b extend {\n  view: v is x\n}',
+         1,
+      );
+      expect(at.tags).toEqual([]);
    });
+
+   it("does not collect a `#` line written inside a block comment", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  /* Notes:",
+         "     # colspan is chosen below",
+         "  */",
+         "  # colspan=6",
+         "  view: revenue is sales",
+         "}",
+      ].join("\n");
+      const at = await block(source, 6);
+      expect(at.start).toBe(2);
+      expect(at.tags.map((t) => t.text)).toEqual(["# colspan=6"]);
+   });
+
+   // Malloy spells a comment three ways. Each of the two this used to read as
+   // code stopped the walk early and hid every tag above it from the WRITER,
+   // while the reader took its tags from the parser and saw them -- so a retag
+   // wrote a second copy below the comment and the read-back gate passed.
+   for (const [kind, comment] of [
+      ["a `--` line", "  -- six across, to sit beside the trend"],
+      ["a `/* ... */` line", "  /* six across, to sit beside the trend */"],
+      [
+         "a block comment over several lines",
+         "  /* six across,\n     to sit beside the trend */",
+      ],
+   ] as const) {
+      it(`reads ${kind} as part of the block, not the end of it`, async () => {
+         const source = [
+            "source: s is a extend {",
+            "",
+            "  # colspan=6",
+            comment,
+            "  view: revenue is sales",
+            "}",
+         ].join("\n");
+         const declLine = source
+            .split("\n")
+            .indexOf("  view: revenue is sales");
+         const at = await block(source, declLine);
+         expect(at.start).toBe(2);
+         expect(at.tags.map((t) => t.text)).toEqual(["# colspan=6"]);
+      });
+   }
 });
 
 describe("readDashboardDocument", () => {
@@ -199,6 +270,226 @@ source: a is one extend {
          { field: "category", given: "CATEGORY" },
          { field: "created_at", given: "SINCE", op: ">=" },
       ]);
+   });
+});
+
+describe("readDashboardDocument: inline body filters", () => {
+   // A binding on an inline body is a depth-1 `where:` statement in the body's
+   // own first stage, not a `+ { … }` refinement — the writer's job is to
+   // locate the same statements, so both sides read the shape the same way.
+   it("reads a depth-1 where: line as the tile's filter", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: category ~ $CATEGORY
+    group_by: category
+    aggregate: n is count()
+  }
+}`);
+      expect(doc.tiles[0].declaration).toEqual({ kind: "inline" });
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   it("reads it at the end, or between two other statements, the same way", async () => {
+      const last = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    group_by: category
+    aggregate: n is count()
+    where: category ~ $CATEGORY
+  }
+}`);
+      expect(last.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+
+      const middle = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    group_by: category
+    where: category ~ $CATEGORY
+    aggregate: n is count()
+  }
+}`);
+      expect(middle.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // A `nest:`'s own `where:` is depth 2, one level inside the nest's own
+   // brace, not depth 1 of the tile's body — it is that nested view's filter,
+   // not this tile's, and must not be reported as one.
+   it("does not read a nest's own where: as the tile's filter", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    group_by: category
+    nest: by_period is {
+      where: period ~ $PERIOD
+      aggregate: n is count()
+    }
+  }
+}`);
+      expect(doc.tiles[0].filters).toBeUndefined();
+   });
+
+   // "Whose ENTIRE text is one or more binding clauses" — `a ~ $A and c = 1`
+   // matches BINDING_CLAUSE once, for `a ~ $A` alone, and the ` and c = 1`
+   // left over means the line is not READ as a binding at all.
+   it("does not read a compound predicate as a binding", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: category ~ $CATEGORY and status = 'open'
+    aggregate: n is count()
+  }
+}`);
+      expect(doc.tiles[0].filters).toBeUndefined();
+   });
+
+   // `cleanBindingClauses` accepts a following statement keyword as a clean
+   // clause's own boundary — the rule a one-liner's binding needs to share a
+   // line with its query — so two clean clauses either side of a real
+   // statement can each pass in isolation while the statement between them
+   // goes unnoticed. The whole-line check has to reject this shape: read as
+   // binding-only, a splice that owns the line would drop `aggregate:` along
+   // with the bindings.
+   // Two `where:` statements with a measure between them. Each clause has its
+   // own span, so both are ordinary bindings -- the writer removes one without
+   // touching the measure, which is what the old "not ours" rule stood in for.
+   it("reads two bindings with a statement between them", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: a ~ $A, aggregate: n is count(), where: b ~ $B
+  }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "a", given: "A" },
+         { field: "b", given: "B" },
+      ]);
+   });
+
+   // Two bindings alone on one line, comma-joined, are still binding-only —
+   // the gap between them is nothing but the separator, so the tightening
+   // above must not catch this shape too.
+   it("still reads two bindings on one line as binding-only", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: a ~ $A, where: b ~ $B
+  }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "a", given: "A" },
+         { field: "b", given: "B" },
+      ]);
+   });
+
+   // A second stage does not stop the FIRST stage's own binding from being
+   // read; only the WRITER refuses to touch a body shaped like this.
+   it("still reads a first-stage binding when a second stage follows", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    where: category ~ $CATEGORY
+    group_by: category
+    aggregate: n is count()
+  } -> {
+    where: n > 10
+    select: category, n
+  }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   it("reads a one-line body's binding alongside its query", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is { aggregate: n is count() where: category ~ $CATEGORY }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // The boundary after a where: clause is the next statement keyword, not
+   // only the next binding clause or the end of the content — a one-line
+   // body's binding is followed by comma-joined query text, not nothing.
+   it("reads a one-line body's where: even when a comma joins it to more query text", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is { where: category ~ $CATEGORY, aggregate: n is count() }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // A where: sharing the line that opens the body's brace, or the line that
+   // closes it, is still read as the tile's own binding.
+   it("reads a where: sharing a line with the body's opening or closing brace", async () => {
+      const opening = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is { where: category ~ $CATEGORY
+    aggregate: n is count()
+  }
+}`);
+      expect(opening.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+
+      const closing = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is {
+    aggregate: n is count()
+    where: category ~ $CATEGORY }
+}`);
+      expect(closing.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+      ]);
+   });
+
+   // A source-level `where:` sits outside every view's extent; it is read as
+   // part of no tile's filters, the same as it always was.
+   it("never attributes a source-level where: to a tile", async () => {
+      const doc = await read(`## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  where: brand_name ~ $BRAND
+
+  view: x is { aggregate: n is count() }
+}`);
+      expect(doc.tiles[0].filters).toBeUndefined();
    });
 });
 
@@ -366,7 +657,7 @@ describe("every composite dashboard in the repository opens", () => {
 describe("the compiler stays lazy", () => {
    it("is never imported statically", () => {
       const source = fs.readFileSync(
-         path.join(import.meta.dir, "readDocument.ts"),
+         path.join(import.meta.dir, "malloyTree.ts"),
          "utf8",
       );
       expect(source).not.toMatch(/^\s*import\s[^(]*@malloydata\/malloy/m);
