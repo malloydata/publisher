@@ -59,6 +59,27 @@ def outcome(verdict: str | None) -> str:
     return "neither"
 
 
+# A golden a person has established is WRONG. Its verdict says nothing about
+# the model -- the answer was scored against a key that does not hold -- so it
+# leaves every aggregate.
+EXCLUDED_GOLD = {"verified_wrong"}
+
+
+def counts_toward_score(gold_status: str | None) -> bool:
+    """Does this score belong in the run's aggregates?
+
+    Exported for the same reason `outcome` is. `run_baseline.py` dropped
+    `verified_wrong` before counting, `eval_run.malloy` did not, and the
+    package's own doc comment on `gold_status` said it did -- so one
+    `verified_wrong` golden made the printed pass rate and the notebook's
+    `pass_rate` disagree (92.31% against 91.67% on a real 13-case run) with
+    nothing to say which was right. One rule, three readers: this function,
+    the `counts` column `build_run_package.py` writes from it, and the
+    measures in `eval_run.malloy` that filter on that column.
+    """
+    return gold_status not in EXCLUDED_GOLD
+
+
 def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     """qid -> the scored outcome, for cases this run actually scored."""
     out: dict[str, dict[str, Any]] = {}

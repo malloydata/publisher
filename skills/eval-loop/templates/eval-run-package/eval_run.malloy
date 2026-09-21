@@ -343,8 +343,10 @@ include {
   public: rubric_sha
   #(doc) Golden revision at score time.
   public: golden_revision
-  #(doc) verified, verified_benign, suspect or verified_wrong. verified_wrong is excluded from aggregates.
+  #(doc) verified, verified_benign, suspect or verified_wrong.
   public: gold_status
+  #(doc) Whether this score belongs in the aggregates. False for a golden a person has established is WRONG (gold_status verified_wrong): the answer was scored against a key that does not hold, so its verdict says nothing about the model. Written by build_run_package.py from flip_table.counts_toward_score, the same rule run_baseline.py applies before printing a pass rate -- this column exists so the two cannot drift, which they had.
+  public: counts
   #(doc) Fields from golden.mustNotUse found in the final query, pipe-separated.
   #(doc) A hit forces no_match: a script decides this, never the judge.
   public: must_not_use_hits
@@ -365,18 +367,18 @@ extend {
   join_one: retrieval with attempt_key
 
   measure:
-    #(doc) Rows with a verdict, scorable or not.
+    #(doc) Rows with a verdict, scorable or not. The only measure here that does NOT drop an excluded golden, so scored_count minus the others shows what left.
     scored_count is count()
-    #(doc) Verdicts the acceptance check counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide.
-    confident_count is count() { where: outcome ? 'pass' | 'fail' }
+    #(doc) Verdicts the acceptance check counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide. A score whose golden is verified_wrong is excluded too -- see `counts`.
+    confident_count is count() { where: outcome ? 'pass' | 'fail'; where: counts = 'true' }
     #(doc) Attempts the judge accepted. A near_match is NOT a pass: it means defensibly different, and an arguable verdict must not move an acceptance check.
-    passed is count() { where: outcome = 'pass' }
+    passed is count() { where: outcome = 'pass'; where: counts = 'true' }
     #(doc) Attempts the judge rejected.
-    failed is count() { where: outcome = 'fail' }
+    failed is count() { where: outcome = 'fail'; where: counts = 'true' }
     #(doc) Defensibly different: neither a pass nor a fail. Watch this climb - it is the leading indicator of a rubric going vague.
-    near_matches is count() { where: verdict = 'near_match' }
+    near_matches is count() { where: verdict = 'near_match'; where: counts = 'true' }
     #(doc) Verdicts referred to a human because the judge was not confident.
-    needs_human is count() { where: verdict = 'needs_human' }
+    needs_human is count() { where: verdict = 'needs_human'; where: counts = 'true' }
     #(doc) Passes over DECIDED verdicts. The headline number; excludes near_match and needs_human by design.
     # percent
     pass_rate is passed / confident_count

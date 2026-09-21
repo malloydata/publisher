@@ -217,6 +217,55 @@ class Outcome(unittest.TestCase):
     def test_an_unknown_verdict_is_never_a_fail(self):
         self.assertEqual(ft.outcome("invented"), "neither")
 
+class CountsTowardScore(unittest.TestCase):
+    """One rule, three readers, because two of them had drifted.
+
+    `run_baseline.py` dropped a `verified_wrong` golden before counting and
+    `eval_run.malloy` did not, while the package's own doc comment on
+    `gold_status` said it did. On a real 13-case run with one such golden the
+    printed rate read 91.67% and the notebook's `pass_rate` read 92.31%, off
+    the same rows, with nothing to say which was right.
+    """
+
+    def test_a_verified_wrong_golden_leaves_the_aggregates(self):
+        self.assertFalse(ft.counts_toward_score("verified_wrong"))
+
+    def test_every_other_status_counts(self):
+        for s in ("verified", "verified_benign", "suspect", "provisional",
+                  "ambiguous", "invalid"):
+            with self.subTest(status=s):
+                self.assertTrue(ft.counts_toward_score(s))
+
+    def test_an_absent_status_counts(self):
+        # A run predating gold_status must not silently lose every case.
+        self.assertTrue(ft.counts_toward_score(None))
+
+    def test_run_baseline_reads_this_rule_rather_than_restating_it(self):
+        src = (pathlib.Path(__file__).resolve().parent
+               / "run_baseline.py").read_text()
+        # The AGGREGATE site reads the helper. The other `verified_wrong`
+        # test in that file is a different question -- whether a case is
+        # scorable at all, from the golden's own status, before an attempt --
+        # and is correctly separate.
+        self.assertIn('counts_toward_score(v.get("gold_status"))', src)
+        self.assertNotIn('v.get("gold_status") == "verified_wrong"', src)
+
+    def test_the_flattener_writes_it_as_a_column(self):
+        src = (pathlib.Path(__file__).resolve().parent
+               / "build_run_package.py").read_text()
+        self.assertIn('"counts": counts_toward_score(', src)
+        self.assertIn('"counts", "reason"', src)
+
+    def test_the_malloy_measures_filter_on_that_column(self):
+        malloy = (pathlib.Path(__file__).resolve().parent.parent
+                  / "templates" / "eval-run-package" / "eval_run.malloy").read_text()
+        for m in ("confident_count", "passed", "failed", "near_matches",
+                  "needs_human"):
+            line = next(l for l in malloy.splitlines()
+                        if l.strip().startswith(f"{m} is count()"))
+            self.assertIn("counts = 'true'", line, f"{m} does not exclude it")
+        # Written as a string because flatten() serialises a bool that way.
+        self.assertIn("public: counts", malloy)
 
 if __name__ == "__main__":
     unittest.main()

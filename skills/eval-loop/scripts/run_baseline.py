@@ -197,6 +197,7 @@ from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
                            build_workspace, default_manifest,
                            manifest_skills, no_events, no_text,
                            run_cli, skills_roots)
+from flip_table import counts_toward_score  # noqa: E402
 
 # `--restricted` used to do two jobs at once: hide the settings that load
 # skills, AND strip the host toolset down to nothing. Turning it off to get
@@ -3284,8 +3285,13 @@ def main(argv: list[str] | None = None) -> int:
     # going vague, and folding it into either column hides that.
     # A demonstrably wrong key is not evidence about the model either way, so it
     # leaves the aggregates entirely rather than counting as a failure.
+    # The rule lives in one place and three things read it: here, the
+    # `counts` column build_run_package.py writes, and the measures in
+    # eval_run.malloy that filter on that column. Restated in two of them, it
+    # drifted -- this printed 91.67% while the notebook's pass_rate read
+    # 92.31% off the same run, with nothing to say which was right.
     wrong_gold = {q for q, v in verdicts.items()
-                  if v.get("gold_status") == "verified_wrong"}
+                  if not counts_toward_score(v.get("gold_status"))}
     scored = {q: v for q, v in verdicts.items() if q not in wrong_gold}
 
     ok = sum(1 for v in scored.values() if v.get("verdict") == "match")
