@@ -243,19 +243,22 @@ describe("generated project serves against a real server", () => {
       }
    });
 
-   test("the package's model loaded without a compile error", async () => {
+   test("the package lists its surface, and only its surface", async () => {
       const models = await getJson<{ path: string; error?: string }[]>(
          `${pkgBase()}/models`,
       );
-      const model = models.find((m) => m.path === "sales.malloy");
+      const model = models.find((m) => m.path === "index.malloy");
       expect(model).toBeDefined();
       expect(model?.error).toBeUndefined();
+      // sales.malloy is a building block now, so it compiles and is imported
+      // but is not listed. A scaffolded package is curated from first boot.
+      expect(models.map((m) => m.path)).not.toContain("sales.malloy");
    });
 
    test("the starter model compiles with all its views", async () => {
       const model = await getJson<{
          sources: { name: string; views?: { name: string }[] }[];
-      }>(`${pkgBase()}/models/sales.malloy`);
+      }>(`${pkgBase()}/models/index.malloy`);
       const views = model.sources.flatMap((s) =>
          (s.views ?? []).map((v) => v.name),
       );
@@ -271,7 +274,7 @@ describe("generated project serves against a real server", () => {
 
    test("querying the overview view returns the expected totals", async () => {
       const response = await postJson<{ result: string }>(
-         `${pkgBase()}/models/sales.malloy/query`,
+         `${pkgBase()}/models/index.malloy/query`,
          { sourceName: "sales", queryName: "overview" },
       );
       const result = JSON.parse(response.result) as {
@@ -285,7 +288,7 @@ describe("generated project serves against a real server", () => {
 
    test("the time view breaks revenue into four months", async () => {
       const response = await postJson<{ result: string }>(
-         `${pkgBase()}/models/sales.malloy/query`,
+         `${pkgBase()}/models/index.malloy/query`,
          { sourceName: "sales", queryName: "sales_by_month" },
       );
       const result = JSON.parse(response.result) as {
@@ -309,12 +312,12 @@ describe("generated project serves against a real server", () => {
       const models = await getJson<{ path: string; error?: string }[]>(
          `${api()}/environments/default/packages/budget/models`,
       );
-      const model = models.find((m) => m.path === "budget.malloy");
+      const model = models.find((m) => m.path === "index.malloy");
       expect(model).toBeDefined();
       expect(model?.error).toBeUndefined();
 
       const response = await postJson<{ result: string }>(
-         `${api()}/environments/default/packages/budget/models/budget.malloy/query`,
+         `${api()}/environments/default/packages/budget/models/index.malloy/query`,
          { sourceName: "budget", queryName: "overview" },
       );
       const result = JSON.parse(response.result) as {
@@ -324,6 +327,28 @@ describe("generated project serves against a real server", () => {
       expect(rows).toHaveLength(1);
       // record_count over the 3-row fixture spreadsheet.
       expect(rows[0].record_value[0].number_value).toBe(3);
+   });
+
+   test("the query the generated briefing prints is one the server answers", async () => {
+      // The briefing is what an agent reads first. If its example curl names a
+      // path the boundary refuses, every new user's first request 404s -- so
+      // the assertion is not "the briefing mentions index.malloy" but "run the
+      // path it printed and get rows".
+      const briefing = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      const printed = briefing.match(
+         /curl -s -X POST \S+\/models\/(\S+?)\/query/,
+      );
+      expect(printed).not.toBeNull();
+      const modelPath = printed![1];
+
+      const response = await postJson<{ result: string }>(
+         `${pkgBase()}/models/${modelPath}/query`,
+         { sourceName: "sales", queryName: "overview" },
+      );
+      const result = JSON.parse(response.result) as {
+         data: { array_value: unknown[] };
+      };
+      expect(result.data.array_value).toHaveLength(1);
    });
 
    test("the MCP endpoint lists the malloy tools", async () => {
