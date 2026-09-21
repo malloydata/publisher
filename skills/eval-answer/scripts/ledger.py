@@ -68,7 +68,16 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
                      "cache_write_tokens", "skills_invoked",
-                     "cost_usd", "num_turns", "wall_seconds", "run_error", "at"},
+                     "cost_usd", "num_turns", "wall_seconds", "run_error",
+                     # False when the SOURCE of this attempt could not carry
+                     # the agent's prose at all -- a transcript rebuilt from a
+                     # host's request logs, where only the tool calls were
+                     # logged. That is not the same fact as an empty
+                     # `answer_text`, which says the agent produced no prose,
+                     # and the two must not be confused: one is a limit of the
+                     # measurement and the other is a result. Absent means the
+                     # source could carry prose, which is every spawned run.
+                     "answer_captured", "at"},
     },
     "tool_call": {
         "required": _CASE | {"tool"},
@@ -191,6 +200,15 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # is the HARNESS's, not the model's. Both leave the denominator
                 # and both suppress the pass rate (`incomplete` below).
                 "truncated", "contaminated",
+                # Where this run's attempts CAME FROM. `spawned` is an
+                # answerer this harness ran; `logs` is a transcript rebuilt
+                # from a host's request logs for a session that ran elsewhere.
+                # `sourceTier` says how much that source could carry: `T1`
+                # tool calls only, `T2` plus the agent's prose, `T3` plus the
+                # host-side tool log that makes contamination decidable. A run
+                # that cannot say which it was cannot be compared with one that
+                # can, and a T1 run has no pass rate to quote at all.
+                "source", "sourceTier",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 # The run whose attempts this run's answerer cost was COPIED
