@@ -103,6 +103,7 @@ import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
+   hasCallerAuthorizeAnnotation,
    findLegacyStringGates,
    referencedGivenNames,
    validateAuthorizeProbes,
@@ -1913,6 +1914,8 @@ export class Model {
    private async assertRequestDeclaredEntryPointIsNotLaundered(
       runnable: QueryMaterializer,
       query: string,
+      givens: Record<string, GivenValue>,
+      graftScope: GraftScope | undefined,
    ): Promise<void> {
       // Nothing to launder unless this model actually declares a gate.
       if (!this.declaresAnyGate()) return;
@@ -1937,16 +1940,105 @@ export class Model {
          entryPoint,
          buildDerivationBaseMap(stripMalloyCommentsAndLiterals(query)),
       );
-      if (proof.proven) return;
+      if (proof.proven) {
+         // Every gated base the chain reached must be a lock this caller
+         // satisfies. A lock is decided, not attached, so once it admits there
+         // is nothing left for the alias to strip — which is why an admitted
+         // one proves the branch that a row filter cannot. A filter reaching
+         // here has no graft target (the entry point is ephemeral, so
+         // `resolveGraftTarget` has no `modelDef.contents` key for it), so it
+         // is refused rather than silently dropped.
+         for (const base of proof.gatedBases) {
+            for (const entry of this.entryPointGatesBySource.get(base) ?? []) {
+               const resolution = this.modelDef
+                  ? await this.resolveGateShape(
+                       entry,
+                       this.modelDef,
+                       graftScope,
+                    )
+                  : ({ shape: "rejected", cause: undefined } as const);
+               if (resolution.shape === "row_level") {
+                  this.denyLaunderedEntryPoint(
+                     entryPoint,
+                     "row_filter_not_graftable",
+                     base,
+                  );
+               }
+               // Throws the same opaque refusal, labelled with the ephemeral
+               // entry point rather than the gated base it reached, and books
+               // its own lock counters.
+               denyUnlessAdmitted(resolution, givens, entryPoint);
+            }
+         }
+         return;
+      }
+      this.denyLaunderedEntryPoint(entryPoint, proof.reason, proof.at);
+   }
+
+   /**
+    * Decide, before compiling, every lock reachable from an entry point THIS
+    * REQUEST declared.
+    *
+    * Deliberately not a proof and never denies on its own: a chain it cannot
+    * read just gates nothing here, and
+    * {@link assertRequestDeclaredEntryPointIsNotLaundered} still decides it
+    * after compilation. The only thing this buys is ORDER — a refused caller
+    * hears "denied" instead of the compiler's opinion of a column name on a
+    * source they may not read.
+    */
+   private async assertLocksOnRequestDeclaredBases(
+      entryPoint: string,
+      query: string,
+      givens: Record<string, GivenValue>,
+      bypassAuthorize?: boolean,
+   ): Promise<void> {
+      if (!this.declaresAnyGate()) return;
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      const seen = new Set<string>();
+      // No run target (`/compile` on text that only DECLARES sources) has no
+      // one place to start, so every name the text declares is a root. The walk
+      // decides the same locks either way; it just cannot be anchored.
+      const worklist = entryPoint ? [entryPoint] : [...basesOf.keys()];
+      for (let i = 0; i < worklist.length; i++) {
+         const name = worklist[i];
+         if (seen.has(name)) continue;
+         seen.add(name);
+         if (seen.size > REQUEST_CHAIN_MAX_NAMES) return;
+         if (this.entryPointGatesBySource.has(name)) {
+            try {
+               // Names a source the request's own text derives from, so
+               // reporting it back tells the caller nothing they did not write.
+               await this.assertAuthorized(name, givens, bypassAuthorize);
+            } catch (error) {
+               // A refusal must not answer for a source the caller cannot even
+               // see: the conversion has to resolve the target at least as well
+               // as the gate that denied it, and the callers' own conversions
+               // read surface syntax, which cannot see through this alias. So
+               // convert HERE, on the base actually gated — a hidden one is a
+               // 404, not a 403 naming it.
+               if (error instanceof AccessDeniedError) {
+                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+               }
+               throw error;
+            }
+            continue;
+         }
+         for (const base of basesOf.get(name) ?? []) worklist.push(base);
+      }
+   }
+
+   /** The one refusal for a request-declared entry point, and its audit line. */
+   private denyLaunderedEntryPoint(
+      entryPoint: string,
+      reason: string,
+      at: string,
+   ): never {
       recordRowLevelGateDecision("denied_by_gate");
       logger.debug(
          "Request-declared entry point in a gated model is not provably ungated; denying",
-         {
-            modelPath: this.modelPath,
-            entryPoint,
-            reason: proof.reason,
-            at: proof.at,
-         },
+         { modelPath: this.modelPath, entryPoint, reason, at },
       );
       // Names the compiled entry point the request itself declared — never the
       // gate's column, nor which gated source it may have reached.
@@ -2002,13 +2094,15 @@ export class Model {
       entryPoint: string,
       basesOf: Map<string, Set<string>>,
    ):
-      | { proven: true; reason?: undefined; at?: undefined }
+      | { proven: true; gatedBases: readonly string[] }
       | {
            proven: false;
-           reason: "reaches_gated_source" | "chain_not_established";
+           reason: "chain_not_established";
            at: string;
+           gatedBases?: undefined;
         } {
       const seen = new Set<string>();
+      const gatedBases: string[] = [];
       const worklist = [entryPoint];
       for (let i = 0; i < worklist.length; i++) {
          const name = worklist[i];
@@ -2021,17 +2115,15 @@ export class Model {
          }
          const modelGates = this.entryPointGatesBySource.get(name);
          if (modelGates !== undefined) {
-            if (modelGates.length > 0) {
-               return {
-                  proven: false,
-                  reason: "reaches_gated_source",
-                  at: name,
-               };
-            }
-            // A model-declared ungated source: this branch is proven, and the
-            // walk stops here rather than following the AUTHOR's own
-            // derivations, which is what keeps the documented model-authored
-            // fail-open intact.
+            // A gated base does not disprove the chain on its own: a LOCK that
+            // admits this caller leaves nothing to graft, so aliasing the
+            // source launders nothing. Collected for the caller to decide;
+            // anything that is not an admitting lock still denies there.
+            if (modelGates.length > 0) gatedBases.push(name);
+            // A model-declared source: this branch is resolved, and the walk
+            // stops here rather than following the AUTHOR's own derivations,
+            // which is what keeps the documented model-authored fail-open
+            // intact.
             continue;
          }
          const bases = basesOf.get(name);
@@ -2040,7 +2132,7 @@ export class Model {
          }
          for (const base of bases) worklist.push(base);
       }
-      return { proven: true };
+      return { proven: true, gatedBases };
    }
 
    /**
@@ -2173,6 +2265,8 @@ export class Model {
             await this.assertRequestDeclaredEntryPointIsNotLaundered(
                runnable,
                options.callerQueryText,
+               givens,
+               graftScope,
             );
          }
          return runnable;
@@ -2831,7 +2925,21 @@ export class Model {
       text: string,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.assertAuthorized(extractRunTargetSourceName(text), givens);
+      const target = extractRunTargetSourceName(text);
+      await this.assertAuthorized(target, givens);
+      // The same caller-declared-alias gap the query path closes, and it bites
+      // harder here: `/compile` answers WITH the compiler's diagnostics, so a
+      // lock that is not decided first makes them readable for a source the
+      // caller is refused. Text with no `run:` resolves no target and is walked
+      // anyway — a bare `source: s is locked extend { … }` is exactly the shape
+      // that reaches the compiler with nothing gated.
+      if (!hasCallerAuthorizeAnnotation(text)) {
+         await this.assertLocksOnRequestDeclaredBases(
+            target ?? "",
+            text,
+            givens,
+         );
+      }
    }
 
    /**
@@ -5058,6 +5166,31 @@ export class Model {
             givens ?? {},
             bypassAuthorize,
          );
+         // A caller-declared alias (`source: s is gated extend {}`) names an
+         // entry point this model never declared, so the gate above matches
+         // nothing and the caller's own compile errors would answer before any
+         // lock did — the schema oracle this whole early gate exists to close.
+         // Decide the locks the request's OWN derivations reach, from its text,
+         // before compiling. A chain this cannot read is left to the
+         // post-compile check ({@link
+         // assertRequestDeclaredEntryPointIsNotLaundered}), which is the
+         // fail-closed one; this is only ever an earlier, opaquer refusal.
+         // Text carrying an annotation at all is left to the forgery rejecter
+         // below, whose refusal is the specific one ("not permitted in
+         // caller-submitted text") and whose counter is the one operators read.
+         // Skipping opens nothing: the post-compile check still decides.
+         if (
+            query &&
+            !hasCallerAuthorizeAnnotation(query) &&
+            !this.entryPointGatesBySource.has(earlySource)
+         ) {
+            await this.assertLocksOnRequestDeclaredBases(
+               earlySource,
+               query,
+               givens ?? {},
+               bypassAuthorize,
+            );
+         }
       }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors

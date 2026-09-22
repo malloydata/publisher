@@ -136,7 +136,15 @@ you resolve identity into givens.
 
 **A denied caller's compile errors are no longer a schema oracle.** The lock is decided before the
 caller's query compiles, so probing a locked source with a non-existent field returns the 403
-rather than "field is not defined".
+rather than "field is not defined". That holds when the request declares its own alias for the
+source (`source: s is locked extend {}`), through a chain of them, and on `/compile` as well as
+`/query` — each reaches the compiler by a different route, and all of them decide the lock first.
+
+The same rule cuts the other way for a caller the lock **admits**: an alias over a locked source is
+served, exactly as the model-declared source would be. A source whose only gate is
+`#(authorize) true` is therefore no more restrictive than an ungated one, which is what the
+deliberately-open marker has to mean. An `#(access_filter)` still cannot be carried through a
+request-declared alias — there is no graft target for it — so that refusal is unchanged.
 
 ### Metrics
 

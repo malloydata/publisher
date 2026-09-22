@@ -3493,6 +3493,98 @@ source: headcount_by_dept is duckdb.table('departments') extend {
    });
 });
 
+// A lock is DECIDED, not attached, so once it admits there is nothing left for
+// a caller-declared alias to strip. The laundering check predates the lock and
+// refuses any request-declared entry point whose chain reaches a source with
+// gates, which is right for a row filter — an ephemeral entry point is not a
+// `modelDef.contents` key, so there is nowhere to graft one — and wrong for a
+// lock the caller already satisfied. MEASURED before the fix: the filter route
+// served `source: s is gated extend {}` while the lock route refused it, and
+// `#(authorize) true` (the deliberately-open marker) refused it too, which made
+// an open source stricter than an ungated one.
+describe("an admitted lock does not block a caller-declared derivation", () => {
+   const LOCKED = `##! experimental.givens
+
+given:
+  ALLOW :: string[]
+
+#(authorize) 'ok' in $ALLOW
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+   const ALIAS = "source: s is gated extend {}\nrun: s -> { aggregate: c }";
+
+   it("serves the alias to a caller the lock admits", async () => {
+      await writeModel("lock_alias.malloy", LOCKED);
+      const { compactResult } = await runGated("lock_alias.malloy", ALIAS, {
+         ALLOW: ["ok"],
+      });
+      // Real rows, not a fabricated zero: the lock admitted, so the alias is
+      // served exactly as the model-declared source would be.
+      expect(compactResult as unknown as { c: number }[]).toEqual([{ c: 2 }]);
+   });
+
+   it("still refuses the alias to a caller the lock denies", async () => {
+      await writeModel("lock_alias.malloy", LOCKED);
+      const err = await runGated("lock_alias.malloy", ALIAS, {
+         ALLOW: ["no"],
+      }).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      // The pre-compile gate names the base the REQUEST derived from, which
+      // discloses nothing: `gated` is a name this caller wrote themselves in
+      // the text above. What must never appear is anything the caller did not
+      // already have — a gate column, or which field resolved.
+      expect(String(err!.message)).toBe('Access denied for source "gated".');
+   });
+
+   it("refuses the alias BEFORE compiling, so it is not a schema oracle", async () => {
+      // The denial above is also reachable from the compiled backstop, so it
+      // alone does not pin that the lock is decided first. This one does: a
+      // refused caller naming a column that does not exist must learn that
+      // they are refused, not whether the column is there.
+      await writeModel("lock_alias.malloy", LOCKED);
+      const err = await runGated(
+         "lock_alias.malloy",
+         "source: s is gated extend {}\nrun: s -> { group_by: no_such_field }",
+         { ALLOW: ["no"] },
+      ).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
+   });
+
+   it("follows the alias chain more than one hop", async () => {
+      // One hop could be closed by inspecting the immediate base; this is what
+      // pins that the walk actually recurses, which is the mechanism.
+      await writeModel("lock_alias.malloy", LOCKED);
+      const err = await runGated(
+         "lock_alias.malloy",
+         "source: a is gated extend {}\nsource: b is a extend {}\nrun: b -> { group_by: no_such_field }",
+         { ALLOW: ["no"] },
+      ).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
+   });
+
+   it("treats an `#(authorize) true` source as open to one", async () => {
+      await writeModel(
+         "open_alias.malloy",
+         `##! experimental.givens\n\n#(authorize) true\nsource: gated is duckdb.table('customers') extend {\n  measure: c is count()\n}\n`,
+      );
+      const { compactResult } = await runGated("open_alias.malloy", ALIAS, {});
+      expect(compactResult as unknown as { c: number }[]).toEqual([{ c: 2 }]);
+   });
+});
+
 // Two schema-oracle holes that survived the first pass at making introspection
 // agree with enforcement, both found in review. Both used to assert
 // AccessDeniedError and NOT MalloyError — the compiled backstop always denied

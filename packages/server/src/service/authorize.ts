@@ -300,6 +300,17 @@ export function authorizeAnnotationRoute(text: string): string | undefined {
  * model an author is compile-checking through `/compile`. That is the intended
  * direction, so the message has to tell an author what to do instead.
  */
+/**
+ * Whether {@link assertNoCallerAuthorizeAnnotation} would reject this text.
+ *
+ * Exported so a caller that wants to defer to that rejection can ask with the
+ * SAME predicate rather than a near-copy: a narrower one lets a spelling it
+ * misses answer through the other path instead.
+ */
+export function hasCallerAuthorizeAnnotation(callerText: string): boolean {
+   return AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText);
+}
+
 export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
    if (!AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText)) return;
    // A caller-input rejection, so 400 — not ModelCompilationError's 424, which
