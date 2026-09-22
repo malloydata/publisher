@@ -1013,28 +1013,23 @@ export class Environment {
                   reason: "base_model_load_failed",
                });
                if (error instanceof MalloyError) {
-                  // The base model itself is broken, or its schema could not be
-                  // fetched. The author needs to see which -- and a schema fetch
-                  // that failed is a dependency being unreachable, not a bad
-                  // request, so it takes the same 503 the package scope already
-                  // gives its analogous failure.
-                  if (
-                     error.problems.some(
-                        (problem) =>
-                           problem.code === "failed-to-fetch-table-schema",
-                     )
-                  ) {
-                     throw new ServiceUnavailableError(
-                        `Cannot validate the submitted source: the schema for ` +
-                           `"${modelName}" could not be fetched. This is a ` +
-                           `problem reaching the data source, not with the ` +
-                           `submitted source.`,
-                     );
-                  }
-                  // A model that does not compile is the author's to fix, and
-                  // the diagnostics naming what is wrong are the useful part --
-                  // they describe the model the caller already has, so they
-                  // disclose nothing the caller cannot see by reading it.
+                  // Every MalloyError here is the same answer: the model this
+                  // fragment would be judged against did not compile, so there
+                  // is nothing to judge it against.
+                  //
+                  // There was a 503 branch keyed on `failed-to-fetch-table-schema`,
+                  // on the reading that a schema fetch which failed means the
+                  // dependency is unreachable. That code does not carry that
+                  // meaning: a table that simply DOES NOT EXIST produces it too,
+                  // so a permanent authoring error was telling the client to
+                  // retry. The reverse also held -- a `conn.sql(...)`-rooted
+                  // model whose warehouse was genuinely down fails with
+                  // `invalid-sql-source` and took the 400 anyway. Splitting on
+                  // it was therefore wrong in both directions, and Malloy
+                  // publishes no code here that means "unreachable". Until one
+                  // exists, these are one 400 carrying the model's own problems,
+                  // which is also what `file` and `package` scope already do
+                  // with the same failure.
                   throw new CompileRefusedError(
                      `Cannot validate the submitted source: the model ` +
                         `"${modelName}" does not compile, so there is nothing ` +
@@ -1050,6 +1045,19 @@ export class Environment {
                );
             }
             try {
+               // The fragment ALONE, against the compiled base model. The
+               // concatenation the real compile runs cannot be passed here:
+               // `extendModel` judges text as an extension of a model that
+               // already holds those declarations, so feeding it the model's
+               // own text yields `Cannot redefine` for every source in the file
+               // and aborts before the appended fragment is ever classified --
+               // which is a bypass rather than a stricter check.
+               //
+               // What closes the continuation hole instead is the gate refusing
+               // when it could not parse what it was given (see
+               // assertNoRestrictedConstructs). A continuation fragment is a
+               // syntax error on its own, and that is now a refusal rather than
+               // silence read as approval.
                await assertNoRestrictedConstructs(
                   runtime,
                   baseModel,

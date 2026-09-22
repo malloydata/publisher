@@ -64,10 +64,16 @@ changes in practice: validating a not-yet-saved dashboard, which opens with an
 
 Compiling at `append` also now requires the model named in the URL to load,
 because the fragment is judged against that model's published surface and there
-is nothing to judge it against otherwise. A model that does not exist, or that
-does not itself compile, answers 400 with the model's own problems; a model
-whose table schema cannot be fetched answers **503** rather than 400, since that
-is a data source being unreachable rather than a bad request.
+is nothing to judge it against otherwise. A model that **does not compile**
+answers 400 carrying the model's own problems, which describe a file the caller
+can already read. A model that **does not exist** answers 400 too, but
+deliberately says only that it could not be loaded: naming what was wrong with a
+path the caller supplied would answer "does this file exist" for any path.
+
+Append text must also stand alone as top-level Malloy. A fragment that only
+parses as a continuation of the model's last statement -- opening with
+`extend {`, for instance -- is refused rather than compiled, because text that
+does not parse on its own cannot be checked on its own.
 
 `file` and `package` are unchanged and still unrestricted. `scope` is a
 caller-chosen request field with no authorization difference between its values,

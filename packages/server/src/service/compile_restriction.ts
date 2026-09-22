@@ -42,6 +42,18 @@ import { CompileRefusedError } from "../errors";
 /** Malloy's stable marker for a construct restricted mode refuses. */
 const RESTRICTED_CONSTRUCT_CODE = "restricted-construct-forbidden";
 
+/**
+ * Malloy's code for text that did not parse (`lang/parse-log.d.ts`). Emitted by
+ * the parser's own error listener, so it marks the case where no tree was built
+ * and therefore nothing in the text was classified.
+ */
+const SYNTAX_ERROR_CODE = "syntax-error";
+
+/** Whether `problem` says the text failed to parse rather than failing to mean something. */
+function isParseFailure(problem: LogMessage): boolean {
+   return problem.code === SYNTAX_ERROR_CODE && problem.severity === "error";
+}
+
 /** The restricted-construct rejections among `problems`, if any. */
 function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
    return problems.filter(
@@ -53,10 +65,20 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
  * Compile `source` against `model` in restricted mode and throw if it uses a
  * construct that reaches outside the model's curated surface.
  *
- * Only restricted-construct rejections are acted on here. Every other
- * diagnostic -- an undefined field, a syntax error, a redefinition -- is left
- * untouched for the real compile to report, so this gate never becomes a second
- * source of ordinary compile errors with its own coordinates and wording.
+ * Only restricted-construct rejections are acted on here, with ONE exception:
+ * a parse failure (below). Every other diagnostic -- an undefined field, a
+ * redefinition -- is left untouched for the real compile to report, so this
+ * gate never becomes a second source of ordinary compile errors with its own
+ * coordinates and wording.
+ *
+ * The exception exists because this gate parses a DIFFERENT unit from the
+ * compile it guards: it judges the fragment alone, while the real compile runs
+ * `${modelContent}\n${source}`. It cannot simply be handed the concatenation --
+ * `extendModel` judges text as an extension of a model that already holds those
+ * declarations, so the model's own text comes back as `Cannot redefine` for
+ * every source in it and nothing in the appended fragment is classified at all.
+ * So the units stay different, and the gate instead refuses whenever it could
+ * not parse what it was given.
  *
  * The gate is deliberately a separate compile from the one whose diagnostics
  * the caller receives. Restricted mode changes what compiles, so reusing its
@@ -104,7 +126,32 @@ export async function assertNoRestrictedConstructs(
    }
 
    const rejected = restrictedRejections(problems);
-   if (rejected.length === 0) return;
+   if (rejected.length === 0) {
+      // A PARSE FAILURE IS NOT A PASS. Classification happens while walking a
+      // parsed tree, so text that never parsed was never judged -- the gate
+      // saw no forbidden construct because it saw no constructs at all. Before
+      // this, that silence was read as approval, which is the wrong direction
+      // for a gate: the one text guaranteed to produce it is text that does
+      // not stand alone, and the real compile may still run it as part of a
+      // larger whole.
+      //
+      // Only a parse-level failure is treated this way. An ordinary semantic
+      // error -- an undefined field, a redefinition -- means the tree WAS
+      // walked and the constructs in it WERE classified, so the absence of a
+      // rejection there is real evidence and the diagnostic belongs to the
+      // caller-facing compile rather than to this gate.
+      if (problems.some(isParseFailure)) {
+         throw new CompileRefusedError(
+            `This Malloy cannot be compiled at scope "append": the submitted ` +
+               `text could not be parsed on its own, so it cannot be checked ` +
+               `against the model's published surface. Fix: send text that ` +
+               `stands alone as top-level Malloy -- a complete ` +
+               `\`source:\`/\`query:\`/\`run:\` statement rather than a ` +
+               `continuation of one already in the model.`,
+         );
+      }
+      return;
+   }
 
    // A caller-input refusal, so 400 rather than a compile-diagnostics response:
    // the text is not being reported as invalid Malloy, it is being refused.
