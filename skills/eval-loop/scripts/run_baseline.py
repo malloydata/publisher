@@ -914,6 +914,47 @@ def resolve_target_version(scope: str | None, target_version: str | None
     return _strip_v(target_version, "--target-version")
 
 
+def measure_coverage(a: argparse.Namespace) -> str | None:
+    """Run check_coverage.py for this model version, into the run directory.
+
+    Coverage is the first of the four things a run reports -- can the model
+    express an answer at all, did retrieval deliver it, did the agent get it
+    right, what did it cost -- and the only one that says whether a failure
+    was ever winnable. A run that skips it cannot tell a model gap from a
+    retrieval miss from a bad answer, so it is measured rather than left to a
+    follow-up command nobody runs.
+
+    It reads the MODEL through the REST API, not the answers and not a local
+    checkout, so it needs no `--model-repo` and is valid for every arm against
+    this model version: keep the file and pass `--coverage` next time.
+
+    A failure here does not stop the arm. Coverage is one rung of the report,
+    and losing it is worth saying loudly and continuing; killing a run over a
+    side measurement would cost the answerers instead.
+    """
+    out = a.out / "coverage.json"
+    script = (pathlib.Path(__file__).resolve().parent.parent.parent
+              / "eval-answer" / "scripts" / "check_coverage.py")
+    cmd = [sys.executable, str(script), "--set", str(a.set_dir),
+           "--publisher", a.publisher, "--environment", a.environment,
+           "--package", a.package, "--out", str(out)]
+    print("measuring coverage: can the model express each answer at all "
+          "(reads the model; no answerer, no judge, no warehouse)", flush=True)
+    try:
+        r = subprocess.run(cmd, timeout=a.timeout * 2)
+    except Exception as e:  # noqa: BLE001 -- any failure is the same call here
+        print(f"  ! coverage not measured ({e}); the covered? rung will be "
+              f"blank and no failure can be attributed to a model gap",
+              flush=True)
+        return None
+    if r.returncode != 0 or not out.exists():
+        print("  ! coverage not measured (check_coverage.py exited "
+              f"{r.returncode}); the covered? rung will be blank and no "
+              "failure can be attributed to a model gap", flush=True)
+        return None
+    return str(out)
+
+
 def run_retrieval_gate(a: argparse.Namespace) -> str:
     """Hold the arm until retrieval is steady, and say what happened.
 
@@ -2656,6 +2697,11 @@ def main(argv: list[str] | None = None) -> int:
                          "in retrieval attribution, and run.json records which "
                          "report was read. Without it an unlabelled case is "
                          "attributed to nobody, not to the model")
+    ap.add_argument("--no-coverage", action="store_true",
+                    help="skip measuring coverage. The covered? rung goes "
+                         "blank and no failure can be attributed to a model "
+                         "gap, so a low score cannot be told from an "
+                         "unanswerable set")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -3036,15 +3082,24 @@ def main(argv: list[str] | None = None) -> int:
 
     retrieval_gate = run_retrieval_gate(a)
 
-    # Coverage is a read of the MODEL and costs a judge call per case, so the
-    # run does not measure it; it consumes a report made separately and says
-    # which one. A path that does not exist is refused here, not discovered as
-    # a traceback after the answerers have been paid for.
+    # Coverage is one of the four things a run measures -- whether the model
+    # can express an answer AT ALL, before any question of whether retrieval
+    # found it or the agent got it right. A model that cannot express an answer
+    # cannot succeed at it, so a run without coverage cannot say whether a
+    # failure was ever winnable. It is measured by default for that reason.
+    #
+    # It reads the MODEL, not the answers, so it is the same for every arm
+    # against one model version: pass `--coverage` to reuse a report you
+    # already have, and it is used as given. Otherwise the run measures it
+    # once, here, before the answerers are paid for -- a `claude -p` per case
+    # with no warehouse, no judge and no answerer. `--no-coverage` skips it.
     if a.coverage and not pathlib.Path(a.coverage).exists():
         raise SystemExit(
             f"--coverage {a.coverage} does not exist. It should be a "
             f"check_coverage.py --out report for the model version this run "
             f"answers from.")
+    if not a.coverage and not a.no_coverage and not a.rebuild:
+        a.coverage = measure_coverage(a)
     coverage_report = coverage_report_summary(a.coverage) if a.coverage else None
 
     # BEFORE the fresh run.json overwrites it: a rebuild reuses saved verdicts

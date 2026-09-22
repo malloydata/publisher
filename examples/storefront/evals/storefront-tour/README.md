@@ -64,7 +64,11 @@ python3 skills/eval-answer/scripts/verify_goldens.py \
 case 404s without it.
 
 **4. Run the arm.** About $3 for twelve cases with sonnet answering and
-judging.
+judging. It first measures **coverage** -- whether the model can express an
+answer to each question at all, read from the model with no answerer and no
+warehouse -- because a question the model cannot express was never winnable,
+and a score that cannot separate those from wrong answers is not worth much.
+`--no-coverage` skips it.
 
 ```bash
 python3 skills/eval-loop/scripts/run_baseline.py \

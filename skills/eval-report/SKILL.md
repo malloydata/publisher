@@ -99,7 +99,7 @@ it becomes a good one.
 - Target `<env>/<package>`, model `<modelPath>`, pinned `<modelSha or targetVersion>`
 - Answerer `<model>`, judge `<model>`, cap `<maxTurns>` turns
 - Steps run: scrape/run, eval<, diagnose><, improve>
-- Cost $X answerer + $Y judge
+- Cost $X answerer + $Y judge, N turns median / N p90, N entities delivered per answer
 
 ## The result
 
@@ -110,9 +110,10 @@ it becomes a good one.
 
 [case matrix](<url>) - [aggregate tables](<url>)
 
-## Retrieval and coverage
+## Coverage, retrieval, accuracy, cost
 
-**Entity recall N%** -- one number, first, before the cascade. It is the share
+**Coverage N of M** -- how many questions the model can express an answer to at
+all. **Entity recall N%** -- one number, first, before the cascade. It is the share
 of the entities an answer needed that retrieval actually handed the agent, and
 it is the headline of this section for the same reason the pass rate is the
 headline of the last one. Then the cascade: Covered? -> Retrieved? -> Correct?,
@@ -146,7 +147,7 @@ these in order and put every one that fires into the list, with its command:
 
 | If the run shows | Then the next step is |
 |---|---|
-| `coverage: unmeasured` | run `check_coverage.py --set <set> --model <pkg> --out coverage.json`, then re-run with `--coverage` so it charges the failures |
+| `coverage: unmeasured` | the run was given `--no-coverage`, or the measurement failed and said so. It is measured by default, so say in "Eval failures" that this score cannot tell a model gap from a bad answer, and re-run without the flag |
 | `goldenCheck: skipped` or the set names no `truthPackage` | build one with `init_truth_package.py`; until then the goldens were derived through the model under test and certify themselves |
 | any golden still `provisional` | re-derive and `verify_goldens.py --promote` |
 | a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do. A next step, not a section: it goes in this list and nowhere else in the report |
@@ -227,11 +228,32 @@ harness prints `INCOMPLETE` and withholds the percentage; the report does the
 same. Give the counts and the re-run command instead of a number with a caveat,
 because the number is what gets repeated and the caveat is what gets dropped.
 
-## Retrieval and coverage belong in every report
+## The four measurements, and why a report carries all of them
 
-A pass rate says an answer was wrong. It does not say WHERE, and the three
-metrics that do are already in the run summary and the notebook. Report them,
-because a report that omits them makes every failure look like the model's:
+A pass rate says an answer was wrong. It does not say where, and on its own it
+makes every failure look like the model's. A run measures four things, in this
+order, and each one tells you whether the next is even a fair question:
+
+| | Measures | A failure here means |
+|---|---|---|
+| **a. Coverage** | can the data and the model express an answer at all | nothing downstream was winnable. Fix the model |
+| **b. Retrieval** | did `get_context` hand the agent the entities it needed | the model has it and the agent never saw it: the docs, or the search wording |
+| **c. Accuracy** | did the agent get the answer right | it had what it needed and still missed: the agent, or a doc that misleads |
+| **d. Cost** | dollars, turns, wall-clock, entities per answer | it works and cannot be afforded, which is its own kind of not working |
+
+**Coverage first, and a report without it is incomplete.** A model that cannot
+express an answer can never succeed at that question, so a pass rate quoted
+without coverage cannot distinguish a bad model from an unanswerable set.
+`run_baseline.py` measures it by default; if a run skipped it, say so in
+"Eval failures" and treat the score as provisional.
+
+**Cost is a result, not an aside.** Report dollars, the turn and call counts,
+and the entity payload per answer. An agent that answers correctly in 40 turns
+and 75 delivered entities per question is a different product from one that
+does it in 8 and 5, and only the report says which you have.
+
+Report them all, because a report that omits them makes every failure look
+like the model's:
 
 **Copy the cascade the run printed. Do not re-derive it.** `cascade_lines()`
 in `run_baseline.py` already renders every rung, and it carries one field a

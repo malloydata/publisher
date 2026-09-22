@@ -1554,3 +1554,43 @@ class GoldenCheckScope(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CoverageByDefault(unittest.TestCase):
+    """Coverage is measured unless asked not to.
+
+    It answers the first of the four questions a run reports -- can the model
+    express an answer at all -- and it is the one that says whether a failure
+    was ever winnable. Left to a follow-up command it went unrun, and the
+    covered? rung came back blank on every real run.
+    """
+
+    def ns(self, **kw):
+        a = argparse.Namespace(
+            coverage=None, no_coverage=False, rebuild=False,
+            out=pathlib.Path("/tmp/does-not-matter"),
+            set_dir=pathlib.Path("evals/e"), publisher="http://p",
+            environment="env", package="pkg", timeout=60)
+        for k, v in kw.items():
+            setattr(a, k, v)
+        return a
+
+    def test_it_runs_when_no_report_was_given(self):
+        a = self.ns()
+        with mock.patch.object(rb, "subprocess") as sp, \
+             mock.patch.object(pathlib.Path, "exists", return_value=True):
+            sp.run.return_value = argparse.Namespace(returncode=0)
+            out = rb.measure_coverage(a)
+        self.assertIsNotNone(out)
+        cmd = sp.run.call_args[0][0]
+        self.assertIn("--publisher", cmd)
+        self.assertIn("http://p", cmd)
+        # Through REST, so it needs no local checkout and stays valid for every
+        # arm against this model version.
+        self.assertNotIn("--model", cmd)
+
+    def test_a_failure_does_not_kill_the_arm(self):
+        """Losing one rung must not cost the answerers."""
+        a = self.ns()
+        with mock.patch.object(rb, "subprocess") as sp:
+            sp.run.return_value = argparse.Namespace(returncode=1)
+            self.assertIsNone(rb.measure_coverage(a))
