@@ -3290,10 +3290,11 @@ components:
             `/compile` with the generic 404, so the exemption cannot be used to
             enumerate gated names.
             `"all"` decouples the axes: `explores`/`export {}` gate discovery
-            only and every compiled source stays directly queryable. When
-            `explores` is absent there is no curated surface, so both modes are
-            equivalent (everything queryable). Invalid values fall back to
-            `"declared"`. Identity-based access is a separate concern — see
+            only and every compiled source stays directly queryable. The two
+            modes are equivalent (everything queryable) only where there is no
+            curated surface at all, which now means no `explores` AND no root
+            `index.malloy` — a package with that file has a surface whether or
+            not the key is present. Invalid values fall back to `"declared"`. Identity-based access is a separate concern — see
             `#(authorize)` and `#(access_filter)`.
             DEPRECATED, still honored. `"declared"` is already the default, so
             the key changes nothing and a root `index.malloy` gives the same

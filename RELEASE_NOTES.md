@@ -117,14 +117,19 @@ and serve nothing. A PATCH that names a genuinely different surface is persisted
 
 **A package curated by the convention alone says so at load.** When a root `index.malloy` becomes
 the surface with no `explores` in `publisher.json`, the package carries a warning naming what that
-withholds and how to opt out (`"explores": []`). It is the one path that curates a package on the
-strength of a file rather than a manifest key, so it is the one an existing package can meet by
-surprise; every other curation path already reported itself. A package whose `index.malloy` is its
-only model withholds nothing and stays quiet.
+withholds and how to opt out (`"explores": []`, which is the only opt-out: renaming or deleting the
+file widens the surface silently and breaks every import naming it). It is the one path that curates
+a package on the strength of a file rather than a manifest key, so it is the one an existing package
+can meet by surprise; every other curation path already reported itself. A package whose
+`index.malloy` is its only model withholds nothing and stays quiet, and notebooks do not count as
+something withheld, because they are always listed and never subject to the boundary.
 
-**A malformed `explores` is reported rather than dropped in silence.** `"explores": "orders.malloy"`
-(the missing-brackets typo) or an array with a non-string element is still ignored — the safe
-direction — but now with a warning naming the shape expected and the value found.
+**A malformed `explores` fails the package load.** `"explores": "orders.malloy"` (the
+missing-brackets typo) or an array with a non-string element is refused, with a message naming the
+value and the fix, and the package is not served. It is not ignored: ignoring it resolves to no
+surface at all, which publishes every source the key was written to withhold, and an absent package
+is visible in `loadErrors` where a silently-uncurated one is not. This restores the behavior the key
+had before the convention, when a non-string entry threw out of path normalization.
 
 **A broken surface explains the 404s it causes.** If every model on a package's surface fails to
 compile on reload, that package exposes nothing and *every* model in it, including the ones that

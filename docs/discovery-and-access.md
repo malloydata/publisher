@@ -148,9 +148,9 @@ the package answering differently than its author expects:
   key is the one path that curates on the strength of a file, so it reports what it withholds and
   how to opt out (`"explores": []`). A package whose `index.malloy` is its only model hides nothing
   and says nothing.
-- **A malformed `explores`.** `"explores": "orders.malloy"` or an array with a non-string element
-  is ignored rather than coerced, and the warning names the shape expected and the value found.
-  Without it the key would look applied while doing nothing.
+- **A malformed `explores`** is not a warning at all: it fails the package load, like an invalid
+  `scope`. Ignoring it would resolve to no surface and publish every source the key was meant to
+  withhold, and keeping the entries that parse would serve a surface the author did not write.
 - **The whole surface failed to compile.** A surface that does not compile exports nothing, so the
   boundary refuses every model in the package — including the ones that compiled — with the same
   404 a missing model gets. The warning names the broken file and how many it took down. This
