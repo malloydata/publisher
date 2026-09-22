@@ -674,7 +674,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--publisher", default=None,
                     help="server to run the checks against; without it the "
                          "ledger is built and nothing is checked")
-    ap.add_argument("--environment", default="samples")
+    ap.add_argument("--environment", default=None,
+                    help="the environment on --publisher; required with it")
     ap.add_argument("--package", default=None)
     ap.add_argument("--model-path", dest="model_path", default=None,
                     help="model path within the package, for the query endpoint")
@@ -687,9 +688,9 @@ def main(argv: list[str] | None = None) -> int:
     if not model.exists():
         print(f"--model {a.model} does not exist", file=sys.stderr)
         return CANNOT_RUN
-    if a.publisher and not (a.package and a.model_path):
-        print("--publisher needs --package and --model-path to address a query",
-              file=sys.stderr)
+    if a.publisher and not (a.environment and a.package and a.model_path):
+        print("--publisher needs --environment, --package and --model-path to "
+              "address a query", file=sys.stderr)
         return CANNOT_RUN
     if a.truth_publisher and not a.truth_package:
         print("--truth-publisher needs --truth-package", file=sys.stderr)

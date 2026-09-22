@@ -177,6 +177,7 @@ RESOURCE = re.compile(r"\[Resource from publisher at [^\]]+\]\s*(\{.*)", re.S)
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
+import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
@@ -2620,10 +2621,45 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     return {**parse_verdict(text), "judge_cost_usd": res.get("total_cost_usd")}
 
 
+def resolve_config(a: argparse.Namespace) -> config.Config:
+    """Fill every unset server, name and path from the set's eval.toml.
+
+    A platform run is the exception for the environment and package: there
+    they name a hosted organization and workspace, which a local config file
+    does not describe, so they are never taken from it.
+    """
+    cfg = config.load(a.set_dir)
+    if a.target == "platform":
+        if not (a.environment and a.package):
+            raise SystemExit(
+                "--target platform needs --environment (the hosted "
+                "organization) and --package (the workspace). They are never "
+                "read from eval.toml, which describes a local server.")
+        a.mcp_url = a.mcp_url or LOCAL_MCP_URL   # refused below, by name
+    else:
+        a.environment = cfg.need(a.environment, "model", "environment",
+                                 "--environment")
+        a.package = cfg.need(a.package, "model", "package", "--package")
+        a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+        a.model_repo = a.model_repo or cfg.get("model", "repo")
+    a.publisher = a.publisher or cfg.model_publisher()
+    a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
+    a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
+    a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
+    if a.out is None:
+        runs = cfg.workdir() / "runs"
+        a.label = a.label or next_run_label(runs / "_", cfg.set_name, a.phase)
+        a.out = runs / a.label
+        print(f"run directory: {a.out}")
+    return cfg
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("--out", type=pathlib.Path, default=None,
+                    help="the run directory. Default: <workdir>/runs/<label>, "
+                         "outside the repository (config.py says why)")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--judge-model", default="sonnet")
     ap.add_argument("--label", default=None)
@@ -2660,13 +2696,15 @@ def main(argv: list[str] | None = None) -> int:
                          "call answers from whatever the workspace serves at "
                          "the time, whatever run.json says it measured; "
                          "--target-version fills it in when @version is absent")
-    ap.add_argument("--environment", default="samples",
-                    help="local: the Publisher environment. "
-                         "platform: the hosted ORGANIZATION")
-    ap.add_argument("--package", default="ecommerce",
-                    help="local: the served package. "
-                         "platform: the hosted WORKSPACE")
-    ap.add_argument("--mcp-url", default=LOCAL_MCP_URL,
+    ap.add_argument("--environment", default=None,
+                    help="local: the Publisher environment, default [model] "
+                         "environment in eval.toml. "
+                         "platform: the hosted ORGANIZATION, always passed")
+    ap.add_argument("--package", default=None,
+                    help="local: the served package, default [model] package "
+                         "in eval.toml, else set.json targetPackage. "
+                         "platform: the hosted WORKSPACE, always passed")
+    ap.add_argument("--mcp-url", default=None,
                     help="where the answerer's MCP tools live, which is what "
                          "separates the three ways to run: a LOCAL Publisher "
                          f"({LOCAL_MCP_URL}); the hosted engine through an "
@@ -2674,10 +2712,13 @@ def main(argv: list[str] | None = None) -> int:
                          "the extension prints, no OAuth because it holds the "
                          "credential); or the hosted engine directly (its "
                          "https endpoint, needing a cached OAuth login). The "
-                         "last two are both --target platform")
-    ap.add_argument("--publisher", default="http://localhost:4811",
+                         "last two are both --target platform. Default: "
+                         "from [model] mcp_port in eval.toml, else "
+                         f"{LOCAL_MCP_URL}")
+    ap.add_argument("--publisher", default=None,
                     help="Publisher REST base, used to re-execute the answerer's "
-                         "final query so the judge sees rows rather than prose")
+                         "final query so the judge sees rows rather than prose. "
+                         "Default: from [model] port in eval.toml")
     ap.add_argument("--model-path", default=None,
                     help="model within the package; defaults to set.json targetModelPath")
     ap.add_argument("--model-repo", default=None, type=pathlib.Path,
@@ -2764,6 +2805,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="with --rebuild: reuse the answers but score them "
                          "again, for a judge or rubric change")
     a = ap.parse_args(argv)
+    cfg = resolve_config(a)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
     a.hosted_tools = hosted_tools(
@@ -3207,6 +3249,7 @@ def main(argv: list[str] | None = None) -> int:
         answererSkills=a.answerer_skills or [],
         judgeSkills=a.judge_skills or [],
         mcpUrl=a.mcp_url, publisher=a.publisher,
+        evalConfig=cfg.summary(),
         predictionsReExecuted=reexec,
         goldenCheck=golden_check,
         # The names themselves, not only a count: each one depresses recall on

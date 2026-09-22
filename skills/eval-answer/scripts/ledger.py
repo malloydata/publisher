@@ -170,6 +170,9 @@ RUN_RECOMMENDED = {"judgeModel", "judgeVersion", "datasetVersion", "modelSha",
                    "skillsVersion", "answererManifest"}
 RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "modelGitSha", "mcpUrl", "publisher", "predictionsReExecuted",
+                # The eval.toml the servers and names were read from, and what
+                # it said, so a run shows where its settings came from.
+                "evalConfig",
                 "serverVersion", "diagnoserModel", "improverModel",
                 "rubricSha",
                 # The prompt the judge was SHOWN, hashed. `rubricSha` covers

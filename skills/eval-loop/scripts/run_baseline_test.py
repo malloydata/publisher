@@ -1033,6 +1033,42 @@ class PlatformMcpUrl(unittest.TestCase):
 
 
 
+class ResolveConfig(unittest.TestCase):
+    """Unset flags come from the set's eval.toml, except on a platform run."""
+
+    def ns(self, set_dir, **kw):
+        base = dict(set_dir=set_dir, out=None, label=None, phase="baseline",
+                    target="local", environment=None, package=None,
+                    mcp_url=None, publisher=None, model_repo=None,
+                    truth_publisher=None, truth_environment=None,
+                    skills_root=None)
+        return argparse.Namespace(**{**base, **kw})
+
+    def set_dir(self, toml):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="rb-config-"))
+        (d / "set.json").write_text(json.dumps({"name": "s"}))
+        (d / "eval.toml").write_text(toml)
+        return d
+
+    def test_a_local_run_takes_its_servers_and_run_dir_from_the_file(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n'
+                         'port = 4000\n[paths]\nworkdir = "w"\n')
+        a = self.ns(d)
+        with mock.patch("builtins.print"):
+            rb.resolve_config(a)
+        self.assertEqual((a.environment, a.package, a.publisher, a.mcp_url),
+                         ("e", "p", "http://localhost:4000",
+                          "http://localhost:4040/mcp"))
+        self.assertEqual(a.truth_publisher, "http://localhost:4881")
+        self.assertEqual(a.out, (d / "w" / "runs" / "s-baseline-01").resolve())
+
+    def test_a_platform_run_never_takes_its_organization_from_the_file(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, target="platform", out=d / "o"))
+        self.assertIn("--target platform needs --environment", str(e.exception))
+
+
 class RetrievalPrecisionIsReportedHonestly(unittest.TestCase):
     """Precision was computed and thrown away; the run printed recall alone.
 

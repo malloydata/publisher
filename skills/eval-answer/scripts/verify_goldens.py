@@ -148,6 +148,7 @@ import traceback
 import urllib.parse
 from typing import Any
 
+import config
 from check_must_not_use import candidate as must_not_use_candidate
 from publisher_rest import get_json, try_query  # the direct paths to a Publisher
 
@@ -1264,7 +1265,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
 CANNOT_RUN = 3
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
@@ -1277,9 +1278,13 @@ def main() -> int:
     # pass it explicitly.
     ap.add_argument("--publisher", default=None,
                     help="the Publisher serving the TRUTH package, and ONLY "
-                         "that package. Omit to run just the checks that need "
-                         "no server; the value check then reports as not run")
-    ap.add_argument("--environment", default="samples")
+                         "that package. Default: the [truth] server in the "
+                         "set's eval.toml. With neither, only the checks that "
+                         "need no server run, and the value check reports as "
+                         "not run")
+    ap.add_argument("--environment", default=None,
+                    help="the environment on the TRUTH server. Default: "
+                         "[truth] environment in eval.toml")
     ap.add_argument("--qid", action="append", help="verify only these cases")
     ap.add_argument("--cases", default="cases.jsonl",
                     help="case file to verify, relative to the set dir")
@@ -1313,7 +1318,18 @@ def main() -> int:
                          "truth server, a set whose every value-bearing case "
                          "rests on validated definitions exits 0 instead of 3, "
                          "and --promote may promote through it")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    # A config that cannot be read means nothing was checked: 3, never 1,
+    # which says a golden drifted.
+    try:
+        cfg = config.load(args.set_dir)
+        args.publisher = args.publisher or cfg.truth_publisher()
+        if args.publisher:
+            args.environment = cfg.need(args.environment, "truth",
+                                        "environment", "--environment")
+    except config.ConfigError as e:
+        print(e, file=sys.stderr)
+        return CANNOT_RUN
     if args.attest is not None and (not args.promote or not args.attest.strip()):
         ap.error("--attest needs --promote and non-empty text naming who "
                  "checked, when, and how")

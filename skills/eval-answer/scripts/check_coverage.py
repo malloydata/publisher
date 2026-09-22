@@ -57,6 +57,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 SKILLS_ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 
+import config  # noqa: E402
 from json_scan import json_objects  # noqa: E402
 from verify_goldens import model_text as local_model_text  # noqa: E402
 
@@ -597,7 +598,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--publisher", default=None,
                     help="read the model over REST instead, from a running "
                          "Publisher serving the version to measure")
-    ap.add_argument("--environment", default="samples")
+    ap.add_argument("--environment", default=None,
+                    help="with --publisher: the environment serving --package. "
+                         "Default: [model] environment in the set's eval.toml")
     ap.add_argument("--package", default=None)
     ap.add_argument("--model-path", dest="one_model", default=None,
                     help="with --publisher: measure one model file rather than "
@@ -658,6 +661,8 @@ def main(argv: list[str] | None = None) -> int:
         if not model:
             raise SystemExit(f"no .malloy text under {a.model_path}")
     elif a.publisher and a.package:
+        a.environment = config.load(a.set_dir).need(
+            a.environment, "model", "environment", "--environment")
         try:
             model = rest_model_text(a.publisher, a.environment, a.package,
                                     a.one_model)
