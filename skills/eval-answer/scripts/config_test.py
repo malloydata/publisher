@@ -55,6 +55,12 @@ class NoExampleDefault(unittest.TestCase):
             f"\"<value>\"` under [model] in {d.resolve() / 'eval.toml'}, or "
             "pass --environment.")
 
+    def test_an_empty_flag_is_refused_not_used(self):
+        cfg = config.load(make_set({"eval.toml": '[model]\nenvironment = "e"\n'}))
+        with self.assertRaises(config.ConfigError) as e:
+            cfg.need("", "model", "environment", "--environment")
+        self.assertIn("Invalid --environment", str(e.exception))
+
     def test_no_file_means_no_truth_server(self):
         # Without a file nothing wrote a truth server's config, so there is no
         # truth server to assume; callers keep their own fallbacks.

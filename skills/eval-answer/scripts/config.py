@@ -104,7 +104,16 @@ class Config:
 
     def need(self, value: Any, section: str, key: str,
              flag: str | None = None) -> Any:
-        """`value` if given, else the config's, else an error that says what to set."""
+        """`value` if given, else the config's, else an error that says what to set.
+
+        An empty value is refused, not taken: `--environment ""` once started a
+        whole arm against `/environments//`.
+        """
+        if value == "":
+            raise ConfigError(
+                f"Invalid {flag or key}: expected a {section} {key}, got an "
+                f"empty value. Fix: pass a name, or omit it to use "
+                f"{self.file_hint}.")
         if value is not None:
             return value
         got = self.get(section, key)
