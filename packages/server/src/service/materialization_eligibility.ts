@@ -30,8 +30,8 @@ import type { PersistSourceGateOutcome } from "./build_plan";
  *     materialized once and served frozen would leak one tenant's rows to every
  *     tenant. This check fails closed: if the source references any given, it is
  *     refused, no exceptions.
- *  3. **No `#(authorize)` gate — a security refusal.** An authorize expression
- *     is a per-request *who-can-query* gate evaluated at query time. The served
+ *  3. **No gate on either route — a security refusal.** An `#(authorize)` lock
+ *     and an `#(access_filter)` row filter are both evaluated per request. The served
  *     virtual shape of a materialized source carries no gate to evaluate, so a
  *     materialized authorize-gated source would be served to everyone,
  *     bypassing the gate. Fails closed on anything it cannot read.
@@ -125,11 +125,12 @@ export function assertMaterializationEligible(
          reason: "authorize",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: it is protected by an authorize gate (its own or a ` +
-            `joined source's). An authorize expression is evaluated per request; ` +
-            `a materialized-once table served frozen carries no gate, so it would ` +
-            `be served to everyone, bypassing authorization. This is refused for ` +
-            `safety. Serve this source live (drop 'storage=').`,
+            `destination: it is protected by a gate — #(authorize) or ` +
+            `#(access_filter), its own or a joined source's. Both are evaluated ` +
+            `per request; a materialized-once table served frozen carries no ` +
+            `gate, so it would be served to everyone, bypassing authorization. ` +
+            `This is refused for safety. Serve this source live (drop ` +
+            `'storage=').`,
       });
    }
 }

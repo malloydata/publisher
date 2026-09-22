@@ -120,7 +120,7 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { malloyGivenToApi, type MalloyGiven } from "./given";
+import { gateGivenSource, malloyGivenToApi, type MalloyGiven } from "./given";
 import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
@@ -216,17 +216,21 @@ function denyUnlessAdmitted(
    label: string,
 ): void {
    if (resolution.shape === "lock") {
-      if (
-         decideLock(
-            resolution.condition.e,
-            (id) => resolution.givenNamesById.get(id),
-            givens,
-         ) === "admit"
-      ) {
+      const outcome = decideLock(
+         resolution.condition.e,
+         (id) => resolution.givenNamesById.get(id),
+         givens,
+      );
+      if (outcome === "admit") {
          recordLockDecision("admitted");
          return;
       }
-      recordLockDecision("denied_by_lock");
+      // Both refusals are the same 403 to the caller; only the label differs,
+      // so an operator can alert on a gate that could not be decided without
+      // firing on one that is working.
+      recordLockDecision(
+         outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
+      );
       throw new AccessDeniedError(`Access denied for source "${label}".`);
    }
    recordLockDecision("denied_unresolvable");
@@ -3057,18 +3061,23 @@ export class Model {
                // .contents[sourceName]` is the same struct the probe was
                // grafted onto, so `refSummary` is already resolved against
                // it either way.
-               onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+               onOwnRowLevelConditionCompiled: (
+                  sourceName,
+                  condition,
+                  route,
+               ) => {
                   const struct = compiledModelDef.contents[sourceName];
                   if (!struct || !isSourceDef(struct)) return;
                   validateSourceLineGateGivenUsage(
                      sourceName,
+                     route,
                      struct,
                      condition.refSummary as ExpandableRefSummary | undefined,
                      condition.e,
                      compiledModelDef,
                      (cause, detail) => {
                         recordRowLevelGateRejected(cause);
-                        logger.warn("Row-level #(access_filter) gate warning", {
+                        logger.warn(`#(${route}) gate warning`, {
                            packageName,
                            modelPath,
                            sourceName,
@@ -3540,16 +3549,19 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
-         // The EFFECTIVE gate per source, inheritance already resolved by the
-         // extraction, so a suggest over a gated source learns which givens its
-         // gate reads. `source.authorize` is scoped to the `authorize` route
-         // only (see `ExtractedSource.authorize`'s doc), so a given
-         // referenced only by a `#(authorize)` term is not suggested
-         // — a known, accepted gap.
+         // The EFFECTIVE gates per source on both routes, inheritance already
+         // resolved by the extraction, so a suggest over a gated source learns
+         // which givens its gates read. See `gateGivenSource`.
          new Map(
             (this.sources ?? []).flatMap((source) =>
                source.name
-                  ? [[source.name, source.authorize ?? []] as const]
+                  ? [
+                       [
+                          source.name,
+                          gateGivenSource(this.sources ?? [], source.name) ??
+                             [],
+                       ] as const,
+                    ]
                   : [],
             ),
          ),

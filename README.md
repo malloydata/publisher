@@ -44,7 +44,7 @@ but looks plausible — and the same question returns the same numbers tomorrow.
   the model, never your raw tables.
 - **Surface** — dashboards declared in Malloy and built by dragging tiles if you like, notebooks,
   and no-build HTML data apps, all shipped inside the package, plus the Console for browsing it all.
-- **Govern** — givens, row-level access, and `#(access_filter)` decide who sees what; discovery curation
+- **Govern** — givens, `#(authorize)` and `#(access_filter)` decide who may query and who sees what; discovery curation
   decides what is even visible.
 - **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
   `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.

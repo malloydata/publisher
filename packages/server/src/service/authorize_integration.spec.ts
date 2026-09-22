@@ -804,6 +804,78 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
    });
 });
 
+const LOCK_METRIC_GATED = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: lm_gated is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+
+describe("books a lock refusal under the label that matches it", () => {
+   let harness: MetricsHarness;
+   const COUNTER = "publisher_authorize_lock_total";
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetAuthorizeGuardTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      resetAuthorizeGuardTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   // Both refusals are the same 403 to the caller, so only the label tells
+   // an operator which one happened. Booking a gate that could not be
+   // decided as `denied_by_lock` reads as routine traffic and no alert
+   // fires; booking a working gate as `denied_unresolvable` pages someone
+   // for nothing. The status code cannot catch either way round.
+   it("a caller the rule refuses is denied_by_lock, not unresolvable", async () => {
+      await writeModel("lm_gated.malloy", LOCK_METRIC_GATED);
+      await expectDeniedByLock(
+         "lm_gated.malloy",
+         "run: lm_gated -> { aggregate: c }",
+         { ROLE: "intern" },
+      );
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "denied_by_lock",
+         }),
+      ).toBeGreaterThan(0);
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "denied_unresolvable",
+         }),
+      ).toBe(0);
+   });
+
+   // The gate is fine; the request never bound its given. That is the
+   // fail-closed side, and the whole reason the label is split.
+   it("a gate whose given never resolved is denied_unresolvable", async () => {
+      await writeModel("lm_gated.malloy", LOCK_METRIC_GATED);
+      await expectDeniedByLock(
+         "lm_gated.malloy",
+         "run: lm_gated -> { aggregate: c }",
+         {},
+      );
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "denied_unresolvable",
+         }),
+      ).toBeGreaterThan(0);
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "denied_by_lock",
+         }),
+      ).toBe(0);
+   });
+});
+
+
 describe("authorize runtime gate", () => {
    const SINGLE_GATE = `##! experimental.givens
 
@@ -818,12 +890,16 @@ source: gated is duckdb.table('customers') extend {
 
    it("allows the query when a given satisfies the gate", async () => {
       await writeModel("rt_single.malloy", SINGLE_GATE);
-      const { result } = await runGated(
+      // The COUNT, not merely that a result came back: an admitted caller who
+      // also got the lock grafted as `where: false` returns defined data too.
+      const { compactResult } = await runGated(
          "rt_single.malloy",
          "run: gated -> { aggregate: c }",
          { ROLE: "analyst" },
       );
-      expect(result.data).toBeDefined();
+      expect((compactResult as unknown as { c: number }[])[0]?.c).toBeGreaterThan(
+         0,
+      );
    });
 
    it("denies (403) when no given satisfies the gate", async () => {
@@ -3955,7 +4031,7 @@ source: dm_mixed is duckdb.table('customers') extend {
       await writeModel("dm_gated.malloy", GATED);
       // `ROLE` has no default (deliberately — a caller must supply one), so
       // enforced-and-unsatisfied surfaces as a MalloyError, not
-      // `Model`-issued `AccessDeniedError` — every gate is a row filter now.
+      // `Model`-issued `AccessDeniedError`.
       await expect(
          runGated("dm_gated.malloy", "run: dm_gated -> { aggregate: c }", {}),
       ).rejects.toThrow();

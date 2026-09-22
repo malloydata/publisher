@@ -1033,7 +1033,7 @@ source: gated_parent is duckdb.table('orgtable') extend {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
          expect(err?.message).toContain(
-            'Invalid #(authorize) annotation on source "gated_parent"',
+            'Invalid #(access_filter) annotation on source "gated_parent"',
          );
       } finally {
          await cleanup(duckdb, dir);
@@ -1065,7 +1065,7 @@ source: child is gated_parent extend {}
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
          expect(err?.message).toContain(
-            'Invalid #(authorize) annotation on source "gated_parent"',
+            'Invalid #(access_filter) annotation on source "gated_parent"',
          );
       } finally {
          await cleanup(duckdb, dir);
@@ -1092,7 +1092,7 @@ source: w_except is gated_parent extend { except: org_id }
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
          expect(err?.message).toContain(
-            'Invalid #(authorize) annotation on source "gated_parent"',
+            'Invalid #(access_filter) annotation on source "gated_parent"',
          );
       } finally {
          await cleanup(duckdb, dir);

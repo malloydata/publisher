@@ -17,9 +17,13 @@ import type { GivenValue } from "@malloydata/malloy";
  * (`./gate_classification`) and `containsNegatedMembership`
  * (`./gate_dimension`) already take toward this IR: an unrecognized node kind,
  * an unresolvable given, an unset given, a value of the wrong arity and a
- * throw all DENY. That is what makes the coupling to Malloy's node names
+ * throw all refuse. That is what makes the coupling to Malloy's node names
  * (pinned `@malloydata/malloy`) safe to carry — a renamed node stops admitting,
  * it never starts admitting.
+ *
+ * Those refusals return `"unresolvable"` rather than `"deny"`. Both are a 403
+ * to the caller; the split exists so an operator can tell a gate refusing
+ * someone from a gate that could not be decided at all (see `LockContext`).
  *
  * `=` is accepted with the given on either side: the graft compiles the
  * author's original text, so both `$ROLE = 'admin'` and `'admin' = $ROLE`
@@ -30,19 +34,40 @@ import type { GivenValue } from "@malloydata/malloy";
  * the warehouse, so a MySQL tenant's case-insensitive default admitted
  * `'Finance'` against `["finance"]`; here it denies.
  */
+export type LockOutcome = "admit" | "deny" | "unresolvable";
+
 export function decideLock(
    conditionExpr: unknown,
    givenNameOf: (givenId: string) => string | undefined,
    givens: Readonly<Record<string, GivenValue>>,
-): "admit" | "deny" {
+): LockOutcome {
+   const ctx: LockContext = { givenNameOf, givens, unresolvable: false };
    try {
-      return admits(conditionExpr, givenNameOf, givens, 0) ? "admit" : "deny";
+      if (admits(conditionExpr, ctx, 0)) return "admit";
    } catch {
       // A malformed node reaching a property access (`null.includes`) is a
       // TypeError, which would surface as a 500 rather than the 403 every
       // other unadmitted shape gets.
-      return "deny";
+      ctx.unresolvable = true;
    }
+   return ctx.unresolvable ? "unresolvable" : "deny";
+}
+
+/**
+ * Evaluation state threaded through the walk.
+ *
+ * `unresolvable` separates "this caller is not admitted" from "this gate could
+ * not be decided" — both 403, but only the second means something is wrong,
+ * and it is the one an operator alerts on. It is set for a given that does not
+ * resolve, a value of the wrong arity, a node kind this allowlist does not
+ * know, and a throw: each of those is a drift between the load-time grammar
+ * and this walk rather than a rule refusing a caller. A `false` sentinel and a
+ * literal that simply does not match are ordinary denials and leave it clear.
+ */
+interface LockContext {
+   givenNameOf: (givenId: string) => string | undefined;
+   givens: Readonly<Record<string, GivenValue>>;
+   unresolvable: boolean;
 }
 
 interface GivenNode {
@@ -50,13 +75,11 @@ interface GivenNode {
    id?: unknown;
 }
 
-function admits(
-   node: unknown,
-   givenNameOf: (givenId: string) => string | undefined,
-   givens: Readonly<Record<string, GivenValue>>,
-   depth: number,
-): boolean {
-   if (depth > 64 || node === null || typeof node !== "object") return false;
+function admits(node: unknown, ctx: LockContext, depth: number): boolean {
+   if (depth > 64 || node === null || typeof node !== "object") {
+      ctx.unresolvable = true;
+      return false;
+   }
    const n = node as {
       node?: unknown;
       e?: unknown;
@@ -66,36 +89,56 @@ function admits(
    };
    switch (n.node) {
       case "()":
-         return admits(n.e, givenNameOf, givens, depth + 1);
+         return admits(n.e, ctx, depth + 1);
       case "true":
          return true;
       case "false":
+         // `#(authorize) false` is the deliberate deny-all sentinel, not a
+         // gate that failed to decide.
          return false;
-      case "and":
-         return (
-            admits(n.kids?.left, givenNameOf, givens, depth + 1) &&
-            admits(n.kids?.right, givenNameOf, givens, depth + 1)
-         );
+      case "and": {
+         // Both sides are walked rather than short-circuited: a left-hand
+         // denial must not hide a right-hand term this cannot read.
+         const left = admits(n.kids?.left, ctx, depth + 1);
+         const right = admits(n.kids?.right, ctx, depth + 1);
+         return left && right;
+      }
       case "=": {
          const { left, right } = n.kids ?? {};
          const pair =
             givenAndLiteral(left, right) ?? givenAndLiteral(right, left);
-         if (!pair) return false;
-         const value = resolve(pair.given, givenNameOf, givens);
+         if (!pair) {
+            ctx.unresolvable = true;
+            return false;
+         }
+         const value = resolve(pair.given, ctx);
          // `=` is the SCALAR operator: a list-typed given is `in`, refused at
          // load, so a list arriving here is a shape this must not guess at.
-         return typeof value === "string" && value === pair.literal;
+         if (typeof value !== "string") {
+            ctx.unresolvable = true;
+            return false;
+         }
+         return value === pair.literal;
       }
       case "inGiven": {
-         // `not (x in $Y)` is W2-warned at load and is not an admission rule.
+         // `not (x in $Y)` is W2-warned at load and left servable, so it is an
+         // ordinary denial rather than a gate that could not be decided.
          if (n.not === true) return false;
          const given = asGiven(n.givenRef);
          const literal = asStringLiteral(n.e);
-         if (!given || literal === undefined) return false;
-         const value = resolve(given, givenNameOf, givens);
-         return Array.isArray(value) && value.some((item) => item === literal);
+         if (!given || literal === undefined) {
+            ctx.unresolvable = true;
+            return false;
+         }
+         const value = resolve(given, ctx);
+         if (!Array.isArray(value)) {
+            ctx.unresolvable = true;
+            return false;
+         }
+         return value.some((item) => item === literal);
       }
       default:
+         ctx.unresolvable = true;
          return false;
    }
 }
@@ -133,15 +176,19 @@ function asStringLiteral(node: unknown): string | undefined {
  * lifted gate condition at load — without it a `given: GROUPS :: string[] =
  * ['finance']` would be silently ignored here.
  */
-function resolve(
-   given: GivenNode,
-   givenNameOf: (givenId: string) => string | undefined,
-   givens: Readonly<Record<string, GivenValue>>,
-): GivenValue | undefined {
-   if (typeof given.id !== "string") return undefined;
-   const name = givenNameOf(given.id);
-   if (name === undefined) return undefined;
-   return Object.prototype.hasOwnProperty.call(givens, name)
-      ? givens[name]
-      : undefined;
+function resolve(given: GivenNode, ctx: LockContext): GivenValue | undefined {
+   if (typeof given.id !== "string") {
+      ctx.unresolvable = true;
+      return undefined;
+   }
+   const name = ctx.givenNameOf(given.id);
+   if (name === undefined) {
+      ctx.unresolvable = true;
+      return undefined;
+   }
+   if (!Object.prototype.hasOwnProperty.call(ctx.givens, name)) {
+      ctx.unresolvable = true;
+      return undefined;
+   }
+   return ctx.givens[name];
 }

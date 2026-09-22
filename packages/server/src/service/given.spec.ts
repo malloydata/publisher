@@ -6,6 +6,7 @@ import { describe, expect, it } from "bun:test";
 import {
    readGivenControlSpec,
    attachSuggestGivenNames,
+   gateGivenSource,
    suggestGivenLookup,
    type MalloyGivenApi,
 } from "./given";
@@ -755,6 +756,40 @@ describe("readStartingGivens", () => {
             () => "filter<string>",
          ),
       ).toBeUndefined();
+   });
+});
+
+describe("gateGivenSource", () => {
+   // Both routes gate a query the same way: a lock given the request omits is
+   // an unsupplied gate given (403), and a filter given it omits cannot be
+   // grafted. A dropdown's own query is an ordinary query, so it needs both.
+   const sources = [
+      { name: "locked", authorize: ["'finance' in $GROUPS"] },
+      { name: "filtered", accessFilter: ["org_id = $ORG"] },
+      {
+         name: "both",
+         authorize: ["'finance' in $GROUPS"],
+         accessFilter: ["org_id = $ORG"],
+      },
+      { name: "ungated" },
+   ];
+
+   it("reads BOTH routes, so neither route's givens go unsuggested", () => {
+      expect(gateGivenSource(sources, "both")).toEqual([
+         "'finance' in $GROUPS",
+         "org_id = $ORG",
+      ]);
+      // Each alone: reading only `authorize` left a migrated source's filter
+      // controls asking for options without the parameter the graft needs.
+      expect(gateGivenSource(sources, "filtered")).toEqual(["org_id = $ORG"]);
+      expect(gateGivenSource(sources, "locked")).toEqual([
+         "'finance' in $GROUPS",
+      ]);
+   });
+
+   it("is empty for an ungated source and undefined for an unknown one", () => {
+      expect(gateGivenSource(sources, "ungated")).toEqual([]);
+      expect(gateGivenSource(sources, "ghost")).toBeUndefined();
    });
 });
 

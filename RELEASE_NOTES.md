@@ -35,10 +35,10 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 **Two annotations, one question each, and two different answers when they say no.**
 
-| Annotation | The question | A denial is |
-| --- | --- | --- |
-| `#(authorize)` | may this caller reach this source at all? | **403** |
-| `#(access_filter)` | which rows may they see, once they may? | **200**, with their rows |
+| Annotation         | The question                              | A denial is              |
+| ------------------ | ----------------------------------------- | ------------------------ |
+| `#(authorize)`     | may this caller reach this source at all? | **403**                  |
+| `#(access_filter)` | which rows may they see, once they may?   | **200**, with their rows |
 
 **This is a semantic flip, not a rename.** `#(authorize)` shipped as the row filter in every
 release from 0.2.0 through 0.4.1. It now means the lock. There is no alias, no deprecation period
@@ -61,7 +61,7 @@ Both migrations are mechanical, and the second is the one that does not announce
    **refused at load** with a message naming the rewrite. Loud, and safe: the package does not
    serve until it is fixed.
 2. **A caller-shaped gate keeps loading and starts answering 403.** `#(authorize) 'finance' in
-   $GROUPS` is already a lock by shape, so nothing refuses it — but a non-member who used to get
+$GROUPS` is already a lock by shape, so nothing refuses it — but a non-member who used to get
    200 with zero rows now gets a 403. **Anything keying on the status code — an alert, a retry
    rule, a client branch, a dashboard panel, a notebook cell — sees a different answer after
    upgrade.** This is the change to audit for, and there is no load error to find it for you:
@@ -160,6 +160,13 @@ on a field inside one, reached through a join, on a top-level `query:`, or as a 
 `##(partition)` — fails to load, naming it, with no fallback interpretation. Migrate it to an
 equivalent `#(access_filter)` gate (or a scoping `where:`, if the intent was convenience rather
 than a boundary — see [docs/row-level-access.md](docs/row-level-access.md)) before upgrading.
+
+### For consumers generating clients from this spec
+
+Five operations now declare `403` in `api-doc.yaml` — `post-querydata`,
+`post-querydata-in-package`, `execute-query-model`, `execute-notebook-cell` and
+`compile-model-source`. All five could already reach an `AccessDeniedError`; the spec did not say
+so, so a generated client had no branch for it. Regenerate before upgrading.
 
 ### Also
 
@@ -274,7 +281,7 @@ explicit `PUBLISHER_HOST` so `--host` still moves both together, then
 
 Credentials are never returned on a read, so a system distributing the same connection to several
 Publishers could not confirm any of them was still holding the credential it last sent: a read tells
-a Publisher holding *some* password from one holding *none*, not one holding last month's from one
+a Publisher holding _some_ password from one holding _none_, not one holding last month's from one
 holding the current one.
 
 `Connection.configEtag` is a new optional string the writer owns. Publisher stores it with the
@@ -284,10 +291,11 @@ against what you would send now. A different tag, or none, means that Publisher 
 configuration. A write that does not carry a tag clears it, so a client that ignores the field is
 unaffected and a config changed outside your writer stops hiding behind a tag it no longer matches.
 
-It is deliberately not `fingerprint`, which identifies the *data* a connection reaches and excludes
+It is deliberately not `fingerprint`, which identifies the _data_ a connection reaches and excludes
 credentials so rotation does not re-address artifacts: two configs differing only by password share
 a fingerprint, which is the case this exists to catch. [docs/connections.md](docs/connections.md)
 has the comparison and the limits.
+
 ## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the

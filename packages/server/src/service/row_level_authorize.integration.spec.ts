@@ -1690,7 +1690,7 @@ source: X is duckdb.table('parent') extend {
    it("CRITICAL — a row-level gate with no resolvable graft target still REJECTS, with nothing to attach a filter to", async () => {
       // Same orphan shape as the test above (an unresolvable graft target —
       // `resolveGraftTarget` returns `undefined`), but exercised through the
-      // FULL `resolveGateShape`: every gate is a row filter now, and a filter
+      // FULL `resolveGateShape`: an `#(access_filter)` is a filter, and a filter
       // with nowhere to attach cannot be enforced, so a missing graft target
       // rejects outright rather than attempting any fallback classification.
       const { internals, duckdb } = await buildGatedModel(`

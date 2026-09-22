@@ -7,6 +7,7 @@ import {
    recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
+   recordLockDecision,
    recordRowLevelGateDecision,
    recordRowLevelGateRejected,
    resetAuthorizeGuardTelemetryForTesting,
@@ -87,6 +88,40 @@ describe("authorize_metrics", () => {
             decision: "empty_after_filter",
          }),
       ).toBe(1);
+   });
+
+   it("publisher_authorize_lock_total ticks per call, labeled by decision", async () => {
+      // The two denials are separate labels on purpose: both are a 403, but
+      // only `denied_unresolvable` means the gate could not be decided, and it
+      // is the one worth alerting on. Folding either into the other — or onto
+      // `publisher_authorize_row_level_total`, whose `denied_by_gate` an
+      // operator already alerts on — makes routine traffic page someone.
+      recordLockDecision("admitted");
+      recordLockDecision("denied_by_lock");
+      recordLockDecision("denied_by_lock");
+      recordLockDecision("denied_unresolvable");
+
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "admitted",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "denied_by_lock",
+         }),
+      ).toBe(2);
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "denied_unresolvable",
+         }),
+      ).toBe(1);
+      // A lock decision must not land on the row-level counter.
+      expect(
+         await harness.collectCounter("publisher_authorize_row_level_total", {
+            decision: "denied_by_gate",
+         }),
+      ).toBe(0);
    });
 
    it("publisher_authorize_row_level_rejected_total ticks per call, labeled by cause", async () => {

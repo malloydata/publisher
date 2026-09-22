@@ -202,7 +202,7 @@ export type SourceLineGateWarningCause =
    | "source_line_gate_negated_membership";
 
 /**
- * G4/W1/W2 for the SOURCE-LINE form of `#(authorize)`: the load-time
+ * G4/W1/W2 for the SOURCE-LINE form of a gate on EITHER route: the load-time
  * given-default refusal and the two non-fatal warnings, run against a
  * source-line gate's lifted probe condition.
  *
@@ -236,17 +236,23 @@ export type SourceLineGateWarningCause =
  */
 export function validateSourceLineGateGivenUsage(
    sourceName: string,
+   /**
+    * The route this gate was collected under. Both routes are validated here,
+    * so every message below names the annotation the author actually wrote.
+    */
+   route: string,
    struct: SourceDef,
    refSummary: ExpandableRefSummary | undefined,
    conditionExpr: unknown,
    modelDef: ModelDef,
    onWarning?: (cause: SourceLineGateWarningCause, detail: string) => void,
 ): void {
+   const gate = `#(${route}) gate`;
    const expansion = expandRefSummaryGivenIds(struct, refSummary);
    if (!expansion.ok) {
       throw new ModelCompilationError({
          message:
-            `The row-level authorize gate on source "${sourceName}" references ` +
+            `The ${gate} on source "${sourceName}" references ` +
             `"${expansion.unresolvedPath}", which could not be resolved to a ` +
             `field this model can reach. An unresolvable reference is refused, ` +
             `not treated as referencing no given`,
@@ -261,10 +267,10 @@ export function validateSourceLineGateGivenUsage(
       ) {
          throw new ModelCompilationError({
             message:
-               `The row-level authorize gate on source "${sourceName}" references ` +
+               `The ${gate} on source "${sourceName}" references ` +
                `\`$${given.name}\`, which is declared with a default. A ` +
                `caller who supplies no value for \`$${given.name}\` gets ` +
-               `that default, which can admit rows the gate was meant to ` +
+               `that default, which can admit what the gate was meant to ` +
                `exclude. Declare \`$${given.name}\` with no default`,
          });
       }
@@ -273,15 +279,15 @@ export function validateSourceLineGateGivenUsage(
    if (givenIds.size === 0) {
       onWarning?.(
          "source_line_gate_no_given_reference",
-         `The row-level authorize gate on source "${sourceName}" references no given; it is ` +
+         `The ${gate} on source "${sourceName}" references no given; it is ` +
             `a fixed predicate, not an access rule keyed on the caller`,
       );
    }
    if (containsNegatedMembership(conditionExpr)) {
       onWarning?.(
          "source_line_gate_negated_membership",
-         `The row-level authorize gate on source "${sourceName}" negates a membership test; ` +
-            `an empty given then matches every row instead of none`,
+         `The ${gate} on source "${sourceName}" negates a membership test; ` +
+            `an empty given then matches everything instead of nothing`,
       );
    }
 }
