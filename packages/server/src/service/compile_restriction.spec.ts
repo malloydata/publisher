@@ -147,6 +147,80 @@ describe("compile construct containment", () => {
          ).rejects.toThrow(CompileRefusedError);
       });
 
+      // NAMESPACE PARITY. The gate judges the fragment against the base
+      // model's COMPILED form via `extendModel`; the real compile judges it
+      // against the file text. Anywhere the gate's namespace is narrower, the
+      // enclosing reference fails to resolve, the construct inside it is never
+      // classified, and the unrestricted compile runs it -- the same shape as
+      // the no-base-model hole, reached through a name the gate cannot see.
+      // Both properties below are malloy's rather than this module's, which is
+      // why they are pinned here rather than reasoned about.
+      it("classifies a construct reached through a non-exported source", async () => {
+         await env.installPackage("exports", async (stagingPath) => {
+            await fs.mkdir(stagingPath, { recursive: true });
+            await fs.writeFile(
+               path.join(stagingPath, "publisher.json"),
+               '{"name":"exports"}',
+            );
+            // `helper` is deliberately outside the export list. If `extendModel`
+            // seeded the namespace from `exports` rather than from every entry
+            // in `contents`, `helper` would be unresolvable in the gate and
+            // resolvable in the concatenated file.
+            await fs.writeFile(
+               path.join(stagingPath, "base.malloy"),
+               `source: published is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}
+source: helper is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}
+export { published }`,
+            );
+         });
+         await expect(
+            env.compileSource(
+               "exports",
+               "base.malloy",
+               `run: helper -> { group_by: v is read_csv!string('${secretPath}') }`,
+               false,
+               undefined,
+               "append",
+            ),
+         ).rejects.toThrow(CompileRefusedError);
+      });
+
+      it("classifies a construct that needs the base model's compiler flags", async () => {
+         await env.installPackage("flags", async (stagingPath) => {
+            await fs.mkdir(stagingPath, { recursive: true });
+            await fs.writeFile(
+               path.join(stagingPath, "publisher.json"),
+               '{"name":"flags"}',
+            );
+            // The gate compiles a synthetic document that carries no `##!` of
+            // its own. If the base model's flags did not ride along,
+            // `sql_number` would be rejected inside the gate as
+            // experiment-not-enabled -- no restricted code, so the gate passes
+            // -- and then accepted by the real compile, which does see the flag.
+            await fs.writeFile(
+               path.join(stagingPath, "base.malloy"),
+               `##! experimental.sql_functions
+source: published is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}`,
+            );
+         });
+         await expect(
+            env.compileSource(
+               "flags",
+               "base.malloy",
+               "run: published -> { group_by: v is sql_number('1') }",
+               false,
+               undefined,
+               "append",
+            ),
+         ).rejects.toThrow(CompileRefusedError);
+      });
+
       it("refuses direct table access", async () => {
          await expect(
             compile(
