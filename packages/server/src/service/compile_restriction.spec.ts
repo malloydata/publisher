@@ -41,6 +41,19 @@ source: tracks is base_source extend {
   measure: total is n.sum()
 }`;
 
+// A model that ENABLES the givens experiment and publishes one given. The
+// refusal of a `given:` declaration has to be judged against a model where
+// givens work at all: against a model without the flag, the same fragment comes
+// back as an ordinary `experiment-not-enabled` diagnostic, which would pass a
+// test asserting only "this did not compile" while proving nothing about the
+// gate.
+const GIVENS_MODEL = `##! experimental.givens
+given:
+  SEED :: string is 'a'
+source: gsrc is duckdb.sql("select 1 as id") extend {
+  dimension: seeded is $SEED
+}`;
+
 describe("compile construct containment", () => {
    let rootDir: string;
    let env: Environment;
@@ -67,6 +80,10 @@ describe("compile construct containment", () => {
          await fs.writeFile(
             path.join(stagingPath, "tracks.malloy"),
             TRACKS_MODEL,
+         );
+         await fs.writeFile(
+            path.join(stagingPath, "givens.malloy"),
+            GIVENS_MODEL,
          );
       });
    });
@@ -266,6 +283,40 @@ source: published is duckdb.sql("select 1 as id") extend {
                "append",
             ),
          ).rejects.toThrow(CompileRefusedError);
+      });
+
+      it("refuses a given: declaration but still allows $NAME references", async () => {
+         // Two halves of one contract, which is why they are asserted together:
+         // a fragment may not DECLARE a given, and may still READ one the model
+         // published. Asserting only the refusal would leave the allowance free
+         // to regress into a blanket ban, which reads identically from outside
+         // and would break every fragment that filters on a model's given.
+         const error = await refusalFor(
+            "given:\n  ROLE :: string is 'x'\n",
+            "append",
+            "givens.malloy",
+         );
+         expect(error).toBeInstanceOf(CompileRefusedError);
+         expect(error.message).toContain("cannot declare new givens");
+
+         const problems = await errorsFor(
+            "run: gsrc -> { group_by: seeded }",
+            "append",
+            "givens.malloy",
+         );
+         expect(problems).toEqual([]);
+      });
+
+      it("refuses a ##! compiler-flag annotation", async () => {
+         // The flag line is how a fragment would turn on a language feature the
+         // curated model deliberately did not, so it is refused rather than
+         // honoured for the duration of one compile.
+         const error = await refusalFor(
+            '##! experimental.sql_functions\nrun: base_source -> { group_by: id }',
+            "append",
+         );
+         expect(error).toBeInstanceOf(CompileRefusedError);
+         expect(error.message).toContain("compiler-flag annotations are not permitted");
       });
 
       it("names the offending construct", async () => {
