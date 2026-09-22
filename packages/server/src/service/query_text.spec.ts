@@ -118,6 +118,27 @@ describe("service/query_text", () => {
             buildSourceAliasMap(stripMalloyCommentsAndLiterals(raw)),
          ).toEqual(buildSourceAliasMap(raw));
       });
+
+      it("reads the declaration shapes the compiler links", () => {
+         // Each of these is legal grammar whose edge a narrower pattern
+         // declined to link, and a missing edge is silent in the unsafe
+         // direction: `resolveFilterSource` returns undefined, no filter is
+         // injected, and the caller gets unfiltered rows with no error.
+         expect(
+            buildSourceAliasMap("source: mine is (protected extend {})").get(
+               "mine",
+            ),
+         ).toBe("protected");
+         expect(
+            buildSourceAliasMap("source: mine(p::string) is protected").get(
+               "mine",
+            ),
+         ).toBe("protected");
+         // `\w` is ASCII-only, so a non-ASCII identifier matched nothing.
+         expect(
+            buildSourceAliasMap("source: café is protected").get("café"),
+         ).toBe("protected");
+      });
    });
 
    describe("stripMalloyCommentsAndLiterals", () => {
@@ -125,6 +146,25 @@ describe("service/query_text", () => {
 
       it("blanks a `--` line comment but keeps the newline", () => {
          expect(strip("run: a -- hide\nrun: b")).toBe("run: a        \nrun: b");
+      });
+
+      it("is idempotent across every span it recognises", () => {
+         // `buildSourceAliasMap` strips its own input, and the argument that
+         // this costs an already-stripping caller nothing rests on running it
+         // twice being the same as running it once. Asserted directly rather
+         // than through a map comparison, where both sides strip and the
+         // property holds whether or not it is true.
+         for (const source of [
+            "source: a is protected extend { dimension: n is 'source: a is x' }",
+            "where: s = 'it''s escaped' and t = \"double\"",
+            "source: `quoted name` is protected -- trailing\n run: x",
+            "a /* unterminated",
+            "a -- unterminated",
+            "where: s = 'unterminated",
+            "run: x // one\n/* two */ run: y -- three",
+         ]) {
+            expect(strip(strip(source))).toBe(strip(source));
+         }
       });
 
       it("blanks `//` and block comments, including an unterminated one", () => {
@@ -214,11 +254,16 @@ describe("service/query_text", () => {
          ).toEqual(new Map([["my-src", new Set(["their-src"])]]));
       });
 
-      it("links a declaration a comment split, once the comment is stripped", () => {
+      it("links a declaration a comment split, whoever stripped it", () => {
+         // This is the shape that evaded a scan: a comment between `is` and the
+         // base, which the compiler reads around. The edge is linked whether the
+         // caller stripped or not, because the function strips its own input --
+         // and both spellings agree, which is the idempotence the change rests
+         // on.
          const text = "source: mine is -- c\n X extend { except: g }";
-         // The raw text does not link (this is the shape that evaded a scan);
-         // stripped, it does.
-         expect(buildDerivationBaseMap(text).get("mine")).toBeUndefined();
+         expect(buildDerivationBaseMap(text).get("mine")).toEqual(
+            new Set(["X"]),
+         );
          expect(
             buildDerivationBaseMap(stripMalloyCommentsAndLiterals(text)).get(
                "mine",
