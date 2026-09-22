@@ -875,7 +875,6 @@ describe("books a lock refusal under the label that matches it", () => {
    });
 });
 
-
 describe("authorize runtime gate", () => {
    const SINGLE_GATE = `##! experimental.givens
 
@@ -897,9 +896,9 @@ source: gated is duckdb.table('customers') extend {
          "run: gated -> { aggregate: c }",
          { ROLE: "analyst" },
       );
-      expect((compactResult as unknown as { c: number }[])[0]?.c).toBeGreaterThan(
-         0,
-      );
+      expect(
+         (compactResult as unknown as { c: number }[])[0]?.c,
+      ).toBeGreaterThan(0);
    });
 
    it("denies (403) when no given satisfies the gate", async () => {
