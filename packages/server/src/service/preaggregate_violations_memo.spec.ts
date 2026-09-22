@@ -20,8 +20,8 @@ import { Model } from "./model";
  * whether or not the memo exists.
  */
 
-// Same shape the other synthetic-ModelDef specs build (authorize_gate_walk,
-// partition_resolution); each keeps its own copy rather than sharing a fixture.
+// Same shape the other synthetic-ModelDef specs build (authorize_gate_walk);
+// each keeps its own copy rather than sharing a fixture.
 function tableSource(name: string, extra: object = {}): SourceDef {
    return {
       type: "table",

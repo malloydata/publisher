@@ -44,7 +44,7 @@ but looks plausible — and the same question returns the same numbers tomorrow.
   the model, never your raw tables.
 - **Surface** — dashboards declared in Malloy and built by dragging tiles if you like, notebooks,
   and no-build HTML data apps, all shipped inside the package, plus the Console for browsing it all.
-- **Govern** — givens, row-level access, and `#(authorize)` decide who sees what; discovery curation
+- **Govern** — givens, `#(authorize)` and `#(access_filter)` decide who may query and who sees what; discovery curation
   decides what is even visible.
 - **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
   `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.
@@ -201,7 +201,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 ### Govern
 
 - **Decide who sees what.** [Givens](docs/givens.md) declare runtime parameters and drive filter
-  widgets; [row-level access](docs/row-level-access.md) and [`#(authorize)`](docs/authorize.md) gate
+  widgets; [row-level access](docs/row-level-access.md) and [`#(access_filter)`](docs/authorize.md) gate
   which rows a caller gets and whether they may query a source at all.
 - **Decide what is visible.** Curate what is [discoverable and queryable](docs/discovery-and-access.md)
   separately, so an agent sees only the sources you meant it to.
@@ -238,7 +238,7 @@ Publisher serves out of the box, and a fourth shows the SDK:
   notebook, and givens-driven filters. It is the package Quick start serves, and the one the SDK
   example reads from.
 - **[governed-analytics](examples/governed-analytics)** — the whole governance story in one small
-  package: givens, row-level access, and `#(authorize)` source gates.
+  package: givens, row-level access, and `#(access_filter)` source gates.
 - **[html-data-app](examples/html-data-app)** — a no-build SaaS subscriptions dashboard served from
   a package's `public/` directory, driven by `Publisher.query()`.
 - **[data-app](examples/data-app)** — a standalone Vite + React app on

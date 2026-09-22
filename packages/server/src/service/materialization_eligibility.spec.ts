@@ -166,40 +166,6 @@ source: mz_part is base -> { select: * }`);
       expect(plan.partitionColumns).toEqual(["region"]);
    });
 
-   it("refuses a source that declares a #(partition) marker (RLAC security refusal, same as a given)", async () => {
-      // No `given:` declaration and no `##! experimental.givens` needed: the
-      // annotation is never compiled by Malloy, so `referencesGiven` (an IR
-      // walk) sees nothing here either — this is exactly the gap
-      // `referencesPartition` exists to close.
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
-#(partition) tenant = $TENANT
-#@ persist name="mz_partition"
-source: mz_partition is base -> { aggregate: c is count() }`);
-      expect(sources.mz_partition).toBeDefined();
-      // Confirms the gap this refusal closes: the source passes
-      // `referencesGiven` clean even though it declares a partition axis.
-      expect(
-         (
-            sources.mz_partition._sourceDef as unknown as {
-               filterList?: unknown[];
-            }
-         ).filterList ?? [],
-      ).toHaveLength(0);
-      expect(() =>
-         assertMaterializationEligible(
-            sources.mz_partition,
-            deriveAnnotationFields(sources.mz_partition),
-         ),
-      ).toThrow(MaterializationEligibilityError);
-      expect(() =>
-         assertMaterializationEligible(
-            sources.mz_partition,
-            deriveAnnotationFields(sources.mz_partition),
-         ),
-      ).toThrow(/partition/i);
-   });
-
    it("refuses a source protected by its own #(authorize) gate", async () => {
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
@@ -232,7 +198,7 @@ source: mz_authz is base -> { aggregate: c is count() }`);
       // given check first and never reach the authorize path this test
       // exists to exercise.
       const sources = await persistSources(`##! experimental.persistence
-#(authorize) org_id = 999
+#(access_filter) org_id = 999
 source: base is duckdb.sql("SELECT 1 AS org_id") extend {}
 #@ persist name="mz_dim_authz"
 source: mz_dim_authz is base -> { aggregate: c is count() }`);
@@ -247,6 +213,60 @@ source: mz_dim_authz is base -> { aggregate: c is count() }`);
          assertMaterializationEligible(
             sources.mz_dim_authz,
             deriveAnnotationFields(sources.mz_dim_authz),
+         ),
+      ).toThrow(/authorize/i);
+   });
+
+   it("refuses a source gated by the `true` admit-all sentinel, same as any other gate", async () => {
+      // Pins current behavior deliberately: `hasAnyAuthorizeNote` /
+      // `isAuthorizeAnnotation` see any gate, `true` included, so a
+      // `true`-gated source stays out of the storage companion. Treating it
+      // as ungated is a later, separate decision, not a side effect.
+      const sources = await persistSources(`##! experimental.persistence
+#(authorize) true
+source: base is duckdb.sql("SELECT 1 AS org_id") extend {}
+#@ persist name="mz_admit_all"
+source: mz_admit_all is base -> { aggregate: c is count() }`);
+      expect(sources.mz_admit_all).toBeDefined();
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_admit_all,
+            deriveAnnotationFields(sources.mz_admit_all),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_admit_all,
+            deriveAnnotationFields(sources.mz_admit_all),
+         ),
+      ).toThrow(/authorize/i);
+   });
+
+   it("refuses a source protected ONLY by its own #(authorize) gate", async () => {
+      // A source carrying no #(authorize) at all, only #(authorize) —
+      // this must draw the same materialization refusal as an ordinary
+      // row-level gate, otherwise a authorize-only source freezes
+      // into a materialized artifact served to everyone. `isAuthorizeAnnotation`
+      // (via `parseAuthorizeAnnotation`) is widened to recognize both routes,
+      // so this is automatic rather than a special case.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(authorize) 'finance' = $role
+#@ persist name="mz_source_authz"
+source: mz_source_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_source_authz).toBeDefined();
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_source_authz,
+            deriveAnnotationFields(sources.mz_source_authz),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_source_authz,
+            deriveAnnotationFields(sources.mz_source_authz),
          ),
       ).toThrow(/authorize/i);
    });
@@ -345,7 +365,7 @@ source: mz_authz_annotated_join is joiner extend {
       const sources =
          await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
@@ -376,7 +396,7 @@ source: orders__preagg__category is orders -> {
       // gate would refuse on `referencesGiven` first.
       const sources =
          await persistSources(`##! experimental { persistence composite_sources }
-#(authorize) org_id = 999
+#(access_filter) org_id = 999
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id") extend {}
 
 #@ persist
@@ -407,7 +427,7 @@ source: orders__preagg__dim_category is orders -> {
       const sources =
          await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
@@ -625,27 +645,6 @@ source: mz_colocated_plain is base -> { aggregate: c is count() }`);
       ).not.toThrow();
    });
 
-   it("refuses a colocated persist source that declares a #(partition) marker (no relaxation, unlike authorize)", async () => {
-      // Storage refusal (a) is trivially sidestepped by dropping `storage=` —
-      // this is the check that closes that gap for the colocated tier.
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
-#(partition) tenant = $TENANT
-#@ persist name="mz_colocated_partition"
-source: mz_colocated_partition is base -> { aggregate: c is count() }`);
-      expect(sources.mz_colocated_partition).toBeDefined();
-      expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
-            sources.mz_colocated_partition,
-         ),
-      ).toThrow(MaterializationEligibilityError);
-      expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
-            sources.mz_colocated_partition,
-         ),
-      ).toThrow(/partition/i);
-   });
-
    it("accepts a colocated persist source that references a given but carries no gate, and so does the storage gate", async () => {
       // The given sits in the source's extend block, so it is absent from the
       // build and applied over the artifact at read with each caller's value.
@@ -744,7 +743,7 @@ source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
          const sources =
             await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
