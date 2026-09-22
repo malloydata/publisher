@@ -31,6 +31,24 @@ describe("service/package_manifest", () => {
          ).toEqual(["index.malloy"]);
       });
 
+      it("says so when the convention curates a package on the file alone", () => {
+         // The one path that arms curation with nothing in publisher.json
+         // asking for it, so it is the one an upgrading package meets by
+         // surprise. It must name the consequence and the opt-out.
+         const text = resolve(undefined, [
+            "index.malloy",
+            "orders.malloy",
+         ]).warnings.join("\n");
+         expect(text).toContain("is its published surface");
+         expect(text).toContain("404");
+         expect(text).toContain('"explores": []');
+      });
+
+      it("stays quiet when the index.malloy is the only model", () => {
+         // Nothing is withheld, so there is nothing to report.
+         expect(resolve(undefined, ["index.malloy"]).warnings).toEqual([]);
+      });
+
       it("leaves a package with no index.malloy uncurated", () => {
          expect(
             resolve(undefined, ["orders.malloy", "internal.malloy"]).explores,
@@ -91,6 +109,24 @@ describe("service/package_manifest", () => {
             resolve("orders.malloy", ["orders.malloy"]).explores,
          ).toBeUndefined();
          expect(resolve([null], ["orders.malloy"]).explores).toBeUndefined();
+      });
+
+      it("reports a malformed explores instead of dropping it in silence", () => {
+         // Falling back is right, but silently falling back leaves the author
+         // reading a package that does not curate the way their manifest says.
+         const text = resolve("orders.malloy", ["orders.malloy"]).warnings.join(
+            "\n",
+         );
+         expect(text).toContain('Invalid "explores"');
+         expect(text).toContain("expected an array of model paths");
+         expect(text).toContain('"orders.malloy"');
+         expect(text).toContain("IGNORED");
+         expect(text).toContain("Fix:");
+
+         // A non-string element is the same defect and gets the same report.
+         expect(
+            resolve([null], ["orders.malloy"]).warnings.join("\n"),
+         ).toContain('Invalid "explores"');
       });
 
       it("tells a queryableSources author to delete it, but never tells the 'all' author that", () => {

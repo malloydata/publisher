@@ -439,11 +439,20 @@ export function resolveExplores(input: {
    // Rejecting leaves the package uncurated (or on the convention), which is
    // the conservative direction. It also stops a non-string element throwing
    // out of `normalizeModelPath` and failing the whole package load.
-   const declared =
+   const wellFormed =
       Array.isArray(declaredExplores) &&
-      declaredExplores.every((entry) => typeof entry === "string")
-         ? (declaredExplores as string[]).map(normalizeModelPath)
-         : undefined;
+      declaredExplores.every((entry) => typeof entry === "string");
+   const declared = wellFormed
+      ? (declaredExplores as string[]).map(normalizeModelPath)
+      : undefined;
+
+   // Rejecting it quietly would leave the author reading a package that does
+   // not curate the way their manifest says it does, with nothing anywhere to
+   // say the key was ignored rather than applied. Every other branch of this
+   // function reports what it did; this one has to as well.
+   if (declaredExplores !== undefined && !wellFormed) {
+      warnings.push(exploresMalformed(declaredExplores));
+   }
 
    if (declaredQueryableSources !== undefined) {
       warnings.push(
@@ -479,8 +488,51 @@ export function resolveExplores(input: {
       return { explores: undefined, warnings };
    }
 
+   // The one path that curates a package on the strength of a file alone, with
+   // nothing in publisher.json asking for it. For a package written for the
+   // convention that is simply the feature working, but for one that predates
+   // it -- or that happens to carry a file by that name -- it is a surface
+   // appearing where there was none, and models that answered yesterday start
+   // returning 404. Say so once, and only where there is something to hide:
+   // an index.malloy that is the package's only model withholds nothing.
+   if (modelPaths.some((modelPath) => modelPath !== INDEX_MODEL_NAME)) {
+      warnings.push(INDEX_MODEL_IS_THE_SURFACE);
+   }
+
    return { explores: [INDEX_MODEL_NAME], warnings };
 }
+
+/**
+ * Said when a malformed `explores` is dropped. Names the shape expected and
+ * the value found, because the failure is otherwise invisible: the package
+ * loads, serves, and simply ignores the key.
+ */
+function exploresMalformed(declaredExplores: unknown): string {
+   return (
+      `Invalid "explores" in publisher.json: expected an array of model ` +
+      `paths, got ${JSON.stringify(declaredExplores)}. The key is being ` +
+      `IGNORED, so this package is curated by its "${INDEX_MODEL_NAME}" if it ` +
+      `has one and is otherwise uncurated. Fix: "explores": ` +
+      `["${INDEX_MODEL_NAME}"].`
+   );
+}
+
+/**
+ * Said when a root `index.malloy` becomes the surface with no manifest key
+ * asking for it. Not a deprecation and not a complaint -- the convention is
+ * the recommended shape, and for a package written for it this is a one-line
+ * confirmation. It exists for the package that did NOT ask: nothing else in
+ * the system reports that a surface appeared, and the symptom an author meets
+ * instead is a 404 on a model that reads as missing rather than withheld.
+ */
+const INDEX_MODEL_IS_THE_SURFACE =
+   `This package has a root "${INDEX_MODEL_NAME}" and no "explores" in ` +
+   `publisher.json, so that file is its published surface: only it is listed, ` +
+   `and sources it does not "export { ... }" are refused by name with a 404. ` +
+   `Other models still compile and are still importable and joinable. If that ` +
+   `is intended, nothing to do. If this package is not meant to be curated, ` +
+   `add "explores": [] to publisher.json to keep every model listed and ` +
+   `queryable, or rename the file.`;
 
 /**
  * Said when a package has a root `index.malloy` but its explicit `explores`
