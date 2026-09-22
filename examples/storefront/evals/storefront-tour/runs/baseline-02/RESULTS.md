@@ -27,9 +27,11 @@ case, no unreadable judge reply.
 | **top-customer-spend** | **wrong** |
 | **summer-sales-2025** | **wrong** |
 
-Against baseline-01, which read 11 of 12: same summer failure,
-`top-customer-spend` flipped. **Two arms, and the rubric changed between them,
-so that move is not attributable** -- this set has no measured noise band.
+An earlier arm read 11 of 12, with the same summer failure and
+`top-customer-spend` passing. Its record was destroyed before it was
+committed, so nothing in it can be re-read or re-judged and it is not kept
+here. Treat that comparison as hearsay: **this set has one arm with a record,
+and therefore no measured noise band.**
 
 ## Retrieval
 
@@ -58,7 +60,7 @@ response. `construction/WRONG-PICK`, owner **model**.
 
 **`summer-sales-2025` -- the wrong summer, 20% low.** $213,939.34 for a
 June-August window; the company's summer is 25 May to 15 September, or
-$267,422.53. Identical to baseline-01. No field, given, filter or doc anywhere
+$267,422.53. No field, given, filter or doc anywhere
 in `storefront.malloy` encodes a season, so the rule exists nowhere the agent
 could find it. `get_context/model/COVERAGE`, owner **model**.
 
