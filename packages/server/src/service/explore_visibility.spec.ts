@@ -470,6 +470,95 @@ export { customers }`,
       }
    });
 
+   it("explains itself when a broken index.malloy takes the whole package down", async () => {
+      // Reload, not first load: a compile error at first load fails the whole
+      // package, which shows up in loadErrors. A reload keeps serving and
+      // installs a placeholder for the broken file, so THIS is the path where
+      // the surface goes empty while the package still reads as healthy.
+      writeManifest({});
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `source: orders is duckdb.sql("select 1 as id")\nexport { orders }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "orders.malloy"\nexport { orders }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.brokenSurfaceWarnings()).toEqual([]);
+
+         // Now break it the way an author does: a typo in the export list.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "orders.malloy"\nexport { ordrs }`,
+         );
+         await pkg.reloadAllModels({});
+
+         const warnings = pkg.brokenSurfaceWarnings();
+         expect(warnings.length).toBe(1);
+         expect(warnings[0].model).toBe("index.malloy");
+         // The point of the message: orders.malloy compiled fine and is still
+         // refused, and nothing else in the system says why.
+         expect(warnings[0].message).toContain(
+            "is this package's whole discovery surface and failed to compile",
+         );
+         expect(warnings[0].message).toContain("including the 1 that compiled");
+         expect(warnings[0].message).toContain("404");
+
+         // It must ride the API, not just the log: the operator sees the 404
+         // on orders.malloy, not the compile error on index.malloy.
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some((w) =>
+               (w.message ?? "").includes("whole discovery surface"),
+            ),
+         ).toBe(true);
+
+         // Deliberately still fail-CLOSED: a typo must not expose what the
+         // author curated away.
+         expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
+
+         // And it clears on the save that compiles.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "orders.malloy"\nexport { orders }`,
+         );
+         await pkg.reloadAllModels({});
+         expect(pkg.brokenSurfaceWarnings()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("stays quiet when only PART of the surface is broken", async () => {
+      // One broken file beside a working one still leaves a surface, and that
+      // file's own compile error is report enough.
+      writeManifest({ explores: ["good.malloy", "bad.malloy"] });
+      fs.writeFileSync(
+         path.join(tempDir, "good.malloy"),
+         `source: good is duckdb.sql("select 1 as id")\nexport { good }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "bad.malloy"),
+         `source: bad is duckdb.sql("select 1 as id")\nexport { bad }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         fs.writeFileSync(
+            path.join(tempDir, "bad.malloy"),
+            `source: bad is duckdb.sql("select 1 as id")\nexport { baad }`,
+         );
+         await pkg.reloadAllModels({});
+         expect(pkg.brokenSurfaceWarnings()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("load is fail-safe on an unknown explores path: warns, hides, does not throw", async () => {
       writeManifest({ explores: ["does-not-exist.malloy"] });
       writeLayeredModels();

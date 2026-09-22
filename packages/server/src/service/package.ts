@@ -1116,6 +1116,11 @@ export class Package {
          // shape this closes was a package reporting exploresWarnings: none
          // while listed files surfaced nothing (HANDOFF CR-5).
          ...this.emptyDiscoveryWarnings(),
+         // The whole surface failed to compile, so every model in the package
+         // is refused by name. Rides the API for the same reason as the line
+         // above, and more urgently: the 404s it causes name models that are
+         // not themselves broken, so nothing else points at the cause.
+         ...this.brokenSurfaceWarnings(),
          // A within-package persist-target collision spans two or more sources, so
          // there is no single subject field; the message names them. Surfaced here
          // (alongside the load-path log) so an operator can see it on the status
@@ -2066,8 +2071,66 @@ export class Package {
       return warnings;
    }
 
+   /**
+    * One message when every model on this package's surface failed to compile,
+    * because that case takes the WHOLE package down and says so nowhere else.
+    *
+    * The curated surface is the union of what the listed models export, so a
+    * surface that does not compile exports nothing, and the boundary then
+    * refuses every model in the package -- including the ones that compiled
+    * perfectly well -- with the same 404 a model that does not exist gets. The
+    * listing carries the broken file's own compile error, but nothing connects
+    * that error to the unrelated 404s it caused, and the package is not marked
+    * stale: the load succeeded, it just produced an empty surface.
+    *
+    * Deliberately NOT a fallback to uncurated. Falling open on a typo would
+    * expose sources the author curated away, which is worse than refusing them;
+    * the gap is that the refusal is unexplained, so this explains it.
+    * {@link emptyDiscoveryWarnings} does not cover this -- it skips a model
+    * that failed to compile, by design, so that a compile error is reported
+    * once rather than twice.
+    */
+   public brokenSurfaceWarnings(): Array<{ model: string; message: string }> {
+      const exploreSet = this.exploreSet();
+      if (!exploreSet || exploreSet.size === 0) return [];
+      const surface = Array.from(this.models.entries()).filter(
+         ([modelPath]) =>
+            modelPath.endsWith(MODEL_FILE_SUFFIX) && exploreSet.has(modelPath),
+      );
+      if (surface.length === 0) return [];
+      // Only when NOTHING on the surface compiled. One broken file beside a
+      // working one still leaves a surface, and that file's own error is
+      // report enough.
+      if (!surface.every(([, model]) => !!model.getCompilationError())) {
+         return [];
+      }
+      const hidden = Array.from(this.models.keys()).filter(
+         (modelPath) =>
+            modelPath.endsWith(MODEL_FILE_SUFFIX) && !exploreSet.has(modelPath),
+      );
+      return surface.map(([modelPath, model]) => ({
+         model: modelPath,
+         message:
+            `Model "${modelPath}" is this package's whole discovery surface ` +
+            `and failed to compile, so the package exposes nothing: every ` +
+            `model in it, including the ${hidden.length} that compiled, is ` +
+            `now refused by name with a 404 that reads as "does not exist". ` +
+            `Fix the compile error to restore them -- ` +
+            `${model.getCompilationError()?.message ?? "unknown error"}`,
+      }));
+   }
+
    /** Log {@link emptyDiscoveryWarnings}; shared by load and reload. */
    private logEmptyDiscoveryWarnings(): void {
+      for (const warning of this.brokenSurfaceWarnings()) {
+         logger.warn(
+            `Package ${this.packageName} has a broken discovery surface`,
+            {
+               packageName: this.packageName,
+               detail: warning.message,
+            },
+         );
+      }
       for (const warning of this.emptyDiscoveryWarnings()) {
          logger.warn(`Package ${this.packageName} has a blank-looking model`, {
             packageName: this.packageName,
