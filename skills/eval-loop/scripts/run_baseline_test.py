@@ -218,6 +218,127 @@ class ReExecution(unittest.TestCase):
         self.assertEqual((got["notJudged"], got["missing"]), (0, 1))
 
 
+class DeriveAttemptFromATranscript(unittest.TestCase):
+    """`derive_attempt` is the entry point a transcript uses, whoever made it.
+
+    It calls no model and no server, so a transcript rebuilt from a host's
+    request logs is scored by exactly the code that scores a spawned one. These
+    pin the seam: what the provenance line changes, and what it does not.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.a = argparse.Namespace(
+            target="local", hosted_tools=(), set_dir=self.tmp / "set",
+            answerer_skills=[])
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def transcript(self, *, prov=None, text="42 orders."):
+        events = []
+        if prov is not None:
+            events.append(prov)
+        events.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1",
+             "name": "mcp__publisher__execute_query",
+             "input": {"query": "run: orders -> by_month",
+                       "modelPath": "m.malloy"}}]}})
+        events.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1",
+             "content": [{"type": "text", "text": "{}"}]}]}})
+        if text:
+            events.append({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": text}]}})
+        return events
+
+    def derive(self, events):
+        return rb.derive_attempt(events, {"qid": "q"}, self.a, self.tmp, 1.0)
+
+    def test_a_spawned_transcript_defaults_to_captured_and_logged(self):
+        att = self.derive(self.transcript())
+        self.assertTrue(att["answer_captured"])
+        self.assertTrue(att["host_log"])
+        self.assertEqual(att["answer_text"], "42 orders.")
+
+    def test_a_rebuilt_transcript_declares_what_its_source_lacked(self):
+        att = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": False,
+                  "host_log": False},
+            text=""))
+        self.assertFalse(att["answer_captured"])
+        self.assertFalse(att["host_log"])
+
+    def test_the_tool_calls_survive_the_missing_prose(self):
+        # The whole point of the tier: no answer, but the query and the model
+        # path are there, so retrieval and construction are still scorable.
+        att = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": False,
+                  "host_log": False},
+            text=""))
+        self.assertTrue(att["submitted"])
+        self.assertEqual(att["final_query"], "run: orders -> by_month")
+        self.assertEqual(att["final_model_path"], "m.malloy")
+        self.assertEqual(att["n_execute"], 1)
+
+    def test_no_host_log_means_no_breaches_rather_than_a_clean_bill(self):
+        # Running the isolation checks over a transcript that has no init
+        # event reported "no init event: cannot verify what the answerer held"
+        # as a BREACH -- which is the opposite of what it says. It landed in
+        # the contamination histogram beside real breaches, voided the verdict
+        # with reason `contaminated`, and printed "isolation breached" about a
+        # session where nothing was breached and nothing was checked.
+        att = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": False,
+                  "host_log": False}, text=""))
+        self.assertEqual(att["breaches"], [])
+        self.assertFalse(att["host_log"])
+
+    def test_a_spawned_transcript_still_reports_a_missing_init_event(self):
+        # The check above must not weaken the spawned case, where an absent
+        # init event really does mean the granted toolset is unverifiable.
+        att = self.derive(self.transcript())
+        self.assertTrue(any("init event" in b for b in att["breaches"]))
+
+    def test_the_provenance_line_is_not_counted_as_a_turn(self):
+        with_prov = self.derive(self.transcript(
+            prov={"type": "provenance", "answer_captured": True,
+                  "host_log": True}))
+        without = self.derive(self.transcript())
+        self.assertEqual(with_prov["host_tool_uses"],
+                         without["host_tool_uses"])
+
+
+class RunProvenance(unittest.TestCase):
+    """A run is only as quotable as its poorest source."""
+
+    def test_all_spawned_is_spawned_t3(self):
+        self.assertEqual(rb.run_provenance([{}, {}]), ("spawned", "T3"))
+
+    def test_one_logged_attempt_makes_the_run_logs(self):
+        # A mixed run cannot be read as a spawned one.
+        src, tier = rb.run_provenance(
+            [{}, {"host_log": False, "answer_captured": True}])
+        self.assertEqual(src, "logs")
+
+    def test_the_tier_is_the_weakest_not_the_most_common(self):
+        # Reporting T2 for a set where one session kept no prose puts a pass
+        # rate on a denominator that silently excluded it.
+        _src, tier = rb.run_provenance([
+            {"host_log": False, "answer_captured": True},
+            {"host_log": False, "answer_captured": True},
+            {"host_log": False, "answer_captured": False}])
+        self.assertEqual(tier, "T1")
+
+    def test_logged_with_prose_throughout_is_t2(self):
+        _src, tier = rb.run_provenance([
+            {"host_log": False, "answer_captured": True}])
+        self.assertEqual(tier, "T2")
+
+    def test_no_attempts_at_all_does_not_claim_a_logged_run(self):
+        self.assertEqual(rb.run_provenance([]), ("spawned", "T3"))
+
+
 class JudgeGate(unittest.TestCase):
     """The gate decides what is unjudgeable, and it is not `submitted`."""
 
@@ -243,6 +364,30 @@ class JudgeGate(unittest.TestCase):
         v = self.judge({"answer_text": "", "submitted": False})
         self.assertEqual(v["reason"], "not_submitted")
         self.assertIsNone(v["verdict"])
+
+    def test_a_source_that_recorded_no_prose_is_refused_not_judged(self):
+        # The agent may have answered perfectly; the logs simply did not keep
+        # it. Judging the empty string against the golden would score a limit
+        # of the measurement as a wrong answer.
+        v = self.judge({"answer_text": "", "submitted": True,
+                        "answer_captured": False})
+        self.assertEqual(v["reason"], "no_answer_captured")
+        self.assertIsNone(v["verdict"])
+
+    def test_that_refusal_outranks_an_unestablished_golden(self):
+        # Establishing the key would not make this attempt judgeable, so the
+        # reason names the blocker that cannot be cleared.
+        v = self.judge({"answer_text": "", "submitted": True,
+                        "answer_captured": False},
+                       golden={"status": "provisional", "value": 1})
+        self.assertEqual(v["reason"], "no_answer_captured")
+
+    def test_an_agent_that_said_nothing_is_still_judged(self):
+        # `answer_captured` absent is the spawned case: the transcript COULD
+        # have carried prose and carried none, which is a result about the
+        # agent and belongs to the judge.
+        v = self.judge({"answer_text": "", "submitted": True})
+        self.assertEqual(v["reason"], "no_saved_verdict")
 
     def test_prose_with_no_query_is_still_judged(self):
         # A confident refusal on an answerable case has to be scorable, or the
