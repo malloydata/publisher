@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Tests for init_truth_package. Stdlib only: python3 init_truth_package_test.py"""
 import os
+import pathlib
 import unittest
 
+import init_truth_package as itp
 from init_truth_package import stem
 
 
@@ -41,6 +43,22 @@ class StemTests(unittest.TestCase):
     def test_every_other_extension_we_know(self):
         for ext in ("csv", "tsv", "json", "jsonl", "ndjson", "orc", "avro"):
             self.assertEqual(stem(f"data/events.{ext}"), "t_events", ext)
+
+
+
+class OutMustBeOutsideThePackage(unittest.TestCase):
+    """A truth package inside the model package is served by the model server."""
+
+    def test_an_out_inside_the_package_is_refused(self):
+        import tempfile
+        pkg = pathlib.Path(tempfile.mkdtemp()) / "model"
+        pkg.mkdir()
+        (pkg / "publisher.json").write_text("{}")
+        with self.assertRaises(SystemExit) as e:
+            itp.main(["--package", str(pkg), "--out", str(pkg / "evals" / "truth"),
+                      "--name", "t"])
+        self.assertIn("is inside the model package", str(e.exception))
+        self.assertFalse((pkg / "evals").exists())
 
 
 if __name__ == "__main__":

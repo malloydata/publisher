@@ -228,7 +228,7 @@ def a_set(toml: str, truth_package: bool = True) -> pathlib.Path:
     (d / "pkg").mkdir()
     if truth_package:
         (d / "truth-package").mkdir()
-    return d
+    return d.resolve()
 
 
 TOML = """
@@ -260,6 +260,18 @@ class Roles(unittest.TestCase):
             {"name": "truth", "connections": [], "packages": [
                 {"name": "s-truth",
                  "location": str((d / "truth-package").resolve())}]}]})
+
+    def test_a_truth_package_inside_the_model_package_is_refused_by_both_roles(self):
+        # The leak is the MODEL server serving the truth package's .malloy, so
+        # refusing only the truth role would still leave it open.
+        d = a_set(TOML + 'package_dir = "pkg/evals/truth"\n')
+        (d / "pkg" / "evals" / "truth").mkdir(parents=True)
+        for role in ("model", "truth"):
+            with self.subTest(role=role):
+                with self.assertRaises(SystemExit) as e:
+                    serve.role_config(serve.config.load(d), role)
+                self.assertIn("the model server serves it to the answerer",
+                              str(e.exception))
 
     def test_a_role_on_the_other_roles_port_is_refused(self):
         cfg = serve.config.load(a_set(TOML))
