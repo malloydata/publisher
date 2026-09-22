@@ -251,8 +251,29 @@ def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
     return [*cmd, "--init"] if seed else cmd
 
 
+def truth_inside_model(cfg: config.Config) -> str | None:
+    """Why the set's truth package leaks through the model server, or None.
+
+    Publisher serves every .malloy under a package directory. A truth package
+    inside the model package is served by the MODEL server, as one of the
+    model's own files, so both roles refuse to start over that layout.
+    """
+    repo, truth = cfg.get("model", "repo"), cfg.truth_package_dir()
+    if not (repo and cfg.set_meta.get("truthPackage")):
+        return None
+    if repo in truth.resolve().parents:
+        return (f"the truth package {truth} is inside the model package {repo}, "
+                f"so the model server serves it to the answerer as one of the "
+                f"model's own files. Fix: move it outside {repo} and set "
+                f"[truth] package_dir in {cfg.file_hint}")
+    return None
+
+
 def role_config(cfg: config.Config, role: str) -> dict:
     """The publisher.config.json a role's server serves: one environment, one package."""
+    leak = truth_inside_model(cfg)
+    if leak:
+        raise SystemExit(leak)
     if role == "model":
         env = cfg.need(None, "model", "environment")
         name = cfg.need(None, "model", "package")
