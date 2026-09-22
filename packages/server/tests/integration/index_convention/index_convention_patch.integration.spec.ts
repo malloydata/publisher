@@ -145,6 +145,30 @@ describe("a metadata PATCH against a convention-derived surface", () => {
       expect(readServedManifest()).not.toHaveProperty("explores");
    });
 
+   it("a read-modify-write PATCH does not freeze the derived surface", async () => {
+      // The shape every generated client and UI uses: GET the resource, change
+      // one field, PATCH the whole thing back. The GET echoes the surface the
+      // server DERIVED, so the body carries an "explores" the author never
+      // wrote. Writing it would turn a surface that tracks index.malloy into a
+      // key that names it -- identical until the file is renamed, and then the
+      // key names nothing and the package lists and serves nothing at all.
+      const current = (await (await fetch(pkgApi())).json()) as ApiPackage;
+      expect(current.explores).toEqual(["index.malloy"]);
+
+      const res = await fetch(pkgApi(), {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            ...current,
+            description: "round-tripped through a client",
+         }),
+      });
+      expect(res.status).toBe(200);
+
+      expect(await listedModels()).toEqual(["index.malloy"]);
+      expect(readServedManifest()).not.toHaveProperty("explores");
+   });
+
    it("a PATCH that declares a different surface persists it and takes effect", async () => {
       const res = await fetch(pkgApi(), {
          method: "PATCH",
