@@ -339,8 +339,13 @@ export class Package {
     * origin, deliberately: nothing records where a surface came from, and
     * nothing should. The question this answers is not "who wrote it" but "is
     * there an index.malloy the author is looking at", and that has the same
-    * answer either way -- an author who wrote `explores: ["index.malloy"]`
-    * edits the same file.
+    * answer either way.
+    *
+    * It is therefore TRUE for a hand-written `explores: ["index.malloy"]`, and
+    * a remedy this selects has to hold for that author too. The file is the
+    * same; the manifest key is not, and a remedy that says to delete the file
+    * without also clearing the key would leave that package listing nothing.
+    * Every message below is worded to cover both.
     *
     * Used ONLY to pick the wording of a warning's remedy. Every message that
     * says "add it to 'explores'" is advice with no target for a package that
@@ -2070,8 +2075,12 @@ export class Package {
                   `e.g. 'export { source_name }' to surface sources on this ` +
                   `model, or ` +
                   (this.surfaceIsIndexModel()
-                     ? `delete the file, which returns the package to ` +
-                       `listing every model.`
+                     ? `delete the file AND any "explores" entry naming it. ` +
+                       `Deleting the file alone returns the package to ` +
+                       `listing every model only when no "explores" was ` +
+                       `written; where one was, it would be left naming a ` +
+                       `model that no longer exists and the package would ` +
+                       `list nothing.`
                      : `remove it from explores.`),
             });
          }
@@ -2112,20 +2121,45 @@ export class Package {
       if (!surface.every(([, model]) => !!model.getCompilationError())) {
          return [];
       }
-      const hidden = Array.from(this.models.keys()).filter(
-         (modelPath) =>
-            modelPath.endsWith(MODEL_FILE_SUFFIX) && !exploreSet.has(modelPath),
-      );
-      return surface.map(([modelPath, model]) => ({
-         model: modelPath,
-         message:
-            `Model "${modelPath}" is this package's whole discovery surface ` +
-            `and failed to compile, so the package exposes nothing: every ` +
-            `model in it, including the ${hidden.length} that compiled, is ` +
-            `now refused by name with a 404 that reads as "does not exist". ` +
-            `Fix the compile error to restore them -- ` +
-            `${model.getCompilationError()?.message ?? "unknown error"}`,
-      }));
+      // Models off the surface that compiled FINE, which is the count worth
+      // reporting: they are the ones refused for someone else's typo. A hidden
+      // model that failed to compile of its own accord was not taken down by
+      // this, and has its own error on the listing.
+      const collateral = Array.from(this.models.entries()).filter(
+         ([modelPath, model]) =>
+            modelPath.endsWith(MODEL_FILE_SUFFIX) &&
+            !exploreSet.has(modelPath) &&
+            !model.getCompilationError(),
+      ).length;
+      // ONE message, however many files the surface spans. Emitting it per
+      // file would have each copy claim to be the whole surface, which is only
+      // true when the surface is one file.
+      const [firstPath] = surface[0];
+      const subject =
+         surface.length === 1
+            ? `Model "${firstPath}" is this package's whole discovery surface ` +
+              `and failed to compile`
+            : `Every model on this package's discovery surface ` +
+              `(${surface.map(([p]) => `"${p}"`).join(", ")}) failed to ` +
+              `compile`;
+      return [
+         {
+            model: firstPath,
+            message:
+               `${subject}, so the package exposes nothing: every model in ` +
+               `it, including the ${collateral} that compiled, is now refused ` +
+               `by name with a 404 that reads as "does not exist". Fix the ` +
+               `compile error${surface.length === 1 ? "" : "s"} to restore ` +
+               `them -- ` +
+               surface
+                  .map(
+                     ([modelPath, model]) =>
+                        `${modelPath}: ` +
+                        `${model.getCompilationError()?.message ?? "unknown error"}`,
+                  )
+                  .join("; "),
+         },
+      ];
    }
 
    /** Log {@link emptyDiscoveryWarnings}; shared by load and reload. */
@@ -2906,8 +2940,8 @@ export class Package {
             const remedy = this.surfaceIsIndexModel()
                ? `This package's surface is "${INDEX_MODEL_NAME}", and a ` +
                  `dashboard file cannot be exported from it -- dashboards are ` +
-                 `files, not sources. To serve this one, declare an ` +
-                 `'explores' in publisher.json listing both ` +
+                 `files, not sources. To serve this one, declare (or extend) ` +
+                 `an 'explores' in publisher.json listing both ` +
                  `"${INDEX_MODEL_NAME}" and "${modelPath}"; an explicit key ` +
                  `overrides the convention. Or set ` +
                  `queryableSources: "all" to keep the curated surface for ` +

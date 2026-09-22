@@ -1383,7 +1383,9 @@ describe("Dashboard discovery (E2E)", () => {
          expect(warning).toBeDefined();
          const message = warning?.message ?? "";
          expect(message).toContain('This package\'s surface is "index.malloy"');
-         expect(message).toContain("declare an 'explores' in publisher.json");
+         expect(message).toContain(
+            "declare (or extend) an 'explores' in publisher.json",
+         );
          // The generic advice would be a dead end here.
          expect(message).not.toContain("Add it to 'explores',");
       });

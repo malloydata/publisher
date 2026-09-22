@@ -506,6 +506,8 @@ export { customers }`,
             "is this package's whole discovery surface and failed to compile",
          );
          expect(warnings[0].message).toContain("including the 1 that compiled");
+         // One message for the surface, not one per file on it.
+         expect(warnings.length).toBe(1);
          expect(warnings[0].message).toContain("404");
 
          // It must ride the API, not just the log: the operator sees the 404
@@ -527,6 +529,87 @@ export { customers }`,
          );
          await pkg.reloadAllModels({});
          expect(pkg.brokenSurfaceWarnings()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("reports a multi-file surface once, and counts only what compiled", async () => {
+      // Two broken files on one surface used to produce two messages, each
+      // claiming to BE the whole surface, and the collateral count included
+      // hidden models that had failed to compile on their own.
+      writeManifest({ explores: ["a.malloy", "b.malloy"] });
+      for (const name of ["a", "b"]) {
+         fs.writeFileSync(
+            path.join(tempDir, `${name}.malloy`),
+            `source: ${name}_src is duckdb.sql("select 1 as id")\nexport { ${name}_src }`,
+         );
+      }
+      fs.writeFileSync(
+         path.join(tempDir, "fine.malloy"),
+         `source: fine is duckdb.sql("select 1 as id")\nexport { fine }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "alsobroken.malloy"),
+         `source: ab is duckdb.sql("select 1 as id")\nexport { ab }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const name of ["a", "b"]) {
+            fs.writeFileSync(
+               path.join(tempDir, `${name}.malloy`),
+               `source: ${name}_src is duckdb.sql("select 1 as id")\nexport { nope }`,
+            );
+         }
+         // A hidden model broken on its own account: it was not taken down by
+         // the surface, so it must not be counted as collateral.
+         fs.writeFileSync(
+            path.join(tempDir, "alsobroken.malloy"),
+            `source: ab is duckdb.sql("select 1 as id")\nexport { nope }`,
+         );
+         await pkg.reloadAllModels({});
+
+         const warnings = pkg.brokenSurfaceWarnings();
+         expect(warnings.length).toBe(1);
+         expect(warnings[0].message).toContain(
+            "Every model on this package's discovery surface",
+         );
+         expect(warnings[0].message).not.toContain("whole discovery surface");
+         // fine.malloy only: alsobroken.malloy is broken on its own.
+         expect(warnings[0].message).toContain("including the 1 that compiled");
+         // Both compile errors are named, so the author has both to fix.
+         expect(warnings[0].message).toContain("a.malloy:");
+         expect(warnings[0].message).toContain("b.malloy:");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("gives a remedy that holds when explores names index.malloy by hand", async () => {
+      // surfaceIsIndexModel() is true here too, and "delete the file" alone
+      // would leave the key naming a model that no longer exists -- the
+      // package would then list NOTHING, the inverse of what it promises.
+      writeManifest({ explores: ["index.malloy"] });
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base_source is duckdb.sql("select 1 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "base.malloy"\nrun: base_source -> { group_by: id }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const warnings = pkg.emptyDiscoveryWarnings();
+         expect(warnings.length).toBe(1);
+         expect(warnings[0].message).toContain(
+            'delete the file AND any "explores" entry naming it',
+         );
+         expect(warnings[0].message).toContain("would list nothing");
       } finally {
          await duckdb.close();
       }
