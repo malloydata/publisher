@@ -16,7 +16,7 @@ of this repository (`evals/.gitignore`).
 | `as-received/questions.md` | the questions as authored, plus the business conventions that arrived with them |
 | `cases.jsonl` | one case per question: the sealed question text, its golden, and the entities its answer depends on |
 | `gold/` | both derivations of every value-bearing golden, and their agreement |
-| `truth-package/` | the raw tables the goldens are derived from, with no modelling. Served on a SECOND server the answerer cannot reach |
+| (`examples/storefront-tour-truth/`) | the raw tables the goldens are derived from, with no modelling. It lives OUTSIDE the storefront package on purpose: Publisher serves every `.malloy` under a package directory, so a truth package kept in here is served as one of storefront's own models and the answerer can query the raw tables |
 
 Every golden is `verified`: derived once as SQL over the raw parquet, once as
 Malloy through the truth package, on axes that differ, and promoted only where
@@ -41,7 +41,7 @@ derivations, so it must never share a server with the model under test.
 mkdir -p /tmp/truthroot && cat > /tmp/truthroot/publisher.config.json <<JSON
 {"frozenConfig": false, "environments": [{"name": "truth", "connections": [],
   "packages": [{"name": "storefront-tour-truth",
-    "location": "$PWD/examples/storefront/evals/storefront-tour/truth-package"}]}]}
+    "location": "$PWD/examples/storefront-tour-truth"}]}]}
 JSON
 python3 skills/eval-loop/scripts/serve.py \
     --publisher-dir "$PWD/packages/server" \

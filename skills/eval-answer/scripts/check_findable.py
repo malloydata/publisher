@@ -51,6 +51,7 @@ import argparse
 import json
 import pathlib
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -176,6 +177,30 @@ def compiled_entities(rest_url: str, environment: str,
     return out or None
 
 
+def embedding_index_status(rest_url: str, environment: str, package: str,
+                           timeout: int = 15) -> str | None:
+    """`embeddingIndex.status` for one package, or None if it cannot be read.
+
+    Retrieval is semantic only once this reaches `ready`; before that the
+    server answers the same calls from the lexical matcher without saying so,
+    and fewer entities come back. A checker that does not wait for it reports
+    the difference as a broken answer key.
+    """
+    url = (f"{rest_url.rstrip('/')}/api/v0/environments/"
+           f"{urllib.parse.quote(environment)}/packages/"
+           f"{urllib.parse.quote(package)}")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            body = json.loads(r.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    index = body.get("embeddingIndex")
+    if not isinstance(index, dict):
+        return None
+    status = index.get("status")
+    return status if isinstance(status, str) else None
+
+
 def stale_packages(rest_url: str, timeout: int = 30) -> set[tuple[str, str]] | None:
     """`{(environment, package)}` serving a model older than their files.
 
@@ -213,6 +238,26 @@ def declared_findings(cases: list[dict[str, Any]],
                        f"(required by {', '.join(qids)})")
             continue
         if f"{kind}:{name}" in declared[src]:
+            continue
+        # A DOTTED name is a join path, not a field name. `declared[src]` holds
+        # the source's OWN fields, so `dimension:order_items:products.brand`
+        # never matched and every dotted id was reported as a missing field --
+        # five of them on one set, against a get_context that returns each as
+        # its top result. Resolve it where it lives: the last segment is the
+        # field, the segment before it names the joined source.
+        if "." in name:
+            *path, leaf = name.split(".")
+            hop = path[-1]
+            if hop in declared and f"{kind}:{leaf}" in declared[hop]:
+                continue
+            if hop not in declared:
+                out.append(f"{eid}: the join path names {hop!r}, which the "
+                           f"compiled model has no source for "
+                           f"(required by {', '.join(qids)})")
+            else:
+                out.append(f"{eid}: the compiled {hop} source declares no "
+                           f"{kind} {leaf!r} to reach through that join "
+                           f"(required by {', '.join(qids)})")
             continue
         other = sorted(k.split(":", 1)[0] for k in declared[src]
                        if k.split(":", 1)[1] == name)
@@ -310,6 +355,11 @@ def main(argv: list[str] | None = None) -> int:
                          "both directions.")
     ap.add_argument("--out", default=None,
                     help="write the per-entity rows as JSON")
+    ap.add_argument("--index-wait", type=int, default=120,
+                    help="seconds to wait for the embedding index to be ready "
+                         "before searching (needs --publisher). 0 to skip the "
+                         "wait, which risks reading the lexical matcher as a "
+                         "missing entity")
     a = ap.parse_args(argv)
 
     f = a.set_dir / "cases.jsonl"
@@ -317,6 +367,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no cases.jsonl in {a.set_dir}", file=sys.stderr)
         return 3
     cases = [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
+
+    # The embedding index is built lazily, on the first call that ranks. A
+    # search run seconds after a server start is answered by the LEXICAL
+    # matcher, which finds fewer things -- and this check reads "fewer things"
+    # as "the key names entities that cannot be retrieved" and tells you to fix
+    # the key. Three ids were reported missing that way on one set and all
+    # three passed on a re-run. So wait for it, and say so when it cannot.
+    if a.publisher and a.index_wait:
+        deadline = time.monotonic() + a.index_wait
+        status = None
+        while time.monotonic() < deadline:
+            status = embedding_index_status(a.publisher, a.environment,
+                                            a.package)
+            if status in ("ready", "disabled", "unavailable", None):
+                break
+            time.sleep(2)
+        if status is None:
+            print("! the embedding index status could not be read; a miss "
+                  "below may be the lexical matcher rather than the key",
+                  file=sys.stderr)
+        elif status != "ready":
+            print(f"! the embedding index is {status!r} after "
+                  f"{a.index_wait}s, so this search may be answered "
+                  f"lexically; a miss below may be the index, not the key",
+                  file=sys.stderr)
 
     declared_out: list[str] = []
     if a.publisher:
