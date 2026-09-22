@@ -83,20 +83,27 @@ import {
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
-import { recordRowLevelGateRejected } from "../authorize_metrics";
+import {
+   recordAuthorizeAdmitAllGate,
+   recordRowLevelGateRejected,
+} from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import {
-   assertAtMostOneAuthorizeGate,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    findLegacyStringGates,
-   findMultipleAuthorizeGates,
    validateAuthorizeProbes,
    type AuthorizeMap,
+   type AuthorizeOwnNotesMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
-import { assertPartitionAnnotationsValid } from "../service/gate_classification";
+import {
+   assertAuthorizeGrammarValid,
+   assertNoRetiredRouteMarkers,
+   collectRetiredRouteMarkers,
+   computeGivenDeclaredTypes,
+} from "../service/gate_classification";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -116,12 +123,12 @@ import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "../service/source_extraction";
-import { type AnnotationNote } from "../service/annotations";
 import {
    malloyGivenToApi,
    type MalloyGiven,
    type MalloyGivenApi,
    attachSuggestGivenNames,
+   gateGivenSource,
    suggestGivenLookup,
 } from "../service/given";
 import { ignoreDotfiles } from "../utils";
@@ -563,6 +570,7 @@ interface ApiSourceWire {
    filters?: unknown[];
    givens?: unknown[];
    authorize?: string[];
+   accessFilter?: string[];
 }
 interface ApiQueryWire {
    name: string;
@@ -583,8 +591,8 @@ function extractSources(
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-   authorizeOwnNotes: Map<string, AnnotationNote[]>;
-   attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
+   authorizeOwnNotes: AuthorizeOwnNotesMap;
+   attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
 } {
    const {
       sources,
@@ -620,7 +628,7 @@ function authorizeWarningCollector(): {
       warnings,
       onRowLevelGateUnexpressible: (sourceName, detail) => {
          warnings.push(
-            `Row-level #(authorize) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
+            `Row-level #(access_filter) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
          );
       },
    };
@@ -739,14 +747,14 @@ async function compileMalloyModel(
       givens,
       suggestGivenLookup(
          modelDef,
-         (name) => sources.find((source) => source.name === name)?.authorize,
+         (name) => gateGivenSource(sources, name),
          new Set((givens ?? []).map((given) => given.name)),
       ),
    );
    const queryResult = extractQueries(modelDef);
    const queries = queryResult.queries;
    // See the identical check in `Model.create`.
-   assertPartitionAnnotationsValid(modelDef);
+   assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
    // A `#(authorize)` annotation in a position nothing enforces (a top-level
    // `query:` statement, or a field inside a `source:` rather than the
    // `source:` line itself) fails OPEN — see
@@ -765,16 +773,23 @@ async function compileMalloyModel(
       recordRowLevelGateRejected("legacy_string_gate"),
    );
    assertNoLegacyStringGate(legacyStringGates);
-   // A source may declare at most one `#(authorize)` block — see
-   // `findMultipleAuthorizeGates`'s doc. Presence-based, same reason as above.
-   assertAtMostOneAuthorizeGate(findMultipleAuthorizeGates(authorizeOwnNotes));
-   // Validate #(authorize) at compile time (shared with Model.create). Throws
-   // on an unknown given / source-field reference or a rejected row-level
-   // shape; compileOneModel's catch turns it into this model's
+   // The body grammar — see `assertAuthorizeGrammarValid`'s doc, same order
+   // as `Model.create`.
+   assertAuthorizeGrammarValid(
+      modelDef,
+      authorizeMap,
+      authorizeOwnNotes,
+      computeGivenDeclaredTypes(givens),
+      (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
+      attributedAuthorizeOwnNotes,
+   );
+   const authorizeWarningCollection = authorizeWarningCollector();
+   // Validate both gate routes at compile time (shared with Model.create).
+   // Throws on an unknown given / source-field reference or a rejected
+   // row-level shape; compileOneModel's catch turns it into this model's
    // compilationError. A gate INHERITED at an entry point that can't express
    // it does not throw — see `validateAuthorizeProbes`'s doc comment for what
    // it validates.
-   const authorizeWarningCollection = authorizeWarningCollector();
    await validateAuthorizeProbes(mm, {
       authorizeMap,
       authorizeOwnNotes: attributedAuthorizeOwnNotes,
@@ -789,11 +804,12 @@ async function compileMalloyModel(
       // resolved against it either way. The worker has no logger (see this
       // function's doc), so a warning rides the same wire channel as
       // `onRowLevelGateUnexpressible` above.
-      onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+      onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
          const struct = modelDef.contents[sourceName];
          if (!struct || !isSourceDef(struct)) return;
          validateSourceLineGateGivenUsage(
             sourceName,
+            route,
             struct,
             condition.refSummary as ExpandableRefSummary | undefined,
             condition.e,
@@ -801,7 +817,7 @@ async function compileMalloyModel(
             (cause, detail) => {
                recordRowLevelGateRejected(cause);
                authorizeWarningCollection.warnings.push(
-                  `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                  `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
                );
             },
          );
@@ -966,9 +982,7 @@ async function compileNotebookModel(
          finalGivens,
          suggestGivenLookup(
             finalModelDef,
-            (name) =>
-               extracted.sources.find((source) => source.name === name)
-                  ?.authorize,
+            (name) => gateGivenSource(extracted.sources, name),
             new Set((finalGivens ?? []).map((given) => given.name)),
          ),
       );
@@ -976,7 +990,7 @@ async function compileNotebookModel(
       const finalQueryResult = extractQueries(finalModelDef);
       finalQueries = finalQueryResult.queries;
       // See the identical check in `compileMalloyModel` above.
-      assertPartitionAnnotationsValid(finalModelDef);
+      assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(finalModelDef));
       // See the identical check in `compileMalloyModel` above.
       assertNoMisplacedAuthorizeAnnotations([
          ...extracted.misplacedAuthorize,
@@ -991,8 +1005,13 @@ async function compileNotebookModel(
       );
       assertNoLegacyStringGate(finalLegacyStringGates);
       // See the identical check in `compileMalloyModel` above.
-      assertAtMostOneAuthorizeGate(
-         findMultipleAuthorizeGates(extracted.authorizeOwnNotes),
+      assertAuthorizeGrammarValid(
+         finalModelDef,
+         extracted.authorizeMap,
+         extracted.authorizeOwnNotes,
+         computeGivenDeclaredTypes(finalGivens),
+         (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
+         extracted.attributedAuthorizeOwnNotes,
       );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
@@ -1007,11 +1026,12 @@ async function compileNotebookModel(
          onRowLevelGateUnexpressible:
             authorizeWarningCollection.onRowLevelGateUnexpressible,
          // See the identical check in `compileMalloyModel` above.
-         onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+         onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
             const struct = finalCompiledModelDef.contents[sourceName];
             if (!struct || !isSourceDef(struct)) return;
             validateSourceLineGateGivenUsage(
                sourceName,
+               route,
                struct,
                condition.refSummary as ExpandableRefSummary | undefined,
                condition.e,
@@ -1019,7 +1039,7 @@ async function compileNotebookModel(
                (cause, detail) => {
                   recordRowLevelGateRejected(cause);
                   authorizeWarningCollection.warnings.push(
-                     `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                     `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
                   );
                },
             );

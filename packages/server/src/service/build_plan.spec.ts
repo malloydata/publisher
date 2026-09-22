@@ -738,7 +738,7 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `);
@@ -913,7 +913,7 @@ given:
 
 source: base_a is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="s"
 source: s is base_a -> { select: org_id } extend {}
 `,
@@ -994,7 +994,7 @@ given:
 source: base is duckdb.sql("select 1 as x")
 
 #@ persist name="s"
-#(authorize) x = $ORG
+#(access_filter) x = $ORG
 source: s is base -> { select: x }
 `,
                "model_b.malloy": `##! experimental.persistence
@@ -1003,7 +1003,7 @@ source: s is base -> { select: x }
 given:
   ORG :: number
 
-#(authorize) x = 1
+#(access_filter) x = 1
 source: locked is duckdb.sql("select 1 as x")
 
 #@ persist name="s"
@@ -1217,7 +1217,7 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
       "does NOT report a colocated gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
       async () => {
          // Plain `#@ persist` (no `storage=`): the entry point's own
-         // `#(authorize)` gate classifies row_level + attributed, so the
+         // `#(access_filter)` gate classifies row_level + attributed, so the
          // colocated relaxation admits it. The OLD `SourceEligibility.refused`
          // (computed with the unconditional storage-tier assert) would report
          // this same source as `refused: authorize` — refusedSources must not
@@ -1229,7 +1229,7 @@ given: ORG :: number
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `);
@@ -1261,7 +1261,7 @@ source: gated is base -> { select: org_id } extend {}
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),

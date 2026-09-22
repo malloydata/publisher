@@ -209,7 +209,7 @@ export function getMalloyErrorDetails(
          refined = true;
          const [, sourceName] = accessDeniedMatch;
          suggestions = [
-            `Suggestion: Access to source '${sourceName}' is restricted by an #(authorize) gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
+            `Suggestion: Access to source '${sourceName}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
          ];
       } else if (viewNotFoundMatch) {
          refined = true;

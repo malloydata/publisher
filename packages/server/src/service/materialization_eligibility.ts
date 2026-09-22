@@ -7,7 +7,6 @@ import { recordEligibilityRefused } from "../materialization_metrics";
 import type { AnnotationNote } from "./annotations";
 import { parseAuthorizeAnnotation } from "./authorize";
 import { deriveColumns, type PersistSourceGateOutcome } from "./build_plan";
-import { containsPartitionAnnotationTag } from "./partition_annotation";
 import {
    buildSubstitutesAGiven,
    classifyDynamicTerms,
@@ -65,8 +64,8 @@ export interface PersistDynamicPlan {
  *     is admitted on the promise that every one of them is put back at read, so
  *     the serve shape has to declare their givens and re-emit their text; a
  *     routed query that could not do both must not route.
- *  3. **No `#(authorize)` gate — a security refusal.** An authorize expression
- *     is a per-request *who-can-query* gate evaluated at query time. The served
+ *  3. **No gate on either route — a security refusal.** An `#(authorize)` lock
+ *     and an `#(access_filter)` row filter are both evaluated per request. The served
  *     virtual shape of a materialized source carries no gate to evaluate, so a
  *     materialized authorize-gated source would be served to everyone,
  *     bypassing the gate. Fails closed on anything it cannot read.
@@ -175,34 +174,12 @@ export function assertMaterializationEligible(
          reason: "authorize",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: it is protected by an #(authorize) gate (its own or a ` +
-            `joined source's). An authorize expression is evaluated per request; ` +
-            `a materialized-once table served frozen carries no gate, so it would ` +
-            `be served to everyone, bypassing authorization. This is refused for ` +
-            `safety. Serve this source live (drop 'storage=').`,
-      });
-   }
-
-   // A `#(partition)` marker leaves no trace the classification above can see:
-   // the column/given pair lives on an ANNOTATION, and the actual `given`
-   // reference only exists once the query-time graft (`Model.probeEntryPointGates`)
-   // appends it to `filterList` — which never happens to the source this build
-   // compiles. So a partitioned source classifies clean, with no term recorded
-   // as stripped, and the serve shape would re-graft nothing: materialized once
-   // and served frozen, it would serve every tenant's slice to every tenant.
-   // Refused separately, and checked here explicitly rather than folded into the
-   // classification's IR walk, because there is no IR node to find.
-   if (referencesPartition(persistSource)) {
-      recordEligibilityRefused("partition");
-      throw new MaterializationEligibilityError({
-         reason: "partition",
-         message:
-            `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: it declares a #(partition) marker. A partition ` +
-            `filter binds a given at query time (the same mechanism as ` +
-            `row-level access control), so a materialized-once table served ` +
-            `frozen would leak every partition's rows to every caller. This ` +
-            `is refused for safety. Serve this source live (drop 'storage=').`,
+            `destination: it is protected by a gate — #(authorize) or ` +
+            `#(access_filter), its own or a joined source's. Both are evaluated ` +
+            `per request; a materialized-once table served frozen carries no ` +
+            `gate, so it would be served to everyone, bypassing authorization. ` +
+            `This is refused for safety. Serve this source live (drop ` +
+            `'storage=').`,
       });
    }
 
@@ -366,39 +343,6 @@ export function assertColocatedPersistNotAuthorizeGated(
          message:
             `${what} cannot be materialized (colocated '#@ persist'): ` +
             `${partition.detail}.`,
-      });
-   }
-
-   // Unconditional, unlike the authorize check below: authorize's colocated
-   // relaxation is available only once `isAuthorizeAttributedToEntryPoint`
-   // PROVES the entry point's own gate is the row filter and nothing else
-   // gates beneath it — partition has no such attribution proof, and without
-   // one this function would have to guess whether the persisted table's
-   // read path still passes through the graft. Refusing outright is also
-   // what closes the gap this check exists for in the first place: this
-   // function runs only its own three rules — partition, a build-substituted
-   // given, and authorize — and NOT `assertMaterializationEligible`'s, so a
-   // partitioned source with no `storage=` would otherwise sail past both
-   // refusals.
-   if (referencesPartition(persistSource)) {
-      recordEligibilityRefused("partition");
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}'`
-            : `Source '${sourceName}'`;
-      const gated =
-         origin === "preaggregate"
-            ? `the source '${sourceName}' rolls up declares`
-            : `it declares`;
-      throw new MaterializationEligibilityError({
-         reason: "partition",
-         message:
-            `${what} cannot be materialized (colocated '#@ persist'): ` +
-            `${gated} a #(partition) marker. A partition filter binds a ` +
-            `given at query time; this pass cannot prove the persisted ` +
-            `artifact's read path still applies it, so this is refused for ` +
-            `safety. Move the marker to a source that is not materialized, ` +
-            `or stop persisting this one.`,
       });
    }
 
@@ -602,69 +546,6 @@ function unboundParameterNames(persistSource: PersistSource): string[] {
 
 /** Max IR depth to walk; deep enough for real sources, a hang backstop. */
 const MAX_GIVEN_WALK_DEPTH = 200;
-
-/**
- * Whether the compiled source (transitively) declares a `#(partition)`
- * marker — on the source itself or on any source reachable through a join.
- * Unlike the given classification, this cannot look for a `given`/`givenReference`
- * IR node: `#(partition)` never compiles to one on the source this function
- * inspects — it is grafted onto `filterList` only at QUERY time, per caller
- * (`Model.probeEntryPointGates`), never onto the persisted/compiled source a
- * materialization build sees. So this walks annotation notes instead, the
- * same shape {@link walkForAuthorize} uses and with the identical join-reach
- * caveat (see that function's doc). Any introspection failure is treated as
- * "declares a marker" (fail closed).
- */
-function referencesPartition(persistSource: PersistSource): boolean {
-   try {
-      return walkForPartition(persistSource._sourceDef, new WeakSet(), 0);
-   } catch {
-      return true;
-   }
-}
-
-function walkForPartition(
-   node: unknown,
-   seen: WeakSet<object>,
-   depth: number,
-): boolean {
-   if (depth > MAX_GIVEN_WALK_DEPTH) {
-      throw new Error("partition-usage walk exceeded max depth");
-   }
-   if (node === null || typeof node !== "object") return false;
-   if (seen.has(node as object)) return false;
-   seen.add(node as object);
-
-   if (Array.isArray(node)) {
-      for (const item of node) {
-         if (walkForPartition(item, seen, depth + 1)) return true;
-      }
-      return false;
-   }
-
-   const record = node as Record<string, unknown>;
-   for (const key of ["blockNotes", "notes"]) {
-      const arr = record[key];
-      if (!Array.isArray(arr)) continue;
-      const texts = arr
-         .map((n) =>
-            typeof n === "string"
-               ? n
-               : n &&
-                   typeof n === "object" &&
-                   typeof (n as { text?: unknown }).text === "string"
-                 ? (n as { text: string }).text
-                 : undefined,
-         )
-         .filter((text): text is string => text !== undefined);
-      if (containsPartitionAnnotationTag(texts)) return true;
-   }
-
-   for (const value of Object.values(record)) {
-      if (walkForPartition(value, seen, depth + 1)) return true;
-   }
-   return false;
-}
 
 /**
  * Whether the compiled source (transitively) carries an `#(authorize)` gate —

@@ -88,7 +88,7 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
       expect(docOnlyText(["# bar_chart"])).toBe("");
       expect(
          docOnlyText([
-            "#(authorize) \"$ROLE = 'admin'\"",
+            "#(access_filter) \"$ROLE = 'admin'\"",
             "#(malloy) drillable",
          ]),
       ).toBe("");
@@ -97,18 +97,18 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
    it("keeps only the #(doc) line when mixed with predicate annotations", () => {
       expect(
          docOnlyText([
-            "#(authorize) \"$TENANT = 'acme'\"",
+            "#(access_filter) \"$TENANT = 'acme'\"",
             "#(doc) Secured orders.",
          ]),
       ).toBe("Secured orders.");
    });
 
-   it("an #(authorize)-only entity produces no embedding text beyond its name", () => {
+   it("an #(access_filter)-only entity produces no embedding text beyond its name", () => {
       // End-to-end: what embeddingText actually sends for a governed,
       // undocumented entity is the humanized name only, never the predicate.
       const embedDoc = docOnlyText([
-         "#(authorize) \"$ROLE = 'admin'\"",
-         "#(authorize) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
+         "#(access_filter) \"$ROLE = 'admin'\"",
+         "#(access_filter) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
       ]);
       const text = embeddingText({
          kind: "source",
@@ -118,7 +118,7 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
          embedDoc,
       });
       expect(text).toBe("orders secured");
-      expect(text).not.toContain("authorize");
+      expect(text).not.toContain("accessFilter");
       expect(text).not.toContain("ROLE");
       expect(text).not.toContain("acme");
    });
@@ -2731,7 +2731,7 @@ describe("get_context source governance and field types", () => {
                { name: "ROLE", type: "string", default: "'analyst'" },
                { name: "TENANT", type: "string" },
             ],
-            authorize: ["$ROLE = 'admin' or $TENANT = 'acme'"],
+            accessFilter: ["$ROLE = 'admin' or $TENANT = 'acme'"],
          },
          {
             name: "sales",
@@ -2744,7 +2744,7 @@ describe("get_context source governance and field types", () => {
       getModel: () => gatedModel,
    };
 
-   it("reports a source's authorize gates and the givens they read", async () => {
+   it("reports a source's accessFilter gates and the givens they read", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => gatedPackage),
       });
@@ -2758,7 +2758,7 @@ describe("get_context source governance and field types", () => {
          (c: SourceCardShape) =>
             c.source_info.resource_id.source === "orders_secured",
       );
-      expect(gated.source_info.authorize).toEqual([
+      expect(gated.source_info.accessFilter).toEqual([
          {
             expression: "$ROLE = 'admin' or $TENANT = 'acme'",
             given_names: ["ROLE", "TENANT"],
@@ -2770,7 +2770,7 @@ describe("get_context source governance and field types", () => {
       ]);
    });
 
-   it("omits authorize on an ungated source rather than sending it empty", async () => {
+   it("omits accessFilter on an ungated source rather than sending it empty", async () => {
       // Absence is the contract on both sides, and an empty array would read
       // as "a gate with no expressions" to anything checking length.
       const handler = captureHandler({
@@ -2785,7 +2785,7 @@ describe("get_context source governance and field types", () => {
       const open = payload.sources.find(
          (c: SourceCardShape) => c.source_info.resource_id.source === "sales",
       );
-      expect("authorize" in open.source_info).toBe(false);
+      expect("accessFilter" in open.source_info).toBe(false);
       expect(open.source_info.givens).toEqual([
          { name: "REGION", type: "filter<string>" },
       ]);
@@ -2804,7 +2804,7 @@ describe("get_context source governance and field types", () => {
          }),
       );
       expect("givens" in payload.sources[0].source_info).toBe(false);
-      expect("authorize" in payload.sources[0].source_info).toBe(false);
+      expect("accessFilter" in payload.sources[0].source_info).toBe(false);
    });
 
    it("carries a field's Malloy type, and only where a type exists", async () => {
@@ -2907,6 +2907,278 @@ describe("get_context source governance and field types", () => {
             c.source_info.resource_id.source === "customers",
       );
       expect("one_line_summary" in customers.source_info).toBe(false);
+   });
+
+   it("reports a source's filters and its locks, each under its own field", async () => {
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "finance_only",
+               annotations: [],
+               schema: { fields: [] },
+            },
+         ],
+         getQueries: () => [],
+         getSources: () => [
+            {
+               name: "finance_only",
+               givens: [{ name: "ROLE", type: "string[]" }],
+               accessFilter: ["region = $REGION"],
+               authorize: ["'finance' in $ROLE"],
+            },
+         ],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "finance.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "finance" }],
+         }),
+      );
+      const card = payload.sources[0];
+      expect(card.source_info.accessFilter).toEqual([
+         { expression: "region = $REGION", given_names: ["REGION"] },
+      ]);
+      expect(card.source_info.authorize).toEqual([
+         { expression: "'finance' in $ROLE", given_names: ["ROLE"] },
+      ]);
+   });
+});
+
+/**
+ * A source carrying an unconditional `false` on either route needs no
+ * caller-supplied given to know nobody is admitted — that is
+ * decidable without trusting anything the caller sent, unlike a real rule
+ * (execute_query_tool.ts's `givens` are untrusted MCP-path input). So this
+ * source is dropped from the results entirely rather than listed with a gate
+ * an agent can only learn is unsatisfiable from a 403.
+ */
+describe("get_context accessFilter deny-all drop", () => {
+   function packageWithSource(apiSource: {
+      name: string;
+      accessFilter?: string[];
+      authorize?: string[];
+   }) {
+      const model = {
+         getSourceInfos: () => [
+            { name: apiSource.name, annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [apiSource],
+      };
+      return {
+         listModels: async () => [{ path: "m.malloy" }],
+         getModel: () => model,
+      };
+   }
+
+   async function sourcesFor(apiSource: {
+      name: string;
+      accessFilter?: string[];
+      authorize?: string[];
+   }) {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => packageWithSource(apiSource)),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      return payload.sources as SourceCardShape[];
+   }
+
+   it("drops a source gated by an unconditional `#(access_filter) false`", async () => {
+      const sources = await sourcesFor({
+         name: "locked",
+         accessFilter: ["false"],
+      });
+      expect(sources).toEqual([]);
+   });
+
+   it("drops a source gated by an unconditional `#(authorize) false`", async () => {
+      const sources = await sourcesFor({
+         name: "locked",
+         authorize: ["false"],
+      });
+      expect(sources).toEqual([]);
+   });
+
+   it("drops the case variant `#(authorize) FALSE` too — the wire can carry it uppercase", async () => {
+      // The grammar parser lowercases only for its OWN comparison
+      // (authorize_grammar.ts); the effective text it reports back can still
+      // be the author's original casing/whitespace.
+      const sources = await sourcesFor({
+         name: "locked",
+         authorize: [" FALSE "],
+      });
+      expect(sources).toEqual([]);
+   });
+
+   it("does NOT drop a source gated by a real (non-deny) rule", async () => {
+      const sources = await sourcesFor({
+         name: "gated",
+         accessFilter: ["org_id in $GROUPS"],
+      });
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("gated");
+      expect(sources[0].source_info.accessFilter).toEqual([
+         { expression: "org_id in $GROUPS", given_names: ["GROUPS"] },
+      ]);
+   });
+
+   it("does not drop an ungated source", async () => {
+      const sources = await sourcesFor({ name: "open" });
+      expect(sources).toHaveLength(1);
+      expect("accessFilter" in sources[0].source_info).toBe(false);
+   });
+
+   // `isUnconditionalDenyAuthorize` compares against `"false"` only — `true`
+   // is a real (if unconditional) gate, not a deny, so it is reported like
+   // any other rule rather than dropped.
+   it("does NOT drop a source gated by `#(authorize) true` — reports it like an ordinary gate", async () => {
+      const sources = await sourcesFor({
+         name: "reopened",
+         authorize: ["true"],
+      });
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("reopened");
+      expect(sources[0].source_info.authorize).toEqual([
+         { expression: "true", given_names: [] },
+      ]);
+   });
+
+   // Two models can expose a same-named source with different gates —
+   // `droppedSources` must be keyed by (modelPath, sourceName), not the bare
+   // name, or a deny-all in one model blacks out the open model's card too
+   // (cardFor/governance/bySource collapse same-named sources into one card,
+   // first-model-wins, but that is a SEPARATE, pre-existing identity rule —
+   // the drop itself must not leak across models).
+   it("a deny-all source in one model does not black out a same-named open source in another model", async () => {
+      const lockedModel = {
+         getSourceInfos: () => [
+            { name: "shared", annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [{ name: "shared", accessFilter: ["false"] }],
+      };
+      const openModel = {
+         getSourceInfos: () => [
+            { name: "shared", annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [{ name: "shared" }],
+      };
+      const pkg = {
+         // Sorted by path in collectEntities, so "a_locked" is processed
+         // before "b_open" — the deny-all model comes first on purpose, to
+         // pin that a later open occurrence is not blacked out by an
+         // earlier drop.
+         listModels: async () => [
+            { path: "a_locked.malloy" },
+            { path: "b_open.malloy" },
+         ],
+         getModel: (path: string) =>
+            path === "a_locked.malloy" ? lockedModel : openModel,
+      };
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => pkg),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      const sources = payload.sources as SourceCardShape[];
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("shared");
+      expect(
+         (sources[0].source_info.resource_id as { model_path?: string })
+            .model_path,
+      ).toBe("b_open.malloy");
+      expect("accessFilter" in sources[0].source_info).toBe(false);
+   });
+
+   // A named query over a dropped source (`query: q is locked -> {...}`) is a
+   // second route to the same name and shape: KINDS_BY_TARGET.view includes
+   // "query", so a bare {target_type: "view"} enumeration would otherwise
+   // resurrect a bare card via cardFor even though the source card itself was
+   // dropped from the sourceInfos loop above.
+   function packageWithQueriedSource(
+      apiSource: {
+         name: string;
+         accessFilter?: string[];
+         authorize?: string[];
+      },
+      query: { name: string; sourceName: string },
+   ) {
+      const model = {
+         getSourceInfos: () => [
+            { name: apiSource.name, annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [{ ...query, annotations: [] }],
+         getSources: () => [apiSource],
+      };
+      return {
+         listModels: async () => [{ path: "m.malloy" }],
+         getModel: () => model,
+      };
+   }
+
+   async function viewSourcesFor(
+      apiSource: {
+         name: string;
+         accessFilter?: string[];
+         authorize?: string[];
+      },
+      query: { name: string; sourceName: string },
+   ) {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => packageWithQueriedSource(apiSource, query)),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "view" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      return payload.sources as SourceCardShape[];
+   }
+
+   it("drops neither a query entity nor a source card for a query over an `#(access_filter) false` source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "locked", accessFilter: ["false"] },
+         { name: "q", sourceName: "locked" },
+      );
+      expect(sources).toEqual([]);
+   });
+
+   it("drops neither a query entity nor a source card for a query over an `#(authorize) false` source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "locked", authorize: ["false"] },
+         { name: "q", sourceName: "locked" },
+      );
+      expect(sources).toEqual([]);
+   });
+
+   it("still surfaces a query entity and its source card for a query over a non-deny gated source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "gated", accessFilter: ["org_id in $GROUPS"] },
+         { name: "q", sourceName: "gated" },
+      );
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("gated");
+      expect(sources[0].entities?.map((e) => e.entity_type)).toContain("query");
    });
 });
 
