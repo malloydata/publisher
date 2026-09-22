@@ -144,7 +144,8 @@ stale, and how to turn it off:
 
 ### Other clients, and unattended agents
 
-Cursor, VS Code, Codex, and Claude Desktop take the same endpoint through their own config; see
+Cursor, VS Code, Codex, and Claude Desktop take the same endpoint — `http://localhost:4040/mcp`,
+or whatever `--mcp_port` / `MCP_PORT` you set — through their own config; see
 [docs/ai-agents.md](docs/ai-agents.md). An agent working unattended that started the server itself uses
 the same loop over REST:
 
