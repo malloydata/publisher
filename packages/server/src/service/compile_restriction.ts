@@ -66,7 +66,13 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
  */
 export async function assertNoRestrictedConstructs(
    runtime: Runtime,
-   model: Model | undefined,
+   // Not `Model | undefined`. Several of the constructs this refuses --
+   // `name!type(...)` and the `sql_*` family -- are classified inside
+   // `getExpression(fs)` and need a resolved FieldSpace, so with no base model
+   // they are never classified and the gate returns clean on text it should
+   // refuse. Requiring one makes that a type error rather than a convention a
+   // later caller can break silently.
+   model: Model,
    source: string,
 ): Promise<void> {
    let problems: readonly LogMessage[];

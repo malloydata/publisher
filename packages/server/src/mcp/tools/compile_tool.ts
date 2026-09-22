@@ -219,10 +219,12 @@ export function registerCompileTool(
             });
          } catch (error) {
             // Unknown environment/package, a notebook (.malloynb) rejected up
-            // front, an authorize denial, or a system error: surface as a clean
-            // isError payload rather than a transport fault. A missing modelPath
-            // does NOT error here; compileSource compiles the source against an
-            // empty namespace, so a typo in modelPath yields a normal result.
+            // front, an authorize denial, a model that could not be loaded to
+            // check the caller's text against, or a system error: surface as a
+            // clean isError payload rather than a transport fault. A typo in
+            // modelPath reaches here at the default scope, because the
+            // restricted-construct gate needs the named model to classify
+            // against and refuses when it cannot load one.
             logger.warn("[MCP Tool compile] compile failed", {
                environmentName,
                packageName,

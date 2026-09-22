@@ -645,8 +645,12 @@ export class Environment {
             try {
                modelContent = await fs.promises.readFile(modelPath, "utf8");
             } catch {
-               // If the model file can't be read, proceed with empty content
-               // and let compilation surface any errors naturally.
+               // Empty content here, and compilation reports the problem. Note
+               // this fallback no longer decides the missing-model case on its
+               // own at `append` scope: the restricted-construct gate below
+               // loads the same model to check the caller's text against, and
+               // refuses when it cannot, so a model that does not exist is
+               // rejected there before this leniency can apply.
             }
             fullSource = modelContent
                ? `${modelContent}\n${source}`
@@ -967,10 +971,20 @@ export class Environment {
                   .loadModel(pathToFileURL(modelPath))
                   .getModel();
             } catch (error) {
+               // The detail stays server-side. `modelPath` is an absolute path
+               // inside the container and the nested message is whatever the
+               // loader raised, so returning either would answer "does this
+               // file exist, and is it readable" for any path a caller names --
+               // the same shape of oracle this gate exists to close. The
+               // caller-supplied model name is enough to act on, and they
+               // already know it.
+               logger.error("Compile gate could not load the base model", {
+                  modelPath,
+                  error,
+               });
                throw new CompileRefusedError(
-                  `Cannot validate the submitted source: the model at ` +
-                     `"${modelPath}" could not be loaded to check it against ` +
-                     `(${error instanceof Error ? error.message : String(error)}).`,
+                  `Cannot validate the submitted source: the model ` +
+                     `"${modelName}" could not be loaded to check it against.`,
                );
             }
             await assertNoRestrictedConstructs(
