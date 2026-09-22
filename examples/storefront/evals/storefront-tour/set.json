@@ -6,5 +6,6 @@
   "targetPackage": "storefront",
   "sourceNote": "Authored directly as a markdown numbered list in as-received/questions.md; one case per list item, question text copied byte for byte. No goldens arrived with them: every key here is derived by the conductor, first as DuckDB SQL over the raw parquet and then as Malloy through the truth package, and promoted only where the two agree.",
   "truthPackage": "storefront-tour-truth",
-  "truthModel": "truth.malloy"
+  "truthModel": "truth.malloy",
+  "auditNote": "verify_goldens.py reports that dimension:customers:signup_date and products.retail_price do not appear in the model TEXT. Both are real and both are retrievable: they are columns the source exposes implicitly from the parquet, which a grep over the .malloy cannot see. check_findable.py returns 22 of 22 required entities retrievable by a search of their own kind. Do not 'fix' those ids."
 }
