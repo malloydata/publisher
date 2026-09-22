@@ -22,6 +22,14 @@ docker run -d \
 
 Once `/api/v0/status` reports `operationalState: "serving"`, the REST API is at `http://localhost:4000` and MCP at `http://localhost:4040/mcp`.
 
+`serving` says the server is up, not that it loaded anything. If the config never reached `/publisher/publisher.config.json`, the server still starts and serves an empty catalog, which is a supported way to run because environments can be created over the API afterwards. Read the counts rather than the state: the server prints one `PUBLISHER_READY` line to stderr on boot, and a server that was given no config also prints a line naming the path it checked.
+
+```
+PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=0 packages=0 load_errors=0
+```
+
+`environments=0` when you expected packages means the config did not arrive. `load_errors=N` means it did and N entries failed to load, with the reasons in `/api/v0/status` under `loadErrors`.
+
 If you don't have a config of your own yet, copy [`packages/server/publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials required) and mount that. There's also a [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) sibling for the BigQuery samples.
 
 ## Pre-built image
@@ -37,7 +45,7 @@ docker run -d \
   ms2data/malloy-publisher
 ```
 
-See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`) lives in the [deployment guide](../../docs/deployment.md).
+See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`) lives in the [deployment guide](../../docs/deployment.md).
 
 ## Runtime layout
 
@@ -71,7 +79,9 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | Env var | Equivalent flag | Default | Purpose |
 |---|---|---|---|
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST API port. |
-| `PUBLISHER_HOST` | `--host <h>` | `0.0.0.0` | Bind address. |
+| `PUBLISHER_HOST` | `--host <h>` | `0.0.0.0` | REST bind address, and the fallback for MCP. |
+| `MCP_HOST` | `--mcp_host <h>` | `127.0.0.1` | MCP bind address. Takes precedence over `PUBLISHER_HOST`. |
+| `MCP_CORS_ORIGINS` | | (none) | Comma-separated origins allowed cross-origin access to MCP; `*` allows any. Unset means none. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
 | `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | `1` **in this image** | Suppresses the `.mcp.json` the server otherwise writes into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a root-owned file, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_NO_MCP_CONFIG=` to turn it back on. Note this is the one env var the image sets for you: `docker run -e PUBLISHER_NO_MCP_CONFIG` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
 | `SERVER_ROOT` | `--server_root <path>` | `.` (cwd) at the server level; overridden to `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--server_root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. If you override CMD with your own entrypoint, set `SERVER_ROOT` yourself to keep this behaviour. |

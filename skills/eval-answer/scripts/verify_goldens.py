@@ -4,6 +4,7 @@
   python3 verify_goldens.py --set evals/ecommerce --publisher http://localhost:4811
   python3 verify_goldens.py --set ... --qid ecom_profit          # one case
   python3 verify_goldens.py --set ... --refresh                  # rewrite drifted values
+  python3 verify_goldens.py --set ... --promote                  # provisional -> verified
 
 A golden that cannot be re-derived is not a golden, it is a number somebody
 typed once. This runs whenever the data changes, a golden is repaired, or the
@@ -45,6 +46,52 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  is compared with the model's own definition of X. Catches the
                  rubric that goes stale when the model is fixed.
 
+4b. rubric alternatives -- a rubric that accepts an alternative reading
+                 ("either the full name or the nickname is fine") whose
+                 `expectedEntities.required` names one id per concept and no
+                 `requiredAnyOf` group. The two halves of a key are read by
+                 different things -- prose by the judge, ids by retrieval
+                 scoring -- so they can disagree silently, and an answer taking
+                 the other reading then scores CORRECT and loses recall in the
+                 same run. Review items: the phrasing is a heuristic over
+                 prose. Measured over the sets available locally: 3 findings
+                 over 64 rubrics, all three genuine.
+
+5. set names  -- every `required` / `requiredAnyOf` entity id, and every
+                 `mustNotUse` name, exists in the model under test (`--model`).
+                 An id naming a field this package does not have can never be
+                 delivered, so it scores as a retrieval miss on every run and
+                 reads as a model failure; five such ids, copied from a sibling
+                 package, cost a real set two days. Hard for `required`; review
+                 for `acceptable` and for a veto on a field the model lacks.
+
+6. question drift -- every `questionSha` stamped at import still matches the
+                 case's question, compared as a prefix so a truncated stamp
+                 (the ecommerce set writes 16 hex chars) is not read as 49
+                 edited questions. The question is the stimulus and is never
+                 editable; a narrowed question deletes what its case tested and
+                 reads as a pass. Four questions on one 69-case set were
+                 narrowed to match what the answerer kept doing, three with the
+                 key untouched, and no run said anything. Hard. A case with no
+                 stamp is skipped, not failed: `import_cases.py --stamp` in
+                 `skill:eval-import` is what writes one.
+
+PROMOTION
+
+`--promote` is the only thing in this toolchain that writes `golden.status`.
+Without it, `skill:eval-import` stamps `provisional` on every golden holding a
+value, `skill:eval-answer` refuses a verdict on one, and nothing closes the
+loop: an imported set is unscorable forever and no file says why. A golden
+promotes only when its value re-derived cleanly from the truth package on THIS
+run and a second, differently shaped derivation exists -- the standard
+`ledger-schema.md` already states. `invalid` and `ambiguous` never promote;
+those are judgements a re-derivation cannot make, and they go through the
+golden side door. Every golden left alone is reported with the reason.
+
+Only check 1 needs the truth server. 2 to 6 read the cases, the gold artifacts
+and the model text, so they run whether or not the set names a truthPackage --
+and a set that names none is exactly the one whose names nobody has verified.
+
 What it deliberately does NOT do: score an answer. The oracle for an answer is
 the judge (`skill:eval-judge`); scripted row comparison fails correct answers
 over an extra column and passes wrong ones whose numbers coincide.
@@ -55,17 +102,54 @@ A canonical query may be written as `duckdb.table('data/x.parquet')` so it
 reads as raw-data provenance; Publisher's query endpoint rejects that form. If
 `set.json` has `"truthTableRewrite": true`, such references are rewritten to the
 bare table stem, which the truth model is expected to bind to the same file.
+
+EXIT CODES
+
+  0  every golden re-derived, no findings
+  1  a golden drifted, or a hard finding -- evidence ABOUT the goldens
+  2  usage error (argparse)
+  3  the value check did not happen -- says nothing about whether the goldens
+     still hold. Either this crashed, or set.json names no truthPackage.
+     With --definitions, a set whose every value-bearing case rests on
+     validated definitions exits 0 instead: the values were not re-derived,
+     but the definitions they rest on were checked, which is the other half
+     of the same rule.
+
+3 is load-bearing and it is why the codes are enumerated here. `improve.py`'s
+acceptance gate has to tell "your edit may have invalidated a golden" from "the
+check never happened", and Python exits 1 on an uncaught traceback -- which
+landed a missing `cases.jsonl` on the golden-finding code and sent someone to
+settle a golden that was fine. A caller must treat anything outside {0, 1} as
+"did not run", and must not read it as a pass.
+
+A set with no truthPackage exits 3, not 0. Checks 2 to 6 still run and still
+report -- on such a set they are the whole of what there is to say -- but no
+golden was re-derived, and 0 told a caller it had been: `improve.py` recorded
+`clean: True` for an audit that never looked. When one of those checks DOES
+find something, 1 wins over 3: a finding is evidence, and 3 says there is none
+to read, so a caller obeying that would discard it.
+
+The composition rule: a golden is trustworthy if it was derived independently,
+OR if every definition it tests has itself been validated. A truth server is the
+first half. `--definitions <ledger>` (from verify_definitions.py) is the second,
+and the only thing it settles is the exit code and the promotion basis -- never a
+golden's value, which it does not touch.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import datetime
 import json
 import pathlib
 import re
 import sys
+import traceback
+import urllib.parse
 from typing import Any
 
-from publisher_rest import try_query    # the one direct path to a Publisher
+from check_must_not_use import candidate as must_not_use_candidate
+from publisher_rest import get_json, try_query  # the direct paths to a Publisher
 
 _TABLE_REF = re.compile(r"""duckdb\.table\(\s*['"](?:\.\./)?data/(\w+)\.\w+['"]\s*\)""")
 
@@ -74,15 +158,53 @@ def rewrite_table_refs(malloy: str) -> str:
     return _TABLE_REF.sub(lambda m: m.group(1), malloy)
 
 
+def as_number(v: Any) -> float | None:
+    """`v` as a float when it IS one, including as a plain numeric string.
+
+    Not a general parser: a bool is not a number here (`True == 1` in Python
+    and a boolean golden compared numerically would match `1`), and a string
+    with anything else in it stays a string.
+    """
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.strip().replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
 def close_enough(want: Any, got: Any, places: int | None) -> bool:
-    if isinstance(want, (int, float)) and isinstance(got, (int, float)):
+    # Numerically whenever both sides ARE numbers, including when one or both
+    # arrived as strings. Malloy renders a number in its shortest form, so a
+    # golden stated to two decimals comes back as `75.7` and a string compare
+    # called it drift -- which blocks the arm, and whose only workaround was
+    # padding expressions in the truth queries whose sole purpose was to make
+    # one string look like the other.
+    w, g = as_number(want), as_number(got)
+    if w is not None and g is not None:
         # Compare at the precision the golden is stated to, not float exactness.
-        tol = 10 ** -places / 2 if places is not None else max(abs(want) * 1e-9, 1e-9)
-        return abs(float(want) - float(got)) <= max(tol, 0.011)
+        tol = 10 ** -places / 2 if places is not None else max(abs(w) * 1e-9, 1e-9)
+        return abs(w - g) <= max(tol, 0.011)
     return want == got
 
 
 # ---------------------------------------------------------------- 1. value
+
+def needs_value_check(case: dict[str, Any]) -> bool:
+    """Whether a truth server would have anything to re-derive for this case.
+
+    The value-free kinds are settled by their own text: `unanswerable` by the
+    refusal it demands, `criteria` by its clauses. `check_value` returns
+    `skipped` for both before it reaches a server, so a set made only of them
+    asks nothing of one.
+    """
+    return (case.get("golden") or {}).get("kind") not in (
+        "unanswerable", "criteria")
+
 
 def check_value(case: dict[str, Any], a: argparse.Namespace
                 ) -> tuple[str, str, list[dict[str, Any]] | None]:
@@ -91,7 +213,29 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     q = g.get("canonicalQuery")
     if g.get("kind") == "unanswerable":
         return "skipped", "unanswerable by design: the pass is a refusal", None
+    if g.get("kind") == "criteria":
+        # The clauses ARE the key. This used to fall through to "no
+        # canonicalQuery" and count as an error, so a set with one criteria
+        # golden failed its own audit with exit 1.
+        return "skipped", "criteria: the clauses are the key, nothing to re-derive", None
     if not q:
+        # A PROVISIONAL golden with no query is young, not wrong, and it is
+        # exactly what `eval-import` produces from a set that arrived as
+        # values: "100 provisional (0 with their query, 100 a number alone)".
+        # Calling that a hard finding made the import skill's own output
+        # refuse the audit that runs before every arm, and the only way past
+        # was --skip-golden-check, which throws away the receipt for whatever
+        # DID verify. It cannot be scored either way: a provisional golden
+        # takes `verdict: null` and stays out of the pass rate, so the arm it
+        # was blocking would have measured coverage and nothing else.
+        #
+        # A VERIFIED golden with no query is still an error. `verified` is a
+        # claim that it re-derived, and that claim needs the query.
+        if (g.get("status") or "provisional") == "provisional":
+            return ("unrederivable",
+                    "provisional, holds a value, no canonicalQuery yet: not "
+                    "re-derivable, so not verifiable. `--promote` after you "
+                    "add one", None)
         return "error", "no canonicalQuery: this golden cannot be re-derived", None
     if a.rewrite:
         q = rewrite_table_refs(q)
@@ -120,7 +264,18 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     if not rows:
         return "diff", "query returned no rows", rows
     got = rows[0]
-    scalars = {k: v for k, v in (want or {}).items() if k not in ("currency", "round")}
+    # Type-check before dereferencing, the way the `kind: rows` branch above
+    # already does. A bare string here -- `"value": "Ecommerce"` instead of
+    # `{"answer": "Ecommerce"}` -- is the obvious authoring mistake for a
+    # benchmark whose answers ARE strings, and it used to raise
+    # AttributeError out of `verify()`, killing the whole sweep. One bad case
+    # is one finding; the other thirty-nine still get audited.
+    if not isinstance(want, dict):
+        return ("error",
+                f"kind=scalar but value is {type(want).__name__}, not an "
+                f"object mapping the query's column name to its expected "
+                f'value (e.g. {{"answer": {json.dumps(want)}}})', rows)
+    scalars = {k: v for k, v in want.items() if k not in ("currency", "round")}
     for k, v in scalars.items():
         if k not in got:
             return "diff", f"golden names {k!r}, query returned {sorted(got)}", rows
@@ -131,7 +286,7 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
 
 # ---------------------------------------------------------------- 2. rubric numbers
 
-_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{2,}|\d{4,})(?![\w])")
+_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{1,}|\d{4,})(?![\w])")
 
 
 def golden_numbers(value: Any) -> list[float]:
@@ -154,7 +309,51 @@ def golden_numbers(value: Any) -> list[float]:
     return out
 
 
-_WRONG_MARK = re.compile(r"(?i)\b(close but wrong|wrong|incorrect|trap|reject)\b")
+# What ends the rubric's ACCEPTING clause. A rejecting marker was always here;
+# `divergent` / `near_match` / `also acceptable` were not, and a rubric that
+# labels its alternative readings that way instead of "WRONG" had its whole
+# text read as accepting. Every figure of every alternative reading was then
+# required to appear in the golden, which it cannot: a divergent reading is by
+# definition not the golden's value. That was 14 of the 79 figures this check
+# reported on the ecommerce set.
+_WRONG_MARK = re.compile(
+    r"(?i)\b(close but wrong|wrong|incorrect|trap|reject"
+    r"|divergent|near_match|also acceptable|partial|structural)\b"
+    r"|\bwrong[ _-]?(pick|answer)|accept:\s*false")
+# Rubrics also reject by naming a diagnose code rather than saying "wrong":
+# "using it is FILTER-LITERAL / SCOPE", "is WRONG_PICK". The underscore in
+# WRONG_PICK defeats `\bwrong\b` above (underscore is a word character), and
+# the codes are written in upper case on purpose, so this one is
+# case-sensitive: a rubric that says "the scope of the question" in prose is
+# not rejecting anything.
+_CODE_MARK = re.compile(
+    r"\b(WRONG[_-]PICK|FILTER-LITERAL|SCOPE|GRAIN|CONVENTION|SYNTAX|COVERAGE"
+    r"|NOT-RETURNED|LOW-RANK)\b")
+
+
+def accepting_clause(rubric: str) -> str:
+    """The text before the first rejecting marker, from either list.
+
+    Measured on the ecommerce set: the `(?i)wrong` marker alone read 168
+    figures as asserted-right, most of them the trap value the rubric names
+    after "is WRONG_PICK" or "is FILTER-LITERAL", because neither spelling
+    matched. Every such figure is supposed to be absent from the golden, so
+    every one was reported as a review item.
+    """
+    starts = [m.start() for m in (_WRONG_MARK.search(rubric),
+                                  _CODE_MARK.search(rubric)) if m]
+    if not starts:
+        return rubric
+    # Back up to the start of the SENTENCE holding the marker. Rubrics name
+    # the trap before its verdict ("Using total_sales (12566292.88) is
+    # WRONG_PICK"), so cutting at the marker itself kept the very figure the
+    # sentence rejects. A sentence ends at . ; ! ? followed by whitespace, so
+    # the dot inside 6564004.49 is not a boundary.
+    prior = rubric[:min(starts)]
+    end = 0
+    for m in re.finditer(r"[.;!?]\s+", prior):
+        end = m.end()
+    return prior[:end]
 
 
 def rubric_number_findings(case: dict[str, Any]) -> list[str]:
@@ -163,18 +362,50 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     Only the rubric's accepting clause is read -- the text before its first
     "wrong" / "close but wrong" / "trap" marker -- because the rejecting half
     quotes numbers that are supposed to be absent. Only figures specific
-    enough to be a quoted result are checked (five or more significant
-    digits, or a decimal with two-plus places on a value over 100); years and
-    small counts are excluded by construction. A figure matches if it is a
+    enough to be a quoted result are checked (a comma-grouped
+    number, an integer of four digits or more, or any decimal, each then held
+    to three significant digits at 100 or more); years and small counts are
+    excluded by construction. The TOKENISER gates before the floor does, so
+    what the floor admits is only what the pattern found -- a bare three-digit
+    integer reaches neither, which is the limit described below.
+
+    The floor was five significant digits and is now three at or above 100.
+    Measured over the local sets: 14 findings to 17 over 54 rubrics. The three
+    added are one numerator ("2672/271019", the legitimate-intermediate case
+    below) and, twice, the last id in a long comma-separated list. No lexical
+    guard was added to suppress either -- see the paragraph below, where one
+    was tried and dropped for hiding a real finding.
+
+    WHAT THIS CHECK CANNOT CATCH, AND WHERE THAT IS HANDLED. A BARE
+    three-digit integer is not tokenised at all (`_NUM` starts at four digits
+    ungrouped), so the defect that motivated the change -- a rubric saying
+    "615 and 502" over goldens holding 747 and 370, one re-derivation out of
+    date, against which an agent that computed the golden's own figures was
+    marked wrong -- is NOT reported here. Tokenising three-digit integers was
+    measured on the same sets and takes the findings from 17 to 552, because a
+    rubric that quotes a list of ids contributes one finding per id; a report
+    of 552 items is not read. The general rule lives in the judge prompt
+    instead: where the rubric and the golden disagree about a figure, the
+    golden is the key. That holds at any precision and needs no regex. Lower
+    the floor again only with a fresh measurement beside it. A figure matches if it is a
     golden value, or the sum of a golden column -- rubrics legitimately quote
     "177,340,447.81 across the three groups".
+
+    READ THE OUTPUT KNOWING ITS PRECISION. Measured over the 49-case ecommerce
+    set: 65 figures reported, and most are legitimate -- a denominator ("over
+    264,071 distinct order_id"), or a cross-case reconciliation ("12566292.88
+    of sales minus this cost is the 6564004.49 gross margin"). A lexical guard
+    on denominator phrasing was tried and dropped: it removed 12 of the 65 and
+    would have suppressed a real one. So this is a prompt to read a rubric
+    against its rows, never a defect count. It does earn its keep: on that set
+    it reports `216,917` for `ecom_unsold_inventory`, which the set's own
+    notes record as an open discrepancy between the rubric and golden.value.
     """
     g = case.get("golden") or {}
     rubric = g.get("rubric") or ""
     if not rubric or g.get("kind") == "unanswerable":
         return []
-    m = _WRONG_MARK.search(rubric)
-    accepting = rubric[:m.start()] if m else rubric
+    accepting = accepting_clause(rubric)
     have = golden_numbers(g.get("value"))
     val = g.get("value")
     if isinstance(val, list):
@@ -192,7 +423,15 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
         digits = tok.replace(",", "").replace(".", "").lstrip("0")
         decimals = len(tok.split(".")[1]) if "." in tok else 0
         n = float(tok.replace(",", ""))
-        if decimals == 0 and (len(digits) < 5 or 1900 <= n <= 2100):
+        # Three significant digits and at least 100, not five. The old floor
+        # let through the exact defect this check exists to catch: a rubric
+        # saying "615 and 502" over goldens holding 747 and 370, after the
+        # goldens were re-derived and the prose was not. The agent computed the
+        # golden's own figures and was failed for it. Three-digit quantities
+        # are ordinary results, so a floor above them is a floor above the
+        # answers.
+        if decimals == 0 and (len(digits) < 3 or n < 100
+                              or 1900 <= n <= 2100):
             continue
         if decimals and n < 100 and len(digits) < 5:
             continue
@@ -216,14 +455,75 @@ def _walk_strings(v: Any):
 
 # ---------------------------------------------------------------- 3. verification axis
 
+def has_second_derivation(case: dict[str, Any], set_dir: pathlib.Path) -> bool:
+    """Does a second, differently shaped derivation of this golden exist?
+
+    `ledger-schema.md`: "A golden is written only after two differently shaped
+    derivations agree". This is the mechanical half of that sentence -- either
+    an inline `golden.verification` block, or a `gold/<qid>.json` carrying
+    `verifyRows` beside the truth rows. Whether the second derivation varies a
+    USEFUL axis is `axis_findings`' job.
+    """
+    ver = (case.get("golden") or {}).get("verification") or {}
+    side = set_dir / "gold" / f"{case['qid']}.json"
+    return bool(ver) or (side.exists()
+                         and "verifyRows" in json.loads(side.read_text()))
+
+
+PROMOTED_BY = "verify_goldens.py --promote"
+
+
+def promotion_blocker(case: dict[str, Any], set_dir: pathlib.Path) -> str | None:
+    """Why this golden may not be promoted to `verified`, or None if it may.
+
+    The gap this closes: NOTHING in this toolchain ever wrote `golden.status`.
+    `skill:eval-import` stamps `provisional` on every golden that holds a value
+    and enforces it, `skill:eval-answer` refuses a verdict on one, and no script
+    and no doc said how a golden stops being provisional. A freshly imported set
+    could therefore never be scored without hand-editing `cases.jsonl`, and
+    nothing said so. This is the promotion, and it enforces the standard
+    `ledger-schema.md` already states rather than inventing a softer one.
+
+    Four conditions, each of them a way a key gets called verified without
+    having earned it:
+
+    - Only `provisional` promotes. `invalid` and `ambiguous` are judgements
+      about the QUESTION or the key that a re-derivation cannot answer; they go
+      through the golden side door and a person settles them.
+    - The golden must hold a value. A `criteria` or `unanswerable` golden is
+      already verified on arrival and has nothing to re-derive.
+    - The value check must have re-derived it from the TRUTH package this run,
+      cleanly. Caller's job; this function is told.
+    - A second, differently shaped derivation must exist. One query agreeing
+      with itself is not agreement, and `verifiedBy: authored_query` is the
+      author's own query, which is why `skill:eval-import` keeps that case
+      provisional even when the number matches.
+    """
+    g = case.get("golden") or {}
+    status = g.get("status")
+    if status == "verified":
+        return "already verified"
+    if status != "provisional":
+        return (f"status is {status!r}, not 'provisional'; invalid and "
+                "ambiguous keys are settled by a person through the golden "
+                "side door, not by re-derivation")
+    if g.get("kind") in ("criteria", "unanswerable"):
+        return f"kind {g.get('kind')!r} holds no value to re-derive"
+    if g.get("value") is None and not g.get("path"):
+        return "holds no value to re-derive"
+    if not has_second_derivation(case, set_dir):
+        return ("no second derivation: a golden is verified only after two "
+                "differently shaped derivations agree (golden.verification, "
+                "or gold/<qid>.json with verifyRows)")
+    return None
+
+
 def axis_findings(case: dict[str, Any], set_dir: pathlib.Path) -> list[str]:
     g = case.get("golden") or {}
     if g.get("kind") == "unanswerable":
         return []
     ver = g.get("verification") or {}
-    side = set_dir / "gold" / f"{case['qid']}.json"
-    has_second = bool(ver) or (side.exists() and "verifyRows" in json.loads(side.read_text()))
-    if not has_second:
+    if not has_second_derivation(case, set_dir):
         return []
     axis = ver.get("variesAxis")
     primary = ver.get("primaryAxis")
@@ -242,14 +542,96 @@ DEFINES = re.compile(r"^\s*(\w+)\s+is\s+(.+?)\s*$", re.M)
 ASSERTS = re.compile(r"(\w+)\s+is\s+(?:defined\s+as\s+)?(count\([^)]*\)|sum\([^)]*\))")
 
 
-def model_definitions(model_path: pathlib.Path | None) -> dict[str, str]:
+# `source: NAME is`, and the block labels that say what KIND of thing follows.
+# Line-oriented like DEFINES above, for the same reason: this reads text, not a
+# compiled model, because no Publisher API returns a definition's expression.
+SOURCE_DECL = re.compile(r"^\s*source:\s*(\w+)\s+is\b")
+KIND_LABEL = re.compile(r"^\s*(measure|dimension|view|join_one|join_many|join_cross):\s*(.*)$")
+# `public: runtimeMinutes` inside an `include { }` block: a raw column passed
+# through, with no expression. It has no definition that could be wrong, but it
+# DOES get an entity id from get_context and so can be named in a case's
+# `expectedEntities`. Parsed so the ledger knows it exists: without a row, a
+# case naming one is indistinguishable from a case naming a definition nobody
+# checked, and stays unvalidated forever.
+PASSTHROUGH = re.compile(r"^\s*public:\s*(\w+)\s*$")
+KIND_OF_LABEL = {"measure": "measure", "dimension": "dimension", "view": "view",
+                 "join_one": "join", "join_many": "join", "join_cross": "join"}
+
+
+def parse_definitions(model_path: pathlib.Path | None,
+                      recursive: bool = False) -> list[dict[str, Any]]:
+    """Every `name is expr` in the model, with the source and kind it belongs to.
+
+    `model_definitions()` below is the flat view of this and keeps its old
+    contract. This one exists because a ledger keyed on `kind:source:name`
+    cannot use a flat `dict[name]`: the flat form resolves a same-named field
+    in two sources to whichever was read first, silently, and a model with
+    `total_sales` on two sources would have one of them validated under the
+    other's definition.
+
+    A line scanner, not a parser. It tracks the enclosing `source:` and the most
+    recent `measure:`/`dimension:`/`view:` block label, which is how Malloy
+    declares them. It does not track braces, so a definition inside a nested
+    block is attributed to the enclosing source rather than to the nesting --
+    good enough to key a ledger, and wrong in the same direction as the flat
+    dict it replaces rather than in a new one.
+    """
     if not model_path or not model_path.exists():
-        return {}
-    out: dict[str, str] = {}
-    files = [model_path] if model_path.is_file() else sorted(model_path.glob("*.malloy"))
+        return []
+    # `glob`, not `rglob`, by default: `model_definitions()` has always read
+    # only the top level and `stale_rubric_claims()` is calibrated to that.
+    # `model_text()` next door DOES recurse, which reads like an oversight
+    # rather than a decision -- but changing it here would quietly move an
+    # existing check, so the ledger opts in and the inconsistency stays visible.
+    files = ([model_path] if model_path.is_file()
+             else sorted(model_path.rglob("*.malloy") if recursive
+                         else model_path.glob("*.malloy")))
+    out: list[dict[str, Any]] = []
     for f in files:
-        for name, expr in DEFINES.findall(f.read_text()):
-            out.setdefault(name, expr.split("#")[0].strip())
+        source, kind = None, None
+        for n, raw in enumerate(f.read_text(errors="replace").splitlines(), 1):
+            line = raw.split("//")[0]
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            m = SOURCE_DECL.match(line)
+            if m:
+                source, kind = m.group(1), None
+                # `source: x is y extend { ... }` declares x itself; fall
+                # through so the `is` on this line is not read as a field.
+                continue
+            m = KIND_LABEL.match(line)
+            if m:
+                kind = KIND_OF_LABEL[m.group(1)]
+                line = m.group(2)          # `measure: x is ...` on one line
+                if not line.strip():
+                    continue
+            pt = PASSTHROUGH.match(line)
+            if pt:
+                out.append({"source": source, "kind": "dimension",
+                            "name": pt.group(1), "expr": None,
+                            "passthrough": True, "file": str(f), "line": n})
+                continue
+            d = DEFINES.match(line if line.startswith(" ") else "  " + line)
+            if not d:
+                continue
+            out.append({"source": source, "kind": kind or "dimension",
+                        "name": d.group(1), "expr": d.group(2).split("#")[0].strip(),
+                        "passthrough": False,
+                        "file": str(f), "line": n})
+    return out
+
+
+def model_definitions(model_path: pathlib.Path | None) -> dict[str, str]:
+    """Flat `name -> expr`, first declaration wins. The old contract, unchanged.
+
+    `stale_rubric_claims()` compares a rubric's claim against a name it has no
+    source for, so the flat view is what it needs; `parse_definitions()` is for
+    anything that must tell two same-named fields apart.
+    """
+    out: dict[str, str] = {}
+    for r in parse_definitions(model_path):
+        if r["expr"] is not None:
+            out.setdefault(r["name"], r["expr"])
     return out
 
 
@@ -267,40 +649,491 @@ def stale_rubric_claims(cases: list[dict[str, Any]], defs: dict[str, str]) -> li
     return bad
 
 
+# ------------------------------------------------- 5. names the model does not have
+
+def model_text(model_path: pathlib.Path | None) -> str:
+    """Every .malloy byte under `--model`, for a name-presence check.
+
+    More text means fewer false alarms, so a directory is walked recursively:
+    a package keeps models in subdirectories and an id may name a field defined
+    in one of them.
+    """
+    if not model_path or not model_path.exists():
+        return ""
+    files = [model_path] if model_path.is_file() else sorted(model_path.rglob("*.malloy"))
+    return "\n".join(f.read_text() for f in files)
+
+
+def _named(name: str, text: str) -> bool:
+    return bool(name) and re.search(r"(?<![A-Za-z0-9_])" + re.escape(name)
+                                    + r"(?![A-Za-z0-9_])", text) is not None
+
+
+def _id_malformed(entity_id: str) -> bool:
+    """An id carrying no `kind:` prefix at all.
+
+    Scoring compares whole ids against the ones `get_context` returned, so an id
+    without its prefix can never match however real the field is. It has to be a
+    finding on its own: `all(parts[1:])` is vacuously True on a one-part id, so
+    `ecommerce.no_such_field`, `no_such_field` and `""` all used to pass the
+    check that exists to catch exactly this, while the well-formed
+    `measure:x:no_such_field` was correctly caught."""
+    return len((entity_id or "").split(":")) < 2
+
+
+def _id_named(entity_id: str, text: str) -> bool:
+    """Both halves of `kind:source:name` must be in the model, or it is not this
+    model's entity. The source half is what catches an id copied from a sibling
+    package: a field name often survives a rename that the source name does
+    not.
+
+    A malformed id is never `named`: there is nothing after the prefix to check,
+    and an empty `all()` is True."""
+    parts = (entity_id or "").split(":")
+    return len(parts) > 1 and all(_named(p, text) for p in parts[1:])
+
+
+def truth_isolation_findings(base: str, environment: str,
+                             target_package: str | None) -> list[str]:
+    """Refuse a "truth" server that also serves the package under test.
+
+    Not because the numbers would be wrong. The value check names the truth
+    package explicitly, so it reads the right sources even on a combined
+    server. The problem is that the ANSWERER can then reach the raw truth
+    sources beside the model it is being tested on: `get_context` retrieves
+    them, and what is under test quietly changes. The ecommerce set's README
+    records this happening, which is why its truth package was moved out of
+    the served tree and onto a second server the answerer has no route to.
+
+    So this reports a server that is not isolated, whether or not this run's
+    values came back clean. It also catches the operator error that motivated
+    it: `--publisher` used to default to 4811, the port that set's README
+    assigns to the ANSWERER, so the default and the documented layout named
+    different servers and nothing said so.
+
+    Silent when the listing cannot be read: the value check reports its own
+    connection error, and a guard that turns an unreachable server into a
+    golden finding is the confusion this file's exit codes exist to prevent.
+    """
+    if not target_package:
+        return []
+    try:
+        listed = get_json(
+            base, f"api/v0/environments/{urllib.parse.quote(environment)}/packages")
+    except Exception:                                   # noqa: BLE001
+        return []
+    if not isinstance(listed, list):
+        return []
+    names = {p.get("name") for p in listed if isinstance(p, dict)}
+    if target_package not in names:
+        return []
+    return [f"the server at {base} serves the package under test "
+            f"({target_package!r}) alongside the truth package, so it is not "
+            "an isolated truth server. These values are still re-derived from "
+            "the truth package, but an answerer on this server can retrieve "
+            "the raw truth sources beside the model and change what is under "
+            "test. Fix: serve the truth package on its own Publisher, which "
+            "the answerer has no route to, and point --publisher there"]
+
+
+# Kept in step with `skill:eval-import`'s `import_cases.STAMP_MIN`, which is
+# what writes the stamps this reads.
+STAMP_MIN = 16
+
+
+def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
+    """Cases whose question no longer matches the seal stamped at import.
+
+    The one edit an eval set must never absorb silently. Narrowing a question
+    to match what an answerer keeps doing deletes what the case tested and
+    reads as a pass: it happened to four questions on one 69-case set, three
+    of them with the answer key untouched, and nothing in the run said so.
+
+    Compared as a PREFIX, because a stamp is not always the whole digest: the
+    ecommerce set's author script writes `sha256(question)[:16]`, and a full
+    64-char comparison read all 49 of its cases as edited. 64 bits is ample to
+    catch an edit, and this check runs before every arm, so a false finding
+    here blocks an arm over nothing.
+
+    A case with no `questionSha` is not a finding. Some sets predate the seal;
+    an unsealed set is unguarded, which is different from broken. New stamps
+    come from `skill:eval-import`'s `import_cases.py --stamp`.
+    """
+    out = []
+    for c in cases:
+        stamp, question = c.get("questionSha"), c.get("question")
+        if not stamp or not isinstance(question, str):
+            continue
+        # Malformed is its own finding, the rule this file already applies to
+        # entity ids. A stamp that arrived as a number used to raise TypeError
+        # on `len(stamp)`, which the top-level handler turns into exit 3 --
+        # reporting a malformed seal as a harness that could not run. A stamp
+        # shorter than 16 is the quieter half: the prefix comparison still
+        # succeeds, on fewer bits than the seal is worth.
+        if not isinstance(stamp, str) or len(stamp) < STAMP_MIN:
+            out.append(
+                f"{c['qid']}: questionSha is malformed "
+                f"({type(stamp).__name__}, "
+                f"{len(stamp) if isinstance(stamp, str) else 'n/a'} chars); "
+                f"expected a hex string of at least {STAMP_MIN}. The question "
+                f"is unguarded until it is re-stamped. Fix: "
+                f"`import_cases.py --stamp`")
+            continue
+        full = hashlib.sha256(question.encode()).hexdigest()
+        if full[:len(stamp)] != stamp:
+            out.append(
+                f"{c['qid']}: question does not match its questionSha. It was "
+                "edited after import, or the stamp is wrong. Fix: restore the "
+                "question, or give the new wording a new qid -- a changed "
+                "question is a different stimulus and its old scores are not "
+                "comparable")
+    return out
+
+
+# A rubric that sanctions an alternative reading, in the words sets actually
+# use. Deliberately narrow: these are phrases that grant the ANSWER a choice,
+# not any use of the word "or".
+_ALLOWS_ALT = re.compile(
+    r"\b(either\b[^.]{0,80}\bor\b"
+    r"|or the \w+ is (?:fine|correct|acceptable|also correct)"
+    r"|is (?:also )?(?:fine|correct|acceptable)\b[^.]{0,40}\beither"
+    r"|any of (?:these|the following)"
+    r"|(?:is|are) (?:also )?acceptable)", re.I)
+
+
+def rubric_alternative_findings(cases: list[dict[str, Any]]) -> list[str]:
+    """Rubrics that accept an alternative while `required` demands one id.
+
+    The two halves of an answer key are read by different things and can
+    disagree without anything noticing: the rubric is prose for the judge, and
+    `expectedEntities.required` is ids for retrieval scoring. When the rubric
+    says "either the full carrier name or the nickname is fine" and the
+    required list names only `dimension:carriers:name`, an answer that uses the
+    nickname is scored CORRECT by the judge and loses recall in the same run.
+
+    That is not a retrieval finding, it is the key contradicting itself, and it
+    was mistaken for a retrieval failure on a real run. `requiredAnyOf` is the
+    repair: a group is satisfied when any member is delivered.
+
+    REVIEW, not a hard finding. The phrasing is a heuristic over prose, a set
+    may legitimately allow an alternative that is not an entity choice ("either
+    rounding is fine"), and a false alarm here costs a glance while a missed
+    one costs a wrong attribution.
+    """
+    out = []
+    for case in cases:
+        g = case.get("golden") or {}
+        rubric = g.get("rubric") or ""
+        if not rubric or not _ALLOWS_ALT.search(rubric):
+            continue
+        exp = case.get("expectedEntities") or {}
+        if exp.get("requiredAnyOf"):
+            continue
+        if not exp.get("required"):
+            continue
+        m = _ALLOWS_ALT.search(rubric)
+        out.append(
+            f"review {case['qid']}: the rubric accepts an alternative "
+            f"({m.group(0)[:60].strip()!r}) but expectedEntities.required "
+            f"names one id per concept and no requiredAnyOf group. An answer "
+            f"taking the other reading scores correct and loses recall in the "
+            f"same run")
+    return out
+
+
+def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
+    """Set names that do not exist in the model under test.
+
+    A `required` id naming a field this package does not have cannot be
+    delivered, so it scores as a retrieval miss on every run and reads as a
+    model failure. Five such ids, copied from a sibling package, quietly cost a
+    real set two days and five false misses. It is a SET error, and the only
+    moment it is cheap to see is before the arm starts.
+
+    `requiredAnyOf` is the exception and the repair for exactly this: a group
+    naming one id per package version is satisfied when ANY of them resolves,
+    so only a group where none does is a finding.
+
+    `acceptable` and `mustNotUse` are reported for review rather than failed.
+    Neither moves a number: an unknown `acceptable` id simply never matches, and
+    an unknown `mustNotUse` name is a veto that can never fire. A model that
+    passes a raw column straight through without naming it in its text would
+    also fail this, and blocking a run on that would be wrong.
+    """
+    if not text:
+        return []
+    out: list[str] = []
+    dup_cases: dict[str, list[str]] = {}
+    for case in cases:
+        qid = case["qid"]
+        exp = case.get("expectedEntities") or {}
+        for e in exp.get("required") or []:
+            if _id_malformed(e):
+                out.append(f"{qid}: required entity {e!r} has no `kind:` "
+                           f"prefix, so it can never match a returned id "
+                           f"whatever the model holds. Fix: "
+                           f"measure:<source>:<name>, or dimension:/view:")
+            elif not _id_named(e, text):
+                out.append(f"{qid}: required entity {e} does not appear in "
+                           f"the model TEXT. Confirm with check_findable.py "
+                           f"before deleting it: this is a grep and cannot see "
+                           f"a column a source exposes implicitly. Measured, "
+                           f"dimension:airports:own_type appears zero times in "
+                           f"the .malloy and retrieves at relevance 1.0. If it "
+                           f"is not retrievable either, it can only ever score "
+                           f"as a retrieval miss; fix the id, or make it a "
+                           f"requiredAnyOf group naming both packages' ids")
+        for g in exp.get("requiredAnyOf") or []:
+            if isinstance(g, list) and g and not any(_id_named(e, text) for e in g):
+                out.append(f"{qid}: no id in requiredAnyOf group "
+                           f"[{', '.join(g)}] names anything in the model under "
+                           f"test")
+        required_ids = set(exp.get("required") or [])
+        for e in exp.get("acceptable") or []:
+            if e in required_ids:
+                # `acceptable` marks ids that are not noise if returned. A
+                # required id is already not noise, so listing it twice says
+                # nothing about the case and hides whether `acceptable` was
+                # authored at all or copied from `required`. Collected and
+                # reported ONCE per set below: on the ecommerce set this fired
+                # 103 times, once per entry, and buried the rubric prompts.
+                dup_cases.setdefault(qid, []).append(e)
+                continue
+            if _id_malformed(e):
+                out.append(f"review {qid}: acceptable entity {e!r} has no "
+                           f"`kind:` prefix, so it never matches. Fix: "
+                           f"measure:<source>:<name>")
+            elif not _id_named(e, text):
+                out.append(f"review {qid}: acceptable entity {e} names nothing "
+                           f"in the model under test, so it never matches")
+        for m in (case.get("golden") or {}).get("mustNotUse") or []:
+            name = must_not_use_candidate(m)
+            if name and not _named(name.rsplit(".", 1)[-1], text):
+                out.append(f"review {qid}: mustNotUse {name!r} names nothing in "
+                           f"the model under test, so the veto can never fire")
+    if dup_cases:
+        n = sum(len(v) for v in dup_cases.values())
+        sample = ", ".join(list(dup_cases)[:4])
+        out.append(f"review set: {len(dup_cases)} case(s) list an id in both "
+                   f"required and acceptable ({n} entries; e.g. {sample}). A "
+                   f"required id is never noise, so those acceptable entries say "
+                   f"nothing. Drop them, or where the model offers more than one "
+                   f"route, make the id a requiredAnyOf group")
+    return out
+
+
 # ---------------------------------------------------------------- driver
 
 def verify(set_dir: pathlib.Path, publisher: str, environment: str,
            *, qids: set[str] | None = None, model: pathlib.Path | None = None,
-           refresh: bool = False, cases_file: str = "cases.jsonl",
-           quiet: bool = False) -> dict[str, Any]:
+           refresh: bool = False, promote: bool = False,
+           target_package: str | None = None,
+           cases_file: str = "cases.jsonl",
+           quiet: bool = False, attest: str | None = None,
+           verbose: bool = False,
+           definitions: pathlib.Path | None = None) -> dict[str, Any]:
     """Run every check. Returns a summary; `drifted` is the count that should
-    stop a run."""
+    stop a run.
+
+    `target_package` names the package under test, for the isolation guard. It
+    falls back to `set.json`'s `targetPackage`, which for a long time was the
+    only way to supply it -- and that field is written by nothing and appears
+    in no schema, so the guard was dead on every set. Callers that know the
+    package pass it.
+    """
     meta = json.loads((set_dir / "set.json").read_text()) if (set_dir / "set.json").exists() else {}
     a = argparse.Namespace(
         publisher=publisher, environment=environment,
         truth_package=meta.get("truthPackage"),
         truth_model=meta.get("truthModel", "truth.malloy"),
         rewrite=bool(meta.get("truthTableRewrite", False)))
+    # Only the value check needs a truth server. Without one it does not happen,
+    # and `skipped` carries that all the way out to the exit code -- but every
+    # audit below still runs. Returning here skipped four checks that need no
+    # server at all, including the set-name lint, on precisely the set whose
+    # names and rubrics nobody has verified either.
+    skipped = None
     if not a.truth_package:
-        return {"skipped": "set.json names no truthPackage; nothing to re-derive against",
-                "drifted": 0, "findings": []}
+        skipped = "set.json names no truthPackage; nothing to re-derive against"
+    elif not publisher:
+        # Same class as the line above: the value check did not happen, and
+        # exit 3 says so. What it must never be is a guess at a port.
+        skipped = ("no --publisher given, so no truth server to re-derive "
+                   "against")
 
     path = set_dir / cases_file
     lines = path.read_text().splitlines()
     cases = [json.loads(l) for l in lines if l.strip()]
     chosen = [c for c in cases if not qids or c["qid"] in qids]
 
+    # A set where no golden holds a value has nothing for a truth server to
+    # re-derive, so a missing one is not a check that did not happen. Left as a
+    # skip, a criteria-only set exited 3 and `improve.py` blocked on it with no
+    # opt-out, over a check that does not apply to it -- and the repair offered
+    # elsewhere ("name a truthPackage") is not open to a set that has no value
+    # to re-derive.
+    #
+    # `server_absent` keeps the audits that really do need a server gated on
+    # the server rather than on the exit code. `chosen and` because "no case
+    # needs a value check" is vacuously true of an empty selection, and an
+    # empty set is not a set that asks nothing -- it is a set with nothing in
+    # it, which must not read as a pass.
+    server_absent = bool(skipped)
+    if skipped and chosen and not any(needs_value_check(c) for c in chosen):
+        skipped = None
+
+    # The composition rule's second half. A truth server re-derives VALUES; a
+    # definition ledger validates the DEFINITIONS a value rests on. When every
+    # value-bearing case's tested definitions read `agrees` in the ledger and
+    # are not stale against --model, the absent server is not a check that
+    # failed to happen, and main() may exit 0 instead of 3. The value loop
+    # below still does not run -- there is nothing to run it against -- so this
+    # settles the exit code and the promotion basis, never a golden's value.
+    # Imported here rather than at the top: verify_definitions imports from
+    # this file, and the cycle is harmless once this module is fully loaded.
+    ledger_validated, unvalidated = False, []
+    if skipped and definitions:
+        from verify_definitions import (case_basis, load_ledger,  # noqa: E402
+                                        stale_ids)
+        led = load_ledger(definitions)
+        stale = stale_ids(led, model)
+        for c in chosen:
+            if not needs_value_check(c):
+                continue
+            basis = case_basis(c, led, stale, set_dir)
+            if basis not in ("independent", "definitions"):
+                unvalidated.append(f"{c['qid']} ({basis})")
+        ledger_validated = bool(led) and not unvalidated
+        if not quiet:
+            print(f"  definition ledger {definitions}: "
+                  + ("every value-bearing case rests on validated definitions"
+                     if ledger_validated else
+                     f"{len(unvalidated)} case(s) rest on unvalidated definitions"))
+
     tally: dict[str, int] = {}
     findings: list[str] = []
     refreshed: list[str] = []
+    promoted: list[str] = []
+    attested: list[str] = []
+    promotion_notes: list[str] = []
+    # Everything down to the value loop reads the cases, the gold artifacts and
+    # the model text. No server is involved, so none of it is gated.
     for c in chosen:
+        findings += rubric_number_findings(c)
+        findings += axis_findings(c, set_dir)
+    findings += rubric_alternative_findings(chosen)
+    findings += stale_rubric_claims(chosen, model_definitions(model))
+    findings += unknown_name_findings(chosen, model_text(model))
+    findings += question_drift_findings(chosen)
+
+    if not server_absent:
+        findings += truth_isolation_findings(
+            publisher, environment,
+            target_package or meta.get("targetPackage"))
+    if skipped and not quiet:
+        print(f"  ! {skipped}; running only the checks that need no server")
+    # Promoting a golden that holds NO value needs no truth server, so it runs
+    # above the value-check loop rather than inside it. It used to sit in the
+    # loop, which `skipped` empties, so a criteria-only set could be promoted by
+    # no path -- and, since a set with no truthPackage now exits 3 and
+    # `improve.py` blocks on it, had no route to `verified` at all. Giving it a
+    # truthPackage is not the escape either: a criteria-only set has no value to
+    # put in one.
+    if promote:
+        for c in chosen:
+            g = c["golden"]
+            if (g.get("kind") in ("unanswerable", "criteria")
+                    and g.get("status") == "provisional"):
+                # Verified on arrival, as skill:eval-import says: there is no
+                # value to re-derive, and the refusal (or the clauses) is the
+                # whole key. Left provisional, the answer judge refused a
+                # verdict on exactly the cases that measure refusal.
+                g["status"] = "verified"
+                g["verifiedBy"] = "authored_criteria"
+                promoted.append(c["qid"])
+
+    # Promotion through the ledger. `verified` here means two derivations of
+    # the value agree (the second derivation, as always) AND every definition
+    # those derivations used is validated. Nothing re-derived the value on a
+    # truth server, and verifiedBy says so by naming the ledger. No --attest
+    # path: an authored control plus a human vouching, with no second
+    # derivation, is too thin to call verified.
+    if promote and ledger_validated:
+        for c in chosen:
+            g = c["golden"]
+            if not needs_value_check(c) or g.get("status") != "provisional":
+                continue
+            why = promotion_blocker(c, set_dir)
+            if why:
+                promotion_notes.append(f"{c['qid']}: not promoted, {why}")
+                continue
+            g["status"] = "verified"
+            g["verifiedBy"] = (f"verify_goldens.py --promote via definition "
+                               f"ledger {definitions.name}")
+            promoted.append(c["qid"])
+
+    # `[] if skipped else chosen` rather than an `if` block: the guard belongs
+    # next to the one call that needs it, and wrapping would reindent the
+    # --refresh write for nothing.
+    for c in [] if skipped else chosen:
         status, detail, rows = check_value(c, a)
         tally[status] = tally.get(status, 0) + 1
         if not quiet:
             print(f"  {status.upper():7s} {c['qid']:34s} {detail}")
+        # Promotion rides on the value check because it IS the evidence: a
+        # golden re-derived cleanly from the truth package this run, with a
+        # second derivation beside it, has met the standard the schema states.
+        # Anything else is reported rather than promoted, so a caller learns
+        # WHY a key it expected to promote did not.
+        # The value-free kinds were promoted above, where they need no server.
+        # What is left here is the value-based promotion, and `check_value` IS
+        # its evidence.
+        if promote and needs_value_check(c):
+            g = c["golden"]
+            if status != "ok":
+                promotion_notes.append(
+                    f"{c['qid']}: not promoted, value check says {status}")
+            else:
+                why = promotion_blocker(c, set_dir)
+                if why and attest and why.startswith("no second derivation"):
+                    # The human path the doctrine already grants `invalid` and
+                    # `ambiguous`: a person vouches, and the record says so
+                    # rather than pretending a second query was run.
+                    g["status"] = "verified"
+                    g["verifiedBy"] = f"attested: {attest}"
+                    g["verification"] = {
+                        "primaryAxis": "canonicalQuery",
+                        "variesAxis": "human-attestation",
+                        "attestation": attest,
+                        "attestedAt": datetime.date.today().isoformat()}
+                    promoted.append(c["qid"])
+                    attested.append(c["qid"])
+                elif why:
+                    if why.startswith("no second derivation"):
+                        why += ("; or vouch for it with --promote --attest "
+                                "'<who, when, how it was checked>'")
+                    promotion_notes.append(f"{c['qid']}: not promoted, {why}")
+                else:
+                    g["status"] = "verified"
+                    g["verifiedBy"] = PROMOTED_BY
+                    promoted.append(c["qid"])
         if status == "diff":
             findings.append(f"{c['qid']}: {detail}")
-            if refresh and rows is not None:
+            # `rows is not None` was the whole guard, and an empty result is
+            # not None. A truth server that loaded nothing answers every query
+            # with zero rows, so a refresh against it emptied every rows-kind
+            # golden and raised IndexError on every scalar one -- destroying the
+            # most expensive artifacts in a set, which no re-run can rebuild,
+            # in the one command whose job is to repair them. A zero-row answer
+            # is a failed measurement, not a new value.
+            if refresh and not rows:
+                findings.append(
+                    f"{c['qid']}: refused to refresh from zero rows. The truth "
+                    f"query returned nothing, which is a failed measurement "
+                    f"rather than a new value -- check that the truth package "
+                    f"loaded (a package serving nothing answers every query "
+                    f"this way) before refreshing")
+            elif refresh and rows is not None:
                 g = c["golden"]
                 if g.get("kind") == "rows":
                     keep = list((g.get("value") or [{}])[0].keys()) or None
@@ -314,27 +1147,39 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 g["verifiedBy"] = "verify_goldens.py --refresh"
                 c["goldenRevision"] = int(c.get("goldenRevision") or 1) + 1
                 refreshed.append(c["qid"])
-        findings += rubric_number_findings(c)
-        findings += axis_findings(c, set_dir)
-    findings += stale_rubric_claims(chosen, model_definitions(model))
 
-    if refreshed:
+    rewritten = set(refreshed) | set(promoted)
+    if rewritten:
         by_qid = {c["qid"]: c for c in cases}
         out = []
         for l in lines:
             if not l.strip():
                 continue
             q = json.loads(l)["qid"]
-            out.append(json.dumps(by_qid[q]) if q in refreshed else l)
+            out.append(json.dumps(by_qid[q]) if q in rewritten else l)
         path.write_text("\n".join(out) + "\n")
-        if not quiet:
-            print(f"\n  refreshed {len(refreshed)} golden(s): {', '.join(refreshed)} "
-                  f"-- goldenRevision bumped; bump set.json datasetVersion and note "
-                  f"that runs before it are not comparable")
+    if refreshed and not quiet:
+        print(f"\n  refreshed {len(refreshed)} golden(s): {', '.join(refreshed)} "
+              f"-- goldenRevision bumped; bump set.json datasetVersion and note "
+              f"that runs before it are not comparable")
+    if promoted and not quiet:
+        # No goldenRevision bump: the VALUE did not move, so scores taken
+        # against it are still comparable. Only its standing changed, from a
+        # number nobody had re-derived to one two derivations agree on.
+        print(f"\n  promoted {len(promoted)} golden(s) to verified: "
+              f"{', '.join(promoted)} -- value unchanged, so goldenRevision is "
+              f"not bumped and earlier scores stay comparable"
+              + (f"\n  {len(attested)} of those by attestation, not by a second "
+                 f"derivation; the record says so on each" if attested else ""))
+    if promotion_notes and not quiet:
+        print(f"\n  {len(promotion_notes)} golden(s) not promoted:")
+        for n in promotion_notes:
+            print(f"    {n}")
 
     drifted = tally.get("diff", 0) + tally.get("error", 0)
     if not quiet:
-        print("\n" + "  ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+        print("\n" + ("  ".join(f"{k}={v}" for k, v in sorted(tally.items()))
+                      or "no golden re-derived"))
         other = [f for f in findings if not any(f.startswith(x + ": ") and
                  (" golden " in f or "query returned" in f) for x in (c["qid"] for c in chosen))]
         hard = [f for f in other if not f.startswith("review ")]
@@ -343,22 +1188,53 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
             print(f"\n{len(hard)} finding(s) besides value drift:")
             for f in hard:
                 print(f"  {f}")
-        if soft:
-            print(f"\n{len(soft)} rubric figure(s) to review (not failures):")
-            for f in soft[:20]:
+        figs = [f for f in soft if "rubric asserts" in f]
+        rest = [f for f in soft if "rubric asserts" not in f]
+        for group, head in ((figs, "rubric figure(s) to review (not failures; a "
+                                   "prompt to read each rubric against its rows)"),
+                            (rest, "other review item(s) (not failures)")):
+            if not group:
+                continue
+            shown = group if verbose else group[:5]
+            print(f"\n{len(group)} {head}:")
+            for f in shown:
                 print(f"  {f[len('review '):]}")
-            if len(soft) > 20:
-                print(f"  ... and {len(soft) - 20} more")
-    return {"tally": tally, "drifted": drifted, "findings": findings,
-            "refreshed": refreshed}
+            if len(group) > len(shown):
+                print(f"  ... and {len(group) - len(shown)} more (--verbose prints all)")
+    # ONE shape, both paths. Two shapes is what produced the bug: a caller had
+    # to branch on `skipped` before it could safely read `tally`, and that
+    # branch is where the findings were dropped. `skipped` stays a truthy
+    # string so both existing predicates still read; `tally` is {} rather than
+    # {"skipped": N}, because check_value already returns a per-case status
+    # spelled "skipped" and one word may not mean two things in one dict.
+    return {"skipped": skipped, "ledgerValidated": ledger_validated,
+            "unvalidated": unvalidated, "tally": tally, "drifted": drifted,
+            "findings": findings, "refreshed": refreshed,
+            "promoted": promoted, "attested": attested,
+            "promotionNotes": promotion_notes}
+
+
+# "The check you asked for did not happen." Two ways in: an unanticipated
+# exception (bottom of this file), and a set with no truthPackage to re-derive
+# against. Never 1 -- see EXIT CODES.
+CANNOT_RUN = 3
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--publisher", default="http://localhost:4811",
-                    help="the Publisher serving the TRUTH package")
+    # No default, and not required. It WAS http://localhost:4811, which the
+    # ecommerce set's own README assigns to the ANSWERER's server, so the
+    # default and the documented ports named different servers and the wrong
+    # one self-certifies goldens. Omitting it now skips the value check the
+    # same way a set with no truthPackage does -- exit 3, "did not happen" --
+    # rather than quietly querying a port nobody chose. Both in-tree callers
+    # pass it explicitly.
+    ap.add_argument("--publisher", default=None,
+                    help="the Publisher serving the TRUTH package, and ONLY "
+                         "that package. Omit to run just the checks that need "
+                         "no server; the value check then reports as not run")
     ap.add_argument("--environment", default="samples")
     ap.add_argument("--qid", action="append", help="verify only these cases")
     ap.add_argument("--cases", default="cases.jsonl",
@@ -370,20 +1246,90 @@ def main() -> int:
                     help="rewrite each drifted golden's value from the fresh rows "
                          "and bump its goldenRevision. For drift, not for a wrong "
                          "canonical query -- read the diff first")
+    ap.add_argument("--promote", action="store_true",
+                    help="mark `provisional` goldens `verified` where the value "
+                         "re-derived cleanly from the truth package AND a second "
+                         "derivation exists. This is the ONLY thing that writes "
+                         "golden.status; without it an imported set stays "
+                         "unscorable forever. Prints why each unpromoted golden "
+                         "was left alone")
+    ap.add_argument("--attest", default=None, metavar="TEXT",
+                    help="with --promote: vouch for goldens that re-derived "
+                         "cleanly but carry no second derivation. TEXT names "
+                         "who checked, when, and how; it is written on the "
+                         "golden as the verification record, so a reader sees "
+                         "a person stood behind it rather than a second query")
+    ap.add_argument("--verbose", action="store_true",
+                    help="print every rubric-figure review item, not the first five")
+    ap.add_argument("--target-package",
+                    help="the package under test, for the isolation guard. "
+                         "Falls back to set.json's `targetPackage`")
+    ap.add_argument("--definitions", type=pathlib.Path, default=None,
+                    help="a definition ledger (verify_definitions.py). With no "
+                         "truth server, a set whose every value-bearing case "
+                         "rests on validated definitions exits 0 instead of 3, "
+                         "and --promote may promote through it")
     args = ap.parse_args()
+    if args.attest is not None and (not args.promote or not args.attest.strip()):
+        ap.error("--attest needs --promote and non-empty text naming who "
+                 "checked, when, and how")
 
     r = verify(args.set_dir, args.publisher, args.environment,
                qids=set(args.qid) if args.qid else None, model=args.model,
-               refresh=args.refresh, cases_file=args.cases)
+               refresh=args.refresh, promote=args.promote,
+               target_package=args.target_package, cases_file=args.cases,
+               attest=args.attest, verbose=args.verbose,
+               definitions=args.definitions)
     if r.get("skipped"):
-        print(r["skipped"])
-        return 0
+        print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a
     # broken set, and a rubric quoting a number its rows do not hold fails the
     # same way -- as wrong verdicts, silently.
     hard = [f for f in r["findings"] if not f.startswith("review ")]
-    return 1 if r["drifted"] or hard else 0
+    # A finding outranks a skip. 3 tells the caller there is nothing here to
+    # read; once an audit HAS found something that is false, and a caller
+    # obeying the contract would throw away the one fact this run produced.
+    if r["drifted"] or hard:
+        return 1
+    if args.promote and not r.get("promoted") and r.get("promotionNotes"):
+        # Asked to promote, promoted nothing, and every candidate was held
+        # back: the set is exactly as unscorable as before. 0 read as "done"
+        # and the next run refused with the same message.
+        print(f"\n--promote promoted 0 of {len(r['promotionNotes'])} candidate(s); "
+              f"the set is still unscorable. Each line above says what is "
+              f"missing (usually the second derivation: `golden.verification` "
+              f"or gold/<qid>.json with verifyRows).", file=sys.stderr)
+        return CANNOT_RUN
+    if r.get("skipped"):
+        if r.get("ledgerValidated"):
+            print("No truth server, and none needed here: every value-bearing "
+                  "golden rests on definitions the ledger validates. Values were "
+                  "not re-derived; the definitions they rest on were.",
+                  file=sys.stderr)
+            return 0
+        if args.definitions:
+            print("The definition ledger does not validate every case: "
+                  + "; ".join(r.get("unvalidated") or ["the ledger has no rows"])
+                  + ". Author or re-run controls for those definitions, or name "
+                    "a truthPackage in set.json.", file=sys.stderr)
+            return CANNOT_RUN
+        print("The audits above ran without a truth server. No golden was "
+              "re-derived, so this says NOTHING about whether the goldens still "
+              "hold; do not read it as a pass. Name a truthPackage in set.json "
+              "(init_truth_package.py scaffolds one), or validate the "
+              "definitions and pass --definitions.", file=sys.stderr)
+        return CANNOT_RUN
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception:
+        traceback.print_exc()
+        print("\nverify_goldens could not run, so this says NOTHING about the "
+              "goldens. Fix the error above and re-run; do not read it as a "
+              "pass or as a drifted golden.", file=sys.stderr)
+        sys.exit(CANNOT_RUN)

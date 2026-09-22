@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 
 Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`malloy-getting-started`](malloy-getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
 
-[`packages/skills`](../packages/skills) publishes this directory to npm, for consumers that need the files themselves without cloning. The MCP prompts carry the same tree: each `SKILL.md` body as one prompt, plus every `reference/*.md` as its own prompt named `<skill>/<file stem>`. It copies this tree in when it is packed, so adding a skill here needs no packaging step. It does need a version bump: `skills-npm.yml`'s PR check requires the version in [`packages/skills/package.json`](../packages/skills/package.json) to be ahead of what is on npm whenever a PR touches this directory, because a published version can never be replaced. A PR that adds or edits a skill without that bump goes red.
+[`packages/skills`](../packages/skills) publishes this directory to npm, for consumers that need the files themselves without cloning. The MCP prompts carry the same tree: each `SKILL.md` body as one prompt, plus every `reference/*.md` as its own prompt named `<skill>/<file stem>`. It copies this tree in when it is packed, so adding a skill here needs no packaging step. It does need a version bump: `skills-npm.yml`'s PR check requires the version in [`packages/skills/package.json`](../packages/skills/package.json) to be ahead of what is on npm whenever a PR touches this directory, because a published version can never be replaced. A PR that adds or edits a skill without that bump goes red. **Two packages need it, not one:** `packages/create-malloy-package` copies this tree into a scaffolded package, so a skills edit is published content there too, and the check names it separately.
 
 ## What ships: `manifests/publisher-local.json`
 
@@ -39,9 +39,11 @@ Two rules make it work:
 
 ## Evaluation skills
 
-`eval-loop`, `eval-answer`, `eval-diagnose` and `eval-improve` are the model-evaluation loop: a set
+`eval-loop`, `eval-answer`, `eval-diagnose`, `eval-improve` and `eval-report` are the model-evaluation loop: a set
 of questions with goldens computed from raw tables, a blind answerer over the model, a judge, a
-diagnosis of each failure, and one smallest model edit gated by a re-run. They are shared skills
+diagnosis of each failure, and one smallest model edit gated by a re-run. `eval-import` comes
+before all of it: it turns a question list, in whatever shape it arrived, into a set, and decides
+what each arriving key is actually worth. They are shared skills
 (upstream: `ms2data/agent-skills`) and ship in the `eval` group. Their Python scripts import each
 other by path from `skills/eval-answer/scripts`, so they run in place from a checkout, not from the
 pack. `manifests/publisher-local.json`'s groups are what the loop installs for the
@@ -51,6 +53,29 @@ the judge's rubric and the acceptance check away from the agents they score. The
 contract probes) is deliberately **not** here: it is Credible's question about its hosted engine and
 lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
 loop on.
+
+The seven eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
+skill. The upstream copy has drifted before and it matters more here than elsewhere, because the
+scripts are the harness: a run made with a stale copy produces a ledger that reads as current and
+is not.
+
+**Record the commit you mirrored FROM, in the upstream PR and in upstream's README.** Without it
+nobody downstream can tell a deliberate pin from drift, and "identical to Publisher" ages into a
+false claim the day the next commit lands here. A sync that names its source SHA is checkable in one
+line; one that does not costs a reviewer a `diff -r` against a guess.
+
+Two files exist only upstream and are not part of the set: `eval-loop/scripts/run_all.py` (a
+sequencing orchestrator, which `skill:eval-loop` forbids) and `eval-answer/reference/judge.md` (now
+`skill:eval-judge`). Delete them when mirroring rather than copying them back.
+
+**`eval-answer/scripts/mcp_client.py` is the exception, and this file used to say to delete it.**
+It is not mirrored -- it does not exist here -- but it is imported by upstream's engine-side
+`eval-retrieval`, which ships to no customer and therefore has no copy here to keep it alive.
+Deleting it on a sync broke both of that skill's entry points outright
+(`ModuleNotFoundError: No module named 'mcp_client'`), which is the shape of mistake this list
+exists to prevent and caused instead. **Leave anything upstream-only alone unless you have checked
+that nothing upstream imports it**; "not part of the set" is a statement about what we own, not a
+licence to remove it.
 
 ## Tool names in shared skills
 
@@ -72,6 +97,7 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 - **Edit a shared skill here.** This repo is the source of truth for them. The mechanism that carries them to Credible is being settled in `ms2data/service#6177`; **until it lands, mirror a shared-skill edit into `ms2data/agent-skills` by hand**, or the two copies drift.
 - **Register it in [`manifests/publisher-local.json`](../manifests/publisher-local.json).** An unregistered skill ships through no channel, and `manifest.spec.ts` fails rather than letting that pass quietly.
 - **`malloy-dashboards` is not a shared skill.** `agent-skills` carries a file by the same name written for its own surfaces; the two describe the same feature and are not copies of each other. Do not copy it in either direction.
+- **A `description` has two budgets, and `packages/skills/src/manifest.spec.ts` holds both.** Every shipped skill stays under 1024 characters, the frontmatter budget a host loader reads. The eight shared skills that a downstream plugin packages -- `malloy-analysis`, `malloy-analysis-pitfalls`, `malloy-charts`, `malloy-gotchas-queries`, `malloy-gotchas-rendering`, `malloy-patterns`, `malloy-phrase-detection`, `malloy-queries` -- stay under 200, because that build rewrites the `description:` line in place at 200 and appends an ellipsis. It does that silently, so a description written past 200 loses its tail on the surface where a description matters most: `malloy-analysis` shipped for several releases with its own trigger clause cut off. Lead with the trigger condition and the budget is rarely tight.
 - **Any edit under `skills/` means regenerating the MCP bundle** (`cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills`) and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree. The bundle is committed indented so that two PRs touching different skills merge cleanly; if you do hit a conflict in it, resolve it by regenerating from the merged `skills/` tree, never by editing the JSON by hand.
 - A new skill directory needs a `.claude/skills/<name>` symlink (`ln -s ../../skills/<name> .claude/skills/<name>`) so Claude Code discovers it.
 - A shared skill may only `skill:`-reference other shared skills; refer to a host wrapper in neutral prose so a verbatim copy never leaves a dangling reference.

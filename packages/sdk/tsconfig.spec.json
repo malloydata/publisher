@@ -4,7 +4,10 @@
 // build. But excluded also meant unchecked: `bun test` strips types without
 // checking them and eslint here is not type-aware, so a type error in a spec
 // reached no gate. The root `typecheck:sdk` runs this config as its second
-// half. Keep the four patterns in step with the exclude list next door.
+// half. Keep these patterns in step with the exclude list next door -- which
+// also excludes `src/**/__test__`, where the helper modules the specs import
+// live. Left out here they would be neither built nor checked, which is the
+// hole this config exists to close.
 {
    "extends": "./tsconfig.json",
    "compilerOptions": {
@@ -16,6 +19,7 @@
       "src/**/*.test.*",
       "src/**/*_spec.*",
       "src/**/*_test.*",
+      "src/**/__test__/**/*",
       "test/**/*"
    ],
    "exclude": []

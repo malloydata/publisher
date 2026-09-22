@@ -189,8 +189,18 @@ function md(text) {
   return `<div class="md">${out.join('')}</div>`;
 }
 
+// A flag that survives the CSV round trip either way it is typed. The build
+// writes booleans as lowercase `true`/`false`, DuckDB sniffs a populated column
+// as BOOLEAN and a header-only one as VARCHAR, so the same field arrives as a
+// JSON boolean on one run and as a string on another. `=== 'true'` alone
+// silently stopped rendering the contamination chip the moment the column
+// sniffed boolean, which is the one flag that must never fail quietly.
+function truthy(v) {
+  return v === true || v === 'true';
+}
+
 function stepHtml(s) {
-  const k = s.kind, err = s.is_error === 'true' || s.is_error === true;
+  const k = s.kind, err = truthy(s.is_error);
   if (k === 'text') return `<div class="step text"><div class="prose">${md(s.label)}</div></div>`;
   if (k === 'skill') return `<div class="step"><span class="k">skill</span><span class="mono">${esc(s.label)}</span></div>`;
   if (k === 'get_context') {
@@ -283,7 +293,8 @@ async function loadCase(qid) {
       <div class="armhead"><span class="name">${esc(d.arm)}</span>${pill(d.verdict)}
         ${d.confidence != null ? `<span class="chip">confidence ${d.confidence}/10</span>` : ''}
         ${d.gold_status && d.gold_status !== 'verified' ? `<span class="chip warn">golden ${esc(d.gold_status)}</span>` : ''}
-        ${d.contaminated === 'true' ? '<span class="chip fail">contaminated</span>' : ''}
+        ${truthy(d.contaminated) ? '<span class="chip fail">contaminated</span>' : ''}
+        ${d.must_not_use_hits ? `<span class="chip fail" title="A script forced no_match: the final query used a field golden.mustNotUse forbids. The judge said ${esc(d.judge_verdict || 'nothing recorded')}.">vetoed: ${esc(d.must_not_use_hits)}</span>` : ''}
         ${dots(req)}</div>
       <div class="meta" title="Totals for this one attempt, not averages across the run. Per-arm averages are in the notebook's effort table.">
         <span><b>${num(d.num_turns)}</b> turns</span>
@@ -292,6 +303,13 @@ async function loadCase(qid) {
         <span><b>${num(d.wall_seconds)}</b> s</span>
         <span><b>$${num(d.cost_usd, 2)}</b></span>
       </div>
+      ${d.must_not_use_hits && d.judge_verdict ? `<div class="judge"><b>Vetoed.</b>
+        A script scored this <b>no_match</b> because the final query used
+        <span class="mono">${esc(d.must_not_use_hits)}</span>, which this
+        golden forbids. The judge itself said
+        <b>${esc(d.judge_verdict)}</b>. If the field is not the mistake and the
+        <em>use</em> of it is, the mustNotUse entry should be prose instead, and
+        this case is a false failure.</div>` : ''}
       <div class="judge"><b>Judge.</b> ${esc(d.judge_reasoning)}${
         d.where_to_fix ? ` <span class="mute">· where to fix: ${esc(d.where_to_fix)}</span>` : ''}</div>
       ${d.prediction ? `<h3>Re-executed rows</h3><p class="cap">The harness ran the
@@ -383,10 +401,18 @@ async function main() {
 
   const fixes = [...new Set(state.rows.flatMap(r => r.arms.map(a => a.where_to_fix).filter(Boolean)))].sort();
   document.getElementById('wtf').title =
-    'Where a failure would have to be fixed: query construction (the agent had '
-    + 'what it needed and built the query wrong), retrieval ranking (the entity '
-    + 'existed but was not returned), model coverage (nothing in the model '
-    + 'answers this), or refusal behaviour.';
+    // No label is split across a concatenation: `score_retrieval_test.py`
+    // checks each one appears here verbatim, and a label broken over two
+    // string literals reads as absent.
+    'Where a failure would have to be fixed. '
+    + '"model coverage": nothing in the model answers this. '
+    + '"not retrieved": a search of the right kind went out and the entity '
+    + 'did not come back. '
+    + '"never asked": no search of that kind went out at all. '
+    + '"delivered, wrong": everything arrived; the agent or the docs, '
+    + 'diagnose decides. '
+    + '"refusal behaviour": the model cannot answer and the agent did. '
+    + '"coverage not measured": a miss with no measured coverage label.';
   document.getElementById('wtf').innerHTML = '<option value="">Where to fix: any</option>' +
     fixes.map(f => `<option${f === state.wtf ? ' selected' : ''}>${esc(f)}</option>`).join('');
 

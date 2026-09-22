@@ -28,7 +28,7 @@ Givens are deliberately simple; the leverage is in what they enable. Jump to the
 > **Runnable example.** [`examples/governed-analytics`](../examples/governed-analytics) is one small
 > package that exercises all three applications. It declares filter-control givens in
 > [`orders.malloy`](../examples/governed-analytics/orders.malloy) and renders their controls in
-> [`orders.malloynb`](../examples/governed-analytics/orders.malloynb); the same package backs the
+> the [`governed-analytics`](../examples/governed-analytics) package; the same package backs the
 > [authorize](authorize.md) and [row-level](row-level-access.md) docs.
 
 ## Declaring Givens
@@ -244,7 +244,7 @@ Change a control and every cell re-runs with the new value, no reload and no rew
 
 ![Typing into the Parameters panel re-runs the notebook's dashboard live](screenshots/givens-live.gif)
 
-The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics/orders.malloynb`](../examples/governed-analytics/) to try it.
+The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics`](../examples/governed-analytics/) to try it.
 
 | Malloy type                                                | Widget                                                                                                                      |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -422,10 +422,10 @@ an `#(authorize)` denial, both surface this way.
 
 ## Worked Example
 
-The bundled `examples` environment ships [`governed-analytics`](../examples/governed-analytics), whose [`orders.malloy`](../examples/governed-analytics/orders.malloy) declares `REGION` and `MIN_AMOUNT` givens and [`orders.malloynb`](../examples/governed-analytics/orders.malloynb) runs a dashboard over them. Open the notebook in the Publisher UI:
+The bundled `examples` environment ships [`governed-analytics`](../examples/governed-analytics), whose [`orders.malloy`](../examples/governed-analytics/orders.malloy) declares `REGION` and `MIN_AMOUNT` givens. Open the package in the Publisher UI:
 
 ```
-http://localhost:4000/examples/governed-analytics/orders.malloynb
+http://localhost:4000/examples/governed-analytics
 ```
 
 The Parameters panel auto-renders above the cells with the declared defaults; change `REGION` (or `MIN_AMOUNT`) and every cell re-executes with the new value.

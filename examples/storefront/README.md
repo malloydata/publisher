@@ -13,23 +13,22 @@ no conversion step. **No credentials required.**
 
 ## What's here
 
-| File | Role |
-| --- | --- |
-| `data/customers.parquet` | 1,000 customers across all 50 states (id, name, state, city, signup date). |
-| `data/products.parquet` | 200 products in 10 categories and 12 brands (id, name, category, brand, cost, retail price). |
-| `data/order_items.parquet` | ~25,000 order lines (~11,000 orders) over three years, joining customers to products. |
-| `data/regions.csv` | The 50 states mapped to a sales region. A CSV, not Parquet: it's the kind of small lookup you'd keep in a spreadsheet, and `duckdb.table()` reads either format. |
-| `storefront.malloy` | The model: `order_items` fact joined to `customers`, `products`, and `regions`, with reusable measures and `# dashboard` views. |
-| `storefront.malloynb` | A guided-tour notebook: the business overview dashboard plus growth, seasonality, geography, category, brand, and top-seller views. |
-| `givens.malloy` | The data app's filter controls, declared as `given:` parameters with the tags that say how each one renders. |
-| `data_app.malloy` | `scoped_orders`: `order_items` narrowed by those givens. Every tile on the page queries it. |
-| `dashboards/overview.malloy` | A [dashboard](../../docs/dashboards.md): `## artifact { tiles=[…] }` naming views off `scoped_orders`, laid out by `# colspan` and `# break` on each. Served at `/examples/storefront/dashboards/overview`. The same figures as the model's `business_overview` view, which is the one-query form of the same page. |
-| `public/index.html` | A no-build [HTML data app](../../docs/html-data-apps.md): a four-tab Chart.js dashboard. Served at `/environments/examples/packages/storefront/`. |
-| `public/app/` | The page's ES modules (state and rendering, controls, charts, tables, formatting). No build step: the browser loads them directly. |
-| `public/vendor/chart.umd.js` | Chart.js v4.5.0 (MIT), vendored so the page renders where a CDN is blocked. |
-| `public/vendor/malloy-filter.js` | `@malloydata/malloy-filter`, bundled for the browser, so the page escapes filter values with Malloy's own printer. Regenerate with `bun run vendor:malloy-filter`. |
-| `tests/` | `node --test` coverage (`bun run test:examples`): the filter encoding, and the controls themselves against a real DOM. |
-| `eslint.config.mjs` | Lints `public/app/`, which nothing else reads: no bundler, no typechecker. Run by the root `bun run lint`. |
+| File                             | Role                                                                                                                                                                                                                                                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data/customers.parquet`         | 1,000 customers across all 50 states (id, name, state, city, signup date).                                                                                                                                                                                                                                          |
+| `data/products.parquet`          | 200 products in 10 categories and 12 brands (id, name, category, brand, cost, retail price).                                                                                                                                                                                                                        |
+| `data/order_items.parquet`       | ~25,000 order lines (~11,000 orders) over three years, joining customers to products.                                                                                                                                                                                                                               |
+| `data/regions.csv`               | The 50 states mapped to a sales region. A CSV, not Parquet: it's the kind of small lookup you'd keep in a spreadsheet, and `duckdb.table()` reads either format.                                                                                                                                                    |
+| `storefront.malloy`              | The model: `order_items` fact joined to `customers`, `products`, and `regions`, with reusable measures and `# dashboard` views.                                                                                                                                                                                     |
+| `givens.malloy`                  | The data app's filter controls, declared as `given:` parameters with the tags that say how each one renders.                                                                                                                                                                                                        |
+| `data_app.malloy`                | `scoped_orders`: `order_items` narrowed by those givens. Every tile on the page queries it.                                                                                                                                                                                                                         |
+| `dashboards/overview.malloy`     | A [dashboard](../../docs/dashboards.md): `## artifact { tiles=[…] }` naming views off `scoped_orders`, laid out by `# colspan` and `# break` on each. Served at `/examples/storefront/dashboards/overview`. The same figures as the model's `business_overview` view, which is the one-query form of the same page. |
+| `public/index.html`              | A no-build [HTML data app](../../docs/html-data-apps.md): a four-tab Chart.js dashboard. Served at `/environments/examples/packages/storefront/`.                                                                                                                                                                   |
+| `public/app/`                    | The page's ES modules (state and rendering, controls, charts, tables, formatting). No build step: the browser loads them directly.                                                                                                                                                                                  |
+| `public/vendor/chart.umd.js`     | Chart.js v4.5.0 (MIT), vendored so the page renders where a CDN is blocked.                                                                                                                                                                                                                                         |
+| `public/vendor/malloy-filter.js` | `@malloydata/malloy-filter`, bundled for the browser, so the page escapes filter values with Malloy's own printer. Regenerate with `bun run vendor:malloy-filter`.                                                                                                                                                  |
+| `tests/`                         | `node --test` coverage (`bun run test:examples`): the filter encoding, and the controls themselves against a real DOM.                                                                                                                                                                                              |
+| `eslint.config.mjs`              | Lints `public/app/`, which nothing else reads: no bundler, no typechecker. Run by the root `bun run lint`.                                                                                                                                                                                                          |
 
 The data is generated deterministically by [`scripts/generate-example-data.mjs`](../../scripts/generate-example-data.mjs)
 (`bun run generate:example-data`) — it has a growth trend and holiday seasonality, so the charts have
@@ -88,7 +87,7 @@ curl -s -X POST $API -H 'content-type: application/json' \
   -d '{"query":"run: order_items -> business_overview"}'
 ```
 
-Or ask an AI agent over MCP: *"Use Malloy to chart storefront revenue by category."*
+Or ask an AI agent over MCP: _"Use Malloy to chart storefront revenue by category."_
 
 ## Learn more
 

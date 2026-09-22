@@ -52,6 +52,7 @@ import {
    getEmbeddingConfig,
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
+   getMcpCorsOrigins,
    getMemoryGovernorConfig,
    isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
@@ -132,6 +133,9 @@ function parseArgs() {
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
          i++;
+      } else if (arg === "--mcp_host" && args[i + 1]) {
+         process.env.MCP_HOST = args[i + 1];
+         i++;
       } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
          process.env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
          i++;
@@ -163,7 +167,10 @@ function parseArgs() {
             "  --port <number>        Port to run the server on (default: 4000)",
          );
          console.log(
-            "  --host <string>        Host to bind the REST and MCP servers to (default: 0.0.0.0)",
+            "  --host <string>        Host to bind the REST server to, and the MCP server unless --mcp_host is given (default: 0.0.0.0)",
+         );
+         console.log(
+            "  --mcp_host <string>    Host to bind the MCP server to (default: 127.0.0.1, or --host when that is set)",
          );
          console.log(
             "  --server_root <path>   Root directory to serve files from (default: .)",
@@ -239,6 +246,14 @@ getQueryMetadataMode();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+// The MCP endpoint is unauthenticated and exposes every MCP tool, so it binds
+// LOOPBACK by default while the REST port keeps its own PUBLISHER_HOST default.
+// Precedence: MCP_HOST, then an explicit PUBLISHER_HOST (so `--host` still moves
+// both listeners together for an operator who asked for a wider bind), then
+// loopback. Widening this is opt-in and belongs behind an authenticating
+// gateway.
+const MCP_HOST =
+   process.env.MCP_HOST || process.env.PUBLISHER_HOST || "127.0.0.1";
 // Resolved here rather than in the listen callback: parseBoolEnv throws on a
 // typo, which is the convention for flags in this server, but a throw inside a
 // listen callback is an uncaughtException that kills a server which has already
@@ -375,7 +390,18 @@ export const mcpApp = express();
 registerHealthEndpoints(mcpApp);
 
 mcpApp.use(MCP_ENDPOINT, express.json());
-mcpApp.use(MCP_ENDPOINT, cors());
+// Cross-origin access is OPT-IN via MCP_CORS_ORIGINS (comma-separated origins,
+// or `*` to allow any). Default is no allowlist, which reflects no
+// `Access-Control-Allow-Origin` back, so a browser page on another origin cannot
+// read a response from this unauthenticated endpoint. A non-browser client (an
+// MCP agent over HTTP) sends no Origin and is unaffected either way: CORS
+// governs what a browser hands to script, not who may connect.
+// codeql[js/cors-permissive-configuration]: the permissive value this rule
+// looks for is reachable only when an operator sets MCP_CORS_ORIGINS=* on
+// purpose, which is the documented escape hatch; every other input, including
+// the default, resolves to an allowlist or to false. The line this replaced was
+// a bare `cors()` -- permissive unconditionally, and unflagged.
+mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));
 
 mcpApp.all(MCP_ENDPOINT, async (req, res) => {
    logger.info(`[MCP Debug] Handling ${req.method} (Stateless)`);
@@ -1378,6 +1404,9 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
+   // sqlSource runs a live DB introspection (a DESCRIBE against the connection),
+   // so it is admission-controlled like a query rather than left unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1398,6 +1427,7 @@ app.post(
 // Per-package versions
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1562,31 +1592,6 @@ app.post(
    },
 );
 
-// Environment-scoped aggregate: every materialization across all packages in
-// the env, newest first. Nested under `/packages` as the collection-level
-// sibling of the per-package `/packages/:packageName/materializations` list.
-// MUST stay registered ahead of `/packages/:packageName` below so the literal
-// `materializations` segment wins the match; consequently `materializations` is
-// a reserved package name at this position (a package can never be named that).
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/materializations`,
-   async (req, res) => {
-      try {
-         const limit = parseNonNegativeIntParam(req.query.limit);
-         const offset = parseNonNegativeIntParam(req.query.offset);
-         const builds =
-            await materializationController.listEnvironmentMaterializations(
-               req.params.environmentName,
-               { limit, offset },
-            );
-         res.status(200).json(builds);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
@@ -1598,7 +1603,6 @@ app.get(
       if (reload === undefined) {
          return;
       }
-
       try {
          res.status(200).json(
             await packageController.getPackage(
@@ -1696,6 +1700,52 @@ app.get(
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   // A dashboard save compiles the submitted text and then writes it under the
+   // package lock, across a full package reload and the rollback reload on
+   // failure -- strictly more of the work this cap exists to bound than one
+   // /compile does. Ungated it also convoys: the save holds the package mutex
+   // while holding no slot, so slot-holding compiles on that package pile up
+   // behind it.
+   queryConcurrency(),
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+      try {
+         // Express stores wildcard matches in params['0'].
+         const result = await dashboardController.putDashboardSource(
+            req.params.environmentName,
+            req.params.packageName,
+            (req.params as Record<string, string>)["0"],
+            req.body,
+         );
+         // 201 for a file that did not exist, the way a created materialization
+         // answers; 200 for one that was replaced.
+         res.status(result.created ? 201 : 200).json(result);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         // A refused write is the endpoint working: a stale hash, a dashboard
+         // that does not compile, a path that is not a dashboard. Logging all
+         // of those at `error` made the level meaningless on this route and
+         // buried the one case that is genuinely wrong — a write that compiled,
+         // landed, and could not be reloaded.
+         const detail = {
+            environmentName: req.params.environmentName,
+            packageName: req.params.packageName,
+            modelPath: (req.params as Record<string, string>)["0"],
+            status,
+            error,
+         };
+         if (status >= 500) logger.error("Dashboard write failed", detail);
+         else logger.warn("Dashboard write refused", detail);
          res.status(status).json(json);
       }
    },
@@ -1948,6 +1998,10 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
+   // Compile runs real Malloy compilation (and resolves source schemas against
+   // the connection), so it is admission-controlled like a query rather than
+   // left to pin the shared event loop unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          // Express stores wildcard matches in params['0'], so nested model
@@ -1974,10 +2028,8 @@ app.post(
 );
 
 // ==================== MATERIALIZATION ROUTES ====================
-// The environment-scoped aggregate list (every materialization across all
-// packages) is registered up in the package routes as
-// `/packages/materializations`, ahead of `/packages/:packageName`, so the
-// literal wins the match — see that route for the ordering contract.
+// Every one of them is package-scoped, because a materialization is a run of
+// one package's persist sources and cannot exist without a package.
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
@@ -2339,7 +2391,7 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
 });
 const mcpServer = mcpApp.listen(
    MCP_PORT,
-   PUBLISHER_HOST,
+   MCP_HOST,
    function (this: import("net").Server) {
       // Read back rather than reusing MCP_PORT, which is only what was requested.
       // `--mcp_port 0` asks for any free port, and under bun a non-numeric value
@@ -2356,7 +2408,7 @@ const mcpServer = mcpApp.listen(
       // dialable form belongs in .mcp.json and in the advice, not here.
       const bound = this.address();
       const boundHost =
-         typeof bound === "object" && bound ? bound.address : PUBLISHER_HOST;
+         typeof bound === "object" && bound ? bound.address : MCP_HOST;
       logger.info(
          `MCP server listening at http://${boundHost.includes(":") ? `[${boundHost}]` : boundHost}:${boundPort}`,
       );
@@ -2383,7 +2435,7 @@ const mcpServer = mcpApp.listen(
                // so another local process can hold the same port on the other family
                // and receive the agent's traffic instead.
                const endpoint = mcpEndpoint(
-                  resolveClientHost(boundAddress, PUBLISHER_HOST),
+                  resolveClientHost(boundAddress, MCP_HOST),
                   boundPort,
                );
                // cwd, not server_root: the file is for whoever opens an agent here.
@@ -2397,7 +2449,7 @@ const mcpServer = mcpApp.listen(
                );
             } catch (error) {
                logger.info(
-                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, PUBLISHER_HOST), boundPort))}`,
+                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, MCP_HOST), boundPort))}`,
                );
             }
          });

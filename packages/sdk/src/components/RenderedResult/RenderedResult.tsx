@@ -276,7 +276,27 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    background: var(--malloy-render--tile-background) !important;
    color: var(--malloy-render--table-body-color) !important;
    box-shadow: none !important;
-   border: var(--malloy-render--table-border) !important;
+   /* The card edge, not the table gridline: --publisher-dashboard-card-border,
+      the same value TileCard paints, so the renderer's card and the composite
+      one are outlined identically. */
+   border: var(--publisher-dashboard-card-border) !important;
+}
+/* The renderer's big-value card — the small card a "# big_value" measure sits
+   in, several to a row inside one tile. (No backticks in here: this is inside
+   a template literal.) Its own CSS gives it a 0.55px edge in
+   #e5e7eb: a sub-pixel width, and a grey off the slate ramp everything else on
+   the page is on. It is a dashboard card like any other, so it takes the card
+   edge and stops being the one card outlined in a hairline nobody can see. */
+.malloy-render .malloy-big-value-card {
+   border: var(--publisher-dashboard-card-border) !important;
+   /* Its shadow is a four-layer Tailwind stack, and only two of those layers
+      are a shadow: the other is "0 0 0 1px #e5e7eb", a spread ring drawn as a
+      second border OVER the real one. So the border above was landing
+      underneath a ring in the renderer's own grey, and the card kept both a
+      lifted look the flat cards around it do not have and an edge we did not
+      pick. Dropped whole rather than rebuilt layer by layer: the ring's job is
+      the border's job, and the border is already doing it. */
+   box-shadow: none !important;
 }
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
@@ -418,10 +438,20 @@ function RenderedResultInner({
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
    // render effect's cleanup: a re-run must keep the old chart until the new
    // one has painted, and the new render disposes it during the swap.
+   //
+   // The NODE goes with the viz, not just the viz. React destroys and
+   // re-creates a component's effects without discarding its DOM in several
+   // ordinary cases — a Suspense boundary revealing, development's
+   // double-invoked mount — and there the container this stage sits in is
+   // still on screen afterwards. Disposing the viz alone left an empty stage
+   // in it, which the next render then appended BELOW: the chart, pushed out
+   // of a clipped box, read as a tile that had lost its content.
    useEffect(() => {
       return () => {
          renderGenRef.current += 1;
-         liveRef.current?.viz.remove();
+         const live = liveRef.current;
+         live?.viz.remove();
+         live?.node.remove();
          liveRef.current = null;
       };
    }, []);
@@ -545,7 +575,11 @@ function RenderedResultInner({
          // would repaint the old chart's chrome to the new theme before it is
          // swapped out. Scoping the vars to this stage keeps each chart stable.
          applyTableCssVars(stage, effectiveTheme, cardGeometry);
-         if (previous) {
+         // Overlaid whenever the container is not empty, which is the
+         // outgoing chart and, defensively, anything an earlier render left
+         // behind. A stage appended as a SIBLING in the flow sits below what
+         // is already there and falls outside the container's clip.
+         if (element.childElementCount > 0) {
             element.style.position = "relative";
             stage.style.position = "absolute";
             stage.style.inset = "0";
@@ -589,12 +623,12 @@ function RenderedResultInner({
                clearTimeout(readyFallback);
                readyFallback = null;
             }
-            // The new chart has painted; drop the outgoing one now.
-            if (previous) {
-               previous.viz.remove();
-               if (previous.node.parentNode === element) {
-                  element.removeChild(previous.node);
-               }
+            // The new chart has painted; drop the outgoing one now, and with
+            // it anything else still in the container, so the promoted stage
+            // is the only thing in it.
+            previous?.viz.remove();
+            for (const node of Array.from(element.children)) {
+               if (node !== stageNode) element.removeChild(node);
             }
             stageNode.style.position = "";
             stageNode.style.inset = "";

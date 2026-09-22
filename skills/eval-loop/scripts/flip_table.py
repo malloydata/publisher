@@ -17,6 +17,7 @@ import argparse
 import json
 import statistics
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -58,13 +59,43 @@ def outcome(verdict: str | None) -> str:
     return "neither"
 
 
+# A golden a person has established is WRONG. Its verdict says nothing about
+# the model -- the answer was scored against a key that does not hold -- so it
+# leaves every aggregate.
+EXCLUDED_GOLD = {"verified_wrong"}
+
+
+def counts_toward_score(gold_status: str | None) -> bool:
+    """Does this score belong in the run's aggregates?
+
+    Exported for the same reason `outcome` is. `run_baseline.py` dropped
+    `verified_wrong` before counting, `eval_run.malloy` did not, and the
+    package's own doc comment on `gold_status` said it did -- so one
+    `verified_wrong` golden made the printed pass rate and the notebook's
+    `pass_rate` disagree (92.31% against 91.67% on a real 13-case run) with
+    nothing to say which was right. One rule, three readers: this function,
+    the `counts` column `build_run_package.py` writes from it, and the
+    measures in `eval_run.malloy` that filter on that column.
+    """
+    return gold_status not in EXCLUDED_GOLD
+
+
 def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     """qid -> the scored outcome, for cases this run actually scored."""
     out: dict[str, dict[str, Any]] = {}
+    queries: dict[str, str | None] = {}
     for line in (run / "events.jsonl").read_text().splitlines():
         if not line.strip():
             continue
         e = json.loads(line)
+        if e.get("kind") == "attempt":
+            # The query the arm actually ran. A flip is a matched pair -- same
+            # question, same model, one right answer and one wrong one -- and
+            # the diff between the two queries is what isolates the cause. It
+            # was not read here, so the richest evidence in the run was the one
+            # thing the flip table did not print.
+            queries[e["qid"]] = e.get("final_query")
+            continue
         if e.get("kind") != "score":
             continue
         v = e.get("verdict")
@@ -72,6 +103,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "verdict": v,
             "confidence": e.get("confidence"),
             "reason": (e.get("reason") or "")[:200],
+            "final_query": queries.get(e["qid"]),
             # near_match and needs_human are neither: counting either as a fail
             # would manufacture a flip every time the judge hedged in one run
             # and not the other.
@@ -79,6 +111,30 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "passed": {"pass": True, "fail": False}.get(outcome(v)),
         }
     return out
+
+
+def query_diff(a: dict[str, Any], b: dict[str, Any], la: str, lb: str) -> str:
+    """The two queries a flipped case ran, side by side.
+
+    The count says a case moved; this says what moved it. On a real set five
+    flips over 28 cases read as an 18% churn rate, and the five turned out to
+    be one question asked two ways -- two discrete query idioms, one returning
+    443 rows and the other 2. Reading the diff would have handed over the
+    finding; averaging the five hid it. The queries were already in the ledger
+    and this table had never printed them.
+
+    Identical queries are worth saying too: then the flip is downstream of the
+    query, in the judge or in the data, and that is a different search.
+    """
+    qa, qb = (a.get("final_query") or "").strip(), (b.get("final_query") or "").strip()
+    if not qa and not qb:
+        return "     (neither arm recorded a final query)"
+    if qa == qb:
+        return ("     both arms ran the SAME query, so the flip is downstream "
+                "of it:\n     the judge, the rubric, or non-determinism in the "
+                "data.")
+    return (f"     {la} ran:\n       " + qa.replace("\n", "\n       ") +
+            f"\n     {lb} ran:\n       " + qb.replace("\n", "\n       "))
 
 
 def cost(run: Path) -> dict[str, float]:
@@ -93,6 +149,152 @@ def cost(run: Path) -> dict[str, float]:
         tot["turns"] += e.get("num_turns") or 0
         tot["seconds"] += e.get("wall_seconds") or 0.0
     return tot
+
+
+def config(run: Path) -> dict[str, Any]:
+    f = run / "run.json"
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+# The pins two runs must share to be one measurement. A difference in any of
+# them is a difference in what was measured, so a flip count across it is not a
+# noise band and not an A/B -- it is two numbers about two different things.
+# `modelGitSha` and `targetVersion` belong here for the same reason the rest do:
+# they are WHICH BUILD answered. Two arms measured across a model edit or a
+# republish are two numbers about two different models, and leaving them out let
+# that pair read as a noise band. Both are null on runs that predate them, and
+# two nulls compare equal, so an older pair is unaffected.
+COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
+              "answererModel", "judgeModel", "answererManifest",
+              "retrievalMode", "modelGitSha", "targetVersion")
+
+
+def completeness_note(ca: dict, cb: dict, la: str, lb: str,
+                      A: dict, B: dict) -> int:
+    """Say which cases one arm excluded and the other scored. Never refuses.
+
+    This REPLACED a refusal, and the refusal was wrong. It rested on the claim
+    that an excluded case "reads as a flip", and it does not: a flip requires a
+    real pass or fail on BOTH sides (`a_only` / `b_only` below), so a case
+    carrying `verdict: null` on either side lands in `unscored` and contributes
+    to no flip count. The pairing already handles this, and the header already
+    prints "N cases, M scored in both, K not". Refusing a 99-versus-100 pair
+    threw away 99 good comparisons to avoid a distortion that was not there.
+
+    What IS worth saying is the asymmetry, which nothing named before. The
+    excluded cases are not a random sample: an attempt truncates BECAUSE it ran
+    long, so the cases one arm drops are its hard ones, and the surviving
+    comparison is over an easier subset than the case list suggests. That is a
+    caveat to carry into the number, not a reason to withhold it.
+
+    An `aborted` arm needs nothing here either: it stopped early, so its cases
+    are absent rather than unscored, and the existing "the runs do not cover
+    the same cases" check already exits 1 on it.
+    """
+    for label, cfg, mine, theirs in ((la, ca, A, B), (lb, cb, B, A)):
+        excluded = [q for q in sorted(set(mine) & set(theirs))
+                    if mine[q]["passed"] is None
+                    and theirs[q]["passed"] is not None]
+        if not excluded:
+            continue
+        why = ", ".join(
+            [f"{len(cfg.get('truncated') or [])} truncated"]
+            * bool(cfg.get("truncated"))
+            + [f"{len(cfg.get('contaminated') or [])} contaminated"]
+            * bool(cfg.get("contaminated"))) or "unscored"
+        print(f"\n  ! {label} left {len(excluded)} case(s) unscored that "
+              f"the other arm scored ({why}): {', '.join(excluded)}")
+        print("    They are out of the flips above, so the comparison holds --"
+              " but an attempt truncates BECAUSE it ran long, so these are not"
+              " a random sample of the set.")
+    return 0
+
+
+def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
+                   allow: bool) -> int:
+    """Refuse a pair whose runs used different retrievers.
+
+    Local retrieval falls back to lexical SILENTLY when no embedding key is
+    set, and partway through a run when the provider fails. Either way the two
+    arms searched differently, and the flips that produces read as a model
+    change. eval-mvp's standing gate: no A/B is scored under an unavailable
+    semantic path. A run written before the harness recorded this carries
+    nothing, and an unrecorded mode is not evidence that it matched -- so that
+    is reported and allowed, because refusing every historical run would make
+    the gate unusable rather than safe.
+    """
+    ma, mb = ca.get("retrievalMode"), cb.get("retrievalMode")
+    if ma is None or mb is None:
+        print(f"\n  ! retrieval mode not recorded ({la}: {ma or 'absent'}, "
+              f"{lb}: {mb or 'absent'}), so which retriever answered cannot be "
+              f"checked. Re-run with a harness that records it before quoting "
+              f"this pair.")
+        return 0
+    if ma == mb and ma != "mixed":
+        if ma != "semantic":
+            print(f"\n  ! both arms retrieved {ma}, not semantic. The pair is "
+                  f"internally consistent, so a band measured here holds for "
+                  f"{ma} retrieval and for nothing else.")
+        return 0
+    if ma == mb == "mixed":
+        # The guard above excludes an equal pair only when it is not `mixed`,
+        # so two mixed arms land here and "retrieval differs: mixed, mixed"
+        # read as a contradiction. Refusing is still right -- a mixed arm is
+        # not a measurement whatever the other arm did -- but the reason is
+        # the actionable part.
+        print(f"\n  ! both arms changed retriever mid-run ({la} and {lb} are "
+              f"both `mixed`), so neither is a measurement and the pair "
+              f"cannot be compared.")
+    else:
+        print(f"\n  ! retrieval differs: {la} {ma}, {lb} {mb}. The arms did not "
+              f"search the same way, so these flips are not a measurement of "
+              f"the change.")
+    if allow:
+        print("    --allow-retrieval-mismatch given; reporting anyway.")
+        return 0
+    # Two mixed arms are not an embedding-provider problem: the provider
+    # answered, and changed its mind mid-run. The fix is to let the index
+    # settle before the arm starts, which is `run_baseline.py`'s retrieval gate.
+    print("    Let the index settle before each arm and re-run (the retrieval "
+          "gate in run_baseline.py), or pass --allow-retrieval-mismatch to "
+          "report anyway."
+          if ma == mb == "mixed" else
+          "    Fix the embedding provider and re-run, or pass "
+          "--allow-retrieval-mismatch to report anyway.")
+    return 2
+
+
+def calibration_block(ca: dict, cb: dict, la: str, lb: str, pa: int, pb: int,
+                      scored: int, flips: int, stable_near: list[str]) -> str:
+    """The set's CALIBRATION.md entry for this pair, ready to append.
+
+    A band is only quotable against the configuration it was measured on, and
+    observed bands have moved by a factor of three across a fortnight of
+    ordinary work. So the block records every pin that has to match, and a
+    reader compares them rather than trusting the number.
+    """
+    rows = [f"| {k} | {ca.get(k) if ca.get(k) == cb.get(k) else f'{ca.get(k)} / {cb.get(k)}'} |"
+            for k in COMPARABLE]
+    return "\n".join([
+        f"## {ca.get('datasetVersion')} / judge v{ca.get('judgeVersion')} "
+        f"/ {ca.get('answererModel')} answerer",
+        "",
+        f"Measured {time.strftime('%Y-%m-%d')} from `{la}` and `{lb}`.",
+        "",
+        "| pin | value |",
+        "| --- | --- |",
+        *rows,
+        "",
+        f"- **Flips: {flips}** over {scored} cases scored in both arms.",
+        f"- Passed {pa} and {pb}, a difference of {pb - pa:+d} with no change "
+        f"between the arms.",
+        f"- Stable near_match: {len(stable_near)}"
+        + (f" ({', '.join(stable_near)})" if stable_near else ""),
+        "",
+        "Quote this band only for a run whose pins above all match. One that "
+        "differs in any of them is a different measurement.",
+        "",
+    ])
 
 
 def targeted_report(args: argparse.Namespace, A: dict, B: dict,
@@ -225,6 +427,13 @@ def main() -> int:
     p.add_argument("--noise-band", type=int, default=None,
                    help="flips your A/A measured. Untargeted flips at or below "
                         "this are consistent with noise.")
+    p.add_argument("--allow-retrieval-mismatch", action="store_true",
+                   help="report a pair whose arms used different retrievers. "
+                        "The flips are then not a measurement of the change; "
+                        "say so wherever the number is quoted.")
+    p.add_argument("--calibration", action="store_true",
+                   help="print the set's CALIBRATION.md entry for this pair, "
+                        "ready to append. Use it on an A/A.")
     a_args = p.parse_args()
 
     la = a_args.label_a or a_args.a.name
@@ -289,17 +498,56 @@ def main() -> int:
               f"  ({', '.join(f'{v} {k}' for k, v in sorted(tally.items()))})")
 
     if a_only or b_only:
-        print(f"\nthe flips\n---------")
+        print(f"\nthe disagreement set\n--------------------")
+        print("  Read these before averaging them. A flip is a case where the "
+              "agent found\n  two paths and the model did not make one of them "
+              "obviously right, which is\n  a model-quality signal and a "
+              "matched pair: same question, same model, one\n  right answer "
+              "and one wrong one. The band says how much movement there is;\n"
+              "  these say what it IS.\n")
         for q in a_only:
             print(f"  {q}\n     {la}: {A[q]['verdict']}  ->  "
                   f"{lb}: {B[q]['verdict']}\n     {B[q]['reason'][:150]}")
+            print(query_diff(A[q], B[q], la, lb))
         for q in b_only:
             print(f"  {q}\n     {la}: {A[q]['verdict']}  ->  "
-                  f"{lb}: {B[q]['verdict']}\n     {B[q]['reason'][:150]}")
+                  f"{lb}: {B[q]['verdict']}\n     {A[q]['reason'][:150]}")
+            print(query_diff(A[q], B[q], la, lb))
 
     if a_args.targets:
         targeted_report(a_args, A, B, la, lb,
                         verdicts(a_args.b2) if a_args.b2 else None)
+
+    # Stable on both sides: the judge is not hedging at random, it is saying
+    # the model cannot distinguish two readings the question does. That is a
+    # coverage finding for eval-diagnose, which selects no_match by default and
+    # so never sees these.
+    stable_near = sorted(q for q in shared
+                         if A[q]["verdict"] == "near_match"
+                         and B[q]["verdict"] == "near_match")
+    if stable_near:
+        print(f"\nstable near_match ({len(stable_near)})\n"
+              f"{'-' * 20}")
+        print("  near_match in BOTH arms, so not judge noise. Each is a "
+              "coverage gap, not a rubric to soften:")
+        for q in stable_near:
+            print(f"    {q}")
+        print(f"  diagnose.py --only {','.join(stable_near)} "
+              f"--verdicts near_match")
+
+    cfg_a, cfg_b = config(a_args.a), config(a_args.b)
+    differing = [k for k in COMPARABLE
+                 if cfg_a.get(k) != cfg_b.get(k)]
+    if differing:
+        print(f"\nthe arms differ in {len(differing)} pin(s): "
+              f"{', '.join(differing)}")
+        for k in differing:
+            print(f"    {k:<20} {cfg_a.get(k)}  ->  {cfg_b.get(k)}")
+        print("  More than one pin moving makes the flips unattributable.")
+
+    gate = retrieval_gate(cfg_a, cfg_b, la, lb,
+                          a_args.allow_retrieval_mismatch)
+    completeness_note(cfg_a, cfg_b, la, lb, A, B)
 
     ca, cb = cost(a_args.a), cost(a_args.b)
     print(f"\ncost\n----")
@@ -308,7 +556,13 @@ def main() -> int:
     print(f"  {lb:<24} ${cb['usd']:.2f}  {cb['turns']:.0f} turns  "
           f"{cb['seconds'] / 60:.0f} min")
 
-    return 0
+    if a_args.calibration:
+        print("\n--- CALIBRATION.md entry, append to the set "
+              "---------------------\n")
+        print(calibration_block(cfg_a, cfg_b, la, lb, pa, pb, scored, flips,
+                                stable_near))
+
+    return gate
 
 
 if __name__ == "__main__":

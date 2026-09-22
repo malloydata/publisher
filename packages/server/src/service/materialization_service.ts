@@ -82,6 +82,7 @@ import {
 import type { components } from "../api";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
+import { resolvePartitionColumns } from "./persist_partition";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
@@ -307,6 +308,36 @@ export function manifestExcludingStorage(
  */
 function declaredStorage(persistSource: PersistSource): string | undefined {
    return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
+}
+
+/**
+ * The columns this source's table is laid out by, for a build that is about to
+ * run.
+ *
+ * Re-resolved here rather than carried from the eligibility gate because the
+ * gate and the build are far apart in this flow, and a value threaded through
+ * that distance is one that can go stale. The resolution is pure over the source
+ * and its annotation, so the two cannot disagree — but that is a contract, not a
+ * coincidence, so a refusal reaching here THROWS. The gate has already refused
+ * every shape this can refuse; arriving at a build means it did not, and
+ * quietly building unpartitioned would turn a broken `partition=` into a table
+ * whose layout silently differs from what the author declared.
+ */
+function partitionColumnsForBuild(persistSource: PersistSource): string[] {
+   const resolved = resolvePartitionColumns(
+      persistSource,
+      deriveAnnotationFields(persistSource),
+   );
+   if (!resolved.ok) {
+      throw new MaterializationEligibilityError({
+         reason: resolved.reason,
+         message:
+            `Source '${persistSource.name}' reached a build with an ` +
+            `unusable 'partition=': ${resolved.detail}. The eligibility gate ` +
+            `should have refused this before any warehouse work ran.`,
+      });
+   }
+   return resolved.columns;
 }
 
 /**
@@ -674,22 +705,6 @@ export class MaterializationService {
       return this.repository.listMaterializations(
          environmentId,
          packageName,
-         options,
-      );
-   }
-
-   /**
-    * Every materialization across all packages in an environment, newest first.
-    * Each record carries its `packageName`, so an env-scoped view can group or
-    * label by package without a per-package fan-out.
-    */
-   async listEnvironmentMaterializations(
-      environmentName: string,
-      options?: { limit?: number; offset?: number },
-   ): Promise<Materialization[]> {
-      const environmentId = await this.resolveEnvironmentId(environmentName);
-      return this.repository.listMaterializationsByEnvironment(
-         environmentId,
          options,
       );
    }
@@ -1178,7 +1193,10 @@ export class MaterializationService {
                // branch was never entered.
                if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
                   try {
-                     assertMaterializationEligible(persistSource);
+                     assertMaterializationEligible(
+                        persistSource,
+                        deriveAnnotationFields(persistSource),
+                     );
                   } catch (err) {
                      if (!(err instanceof MaterializationEligibilityError))
                         throw err;
@@ -1192,7 +1210,10 @@ export class MaterializationService {
                      continue;
                   }
                } else {
-                  assertMaterializationEligible(persistSource);
+                  assertMaterializationEligible(
+                     persistSource,
+                     deriveAnnotationFields(persistSource),
+                  );
                }
             } else {
                // No storage destination: this is the colocated `#@ persist`
@@ -1215,6 +1236,7 @@ export class MaterializationService {
                      ? "preaggregate"
                      : "persist",
                   compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                  deriveAnnotationFields(persistSource),
                );
             }
 
@@ -1228,8 +1250,12 @@ export class MaterializationService {
             // Self-assign the physical name from `name=` (or the source name)
             // verbatim for BOTH the colocated and storage destinations — the only
             // difference between the two is which connection the table lands in. A
-            // storage build replaces the table atomically (`CREATE OR REPLACE`),
-            // so no generational decoration is needed to make a rebuild safe. An
+            // storage build replaces the table atomically — a single `CREATE OR
+            // REPLACE`, or, when the source declares `partition=`, the
+            // create/alter/insert trio inside ONE transaction for exactly this
+            // reason — so no generational decoration is needed to make a rebuild
+            // safe. Without that transaction a rebuild would empty the table it
+            // is serving. An
             // orchestrated build ignores this and trusts the host-supplied
             // `physicalTableName`; the host owns any generational,
             // ownership-scoped naming.
@@ -2047,7 +2073,10 @@ export class MaterializationService {
                   orchestratedInstruction?.destination &&
                   getPersistStorageMode() !== "off"
                ) {
-                  assertMaterializationEligible(persistSource);
+                  assertMaterializationEligible(
+                     persistSource,
+                     deriveAnnotationFields(persistSource),
+                  );
                } else {
                   // The gate refusal above only fires for a STORAGE-targeted
                   // build, so on its own it leaves every other instruction —
@@ -2071,6 +2100,7 @@ export class MaterializationService {
                         ? "preaggregate"
                         : "persist",
                      compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                     deriveAnnotationFields(persistSource),
                   );
                }
 
@@ -2110,7 +2140,10 @@ export class MaterializationService {
                   instruction.destination &&
                   getPersistStorageMode() !== "off"
                ) {
-                  assertMaterializationEligible(persistSource);
+                  assertMaterializationEligible(
+                     persistSource,
+                     deriveAnnotationFields(persistSource),
+                  );
                }
 
                // One physical table, written once. Several sources routinely map
@@ -3161,6 +3194,7 @@ export class MaterializationService {
                sourceConnection,
                buildSQL: params.publicBuildSQL,
                physicalTableName,
+               partitionColumns: partitionColumnsForBuild(persistSource),
                environmentPath: environment.getEnvironmentPath(),
                queryMetadata,
                incremental: refresh,
@@ -3498,6 +3532,7 @@ export class MaterializationService {
          downstreamName: persistSource.name,
          virtualMap: buildVirtualMap(upstreams),
          physicalTableName,
+         partitionColumns: partitionColumnsForBuild(persistSource),
          environmentPath: environment.getEnvironmentPath(),
       });
    }

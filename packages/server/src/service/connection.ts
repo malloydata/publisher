@@ -32,7 +32,12 @@ import {
 } from "@malloydata/malloy";
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
+import { createHash } from "crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import tls from "tls";
 import { components } from "../api";
 import {
    getDuckDBMemoryLimit,
@@ -51,7 +56,7 @@ import {
    UnsupportedCatalogFormatError,
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
-import { redactPgSecrets } from "../pg_helpers";
+import { redactConnectionSecretShapes, redactPgSecrets } from "../pg_helpers";
 import {
    assertSafeEnvironmentPath,
    assertSafePackageName,
@@ -62,6 +67,7 @@ import {
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
+   PROXIED_SSLMODES,
 } from "./connection_config";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import {
@@ -138,7 +144,7 @@ export async function applyDuckLakeRowGroupBound(
       // and a read-only attach never reaches here.
       await connection.runSQL("SET preserve_insertion_order=false");
       await connection.runSQL(
-         `CALL ${dbName}.set_option('parquet_row_group_size_bytes', '${escapeSQL(bytes)}')`,
+         `CALL ${quoteIdentifier(dbName, "duckdb")}.set_option('parquet_row_group_size_bytes', '${escapeSQL(bytes)}')`,
       );
       logger.info(`DuckLake row group bound applied to ${dbName}: ${bytes}`);
    } catch (error) {
@@ -175,7 +181,7 @@ export async function applyDuckLakeTargetFileSize(
    }
    try {
       await connection.runSQL(
-         `CALL ${dbName}.set_option('target_file_size', '${escapeSQL(bytes)}')`,
+         `CALL ${quoteIdentifier(dbName, "duckdb")}.set_option('target_file_size', '${escapeSQL(bytes)}')`,
       );
       logger.info(`DuckLake target file size applied to ${dbName}: ${bytes}`);
    } catch (error) {
@@ -400,7 +406,12 @@ async function isDatabaseAttached(
          ),
       );
    } catch (error) {
-      logger.warn(`Failed to check existing databases:`, error);
+      // Redact in case the error text carries a connection string.
+      logger.warn("Failed to check existing databases", {
+         error: redactPgSecrets(
+            error instanceof Error ? error.message : String(error),
+         ),
+      });
       return false;
    }
 }
@@ -615,13 +626,19 @@ async function attachPostgres(
          `PostgreSQL connection configuration missing for: ${attachedDb.name}`,
       );
    }
+   // Before any SQL is built: an empty alias emits `AS ""`, which DuckDB
+   // rejects at a position after the DSN literal, and that error truncates the
+   // redactor's anchor away.
+   if (!attachedDb.name) {
+      throw new Error("Attached database name is required");
+   }
 
    await installAndLoadExtension(connection, "postgres");
 
    const config = attachedDb.postgresConnection;
    const attachString: string = buildPgConnectionString(config);
 
-   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${attachedDb.name} (TYPE postgres, READ_ONLY);`;
+   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY);`;
    await connection.runSQL(attachCommand);
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
@@ -668,6 +685,7 @@ async function preflightDuckLakeCatalogFormat(
    metadataSchema?: string,
 ): Promise<void> {
    const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
+   const tempDbRef = quoteIdentifier(tempDb, "duckdb");
    // Identifier position, not a string literal, so the schema is double-quoted.
    // Measured: with today's validator this is belt-and-braces rather than a fix —
    // every name the regex admits resolves correctly unquoted, including reserved
@@ -679,12 +697,12 @@ async function preflightDuckLakeCatalogFormat(
    // validator's accept-set, so widening that regex later cannot break it. Safe
    // by construction: the regex admits no quote character to break out with.
    const metadataRef = metadataSchema
-      ? `${tempDb}."${metadataSchema}".ducklake_metadata`
-      : `${tempDb}.ducklake_metadata`;
+      ? `${tempDbRef}."${metadataSchema}".ducklake_metadata`
+      : `${tempDbRef}.ducklake_metadata`;
    let catalogFormat: string | undefined;
    try {
       await connection.runSQL(
-         `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDb} (TYPE postgres, READ_ONLY);`,
+         `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDbRef} (TYPE postgres, READ_ONLY);`,
       );
       const result = await connection.runSQL(
          `SELECT value FROM ${metadataRef} WHERE key = 'version' LIMIT 1;`,
@@ -723,7 +741,7 @@ async function preflightDuckLakeCatalogFormat(
       return;
    } finally {
       try {
-         await connection.runSQL(`DETACH ${tempDb};`);
+         await connection.runSQL(`DETACH ${tempDbRef};`);
       } catch {
          // The ATTACH may have failed, so there may be nothing to detach.
       }
@@ -885,7 +903,7 @@ async function attachDuckLakeWithMode(
    const metadataSchemaClause = metadataSchema
       ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
       : "";
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
    logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
@@ -955,6 +973,13 @@ export type FederatedSourceType = "bigquery" | "snowflake" | "postgres";
 export interface FederatedHandle {
    handle: string;
    sourceType: FederatedSourceType;
+   /**
+    * Releases anything the federation holds OUTSIDE the DuckDB session — today
+    * the SSH tunnel a proxied Postgres source is reached through. Disposing the
+    * session does not close it (the tunnel is a process-level listener, not a
+    * DuckDB object), so the build session calls this in its `finally`.
+    */
+   close?: () => Promise<void>;
 }
 
 /**
@@ -967,6 +992,19 @@ export interface FederationConfig {
    bigqueryConnection?: components["schemas"]["BigqueryConnection"];
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
    postgresConnection?: components["schemas"]["PostgresConnection"];
+   /**
+    * The connection's proxy, when it has one. A proxied Postgres source is only
+    * reachable through the SSH tunnel this server opens to the tenant's bastion;
+    * the query path already tunnels it, and a storage build has to as well or
+    * the passthrough dials the database's own host, which the bastion exists to
+    * keep unreachable.
+    */
+   proxy?: components["schemas"]["ConnectionProxy"];
+}
+
+/** Injection seam for tests: how a proxied federation opens its tunnel. */
+export interface FederationDeps {
+   openProxy?: typeof openProxy;
 }
 
 /**
@@ -988,6 +1026,7 @@ export async function federateSourceForPassthrough(
    connection: DuckDBConnection,
    sourceType: FederatedSourceType,
    config: FederationConfig,
+   deps: FederationDeps = {},
 ): Promise<FederatedHandle> {
    switch (sourceType) {
       case "bigquery":
@@ -995,7 +1034,7 @@ export async function federateSourceForPassthrough(
       case "snowflake":
          return federateSnowflake(connection, config);
       case "postgres":
-         return federatePostgres(connection, config);
+         return federatePostgres(connection, config, deps);
       default: {
          // Exhaustiveness guard: a new FederatedSourceType must add a branch.
          const exhaustive: never = sourceType;
@@ -1179,6 +1218,7 @@ async function federateSnowflake(
 async function federatePostgres(
    connection: DuckDBConnection,
    config: FederationConfig,
+   deps: FederationDeps = {},
 ): Promise<FederatedHandle> {
    const pg = config.postgresConnection;
    if (!pg) {
@@ -1189,28 +1229,238 @@ async function federatePostgres(
 
    await installAndLoadExtension(connection, "postgres");
 
-   const attachString = buildPgConnectionString(pg);
    // `name` is the ATTACH alias AND (verbatim) the postgres_query handle, so the
    // handle stays the raw name while the ATTACH identifier is dialect-quoted —
    // a name needing quoting (e.g. a hyphen) would otherwise be a parser error.
    const alias = config.name;
-   logger.info(
-      `Federating Postgres source for passthrough as alias '${alias}': ${redactPgSecrets(attachString)}`,
+
+   // A proxied connection is reached through an SSH tunnel to the tenant's
+   // bastion, never at its own host: the query path opens that tunnel per
+   // connection (see buildProxiedPostgresConnection) and the build path must do
+   // the same, or the passthrough dials a host the bastion exists to keep
+   // unreachable and the build fails on a connect timeout. The tunnel is
+   // build-scoped — opened here, closed by the handle's `close` from the build
+   // session's finally — so no listener outlives the build. It is opened INSIDE
+   // the try: the tunnel is a process-level listener that nothing else can reach,
+   // so any throw between opening it and returning the handle (a refused TLS
+   // mapping as much as a failed ATTACH) has to close it here, or it is stranded
+   // for the life of the process and a retried build opens another.
+   let endpoint: ProxyEndpoint | undefined;
+   try {
+      let attachString: string;
+      if (config.proxy) {
+         if (!pg.host || !pg.port) {
+            // validateConnectionShape requires both on a proxied connection, so
+            // this is unreachable in practice — guard so the tunnel target is
+            // never undefined.
+            throw new Error(
+               `Connection proxy on '${config.name}' requires explicit host and port on the postgres connection.`,
+            );
+         }
+         endpoint = await (deps.openProxy ?? openProxy)(config.proxy, {
+            host: pg.host,
+            port: pg.port,
+         });
+         attachString = buildProxiedPgAttachString(config.name, pg, endpoint);
+      } else {
+         attachString = buildPgConnectionString(pg);
+      }
+      logger.info(
+         `Federating Postgres source for passthrough as alias '${alias}'${endpoint ? " through its SSH proxy" : ""}: ${redactPgSecrets(attachString)}`,
+      );
+      // OR REPLACE for within-session idempotency. The cross-build/cross-tenant
+      // alias-collision boundary is the build session's PRIVATE DuckDB instance
+      // (see createIsolatedBuildSession): each build runs on its own instance, so
+      // its postgres attach cannot collide with another build's or another tenant's
+      // on a shared instance. OR REPLACE is kept as belt-and-suspenders for a
+      // re-attach of the identical source within one session (the alias is the
+      // connection name, the config is that connection's, so replacing is a no-op
+      // rebind to the same source). (bigquery/snowflake federate via CREATE OR
+      // REPLACE SECRET with no ATTACH; secrets are instance-scoped, so isolation
+      // covers them too.)
+      await connection.runSQL(
+         `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
+      );
+   } catch (e) {
+      // The federation error is the one that propagates; a tunnel that then
+      // fails to close is the one case where a listener really does outlive the
+      // build, so it is logged rather than lost.
+      await endpoint
+         ?.close()
+         .catch((closeErr) =>
+            logger.warn(
+               `Failed to close the SSH proxy opened for Postgres source '${config.name}' after its federation failed: ${String(closeErr)}`,
+            ),
+         );
+      throw e;
+   }
+   return {
+      handle: alias,
+      sourceType: "postgres",
+      ...(endpoint ? { close: () => endpoint!.close() } : {}),
+   };
+}
+
+/**
+ * One libpq conninfo keyword/value pair. libpq takes a bare value only when it
+ * has no whitespace, quote or backslash; any other value is single-quoted with
+ * `\` and `'` backslash-escaped, so a password containing a space is not read
+ * as a second keyword. Exported for tests.
+ */
+export function pgConninfoPair(key: string, value: string): string {
+   if (value !== "" && !/[\s'\\]/.test(value)) return `${key}=${value}`;
+   return `${key}='${value.replace(/([\\'])/g, "\\$1")}'`;
+}
+
+/**
+ * The CA material a proxied storage build hands libpq. Injected so a test needs
+ * neither the process environment nor a file on disk.
+ */
+export interface ProxiedAttachTrust {
+   /** The deployment's trusted CA bundle (NODE_EXTRA_CA_CERTS), when set. */
+   caBundle?: string;
+   /**
+    * Path of a bundle holding the runtime's ambient trust anchors — its bundled
+    * roots plus `caBundle` — which is the set the query path verifies
+    * `verify-full` against.
+    */
+   ambientBundle: () => string;
+}
+
+export function defaultProxiedAttachTrust(): ProxiedAttachTrust {
+   return {
+      caBundle: process.env.NODE_EXTRA_CA_CERTS || undefined,
+      ambientBundle: ambientTrustBundlePath,
+   };
+}
+
+const ambientTrustBundles = new Map<string | undefined, string>();
+let ambientTrustDir: string | undefined;
+
+/**
+ * Materializes the runtime's ambient trust anchors as one PEM file libpq can take
+ * as `sslrootcert`: `tls.rootCertificates` (the bundled roots) followed by the
+ * contents of NODE_EXTRA_CA_CERTS when set. libpq verifies against exactly one
+ * file, so the union has to exist on disk.
+ *
+ * The file is written by THIS process into a directory it created (`mkdtemp`,
+ * mode 0700) and never reused from a path that merely exists: a trust store
+ * picked up because something at a predictable name was already there would let
+ * whoever wrote it choose the CAs a `verify-full` build trusts. Written once per
+ * process per bundle path. An unreadable NODE_EXTRA_CA_CERTS is skipped with a
+ * warning, which is what both runtimes do with it at startup, so the build trusts
+ * the same set the query path does. Exported for tests.
+ */
+export function ambientTrustBundlePath(): string {
+   const extra = process.env.NODE_EXTRA_CA_CERTS || undefined;
+   const cached = ambientTrustBundles.get(extra);
+   if (cached) return cached;
+   let extraPem: string | undefined;
+   if (extra) {
+      try {
+         extraPem = readFileSync(extra, "utf8").trim();
+      } catch (err) {
+         logger.warn(
+            `Ignoring NODE_EXTRA_CA_CERTS for the storage build's trust bundle: ${extra} could not be read (${err instanceof Error ? err.message : String(err)}).`,
+         );
+      }
+   }
+   const pem =
+      [...tls.rootCertificates, ...(extraPem ? [extraPem] : [])].join("\n") +
+      "\n";
+   const digest = createHash("sha256").update(pem).digest("hex").slice(0, 16);
+   ambientTrustDir ??= mkdtempSync(
+      path.join(os.tmpdir(), "publisher-ambient-ca-"),
    );
-   // OR REPLACE for within-session idempotency. The cross-build/cross-tenant
-   // alias-collision boundary is the build session's PRIVATE DuckDB instance
-   // (see createIsolatedBuildSession): each build runs on its own instance, so
-   // its postgres attach cannot collide with another build's or another tenant's
-   // on a shared instance. OR REPLACE is kept as belt-and-suspenders for a
-   // re-attach of the identical source within one session (the alias is the
-   // connection name, the config is that connection's, so replacing is a no-op
-   // rebind to the same source). (bigquery/snowflake federate via CREATE OR
-   // REPLACE SECRET with no ATTACH; secrets are instance-scoped, so isolation
-   // covers them too.)
-   await connection.runSQL(
-      `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
-   );
-   return { handle: alias, sourceType: "postgres" };
+   const file = path.join(ambientTrustDir, `${digest}.pem`);
+   writeFileSync(file, pem, { mode: 0o600 });
+   ambientTrustBundles.set(extra, file);
+   return file;
+}
+
+type ProxiedSslmode = (typeof PROXIED_SSLMODES)[number];
+
+/**
+ * libpq keyword/value string for a Postgres source reached through the SSH
+ * tunnel. libpq splits the two roles a host name plays: `hostaddr` is the
+ * address it dials, `host` is the name it sends as SNI and checks the server
+ * certificate against. So the socket goes to the tunnel's LOCAL endpoint
+ * (`hostaddr`, `port`) while `host` stays the database's own name, and every
+ * `sslmode` keeps its full libpq meaning through the tunnel, `verify-full`
+ * included. The credentials are the connection's own. TLS is mapped from the
+ * connection's `sslmode` the way the query path maps it (see resolveProxiedTls):
+ *
+ *  - unset / `no-verify` → `require`: encrypt without verifying, so a force-SSL
+ *    target (the common managed-Postgres case) is not rejected for plaintext;
+ *  - `disable` → `disable`;
+ *  - `verify-ca` → `verify-ca` against the trusted CA bundle (NODE_EXTRA_CA_CERTS,
+ *    the same pinned file the query path uses), which libpq takes as `sslrootcert`;
+ *  - `verify-full` → `verify-full` against the runtime's ambient trust anchors plus
+ *    NODE_EXTRA_CA_CERTS — the trust set the query path verifies `verify-full`
+ *    against, so a target with a publicly-trusted CA builds as it queries and no
+ *    bundle is required — with the certificate's hostname checked against `host`.
+ *
+ * Exported for tests.
+ */
+export function buildProxiedPgAttachString(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+   endpoint: ProxyEndpoint,
+   trust: ProxiedAttachTrust = defaultProxiedAttachTrust(),
+): string {
+   if (!pg.host) {
+      // validateConnectionShape requires host on a proxied connection, so this
+      // is unreachable in practice — guard so the certificate is never checked
+      // against an empty name.
+      throw new Error(
+         `Connection proxy on '${name}' requires an explicit host on the postgres connection.`,
+      );
+   }
+   const parts = [
+      pgConninfoPair("host", pg.host),
+      pgConninfoPair("hostaddr", endpoint.host),
+      pgConninfoPair("port", String(endpoint.port)),
+   ];
+   if (pg.databaseName) parts.push(pgConninfoPair("dbname", pg.databaseName));
+   if (pg.userName) parts.push(pgConninfoPair("user", pg.userName));
+   if (pg.password) parts.push(pgConninfoPair("password", pg.password));
+   // Typed against PROXIED_SSLMODES, the one list the config validator and the
+   // query path derive from: a mode added there without a case below is a
+   // compile error here, not a throw at build time.
+   const mode: ProxiedSslmode = pg.sslmode ?? "no-verify";
+   switch (mode) {
+      case "disable":
+         parts.push("sslmode=disable");
+         break;
+      case "no-verify":
+         parts.push("sslmode=require");
+         break;
+      case "verify-ca": {
+         if (!trust.caBundle) {
+            throw new Error(
+               `Connection proxy on '${name}' uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
+            );
+         }
+         parts.push(
+            "sslmode=verify-ca",
+            pgConninfoPair("sslrootcert", trust.caBundle),
+         );
+         break;
+      }
+      case "verify-full":
+         parts.push(
+            "sslmode=verify-full",
+            pgConninfoPair("sslrootcert", trust.ambientBundle()),
+         );
+         break;
+      default: {
+         const unhandled: never = mode;
+         throw new Error(
+            `Connection proxy on '${name}' has unsupported sslmode '${String(unhandled)}' (expected ${PROXIED_SSLMODES.join(" | ")}).`,
+         );
+      }
+   }
+   return parts.join(" ");
 }
 
 /**
@@ -1580,7 +1830,12 @@ async function attachDatabasesToDuckDB(
             handleAlreadyAttachedError(attachError, attachedDb.name || "");
          }
       } catch (error) {
-         logger.error(`Failed to attach database ${attachedDb.name}:`, error);
+         // Attach errors echo the connection string (DuckDB embeds the DSN).
+         logger.error(`Failed to attach database ${attachedDb.name}`, {
+            error: redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         });
          throw new Error(
             `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
          );
@@ -2575,7 +2830,10 @@ async function testDuckDBConnection(
          }
       } catch (error) {
          const errorMessage = `Attached database '${attachedDb.name}' (${attachedDb.type}) test failed: ${(error as Error).message}`;
-         logger.error(errorMessage);
+         // A probe that fails after the attach half-succeeded can carry the
+         // DSN, so redact this log line too (the rethrow below is redacted at
+         // the testConnectionConfig boundary).
+         logger.error(redactPgSecrets(errorMessage));
          failedAttachments.push(errorMessage);
       }
    }
@@ -2587,17 +2845,111 @@ async function testDuckDBConnection(
    }
 }
 
+/**
+ * Redacts a connection-test failure before it reaches the caller or the log.
+ *
+ * <p>Two passes, because neither alone is sufficient. The value pass removes the
+ * exact credential strings this very request supplied, which needs no list of
+ * field names and so cannot miss a field the schema gains -- the failure mode of
+ * a name list. The shape pass then catches what the value pass cannot see: a
+ * credential the driver echoed re-encoded, and any secret that reached the
+ * message from somewhere other than the config in hand.
+ *
+ * <p>Credentials shorter than four characters are left to the shape pass alone:
+ * removing every occurrence of a two-character string would shred the prose.
+ */
+export function redactTestFailure(message: string, config: unknown): string {
+   const secrets = new Set<string>();
+   collectConfigSecrets(config, secrets, new WeakSet());
+   let redacted = message;
+   for (const secret of secrets) {
+      redacted = redacted.split(secret).join("***");
+      // A driver that echoes the offending SQL shows a quote-carrying secret in
+      // its escaped form, so the raw value alone would not match.
+      const escaped = escapeSQL(secret);
+      if (escaped !== secret) redacted = redacted.split(escaped).join("***");
+   }
+   return redactConnectionSecretShapes(redacted);
+}
+
+/**
+ * Connection-config keys whose string values are credentials to remove whole.
+ *
+ * Excludes `connectionString` and `sasUrl` on purpose. Those carry a credential
+ * inside a larger value that is otherwise the most useful part of the message --
+ * the host and port a reader needs to tell "wrong password" from "wrong host".
+ * Removing the whole value passes a "no credential present" assertion while
+ * destroying the diagnosis. The shape passes handle them instead, masking the
+ * password or signature in place and leaving the rest readable.
+ */
+const CONFIG_SECRET_KEY =
+   /pass(word)?|secret|private_?key|service_?account|access_?key|token|peaka_?key/i;
+
+/** Collects the credential strings a connection config carries. */
+function collectConfigSecrets(
+   value: unknown,
+   out: Set<string>,
+   seen: WeakSet<object>,
+): void {
+   if (value === null || typeof value !== "object") return;
+   // Depth-guarded: a config that has been hydrated into a live connection can
+   // hold a back-reference, and an unguarded walk would exhaust the stack and
+   // replace the failure being redacted with a RangeError.
+   if (seen.has(value)) return;
+   seen.add(value);
+   if (Array.isArray(value)) {
+      for (const v of value) collectConfigSecrets(v, out, seen);
+      return;
+   }
+   for (const [key, v] of Object.entries(value)) {
+      if (
+         typeof v === "string" &&
+         v.length >= 4 &&
+         CONFIG_SECRET_KEY.test(key)
+      ) {
+         out.add(v);
+      } else {
+         collectConfigSecrets(v, out, seen);
+      }
+   }
+}
+
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
    let environmentConfig: EnvironmentMalloyConfig | null = null;
+   let testRoot: string | null = null;
    try {
       // Validate that connection name is provided
       if (!connectionConfig.name) {
          throw new Error("Connection name is required");
       }
 
-      environmentConfig = buildEnvironmentMalloyConfig([connectionConfig]);
+      // Only duckdb/ducklake derive a `<name>.duckdb` filename from the name
+      // (other types never touch the filesystem), so scope the path-safety
+      // check to them. Defense in depth: the throwaway directory below already
+      // contains any write, but this keeps a traversing name from escaping it.
+      if (
+         connectionConfig.type === "duckdb" ||
+         connectionConfig.type === "ducklake"
+      ) {
+         assertSafePackageName(connectionConfig.name);
+      }
+
+      // Root the throwaway config in a fresh temp directory. DuckDB/DuckLake
+      // connections need a non-empty workingDirectory (empty fails validation
+      // before the test runs) and open a `<name>.duckdb` there; keeping that in
+      // its own directory, rather than cwd, means the test never reads, writes,
+      // or deletes an operator's own database, and two concurrent tests of one
+      // name can't clobber each other. The whole directory is removed in the
+      // finally.
+      testRoot = await fs.mkdtemp(
+         path.join(os.tmpdir(), "publisher-conn-test-"),
+      );
+      environmentConfig = buildEnvironmentMalloyConfig(
+         [connectionConfig],
+         testRoot,
+      );
       const connection =
          await environmentConfig.malloyConfig.connections.lookupConnection(
             connectionConfig.name,
@@ -2648,12 +3000,35 @@ export async function testConnectionConfig(
       if (error instanceof AxiosError) {
          logAxiosError(error);
       } else {
-         logger.error(error);
+         // Same redaction as the response, but keep the stack for diagnostics
+         // (the raw message/stack can carry the credentials). Operator logs are
+         // read more widely than the caller's own response body, so this is the
+         // wider of the two exposures, not the lesser one.
+         logger.error("Connection test failed", {
+            error: redactTestFailure(
+               error instanceof Error
+                  ? (error.stack ?? error.message)
+                  : String(error),
+               connectionConfig,
+            ),
+         });
       }
 
       return {
          status: "failed",
-         errorMessage: (error as Error).message,
+         // Drivers echo the config they were handed: attach failures embed the
+         // full DSN (DuckDB), an SSH tunnel failure carries the private key and
+         // its passphrase, and a warehouse auth failure carries the token or key
+         // JSON. This message goes into the REST response body, which API
+         // clients print into their own logs.
+         //
+         // This is the redaction point for the connection test. The controller's
+         // catch above it never runs: every failure here is resolved into this
+         // object rather than thrown.
+         errorMessage: redactTestFailure(
+            error instanceof Error ? error.message : String(error),
+            connectionConfig,
+         ),
       };
    } finally {
       if (environmentConfig) {
@@ -2666,11 +3041,20 @@ export async function testConnectionConfig(
          }
       }
 
-      if (connectionConfig.type === "ducklake" && connectionConfig.name) {
-         await deleteDuckLakeConnectionFile(
-            connectionConfig.name,
-            process.cwd(),
-         );
+      // Remove the whole throwaway directory (and any <name>.duckdb /
+      // <name>_ducklake.duckdb the test wrote inside it). Wrapped so a cleanup
+      // failure can never override the response.
+      if (testRoot) {
+         try {
+            await fs.rm(testRoot, { recursive: true, force: true });
+         } catch (cleanupError) {
+            logger.warn("Error cleaning up connection test directory", {
+               error:
+                  cleanupError instanceof Error
+                     ? cleanupError.message
+                     : String(cleanupError),
+            });
+         }
       }
    }
 }

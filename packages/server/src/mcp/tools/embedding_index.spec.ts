@@ -391,6 +391,55 @@ describe("trySemanticSearch", () => {
       expect(counts.get("beta")).toBe(1);
    });
 
+   it("embeds a source resolvable at two paths once, and counts it once", async () => {
+      const { provider, counts } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+      });
+      // One entity reached through two model files. The response gives each
+      // path its own card; the vector cache has no model_path in its key, so
+      // for everything below this boundary they are one entity.
+      const entities = [
+         { ...entity("alpha", "src"), modelPath: "defs.malloy" },
+         { ...entity("alpha", "src"), modelPath: "uses.malloy" },
+      ];
+      const args = {
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "twopath",
+         entities,
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+      };
+
+      const ready = await searchReady(args);
+      if (!("hits" in ready)) throw new Error("expected hits");
+
+      // Embedded once, not once per path. Keyed per path, both copies missed
+      // the row cache on a cold sync and were sent to the provider, then
+      // upserted onto the same row -- identical text, paid for twice, and a
+      // shared include imported by ten files is 10x.
+      expect(counts.get("alpha")).toBe(1);
+      expect(ready.hits.map((h) => h.name)).toEqual(["alpha"]);
+      // Counted once too, so MAX_EMBEDDED_ENTITIES and totalEntities track
+      // the model rather than the number of files importing it.
+      expect(ready.totalEntities).toBe(1);
+
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "twopath",
+         entities,
+      );
+      expect(status.status).toBe("ready");
+      expect(status.totalEntities).toBe(1);
+      expect(status.embeddedEntities).toBe(1);
+      expect(status.embeddedRows).toBe(1);
+   });
+
    it("re-embeds only the entity whose text changed, via upsert", async () => {
       const vectors = {
          ...ENTITY_VECTORS,

@@ -511,6 +511,17 @@ paths:
             schema:
               type: object
               properties:
+                configEtag:
+                  type: string
+                  description: >
+                    The writer's opaque tag for the configuration this update
+                    produces. Declared here because the rest of this body is a
+                    hand-picked subset of `Connection` rather than a partial of
+                    it, and a writer that could not send the tag on the endpoint
+                    it rotates credentials through could only ever clear it —
+                    an update that omits the tag drops the stored one, since the
+                    configuration that tag described has been replaced. See the
+                    field on `Connection` for what it is and how it is compared.
                 proxy:
                   $ref: "#/components/schemas/ConnectionProxy"
                 postgresConnection:
@@ -1642,6 +1653,107 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+    put:
+      tags:
+        - models
+      operationId: update-model-source
+      summary: Write a dashboard file into the package
+      description: |
+        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy`,
+        the only paths this endpoint accepts — into the package, and reloads the
+        package in place so the dashboard is served from the new text. This is
+        the dashboard builder's save.
+
+        The text is compiled first, as the file, and refused with its problems
+        when it does not compile; nothing is written. The write is atomic (a
+        sibling temporary file renamed over the target). If the reload that
+        follows fails to compile the package, the previous text is restored (or
+        a new file removed) and the package reloaded again, so a save never
+        leaves the package serving less than it did.
+
+        `expectedHash` is the SHA-256 (hex) of the text the caller opened, as
+        `GET …/models/{path}` returned it in `sourceText`. When the file on disk
+        no longer hashes to it, the write is refused with 409 and nothing is
+        merged: the caller re-opens and reapplies its change. Omit it to CREATE
+        the file: a file that already exists is then refused with 409 too, so an
+        unconditional overwrite is not something a caller can ask for by leaving
+        a field out. The check, the write, the reload and the restore all happen
+        under one hold of the package lock, so two saves racing on one file
+        cannot both pass the check, and a rollback cannot revert the other
+        writer's text instead of its own.
+
+        A create answers 201 and an update 200; `created` in the body says the
+        same thing.
+
+        Refused with 403 when `publisher.config.json` has `frozenConfig: true`.
+        Like every write on this server, it is unauthenticated and meant to sit
+        behind an authenticating gateway; see docs/security-posture.md.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          description: The dashboard file, `dashboards/<slug>.malloy`
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelSourceWriteRequest"
+      responses:
+        "200":
+          description: The file was replaced and the package reloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelSourceWriteResult"
+        "201":
+          description: The file did not exist and was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelSourceWriteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description:
+            The file changed since the caller opened it, or already exists and
+            no `expectedHash` was sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /environments/{environmentName}/packages/{packageName}/models/{path}/query:
     post:
@@ -2362,48 +2474,6 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/materializations:
-    get:
-      tags:
-        - materializations
-      operationId: list-environment-materializations
-      summary: List all materializations in an environment
-      description:
-        Returns every materialization across all packages in the environment,
-        ordered by most recent first. Each item carries its `packageName`, so an
-        environment-scoped view can group or label by package. This is the
-        collection-level sibling of the per-package
-        `/packages/{packageName}/materializations` list; the literal
-        `materializations` segment is matched ahead of `{packageName}`, so
-        `materializations` cannot be used as a package name.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-          description: Maximum number of materializations to return
-        - name: offset
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 0
-          description: Number of materializations to skip
-      responses:
-        "200":
-          description: List of materializations across the environment
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Materialization"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
   /environments/{environmentName}/packages/{packageName}/materializations:
     post:
       tags:
@@ -3045,9 +3115,14 @@ components:
             inline error at query time, or inert where it sits and silently
             ignored. Materialization
             findings: a `storage=` source not served from storage, a `#@ persist`
-            source that was not recognized as materializable, a persist-target
-            collision, and materialization-config problems that degrade
-            attribution. Discovery findings: a model listed in `explores` whose
+            source that was not recognized as materializable, a `#@ persist`
+            REFUSED by the compile-time eligibility gate (one entry per
+            `BuildPlan.refusedSources` member, carrying that gate's own message),
+            a persist-target collision, and materialization-config problems that
+            degrade attribution. A refusal is the one materialization finding the
+            build plan cannot also be read for: a refused `storage`/`colocated`
+            source is ABSENT from `BuildPlan.sources`, so nothing there records
+            that the annotation was written at all. Discovery findings: a model listed in `explores` whose
             export closure surfaces no sources or named queries, so it lists as
             empty and renders a blank page. Dashboard findings: a
             `dashboards/` file whose `# artifact` tag does not parse or does not
@@ -3429,7 +3504,6 @@ components:
             discovery index, which is what `get_context` ranks against
             when an embedding provider is configured. Absent when the server
             has no provider, because there is no index to describe.
-
 
     PackageEmbeddingIndex:
       type: object
@@ -4749,6 +4823,48 @@ components:
             environments on the same project with different
             impersonateServiceAccount values but the same fingerprint would
             share persisted-table ids.
+        configEtag:
+          type: string
+          description: >
+            Optional, opaque entity tag for this connection's configuration,
+            owned by whoever wrote the connection. The server stores it
+            verbatim, returns it verbatim, and never derives, validates or
+            interprets it; it has no meaning to Publisher itself.
+
+            It exists so that a writer distributing this connection to several
+            Publishers can tell which of them are still holding the
+            configuration it last sent. The writer computes a tag over the
+            configuration it is about to send, sends the two together, and
+            compares the tag each server reports against the one it would send
+            now — the same equality-only comparison an HTTP ETag supports, and
+            no other operation is defined on it. A server that reports a
+            different tag, or none, has not been given that configuration.
+
+            Distinct from `fingerprint`, which identifies the DATA a connection
+            reaches and deliberately excludes credentials so it survives
+            rotation. This identifies the CONFIGURATION, credentials included,
+            which is what makes it able to distinguish a server holding a
+            rotated-away password from one holding the current one — a
+            distinction no read can otherwise make, since credentials are never
+            returned. The two change independently and neither substitutes for
+            the other.
+
+            It is returned on reads, because a writer that cannot read it back
+            cannot compare it. Choose the value with that in mind: a digest over
+            configuration that includes credentials does not reveal them, but it
+            COMMITS to them, and a reader who can see the other inputs has a
+            preimage with only the secret missing. If the connection is readable
+            by anyone you would not hand the credential to, use a keyed digest,
+            or keep this tag out of the reach of that reader.
+
+            A write that does not carry a tag CLEARS it, rather than inheriting
+            the stored one. The tag describes the configuration the writer that
+            set it sent; an update that replaces that configuration without
+            supplying a tag has invalidated it. This is also what keeps a writer
+            convergent when it stops sending tags — it pushes its own config, the
+            stale tag is dropped, and its next comparison agrees, where an
+            inherited tag would differ from a config that writer itself just sent
+            and make it re-push on every poll.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -4921,7 +5037,9 @@ components:
             validates the chain AND the hostname against the real host (verified
             via SNI through the tunnel; requires the target's CA to be trusted by
             Node's bundled CA roots or NODE_EXTRA_CA_CERTS), `no-verify` encrypts without
-            verifying, and `disable` uses no TLS. Note `verify-full` trusts a
+            verifying, and `disable` uses no TLS. A `storage=` build of a proxied
+            source applies the same mode through its own tunnel, `verify-full`
+            included. Note `verify-full` trusts a
             broader CA set than `verify-ca` here — ambient roots plus
             NODE_EXTRA_CA_CERTS, rather than the pinned NODE_EXTRA_CA_CERTS
             bundle that `verify-ca` uses — so it is intentionally not a strict
@@ -5533,6 +5651,42 @@ components:
         givens:
           $ref: "#/components/schemas/GivenValues"
 
+    ModelSourceWriteRequest:
+      type: object
+      description: The text to write into a dashboard file
+      required:
+        - source
+      properties:
+        source:
+          type: string
+          description: The whole file's Malloy text
+        expectedHash:
+          type: string
+          description:
+            SHA-256 (hex) of the text the caller opened. Refused with 409 when
+            the file on disk no longer hashes to it. Omit to create the file,
+            which is then refused with 409 if it already exists.
+
+    ModelSourceWriteResult:
+      type: object
+      description: What a dashboard write left in the package
+      required:
+        - path
+        - contentHash
+      properties:
+        resource:
+          type: string
+          description: Resource path to the model file that was written
+        path:
+          type: string
+          description: The file written, relative to the package
+        contentHash:
+          type: string
+          description: SHA-256 (hex) of the text as written; the next write's `expectedHash`
+        created:
+          type: boolean
+          description: True when the file did not exist before
+
     CompileResult:
       type: object
       description: Result of a Malloy source compilation check
@@ -5819,16 +5973,50 @@ components:
             [
               free_parameter,
               given,
+              given_in_persisted_query,
+              dynamic_projection,
+              dynamic_join,
+              dynamic_joined_where,
+              partition_without_storage,
+              partition_column_unknown,
+              partition_column_not_public,
+              merge_key_scope_unresolved,
+              preaggregate_over_dynamic_source,
               authorize,
               partition,
               not_duckdb_portable,
               public_surface_unknown,
             ]
           description: >-
-            The bounded refusal reason. Only `free_parameter`, `given`,
-            `authorize` and `partition` can appear here — those are the only
-            reasons the two compile-time eligibility asserts this collection is
-            computed from produce. `not_duckdb_portable` is decided against the
+            The bounded refusal reason. Only the compile-time reasons can
+            appear here — `free_parameter`, `authorize`, `partition`, the four
+            that name where a given the build could not strip sits
+            (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
+            `dynamic_joined_where`), the three that name an unusable
+            `partition=` (`partition_without_storage`,
+            `partition_column_unknown`, `partition_column_not_public`),
+            `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
+            cannot be expressed over the stored table's own columns), and
+            `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
+            a given, which has no read-time re-application to put the term back)
+            — those being the only reasons the two compile-time eligibility
+            asserts this collection is computed from produce.
+
+
+            `given_in_persisted_query` is raised by BOTH gates, for one
+            condition: the BUILD would substitute a given's value, so the
+            artifact holds one caller's slice. On colocated that is a build that
+            runs and lies; on a storage destination the same placement also
+            leaves nothing for the read to re-apply. A given in the source's
+            extend block is neither — it is left out of the build and applied
+            per caller at read — and is admitted on both tiers.
+
+
+            `given` is retained for records that already carry it and is no
+            longer produced. It was the storage tier's blanket refusal of any
+            given reference, and the positional reasons above replaced it: where
+            a given sits decides the outcome, so a single reason covering every
+            placement can no longer be raised. `not_duckdb_portable` is decided against the
             post-build captured schema, which does not exist at compile time,
             and `public_surface_unknown` is raised by the build-time narrowing
             of a stored table to the source's public columns; both are listed
@@ -5870,6 +6058,26 @@ components:
           items:
             type: string
 
+    StrippedTerm:
+      type: object
+      required: [code, givens]
+      description: >-
+        One `where:` conjunct a storage build leaves out of the artifact and the
+        read puts back. Its `code` is the author's verbatim expression, which is
+        what a serve shape re-emits; `givens` are the names that expression reads,
+        which is what the shape must declare for it to compile.
+      properties:
+        code:
+          type: string
+          description: The author's verbatim filter expression, e.g. `org_id = $ORG_ID`.
+        givens:
+          type: array
+          items:
+            type: string
+          description: >-
+            The given names this term reads, in first-seen order. A reader must
+            bind these for the term to apply; binding none applies each given's
+            declared default, as a live query would.
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
@@ -5935,6 +6143,45 @@ components:
           description:
             The source's build SQL (with the build manifest applied for upstream
             rewrites).
+        partition:
+          type: array
+          items:
+            type: string
+          description: >-
+            The source's declared `#@ persist partition=` columns, resolved
+            against its public projection and reported in the author's order,
+            which is the order the stored table's directories nest in. Absent or
+            empty means the table is written unpartitioned, which is the default
+            and what every source built before this field existed means.
+
+
+            A layout, not an access control. Every term the build strips from a
+            source is re-applied when the artifact is read whether or not its
+            column is partitioned, so a list omitting the column a caller is
+            scoped by costs a full scan and never widens what that caller sees.
+            Consumers should not infer isolation from it.
+
+
+            `partition=` requires `storage=`; declared without one it is a
+            publish refusal rather than an ignored key, so this is empty for
+            every colocated source.
+        strippedTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrippedTerm"
+          description: >-
+            The source's extend-block `where:` conjuncts that reference a given —
+            the terms Malloy leaves OUT of the build and that must be re-applied,
+            with the caller's own values, whenever the artifact is read. Absent
+            or empty means the artifact is the whole relation and needs no
+            re-application.
+
+
+            Reported so a consumer that supplies its own serve bindings can tell
+            that this artifact is under-filtered on its own, and which givens a
+            reader has to bind for it to be served correctly. The publisher's own
+            serve path re-derives these from the compiled model rather than from
+            here.
         refresh:
           type: ["string", "null"]
           description: >-

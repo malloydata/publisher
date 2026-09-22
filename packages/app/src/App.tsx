@@ -6,6 +6,7 @@ import {
    DocumentStorage,
    DocumentStorageProvider,
    Loading,
+   setConsoleEventHandler,
 } from "@malloy-publisher/sdk";
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
@@ -18,6 +19,7 @@ import {
    RouterProvider,
 } from "react-router-dom";
 import { HeaderProps } from "./components/layout/Header/Header";
+import { logConsoleEvent } from "./utils/consoleTelemetry";
 import { PublisherMuiThemeProvider } from "./theme/PublisherMuiThemeProvider";
 
 /**
@@ -36,9 +38,6 @@ const ModelPage = React.lazy(
 );
 const PackagePage = React.lazy(
    () => import("./components/pages/PackagePage/PackagePage"),
-);
-const MaterializationsPage = React.lazy(
-   () => import("./components/pages/MaterializationsPage/MaterializationsPage"),
 );
 const EnvironmentPage = React.lazy(
    () => import("./components/pages/EnvironmentPage/EnvironmentPage"),
@@ -60,6 +59,10 @@ export const createMalloyRouter = (
    documentStorage: DocumentStorage = new BrowserDocumentStorage(),
    headerProps?: HeaderProps,
 ) => {
+   // Here rather than in `main.tsx`, which is only the local dev entry: this
+   // is the one function every host calls, embedders included, so the writes
+   // are reported wherever the Console is mounted.
+   setConsoleEventHandler(logConsoleEvent);
    return createBrowserRouter([
       {
          path: basePath,
@@ -101,10 +104,6 @@ export const createMalloyRouter = (
             {
                path: ":environmentName/:packageName",
                element: <PackagePage />,
-            },
-            {
-               path: ":environmentName/:packageName/materializations",
-               element: <MaterializationsPage />,
             },
             {
                path: ":environmentName/:packageName/*",

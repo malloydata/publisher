@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { MALLOY_ACCENT } from "../styles";
-import { CONTENT_TINT, type ContentType } from "./ContentTypeIcon";
+import { PALETTE } from "../styles";
+import { CONTENT_TINT } from "./ContentTypeIcon";
 
 /** Relative luminance, WCAG 2.x definition. */
 function luminance(hex: string): number {
@@ -34,18 +34,6 @@ describe("CONTENT_TINT", () => {
    });
 });
 
-/**
- * Content types whose colour predates this bar. `report` is backed by
- * `MALLOY_BRAND.teal` at 2.5:1, which is below it; that is inherited from the
- * logo and is a brand decision rather than a component one.
- *
- * Keyed by content TYPE rather than by colour, which is the whole point. A new
- * type handed teal is not grandfathered and fails, and fixing teal one day
- * leaves this entry merely unused rather than turning a correct fix into a red
- * suite.
- */
-const GRANDFATHERED: ContentType[] = ["report"];
-
 describe("CONTENT_TINT contrast", () => {
    /**
     * Every tint fills a 32px backplate behind an 18px white glyph, so it has to
@@ -58,34 +46,31 @@ describe("CONTENT_TINT contrast", () => {
     * what actually get painted. Asserting the accent palette alone left three of
     * the six painted values unchecked.
     */
-   it.each(
-      Object.entries(CONTENT_TINT).filter(
-         ([type]) => !GRANDFATHERED.includes(type as ContentType),
-      ),
-   )("%s clears 3:1 against white", (_type, hex) => {
-      expect(contrastWithWhite(hex)).toBeGreaterThanOrEqual(3);
-   });
-
-   // Guards the exception list against drift: a grandfathered name that no
-   // longer matches a `ContentType` fails here rather than silently exempting
-   // nothing. It does NOT catch the list being emptied, which passes
-   // vacuously; that case is caught instead by the contrast assertion for the
-   // type that stops being skipped, and an empty list is the desired end state
-   // anyway.
-   it("grandfathers only types that exist", () => {
-      for (const type of GRANDFATHERED) {
-         expect(CONTENT_TINT).toHaveProperty(type);
-      }
-   });
+   it.each(Object.entries(CONTENT_TINT))(
+      "%s clears 3:1 against white",
+      (_type, hex) => {
+         expect(contrastWithWhite(hex)).toBeGreaterThanOrEqual(3);
+      },
+   );
 });
 
-describe("MALLOY_ACCENT", () => {
-   // The accents were chosen against this bar, so they hold it even before any
-   // of them is assigned to a content type.
-   it.each(Object.entries(MALLOY_ACCENT))(
+describe("PALETTE", () => {
+   // Every hue holds the bar, whether or not it is assigned to a content type
+   // yet — so picking one for a new plate is always safe, and there is no
+   // exception list to grandfather anything into. There used to be one: the
+   // logo's teal sat at 2.5:1 and painted a row whose glyph did not meet the
+   // standard.
+   it.each(Object.entries(PALETTE))(
       "%s clears 3:1 against white",
       (_name, hex) => {
          expect(contrastWithWhite(hex)).toBeGreaterThanOrEqual(3);
       },
    );
+
+   // Two kinds of thing painted the same colour is the failure the tints exist
+   // to prevent, so the palette they are drawn from must not repeat itself.
+   it("has no duplicate hues", () => {
+      const values = Object.values(PALETTE);
+      expect(new Set(values).size).toBe(values.length);
+   });
 });

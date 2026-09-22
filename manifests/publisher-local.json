@@ -5,9 +5,11 @@
   "auto_discovered": [
     "eval-answer",
     "eval-diagnose",
+    "eval-import",
     "eval-improve",
     "eval-judge",
     "eval-loop",
+    "eval-report",
     "malloy",
     "malloy-analysis",
     "malloy-analysis-pitfalls",
@@ -91,9 +93,11 @@
     ],
     "eval": [
       "eval-loop",
+      "eval-import",
       "eval-answer",
       "eval-diagnose",
       "eval-improve",
+      "eval-report",
       "eval-judge"
     ]
   }

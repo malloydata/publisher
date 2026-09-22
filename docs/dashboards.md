@@ -15,7 +15,8 @@ Publisher discovers it at package load, lists it on the package page, and serves
 
 **One form:** `## artifact { tiles=[…] }` at model level, one tile per named view. The controls at the
 top are not written anywhere in the page; they are rendered from the `given:` declarations the tiles
-filter by. Cells are clickable where the model's dimension carries a `# drill` tag.
+filter by. Every grouped value in a tile is clickable: where the dimension carries a `# drill` tag
+it goes where the tag says, and otherwise it opens the rows behind the value.
 [`examples/storefront/dashboards/overview.malloy`](../examples/storefront/dashboards/overview.malloy)
 is the shipped one.
 
@@ -42,9 +43,9 @@ names the two spellings that are. The dated list of everything else that differs
 storefront/
   publisher.json           # package manifest
   storefront.malloy        # sources, measures, reusable views, # drill tags
-  givens.malloy            # given: declarations, the filter controls
+  givens.malloy            # given: declarations the data app and notebooks share
   dashboards/
-    overview.malloy        # a dashboard: imports the model, names its tiles
+    overview.malloy        # a dashboard: declares its filters, names its tiles
     category.malloy
     regions.malloy
     _shared.malloy         # no artifact tag ⇒ a shared include, not a dashboard
@@ -233,8 +234,11 @@ Two spellings that bite:
 
 ## Filter controls
 
-Controls are not declared on the dashboard. They come from the `given:` declarations the query
-references, and the tags on each declaration are its control contract:
+Controls are the `given:` declarations the tiles reference. **Declare them in the dashboard file**:
+that is the convention, because it is the one file the dashboard builder edits, and a filter the
+builder adds has to be a declaration in it. A package-wide `givens.malloy` is for controls several
+surfaces share, the data app and notebooks here, and a dashboard can still import and bind those; it
+just cannot add to them. Either way the tags on the declaration are its control contract:
 
 ```malloy
 ##! experimental.givens
@@ -290,26 +294,41 @@ Which controls appear is decided per dashboard, by which givens its query refere
 and referencing two shows two. That is what lets one `CATEGORY` declaration scope revenue on one
 dashboard and margin on another without either redeclaring it.
 
-**Importing a given is what makes it bindable.** Malloy's given namespace is per-file, so a
-dashboard can only be _run_ with the givens its own file imports, even when the `where:` that
-references one lives up an import chain. A given the file does not import gets no control, and
-sending it at run time fails with "unknown given". Everything about givens themselves
-(declaration, types, defaults, access control) is in [givens.md](givens.md).
+**A given has to be in the dashboard file's own scope to be bindable**: declared there, or imported.
+Malloy's given namespace is per-file, so a dashboard can only be _run_ with the givens its own file
+declares or imports, even when a `where:` that references one lives up an import chain. A given the
+file cannot see gets no control, and sending it at run time fails with "unknown given". Everything
+about givens themselves (declaration, types, defaults, access control) is in [givens.md](givens.md).
 
-**Import the givens file whole, rather than naming the ones you use.** A control renders for a given
-the tiles actually _reference_, not for every one in scope, so a whole-file `import '../givens.malloy'`
-brings no controls you did not ask for and costs nothing. A named list only makes the author
-enumerate, and the failure when they forget one is a missing control rather than an error. The same
-convention is what Malloyyo documents for this format, so a repo written for either side reads the
-same. Naming the imports stays correct and is still the right form for _sources_, where a file
-usually wants a few specific names.
+**Binding is per declaration, not per name.** Measured: a dashboard that declares its own `CATEGORY`
+and extends a source whose `where:` reads the model's `CATEGORY` gets a control that moves nothing,
+because the two are different declarations that happen to share a name. So a dashboard that declares
+its controls binds them on its **tiles**. A tile declared as a reference, `view: x is base_view`, gets
+a `+ { where: field ~ $GIVEN }` refinement after the reference; a tile whose body is written inline,
+`view: x is { aggregate: … }` — the common way people actually write one — gets the binding as a
+depth-1 `where:` statement inside the body's own first stage instead, since there is no reference to
+refine. Either way it is exactly what the builder reads and writes; a `where:` anywhere else in an
+inline body (nested inside a `nest:`, part of a compound predicate, or in a second pipeline stage) is
+left alone and is not a binding the builder will touch. Model-level scoping (a `where:` inside a
+source, reading the model's givens) is the other design and still works: import that source and
+`import '../givens.malloy'` whole, and the controls render for the givens the tiles reach. The two do
+not mix on one given.
 
-Where the declaration itself lives is a separate question, and the answer is the model: a given is
-read by the MCP surface, by row-level access, and by `#(authorize)`, so it is a model concern rather
-than a presentation one, and `givens.malloy` is where a package keeps it. Declaring one in a
-dashboard file is legal and works — the control renders and the tile filters — which is what makes
-a dashboard-local filter possible for a page that owns its own knob. It is the exception, not the
-convention.
+**A tile whose body has no one place for a binding keeps everything but its filter.** A `->`
+pipeline from a named view, or a chained `vx + { … } + { … }` where neither block is where a binding
+belongs, is declared in the dashboard file but is not a body the builder rewrites. Its label,
+subtitle, colspan and position are ordinary `#` lines and stay editable; only the filter control is
+off, and the tile menu names the shape. A tile that is not declared in the dashboard at all — `orders
+-> by_brand` against an imported source — is read and shown but not changed either way, because its
+tags live on the model's own view and the builder does not write model files.
+
+**Declare in the dashboard when the dashboard is the thing being edited.** The builder adds and
+removes filters by writing `given:` declarations and tile bindings into the dashboard file, and it
+never edits imports or model files, so a control that lives in `givens.malloy` is one it can bind but
+not add, change or remove. Keep declarations in the model when several surfaces really share a
+control, and when row-level access or `#(authorize)` reads the given, since those are model concerns.
+A `filter<…>` given binds with `~`; a plain `date` or `number` given is a value, not a filter
+expression, and binds with `>=`, `<=` or `=`.
 
 <a id="apply"></a>
 
@@ -341,10 +360,11 @@ the results out:
 
 ```malloy
 ##! experimental.givens
-## artifact { title="Seasonality" tiles=["scoped_sales -> sales_by_month", "scoped_sales -> seasonality"] } dashboard { columns=12 }
-import { scoped_sales } from './_shared.malloy'
-import { products } from '../storefront.malloy'
-import '../givens.malloy'
+## artifact { title="Seasonality" tiles=["seasonal -> revenue_trend", "seasonal -> by_season"] } dashboard { columns=12 }
+import { order_items, products } from '../storefront.malloy'
+
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
 ```
 
 Model-level because there is no query of its own to hang a `#` tag on, and model-level for a second
@@ -356,17 +376,21 @@ child. One view therefore presents identically whether it is named as a tile her
 `# dashboard` query, and there is no second grammar to learn:
 
 ```malloy
-source: overview is scoped_sales extend {
+source: seasonal is order_items extend {
   # colspan=8
   # break
   # label="Revenue by month"
-  view: revenue_trend is sales_by_month
+  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY }
 
   # colspan=4
-  # label="Revenue by state"
-  view: revenue_by_state is sales_by_state
+  # label="By season"
+  view: by_season is seasonality + { where: category ~ $CATEGORY }
 }
 ```
+
+The `+ { where: … }` on each view is the tile's **binding**: the controls it answers to, one clause
+per given. A view without one does not move when the control does, which is how a page keeps one
+tile fixed while the rest filter. The builder writes these clauses; see [Filter controls](#filter-controls).
 
 Tagging a thin re-declaration like that, rather than the shared view itself, is what lets one modelled
 view sit at different widths on different pages. `# colspan` is clamped to `columns` and a colspan
@@ -446,6 +470,15 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   parameters it declares, spelled identically. So `given=brand` into a dashboard declaring `BRAND`
   opens it unfiltered. The load-time lint reports the case it can see: a `to=self` drill seeding a
   given no model in the package declares is an error at load.
+
+**The rows behind a value, and exploring from a tile.** On a composite dashboard every grouped
+value is clickable. A value whose dimension carries a `# drill` does what the tag says — one
+destination navigates at once, several open a menu — exactly as described below. A value with no
+drill opens the rows behind it: Malloy's `drill:` through the tile's view (`run: <source> -> {
+drill: <view>.<field> = <value>; select: *; limit: 200 }`), so the tile's own `where:` and the
+applied controls both hold. Each tile's heading shows "Explore from here" on hover, which opens the
+model explorer on the tile's source with its view as the query. Neither is available on the
+single-query form, whose one result names no tile.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
 underlined under the pointer: plain text at rest, a link when you reach for them. They carry a button
@@ -544,12 +577,14 @@ the file, reload again.
 
 ## Serving, URLs, and the API
 
-| Path                                                       | What it is                                                  |
-| ---------------------------------------------------------- | ----------------------------------------------------------- |
-| `/<env>/<pkg>/dashboards/<name>`                           | The Console page                                            |
-| `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered: control state is URL state         |
-| `GET /api/v0/environments/<env>/packages/<pkg>/dashboards` | List them                                                   |
-| `GET …/dashboards/<name>`                                  | The manifest: title, autorun, columns, control specs, tiles |
+| Path                                                       | What it is                                                     |
+| ---------------------------------------------------------- | -------------------------------------------------------------- |
+| `/<env>/<pkg>/dashboards/<name>`                           | The Console page                                               |
+| `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered: control state is URL state            |
+| `GET /api/v0/environments/<env>/packages/<pkg>/dashboards` | List them                                                      |
+| `GET …/dashboards/<name>`                                  | The manifest: title, autorun, columns, control specs, tiles    |
+| `/<env>/<pkg>/dashboards/<name>/edit`                      | The same dashboard in the builder                              |
+| `PUT …/models/dashboards/<name>.malloy`                    | Write the file into the package and reload; the builder's save |
 
 A dashboard's query runs through the ordinary query endpoint against
 `dashboards/<name>.malloy`, with givens in the request body. There is no dashboard-specific
@@ -559,6 +594,31 @@ else. [ai-agents.md](ai-agents.md) has the REST playbook.
 After editing a dashboard file, `GET …/packages/<pkg>?reload=true` recompiles the package in place,
 and a reload that fails to compile leaves the previously compiled model serving.
 [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
+
+### Editing in the Console
+
+If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
+dashboard page has an **Edit** button, and the package page has an **Add dashboard** control: pick a
+model, a source, the view for the first tile and a title, and the file is written into the package
+and opened in the builder. From there it is the classic loop — **drag a tile by its grip to move
+it, drag its right edge to resize it, pick its view and label from its own menu, and add filters
+from the strip above the grid.**
+
+What makes it different from a classic BI tool is not the editing, it is what the editing produces.
+There is no proprietary layout document: the builder reads and writes the same
+`dashboards/*.malloy` file described above, splicing your changes into it rather than regenerating
+it, so comments and anything it does not model survive the round trip. The result is a source file
+you can review in a pull request, and one an agent can write by hand just as well.
+
+The builder's **Save** writes the file back
+through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
+atomically, reloads the package in place, and restores the previous text if the reload does not
+take it; a copy someone else changed since you opened it is refused (409), never merged. The
+check, the write, the reload and the restore all happen under one hold of the package lock, so two
+saves racing on one file cannot both pass the check, and a rollback cannot revert the other
+writer's text instead of its own. On a
+server that does not take writes (`frozenConfig`), Save keeps the edit in this browser instead,
+and the package page lists those drafts.
 
 ## Rendering one in your own React app
 
@@ -643,6 +703,48 @@ Embedding into a **non-React** host page is a follow-up
 ([#931](https://github.com/malloydata/publisher/issues/931)); `Publisher.embed` cannot usefully
 target a dashboard route yet, so an [HTML data app](html-data-apps.md) remains the surface with the
 complete embedding story.
+
+## Editing one in your own React app
+
+`<DashboardEditor>` is the other public export of `@malloy-publisher/sdk` for this component: the
+same builder the Console's own `/edit` route mounts, over the same `resourceUri` + `dashboard` shape
+as `<Dashboard>`, plus `onExit`, `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`,
+and a `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the
+package cannot be written (see the SDK README's
+[Document Storage](../packages/sdk/README.md#document-storage) section).
+
+```tsx
+import {
+  DashboardEditor,
+  encodeResourceUri,
+  ServerProvider,
+} from "@malloy-publisher/sdk";
+
+<ServerProvider baseURL="https://publisher.example.com/api/v0">
+  <DashboardEditor
+    resourceUri={encodeResourceUri({
+      environmentName: "examples",
+      packageName: "storefront",
+    })}
+    dashboard="overview"
+    onExit={() => navigate(-1)}
+  />
+</ServerProvider>;
+```
+
+An older host may still pass `environmentName`, `packageName` and `dashboardName` in place of
+`resourceUri` and `dashboard`; that form is deprecated but not removed, so a 0.4.1 integration keeps
+working untouched.
+
+`versionId` on the URI pins every READ the editor makes — the file, the manifest, the dashboard list,
+the catalog behind the filter window's field search, and, through the live surface it renders, each
+tile's query and each control's suggest query — exactly as it does for `<Dashboard>`. It
+never reaches the write: `updateModelSource` answers `501 Not Implemented` to a `versionId` on this
+route, same as everywhere else, and a version is a fixed point in history regardless. Pin one against
+a package that would otherwise take the editor's writes and Save turns itself off, with the toolbar
+caption saying why, rather than opening the editor onto a compare-and-swap it can never win. Pinning
+has no effect on a save that goes into a host's own document store or a browser draft instead:
+neither touches the package's write endpoint.
 
 ## Where dashboards stop
 

@@ -1,11 +1,8 @@
 ---
 name: malloy-analysis-pitfalls
-description: Common data analysis pitfalls to watch for during query construction and result interpretation. Reference this checklist when verifying queries and results to catch errors before presenting an answer.
+description: Checks to run on a query and its numbers before a result is presented - wrong grain, fan-out, invented field names, mismatched filters, count vs distinct. The common data-analysis pitfalls.
 ---
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
 
 # Data Analysis Pitfalls
 
@@ -17,6 +14,18 @@ Watch for these common mistakes throughout the analysis workflow. When you encou
 
 ### Wrong grain / fan-out
 Using dimensions or measures from a joined source that has a finer grain than the base source can silently multiply rows, inflating aggregates. For example, aggregating revenue while grouping by a line-item field may double- or triple-count totals. If your query touches fields from a joined source, compare `count(key_field)` to `count()`: if the row count is significantly higher than the distinct key count, you likely have fan-out.
+
+That check reads in ONE direction only. `count(joined.field)` is a distinct count evaluated at the joined source's grain, so for an ordinary many-to-one join it is much SMALLER than `count()`, and that is the expected, correct result -- not missing data. Ten thousand flights joined to four hundred aircraft give `count(aircraft.tail_num)` of 400, and nothing is wrong. Do not read a low value as a coverage problem and do not abandon the answer over it. **Coverage is measured at the base grain**, by counting base rows whose joined value is null:
+
+```malloy
+run: flights -> {
+  aggregate:
+    all_rows is count()
+    missing is count() { where: aircraft.aircraft_models.seats = null }
+}
+```
+
+An agent once refused a correct answer it had already computed because `count(aircraft.tail_num)` returned 36 against 17,875 flights; measured at the base grain, zero flights were missing a seat value.
 
 ### Invented entity names
 Never guess field names. Use only the exact field paths defined in the model (find them with `get_context`). A plausible-sounding name that does not exist in the model will produce an error, or worse, silently reference the wrong field.
@@ -61,10 +70,16 @@ When computing percentages or shares, be explicit about the denominator. "30% of
 ### Time period mismatches
 Comparing metrics across different time periods without normalizing (e.g., comparing a full year to a partial quarter) produces misleading conclusions.
 
+### Extremes of a rate on a tiny denominator
+"Which one is worst" ranked on a ratio hands the top spot to whichever group has the fewest rows: one failure out of three is a 33% failure rate, and it will outrank a group with thousands. Before reporting an extreme of any rate, look at what is underneath it. Apply the model's documented minimum volume if it has one; if it has none, pick a floor, say which floor you picked, and print the denominator next to the rate rather than the rate alone.
+
 ## Verification Signals
 
 ### Parts don't sum to the whole
 If you break down a total by category, the categories should sum to the total (or close to it, accounting for nulls). If they don't, something is wrong with the grain or filters.
+
+### A total the model tells you not to take
+The check above assumes the parts are additive. Sometimes they are not, and the model says so: a doc noting that one event can be logged on two layers, or that a measure is non-additive, is telling you the sum across that dimension double-counts. Do not print a total row across such a dimension, and least of all one the user did not ask for. If a total is genuinely wanted, say why the model does not support it and give the per-category figures.
 
 ### Row count surprises
 Before interpreting results, check whether the row count makes sense. An unexpectedly high row count often indicates fan-out from a join. An unexpectedly low count may mean an overly restrictive filter.

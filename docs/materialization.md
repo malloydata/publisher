@@ -57,18 +57,28 @@ Reach for it when a reader must not see stale rows, and remember what it costs: 
 
 A source protected by an `#(authorize)` gate — its own, or one carried from a joined or derived
 source — is refused for `storage=` and for pre-aggregation, unconditionally. A **colocated**
-`#@ persist` (no `storage=`) is different: it is admitted when the gate is *proven* to be the entry
+`#@ persist` (no `storage=`) is different: it is admitted when the gate is _proven_ to be the entry
 point's own row filter, and refused otherwise.
 
 - **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
-  reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
+  the build would substitute (see
+  [§ Tenant-scoped sources](#tenant-scoped-sources-where-a-given-may-sit) below and
+  [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
   a materialized-once table is served frozen to every caller, and the served shape carries no gate
   to re-evaluate. This refusal is unaffected by anything below.
+- **A colocated `#@ persist` and givens.** Distinct from the gate question, and decided by WHERE the
+  given sits. A given the persisted query is built with — inside the `-> { … }`, or in a field the
+  query uses — is substituted at build time with its declaration default, so the artifact holds one
+  caller's slice and every caller is served it; that shape is **refused**. A given applied when the
+  source is READ — a `where:` in its extend block, or a dimension, measure or join declared there —
+  never reaches the build and binds per caller over the materialized rows; that shape is admitted,
+  and is the documented form (see [row-level-access.md](row-level-access.md)).
+
 - **A colocated `#@ persist`** is not served frozen with respect to the gate at all: persistence
   changes only where the rows are read FROM, never whether the entry point's own `#(authorize)` is
   re-evaluated — the substitution swaps only the source's relation SQL, and the gate applies as the
   reading query's own `WHERE` on top of it, so filtered rows come back filtered. When the compiler can
-  *prove* the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
+  _prove_ the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
   the source is eligible and serves correctly filtered from the materialized table. It is still
   refused when that cannot be proven — a gate reachable only through a join (join-only gate
   attribution is not traced), an inherited gate the compiler cannot attribute cleanly, or a gate that
@@ -77,7 +87,7 @@ point's own row filter, and refused otherwise.
 - **`#@ preaggregate`** refuses unconditionally, regardless of the gate's classification. A rollup
   synthesizes a colocated `#@ persist` over an import of the annotated base, and none of the
   pre-aggregation modules has any `#(authorize)` awareness of its own — so this refusal is the only
-  thing standing between a gated source and the pre-aggregation tier. It also groups *across* the
+  thing standing between a gated source and the pre-aggregation tier. It also groups _across_ the
   gated column, so the column is not even present in the rolled-up result to filter afterwards, even
   in principle. A refused rollup names `#@ preaggregate` and the gated source rather than the
   synthesized rollup's own name, which the author never wrote.
@@ -86,17 +96,173 @@ Every refusal names the source and the remedy; a package carrying one fails to b
 `storage=`, fails that materialization run) rather than silently serving the gated source to
 everyone.
 
+### Tenant-scoped sources: where a given may sit
+
+A source scoped to the caller — `where: org_id = $ORG_ID` — can be materialized into a `storage=`
+destination and served per caller. It is built **once**, holding every tenant's rows, and each
+caller's term is applied when they read it.
+
+Without this the options are one artifact per tenant, each with its own build, schedule and
+freshness, or no materialization at all. One shared artifact replaces both.
+
+That works because of how Malloy builds a persist source: the build SQL is the persisted relation
+**alone**. The source's own extend-block `where:` is not in it — it refines the relation when the
+relation is read. So the given was never frozen into the artifact, and the serve path re-applies the
+term with the value that caller supplied.
+
+What is refused is a given the **build substitutes**, because then the predicate is inside the frozen
+rows with one caller's value already in it and nothing downstream can undo it. The only value
+available at build time is the declaration's default, so that is whose rows everyone gets.
+
+Put the other way round: a predicate that varies per caller is part of the **question**, not part of
+the relation being stored. Materialization stores relations, so such a predicate was never a
+candidate for freezing in the first place.
+
+That gives you a rule you can apply to a shape not listed below. **If changing a caller's value would
+change the SQL the build runs, the predicate is in the artifact, and the source is refused. If it
+would not, the predicate is read-time and is re-applied per caller.**
+
+**Write the source as a query, not as a filtered table.** Both forms below persist a
+query — `raw -> { select: * }` — and then refine it. That is not stylistic: a source
+written as a plain extension of a table, `source: orders is raw extend { where: org_id =
+$ORG_ID }`, stays type `table`, and only a query-shaped source is treated as a build
+root. `#@ persist` on one is a **silent no-op** — nothing is built, no error is raised,
+and the source is served live exactly as if the annotation were absent. Publisher warns
+on the package when it sees an annotated source missing from the build plan, which is
+the only signal you get, so reach for the `-> { select: * }` form first.
+
+```malloy
+given:
+  ORG_ID :: number is 1
+
+// Served per caller: the term is outside the persisted query.
+#@ persist name="orders" storage=lake
+source: orders is raw -> { select: * } extend {
+  where: org_id = $ORG_ID
+}
+
+// Refused: the persisted query reads the given, so `org_id = 1` is in the build SQL.
+#@ persist name="orders_baked" storage=lake
+source: orders_baked is raw -> { where: org_id = $ORG_ID; select: * }
+```
+
+The second form is refused as `given_in_persisted_query`, and the refusal names the move that fixes
+it. It fires however the given reaches the query — including through the source the query reads, so
+`source: scoped is raw extend { where: org_id = $ORG_ID }` followed by
+`#@ persist source: r is scoped -> { … }` is refused too: the query reads `scoped`'s filter, so the
+value is substituted just the same.
+
+Three positions carry a given that this version does not admit even though the build leaves them out:
+a declared `dimension:` or `measure:` (`dynamic_projection`), a join's `on:` condition
+(`dynamic_join`), and a given-scoped source reached through a join (`dynamic_joined_where`). None is
+in the artifact, so none is a leak; they are refused because whether the serve shape reproduces them
+is a separate question from whether the build strips them. To scope by a joined source's own filter,
+enter through a non-persisted extension that declares the join, so the term is part of the query
+rather than of the artifact. Note what that costs today: such an entry point answers correctly
+but is **served live**, because a plain extension of a persisted source is currently treated as
+a build target of its own and refused, while `#@ -persist` opts out of reading the stored table.
+The arrangement is correct; it does not yet get the tier.
+
+A source that reaches a given-scoped source only through a join its persisted query never
+reads is admitted. That rests on the COMPILER: Malloy prunes an unread join out of the build
+SQL, so nothing given-derived reaches the artifact. It is a property of Malloy's pruning
+rather than of the gate, and worth knowing for anyone changing the compiler version.
+
+#### Joins between materialized sources
+
+A join is served from storage only when the joined source is **also** materialized. So persisting a
+caller-scoped dimension table is what makes a join to it servable at all: without it, a query using
+the join does not simply lose the join, it loses the tier and is answered live.
+
+This is also how two sources on different connections become joinable. They cannot be queried
+together live, but materialized into the same destination they are siblings, and the join compiles.
+
+#### Where the per-caller value comes from
+
+Serving per caller is only a boundary if the caller cannot choose their own value — and
+**Publisher does not decide that**. A given's value is whatever the request supplies, so on
+a bare Publisher every given is a convenience filter rather than an access control.
+
+`#(secure)` marks a given whose value must come from the HOST rather than the caller. It is
+a contract with whatever fronts Publisher: a gateway that authenticates the caller,
+resolves their assigned values, and replaces anything the request supplied. Publisher does
+not itself strip or resolve it. If nothing in front of Publisher implements that, marking a
+given `#(secure)` changes nothing about who can send what.
+
+**A `#(secure)` given must be set-valued**, and the shape that scopes by one is therefore
+`in`, not `=`:
+
+```malloy
+// A boundary: the caller cannot supply ORG_IDS, and an unassigned caller sees nothing.
+#(secure)
+given: ORG_IDS :: number[]
+
+#@ persist name="orders" storage=lake
+source: orders is raw -> { select: * } extend {
+  where: org_id in $ORG_IDS
+}
+```
+
+The reason is that it has to fail closed. A set has an empty list as a natural
+impossible value, so a caller with nothing assigned filters to zero rows whatever
+operator the model uses. A scalar has no equivalent — there is no value of `number` that
+matches nothing — so a caller with nothing assigned cannot be given one.
+
+This matters because a host implementing the contract has nothing to fail on: a scalar
+declaration is the shape it cannot honour, so the safe outcome is that the given is simply
+never resolved and the caller's own value is honoured — by a model that reads as though it
+were gated. Declare the attribute as a set and scope with `in`.
+
+### `partition=`: laying the artifact out
+
+`#@ persist partition="org_id"` writes the stored table as one directory per distinct value, so an
+equality term on that column reads only the files it names. `partition="org_id,day"` nests them in
+the order given.
+
+It is a **layout** and carries no isolation. Every stripped term is re-applied at read whether or not
+its column is partitioned, so a partition list that omits the column a caller is scoped by costs a
+full scan, never a leak — which is why the list is the author's free choice rather than something
+derived from the source's filters. Partitioning by a high-cardinality column, or by several columns
+at once, buys pruning at the cost of many small files.
+
+Partitioning by the column a caller is scoped by gives a useful asymmetry: **read cost tracks the
+caller's own partition, while build cost tracks the whole artifact.** A caller's queries do not get
+slower as tenants are added; the build does, since it is one pass over everyone's rows. Pruning
+depends on the scoping term being an equality (`=`, `in`) on a partitioned column, and
+nothing checks the column's cardinality for you — a partition per caller across very many
+callers is the many-small-files case, and it is your judgement to make.
+
+That asymmetry is the argument for one shared artifact over one per tenant. Both have the same read
+cost; the per-tenant arrangement also has one build, one schedule and one freshness story *per
+tenant*, all of which can drift apart.
+
+`partition=` is part of the source's content address, so changing it rebuilds the table. A source
+that declares none addresses exactly as it did before the key existed, so nothing already
+materialized is disturbed by this feature.
+
+Each name must be a column of the source's **public** projection: the stored table is narrowed to
+that surface, so a hidden or `except:`-ed column is not there to partition by
+(`partition_column_not_public`, `partition_column_unknown`). `partition=` requires `storage=` — a
+colocated build writes into the source's own warehouse, where the layout is that warehouse's DDL —
+and is refused rather than ignored without it (`partition_without_storage`).
+
 ### The freshness contract for a gated colocated persist source
 
 Admitting a proven row-level gate applies unconditionally. The refusal it relaxes never fired at
-*load*: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
+_load_: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
 package with a colocated `#@ persist` on an `#(authorize)`-gated source already loads, appears in
-`plan.sources`, and serves live — what 422'd was its *materialization run*, not the package.
+`plan.sources`, and serves live — what 422'd was its _materialization run_, not the package.
 
 **So such packages already exist.** On upgrade, a run that used to fail succeeds when the gate proves
 row-level and attributed to the entry point, and the next auto-run or scheduled build materializes the
 source and binds it for serving **with no author action** — a source that served live yesterday serves
 from a possibly-stale artifact afterwards, subject to the staleness below.
+
+The given refusal above runs the other way, and such packages may also already exist. On upgrade a
+colocated `#@ persist` whose persisted query references a given stops materializing: the package
+still loads and the source still serves — live, correctly, per caller — but its next materialization
+run 422s, and an artifact built before the upgrade is unbound on the next reload rather than served.
+The remedy is to move the given out of the persisted query, which the refusal message names.
 
 What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the
 querying principal's attributes (givens, roles) are still evaluated live, on every query, against the
@@ -126,7 +292,7 @@ on. An incremental source needs `reseed` to do the same.
 
 **`refresh="incremental"` does not bound revocation.** The [delta](#incremental-refresh) wraps the
 seed's own SQL in a predicate over `[covered_through, frontier)`, so a row whose access decision
-changes *without its watermark advancing* falls outside every future delta and is never re-read.
+changes _without its watermark advancing_ falls outside every future delta and is never re-read.
 Take `orders`, gated with `#(authorize) org_id = $ORG` and declared
 `refresh="incremental" watermark="order_date"`: order 7 (`order_date` 2026-01-02) moves from org 1 to
 org 2, every later run advances past that date, and principal `ORG: 1` keeps reading it
@@ -195,6 +361,31 @@ source: daily_orders is orders -> {
 Where the frontier comes from depends on the watermark's type: a `date` or `timestamp` watermark takes the run's own start time, while a numeric or string watermark is read from the source (`max(watermark)`). One consequence worth knowing before you test it: two refreshes of a date-watermarked source within the same day produce an empty range and skip, which is correct but looks like nothing happened.
 
 Add `merge_key="col,…"` when a row can be **restated** with a new watermark value — an order that moves to a later day. Publisher then applies the delta as a `MERGE` on the declared identity columns instead of deleting the watermark range and re-inserting it, which is the only strategy that tolerates a row changing which range it belongs to. Without it, a refresh replaces the range wholesale, which is correct exactly when a row's watermark value never changes.
+
+**On a caller-scoped source, the merge matches on more than you declared.** A source whose
+term is stripped and re-applied per caller is stored once holding every caller's rows, so a
+key you chose against the source as you wrote it — `order_id`, unique within one org — is
+ambiguous over what was actually stored, where the same `order_id` appears once per org. A
+merge on that key alone would match another caller's row and update it.
+
+So the match also carries the columns those stripped terms filter on, and the effective
+identity is your key plus that scope. This restores the relation you chose the key against,
+and there is nothing to change in the model: declare `merge_key=` exactly as you would for a
+source that is not scoped.
+
+Scoping is all or nothing. If a stripped term resolves to no column of the source — one
+reaching through a join, say — the source is refused (`merge_key_scope_unresolved`) rather
+than scoped by the terms that do resolve, since a partial scope is narrower than the bare key
+but still wider than your relation, and would look like it works. Scope such a source with a
+term over its own columns, or drop `merge_key=` and refresh by watermark range.
+
+Two things to know about the narrowed match. A row whose **scope column value changes**
+between refreshes no longer matches its stored copy, so it is inserted beside it rather than
+updated — a duplicate. The same happens with a term whose columns are combined with `or`
+(`where: org_id = $ORG_ID or user_id = $USER_ID`), because the match carries both columns and
+is therefore narrower than the disjunction you wrote. Both fail in the same direction: a
+duplicated row, never a row belonging to another caller. If either applies to your source,
+rebuild it rather than refreshing.
 
 **An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
 
@@ -278,9 +469,6 @@ malloy-pub schedule clear --environment <env> --package <pkg>
 # List a package's runs (ID, Status, Trigger, Started, Completed, Error)
 malloy-pub list materialization --environment <env> --package <pkg>
 
-# List every package's runs across the environment (adds a leading Package column)
-malloy-pub list materialization --environment <env>
-
 # Inspect one run (timings, sourcesBuilt/sourcesReused, manifest entries)
 malloy-pub get materialization <id> --environment <env> --package <pkg>
 
@@ -314,3 +502,11 @@ The materialization history (`list` + `get` above) records per-run timings and h
 ## Pre-aggregation
 
 `#@ persist` stores a source you wrote. [Pre-aggregation](preaggregation.md) stores a rollup Publisher derives for you: annotate a measure with a grain, and covered queries read a small pre-grouped table instead of the base, with no change to the queries themselves. Rollups appear in the same build plan (as `origin: "preaggregate"`) and build through the same manifest and scheduler described above.
+
+**A rollup over a caller-scoped source is refused** (`preaggregate_over_dynamic_source`).
+A persisted source may be scoped by a given because the term is left out of the build and
+put back when the rows are read; a rollup has no such read. It is stored pre-grouped and
+answered from directly, so there is no point at which a caller's term could be applied to
+it — and building it reads the base, which applies that base's `where:` with the
+declaration's default, so the rollup would hold one caller's aggregate and serve it to
+everyone. Roll up a source that is not caller-scoped.

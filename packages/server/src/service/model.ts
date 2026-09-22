@@ -65,14 +65,20 @@ import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
    buildServeShapeModelForBindings,
+   liftDerivedSources,
+   type ServeShapeGiven,
    buildVirtualMap,
    extractJoins,
    extractRefinements,
+   extractSourceFilters,
+   buildServeShapeTiers,
    extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
    sliceSourceRange,
    type ServeBinding,
+   type DerivedSourceLift,
+   type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
 } from "./materialization_serve_transform";
@@ -174,6 +180,7 @@ import {
    type PartitionGraftEntry,
 } from "./gate_classification";
 import {
+   collectSourceInfos,
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "./source_extraction";
@@ -457,6 +464,18 @@ export class Model {
     * bind. Keying on the version means such a write is simply never read again.
     */
    private preaggregatePlansVersion = 0;
+   /**
+    * The model file's text as the compile that produced {@link modelDef} read
+    * it, when the loader shipped it (worker package loads of `.malloy` files).
+    *
+    * Held on the Model, not re-read on demand, because it is only meaningful
+    * paired with THIS compile's `DocumentLocation` coordinates. A Model is
+    * replaced wholesale by a reload, so the two never drift; a file read later
+    * can be newer than the IR, which is exactly the case a failed reload
+    * leaves behind (the package keeps serving the previous model while the
+    * files on disk have moved on).
+    */
+   private compiledSourceText: string | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -1541,8 +1560,16 @@ export class Model {
       if (!skipOwnSourceGate && ownSourceName) {
          const onDiskGates = this.entryPointGatesBySource.get(ownSourceName);
          if (onDiskGates) {
+            // The parts are concatenated, so the separator has to be a
+            // character that neither a label nor an expression can contain:
+            // otherwise `{label: "a b", exprs: []}` keys the same as
+            // `{label: "a", exprs: ["b"]}`. Not \0, which has that property
+            // but also makes the whole file binary to anything that sniffs
+            // for one, and a tool that skips binaries skips every line of
+            // this one in silence.
+            const SEP = "\x1f";
             const keyOf = (entry: GateEntry): string =>
-               `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`;
+               `${entry.label}${SEP}${entry.exprs.join(SEP)}${SEP}${entry.selfContained}`;
             const byKey = new Map(
                entryPointGates.map((entry) => [keyOf(entry), entry]),
             );
@@ -3066,50 +3093,12 @@ export class Model {
                },
             });
 
-            // Collect sourceInfos from imported models first
-            // This follows the same pattern as notebook imports handling
-            const imports = modelDef.imports || [];
-            const importedSourceNames = new Set<string>();
-            for (const importLocation of imports) {
-               try {
-                  const modelString = await runtime.urlReader.readURL(
-                     new URL(importLocation.importURL),
-                  );
-                  const importedModelDef = (
-                     await runtime
-                        .loadModel(modelString as string, { importBaseURL })
-                        .getModel()
-                  )._modelDef;
-                  const importedModelInfo =
-                     modelDefToModelInfo(importedModelDef);
-                  const importedSources = importedModelInfo.entries.filter(
-                     (entry) => entry.kind === "source",
-                  ) as Malloy.SourceInfo[];
-                  for (const source of importedSources) {
-                     if (!importedSourceNames.has(source.name)) {
-                        sourceInfos.push(source);
-                        importedSourceNames.add(source.name);
-                     }
-                  }
-               } catch (importError) {
-                  // Log but don't fail if we can't load an import's sourceInfo
-                  logger.warn("Failed to load sourceInfo from import", {
-                     importURL: importLocation.importURL,
-                     error: importError,
-                  });
-               }
-            }
-
-            // Add locally-defined sources (not already added from imports)
-            const localModelInfo = modelDefToModelInfo(modelDef);
-            const localSources = localModelInfo.entries.filter(
-               (entry) => entry.kind === "source",
-            ) as Malloy.SourceInfo[];
-            for (const source of localSources) {
-               if (!importedSourceNames.has(source.name)) {
-                  sourceInfos.push(source);
-               }
-            }
+            // Every source this file can resolve — its own declarations plus
+            // exactly the names an `import { … }` selected. Shared with the
+            // package-load worker so the two paths cannot drift; see
+            // collectSourceInfos on why re-loading each imported file (what
+            // this used to do) reported sources that resolve nowhere here.
+            sourceInfos.push(...collectSourceInfos(modelDef));
          }
 
          const model = new Model(
@@ -3268,6 +3257,9 @@ export class Model {
       // reloading it through this runtime, so it has to be the one that
       // shares this model's given identities, not a fresh one.
       model.setGateRuntime(runtime);
+      // Paired with `modelDef` above: the coordinates in that IR index this
+      // text and no other revision of the file.
+      model.compiledSourceText = data.modelSourceText;
       return model;
    }
 
@@ -3395,7 +3387,17 @@ export class Model {
       if (!items) return items;
       if (!this.discoveryCurationEnabled) return items;
       const exports = this.modelDef?.exports;
-      if (!Array.isArray(exports)) return items;
+      if (!Array.isArray(exports)) {
+         // Every other step on this path fails closed; this one cannot without
+         // blanking a package's listing over a malloy shape change. `exports`
+         // is non-optional in `ModelDef`, so reaching here means the IR moved
+         // under us — say so instead of quietly serving an uncurated surface.
+         logger.warn(
+            "Discovery curation skipped: modelDef.exports is not an array",
+            { modelPath: this.modelPath, packageName: this.packageName },
+         );
+         return items;
+      }
       const exported = new Set(exports);
       return items.filter(
          (item) => item.name !== undefined && exported.has(item.name),
@@ -3512,6 +3514,20 @@ export class Model {
     */
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
+   }
+
+   /**
+    * The model file's text as this model's compile read it, or undefined when
+    * the loader did not ship it (a notebook, a compile failure, or an
+    * in-process `Model.create`).
+    *
+    * The only safe input for slicing a `DocumentLocation` out of: the ranges in
+    * {@link getModelDef}'s IR index THIS text. Callers must not fall back to
+    * reading the file, which can be newer than the compile. See
+    * `SerializedModel.modelSourceText`.
+    */
+   public getCompiledSourceText(): string | undefined {
+      return this.compiledSourceText;
    }
 
    /**
@@ -4274,7 +4290,20 @@ export class Model {
       );
    }
 
-   private async loadServeShapeQuery(queryString: string): Promise<{
+   private async loadServeShapeQuery(
+      queryString: string,
+      /**
+       * The request's given values, passed to the origin probe below.
+       *
+       * The probe compiles the query to decide whether a rollup answered it, and
+       * compiling resolves every given the shape declares. A given with no
+       * DEFAULT — which is every `#(secure)` attribute, since a scalar cannot be
+       * secure and a set-valued one is server-set — has nothing to resolve to at
+       * that point, so the probe threw and the whole tier fell back to live for
+       * exactly the sources that carry a row-level boundary.
+       */
+      givens?: Record<string, GivenValue>,
+   ): Promise<{
       runnable: QueryMaterializer;
       virtualMap: VirtualMap;
       /**
@@ -4365,7 +4394,7 @@ export class Model {
       // so without this the error would escape at prepare/run instead of at the
       // caller's try, defeating the safe fallback. Cheap relative to the run. The
       // serve shape is pure virtual sources, so no buildManifest is needed.
-      const probeSQL = await runnable.getSQL({ virtualMap });
+      const probeSQL = await runnable.getSQL({ virtualMap, givens });
       // The rollup members' physical paths, quoted exactly as the virtualMap
       // substitutes them, so this compares like with like rather than re-deriving
       // the quoting and drifting from it.
@@ -4386,8 +4415,11 @@ export class Model {
     * disable storage serving for every source in the package. So the shape is
     * validated once (per binding set — the result is cached) and, on failure,
     * the riskiest refinement category is dropped and it retries: full → drop
-    * views → drop views + joins → base-only. Base-only is pure virtual sources
-    * and always compiles, so it is the guaranteed floor. Each surviving tier
+    * views → drop views + joins → base-only. Base-only carries the virtual
+    * sources and their filters, so it compiles for every source whose filters
+    * can be reproduced — it is the floor, but no longer a guaranteed one: a
+    * filter that cannot be reproduced fails every tier, and the caller then
+    * serves live rather than serving unfiltered. Each surviving tier
     * still serves everything it can; the per-query eager compile in
     * {@link loadServeShapeQuery} remains the final net for query-specific
     * ineligibility.
@@ -4403,54 +4435,21 @@ export class Model {
        * nothing.
        */
       rollupGroups: RollupShapeGroup[] = [],
+      /**
+       * Set on the one re-entry this method makes after withholding bindings
+       * whose filters cannot be reproduced. It bounds the recursion to a single
+       * extra pass: a floor failure on the retry is answered by serving live
+       * rather than by isolating again.
+       */
+      isRetry = false,
    ): Promise<ModelMaterializer> {
-      // Richest first; each predicate keeps fewer refinement kinds than the last.
-      const keepKinds: Array<ReadonlySet<string>> = [
-         new Set(["join", "dimension", "measure", "view"]),
-         new Set(["join", "dimension", "measure"]),
-         new Set(["dimension", "measure"]),
-         new Set(),
-      ];
-      // A pre-aggregation group is dropped WHOLE, in one final tier, and never
-      // thinned by the tiers above it.
-      //
-      // Thinning does nothing for a group: its measures are generated from its own
-      // plan and are the only reason its member exists, so a tier that removes
-      // them leaves a member that compiles and answers nothing. What CAN rescue
-      // the shape is removing the group, and until this tier existed nothing did
-      // — which mattered because a group that will not compile takes the whole
-      // package's storage serving with it. Base-only was documented as the
-      // guaranteed floor, and a group breached it: a composite whose members
-      // disagree about a grain column's captured type fails at every tier,
-      // including the one that carries no refinements at all.
-      const tiers: Array<{
-         keep: ReadonlySet<string>;
-         groups: RollupShapeGroup[];
-      }> = [
-         // Richest, with groups.
-         { keep: keepKinds[0], groups: rollupGroups },
-         // Then groups DROPPED while every authored refinement is kept. This tier
-         // exists because the two failure sources are independent and the ladder
-         // otherwise conflates them: a single uncompilable group failed all four
-         // thinning tiers, and the tier that finally dropped it had already
-         // stripped every join, view, dimension and measure — so one bad rollup
-         // degraded every authored `storage=` source in the package to base-only,
-         // where before this feature it served at the richest tier. Trying this
-         // second means a group-caused failure costs the rollups and nothing else.
-         ...(rollupGroups.length > 0
-            ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
-            : []),
-         // Then the ordinary thinning ladder, still WITH groups: reaching here
-         // means dropping the groups alone did not fix it, so an authored
-         // refinement is implicated and the groups may be fine.
-         ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
-         // The floor: no refinements and no groups. Pure virtual bases, so it
-         // always compiles. Appended only when there is a group to drop, since
-         // without one the last thinning tier is already this shape.
-         ...(rollupGroups.length > 0
-            ? [{ keep: new Set<string>(), groups: [] as RollupShapeGroup[] }]
-            : []),
-      ];
+      // The ladder, richest first. Built by {@link buildServeShapeTiers} rather
+      // than here so the invariant it must hold — every tier keeps the
+      // never-thinned kinds — is assertable in one place. `filter` is one of
+      // those: the other kinds are optimizations, while a source's `where:` is
+      // part of what the source MEANS, so a tier that dropped it would answer
+      // with rows the source excludes.
+      const tiers = buildServeShapeTiers(rollupGroups);
       // Skip escalation entirely when nothing beyond the base is carried — but a
       // GROUP is something beyond the base. Reading this off `enriched` alone left
       // the pure-rollup case (no ordinary bindings at all) returning tier 0
@@ -4476,11 +4475,75 @@ export class Model {
                          }
                        : b,
                  );
-         const materializer = this.buildServeShapeMaterializer(shaped, groups);
-         // The last tier is pure virtual bases with no composite, so it always
-         // compiles; trust it without a probe. And when there is nothing to
-         // escalate, tier 0 IS that shape — skip too.
-         if (tier === lastTier || (tier === 0 && nothingToEscalate)) {
+         // Derived entry points ride the richest rung only. They are the most
+         // that can be carried, and confining them here is what bounds the blast
+         // radius: every rung below is byte-identical to the shape this package
+         // compiled before lifting existed.
+         const materializer = this.buildServeShapeMaterializer(
+            shaped,
+            groups,
+            tier === 0 ? this.liftedDerivedSources(enriched) : [],
+         );
+         // The last tier is virtual bases plus their filters. Unlike the tiers
+         // above it, it can fail: a filter that cannot be reproduced (one
+         // reaching through a join whose target is not materialized, or over a
+         // column the source hides) fails every tier including this one. It is
+         // therefore PROBED, and a failure is answered by withholding the
+         // offending bindings — never by thinning their filters, which is the
+         // unfiltered serve this ladder exists to prevent.
+         if (tier === lastTier) {
+            try {
+               await materializer.getModel();
+               return materializer;
+            } catch (err) {
+               if (isRetry) return materializer;
+               const servable = await this.bindingsWhoseFiltersCompile(
+                  enriched,
+                  keep,
+               );
+               const withheld = enriched
+                  .filter((b) => !servable.includes(b))
+                  .map((b) => b.sourceName);
+               if (servable.length === 0 || withheld.length === 0) {
+                  // Nothing left to serve, or every binding compiles alone so the
+                  // failure is in their COMBINATION — a duplicate source name is
+                  // the reachable one, since the floor carries no joins and so
+                  // cannot have an ordering cycle. Either way the model is served
+                  // live.
+                  logger.warn(
+                     "Storage serve shape failed at its floor and no binding could be isolated; serving live",
+                     {
+                        model: this.modelPath,
+                        error: err instanceof Error ? err.message : String(err),
+                     },
+                  );
+                  return materializer;
+               }
+               logger.warn(
+                  "Withheld storage serve bindings whose filters cannot be reproduced; those sources serve live",
+                  {
+                     model: this.modelPath,
+                     withheld,
+                     stillServed: servable.map((b) => b.sourceName),
+                     error: err instanceof Error ? err.message : String(err),
+                  },
+               );
+               // Re-enter the LADDER rather than returning this floor shape: the
+               // survivors did nothing wrong, and rebuilding them here would cost
+               // every one of them its joins, views and rollups because a
+               // sibling's filter was unservable. Same rationale as the
+               // group-dropping rung — a failure should cost its own cause and
+               // nothing else.
+               return await this.compileServeShape(
+                  servable,
+                  rollupGroups,
+                  true,
+               );
+            }
+         }
+         // Nothing to escalate means tier 0 IS the floor's shape, and the loop
+         // would otherwise probe a shape it cannot improve on.
+         if (tier === 0 && nothingToEscalate) {
             return materializer;
          }
          try {
@@ -4499,21 +4562,114 @@ export class Model {
          }
       }
       // Unreachable: the last tier returns above. Satisfy the type checker.
-      // Groups dropped, matching what that last tier is.
+      // Groups dropped and the never-thinned kinds kept, matching what that last
+      // tier is — stripping every refinement here would reintroduce the
+      // unfiltered serve this ladder exists to prevent.
+      const floor = tiers[tiers.length - 1].keep;
       return this.buildServeShapeMaterializer(
-         enriched.map((b) => ({ ...b, refinements: [] })),
+         enriched.map((b) => ({
+            ...b,
+            refinements: (b.refinements ?? []).filter((r) => floor.has(r.kind)),
+         })),
          [],
       );
+   }
+
+   /**
+    * The bindings whose own filters the serve shape can reproduce, found by
+    * compiling each alone at the floor — base plus filters, the smallest shape a
+    * binding can be served from. One compile per binding, on a failure path whose
+    * result is cached.
+    *
+    * Probed at the FLOOR on purpose: a binding whose view cannot be reproduced
+    * still compiles here and is kept, because thinning is the right answer for a
+    * view and the ladder above already does it. Only filters survive to this
+    * tier, so a failure here is a filter failure.
+    *
+    * Known limit, and the reason that reasoning does not fully generalise: the
+    * floor carries no joins, so a filter reaching through a join whose target IS
+    * materialized fails this solo probe even though it compiles at the richer
+    * tiers. Such a binding is over-withheld and serves live. Fails safe, and no
+    * worse than before filters were carried at all, but it is why a source can
+    * lose the tier to a sibling it has nothing to do with. Fixing it means
+    * probing a binding together with its join-dependency closure rather than
+    * alone — `orderBindingsByJoinDeps` already computes that ordering — which is
+    * more machinery than the case has so far warranted.
+    *
+    * Withholding, never thinning: a binding that does not compile is absent from
+    * the shape, so queries on it fail to resolve and serve live. Thinning its
+    * filters instead would serve it unfiltered, which is the defect this whole
+    * mechanism exists to prevent.
+    */
+   private async bindingsWhoseFiltersCompile(
+      enriched: ServeBinding[],
+      floorKeep: ReadonlySet<string>,
+   ): Promise<ServeBinding[]> {
+      const servable: ServeBinding[] = [];
+      for (const binding of enriched) {
+         const floored = {
+            ...binding,
+            refinements: (binding.refinements ?? []).filter((r) =>
+               floorKeep.has(r.kind),
+            ),
+         };
+         try {
+            await this.buildServeShapeMaterializer([floored], []).getModel();
+            servable.push(binding);
+         } catch {
+            // Withheld: its filters do not reproduce, so it cannot be served.
+         }
+      }
+      return servable;
+   }
+
+   /**
+    * This model's given surface, in the shape the serve-shape model declares.
+    *
+    * `Model.givens` has already collapsed inheritance from imports, so this is
+    * the same surface a live query binds against — which is the point: the
+    * transient shape should accept exactly the givens the author's model
+    * accepts, no more and no less.
+    *
+    * A given whose type cannot be rendered is DROPPED rather than guessed. The
+    * cost is bounded and safe: a re-emitted `where:` that reads it then fails to
+    * compile, the binding is withheld, and the query serves live. Guessing a
+    * type would instead compile a filter that silently coerces.
+    */
+   private serveShapeGivens(): ServeShapeGiven[] {
+      const out: ServeShapeGiven[] = [];
+      for (const given of this.givens ?? []) {
+         if (typeof given.name !== "string" || given.name.length === 0)
+            continue;
+         if (typeof given.type !== "string" || given.type.length === 0)
+            continue;
+         out.push({
+            name: given.name,
+            type: given.type,
+            defaultText:
+               typeof given.default === "string" ? given.default : undefined,
+         });
+      }
+      return out;
    }
 
    /** Build the transient serve-shape materializer for a set of bindings. */
    private buildServeShapeMaterializer(
       bindings: ServeBinding[],
       rollupGroups: RollupShapeGroup[] = [],
+      /**
+       * Non-persisted sources to carry over these bindings. Defaulted empty so
+       * every probe path — the per-binding filter probe especially — compiles
+       * the bindings ALONE: a lift failing there would withhold a binding that
+       * serves perfectly well on its own.
+       */
+      derived: DerivedSourceLift[] = [],
    ): ModelMaterializer {
       const { modelText } = buildServeShapeModelForBindings(
          bindings,
          rollupGroups,
+         this.serveShapeGivens(),
+         derived,
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -4558,36 +4714,40 @@ export class Model {
     * parsing that text; views are emitted optimistically and pruned by the
     * shape-compile escalation in {@link compileServeShape} if they don't hold.
     */
-   private serveBindingsWithRefinements(
-      // No default. This function resolves a binding back into the AUTHOR's model
-      // — by name, for its field list — which a rollup cannot survive: its source
-      // name names nothing there, so the fields come back undefined and the
-      // binding is dropped. Defaulting to `this.serveBindings` would hand the
-      // whole set, rollups included, to any future caller that omitted the
-      // argument. Every caller states which set it means.
-      bindings: ServeBinding[],
-   ): ServeBinding[] {
-      const contents = (
-         this.modelDef as
-            | {
-                 contents?: Record<
-                    string,
-                    { sourceID?: unknown; fields?: unknown[] }
-                 >;
-              }
-            | undefined
-      )?.contents;
-      // sourceID -> author source name, for the join materialization gate.
+   /**
+    * The compiled-model facts the serve shape is assembled from: this model's
+    * `contents`, a sourceID index over it, and a reader that recovers a
+    * declaration's verbatim text from the author's file by location.
+    *
+    * Shared by the refinement extraction and the derived-source lift so the two
+    * read ONE view of the model. The file cache lives per call, which is what
+    * keeps a package's sources from re-reading the same file once each.
+    */
+   private authorModelLift(): {
+      contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
+      sourceNameById: Map<string, string>;
+      liftText: (location: SourceLocation) => string | undefined;
+   } {
+      const contents =
+         (
+            this.modelDef as
+               | {
+                    contents?: Record<
+                       string,
+                       DerivedSourceDef & { sourceID?: unknown }
+                    >;
+                 }
+               | undefined
+         )?.contents ?? {};
+      // sourceID -> author source name, for the join materialization gate and
+      // for resolving what a derived source extends.
       const sourceNameById = new Map<string, string>();
-      for (const [name, def] of Object.entries(contents ?? {})) {
+      for (const [name, def] of Object.entries(contents)) {
          if (typeof def?.sourceID === "string") {
             sourceNameById.set(def.sourceID, name);
          }
       }
-      const materializedSourceNames = new Set(
-         bindings.map((b) => b.sourceName),
-      );
-      // Cache each source file's text (or null when unreadable) across bindings.
+      // Cache each source file's text (or null when unreadable) across lookups.
       const fileCache = new Map<string, string | null>();
       const liftText = (location: SourceLocation): string | undefined => {
          if (!location?.url?.startsWith("file:")) return undefined;
@@ -4604,6 +4764,46 @@ export class Model {
          const text = fileCache.get(location.url);
          return text ? sliceSourceRange(text, location.range) : undefined;
       };
+      return { contents, sourceNameById, liftText };
+   }
+
+   /**
+    * The non-persisted sources that can be carried onto the shape over the
+    * supplied bindings — the entry points a caller's own term lives on.
+    *
+    * Carried at the RICHEST tier only (see {@link compileServeShape}). That is
+    * what makes this strictly additive: a lift that does not compile costs its
+    * own rung and nothing else, and every tier below is the shape this package
+    * already got, so a package serving today serves identically if the lift
+    * fails.
+    */
+   private liftedDerivedSources(bindings: ServeBinding[]): DerivedSourceLift[] {
+      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      return liftDerivedSources({
+         contents,
+         sourceNameById,
+         // Bases a lift may extend: the FRESH bindings it is handed.
+         shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
+         // Candidates are excluded against EVERY binding, including the ones
+         // freshness withheld — see `boundSourceNames`.
+         boundSourceNames: new Set(this.serveBindings.map((b) => b.sourceName)),
+         liftText,
+      });
+   }
+
+   private serveBindingsWithRefinements(
+      // No default. This function resolves a binding back into the AUTHOR's model
+      // — by name, for its field list — which a rollup cannot survive: its source
+      // name names nothing there, so the fields come back undefined and the
+      // binding is dropped. Defaulting to `this.serveBindings` would hand the
+      // whole set, rollups included, to any future caller that omitted the
+      // argument. Every caller states which set it means.
+      bindings: ServeBinding[],
+   ): ServeBinding[] {
+      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      const materializedSourceNames = new Set(
+         bindings.map((b) => b.sourceName),
+      );
       return (
          bindings
             .map((b) => {
@@ -4623,6 +4823,11 @@ export class Model {
                      liftText,
                   }),
                   ...extractRefinements(fields),
+                  // The source's own `where:` clauses. Not part of the
+                  // materialized relation (the build SQL is the persisted
+                  // relation alone), so without these the shape serves rows the
+                  // source excludes.
+                  ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
                   ...extractViews(fields, liftText),
                ];
                return { ...b, schema, refinements };
@@ -5042,7 +5247,10 @@ export class Model {
          // row-level-gated entry point, per the pre-check just above.
          if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
             try {
-               const shaped = await this.loadServeShapeQuery(queryString);
+               const shaped = await this.loadServeShapeQuery(
+                  queryString,
+                  querySurfaceGivens,
+               );
                runnable = shaped.runnable;
                serveVirtualMap = shaped.virtualMap;
                serveShapeBindings = shaped.bindings;
@@ -5340,18 +5548,25 @@ export class Model {
       let executionTime = 0;
       let queryResults;
       let appliedQueryMetadata: QueryMetadata | undefined;
-      // Same reason as effectiveBuildManifest: the serve shape is built from
-      // given-FREE sources, so it surfaces no `given:` and Malloy rejects any
-      // supplied name with "unknown given" — a spurious 400, past the routing
-      // fallback, on a query that should just serve from storage. Nothing in the
-      // shape can read them; the authorize gate above already saw the full set.
-      // Safe for `#(partition)` too, and for the identical reason: the
-      // materialization eligibility gate refuses a partition-referencing
-      // source the same way it refuses a given-referencing one (see
-      // `materialization_eligibility.ts`'s `referencesPartition`), and
-      // `routingBlockedByRowLevelGate` above vetoes routing outright whenever
-      // the QUERY's own entry point carries either annotation.
-      const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
+      // Passed through whether or not the query routes. The serve shape declares
+      // this model's whole given surface (see `serveShapeGivens`), so a supplied
+      // name resolves there exactly as it does live — and it MUST be passed,
+      // because a materialized source's re-emitted `where:` may read one. That
+      // term was left out of the build on the promise that the read puts it
+      // back; dropping the value here would read the artifact unfiltered, which
+      // is every caller's rows.
+      //
+      // Withholding them was right while the shape was built from given-free
+      // sources: it surfaced no `given:`, so any supplied name met Malloy's
+      // "unknown given" as a spurious 400 past the routing fallback. Declaring
+      // the surface is what removes that, and it removes it in both directions —
+      // a name this model does not declare is still rejected, as it is live.
+      //
+      // `#(partition)` needs no special case: `routingBlockedByRowLevelGate`
+      // above vetoes routing outright whenever the QUERY's own entry point
+      // carries that annotation or an authorize gate, so a grafted row filter
+      // never reaches the shape at all.
+      const effectiveGivens = querySurfaceGivens;
       try {
          // The prepared result is also where the executing connection's name
          // comes from, which is what makes the connection's default metadata
@@ -5422,10 +5637,12 @@ export class Model {
          //    mixed set is normal and a sibling must not decide this query;
          //  - never for a client error (a bad given) or an abort, where a retry
          //    would just reproduce it or defy the caller;
-         //  - the retry re-supplies the REAL givens. The storage path suppresses
-         //    them because the shape is built from given-free sources; the live
-         //    source may filter on them, and running it without them would serve
-         //    unfiltered rows.
+         //  - the retry re-supplies the REAL givens. It always did for the live
+         //    source, which may filter on them — running it without them would
+         //    serve unfiltered rows. The storage path now supplies them too (the
+         //    shape declares the model's given surface), so the two paths carry
+         //    the same values and this retry changes only where the rows come
+         //    from.
          const canDegradeToLive =
             !!serveVirtualMap &&
             !!liveRunnable &&

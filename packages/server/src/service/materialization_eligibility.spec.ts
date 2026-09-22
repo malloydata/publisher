@@ -16,10 +16,15 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
+import { deriveAnnotationFields } from "./build_plan";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
 } from "./materialization_eligibility";
+import {
+   classifyDynamicTerms,
+   readTimeDynamicTerms,
+} from "./persist_dynamic_terms";
 
 const ROOT = "file:///elig/";
 let connections: FixedConnectionMap;
@@ -58,7 +63,10 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 source: mz_plain is base -> { aggregate: c is count() }`);
       expect(sources.mz_plain).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_plain),
+         assertMaterializationEligible(
+            sources.mz_plain,
+            deriveAnnotationFields(sources.mz_plain),
+         ),
       ).not.toThrow();
    });
 
@@ -70,7 +78,10 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 source: mz_bound(threshold::number is 5) is base -> { aggregate: c is count() }`);
       expect(sources.mz_bound).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_bound),
+         assertMaterializationEligible(
+            sources.mz_bound,
+            deriveAnnotationFields(sources.mz_bound),
+         ),
       ).not.toThrow();
    });
 
@@ -81,15 +92,24 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_free"
 source: mz_free(threshold::number) is base -> { aggregate: c is count() }`);
       expect(sources.mz_free).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_free)).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_free)).toThrow(
-         /unbound parameter/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_free,
+            deriveAnnotationFields(sources.mz_free),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_free,
+            deriveAnnotationFields(sources.mz_free),
+         ),
+      ).toThrow(/unbound parameter/i);
    });
 
-   it("refuses a source that references a given (RLAC security refusal)", async () => {
+   it("refuses a given the BUILD would substitute, which is the one the artifact freezes", async () => {
+      // Inside the persisted query the only value available at build time is
+      // the declaration default, so it is baked into the relation and no
+      // read-time term can undo it.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: tenant :: string is 'acme'
@@ -97,12 +117,53 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 #@ persist name="mz_given"
 source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }`);
       expect(sources.mz_given).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_given)).toThrow(
-         MaterializationEligibilityError,
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_given,
+            deriveAnnotationFields(sources.mz_given),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_given,
+            deriveAnnotationFields(sources.mz_given),
+         ),
+      ).toThrow(/given/i);
+   });
+
+   it("admits the same given in the extend block, and reports it as a stripped term", async () => {
+      // The half that makes the refusal above acceptable: the safe placement is
+      // one move away from the refused one, and it is the documented form.
+      // Malloy leaves an extend-block `where:` out of the build, so the
+      // artifact holds every caller's rows and the term is the reader's to
+      // apply — which is what the returned plan commits the serve shape to.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+#@ persist name="mz_given_outside" storage=lake
+source: mz_given_outside is base -> { select: * } extend { where: tenant = $tenant }`);
+      expect(sources.mz_given_outside).toBeDefined();
+      const plan = assertMaterializationEligible(
+         sources.mz_given_outside,
+         deriveAnnotationFields(sources.mz_given_outside),
       );
-      expect(() => assertMaterializationEligible(sources.mz_given)).toThrow(
-         /given/i,
+      expect(plan.terms).toEqual([
+         { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
+      ]);
+      expect(plan.partitionColumns).toEqual([]);
+   });
+
+   it("resolves partition= into the plan the build lays the table out with", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#@ persist name="mz_part" storage=lake partition="region"
+source: mz_part is base -> { select: * }`);
+      const plan = assertMaterializationEligible(
+         sources.mz_part,
+         deriveAnnotationFields(sources.mz_part),
       );
+      expect(plan.partitionColumns).toEqual(["region"]);
    });
 
    it("refuses a source that declares a #(partition) marker (RLAC security refusal, same as a given)", async () => {
@@ -125,12 +186,18 @@ source: mz_partition is base -> { aggregate: c is count() }`);
             }
          ).filterList ?? [],
       ).toHaveLength(0);
-      expect(() => assertMaterializationEligible(sources.mz_partition)).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_partition)).toThrow(
-         /partition/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_partition,
+            deriveAnnotationFields(sources.mz_partition),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_partition,
+            deriveAnnotationFields(sources.mz_partition),
+         ),
+      ).toThrow(/partition/i);
    });
 
    it("refuses a source protected by its own #(authorize) gate", async () => {
@@ -142,20 +209,26 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_authz"
 source: mz_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_authz).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_authz)).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_authz)).toThrow(
-         /authorize/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_authz,
+            deriveAnnotationFields(sources.mz_authz),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_authz,
+            deriveAnnotationFields(sources.mz_authz),
+         ),
+      ).toThrow(/authorize/i);
    });
 
    it("refuses a source protected by a no-given, fixed-predicate #(authorize) gate", async () => {
       // Deliberately references NO given (`org_id = 999`, a fixed predicate —
       // `source_line_gate_no_given_reference` at load time, still a valid
       // gate) rather than a `given:`-keyed comparison:
-      // `assertMaterializationEligible` checks `referencesGiven` BEFORE
-      // `referencesAuthorize`, so a given-keyed gate here would refuse on the
+      // `assertMaterializationEligible` classifies givens BEFORE
+      // `referencesAuthorize`, so a given-keyed gate here could refuse on the
       // given check first and never reach the authorize path this test
       // exists to exercise.
       const sources = await persistSources(`##! experimental.persistence
@@ -164,12 +237,18 @@ source: base is duckdb.sql("SELECT 1 AS org_id") extend {}
 #@ persist name="mz_dim_authz"
 source: mz_dim_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_dim_authz).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_dim_authz)).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_dim_authz)).toThrow(
-         /authorize/i,
-      );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_dim_authz,
+            deriveAnnotationFields(sources.mz_dim_authz),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_dim_authz,
+            deriveAnnotationFields(sources.mz_dim_authz),
+         ),
+      ).toThrow(/authorize/i);
    });
 
    it("refuses a source that reaches an #(authorize) gate through a JOIN", async () => {
@@ -187,7 +266,10 @@ source: mz_authz_joined is joiner extend {
 } -> { aggregate: c is count() }`);
       expect(sources.mz_authz_joined).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_authz_joined),
+         assertMaterializationEligible(
+            sources.mz_authz_joined,
+            deriveAnnotationFields(sources.mz_authz_joined),
+         ),
       ).toThrow(MaterializationEligibilityError);
    });
 
@@ -208,10 +290,16 @@ $role = 'analyst'
 source: mz_block_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_block_authz).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_block_authz),
+         assertMaterializationEligible(
+            sources.mz_block_authz,
+            deriveAnnotationFields(sources.mz_block_authz),
+         ),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertMaterializationEligible(sources.mz_block_authz),
+         assertMaterializationEligible(
+            sources.mz_block_authz,
+            deriveAnnotationFields(sources.mz_block_authz),
+         ),
       ).toThrow(/authorize/i);
    });
 
@@ -240,7 +328,10 @@ source: mz_authz_annotated_join is joiner extend {
 } -> { aggregate: c is count() }`);
       expect(sources.mz_authz_annotated_join).toBeDefined();
       expect(() =>
-         assertMaterializationEligible(sources.mz_authz_annotated_join),
+         assertMaterializationEligible(
+            sources.mz_authz_annotated_join,
+            deriveAnnotationFields(sources.mz_authz_annotated_join),
+         ),
       ).not.toThrow();
    });
 
@@ -269,7 +360,10 @@ source: orders__preagg__category is orders -> {
          ),
       ).toThrow(/authorize/i);
       expect(() =>
-         assertMaterializationEligible(sources.orders__preagg__category),
+         assertMaterializationEligible(
+            sources.orders__preagg__category,
+            deriveAnnotationFields(sources.orders__preagg__category),
+         ),
       ).toThrow(/authorize/i);
    });
 
@@ -297,7 +391,10 @@ source: orders__preagg__dim_category is orders -> {
          ),
       ).toThrow(/authorize/i);
       expect(() =>
-         assertMaterializationEligible(sources.orders__preagg__dim_category),
+         assertMaterializationEligible(
+            sources.orders__preagg__dim_category,
+            deriveAnnotationFields(sources.orders__preagg__dim_category),
+         ),
       ).toThrow(/authorize/i);
    });
 
@@ -334,10 +431,131 @@ source: orders__preagg__category is orders -> {
       expect(message).toMatch(/groups ACROSS the gated column/);
    });
 
-   it("refuses a source that reaches a given through a JOIN (not just its own pipeline)", async () => {
-      // The given lives on a joined source, not on mz_joined's own where/fields.
-      // The compiled struct embeds the joined SourceDef, so the fail-closed walk
-      // must still reach it — a join must not launder a given-filtered source.
+   it("scopes a merge off the source's own terms, not off the classification", async () => {
+      // The two gates refuse different sets: the colocated one deliberately
+      // admits the positional cases (a given in a declared `dimension:`, a
+      // join's `on:`, a given-scoped join) that the storage gate refuses. A
+      // merge scope taken from the classification is therefore EMPTY for a
+      // source one gate admitted while the classifier refused it for an
+      // unrelated position — and an empty scope is indistinguishable from "this
+      // source is not caller-scoped", so the merge would go out unscoped.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 as org_id, 2 as amount")
+
+#@ persist name="t"
+source: mixed is raw -> { select: * } extend {
+  where: org_id = $ORG_ID
+  dimension: flagged is org_id = $ORG_ID
+}`);
+      expect(classifyDynamicTerms(sources.mixed).ok).toBe(false);
+      // Still names the column the source is actually scoped by.
+      expect(
+         readTimeDynamicTerms(sources.mixed).flatMap((t) => t.columns),
+      ).toEqual(["org_id"]);
+   });
+
+   it("refuses a merge_key whose scope cannot be fully resolved, on BOTH gates", async () => {
+      // One term resolves to a column of the source, one does not: `vis.user_id`
+      // is a joined field and names no column of the stored table. Scoping by the
+      // half that resolves would give a match narrower than the bare key and
+      // still wider than the author's relation, so the source is refused instead.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given:
+  ORG_ID  :: number is 1
+  USER_ID :: number is 7
+source: raw is duckdb.sql("SELECT 1 as org_id, 1 as list_id, 2 as amount")
+source: vis is duckdb.sql("SELECT 1 as list_id, 7 as user_id")
+
+#@ persist name="t" storage=lake refresh="incremental" watermark="amount" merge_key="org_id"
+source: mixed is raw -> { select: * } extend {
+  join_one: v is vis on v.list_id = list_id
+  where: org_id = $ORG_ID
+  where: v.user_id = $USER_ID
+}`);
+      const fields = {
+         merge_key: "org_id",
+         refresh: "incremental",
+         watermark: "amount",
+         storage: "lake",
+      };
+      // Storage gate.
+      let storageReason = "";
+      try {
+         assertMaterializationEligible(sources.mixed, fields);
+      } catch (err) {
+         storageReason = (err as MaterializationEligibilityError).reason ?? "";
+      }
+      // Colocated gate, which does not refuse the positional cases and so is the
+      // one that would otherwise let this through.
+      let colocatedReason = "";
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            sources.mixed,
+            "mixed",
+            "persist",
+            undefined,
+            fields,
+         );
+      } catch (err) {
+         colocatedReason =
+            (err as MaterializationEligibilityError).reason ?? "";
+      }
+      expect([storageReason, colocatedReason]).toEqual([
+         "merge_key_scope_unresolved",
+         "merge_key_scope_unresolved",
+      ]);
+   });
+
+   it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {
+      // The outcome does not change — such a rollup already refused, as a
+      // `given_in_persisted_query`. Two things do. The reason names the rollup
+      // case, so it survives a change to the one it used to ride on; and the
+      // advice is followable. The old message told the author to move the given
+      // into the source's extend block, where for a rollup it ALREADY is: it is
+      // the rollup READING the source that applies that `where:` and bakes the
+      // value.
+      const sources =
+         await persistSources(`##! experimental { persistence composite_sources givens }
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'acme' AS tenant")
+source: scoped is base extend { where: tenant = $tenant }
+
+#@ persist
+source: scoped__preagg__category is scoped -> {
+  group_by: category
+  aggregate: total__partial is amount.sum()
+}`);
+      let err: MaterializationEligibilityError | undefined;
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            sources.scoped__preagg__category,
+            sources.scoped__preagg__category.name,
+            "preaggregate",
+         );
+      } catch (caught) {
+         err = caught as MaterializationEligibilityError;
+      }
+      expect(err?.reason).toBe("preaggregate_over_dynamic_source");
+      // Not the advice that leads nowhere.
+      expect(err?.message).not.toContain("extend block");
+      expect(err?.message).toContain("no read-time re-application");
+   });
+
+   it("refuses a given a joined source contributes to the build, and admits one it does not", async () => {
+      // A join reaches the build SQL only when the persisted query READS it,
+      // and that is exactly when the given-filtered join condition is baked. So
+      // the two halves of this shape get opposite answers, and each asserts the
+      // build SQL that justifies its own answer rather than trusting the gate.
+      //
+      // The pruned half is deliberately admitted, not overlooked. Refusing it
+      // would refuse every derivation of a base that merely OFFERS a
+      // given-filtered join — a base joining a visibility source, with
+      // persisted derivations over it reading different subsets, is an ordinary
+      // shape — and a structural walk cannot be narrowed to allow it, because an
+      // unread join sits exactly where a read one sits.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: tenant :: string is 'acme'
@@ -345,14 +563,36 @@ source: gated is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant") extend {
   where: tenant = $tenant
 }
 source: joiner is duckdb.sql("SELECT 2 AS n, 'acme' AS tenant")
-#@ persist name="mz_joined"
-source: mz_joined is joiner extend {
+#@ persist name="mz_joined_read"
+source: mz_joined_read is joiner extend {
+  join_one: g is gated on tenant = g.tenant
+} -> { group_by: amt is g.amount; aggregate: c is count() }
+
+#@ persist name="mz_joined_unread"
+source: mz_joined_unread is joiner extend {
   join_one: g is gated on tenant = g.tenant
 } -> { aggregate: c is count() }`);
-      expect(sources.mz_joined).toBeDefined();
-      expect(() => assertMaterializationEligible(sources.mz_joined)).toThrow(
-         MaterializationEligibilityError,
+
+      // Read: the join is in the build, and the given's default is baked into
+      // its ON condition, where no read-time term could undo it.
+      expect(await sources.mz_joined_read.getSQL()).toContain(
+         `g_0."tenant"='acme'`,
       );
+      expect(() =>
+         assertMaterializationEligible(
+            sources.mz_joined_read,
+            deriveAnnotationFields(sources.mz_joined_read),
+         ),
+      ).toThrow(MaterializationEligibilityError);
+
+      // Unread: the join is pruned, so nothing given-derived reaches the
+      // artifact and there is nothing to strip or re-apply.
+      expect(await sources.mz_joined_unread.getSQL()).not.toContain("JOIN");
+      const plan = assertMaterializationEligible(
+         sources.mz_joined_unread,
+         deriveAnnotationFields(sources.mz_joined_unread),
+      );
+      expect(plan.terms).toEqual([]);
    });
 });
 
@@ -406,22 +646,39 @@ source: mz_colocated_partition is base -> { aggregate: c is count() }`);
       ).toThrow(/partition/i);
    });
 
-   it("accepts a colocated persist source that references a given but carries no gate (narrow check does not pull in referencesGiven)", async () => {
+   it("accepts a colocated persist source that references a given but carries no gate, and so does the storage gate", async () => {
+      // The given sits in the source's extend block, so it is absent from the
+      // build and applied over the artifact at read with each caller's value.
+      // Previously written with the given INSIDE the persisted query, which is
+      // the shape that bakes the default and serves it to everyone — that one is
+      // refused, so this test would otherwise have been asserting the defect as
+      // the contract.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: tenant :: string is 'acme'
 source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 #@ persist name="mz_colocated_given"
-source: mz_colocated_given is base -> { where: tenant = $tenant; aggregate: c is count() }`);
+source: mz_colocated_given is base -> { select: * } extend { where: tenant = $tenant }`);
       expect(sources.mz_colocated_given).toBeDefined();
-      // assertMaterializationEligible would refuse this (referencesGiven), but
-      // the colocated check deliberately does not apply that rule.
-      expect(() =>
-         assertMaterializationEligible(sources.mz_colocated_given),
-      ).toThrow(MaterializationEligibilityError);
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),
       ).not.toThrow();
+
+      // The two gates AGREE on this shape, and the agreement is the point. This
+      // assertion used to be the contrast — the storage gate refused a given
+      // wherever it sat, and that difference was what "the colocated check is
+      // narrower" meant. The storage gate now asks the same question both do:
+      // does the BUILD substitute a value? Here it does not, so both admit it,
+      // and the storage side additionally reports the term it will re-apply at
+      // read. What still separates the tiers is what they do with that term,
+      // not whether they tolerate it.
+      const plan = assertMaterializationEligible(
+         sources.mz_colocated_given,
+         deriveAnnotationFields(sources.mz_colocated_given),
+      );
+      expect(plan.terms).toEqual([
+         { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
+      ]);
    });
 
    describe("row-level relaxation (gateOutcome)", () => {
@@ -504,5 +761,322 @@ source: orders__preagg__category is orders -> {
             ),
          ).toThrow(/authorize/i);
       });
+   });
+});
+
+describe("a given inside the persisted query (colocated)", () => {
+   const MODEL = `##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
+
+#@ persist name="inside"
+source: inside is raw -> { where: org_id = $ORG_ID; select: * }
+
+#@ persist name="outside"
+source: outside is raw -> { select: * } extend { where: org_id = $ORG_ID }
+
+#@ persist name="clean"
+source: clean is raw -> { select: * }`;
+
+   it("refuses a given the persisted query is built with", async () => {
+      // Built with the default substituted, so the table holds one caller's
+      // slice and the read path — which swaps only the FROM — serves it to all.
+      const sources = await persistSources(MODEL);
+      expect(sources.inside).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(/persisted query references a given/i);
+      // The message has to name the remedy, since the safe shape is one move of
+      // placement away from the refused one — and name it as the RULE rather
+      // than one spelling of it, because a given applied at read is equally
+      // correct written as a dimension, a measure or a join.
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(/out of the persisted query/i);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(/dimension, measure or join/i);
+   });
+
+   it("admits the same given in the source's extend block", async () => {
+      // Absent from the build, applied over the artifact at read with each
+      // caller's own value. This is the documented form; refusing it would
+      // leave row-level access with no materializable shape at all.
+      const sources = await persistSources(MODEL);
+      expect(sources.outside).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.outside),
+      ).not.toThrow();
+   });
+
+   it("admits a predicate factored through a dimension, measure or join", async () => {
+      // These differ from the admitted `where:` only in how the predicate is
+      // written, and none of them reaches the build: each compiles to the same
+      // unfiltered relation. Refusing them would reject ordinary row-level
+      // access models and tell their authors to make a move they already made.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 100 AS amount")
+
+#@ persist name="via_dimension"
+source: via_dimension is raw -> { select: * } extend {
+  dimension: mine is org_id = $ORG_ID
+  where: mine
+}
+
+#@ persist name="via_measure"
+source: via_measure is raw -> { select: * } extend {
+  measure: mine_total is amount.sum() { where: org_id = $ORG_ID }
+}
+
+#@ persist name="via_extend_only"
+source: via_extend_only is raw extend {
+  dimension: mine is org_id = $ORG_ID
+  where: mine
+}`);
+      for (const name of ["via_dimension", "via_measure", "via_extend_only"]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).not.toThrow();
+      }
+   });
+
+   it("refuses a field the persisted QUERY is built with, wherever it is declared", async () => {
+      // The mirror of the case above: the same dimension, used INSIDE the query
+      // rather than in the extend block, is substituted into the build. The
+      // query carries the usage itself, which is why excluding `fields` from the
+      // walk does not let this through.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 100 AS amount")
+
+#@ persist name="used_in_query"
+source: used_in_query is raw extend {
+  dimension: mine is org_id = $ORG_ID
+} -> { where: mine; select: * }
+
+#@ persist name="given_in_group_by"
+source: given_in_group_by is raw -> {
+  group_by: flag is org_id = $ORG_ID
+  aggregate: c is count()
+}`);
+      for (const name of ["used_in_query", "given_in_group_by"]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).toThrow(MaterializationEligibilityError);
+      }
+   });
+
+   it("admits a derivation that does not READ the input source's given", async () => {
+      // The shape a structural walk cannot get right: a base source that merely
+      // OFFERS a given-filtered join, dimension or measure, with persisted
+      // derivations over it that use different subsets. None of these three
+      // reads the given, none bakes it, and refusing them would reject every
+      // derivation of a base that joins a visibility source.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id, 100 AS amt")
+source: orgs is duckdb.sql("SELECT 1 AS org_id, 'acme' AS name") extend {
+  where: org_id = $ORG_ID
+}
+
+source: offers_join is raw extend { join_one: o is orgs on org_id = o.org_id }
+#@ persist name="unused_join"
+source: unused_join is offers_join -> { select: org_id, user_id }
+
+source: offers_dim is raw extend { dimension: mine is org_id = $ORG_ID }
+#@ persist name="unused_dimension"
+source: unused_dimension is offers_dim -> { select: org_id, user_id }
+
+source: offers_measure is raw extend {
+  measure: scoped is amt.sum() { where: org_id = $ORG_ID }
+}
+#@ persist name="unused_measure"
+source: unused_measure is offers_measure -> {
+  group_by: user_id
+  aggregate: c is count()
+}`);
+      for (const name of [
+         "unused_join",
+         "unused_dimension",
+         "unused_measure",
+      ]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).not.toThrow();
+      }
+   });
+
+   it("refuses the same declarations once the query READS them", async () => {
+      // The mirror of the case above, and the pair that decides the whole
+      // check: same declarations, same input sources, and the only difference is
+      // that the persisted query consumes them — which is exactly when the build
+      // substitutes the default.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id, 100 AS amt")
+source: orgs is duckdb.sql("SELECT 1 AS org_id, 'acme' AS name") extend {
+  where: org_id = $ORG_ID
+}
+
+source: offers_join is raw extend { join_one: o is orgs on org_id = o.org_id }
+#@ persist name="reads_join"
+source: reads_join is offers_join -> {
+  group_by: nm is o.name
+  aggregate: c is count()
+}
+
+source: offers_dim is raw extend { dimension: mine is org_id = $ORG_ID }
+#@ persist name="reads_dimension"
+source: reads_dimension is offers_dim -> { where: mine; select: org_id, user_id }
+
+source: offers_measure is raw extend {
+  measure: scoped is amt.sum() { where: org_id = $ORG_ID }
+}
+#@ persist name="reads_measure"
+source: reads_measure is offers_measure -> {
+  group_by: user_id
+  aggregate: t is scoped
+}`);
+      for (const name of ["reads_join", "reads_dimension", "reads_measure"]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).toThrow(MaterializationEligibilityError);
+      }
+   });
+
+   it("falls back to the structural walk when the marker is absent", () => {
+      // `query.givenUsage` is the compiler's own summary, so if a future version
+      // stops emitting it this check would otherwise read "no givens" and admit
+      // everything. Synthetic IR rather than Malloy source, because the marker
+      // cannot be removed from the compiler's output from here — and this is the
+      // branch a compiler change would silently take.
+      const noMarker = {
+         name: "no_marker",
+         _sourceDef: {
+            // A query carrying a given, with no `givenUsage` alongside it.
+            query: {
+               pipeline: [
+                  {
+                     filterList: [
+                        { node: "filterCondition", e: { node: "given" } },
+                     ],
+                  },
+               ],
+            },
+         },
+      } as unknown as PersistSource;
+      expect(() => assertColocatedPersistNotAuthorizeGated(noMarker)).toThrow(
+         MaterializationEligibilityError,
+      );
+
+      // And the same shape with the given only where it is applied at read stays
+      // admitted, so the fallback is not a blanket refusal.
+      const readTimeOnly = {
+         name: "read_time_only",
+         _sourceDef: {
+            query: { pipeline: [{}] },
+            filterList: [{ node: "filterCondition", e: { node: "given" } }],
+            fields: [{ name: "d", e: { node: "given" } }],
+         },
+      } as unknown as PersistSource;
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly),
+      ).not.toThrow();
+   });
+
+   it("refuses when the compiled definition cannot be read at all", () => {
+      const unreadable = {
+         name: "unreadable",
+         _sourceDef: null,
+      } as unknown as PersistSource;
+      expect(() => assertColocatedPersistNotAuthorizeGated(unreadable)).toThrow(
+         MaterializationEligibilityError,
+      );
+   });
+
+   it("refuses a given bound as a source ARGUMENT, and admits a constant one", async () => {
+      // The channel the marker cannot see: an argument binds while the source
+      // the query reads is constructed, so nothing summarises it onto the query
+      // and `givenUsage` reads empty — while the build SQL is byte-identical to
+      // writing the given inside the query.
+      //
+      // The constant is the control that keeps this from being a blanket
+      // refusal of parameterized reads: it bakes too, but a concrete
+      // instantiation has no per-caller binding to lose.
+      const sources =
+         await persistSources(`##! experimental { persistence givens parameters }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
+source: pp(x::number) is raw extend { where: org_id = x }
+
+#@ persist name="arg_given"
+source: arg_given is pp(x is $ORG_ID) -> { select: * }
+
+#@ persist name="arg_constant"
+source: arg_constant is pp(x is 1) -> { select: * }`);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.arg_given),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.arg_constant),
+      ).not.toThrow();
+   });
+
+   it("refuses a given bound into a joined source the query reads", async () => {
+      // The argument walk has to descend for this: the given binds a joined
+      // source declared on the INPUT, so the holder sits under
+      // `structRef.fields`, and `query.givenUsage` is EMPTY even though the
+      // build SQL carries the predicate. Checking only the query's own holders
+      // admits it — a fail-open, which is why the descent is not narrowed.
+      //
+      // Its cost is stated rather than pinned: the same shape with a join the
+      // query does NOT read is also refused, though nothing reaches the build.
+      // That over-refusal is safe and deliberate, and a future signal precise
+      // enough to flip it would be an improvement, not a regression — so it is
+      // documented on `argumentBindsAGiven` and left unasserted here.
+      const sources =
+         await persistSources(`##! experimental { persistence givens parameters }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
+source: joinee is duckdb.sql("SELECT 1 AS org_id, 'a' AS nm")
+source: J(x::number) is joinee extend { where: org_id = x }
+source: withjoin is raw extend { join_one: j is J(x is $ORG_ID) on org_id = j.org_id }
+
+#@ persist name="join_arg_read"
+source: join_arg_read is withjoin -> { group_by: n is j.nm }`);
+      expect(sources.join_arg_read).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.join_arg_read),
+      ).toThrow(MaterializationEligibilityError);
+   });
+
+   it("admits a persisted query that references no given", async () => {
+      const sources = await persistSources(MODEL);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.clean),
+      ).not.toThrow();
+   });
+
+   it("names a rollup by the annotation its author wrote", async () => {
+      const sources = await persistSources(MODEL);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            sources.inside,
+            "orders__preagg__category",
+            "preaggregate",
+         ),
+      ).toThrow(/Pre-aggregation rollup/i);
    });
 });

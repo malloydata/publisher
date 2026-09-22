@@ -938,6 +938,32 @@ export const getPersistCollisionEnforce = (): boolean =>
    parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
 /**
+ * Which origins may read a cross-origin response from the MCP endpoint, from
+ * `MCP_CORS_ORIGINS` (comma-separated; `*` allows any).
+ *
+ * Returns the value for `cors`'s `origin` option. `false`, the default, sends
+ * no `Access-Control-Allow-Origin`, so a browser withholds the response from a
+ * page on another origin. That is the safe default for an endpoint that is
+ * unauthenticated and can read whatever the models connect to.
+ *
+ * Returned as a value rather than applied here so the policy is unit-testable
+ * without booting a listener.
+ */
+export const getMcpCorsOrigins = (): string[] | boolean | string => {
+   const raw = process.env.MCP_CORS_ORIGINS;
+   if (raw === undefined || raw.trim() === "") return false;
+   const trimmed = raw.trim();
+   if (trimmed === "*") return "*";
+   const origins = trimmed
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0);
+   // A value that parses to nothing (`","`, `" , "`) is a typo, not a request to
+   // allow every origin. Deny rather than fall through to a permissive default.
+   return origins.length > 0 ? origins : false;
+};
+
+/**
  * Whether the publisher attaches per-query metadata at all, from
  * `PUBLISHER_QUERY_METADATA` (default `off`).
  *
@@ -1034,6 +1060,31 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
    // Resolve: `--config` may be relative, and an anchor that is itself relative
    // would re-resolve against the cwd of whoever reads it.
    return path.resolve(path.dirname(resolved.path));
+};
+
+/**
+ * The `publisher.config.json` path that was looked for and not found, or null
+ * whenever a config did resolve.
+ *
+ * Exists so a caller running ONCE at boot can explain an empty environment list.
+ * `getPublisherConfig` deliberately does not log this itself: it is called on
+ * every config read, so a line there re-emits per request.
+ *
+ * Returns null when `--config` was given, whether or not that path exists.
+ * A missing explicit path is already reported by `getPublisherConfig`, and
+ * reporting it twice in two different shapes helps nobody.
+ */
+export const getUnresolvedPublisherConfigPath = (
+   serverRoot: string,
+): string | null => {
+   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
+   if (explicitPath && explicitPath.length > 0) {
+      return null;
+   }
+   if (resolvePublisherConfigPath(serverRoot)) {
+      return null;
+   }
+   return path.join(serverRoot, PUBLISHER_CONFIG_NAME);
 };
 
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {

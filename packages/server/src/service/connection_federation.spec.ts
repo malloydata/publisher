@@ -9,11 +9,18 @@
 // spike's job.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import * as sinon from "sinon";
+import tls from "tls";
 import type { components } from "../api";
 import {
+   ambientTrustBundlePath,
    attachDuckLakeReadWrite,
    federateSourceForPassthrough,
+   buildProxiedPgAttachString,
+   pgConninfoPair,
 } from "./connection";
 
 /** A real in-memory DuckDB connection with runSQL stubbed to capture SQL. */
@@ -26,6 +33,22 @@ function stubbedConnection(): { conn: DuckDBConnection; sql: string[] } {
       return { rows: [], totalRows: 0, runStats: {} } as any;
    });
    return { conn, sql };
+}
+
+/** Runs `fn` with NODE_EXTRA_CA_CERTS set to `value` (unset when undefined). */
+async function withCaBundle(
+   value: string | undefined,
+   fn: () => void | Promise<void>,
+): Promise<void> {
+   const prev = process.env.NODE_EXTRA_CA_CERTS;
+   if (value === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+   else process.env.NODE_EXTRA_CA_CERTS = value;
+   try {
+      await fn();
+   } finally {
+      if (prev === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+      else process.env.NODE_EXTRA_CA_CERTS = prev;
+   }
 }
 
 const SERVICE_ACCOUNT = JSON.stringify({
@@ -254,6 +277,151 @@ describe("federateSourceForPassthrough", () => {
       expect(attach).toContain('AS "my-pg" (TYPE postgres, READ_ONLY)');
    });
 
+   it("postgres: a proxied source is federated through its tunnel, not at its own host", async () => {
+      const { conn, sql } = stubbedConnection();
+      let closed = 0;
+      let dialled: { host: string; port: number } | undefined;
+      const openProxy = async (
+         _proxy: components["schemas"]["ConnectionProxy"],
+         target: { host: string; port: number },
+      ) => {
+         dialled = target;
+         return {
+            host: "127.0.0.1",
+            port: 54321,
+            close: async () => {
+               closed += 1;
+            },
+         };
+      };
+      const result = await federateSourceForPassthrough(
+         conn,
+         "postgres",
+         {
+            name: "src_pg",
+            postgresConnection: {
+               host: "db.internal.example",
+               port: 5432,
+               databaseName: "d",
+               userName: "u",
+               password: "pw",
+            } as components["schemas"]["PostgresConnection"],
+            proxy: {
+               type: "ssh",
+               ssh: { host: "bastion.example", port: 22, username: "tunnel" },
+            } as components["schemas"]["ConnectionProxy"],
+         },
+         { openProxy },
+      );
+      // The tunnel is opened to the database's own host:port …
+      expect(dialled).toEqual({ host: "db.internal.example", port: 5432 });
+      // … and the ATTACH dials the tunnel's local endpoint (`hostaddr`), keeping
+      // the database's own name as `host` for SNI and the certificate check.
+      const attach = sql.find((s) => s.startsWith("ATTACH"));
+      expect(attach).toContain(
+         "host=db.internal.example hostaddr=127.0.0.1 port=54321",
+      );
+      expect(attach).not.toContain("host=127.0.0.1");
+      expect(attach).toContain("dbname=d user=u password=pw");
+      // Encrypt without verifying by default (a force-SSL target must not be
+      // refused for plaintext; the query path defaults the same way).
+      expect(attach).toContain("sslmode=require");
+      expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+      expect(result.handle).toBe("src_pg");
+      // The handle carries the tunnel's close for the build session's finally.
+      expect(result.close).toBeDefined();
+      await result.close!();
+      expect(closed).toBe(1);
+   });
+
+   it("postgres: a proxied attach that fails closes the tunnel it opened", async () => {
+      const conn = new DuckDBConnection("build", ":memory:");
+      sinon.stub(conn, "runSQL").callsFake(async (q: string) => {
+         if (q.startsWith("ATTACH")) throw new Error("boom");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         return { rows: [], totalRows: 0, runStats: {} } as any;
+      });
+      let closed = 0;
+      const openProxy = async () => ({
+         host: "127.0.0.1",
+         port: 54321,
+         close: async () => {
+            closed += 1;
+         },
+      });
+      await expect(
+         federateSourceForPassthrough(
+            conn,
+            "postgres",
+            {
+               name: "src_pg",
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+               } as components["schemas"]["PostgresConnection"],
+               proxy: {
+                  type: "ssh",
+                  ssh: { host: "b", port: 22, username: "t" },
+               } as components["schemas"]["ConnectionProxy"],
+            },
+            { openProxy },
+         ),
+      ).rejects.toThrow("boom");
+      expect(closed).toBe(1);
+   });
+
+   it("postgres: a refusal between opening the tunnel and the attach closes the tunnel", async () => {
+      const { conn, sql } = stubbedConnection();
+      let closed = 0;
+      const openProxy = async () => ({
+         host: "127.0.0.1",
+         port: 54321,
+         close: async () => {
+            closed += 1;
+         },
+      });
+      // verify-ca with no trusted bundle is refused AFTER the tunnel is open and
+      // BEFORE any ATTACH: the tunnel must not be stranded by that refusal.
+      await withCaBundle(undefined, async () => {
+         await expect(
+            federateSourceForPassthrough(
+               conn,
+               "postgres",
+               {
+                  name: "src_pg",
+                  postgresConnection: {
+                     host: "h",
+                     port: 5432,
+                     sslmode: "verify-ca",
+                  } as components["schemas"]["PostgresConnection"],
+                  proxy: {
+                     type: "ssh",
+                     ssh: { host: "b", port: 22, username: "t" },
+                  } as components["schemas"]["ConnectionProxy"],
+               },
+               { openProxy },
+            ),
+         ).rejects.toThrow(/NODE_EXTRA_CA_CERTS/);
+      });
+      expect(sql.find((s) => s.startsWith("ATTACH"))).toBeUndefined();
+      expect(closed).toBe(1);
+   });
+
+   it("postgres: an unproxied source still attaches at its own host, with no close", async () => {
+      const { conn, sql } = stubbedConnection();
+      const result = await federateSourceForPassthrough(conn, "postgres", {
+         name: "src_pg",
+         postgresConnection: {
+            host: "h",
+            port: 5432,
+         } as components["schemas"]["PostgresConnection"],
+      });
+      expect(sql.find((s) => s.startsWith("ATTACH"))).toContain(
+         "host=h port=5432",
+      );
+      expect(result.close).toBeUndefined();
+   });
+
    it("rejects a source type with no native passthrough", async () => {
       const { conn } = stubbedConnection();
       await expect(
@@ -293,7 +461,16 @@ describe("attachDuckLakeReadWrite", () => {
       expect(attach).toContain("OVERRIDE_DATA_PATH true");
       expect(attach).not.toContain("READ_ONLY");
       expect(attach).not.toContain("AUTOMATIC_MIGRATION");
-      expect(attach).toContain("AS lake");
+      expect(attach).toContain('AS "lake"');
+   });
+
+   // A name the validator admits but DuckDB cannot parse unquoted; the error
+   // would otherwise land after the catalog DSN in the same statement.
+   it("quotes a hyphenated catalog alias", async () => {
+      const { conn, sql } = stubbedConnection();
+      await attachDuckLakeReadWrite(conn, "prod-lake", ducklakeConfig);
+      const attach = sql.find((s) => s.includes("ATTACH OR REPLACE"));
+      expect(attach).toContain('AS "prod-lake"');
    });
 
    // Both write bounds are covered in isolation by their own specs, which pass
@@ -316,15 +493,148 @@ describe("attachDuckLakeReadWrite", () => {
          expect(
             sql.some((s) =>
                s.includes(
-                  "CALL lake.set_option('parquet_row_group_size_bytes', '32MB')",
+                  "CALL \"lake\".set_option('parquet_row_group_size_bytes', '32MB')",
                ),
             ),
          ).toBe(true);
          expect(
             sql.some((s) =>
-               s.includes("CALL lake.set_option('target_file_size', '256MB')"),
+               s.includes(
+                  "CALL \"lake\".set_option('target_file_size', '256MB')",
+               ),
             ),
          ).toBe(true);
+      });
+   });
+});
+
+describe("buildProxiedPgAttachString", () => {
+   const endpoint = { host: "127.0.0.1", port: 6000, close: async () => {} };
+   const pg = (sslmode?: string) =>
+      ({
+         host: "real.example",
+         port: 5432,
+         databaseName: "d",
+         userName: "u",
+         password: "p",
+         sslmode,
+      }) as components["schemas"]["PostgresConnection"];
+   it("dials the tunnel endpoint as hostaddr, keeps the real host, and defaults to sslmode=require", () => {
+      const s = buildProxiedPgAttachString("c", pg(undefined), endpoint);
+      expect(s).toBe(
+         "host=real.example hostaddr=127.0.0.1 port=6000 dbname=d user=u password=p sslmode=require",
+      );
+   });
+
+   it("maps disable and no-verify", () => {
+      expect(
+         buildProxiedPgAttachString("c", pg("disable"), endpoint),
+      ).toContain("sslmode=disable");
+      expect(
+         buildProxiedPgAttachString("c", pg("no-verify"), endpoint),
+      ).toContain("sslmode=require");
+   });
+
+   it("verify-ca needs the trusted CA bundle and passes it as sslrootcert", async () => {
+      await withCaBundle(undefined, () => {
+         expect(() =>
+            buildProxiedPgAttachString("c", pg("verify-ca"), endpoint),
+         ).toThrow(/NODE_EXTRA_CA_CERTS/);
+      });
+      await withCaBundle("/etc/ssl/rds.pem", () => {
+         expect(
+            buildProxiedPgAttachString("c", pg("verify-ca"), endpoint),
+         ).toContain("sslmode=verify-ca sslrootcert=/etc/ssl/rds.pem");
+      });
+   });
+
+   it("verify-full stays verify-full: chain against the ambient roots plus the bundle, hostname against the real host", () => {
+      // No NODE_EXTRA_CA_CERTS: a publicly-trusted target still builds. libpq
+      // checks the certificate against `host` (real.example) while dialling
+      // `hostaddr`, so nothing is downgraded through the tunnel.
+      const full = buildProxiedPgAttachString(
+         "c",
+         pg("verify-full"),
+         endpoint,
+         {
+            caBundle: undefined,
+            ambientBundle: () => "/tmp/ambient.pem",
+         },
+      );
+      expect(full).toContain("host=real.example hostaddr=127.0.0.1");
+      expect(full).toContain(
+         "sslmode=verify-full sslrootcert=/tmp/ambient.pem",
+      );
+      expect(full).not.toContain("verify-ca");
+      // With a bundle set, the union (ambient roots + bundle) is what libpq gets —
+      // the query path's trust set — never the pinned bundle alone.
+      const s = buildProxiedPgAttachString("c", pg("verify-full"), endpoint, {
+         caBundle: "/etc/ssl/rds.pem",
+         ambientBundle: () => "/tmp/ambient.pem",
+      });
+      expect(s).toContain("sslrootcert=/tmp/ambient.pem");
+      expect(s).not.toContain("/etc/ssl/rds.pem");
+   });
+
+   it("quotes a value libpq would otherwise split or mis-parse", () => {
+      const s = buildProxiedPgAttachString(
+         "c",
+         { ...pg(undefined), password: "p w'x\\y" },
+         endpoint,
+      );
+      expect(s).toContain("user=u password='p w\\'x\\\\y' sslmode=require");
+      expect(pgConninfoPair("k", "plain")).toBe("k=plain");
+      expect(pgConninfoPair("k", "")).toBe("k=''");
+      expect(pgConninfoPair("k", "a b")).toBe("k='a b'");
+   });
+
+   it("refuses an unknown sslmode", () => {
+      expect(() =>
+         buildProxiedPgAttachString("c", pg("prefer"), endpoint),
+      ).toThrow(/unsupported sslmode/);
+   });
+});
+
+describe("ambientTrustBundlePath", () => {
+   it("writes the runtime's roots plus NODE_EXTRA_CA_CERTS to one file, once", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "ambient-ca-"));
+      const extra = join(dir, "extra.pem");
+      const marker =
+         "-----BEGIN CERTIFICATE-----\nEXTRA-MARKER\n-----END CERTIFICATE-----";
+      writeFileSync(extra, `${marker}\n`);
+      await withCaBundle(extra, () => {
+         const file = ambientTrustBundlePath();
+         const pem = readFileSync(file, "utf8");
+         expect(pem).toContain(tls.rootCertificates[0]);
+         expect(pem).toContain(marker);
+         expect(ambientTrustBundlePath()).toBe(file);
+      });
+      await withCaBundle(undefined, () => {
+         const pem = readFileSync(ambientTrustBundlePath(), "utf8");
+         expect(pem).toContain(tls.rootCertificates[0]);
+         expect(pem).not.toContain("EXTRA-MARKER");
+      });
+   });
+
+   it("hands libpq a file this process wrote, in a directory only it can enter", () => {
+      const file = ambientTrustBundlePath();
+      // A private mkdtemp directory: nothing pre-existing at a predictable path
+      // can be picked up as the trust store. The directory name carries the
+      // mkdtemp suffix, so it is not a fixed, guessable path.
+      expect(join(file, "..")).toMatch(/publisher-ambient-ca-[^/\\]+$/);
+      expect(file).not.toBe(join(tmpdir(), "publisher-ambient-ca.pem"));
+      // POSIX permission bits; Windows has no equivalent in `mode`, so the
+      // private-directory guarantee there is the unguessable name alone.
+      if (process.platform !== "win32") {
+         expect(statSync(join(file, "..")).mode & 0o777).toBe(0o700);
+         expect(statSync(file).mode & 0o777).toBe(0o600);
+      }
+   });
+
+   it("skips an unreadable NODE_EXTRA_CA_CERTS the way the runtime does, instead of failing the build", async () => {
+      await withCaBundle(join(tmpdir(), "does-not-exist.pem"), () => {
+         const pem = readFileSync(ambientTrustBundlePath(), "utf8");
+         expect(pem).toContain(tls.rootCertificates[0]);
       });
    });
 });

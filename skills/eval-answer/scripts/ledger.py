@@ -64,19 +64,54 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                              "transcriptPath"},
         "optional": {"question_sha", "servedRevision", "n_get_context",
                      "n_execute", "n_execute_errors", "host_tool_uses",
+                     "mcp_tool_uses", "final_query_source",
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
+                     "cache_write_tokens", "skills_invoked",
                      "cost_usd", "num_turns", "wall_seconds", "run_error", "at"},
     },
     "tool_call": {
         "required": _CASE | {"tool"},
-        "optional": {"targets", "rankedSummary", "error", "traceId", "at"},
+        # `retrieval_mode` is get_context's own `retrieval` field: "semantic",
+        # "lexical", or absent. Absent means the call did not RANK -- an
+        # enumeration or a targeted lookup -- or that the server has no
+        # embedding provider at all, so it is not on its own evidence of
+        # either. Which retriever answered decides whether two runs are
+        # comparable at all, and it is only knowable from the response that
+        # answered.
+        # `query`, `modelPath` and `filterParams` are one fact about one
+        # call: the text that ran, the file it was written against, and the
+        # filter values it ran under. Recorded apart they drift, and two of
+        # the three drift SILENTLY -- a replay against the wrong file at least
+        # errors, while a replay under another report's filter values returns
+        # real rows for the wrong population. Keeping all three on the event
+        # is what lets a re-execution be audited from the ledger at all.
+        # `target_shapes` is one row per search target -- its type, and whether
+        # it carried search text -- beside `targets`, which is the terms
+        # searched for and drops a target that carried none. Without it the
+        # bare-target rate is not recomputable from a run directory, only from
+        # transcripts, and transcripts get pruned.
+        "optional": {"targets", "target_shapes", "scopes", "rankedSummary",
+                     "error", "traceId",
+                     "query", "modelPath", "filterParams", "retrieval_mode",
+                     "at"},
     },
     "score": {
         "required": _CASE | {"verdict", "reason"},
+        # `judge_verdict` keeps what the judge said when a mechanical veto
+        # (`must_not_use_hits`) overrode it, so a veto is auditable and the
+        # judge's own agreement rate stays measurable.
         "optional": {"judge_version", "rubric_sha", "golden_revision",
                      "artifactPath", "confidence", "column_pairing",
-                     "contaminated", "gold_status", "gold_note", "at"},
+                     "contaminated", "gold_status", "gold_note",
+                     "must_not_use_hits", "judge_verdict",
+                     # What this case's judge call cost. Collected per case and
+                     # discarded on the write path until now, so the run could
+                     # report what judging cost in total and never which case
+                     # was expensive -- and a case that spent its whole turn
+                     # budget without producing a verdict is the one worth
+                     # finding.
+                     "judge_cost_usd", "at"},
     },
     "retrieval_score": {
         "required": {"intentId", "term"},
@@ -136,14 +171,45 @@ RUN_RECOMMENDED = {"judgeModel", "judgeVersion", "datasetVersion", "modelSha",
 RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "modelGitSha", "mcpUrl", "publisher", "predictionsReExecuted",
                 "serverVersion", "diagnoserModel", "improverModel",
-                "rubricSha", "setName", "targetVersion", "scope", "mode",
+                "rubricSha",
+                # The prompt the judge was SHOWN, hashed. `rubricSha` covers
+                # the judge's skill file and not the harness's own prompt
+                # template, so two runs whose prompts differed compared as the
+                # same judge -- the blind spot that let a golden-rendering
+                # defect run for three arms with every test passing.
+                "judgePromptSha", "setName", "targetVersion", "scope", "mode",
                 "traceMode",
+                # The answerer's cap and timeout, as the run actually ran them.
+                # `eval-loop` step 6 lists "call budget" among the pins to
+                # freeze for a whole arm, and nothing wrote one, so no two runs
+                # could be compared on the setting that decides whether a case
+                # got to finish at all. `callBudget` stays for runs written
+                # before this, and is not the same field: it was never
+                # populated by this harness.
+                "maxTurns", "answererTimeout",
+                # How many attempts never reached a verdict for a reason that
+                # is the HARNESS's, not the model's. Both leave the denominator
+                # and both suppress the pass rate (`incomplete` below).
+                "truncated", "contaminated",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
+                # The run whose attempts this run's answerer cost was COPIED
+                # from, when it did not spawn an answerer at all (a re-judge, a
+                # rebuild, a `--from`). Null when this run paid. Summing
+                # `answererCostUsd` across run files double-counts without it:
+                # one re-judge reported $17.56 of answering that never happened.
+                "answererCostCopiedFrom",
+                # Set when a rebuild reused saved verdicts, so `judgeCostUsd`
+                # is the ORIGINAL judging spend rather than this run's zero.
+                "judgeCostCopiedFrom",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
                 "improverManifest", "doubtedGoldens",
-                "packageSha", "servedRevision", "datasetSha"} | RUN_RECOMMENDED
+                "packageSha", "servedRevision", "datasetSha",
+                "staleEntityNames",
+                "retrievalMode", "retrievalCalls", "retrievalGate",
+                "reExecution", "coverageReport",
+                "modelRepo"} | RUN_RECOMMENDED
 
 
 def dataset_sha(set_dir: pathlib.Path) -> str | None:
@@ -281,14 +347,29 @@ def skills_git_sha(root: pathlib.Path | None = None) -> str | None:
     the `skillsVersion` pin. Defaults to this checkout; pass the external
     --skills-root when the doctrine came from elsewhere (a Publisher checkout).
     The skills ARE the doctrine the agents load, so a run that cannot name
-    their version cannot take part in a comparison."""
-    d = pathlib.Path(root) if root else pathlib.Path(__file__).resolve().parent
+    their version cannot take part in a comparison.
+
+    `-dirty` is decided over the SKILLS PATH, not the whole repository. It used
+    to be the whole tree, so every run ever taken read `-dirty` -- including
+    runs taken before anything was edited -- because a checkout picks up stray
+    untracked files as a matter of course. A marker that cannot distinguish
+    "someone left a scratch file in the repo root" from "the judge prompt was
+    rewritten between these two arms" is not a pin, and the runs that carry it
+    cannot be told apart on the one thing it exists to record."""
+    # Resolved, always: the path is used BOTH as git's working directory and as
+    # its pathspec, and a relative one means different things in those two
+    # positions. Passed `skills`, git ran in `skills/` and then looked for
+    # `skills/skills`, which matches nothing -- so every tree read clean and
+    # the marker silently stopped working in the other direction.
+    d = (pathlib.Path(root) if root
+         else pathlib.Path(__file__).resolve().parent).resolve()
     try:
         head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
                               capture_output=True, text=True, timeout=10)
         if head.returncode != 0:
             return None
-        dirty = subprocess.run(["git", "-C", str(d), "status", "--porcelain"],
+        dirty = subprocess.run(["git", "-C", str(d), "status", "--porcelain",
+                                "--", str(d)],
                                capture_output=True, text=True, timeout=10)
         return head.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:  # noqa: BLE001
@@ -354,6 +435,28 @@ def validate_run(run_dir: pathlib.Path) -> tuple[list[str], list[str]]:
             (warnings if ("unknown field" in p or "legacy shape" in p)
              else errors).append(
                 f"events.jsonl:{n}: {p}")
+        # The under-report floor from skill:eval-answer's contamination
+        # checklist: the answerer cannot have made more MCP calls than the host
+        # saw tool uses in total. Written into the ledger by every run and
+        # applied nowhere until now, so an under-reporting answerer passed.
+        # `host_tool_uses` counts EVERY tool use, MCP included -- it counted
+        # only the non-MCP ones until 2026-09-03, which made the comparison
+        # true of almost every clean attempt and unusable as a signal.
+        #
+        # The floor consults `reported_calls` and `host_tool_uses` only.
+        # `mcp_tool_uses` was bound and conjoined here without being compared,
+        # and it is OPTIONAL on an attempt event, so the floor silently skipped
+        # every attempt that omitted it -- a check applied to exactly the
+        # attempts that carried a field it never read.
+        if kind == "attempt":
+            rep, host = e.get("reported_calls"), e.get("host_tool_uses")
+            if (isinstance(rep, int) and isinstance(host, int)
+                    and rep > host):
+                warnings.append(
+                    f"events.jsonl:{n}: {e.get('qid')}: reported_calls {rep} > "
+                    f"host_tool_uses {host} -- the answerer claims more calls "
+                    f"than the host logged; treat the attempt as contaminated")
+
         if kind == "score":
             key = (e.get("qid"), e.get("sample"), e.get("phase"))
             if key in seen_scores:
