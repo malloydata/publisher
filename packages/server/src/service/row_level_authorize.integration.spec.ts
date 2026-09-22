@@ -4429,6 +4429,22 @@ source: X is duckdb.sql("select 1 as id") extend {
       expect(secureNotesOf(pkg, "ROLE").length).toBeGreaterThan(0);
    });
 
+   // The other half of the predicate. The assertions above catch the marker
+   // being LOST; reporting one on a given that carries none is the same failure
+   // in reverse, and a deployment acting on it would strip a value the author
+   // never asked it to.
+   //
+   // The given below carries a DIFFERENT routed annotation on purpose. A given
+   // with no annotations at all cannot prove anything here: the helper filters
+   // an empty array, so a predicate that always returned true would pass such a
+   // test unchanged. `#(insecure)` is both non-empty and adversarial -- it
+   // contains the substring "secure", so it also pins that this reads Malloy's
+   // routing rather than matching text.
+   it("does not report a marker on a given annotated otherwise", async () => {
+      const pkg = await loadThroughPool("  #(insecure)\n  ROLE :: string");
+      expect(secureNotesOf(pkg, "ROLE")).toHaveLength(0);
+   });
+
    // GUARDS: every shape below loads today and must keep loading. A scalar
    // secure given behind a gate is the exact shape an earlier revision of this
    // work refused, and it is a working configuration -- the gate evaluates and
