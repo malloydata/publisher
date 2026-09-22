@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
+## [0.5.0] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
 
 `proxy.ssh.hostKey` pins the bastion's host key. When it was omitted the tunnel
 connected to whatever key the far end presented, which means a
@@ -64,7 +64,7 @@ for a failing query either: the tunnel is dialed lazily, and on config load this
 release logs a warning naming each SSH connection that pins no host key while the
 opt-in is off, so the list is in the startup log before anyone runs a query.
 
-## [Unreleased] — compile and sqlSource now count against the concurrency cap
+## [0.5.0] — compile and sqlSource now count against the concurrency cap
 
 `PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
 flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`,
@@ -94,7 +94,7 @@ What this does not cover, so the entry is not read as a complete list:
 connection `schemas` and `tables` routes and the MCP `search_database_schema`
 tool take no slot.
 
-## [Unreleased] - two server defaults now close instead of open
+## [0.5.0] - two server defaults now close instead of open
 
 Two settings that were open by default are closed. Both are silent until
 something that relied on the old default stops working, so each needs a
@@ -126,7 +126,7 @@ have moved the REST port to localhost too. Precedence is `MCP_HOST`, then an
 explicit `PUBLISHER_HOST` so `--host` still moves both together, then
 `127.0.0.1`. The REST default is unchanged.
 
-## [Unreleased] — `configEtag`, so a writer can tell which Publishers still hold the config it sent
+## [0.5.0] — `configEtag`, so a writer can tell which Publishers still hold the config it sent
 
 Credentials are never returned on a read, so a system distributing the same connection to several
 Publishers could not confirm any of them was still holding the credential it last sent: a read tells
@@ -182,7 +182,7 @@ no expected-version slot, so two people editing one authoritative workspace are 
 last writer wins, and the editor cannot detect it. Only the package path is
 compare-and-swap protected.
 
-## [Unreleased] — a colocated persist whose query is built with a given is refused
+## [0.5.0] — a colocated persist whose query is built with a given is refused
 
 A given's value is substituted when the compiler compiles. Inside a persisted query the only value available is the declaration default, so it was baked into the relation — and persistence swaps only the source's `FROM`, leaving nothing to re-apply a filter that lives inside that relation. The table held one caller's slice and was served to everyone, whatever value they supplied. That shape is now refused.
 
@@ -553,7 +553,7 @@ implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/
 
 ---
 
-## [Unreleased] — the dashboard editor can now filter a tile whose view is written inline
+## [0.5.0] — the dashboard editor can now filter a tile whose view is written inline
 
 A dashboard tile's filter control used to refuse to bind on an `inline` tile — `view: x
 is { aggregate: … }` — because the only write path was a `+ { where: … }` refinement
@@ -633,7 +633,7 @@ or stranding a comment it was not asked about, and names the comment in the reas
 
 ---
 
-## [Unreleased] — `DashboardEditor` takes a `resourceUri`, and can now open a pinned version
+## [0.5.0] — `DashboardEditor` takes a `resourceUri`, and can now open a pinned version
 
 `DashboardEditor` was the only resource-addressed component in the SDK still taking loose
 `environmentName` / `packageName` props, under a `dashboardName` that disagreed with
