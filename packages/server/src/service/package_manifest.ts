@@ -8,7 +8,11 @@
  * package-load worker that consumes it.
  */
 
-import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
+import {
+   INDEX_MODEL_NAME,
+   MODEL_FILE_SUFFIX,
+   normalizeModelPath,
+} from "../constants";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -410,10 +414,11 @@ export function queryMetadataParseWarnings(
  * conventional name — the code tests for one spelling, so it must claim only
  * that one.
  *
- * Never throws, unlike {@link resolvePackageScope}. Precedence here is
- * deterministic, so a package that declares both a surface and an index file
- * has a defined answer; only the author's intent is in doubt, and that is a
- * warning.
+ * Precedence never throws: a package that declares both a surface and an index
+ * file has a defined answer, and only the author's intent is in doubt, which is
+ * a warning. A MALFORMED `explores` does throw, like {@link
+ * resolvePackageScope}, and fails the package load -- see the rejection below
+ * for why refusing beats every way of carrying on.
  */
 export function resolveExplores(input: {
    /** The raw `explores` value as it appeared in publisher.json. */
@@ -432,27 +437,46 @@ export function resolveExplores(input: {
    const hasIndexModel = modelPaths.includes(INDEX_MODEL_NAME);
    const warnings: string[] = [];
 
-   // An array of strings is the only well-formed shape. A non-string element
-   // is malformed too, and is rejected rather than coerced: `String(null)`
-   // would build a surface naming "null", which matches no model, so curation
-   // would switch on over an empty set and the package would list nothing.
-   // Rejecting leaves the package uncurated (or on the convention), which is
-   // the conservative direction. It also stops a non-string element throwing
-   // out of `normalizeModelPath` and failing the whole package load.
-   const wellFormed =
-      Array.isArray(declaredExplores) &&
-      declaredExplores.every((entry) => typeof entry === "string");
-   const declared = wellFormed
-      ? (declaredExplores as string[]).map(normalizeModelPath)
-      : undefined;
-
-   // Rejecting it quietly would leave the author reading a package that does
-   // not curate the way their manifest says it does, with nothing anywhere to
-   // say the key was ignored rather than applied. Every other branch of this
-   // function reports what it did; this one has to as well.
-   if (declaredExplores !== undefined && !wellFormed) {
-      warnings.push(exploresMalformed(declaredExplores));
+   // An array of strings is the only well-formed shape, and anything else fails
+   // the package load. `explores` decides what is REACHABLE, so a value the
+   // server only partly understands must not be partly applied:
+   //
+   //  - ignoring it widens the surface. `["orders.malloy", 7]` would resolve to
+   //    no surface at all, and every source the author curated away would be
+   //    listed and queryable -- the exact direction `brokenSurfaceWarnings`
+   //    refuses for the same question in package.ts.
+   //  - keeping the entries that parse serves a surface the author did not
+   //    write, which is guessing at intent on the one key where guessing wrong
+   //    is an access change.
+   //  - coercing (`String(null)` -> "null") builds a surface naming a model
+   //    that cannot exist, so the package lists nothing while reporting a
+   //    reason that describes a file rather than the typo that caused it.
+   //
+   // Refusing is the only one of the four that neither widens the surface nor
+   // invents intent, and an absent package is visible in `loadErrors` where a
+   // silently-uncurated one is not. It also restores the behavior this key had
+   // before the `index.malloy` convention, when a non-string entry threw out of
+   // `normalizeModelPath` -- the same outcome, now with a message that names the
+   // value and the fix.
+   if (
+      declaredExplores !== undefined &&
+      !(
+         Array.isArray(declaredExplores) &&
+         declaredExplores.every((entry) => typeof entry === "string")
+      )
+   ) {
+      throw new Error(
+         `Invalid "explores" in publisher.json: expected an array of model ` +
+            `paths, got ${JSON.stringify(declaredExplores)}. The package is ` +
+            `not served, because ignoring the key would publish every source ` +
+            `it was meant to withhold. Fix: "explores": ` +
+            `["${INDEX_MODEL_NAME}"], or delete the key to use a root ` +
+            `"${INDEX_MODEL_NAME}" instead.`,
+      );
    }
+   const declared = Array.isArray(declaredExplores)
+      ? declaredExplores.map((entry) => normalizeModelPath(entry as string))
+      : undefined;
 
    if (declaredQueryableSources !== undefined) {
       warnings.push(
@@ -463,7 +487,14 @@ export function resolveExplores(input: {
    }
 
    if (declared !== undefined) {
-      if (declared.length === 0 && hasIndexModel) {
+      if (declared.length === 0 && !hasIndexModel) {
+         // Still the supported "do not curate" state, just with nothing to
+         // suppress. The deprecation must not reach it: its advice ends "it
+         // curates and enforces exactly as the key does", which is false of an
+         // empty array, and an author who followed it would curate a package
+         // they had deliberately left open.
+         warnings.push(EXPLORES_EMPTY_IS_UNCURATED);
+      } else if (declared.length === 0) {
          // The one case where the key is load-bearing rather than legacy.
          // `explores: []` beside an index.malloy is the documented way to keep
          // a package uncurated, so the ordinary "delete the key" advice is
@@ -493,28 +524,21 @@ export function resolveExplores(input: {
    // convention that is simply the feature working, but for one that predates
    // it -- or that happens to carry a file by that name -- it is a surface
    // appearing where there was none, and models that answered yesterday start
-   // returning 404. Say so once, and only where there is something to hide:
-   // an index.malloy that is the package's only model withholds nothing.
-   if (modelPaths.some((modelPath) => modelPath !== INDEX_MODEL_NAME)) {
+   // returning 404. Say so once, and only where there is something to hide.
+   // MODELS, not every path: `filterModelPaths` also yields `.malloynb`, and a
+   // notebook is always listed and never subject to the boundary, so a package
+   // of an index.malloy and a notebook withholds nothing.
+   if (
+      modelPaths.some(
+         (modelPath) =>
+            modelPath.endsWith(MODEL_FILE_SUFFIX) &&
+            modelPath !== INDEX_MODEL_NAME,
+      )
+   ) {
       warnings.push(INDEX_MODEL_IS_THE_SURFACE);
    }
 
    return { explores: [INDEX_MODEL_NAME], warnings };
-}
-
-/**
- * Said when a malformed `explores` is dropped. Names the shape expected and
- * the value found, because the failure is otherwise invisible: the package
- * loads, serves, and simply ignores the key.
- */
-function exploresMalformed(declaredExplores: unknown): string {
-   return (
-      `Invalid "explores" in publisher.json: expected an array of model ` +
-      `paths, got ${JSON.stringify(declaredExplores)}. The key is being ` +
-      `IGNORED, so this package is curated by its "${INDEX_MODEL_NAME}" if it ` +
-      `has one and is otherwise uncurated. Fix: "explores": ` +
-      `["${INDEX_MODEL_NAME}"].`
-   );
 }
 
 /**
@@ -531,8 +555,9 @@ const INDEX_MODEL_IS_THE_SURFACE =
    `and sources it does not "export { ... }" are refused by name with a 404. ` +
    `Other models still compile and are still importable and joinable. If that ` +
    `is intended, nothing to do. If this package is not meant to be curated, ` +
-   `add "explores": [] to publisher.json to keep every model listed and ` +
-   `queryable, or rename the file.`;
+   `add "explores": [] to publisher.json, which keeps every model listed and ` +
+   `queryable. Do NOT rename or delete the file to opt out: that widens the ` +
+   `surface silently and breaks every import that names it.`;
 
 /**
  * Said when a package has a root `index.malloy` but its explicit `explores`
@@ -576,6 +601,21 @@ const EXPLORES_EMPTY_SUPPRESSES_CONVENTION =
    `answering by name. The empty array suppresses that, so every model stays ` +
    `listed and queryable. This is supported and is the intended way to opt out ` +
    `-- do NOT delete the key unless you want the convention to take effect.`;
+
+/**
+ * Said for `"explores": []` in a package with NO root index.malloy. There is
+ * no convention to suppress here, so this is the plain opt-out: the author
+ * asked for an uncurated package and got one. Said rather than deprecated,
+ * because the deprecation's advice -- swap the key for an index.malloy, which
+ * "curates and enforces exactly as the key does" -- is the one thing an empty
+ * array does not do.
+ */
+const EXPLORES_EMPTY_IS_UNCURATED =
+   `"explores": [] in publisher.json is keeping this package uncurated: every ` +
+   `model is listed and queryable by name. This is supported and is the ` +
+   `intended way to say "do not curate". Nothing to do unless you meant to ` +
+   `publish a surface, in which case list the models, or add a root ` +
+   `"${INDEX_MODEL_NAME}" and delete the key.`;
 
 const QUERYABLE_SOURCES_DEPRECATION =
    `"queryableSources" in publisher.json is deprecated. "declared" is already ` +

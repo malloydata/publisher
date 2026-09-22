@@ -42,6 +42,20 @@ describe("service/package_manifest", () => {
          expect(text).toContain("is its published surface");
          expect(text).toContain("404");
          expect(text).toContain('"explores": []');
+         // Renaming is NOT an opt-out -- it widens the surface silently and
+         // breaks every import naming the file. RELEASE_NOTES says so; the
+         // load-time message must not steer the other way.
+         expect(text).not.toMatch(/or rename the file/);
+         expect(text).toContain("Do NOT rename or delete the file");
+      });
+
+      it("counts models, not notebooks, when deciding something is withheld", () => {
+         // filterModelPaths also yields .malloynb, and a notebook is always
+         // listed and never subject to the boundary, so this package hides
+         // nothing and must stay quiet.
+         expect(
+            resolve(undefined, ["index.malloy", "report.malloynb"]).warnings,
+         ).toEqual([]);
       });
 
       it("stays quiet when the index.malloy is the only model", () => {
@@ -87,12 +101,15 @@ describe("service/package_manifest", () => {
          expect(text).not.toContain("then delete the key");
       });
 
-      it("still deprecates an empty explores when there is no index.malloy to suppress", () => {
-         // Without the file the key suppresses nothing, so it is ordinary
-         // legacy and the ordinary advice applies.
+      it("treats an empty explores as the opt-out with no index.malloy too", () => {
+         // There is no convention to suppress here, but it is still the
+         // supported "do not curate" state. The deprecation must not reach it:
+         // its advice ends "it curates and enforces exactly as the key does",
+         // which is false of an empty array, so following it would curate a
+         // package the author deliberately left open.
          const text = resolve([], ["orders.malloy"]).warnings.join("\n");
-         expect(text).toContain("then delete the key");
-         expect(text).not.toContain("keeping this package uncurated");
+         expect(text).toContain("keeping this package uncurated");
+         expect(text).not.toContain("then delete the key");
       });
 
       it("only counts a root index.malloy, not a nested one", () => {
@@ -102,31 +119,34 @@ describe("service/package_manifest", () => {
          ).toBeUndefined();
       });
 
-      it("ignores a malformed explores rather than coercing it into a surface", () => {
-         // A bare string is the usual typo of the array form, and a non-string
-         // element used to throw out of normalizeModelPath and fail the load.
-         expect(
-            resolve("orders.malloy", ["orders.malloy"]).explores,
-         ).toBeUndefined();
-         expect(resolve([null], ["orders.malloy"]).explores).toBeUndefined();
+      it("refuses to load a package whose explores is malformed", () => {
+         // `explores` decides what is REACHABLE, so a half-understood value is
+         // not half-applied. Ignoring it would resolve to no surface at all and
+         // publish every source the author curated away, which is the one
+         // direction this key must never fail in.
+         expect(() => resolve("orders.malloy", ["orders.malloy"])).toThrow(
+            /Invalid "explores"/,
+         );
+         // A single bad element condemns the array: keeping the rest would
+         // serve a surface the author did not write.
+         expect(() => resolve(["orders.malloy", 7], ["orders.malloy"])).toThrow(
+            /Invalid "explores"/,
+         );
+         expect(() => resolve([null], ["orders.malloy"])).toThrow();
       });
 
-      it("reports a malformed explores instead of dropping it in silence", () => {
-         // Falling back is right, but silently falling back leaves the author
-         // reading a package that does not curate the way their manifest says.
-         const text = resolve("orders.malloy", ["orders.malloy"]).warnings.join(
-            "\n",
+      it("names the value and the fix when it refuses", () => {
+         expect(() => resolve(["orders.malloy", 7], ["orders.malloy"])).toThrow(
+            /expected an array of model paths, got \["orders.malloy",7\]/,
          );
-         expect(text).toContain('Invalid "explores"');
-         expect(text).toContain("expected an array of model paths");
-         expect(text).toContain('"orders.malloy"');
-         expect(text).toContain("IGNORED");
-         expect(text).toContain("Fix:");
+         expect(() => resolve("orders.malloy", ["orders.malloy"])).toThrow(
+            /Fix: "explores": \["index.malloy"\]/,
+         );
+      });
 
-         // A non-string element is the same defect and gets the same report.
-         expect(
-            resolve([null], ["orders.malloy"]).warnings.join("\n"),
-         ).toContain('Invalid "explores"');
+      it("keeps a well-formed empty array out of the refusal", () => {
+         // [] is the documented opt-out, not a malformation.
+         expect(() => resolve([], ["orders.malloy"])).not.toThrow();
       });
 
       it("tells a queryableSources author to delete it, but never tells the 'all' author that", () => {
