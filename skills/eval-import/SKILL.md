@@ -94,6 +94,134 @@ back until somebody derives keys. A set of bare questions already measures
 whether the model can express an answer at all, and the answers it produces
 are what the keys get derived from.
 
+### Deriving a key yourself, when nothing arrived with the question
+
+The table above is about what ARRIVED. Sometimes nothing did, nobody knows the
+right number, and the set still needs keys. You may derive one, and the rules
+are the ones already stated rather than new ones:
+
+- Use your full model access and query until you can defend the number. The
+  agent that gets tested later holds only `get_context` and `execute_query`;
+  you are not that agent, and the gap is the point.
+- Record the query as `canonicalQuery`. A number with no query is somebody's
+  guess, which is the row above it in the table.
+- Record the entities you used to get there as `expectedEntities.required`, in
+  the `kind:source:name` form: the measures, dimensions and views the answer
+  cannot be produced without. `reference/case-format.md` says to leave this
+  field empty at import because guessing it invents a retrieval expectation
+  nobody stated; you are not guessing, you just used them. That is the only
+  trustworthy producer this field has, and it is what makes retrieval
+  measurable on a set nobody sent keys for. Where the model offers two
+  legitimate routes, write a `requiredAnyOf` group rather than pick one.
+  `verify_goldens.py` check 5 audits every id against the model, so a wrong one
+  is a hard finding rather than a silent retrieval miss.
+- **Derive the list with the model in front of you, not from memory, and not
+  with grep.** The model knows what each field IS; an author does not reliably.
+  Ask the question of the model: which entities does an answer to this depend
+  on, and is each a measure or a dimension. Confirm every id with `get_context`
+  before writing it. A list written from recollection is the most common way a
+  set acquires a retrieval expectation nobody can satisfy.
+
+  Measured: an agent given the model and one question found alternatives a
+  hand-written key had missed on all three cases tried -- carrier name against
+  nickname against code, `destination_count` against its underlying
+  `destination.airport_count`. At roughly $0.13 a question. It is better than a
+  person working from notes at finding what the model actually offers.
+
+  It is worse at deciding what to REQUIRE, and the two rules below are why. On
+  the same three cases it proposed demoting two named measures on the grounds
+  that a raw expression answered identically. One of those equivalences was
+  false; the other was true today and is not a reason to demote anything.
+
+- **But VERIFY every "this is not strictly required" claim by running both
+  sides.** This is the rule that makes the step above safe, and it is not
+  optional.
+
+  The same probe got one badly wrong. Told that a named measure is not required
+  when a raw column plus a plain aggregate answers identically, it wrote that
+  `average_plane_size` was "equally answerable by
+  `avg(aircraft.aircraft_models.seats)`". Executed, those are 229 and 196.93.
+  The measure is `aircraft.avg(...)`, an average over distinct aircraft, and the
+  inline version averages over flights. The claim was false for exactly the
+  measure whose entire purpose is to carry that distinction -- and it is the
+  same mistake, on the same field, that produced the only wrong answer in the
+  run this set came from.
+
+  Had that proposal been written into the key, the case would have stopped
+  testing the thing it exists to test.
+
+  So: an equivalence is a claim about DATA, and reading a definition is not
+  evidence. Run both expressions and compare the rows.
+
+  **But agreeing today is not a reason to demote the model's entity, and this
+  is the part the probe got backwards.** `airport_count is count()` returns the
+  same 984 as a bare `count()` right now, and stops doing so the moment anyone
+  adds a null filter or a deduplication to it. The key would not notice: it
+  would go on passing while testing nothing. That applies to every measure that
+  is currently a thin wrapper, which is most of them until the day one is not.
+
+  **`requiredAnyOf` is for two routes the MODEL defines** -- a carrier's `name`
+  and its `nickname`, `destination_count` and the `destination.airport_count`
+  it wraps. Both are entities, both are retrievable, and an answer using either
+  has gone through the semantic layer. That is a real choice and the group
+  records it.
+
+  It is NOT for "the model's entity, or a raw expression that happens to
+  agree". Those are not two routes: one is the route, the other is a bypass
+  that currently works. Keeping the named entity in `required` is what makes
+  the eval measure what the semantic layer is for, and finding it IS the
+  retrieval behaviour under test -- an agent that searches for the pre-defined
+  entity inherits its definition and its rules, while one that rebuilds from
+  raw columns inherits whatever it thought of.
+
+  What the equivalence check is FOR is reading a run afterwards. When an answer
+  came out right without the entity, comparing the two says whether it got
+  lucky or got it wrong, and a set whose passes are merely lucky is a set of
+  near-misses.
+
+- **Then prove each one is retrievable, and record what finds it.**
+  `check_findable.py --set <set> --mcp-url <mcp> --publisher <rest>
+  --environment <env> --package <pkg>` runs two checks and needs no model call.
+  With `--publisher` it reads the COMPILED model and settles whether each field
+  exists and what KIND it is; then it searches for each entity to confirm the
+  index can actually deliver it.
+
+  This matters more than it looks, because `required` is what BOTH retrieval
+  numbers are computed against: whether the agent asked for the entity, and
+  whether it came back. An id retrieval cannot deliver makes both fiction, and
+  the case reports a retrieval miss on every run, which reads as a defect in
+  the model or the agent rather than in the key.
+
+  **Prefer the compiled model over a grep, and prefer it in both directions.**
+  Measured on one package: `dimension:flights:flight_count` names a field the
+  model really has, so grepping the text passes it, and the compiled model says
+  `flight_count` is a MEASURE, which no `dimension` request can return.
+  Conversely `dimension:airports:own_type` appears zero times in the `.malloy`
+  and the compiled model declares it, because the source exposes it implicitly
+  from the data; the grep calls it missing and acting on that deletes a good
+  entity. `verify_goldens.py` check 5 is the grep, it is free and needs no
+  server, and it is not the authority.
+
+  A pass is a floor, not a verdict on the docs: each entity is searched by its
+  OWN NAME, the easiest query that could find it. An entity that answers to its
+  identifier and not to the words a question uses still fails at run time, as
+  `not retrieved`.
+
+  Writing the list forces the question an author has to answer anyway: what
+  would a reasonable agent search for, and of what type, to find this? If you
+  cannot state that, the agent cannot be expected to guess it.
+- `status: provisional`, never `verified`, for the reason stated above: you
+  derived it THROUGH the model under test, so a model bug would certify its
+  own key. `verify_goldens.py --promote` is still the only way out.
+- **Where two readings are both defensible from the model, do not pick one.**
+  A model that documents two conventions for the same population produces two
+  honest numbers, and choosing quietly is how a confident wrong key gets
+  written. Go to Hold an ambiguous golden in `skill:eval-loop`'s
+  `reference/golden-side-door.md`: record the competing candidates rather than
+  a new number.
+- What no query can settle is not a failure to derive. It is step 4's second
+  kind, and those clauses score on day one.
+
 ## Step 3: run their query, if they gave one
 
 Do it at import, before any run. It is the cheapest finding in the whole loop.
@@ -149,6 +277,57 @@ Split it. The number half goes provisional; the shape half scores.
 Where you cannot decide, mark the case and report it rather than guessing. A
 criterion nobody could classify is a question for its author, and
 `skill:eval-loop`'s golden side door is where it waits.
+
+### Four rules for writing the rubric itself
+
+Each of these cost a scored case on a real set, and none of them is obvious
+while you are writing one.
+
+**The golden rows are the figures. The rubric's prose is a gloss on them, and
+where the two disagree the prose is what is stale.** On one set 26 of 29
+rubrics quoted a figure that appears nowhere in their own golden rows: the
+goldens were re-derived the next morning, the prose was not, and an agent that
+computed 747 and 370 -- the exact numbers in the golden JSON -- was failed
+against a rubric still saying 615 and 502. Say how to derive the figure, not
+what it equalled. `verify_goldens.py` check 2 reports figures in the accepting
+clause that are absent from the rows, but it reads only figures specific enough
+to be a quoted result -- a bare three-digit number is invisible to it, and 615
+is exactly that. So the check is a help, not a guarantee, and the rule above is
+yours to keep. The judge is told the same thing from the other side: where a
+rubric and a golden disagree about a figure, it scores against the golden.
+
+**Do not assert the model's current behaviour.** "`contract_terms` cannot be
+used here at all -- it returns ZERO rows" was true when written and false four
+hours later, when a commit unblocked that view. Nothing linked the two, and the
+judge then reasoned from the stale claim against an answer that was right.
+Co-locating the set with the model makes such drift visible in a diff; it does
+not detect it. A rubric that describes a bug is a rubric with an expiry date:
+write the requirement, not the defect.
+
+**When a question admits two honest populations, accept either and require the
+answer to name which.** "Products in a category" can mean listed-in or
+primary-category, and on one set the two readings differed by 4,070 against
+2,707. Six or more cases turned on it and one rubric had been written to accept
+both. That one was right. The rest were repaired afterwards, having failed
+correct answers in the meantime.
+
+**If the rubric accepts an alternative, the entity list must too.** The two
+halves of a key are read by different things: the rubric is prose for the judge,
+`expectedEntities.required` is ids for retrieval scoring. They can disagree
+without anything noticing. A rubric saying "either the full carrier name or the
+nickname is fine" beside a required list naming only `dimension:carriers:name`
+scores an answer that used the nickname CORRECT and docks it recall in the same
+run, and that lost recall then reads as a retrieval failure. Use a
+`requiredAnyOf` group, which is satisfied when any member is delivered.
+`verify_goldens.py` reports the mismatch as a review item, but the rule is
+yours: it is a heuristic over prose and cannot catch every phrasing.
+
+**A trap note is not a requirement.** Notes that arrive beside the questions
+describe what their author thought was hard, and they mention things the
+question never asked for. Turning one into a rubric clause invents a
+requirement the answerer was never given, and it happened: a term appearing
+nowhere in any question became a clause an answer was marked down for missing.
+Convert a note only where it constrains the answer to the question as asked.
 
 ## Step 5: never change a question, and seal it
 

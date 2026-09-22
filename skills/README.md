@@ -39,7 +39,7 @@ Two rules make it work:
 
 ## Evaluation skills
 
-`eval-loop`, `eval-answer`, `eval-diagnose` and `eval-improve` are the model-evaluation loop: a set
+`eval-loop`, `eval-answer`, `eval-diagnose`, `eval-improve` and `eval-report` are the model-evaluation loop: a set
 of questions with goldens computed from raw tables, a blind answerer over the model, a judge, a
 diagnosis of each failure, and one smallest model edit gated by a re-run. `eval-import` comes
 before all of it: it turns a question list, in whatever shape it arrived, into a set, and decides
@@ -54,7 +54,7 @@ contract probes) is deliberately **not** here: it is Credible's question about i
 lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
 loop on.
 
-The six eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
+The seven eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
 skill. The upstream copy has drifted before and it matters more here than elsewhere, because the
 scripts are the harness: a run made with a stale copy produces a ledger that reads as current and
 is not.

@@ -41,15 +41,52 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
-from score_retrieval import load, score_case  # noqa: E402
+from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,  # noqa: E402
+                             NOT_RETURNED, REFUSAL, UNMEASURED,
+                             load, score_case)
 
-# Which artifact a cluster's fix would land in. eval-improve needs this to know
-# what kind of edit it is even proposing.
-LEVER_BY_WHERE = {
-    "query construction": "skill",
-    "retrieval ranking": "ranking",
-    "model coverage": "model",
-    "refusal behaviour": "skill",
+# The labels are imported, never spelled again here. They were spelled out
+# once, and when `score_retrieval` renamed them -- "query construction" to
+# `delivered, wrong`, "retrieval ranking" to `not retrieved` -- every branch
+# below silently stopped matching: the two commonest failure kinds fell to the
+# catch-all `other:` group and lost their lever, while this file's tests, of
+# which there were none, stayed green.
+WHERE_DELIVERED = DELIVERED[2]
+WHERE_NOT_RETRIEVED = NOT_RETURNED[2]
+WHERE_NEVER_ASKED = NEVER_ASKED[2]
+WHERE_MODEL = MODEL[2]
+WHERE_REFUSAL = REFUSAL[2]
+WHERE_UNMEASURED = UNMEASURED[2]
+
+# A DIAGNOSED cluster arrives labelled by eval-diagnose's OWNER rather than by
+# a retrieval outcome, and both land in the same `where_to_fix` column of the
+# run package. These two maps are the translation, and they live here, in
+# eval-diagnose, because the owners they key on are eval-diagnose's vocabulary
+# (`diagnose.py`'s OWNERS): `retrieval` and `dataset` are values the retrieval
+# scorer never assigns, so holding them over there left eval-answer carrying
+# keys only this package can trigger. `diagnose.py` imports them from here.
+#
+# One map rather than two, because `diagnose.py` and this file both write
+# `clusters.jsonl` and each used to spell its own -- so the package served two
+# vocabularies under one column name and the doc on it matched neither. A
+# cluster's label is the nearest shared bucket, not a new one; its `component`
+# and cause code carry the precise finding.
+WHERE_BY_OWNER = {
+    "model": MODEL[2],
+    "retrieval": NOT_RETURNED[2],
+    "agent-skill": DELIVERED[2],
+    "dataset": "dataset",
+}
+# Which artifact the edit lands in. An owner nobody has named yet -- eval-
+# diagnose has not run, or it ran and declined (`undecided` for a
+# delivered-wrong or an unreturned entity, `unknown` for unmeasured coverage)
+# -- yields no lever rather than a guessed one, because a guess here is the
+# default blame this taxonomy exists to remove.
+LEVER_BY_OWNER = {
+    "model": "model",
+    "retrieval": "retrieval",
+    "agent-skill": "skill",
+    "dataset": "dataset",
 }
 
 
@@ -63,7 +100,7 @@ def cluster_key(row: dict[str, Any], case: dict[str, Any]) -> tuple[str, str]:
     where = row["where_to_fix"]
     missing = row.get("missing") or []
 
-    if where == "model coverage":
+    if where == WHERE_MODEL:
         note = (case.get("coverageNote") or "").strip()
         if note:
             # Notes are already phrased as an absence ("no measure; ..."), so
@@ -73,14 +110,20 @@ def cluster_key(row: dict[str, Any], case: dict[str, Any]) -> tuple[str, str]:
             return (f"model:{note[:60]}", f"the model has {lead}{note[:80]}")
         return ("model:unspecified", "the model does not cover what was asked")
 
-    if where == "retrieval ranking" and missing:
+    if where == WHERE_NOT_RETRIEVED and missing:
         # One entity that several questions needed and none received.
         return (f"retrieval:{missing[0]}", f"{missing[0]} is never returned")
 
-    if where == "refusal behaviour":
+    if where == WHERE_NEVER_ASKED and missing:
+        # A different edit from the one above, so a different group: the
+        # entity was reachable and no search of its kind went out.
+        return (f"unasked:{missing[0]}",
+                f"{missing[0]} is never searched for")
+
+    if where == WHERE_REFUSAL:
         return ("refusal", "answered a question the model cannot answer")
 
-    if where == "query construction":
+    if where == WHERE_DELIVERED:
         tags = [t for t in (case.get("tags") or [])
                 if t in ("window", "time-series", "ratio", "join", "distinct",
                          "cohort", "cumulative", "rank")]
@@ -114,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         g = groups.setdefault(key, {
             "clusterId": key, "label": label,
             "whereToFix": r["where_to_fix"], "component": r["component"],
-            "owner": r["owner"], "lever": LEVER_BY_WHERE.get(r["where_to_fix"]),
+            "owner": r["owner"], "lever": LEVER_BY_OWNER.get(r["owner"]),
             "qids": [], "evidence": [], "proposedEdit": "", "confidence": None})
         g["qids"].append(r["qid"])
         why = (c.get("golden") or {}).get("rubric") or ""

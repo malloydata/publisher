@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -41,6 +42,28 @@ class Invocation(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def capture(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        with mock.patch.object(improve.subprocess, "run", fake_run):
+            improve.verify_goldens(self.a, self.art, "a diff")
+        return seen["cmd"]
+
+    def test_definitions_reaches_the_verifier_command(self):
+        # The acceptance check can pass on a set with no truth package only if
+        # the ledger gets as far as the verifier.
+        self.a.definitions = pathlib.Path("/tmp/led.jsonl")
+        cmd = self.capture()
+        self.assertIn("--definitions", cmd)
+        self.assertIn("/tmp/led.jsonl", cmd)
+
+    def test_a_namespace_without_definitions_is_still_accepted(self):
+        # Older callers and these fixtures build the Namespace by hand.
+        self.assertNotIn("--definitions", self.capture())
 
     def test_the_verifier_accepts_the_arguments_improve_sends(self):
         r = improve.verify_goldens(self.a, self.art, "a diff")
@@ -175,6 +198,34 @@ class VerifierContract(unittest.TestCase):
         p = subprocess.run([sys.executable, str(VERIFIER), "--help"],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 0)
+
+
+class TruthEnvironment(unittest.TestCase):
+    """The truth server is separate and names its environments independently.
+
+    Passing the MODEL server's environment to the audit 404'd every case, the
+    audit exited non-zero, and the acceptance check read that as "this edit
+    may have invalidated a golden" -- so it BLOCKED every cluster and no edit
+    could ever be accepted. run_baseline.py grew --truth-environment for
+    exactly this; this caller had not.
+    """
+
+    SRC = (pathlib.Path(__file__).resolve().parent / "improve.py").read_text()
+
+    def test_the_flag_exists(self):
+        self.assertIn('ap.add_argument("--truth-environment"', self.SRC)
+
+    def test_the_audit_is_given_the_truth_environment(self):
+        self.assertIn('getattr(a, "truth_environment", None) or a.environment',
+                      self.SRC)
+
+    def test_it_falls_back_to_the_model_environment(self):
+        # One server serving both is the ordinary local case, and it must keep
+        # working without the new flag.
+        import argparse as _a
+        ns = _a.Namespace(environment="samples", truth_environment=None)
+        self.assertEqual(
+            getattr(ns, "truth_environment", None) or ns.environment, "samples")
 
 
 if __name__ == "__main__":

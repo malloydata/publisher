@@ -9,6 +9,7 @@
     "eval-improve",
     "eval-judge",
     "eval-loop",
+    "eval-report",
     "malloy",
     "malloy-analysis",
     "malloy-analysis-pitfalls",
@@ -96,6 +97,7 @@
       "eval-answer",
       "eval-diagnose",
       "eval-improve",
+      "eval-report",
       "eval-judge"
     ]
   }

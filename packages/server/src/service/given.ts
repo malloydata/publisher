@@ -34,7 +34,12 @@ import { motlyTag, tagNumeric, tagText } from "./motly";
  */
 export interface MalloyGiven {
    readonly name: string;
-   readonly type: { type: string; filterType?: string };
+   readonly type: {
+      type: string;
+      filterType?: string;
+      /** Present when `type` is `array`; carries the element's own type def. */
+      elementTypeDef?: { type: string };
+   };
    readonly annotations: Annotations;
 }
 
@@ -236,21 +241,29 @@ export function readGivenControlSpec(
  * (plain `#` tags, `#"` doc strings, `##!` pragmas), which aren't part
  * of the given's surface contract.
  *
- * Type rendering: `GivenTypeDef` is typed as `AtomicTypeDef |
- * FilterExpressionParamTypeDef`, but Malloy's grammar only emits
- * the scalar parameter types (`string` | `number` | `boolean` |
- * `date` | `timestamp` | `timestamptz` | `filter expression` |
- * `error`) for given declarations today. If the grammar expands
- * to allow array or record givens, the bare `type.type`
- * discriminator (`'array'`, `'record'`) will land in the wire
- * response with no element info — revisit when that happens.
+ * Type rendering: a scalar renders as its own name (`string`,
+ * `number`, `boolean`, `date`, `timestamp`, `timestamptz`,
+ * `error`), a filter as `filter<…>`, and an ARRAY as
+ * `<element>[]` — `number[]`, `string[]`.
+ *
+ * The array case is not decoration. A set-valued given is how a
+ * `#(secure)` attribute is declared (a scalar cannot be one: it
+ * has no value that fails closed), so it is the shape every
+ * row-level access boundary uses. Rendering the bare `array`
+ * discriminator loses the element type and yields text that is
+ * not valid Malloy, which breaks any consumer that re-declares a
+ * given from this field rather than merely displaying it — the
+ * storage tier's serve shape does exactly that. A `record`
+ * given, if the grammar gains one, still renders bare.
  */
 export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
    const type = given.type;
    const renderedType =
       type.type === "filter expression"
          ? `filter<${type.filterType}>`
-         : type.type;
+         : type.type === "array" && type.elementTypeDef?.type
+           ? `${type.elementTypeDef.type}[]`
+           : type.type;
    const allNotes = given.annotations.forRoute(undefined);
    return {
       name: given.name,

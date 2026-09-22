@@ -477,13 +477,17 @@ function parseTerm(
    const given = givenMatch[1];
 
    // A given's declared type renders as the bare Malloy type name
-   // (`malloyGivenToApi`) — `"array"` for a list-typed given (Malloy has no
-   // element-type-qualified rendering), any scalar type name otherwise. A
-   // given absent from the map (unresolvable at this call site) skips the
-   // check rather than guessing.
+   // (`malloyGivenToApi`) — `number[]`/`string[]` for a list-typed given, or a
+   // bare `array` for one whose element type could not be rendered, and any
+   // scalar type name otherwise. Both list spellings must be recognized: a
+   // set-valued given is how every `#(secure)` attribute is declared, so
+   // reading one as a scalar refuses `in` and fails the model load. A given
+   // absent from the map (unresolvable at this call site) skips the check
+   // rather than guessing.
    const declaredType = givenDeclaredTypes.get(given);
    if (declaredType !== undefined) {
-      const isListType = declaredType === "array";
+      const isListType =
+         declaredType === "array" || declaredType.endsWith("[]");
       if (operator === "=" && isListType) {
          reject(
             sourceName,

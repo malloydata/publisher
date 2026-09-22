@@ -36,6 +36,7 @@ const LINEAGE: IncrementalLineage = {
    watermarkName: "order_date",
    watermarkType: "date",
    mergeKeys: [],
+   scopeColumns: [],
    strategy: "range_replace",
 };
 
@@ -300,6 +301,7 @@ describe("planIncrementalStep against a storage destination", () => {
       const keyed: IncrementalLineage = {
          ...LINEAGE,
          mergeKeys: ["region"],
+         scopeColumns: [],
          strategy: "merge",
       };
       const step = await plan({

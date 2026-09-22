@@ -1083,6 +1083,13 @@ export class Package {
          ...this.dashboardWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
+         // A `#@ persist` the compile-time gate refused. Without this the
+         // refusal is computed, recorded on the build plan, and read by nobody:
+         // the package publishes, the source is served live, and the author who
+         // wrote the annotation is told nothing. Same operator-facing fact as
+         // storageWarnings() — no table, answers come from the warehouse — so it
+         // belongs in the same place.
+         ...this.persistRefusalWarnings(),
          // A listed model whose curated surface is empty. Advisory (an
          // import-only file is legitimate and must not block a publish, so it
          // stays out of exploresWarnings), but it must ride the API: the QA
@@ -1636,6 +1643,40 @@ export class Package {
             `does not. Persist a query source, or invoke a parameterized source ` +
             `with a bound argument.`,
       }));
+   }
+
+   /**
+    * Warnings for the `#@ persist` sources the compile-time eligibility gates
+    * refused, read off the build plan's `refusedSources`.
+    *
+    * The gate's own message is carried VERBATIM. It already names the source, the
+    * reason and the remedy, and rebuilding a second wording here from `reason`
+    * would be a second text to keep in step with the first — one that drifts
+    * silently, since nothing compares them. The cost is that the message repeats
+    * the source name the `subject` field also carries; that is the cheaper defect.
+    *
+    * `subject` names a rollup by its BASE source, never by its own. A rollup's
+    * name is synthesized and appears in no file the author can open, so the
+    * generated name answers a question nobody asked (the reason
+    * {@link storageWarnings} does the same). The base is reachable only while the
+    * entry is ALSO in `sources`, which for this tier is the authorize refusal
+    * alone — a storage-refused rollup is deliberately absent from `sources`, and
+    * there the subject is omitted rather than filled with the digest.
+    */
+   private persistRefusalWarnings(): ApiPackageWarning[] {
+      const refused = this.buildPlan?.refusedSources;
+      if (!refused) return [];
+      return Object.entries(refused).map(([sourceID, source]) => {
+         const subject =
+            source.tier === "preaggregate"
+               ? this.buildPlan?.sources?.[sourceID]?.preaggregate
+                    ?.baseSourceName
+               : source.name;
+         const warning: ApiPackageWarning = { message: source.message };
+         if (source.modelPath) warning.model = source.modelPath;
+         if (subject) warning.subject = subject;
+         return warning;
+      });
    }
 
    private storageWarnings(): ApiPackageWarning[] {

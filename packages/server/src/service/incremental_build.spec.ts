@@ -23,6 +23,8 @@ function declaration(
       watermark: { name: "order_date", ...DIMENSION },
       watermarkOrderable: true,
       mergeKeys: [],
+      scopeColumns: [],
+      scopeIncomplete: false,
       watermarkInMergeKeys: false,
       strategy: "range_replace",
       malformed: [],
@@ -73,6 +75,7 @@ describe("incrementalLineage", () => {
          watermarkName: "order_date",
          watermarkType: "date",
          mergeKeys: ["order_id", "region"],
+         scopeColumns: [],
          strategy: "merge",
       });
    });

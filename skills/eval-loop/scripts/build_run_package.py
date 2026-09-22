@@ -37,7 +37,7 @@ TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 from score_retrieval import delivery, groups, score_case  # noqa: E402
-from flip_table import outcome  # noqa: E402  (same directory)
+from flip_table import counts_toward_score, outcome  # noqa: E402  (same directory)
 
 
 def read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -364,6 +364,11 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
                            # uses, so the package cannot disagree with the
                            # flip table about what a flip is.
                            "outcome": outcome(s.get("verdict")),
+                           # Whether this score belongs in the aggregates, by
+                           # the same function run_baseline.py uses before it
+                           # prints one. Written as a column so the measures
+                           # read the rule rather than restating it.
+                           "counts": counts_toward_score(s.get("gold_status")),
                            **s})
 
             mine = tool_calls.get(kk, [])
@@ -474,7 +479,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",
         "host_tool_uses", "mcp_tool_uses", "reported_calls", "contaminated",
         "final_query_source", "servedRevision",
-        "input_tokens", "output_tokens", "cache_read_tokens", "cost_usd",
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "cost_usd",
         "num_turns", "wall_seconds", "run_error", "transcriptPath",
         "n_steps", "prediction"])
     write_csv(data / "steps.csv", steps_rows, [
@@ -484,7 +490,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "attempt_key", "run_id", "qid", "entity_id", "status"])
     write_csv(data / "scores.csv", scores, [
         "attempt_key", "run_id", "qid", "sample", "phase", "verdict", "outcome",
-        "reason", "confidence",
+        "counts", "reason", "confidence",
         "judge_version", "rubric_sha", "golden_revision", "gold_status",
         "contaminated", "judge_verdict", "must_not_use_hits", "artifactPath"])
     write_csv(data / "retrieval.csv", retr, [

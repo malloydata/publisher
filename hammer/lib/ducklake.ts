@@ -24,11 +24,23 @@ export interface LakeAttach {
    storageDir: string;
 }
 
-/** Attach the DuckLake read-write and run one or more `;`-separated statements. */
+/**
+ * Attach the DuckLake read-write and run one or more `;`-separated statements,
+ * returning the LAST statement's rows.
+ *
+ * Rows come back because provisioning and asserting are the same act from an
+ * operator's side: the thing that can `CREATE SCHEMA` on a destination is the
+ * thing that can look at what the tier wrote there. Returning nothing would make
+ * an `Expect:` on such a step compare against an empty set, which passes or
+ * fails for reasons unrelated to the rule under test.
+ *
+ * The LAST statement's, so a multi-statement body may set up and then read —
+ * every earlier statement runs for its effect, as before.
+ */
 export async function runLakeSql(
    attach: LakeAttach,
    sql: string,
-): Promise<void> {
+): Promise<Record<string, string>[]> {
    const wd = mkdtempSync(path.join(os.tmpdir(), "hammer-lake-op-"));
    const conn = new DuckDBConnection("operator", ":memory:", wd);
    try {
@@ -42,12 +54,17 @@ export async function runLakeSql(
       // Make `lake` the default catalog so unqualified DDL (e.g. CREATE SCHEMA
       // analytics) targets the lake, not the session's :memory: primary.
       await conn.runSQL("USE lake");
+      let rows: Record<string, string>[] = [];
       for (const stmt of sql
          .split(";")
          .map((s) => s.trim())
          .filter(Boolean)) {
-         await conn.runSQL(stmt);
+         const result = await conn.runSQL(stmt);
+         rows = (
+            Array.isArray(result) ? result : (result?.rows ?? [])
+         ) as Record<string, string>[];
       }
+      return rows;
    } finally {
       await conn.close();
       rmSync(wd, { recursive: true, force: true });

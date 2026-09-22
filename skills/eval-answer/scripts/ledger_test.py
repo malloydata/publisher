@@ -178,6 +178,13 @@ class WriteContract(unittest.TestCase):
                          filterParams={"report_id": "123"})
         self.assertEqual(e["filterParams"], {"report_id": "123"})
 
+    def test_an_attempt_may_carry_cache_write_tokens(self):
+        # The fourth token column. Without it the ledger held a cache-inclusive
+        # cost_usd and a breakdown that could not reproduce it.
+        e = ledger.event("attempt", **ATTEMPT, cache_read_tokens=2435273,
+                         cache_write_tokens=900000)
+        self.assertEqual(e["cache_write_tokens"], 900000)
+
     def test_run_config_requires_identity(self):
         with self.assertRaises(ValueError) as cm:
             ledger.run_config(**{k: v for k, v in RUN.items()

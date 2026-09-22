@@ -128,10 +128,16 @@ include {
   public: final_query_source
   #(doc) The answer text the judge scored. Readable without opening the transcript.
   public: answer_text
-  #(doc) Answerer input tokens.
+  #(doc) Answerer input tokens AFTER the last cache breakpoint only. Not the context volume: one
+  #(doc) run recorded 224 here for 24 questions beside 2.4M cache reads. See cache_read_tokens.
   public: input_tokens
   #(doc) Answerer output tokens.
   public: output_tokens
+  #(doc) Tokens served from the prompt cache. The bulk of an answerer's input.
+  public: cache_read_tokens
+  #(doc) Tokens written into the prompt cache. Priced above input; on one analysed run the single
+  #(doc) largest cost line, and never recorded before this column existed.
+  public: cache_write_tokens
   #(doc) Answerer cost in USD for this attempt.
   public: cost_usd
   #(doc) Assistant turns the attempt took.
@@ -200,12 +206,18 @@ extend {
     total_cost_usd is sum(cost_usd::number)
     #(doc) Mean cost per attempt. Compare across arms only at equal case counts.
     avg_cost_usd is avg(cost_usd::number)
-    #(doc) Total tokens the answerer consumed.
+    #(doc) Post-breakpoint input plus output. NOT the context volume: cache reads are excluded,
+    #(doc) and they are the bulk of it. Kept under its old name for continuity; read
+    #(doc) context_tokens for size and cost_usd for money.
     -- Cast, like cases_covered below and for the same reason: a column that is
     -- empty in every row types as VARCHAR, and a platform run reports no token
     -- usage at all. Untyped, `sum()` then fails to compile and takes the whole
     -- package with it, so the run that most needs reading shows nothing.
     total_tokens is sum(input_tokens::number) + sum(output_tokens::number)
+    #(doc) Every input token the model saw: post-breakpoint input, cache reads and cache writes.
+    #(doc) This is the number that matches the CLI's cost accounting; total_tokens is not.
+    context_tokens is sum(input_tokens::number) + sum(cache_read_tokens::number)
+      + sum(cache_write_tokens::number)
     #(doc) Mean turns per attempt. Rises when the agent is groping rather than reading.
     avg_turns is avg(num_turns::number)
     #(doc) Mean wall-clock seconds per attempt.
@@ -237,12 +249,19 @@ include {
   public: precision
   #(doc) How many distinct entities get_context returned across the attempt.
   public: n_returned
-  #(doc) construction, get_context/retrieval or get_context/model. Empty when the attempt passed.
+  #(doc) Which stage the failure sits in: construction, get_context,
+  #(doc) get_context/agent-call or get_context/model. Empty when the attempt passed.
   public: component
-  #(doc) agent-skill, retrieval or model. Kept to match eval-diagnose's taxonomy; for reading, use where_to_fix.
+  #(doc) model, agent-skill, or undecided when the run cannot tell and eval-diagnose
+  #(doc) decides, or unknown when coverage was never measured. Kept to match
+  #(doc) eval-diagnose's taxonomy; for reading, use where_to_fix.
   public: owner
-  #(doc) Where to go and fix it: query construction, retrieval ranking, model coverage or refusal behaviour.
-  #(doc) Empty unless the attempt failed. Every failure has one, so this ties to the failure count.
+  #(doc) Where to go and fix it: model coverage, not retrieved, never asked, delivered wrong,
+  #(doc) refusal behaviour, or coverage not measured. Empty unless the attempt failed. Every failure
+  #(doc) has one, so this ties to the failure count. Only two of them name an owner. `never asked`
+  #(doc) is the agent's: no search asked for the missing entity's kind, so nothing of that kind
+  #(doc) could return. `model coverage` is the model's. `not retrieved` and `delivered, wrong` name
+  #(doc) no owner on purpose -- the docs or the agent, and eval-diagnose decides.
   public: where_to_fix
   #(doc) One sentence on why it landed there.
   public: why
@@ -279,14 +298,21 @@ extend {
     #(doc) Scored failures. Every one of these carries a where_to_fix.
     -- String comparison for the reason given on submitted_count.
     failure_count is count() { where: failed = 'true' }
-    #(doc) Failures where retrieval delivered everything, so the fix is skills, not search.
-    construction_failures is count() { where: where_to_fix = 'query construction' }
-    #(doc) Failures where the entity existed and search missed it.
-    retrieval_failures is count() { where: where_to_fix = 'retrieval ranking' }
+    #(doc) Failures where retrieval delivered everything and the answer is still wrong. The agent's
+    #(doc) or the docs'; eval-diagnose decides, sufficiency first. Do not read this as a skills count.
+    delivered_wrong_failures is count() { where: where_to_fix = 'delivered, wrong' }
+    #(doc) Failures where the entity existed, a search of the right kind was issued, and it did not
+    #(doc) come back. The docs or the search wording; eval-diagnose decides. Not a docs count.
+    not_retrieved_failures is count() { where: where_to_fix = 'not retrieved' }
+    #(doc) Failures where no search asked for the missing entity's kind at all. The agent's.
+    never_asked_failures is count() { where: where_to_fix = 'never asked' }
     #(doc) Failures where there was nothing to retrieve. Add the entity.
     model_failures is count() { where: where_to_fix = 'model coverage' }
     #(doc) Failures where the model cannot answer and the agent answered anyway.
     refusal_failures is count() { where: where_to_fix = 'refusal behaviour' }
+    #(doc) Failures on a case with no measured coverage label: retrieval's or the model's, and
+    #(doc) nothing says which. Not a model gap.
+    unmeasured_failures is count() { where: where_to_fix = 'coverage not measured' }
 }
 
 #(doc) The answer judge's verdict for one attempt. Exactly one per attempt in a scored run.
@@ -317,8 +343,10 @@ include {
   public: rubric_sha
   #(doc) Golden revision at score time.
   public: golden_revision
-  #(doc) verified, verified_benign, suspect or verified_wrong. verified_wrong is excluded from aggregates.
+  #(doc) verified, verified_benign, suspect or verified_wrong.
   public: gold_status
+  #(doc) Whether this score belongs in the aggregates. False for a golden a person has established is WRONG (gold_status verified_wrong): the answer was scored against a key that does not hold, so its verdict says nothing about the model. Written by build_run_package.py from flip_table.counts_toward_score, the same rule run_baseline.py applies before printing a pass rate -- this column exists so the two cannot drift, which they had.
+  public: counts
   #(doc) Fields from golden.mustNotUse found in the final query, pipe-separated.
   #(doc) A hit forces no_match: a script decides this, never the judge.
   public: must_not_use_hits
@@ -339,18 +367,18 @@ extend {
   join_one: retrieval with attempt_key
 
   measure:
-    #(doc) Rows with a verdict, scorable or not.
+    #(doc) Rows with a verdict, scorable or not. The only measure here that does NOT drop an excluded golden, so scored_count minus the others shows what left.
     scored_count is count()
-    #(doc) Verdicts the acceptance check counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide.
-    confident_count is count() { where: outcome ? 'pass' | 'fail' }
+    #(doc) Verdicts the acceptance check counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide. A score whose golden is verified_wrong is excluded too -- see `counts`.
+    confident_count is count() { where: outcome ? 'pass' | 'fail'; where: counts = 'true' }
     #(doc) Attempts the judge accepted. A near_match is NOT a pass: it means defensibly different, and an arguable verdict must not move an acceptance check.
-    passed is count() { where: outcome = 'pass' }
+    passed is count() { where: outcome = 'pass'; where: counts = 'true' }
     #(doc) Attempts the judge rejected.
-    failed is count() { where: outcome = 'fail' }
+    failed is count() { where: outcome = 'fail'; where: counts = 'true' }
     #(doc) Defensibly different: neither a pass nor a fail. Watch this climb - it is the leading indicator of a rubric going vague.
-    near_matches is count() { where: verdict = 'near_match' }
+    near_matches is count() { where: verdict = 'near_match'; where: counts = 'true' }
     #(doc) Verdicts referred to a human because the judge was not confident.
-    needs_human is count() { where: verdict = 'needs_human' }
+    needs_human is count() { where: verdict = 'needs_human'; where: counts = 'true' }
     #(doc) Passes over DECIDED verdicts. The headline number; excludes near_match and needs_human by design.
     # percent
     pass_rate is passed / confident_count
@@ -412,7 +440,8 @@ include {
   public: cluster_id
   #(doc) What the group has in common, in a phrase.
   public: label
-  #(doc) query construction, retrieval ranking, model coverage or refusal behaviour.
+  #(doc) model coverage, not retrieved, never asked, delivered wrong, refusal behaviour,
+  #(doc) or coverage not measured.
   public: where_to_fix
   #(doc) eval-diagnose component.
   public: component
