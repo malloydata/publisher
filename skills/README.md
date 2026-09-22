@@ -55,7 +55,10 @@ contract probes) is deliberately **not** here: it is Credible's question about i
 lives in Credible's own repo. `credibledata/malloy-samples#23` is a set anyone can run the
 loop on.
 
-No Credible manifest lists the eval skills, so they are not mirrored anywhere.
+These seven are Publisher's own and ship nowhere else: no Credible manifest lists
+one, and none is mirrored. `ms2data/agent-skills` does carry nine skills named
+`credible-eval-*`, which are a different set with no name in common -- Credible's
+engine-side evaluation, not this loop.
 
 ## Tool names in shared skills
 
