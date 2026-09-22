@@ -153,6 +153,9 @@ the package answering differently than its author expects:
   withhold, and keeping the entries that parse would serve a surface the author did not write.
 - **The whole surface failed to compile.** A surface that does not compile exports nothing, so the
   boundary refuses every model in the package — including the ones that compiled — with the same
-  404 a missing model gets. The warning names the broken file and how many it took down. This
+  404 a missing model gets. The warning names the broken files and how many working models they
+  took down. Narrow by design: a compile error at first load fails the package (it appears in
+  `loadErrors`), and a failed reload keeps the last good model serving and is reported with
+  `stale: true`, so the surface empties only on the materialization and manifest rebind paths. It
   stays fail-closed on purpose: falling back to listing everything would expose exactly what the
   author curated away.

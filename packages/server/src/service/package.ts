@@ -2089,16 +2089,31 @@ export class Package {
    }
 
    /**
-    * One message when every model on this package's surface failed to compile,
-    * because that case takes the WHOLE package down and says so nowhere else.
+    * One message when every model on this package's surface failed to compile.
     *
     * The curated surface is the union of what the listed models export, so a
     * surface that does not compile exports nothing, and the boundary then
     * refuses every model in the package -- including the ones that compiled
-    * perfectly well -- with the same 404 a model that does not exist gets. The
-    * listing carries the broken file's own compile error, but nothing connects
-    * that error to the unrelated 404s it caused, and the package is not marked
-    * stale: the load succeeded, it just produced an empty surface.
+    * perfectly well -- with the same 404 a model that does not exist gets.
+    *
+    * NARROW ON PURPOSE, because the edit paths an author uses already report
+    * this better than a warning could, and it took a run against a live server
+    * to establish which paths those are:
+    *
+    *  - FIRST LOAD: a compile error fails the whole package. It is absent, and
+    *    named in `/status` loadErrors. Nothing serves an empty surface.
+    *  - RELOAD, whether from the chokidar watcher, MCP `reload_package` or REST
+    *    `?reload=true`: all three go through `Environment.loadPackage`, which
+    *    keeps the last good compiled model serving and records a
+    *    `staleCompileErrors` entry, so `/status` reports the package with
+    *    `stale: true` AND the compile error. The surface never empties.
+    *
+    * What is left is {@link reloadAllModels} called directly -- the
+    * materialization / manifest rebind paths (`reloadAllModelsForPackage`,
+    * `bindManifest`). Those replace a model that fails to compile with a
+    * placeholder and do NOT go through `loadPackage`, so they are the one way
+    * to reach a package that is serving, is not stale, and whose surface
+    * exports nothing. Rare, and the only path where nothing else would say so.
     *
     * Deliberately NOT a fallback to uncurated. Falling open on a typo would
     * expose sources the author curated away, which is worse than refusing them;

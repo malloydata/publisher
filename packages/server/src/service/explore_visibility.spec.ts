@@ -471,10 +471,15 @@ export { customers }`,
    });
 
    it("explains itself when a broken index.malloy takes the whole package down", async () => {
-      // Reload, not first load: a compile error at first load fails the whole
-      // package, which shows up in loadErrors. A reload keeps serving and
-      // installs a placeholder for the broken file, so THIS is the path where
-      // the surface goes empty while the package still reads as healthy.
+      // `reloadAllModels` DIRECTLY, which is the narrow path this warning is
+      // for: it installs a placeholder for the file that failed and does not
+      // go through Environment.loadPackage, so the package keeps serving with
+      // an empty surface and is never marked stale. Verified against a live
+      // server: first load fails the package outright (loadErrors), and every
+      // author-facing reload -- watcher, MCP reload_package, REST ?reload=true
+      // -- goes through loadPackage, which keeps the last good model and
+      // reports `stale: true` with the compile error. Only the materialization
+      // / manifest rebind paths land here.
       writeManifest({});
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),

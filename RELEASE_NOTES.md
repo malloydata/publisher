@@ -131,10 +131,14 @@ surface at all, which publishes every source the key was written to withhold, an
 is visible in `loadErrors` where a silently-uncurated one is not. This restores the behavior the key
 had before the convention, when a non-string entry threw out of path normalization.
 
-**A broken surface explains the 404s it causes.** If every model on a package's surface fails to
-compile on reload, that package exposes nothing and *every* model in it, including the ones that
-compiled, is refused by name with a 404 that reads as "does not exist". The package now carries a
-warning naming the broken file and the count it took down. The refusal itself is unchanged and
+**A broken surface explains the 404s it causes.** A package whose surface files all fail to compile
+exposes nothing, so *every* model in it, including the ones that compiled, is refused by name with a
+404 that reads as "does not exist". It now carries a warning naming the broken files and how many
+working models they took down. This is a narrow case by design: a compile error at first load fails
+the package outright, and a failed reload from the watcher, `reload_package` or `?reload=true` keeps
+the last good model serving and reports `stale: true` with the compile error, so neither empties the
+surface. The gap is the materialization and manifest rebind paths, which replace a failed model with
+a placeholder without going through the package loader. The refusal itself is unchanged and
 deliberately fail-closed: falling back to uncurated on a typo would expose sources the author
 curated away.
 
