@@ -499,6 +499,13 @@ conductor. Do not:
 
 - The model is the only thing improve edits. No question text, qids, or
   expected values in any name, doc, or comment.
+- **You are measuring a model, not reviewing this harness.** Read a script when
+  a number you have to report cannot be explained otherwise, and stop there. Do
+  not audit the scripts, propose fixes to them, or hand back tooling critique
+  in place of a result -- a run that ends in harness feedback has not answered
+  the question it was asked. A defect that changed a number gets one sentence
+  in the report; a defect that changed nothing gets one line in chat, once.
+  Fixing it is a different task, and the user starts it.
 - When the environment misbehaves, stop. Never diagnose a sick system. The
   harness is part of the environment: a known-broken measurement does not
   become quotable by being finished. Measured against this directive, an arm

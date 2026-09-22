@@ -1594,3 +1594,31 @@ class CoverageByDefault(unittest.TestCase):
         with mock.patch.object(rb, "subprocess") as sp:
             sp.run.return_value = argparse.Namespace(returncode=1)
             self.assertIsNone(rb.measure_coverage(a))
+
+
+class OffloadedToolResult(unittest.TestCase):
+    """A response spilled to a file is not an empty response.
+
+    A get_context result too large for the model's context is written to a
+    file and replaced by a notice naming the path. The answerer reads the file
+    and is unaffected; the ledger used to parse the notice, find no JSON, and
+    record an empty entity list -- a total retrieval miss on a call that
+    returned in full. One arm printed 86.4% recall against an actual 95%, and
+    diagnose then explained the phantom miss with an index-readiness story
+    that was false.
+    """
+
+    def test_the_body_is_read_back_from_the_named_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "big.txt"
+            p.write_text(json.dumps({"sources": [], "retrieval": "semantic"}))
+            out = rb.offloaded_json(
+                f"Error: result exceeds maximum allowed tokens. "
+                f"Output has been saved to {p}")
+        self.assertEqual(out, {"sources": [], "retrieval": "semantic"})
+
+    def test_an_unreadable_path_is_none_not_empty(self):
+        self.assertIsNone(rb.offloaded_json("saved to /nope/does-not-exist.txt"))
+
+    def test_an_ordinary_result_is_not_mistaken_for_an_offload(self):
+        self.assertIsNone(rb.offloaded_json('{"sources": []}'))

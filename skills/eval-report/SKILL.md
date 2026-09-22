@@ -25,6 +25,30 @@ one exception is anything that qualifies THIS run's number -- a truncated
 attempt, a contaminated one, an unestablished answer key -- which the "Eval
 failures" section exists for.
 
+**Do not audit the harness. You were asked to measure a model.** This is the
+most common way this job goes wrong, and it does not look like going wrong: a
+run turns up something odd in a script, the odd thing is genuinely a bug, and
+the reply comes back as a critique of the tooling with the model's score
+somewhere underneath. The reader asked what their model scored. Answer that.
+
+So, unless the user asked you to work on the harness:
+
+- Do not read harness source to satisfy your own curiosity about a number.
+  Read it when a number you must report cannot be explained any other way, and
+  stop when it can.
+- Do not propose harness fixes, refactors, flags or "while I was in there"
+  improvements. Not in the report, not in the chat reply.
+- When a harness defect DID change this run's number, the report gets one
+  sentence: what the number should be and why. Not the mechanism, not the
+  file, not the fix.
+- Keep a defect that changed nothing out of the report entirely. Mention it
+  once in chat, in a line, and let the user decide whether they want it
+  chased.
+
+A harness bug you found and did not chase is not a loose end. It is the job
+being done. If the user wants it fixed they will say so, and then it is a
+different task with its own turn.
+
 ## Step 1: build the artifacts, before writing a word
 
 ```bash

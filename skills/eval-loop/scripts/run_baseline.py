@@ -465,6 +465,33 @@ def format_rows(rows: list[dict], limit: int = 60) -> str:
     return "\n".join(out)
 
 
+# A tool result too large for the model's context is not returned inline: the
+# host writes it to a file and hands back a notice naming the path. The
+# ANSWERER is unaffected -- it reads the file and carries on -- but the notice
+# is not JSON, so this module parsed nothing and recorded an empty entity list.
+# An empty list is not "nothing came back"; it scores as a total retrieval miss
+# on a call that returned a full response, and a run then reports a recall it
+# did not measure. Seen twice in one arm: 86.4% printed against 95% actual, and
+# diagnose went on to explain the phantom miss with an index-readiness story
+# that was not true.
+OFFLOADED = re.compile(r"(?:saved to|written to)\s+(/[^\s'\"]+)")
+
+
+def offloaded_json(text: str) -> dict[str, Any] | None:
+    """The response body a host spilled to a file, read back, or None.
+
+    Only ever reads a path the host itself named in the result it returned.
+    """
+    m = OFFLOADED.search(text or "")
+    if not m:
+        return None
+    try:
+        body = pathlib.Path(m.group(1)).read_text()
+    except OSError:
+        return None
+    return resource_json(body)
+
+
 def resource_json(text: str) -> dict[str, Any] | None:
     """The machine-readable part of a tool result. Publisher wraps it in a
     '[Resource from publisher at ...]' preamble; a hosted MCP may return
@@ -1927,6 +1954,18 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     calls.append({**info, "error": text[:300] if failed else None,
                                   "rankedSummary": None})
                 else:
+                    # The host may have spilled the body to a file. Read it
+                    # back rather than scoring the notice as an empty response.
+                    if payload is None:
+                        payload = offloaded_json(text)
+                    if payload is None and OFFLOADED.search(text or ""):
+                        # Named a file we could not read. Record NO summary
+                        # rather than an empty one: unmeasured is the truth,
+                        # and a zero here is a miss the run did not observe.
+                        calls.append({**info,
+                                      "error": text[:300] if failed else None,
+                                      "rankedSummary": None})
+                        continue
                     ids = entity_ids(payload or {})
                     # Which retriever answered, from the response that answered
                     # it: "semantic", "lexical" when the embedding path is down,
