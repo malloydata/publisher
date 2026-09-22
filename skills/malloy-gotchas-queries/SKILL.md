@@ -114,7 +114,7 @@ aggregate: missing is count() { where: seats = null }
 aggregate: missing is count() { where: seats is null }
 ```
 
-Depending on the server this is either rejected or run as a filter that matches nothing, and a count of zero looks like an answer. Use `is null` / `is not null`.
+It runs as a filter that matches nothing. The compiler warns, but the warning is not returned with a result, and a count of zero looks like an answer. Use `is null` / `is not null`.
 
 ## Window Braces Bind to the Function
 
