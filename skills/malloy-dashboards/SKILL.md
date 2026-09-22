@@ -61,8 +61,11 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    include wants `"scope": "package"`**, which recompiles every file as saved: `file` only checks the
    one you are editing, so renaming a source in `_shared.malloy` passes it while breaking every
    dashboard that imports it. A clean compile is not a working dashboard: some tag mistakes surface
-   at step 6, and some only when you look at the page in step 7. (The third scope, `append`, is the
-   default and is what a not-yet-saved file gets.)
+   at step 6, and some only when you look at the page in step 7. **A not-yet-saved dashboard wants
+   `"scope": "file"` too**, not the default: a dashboard file opens with an `import`, and the
+   default `append` scope refuses one, so the new-file case fails on the import and again on the
+   path that does not exist yet. `append` is for a fragment checked against a model that is
+   already on disk, which a dashboard file is not.
 6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `reload_package`, or
    `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
    a 424 means the package did not load and your edit is not live. **The `warnings` key is absent

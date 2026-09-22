@@ -121,7 +121,7 @@ describe("compile construct containment", () => {
       });
 
       // `name!type(...)` and the `sql_*` family are classified inside
-      // `getExpression(fs)`, which needs a resolved FieldSpace -- unlike the
+      // `computeExpression(fs)`, which needs a resolved FieldSpace -- unlike the
       // five constructs refused on sight. So they are the two the gate can
       // only see when the base model loaded, and a base model that does not
       // load has to fail the request rather than pass the fragment through.

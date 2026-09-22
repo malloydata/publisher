@@ -955,7 +955,7 @@ export class Environment {
             //
             // Five of the seven restricted constructs are refused on sight,
             // but two are not: `name!type(...)` and the `sql_*` family are
-            // classified inside `getExpression(fs)`, which needs a resolved
+            // classified inside `computeExpression(fs)`, which needs a resolved
             // FieldSpace. With no base model a fragment like
             // `run: base_source -> { ... }` never resolves `base_source`, so
             // the expression is never evaluated, the construct is never
@@ -971,17 +971,50 @@ export class Environment {
                   .loadModel(pathToFileURL(modelPath))
                   .getModel();
             } catch (error) {
-               // The detail stays server-side. `modelPath` is an absolute path
-               // inside the container and the nested message is whatever the
-               // loader raised, so returning either would answer "does this
-               // file exist, and is it readable" for any path a caller names --
-               // the same shape of oracle this gate exists to close. The
-               // caller-supplied model name is enough to act on, and they
-               // already know it.
+               // Three different failures arrive here and they are not one
+               // answer. Refusing uniformly would tell a caller their text was
+               // bad when the warehouse was down, and a 4xx says "do not
+               // retry" -- the opposite of what an outage wants. The detail
+               // stays server-side either way: `modelPath` is an absolute path
+               // inside the container, so returning it would answer "does this
+               // file exist, and is it readable" for any path a caller names,
+               // which is the shape of oracle this gate exists to close.
                logger.error("Compile gate could not load the base model", {
                   modelPath,
                   error,
                });
+               if (error instanceof MalloyError) {
+                  // The base model itself is broken, or its schema could not be
+                  // fetched. The author needs to see which -- and a schema fetch
+                  // that failed is a dependency being unreachable, not a bad
+                  // request, so it takes the same 503 the package scope already
+                  // gives its analogous failure.
+                  if (
+                     error.problems.some(
+                        (problem) =>
+                           problem.code === "failed-to-fetch-table-schema",
+                     )
+                  ) {
+                     throw new ServiceUnavailableError(
+                        `Cannot validate the submitted source: the schema for ` +
+                           `"${modelName}" could not be fetched. This is a ` +
+                           `problem reaching the data source, not with the ` +
+                           `submitted source.`,
+                     );
+                  }
+                  // A model that does not compile is the author's to fix, and
+                  // the diagnostics naming what is wrong are the useful part --
+                  // they describe the model the caller already has, so they
+                  // disclose nothing the caller cannot see by reading it.
+                  throw new CompileRefusedError(
+                     `Cannot validate the submitted source: the model ` +
+                        `"${modelName}" does not compile, so there is nothing ` +
+                        `to check the submitted source against. Problems: ` +
+                        error.problems.map((p) => p.message).join("; "),
+                  );
+               }
+               // Missing file, permission, anything else: the caller named a
+               // model this server cannot load, which is theirs to correct.
                throw new CompileRefusedError(
                   `Cannot validate the submitted source: the model ` +
                      `"${modelName}" could not be loaded to check it against.`,
