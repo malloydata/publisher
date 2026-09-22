@@ -139,3 +139,20 @@ resolve to a real model is rejected with a `400`, while at **startup/reload** th
 serves but hides the unresolved entry (it never falls back to listing everything) and surfaces the
 reason in the package's `exploresWarnings` field. A surface derived from `index.malloy` always
 resolves, so it never appears there.
+
+`exploresWarnings` is about entries that name nothing. Three other conditions ride the package's
+general `warnings` field instead, because they are about a surface that resolves and still leaves
+the package answering differently than its author expects:
+
+- **The convention curated a package that never asked.** A root `index.malloy` and no `explores`
+  key is the one path that curates on the strength of a file, so it reports what it withholds and
+  how to opt out (`"explores": []`). A package whose `index.malloy` is its only model hides nothing
+  and says nothing.
+- **A malformed `explores`.** `"explores": "orders.malloy"` or an array with a non-string element
+  is ignored rather than coerced, and the warning names the shape expected and the value found.
+  Without it the key would look applied while doing nothing.
+- **The whole surface failed to compile.** A surface that does not compile exports nothing, so the
+  boundary refuses every model in the package — including the ones that compiled — with the same
+  404 a missing model gets. The warning names the broken file and how many it took down. This
+  stays fail-closed on purpose: falling back to listing everything would expose exactly what the
+  author curated away.

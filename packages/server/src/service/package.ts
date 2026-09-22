@@ -316,12 +316,15 @@ export class Package {
    /**
     * Push the discovery-curation policy down onto each Model. Curation (file
     * listing via `explores` and within-file `export {}` filtering) is enabled
-    * only when `explores` is declared in publisher.json — absent/empty
-    * `explores` preserves legacy listings. Re-derived on reload and metadata
-    * PATCH (the inputs can change there).
+    * whenever the package resolves a non-empty surface. That surface is either
+    * an `explores` the author wrote in publisher.json or one derived from a
+    * root `index.malloy`, and this code cannot tell the two apart by design
+    * (see resolveExplores) — so "no `explores` key" does NOT mean "uncurated".
+    * No surface at all preserves legacy listings. Re-derived on reload and
+    * metadata PATCH (the inputs can change there).
     */
-   /** True when the package opts into curated discovery via a non-empty
-    *  `explores`. Single source of truth so the curation/boundary/listing
+   /** True when the package has a non-empty resolved surface, whoever
+    *  authored it. Single source of truth so the curation/boundary/listing
     *  derivations can't drift out of sync. */
    private exploresDeclared(): boolean {
       const explores = this.packageMetadata.explores;
@@ -376,11 +379,14 @@ export class Package {
     * Derived once here (and on reload) rather than per query: the policy only
     * changes when the manifest is (re)read.
     *
-    * Policy: queryable == discoverable. The boundary is inert unless `explores`
-    * is declared (no curated surface ⇒ nothing to restrict) AND
+    * Policy: queryable == discoverable. The boundary is inert unless the
+    * package resolved a surface (no curated surface ⇒ nothing to restrict) AND
     * `queryableSources` is "declared" (the default; "all" decouples the axes).
-    * When active, a model file is a query entry point only if it is listed in
-    * `explores`; within-file curation (`export {}`) is read off each Model.
+    * A surface derived from a root `index.malloy` arms it exactly as a written
+    * `explores` does, so an absent manifest key does not mean an inert
+    * boundary. When active, a model file is a query entry point only if it is
+    * on that surface; within-file curation (`export {}`) is read off each
+    * Model.
     */
    private applyQueryBoundaryToModels(): void {
       const exploresDeclared = this.exploresDeclared();
@@ -1552,9 +1558,11 @@ export class Package {
    }
 
    /**
-    * Declared `explores` (publisher.json) that don't resolve to a real
-    * `.malloy` model in this package, each with an actionable reason. Empty
-    * when explores is absent/empty or every entry resolves.
+    * Surface entries that don't resolve to a real `.malloy` model in this
+    * package, each with an actionable reason. Empty when there is no surface
+    * or every entry resolves. In practice this can only fire for an `explores`
+    * an author wrote: a surface derived from a root `index.malloy` names a
+    * file that was just read off disk, so it always resolves.
     *
     * The listing already fails safe — a non-resolving entry matches no model in
     * `listModels`, so it hides rather than exposes. This surfaces *why*, so the
@@ -2428,10 +2436,11 @@ export class Package {
    }
 
    public async listModels(): Promise<ApiModel[]> {
-      // When `explores` is declared in publisher.json, only those models
-      // form the public surface; every other .malloy file still compiles for
-      // import/join resolution but is hidden from the listing. Absent/empty →
-      // every model is listed (backward-compatible default). Notebooks are
+      // When the package resolved a surface — an `explores` in publisher.json
+      // or a root `index.malloy` — only those models are listed; every other
+      // .malloy file still compiles for import/join resolution but is hidden.
+      // No surface → every model is listed (backward-compatible default), but
+      // note that means no surface, not merely no manifest key. Notebooks are
       // unaffected (see listNotebooks) — they are always public.
       const exploreSet = this.exploreSet();
       const values = await Promise.all(
@@ -2464,7 +2473,8 @@ export class Package {
    /**
     * Whether a model file may be a top-level query target, the FILE-LEVEL half
     * of the policy `applyQueryBoundaryToModels` pushes onto each Model: inert
-    * unless `explores` is declared AND `queryableSources` is `"declared"`.
+    * unless the package resolved a surface (written or derived from a root
+    * `index.malloy`) AND `queryableSources` is `"declared"`.
     *
     * Read here because a dashboard is only worth serving if the queries its
     * manifest advertises can actually run.

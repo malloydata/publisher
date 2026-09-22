@@ -108,11 +108,30 @@ defaults to `"declared"`. If you want listings-only curation, keep both keys.
 
 The `explores` field in a package response may now be a value the server derived rather than one the
 author wrote, and the response does not distinguish the two — deliberately, because nothing
-downstream treats them differently. One consequence: a client that GETs a whole package object,
-edits a field and PATCHes the object back re-sends the derived list, which materializes it into
-`publisher.json`. That is inert — an explicit `["index.malloy"]` and a derived one behave
-identically — but the package will start reporting the `explores` deprecation afterwards. A PATCH
-that does not carry `explores` writes nothing and leaves the convention alone.
+downstream treats them differently. **A derived surface is never written back to `publisher.json`.**
+A client that GETs a whole package object, edits a field and PATCHes the object back re-sends the
+derived list, and the server recognizes it and declines to persist it. Writing it would look inert —
+an explicit `["index.malloy"]` and a derived one behave identically — right up until the file is
+renamed: the convention follows the rename, a frozen key does not, and the package would then list
+and serve nothing. A PATCH that names a genuinely different surface is persisted as before.
+
+**A package curated by the convention alone says so at load.** When a root `index.malloy` becomes
+the surface with no `explores` in `publisher.json`, the package carries a warning naming what that
+withholds and how to opt out (`"explores": []`). It is the one path that curates a package on the
+strength of a file rather than a manifest key, so it is the one an existing package can meet by
+surprise; every other curation path already reported itself. A package whose `index.malloy` is its
+only model withholds nothing and stays quiet.
+
+**A malformed `explores` is reported rather than dropped in silence.** `"explores": "orders.malloy"`
+(the missing-brackets typo) or an array with a non-string element is still ignored — the safe
+direction — but now with a warning naming the shape expected and the value found.
+
+**A broken surface explains the 404s it causes.** If every model on a package's surface fails to
+compile on reload, that package exposes nothing and *every* model in it, including the ones that
+compiled, is refused by name with a 404 that reads as "does not exist". The package now carries a
+warning naming the broken file and the count it took down. The refusal itself is unchanged and
+deliberately fail-closed: falling back to uncurated on a typo would expose sources the author
+curated away.
 
 ## [Unreleased] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
 
