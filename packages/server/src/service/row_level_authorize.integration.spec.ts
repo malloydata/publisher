@@ -70,6 +70,7 @@ import {
    InMemoryURLReader,
    MalloyConfig,
    modelDefToModelInfo,
+   routeOf,
    Runtime,
    type Connection,
    type GivenValue,
@@ -4397,8 +4398,16 @@ source: X is duckdb.sql("select 1 as id") extend {
          }[];
          const given = givens.find((g) => g.name === givenName);
          if (given) {
-            return (given.annotations ?? []).filter((note) =>
-               note.includes("secure"),
+            // Malloy's own routing, not a substring test: `#(insecure)` contains
+            // "secure" and means the opposite, so a text match would let an
+            // annotation that negates the marker satisfy the assertion. Carrying
+            // the marker is the whole deliverable here, which makes this
+            // predicate the deliverable too.
+            return (given.annotations ?? []).filter(
+               (note) =>
+                  routeOf({
+                     value: note.trimStart(),
+                  } as Parameters<typeof routeOf>[0]) === "secure",
             );
          }
       }

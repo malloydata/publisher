@@ -71,10 +71,11 @@ A given has a name, a Malloy type, and an optional default. Queries reference th
 | `timestamptz` | `given: since :: timestamptz is @2024-01-01 00:00:00::timestamptz` | Zone-aware timestamp thresholds      |
 | `filter<T>`   | `given: REGION :: filter<string> is f''`                           | First-class Malloy filter expression |
 
-These are the scalar types Malloy's grammar accepts in a `given:` declaration. **Array and record
-givens are not among them**: `given: categories :: string[] is []` is a compile error
-(`unexpected ']'`), not an unsupported-but-tolerated form. To let a caller pass several values, use
-`filter<string>` and send a Malloy filter expression such as `Footwear, Outerwear`.
+The table lists the scalar types, but the grammar is not limited to them: an array-typed declaration
+such as `given: ROLES :: string[]` compiles, and the given surfaces with type `array`. What does not
+compile is an **empty-array literal default** -- `given: categories :: string[] is []` fails with
+`unexpected ']'`. To let a caller pass several values, use `filter<string>` and send a Malloy filter
+expression such as `Footwear, Outerwear`.
 
 ### `#(secure)`: a given the deployment resolves, not the caller
 
@@ -85,10 +86,11 @@ server enforces on its own -- see [security-posture.md](security-posture.md). Pu
 to carry the marker through package load so the deployment can act on it.
 
 What a deployment does with a `#(secure)` given depends on its own attribute store. Credible's
-trusted-name registry, for example, registers only multi-valued attributes, because its fail-closed
-sentinel is an empty set and a scalar has no empty form -- so a scalar secure given there registers
-nothing and the value stays caller-supplied. That is a property of the deployment, not of the
-`given:` grammar, so check what your own middleware requires before relying on the marker.
+trusted-name registry, at the time of writing, registers only multi-valued attributes, because its
+fail-closed sentinel is an empty set and a scalar has no empty form -- so a scalar secure given
+there currently registers nothing and the value stays caller-supplied. That is a property of the
+deployment rather than of the `given:` grammar, and it may change, so check your own deployment's
+documentation for its current requirement before relying on the marker.
 
 A given a `#(authorize)` gate references may not carry a default, since a caller who supplies no
 value would receive it.
