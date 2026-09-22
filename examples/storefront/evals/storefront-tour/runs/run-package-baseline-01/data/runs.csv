@@ -1,0 +1,2 @@
+run_id,label,target,model,effort,started,judge_version,set_version,retrieval_mode,target_version,model_git_sha,model_repo,reexec_attempted,reexec_ok,reexec_failed,reexec_no_query,reexec_not_re_executed,reexec_not_judged,reexec_missing
+baseline-01,baseline-01,local,sonnet,,2026-09-22T04:57:33Z,5,1,semantic,,a7a13e949f8770677d7997c4bafe735b16457091-dirty,examples/storefront,12,12,0,0,0,0,0
