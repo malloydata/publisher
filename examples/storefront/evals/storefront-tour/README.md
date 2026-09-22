@@ -5,8 +5,11 @@ verified goldens, as a worked example of the eval loop (`skill:eval-loop`).
 Run it to see what an evaluation produces: a score, retrieval recall, a
 diagnosis of each failure, and a servable report.
 
-`RESULTS.md` is the write-up of the first run, if you would rather read one
-than pay for one.
+The repository holds the **questions and their answer key, and nothing else**.
+A run is output: it lands outside the tree, and `evals/.gitignore` keeps it
+there. A run package committed inside the package also breaks it -- its
+`eval_run.malloy` reads `data/*.csv` relative to the STOREFRONT package root,
+so Publisher puts `storefront` in `loadErrors` and serves nothing.
 
 ## What is here
 
@@ -16,7 +19,6 @@ than pay for one.
 | `cases.jsonl` | one case per question: the sealed question text, its golden, and the entities its answer depends on |
 | `gold/` | both derivations of every value-bearing golden, and their agreement |
 | `truth-package/` | the raw tables the goldens are derived from, with no modelling. Served on a SECOND server the answerer cannot reach |
-| `runs/` | the first run's report package and console log |
 
 Every golden is `verified`: derived once as SQL over the raw parquet, once as
 Malloy through the truth package, on axes that differ, and promoted only where
@@ -69,7 +71,7 @@ judging.
 ```bash
 python3 skills/eval-loop/scripts/run_baseline.py \
     --set examples/storefront/evals/storefront-tour \
-    --out examples/storefront/evals/storefront-tour/runs/baseline-02 \
+    --out /tmp/storefront-eval/baseline-02 \
     --environment examples --package storefront \
     --publisher http://localhost:4000 --mcp-url http://localhost:4040/mcp \
     --truth-publisher http://localhost:4881 --truth-environment truth \
@@ -77,16 +79,16 @@ python3 skills/eval-loop/scripts/run_baseline.py \
     --label baseline-02 --max-turns 40 --parallel 4
 ```
 
-**Commit the run directory as soon as it finishes**, before building anything
-from it. The first run's was untracked when an unrelated branch switch removed
-it, and its transcripts and diagnosis could not be recovered.
+The run directory holds the transcripts, the verdicts and the diagnosis. It is
+not committed here, so copy it somewhere durable if you want to keep it -- an
+unrelated branch switch destroyed one already.
 
 **5. Diagnose what failed**, and only then build the report: the run package
 reads `clusters.jsonl`, so building first gives you empty cluster views.
 
 ```bash
 python3 skills/eval-diagnose/scripts/diagnose.py \
-    --run examples/storefront/evals/storefront-tour/runs/baseline-02 \
+    --run /tmp/storefront-eval/baseline-02 \
     --set examples/storefront/evals/storefront-tour \
     --model-dir examples/storefront \
     --environment examples --package storefront \
@@ -97,7 +99,7 @@ python3 skills/eval-diagnose/scripts/diagnose.py \
 
 ```bash
 python3 skills/eval-loop/scripts/build_run_package.py \
-    --run examples/storefront/evals/storefront-tour/runs/baseline-02 \
+    --run /tmp/storefront-eval/baseline-02 \
     --set examples/storefront/evals/storefront-tour --out /tmp/eval-baseline-02
 curl -sS -X POST http://localhost:4000/api/v0/environments/examples/packages \
     -H 'content-type: application/json' \
@@ -112,7 +114,8 @@ the other is a 404:
 - the aggregate notebook, a model rendered by the Console:
   `http://localhost:4000/examples/eval-baseline-02/eval_run.malloynb`
 
-Then write the run up per `skill:eval-report`, beside this file.
+Then write the run up per `skill:eval-report`. Keep the write-up wherever
+you keep the run; it is a record of one measurement, not part of the set.
 
 ## Running it on your own questions
 

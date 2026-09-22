@@ -1,0 +1,6 @@
+# A run is output, not source. Keeping one here also breaks the package:
+# build_run_package.py writes an eval_run.malloy whose duckdb.table("data/...")
+# paths resolve against the STOREFRONT package root, so a committed run package
+# puts storefront itself into loadErrors and it serves nothing.
+# Build runs outside the repo (the README uses /tmp).
+*/runs/

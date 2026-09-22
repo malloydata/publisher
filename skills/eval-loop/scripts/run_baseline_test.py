@@ -1211,7 +1211,10 @@ class RunSummary(unittest.TestCase):
         # wording, and only diagnose separates them. This assertion is here
         # because the label was renamed in score_retrieval and the display line
         # in this file was missed, so the two disagreed in a shipped commit.
-        self.assertIn("retrieved?    36 yes, 5 no (the entity exists and did "
+        # 43 cases retrieval could be judged on (49 less the 6 known coverage
+        # gaps), less 5 misses. The 2 coverage-UNMEASURED cases count here:
+        # retrieval was measured on them even though coverage was not.
+        self.assertIn("retrieved?    38 yes, 5 no (the entity exists and did "
                       "not come back", text)
         self.assertNotIn("(documentation", text)
         # And a delivered-but-wrong answer names no owner until diagnose runs.
@@ -1220,6 +1223,28 @@ class RunSummary(unittest.TestCase):
         # It heads the COVERAGE & RETRIEVAL layer, above the retrieval-mode line.
         self.assertLess(self.index_of(lines, "cascade"),
                         self.index_of(lines, "  retrieval "))
+
+    def test_unmeasured_coverage_does_not_zero_the_retrieval_rung(self):
+        """check_coverage is a separate spend, so most runs have none.
+
+        When it has not run, every case is `unmeasured` and `covered` is 0.
+        Subtracting the misses from THAT printed `retrieved? 0 yes, 0 no` on a
+        run whose entity recall was measured on every case -- three zeroed
+        rungs reading as "nothing was measured" when only the first rung was
+        missing. Reported from a real run of the storefront tour set, which
+        showed 95.5% recall beside a cascade claiming it had retrieved nothing.
+        """
+        # The storefront tour set's own shape: 11 cases carry expected
+        # entities and none has measured coverage, 1 names none at all.
+        text = "\n".join(self.lines(cascade={
+            "total": 12, "not covered": 0, "unmeasured": 11,
+            "no entities named": 1, "not retrieved": 1,
+            "delivered, wrong": 2, "delivered, right": 8, "not scored": 0}))
+        self.assertIn("covered?      0 yes, 0 no (model gap), 11 unmeasured",
+                      text)
+        # 11 judgeable (12 less the one naming no entities), less the 1 miss.
+        self.assertIn("retrieved?    10 yes, 1 no", text)
+        self.assertNotIn("retrieved?    0 yes", text)
 
     def test_no_cascade_prints_nothing(self):
         self.assertNotIn("cascade", "\n".join(self.lines()))

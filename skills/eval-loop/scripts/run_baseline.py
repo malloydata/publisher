@@ -1225,7 +1225,18 @@ def cascade_lines(c: dict | None) -> list[str]:
         return []
     covered = (c["total"] - c["not covered"] - c["unmeasured"]
                - c["no entities named"])
-    retrieved = covered - c["not retrieved"]
+    # Retrieval does NOT inherit coverage's denominator. Coverage is optional
+    # (`check_coverage.py` is a separate spend), so when it has not run every
+    # case is `unmeasured`, `covered` is 0 -- and subtracting from that used to
+    # print `retrieved? 0 yes, 0 no` on a run whose entity recall was measured
+    # on every case. Three zeroed rungs read as "nothing was measured" when only
+    # the first rung was missing, which is the one thing this block exists to
+    # say clearly. So the retrieval rung counts every case retrieval could be
+    # judged on: coverage-unmeasured cases included, cases with no expected
+    # entities and known coverage gaps excluded. When coverage HAS run,
+    # `unmeasured` is 0 and this is the funnel it always was.
+    retrieval_base = c["total"] - c["not covered"] - c["no entities named"]
+    retrieved = retrieval_base - c["not retrieved"]
     # A pass that stops on an earlier rung is reported there. Otherwise the
     # last rung reads as the pass count and disagrees with the headline.
     anyway = lambda n: f"; {n} answered correctly anyway" if n else ""

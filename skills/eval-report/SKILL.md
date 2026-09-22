@@ -63,6 +63,29 @@ not in `~/Downloads`, both of which have lost a findings document before.
 from the console.** A figure retyped from scrollback is a figure nobody can
 check, and the console rounds.
 
+### Keep it under a page and a half
+
+**Budget: about 80 lines, and 120 is the ceiling for a run with several
+distinct failures.** Reports have shipped at 200 and the length is not
+thoroughness -- it is the artifact links restated as prose, the cascade
+explained twice, and a paragraph apologising for a figure nobody disputed.
+A reader who wants the detail opens the case matrix, which is why step 1 builds
+it. What cannot be recovered from the artifacts is your judgement: what broke,
+why, and what to do. Spend the lines there.
+
+What earns its place: the headline, one row per case, one short entry per
+failure, the retrieval numbers, and the next steps. What does not: restating a
+number you already gave, explaining what a cascade is before showing it,
+defending a decision nobody questioned, or any section whose content is that
+nothing happened -- except "Eval failures", where "None." is the point.
+
+**Being brief is not being terse with the vocabulary.** The reader does not
+know what `near_match`, a cluster, recall or a holdout is, so the first time
+one appears, say what it means in the same sentence -- "`near_match`, which is
+excluded from the pass rate" -- and then use it. Cutting the explanations is
+how a short report becomes an unreadable one; cutting the restatements is how
+it becomes a good one.
+
 ### The template
 
 ```markdown
@@ -89,7 +112,12 @@ check, and the console rounds.
 
 ## Retrieval and coverage
 
-Covered? -> Retrieved? -> Correct?, with the per-arm numbers under each.
+**Entity recall N%** -- one number, first, before the cascade. It is the share
+of the entities an answer needed that retrieval actually handed the agent, and
+it is the headline of this section for the same reason the pass rate is the
+headline of the last one. Then the cascade: Covered? -> Retrieved? -> Correct?,
+with the per-arm numbers under each. Say in one clause what recall counts, then
+give the number.
 
 ## Model failures
 
@@ -121,7 +149,7 @@ these in order and put every one that fires into the list, with its command:
 | `coverage: unmeasured` | run `check_coverage.py --set <set> --model <pkg> --out coverage.json`, then re-run with `--coverage` so it charges the failures |
 | `goldenCheck: skipped` or the set names no `truthPackage` | build one with `init_truth_package.py`; until then the goldens were derived through the model under test and certify themselves |
 | any golden still `provisional` | re-derive and `verify_goldens.py --promote` |
-| a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do |
+| a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do. A next step, not a section: it goes in this list and nowhere else in the report |
 | a passing case with recall below 1.0 | check whether `required` over-specifies one path |
 | `truncated` non-empty | re-run those cases at a higher cap with `--from` |
 | diagnose did not run | run it, or say the failures have no owner yet |
@@ -164,8 +192,23 @@ wrong answer. One entry each: what the answer said, what was right, and the
 mechanism in one sentence. Do not write a cluster id here; write what it got
 wrong.
 
-**Eval failures** are everything that stopped the run measuring the model.
-Report every one that occurred, with its count and its qids, and say plainly
+**Eval failures** are the things that stopped the run measuring the model, and
+**only** those. The test is one question: *did this cost a verdict, or make one
+untrustworthy?* If no, it does not appear in the report at any length.
+
+That rules out most of what is tempting to put here, and all of it has been put
+here on a real run: a `-dirty` model pin, a stale-entity-name warning that cost
+no case, a defect you hit in the harness and worked around, a setup step that
+took two tries, anything you would open with "worth knowing, though it changes
+no verdict". A reader wants to know what their model scored. Harness defects are
+real and belong in a harness issue, filed against the harness -- that is the
+skill's opening rule, and this section is where it gets broken.
+
+The section is usually two words. "**None.**" is a complete and good answer, and
+a reader who sees it learns exactly what they need to. Do not pad it into a
+paragraph explaining the absence.
+
+Report every one that DID occur, with its count and its qids, and say plainly
 that these are NOT evidence about the model:
 
 | What happened | How it reads in the ledger | Who fixes it |
