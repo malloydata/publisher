@@ -693,8 +693,7 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
                     human=0, doubted=[], vetoed=[], alt_path=0, unscorable=0,
                     retrieval_mode="semantic",
                     tally={"semantic": 1, "lexical": 0, "unreported": 0},
-                    rs={}, answerer_cost=0.0, judge_cost=0.0, publisher="",
-                    environment="e")
+                    rs={}, answerer_cost=0.0, judge_cost=0.0)
         return "\n".join(rb.summary_lines(**{**base, **kw}))
 
     def test_the_summary_names_the_cases_it_could_not_read(self):
@@ -1205,8 +1204,7 @@ class RunSummary(unittest.TestCase):
             rs={"retrieval_scored": 49, "mean_recall": 0.842,
                 "complete_retrievals": 41,
                 "failures_by_where_to_fix": {"model": 8}},
-            answerer_cost=4.0, judge_cost=0.5,
-            publisher="http://localhost:4811", environment="samples")
+            answerer_cost=4.0, judge_cost=0.5)
         args.update(over)
         return rb.summary_lines(**args)
 
@@ -1338,26 +1336,18 @@ class RunSummary(unittest.TestCase):
         self.assertIn("check_coverage.py", block)
         self.assertIn("--set evals/e", block)
 
-    def test_the_deep_dive_ends_in_a_url_a_human_can_open(self):
+    def test_the_deep_dive_names_diagnose_before_package(self):
         # The point of the layer: a run directory is JSONL, and the reader
-        # needs the served app, not the record it was built from.
-        block = "\n".join(self.lines())
-        self.assertIn("build_run_package.py", block)
-        self.assertIn("--run results/r1", block)
-        self.assertIn(
-            "http://localhost:4811/environments/samples/packages/eval-r1/",
-            block)
-
-    def test_the_deep_dive_registers_the_package_it_just_built(self):
-        # The URL only resolves after the POST, and the two have to name the
-        # same package and the same directory or the link 404s.
-        block = "\n".join(self.lines())
-        self.assertIn("--out /tmp/eval-r1", block)
-        self.assertIn('"name":"eval-r1"', block)
-        self.assertIn('"location":"/tmp/eval-r1"', block)
-        self.assertIn(
-            "POST http://localhost:4811/api/v0/environments/samples/packages",
-            block.replace("-sS -X ", ""))
+        # needs the served report. The builder refuses an undiagnosed run,
+        # so the two commands come in that order, for this run.
+        lines = self.lines()
+        diag = [l for l in lines if "eval.py diagnose" in l]
+        pkg = [l for l in lines if "eval.py package" in l]
+        self.assertEqual(len(diag), 1)
+        self.assertEqual(len(pkg), 1)
+        self.assertIn("--run results/r1", diag[0])
+        self.assertIn("--run results/r1", pkg[0])
+        self.assertLess(lines.index(diag[0]), lines.index(pkg[0]))
 
     def test_the_deep_dive_still_names_the_raw_events(self):
         self.assertIn("events.jsonl", "\n".join(self.lines()))

@@ -603,7 +603,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "no clusters.jsonl in " + ", ".join(str(r) for r in undiagnosed)
             + ": the report's cluster views would be empty. Fix: run "
-              "diagnose.py on each run first, or pass --without-diagnosis")
+              "`eval.py diagnose` on each run first, or pass "
+              "--without-diagnosis")
 
     counts = build(a.run, a.set_dir, out)
     lines = serving_lines(cfg, a.run, out)

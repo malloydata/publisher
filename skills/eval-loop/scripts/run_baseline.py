@@ -1410,7 +1410,6 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   max_turns: int | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
-                  publisher: str, environment: str,
                   evidence: dict | None = None,
                   coverage_report: dict | None = None,
                   cascade: dict | None = None,
@@ -1590,30 +1589,23 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   f"check_coverage.py --set {set_dir} --model <package-dir> "
                   f"--out coverage.json"]
 
-    pkg_name = f"eval-{out.name}"
-    pkg_dir = f"/tmp/{pkg_name}"
+    # The register command and the two URLs are printed by the builder, the
+    # one place that knows the package's path and which server it goes on.
+    # A copy here drifted: it skipped diagnose, built into /tmp and named the
+    # model server, which the answerer can read, for a package holding the key.
     lines += ["", "DEEP DIVE",
               "  A run directory is JSONL, which is a record, not a report.",
-              "  build_run_package.py turns it into a servable Malloy package:",
-              "  a model over the run's CSVs, eval_run.malloynb for the",
-              "  aggregate tables, and an in-package HTML app for the case",
-              "  matrix and its per-case drawer. Register it and open it:",
+              "  Diagnose the failures, then build the report: a Malloy",
+              "  package with eval_run.malloynb for the aggregate tables and",
+              "  an HTML app for the case matrix. The builder refuses a run",
+              "  with no diagnosis, then prints how to register the report",
+              "  and both of its URLs:",
               "",
-              f"    python3 skills/eval-loop/scripts/build_run_package.py \\",
-              f"      --run {out} --set {set_dir} --out {pkg_dir}",
+              f"    python3 skills/eval-loop/scripts/eval.py diagnose "
+              f"--set {set_dir} --run {out}",
+              f"    python3 skills/eval-loop/scripts/eval.py package "
+              f"--set {set_dir} --run {out}",
               "",
-              f"    curl -sS -X POST {publisher}/api/v0/environments/"
-              f"{environment}/packages \\",
-              "      -H 'content-type: application/json' \\",
-              f"      -d '{{\"name\":\"{pkg_name}\","
-              f"\"location\":\"{pkg_dir}\"}}'",
-              "",
-              f"    {publisher}/environments/{environment}/packages/"
-              f"{pkg_name}/",
-              "",
-              "  The POST needs no restart, and lands the package in the",
-              f"  environment this run used ({environment}); move it to another",
-              "  if you would rather the package listing stay untouched.",
               f"  Raw events: {out}/events.jsonl ({events_n} events)",
               "=" * 64]
     return lines
@@ -3546,7 +3538,7 @@ def main(argv: list[str] | None = None) -> int:
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses,
             answerer_cost=cost, judge_cost=judge_cost,
-            publisher=a.publisher, environment=a.environment):
+):
         print(line)
 
     # Recorded, not only printed. The next command is usually diagnose, and a
