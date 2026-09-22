@@ -16,7 +16,24 @@ and to exercise the eval loop end to end on an example anyone can re-run.
 
 ## The result
 
-**11 of 11 decided (100%). One near match.**
+**11 of 12 correct (92%). One wrong answer.**
+
+The arm RECORDED that differently, and the correction matters more than the
+number. It printed `near_match` on `summer-sales-2025` and "11 of 11 decided
+(100%)", because `near_match` is excluded from the pass rate -- so a
+materially wrong answer cost the score nothing.
+
+That verdict followed the rubric as it stood. The rubric was wrong: it granted
+`near_match` to any answer that stated the window it used, on the reasoning
+that a stated method is checkable. A stated method makes an error
+*diagnosable*; it does not make a wrong figure a partial answer. The question
+asks what summer sales were, a reader acts on the number, and $213,939 is not
+it. The rubric now scores any other window `no_match`, so the honest reading
+of this arm is 11 of 12.
+
+It cannot be re-judged: re-scoring needs the run's saved transcripts, and the
+run directory was destroyed (see "Eval failures"). The corrected rubric takes
+effect on the next arm. The table below shows both.
 
 | qid | verdict |
 |---|---|
@@ -31,7 +48,7 @@ and to exercise the eval loop end to end on an example anyone can re-run.
 | top-region | match |
 | best-customers | match |
 | customer-count-basis | match |
-| **summer-sales-2025** | **near_match** |
+| **summer-sales-2025** | **near_match** as recorded; **no_match** under the corrected rubric |
 
 No attempt was truncated, contaminated or environment-failed.
 
@@ -58,10 +75,18 @@ agent answered $213,939.34 for 1 June to 31 August, the meteorological
 window, and **said so plainly**: "summer 2025 (June 1 - Aug 31, 2025)". The
 correct figure for the company's window is $267,422.53, 25% higher.
 
-The judge scored `near_match` rather than `no_match` on exactly the right
-ground: the rubric accepts a stated window, because an answer that names its
-own definition is checkable and only the convention is missing. That is the
-distinction the set was built to make.
+The judge scored `near_match` and named the rubric clause that allowed it,
+which is what `skill:eval-judge` requires of it. The fault was upstream, in
+the clause: it let transparency about method buy partial credit for a wrong
+number. Corrected, this is a `no_match`.
+
+`skill:eval-judge` rule 7 has been amended alongside the rubric, because the
+doctrine had no floor under a rubric author: it said to use `near_match` only
+where a rubric clause makes the difference defensible, and said nothing about
+a clause having no power to make a wrong VALUE defensible. The added test is
+"would a reader who acted on this figure be wrong?" -- if yes it is
+`no_match`, however the rubric is worded, and the judge says it is overriding
+a clause so the clause gets fixed.
 
 Diagnosis put it at `get_context/model/COVERAGE`, owner **model**, in a
 cluster named `sales-season-calendar-unrepresented`: `storefront.malloy`
@@ -121,9 +146,20 @@ five failures forecast before the run did not happen:
   `customer_id` and returned Delilah Okafor, $8,817.56.
 
 Only the business convention failed, and it is the one category that no
-amount of field documentation can close: the rule exists nowhere in the
-data. That is a sharper claim than the run was designed to make, and it is
-worth more than the 100% is.
+amount of field documentation can close: the rule exists nowhere in the data.
+That is the finding worth keeping, and it is worth more than the pass rate.
+
+**The scoring lesson is the second finding, and it is about the eval rather
+than the model.** A rubric written by the same person who authored the
+question granted partial credit for transparency, and the effect was an arm
+reporting 100% with a wrong answer in it. Two of this set's four `near_match`
+clauses had that defect; the other two are sound, and the line between them is
+sharp. `best-customers` and `customer-count-basis` give `near_match` to a
+figure that is RIGHT under some reading the question leaves open, missing only
+a statement of which basis it used. `summer-sales-2025` and `net-sales-2025`
+gave it to a figure that is WRONG, dressed in an explanation. The first is
+what `near_match` is for. The second keeps a wrong answer out of the
+denominator.
 
 **Two of the eval's own rubrics were wrong before the run**, both asserting
 the model exposed nothing for a question when `get_context` returns the
