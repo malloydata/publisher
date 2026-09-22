@@ -17,6 +17,7 @@ of this repository (`evals/.gitignore`).
 | `cases.jsonl` | one case per question: the sealed question text, its golden, and the entities its answer depends on |
 | `gold/` | both derivations of every value-bearing golden, and their agreement |
 | (`examples/storefront-tour-truth/`) | the raw tables the goldens are derived from, with no modelling. It lives OUTSIDE the storefront package on purpose: Publisher serves every `.malloy` under a package directory, so a truth package kept in here is served as one of storefront's own models and the answerer can query the raw tables |
+| `eval.toml` | where each step finds its servers: the model package and its ports, the truth package and the truth server's ports |
 
 Every golden is `verified`: derived once as SQL over the raw parquet, once as
 Malloy through the truth package, on axes that differ, and promoted only where
@@ -71,46 +72,33 @@ declaring a field to quiet a checker changes the thing being measured.
 
 ## Run it
 
-From a clone, with Node 20+ and Bun. Four terminals' worth of setup, then one
-command that spends money.
-
-**1. Serve the model the answerer will query.**
+From a clone, with Node 20+, Bun and Python 3.11+. Every command reads
+`eval.toml`, so none of them takes a server flag. Build once:
 
 ```bash
-bun install && bun run build && bun run start     # REST :4000, MCP :4040
-curl -s http://localhost:4000/api/v0/status | jq -r .operationalState   # -> serving
+bun install && bun run build
 ```
 
-**2. Serve the truth package, separately.** It holds the answer key's
-derivations, so it must never share a server with the model under test.
+**1. Serve the model the answerer will query, and the truth package.** Two
+servers: the truth package holds the answer key's derivations, so it must
+never share a server with the model under test.
 
 ```bash
-mkdir -p /tmp/truthroot && cat > /tmp/truthroot/publisher.config.json <<JSON
-{"frozenConfig": false, "environments": [{"name": "truth", "connections": [],
-  "packages": [{"name": "storefront-tour-truth",
-    "location": "$PWD/examples/storefront-tour-truth"}]}]}
-JSON
-python3 skills/eval-loop/scripts/serve.py \
-    --publisher-dir "$PWD/packages/server" \
-    --server-root /tmp/truthroot --port 4881 --mcp-port 4882 --reinit
+bun run eval -- serve model --set examples/storefront/evals/storefront-tour   # :4000 / :4040
+bun run eval -- serve truth --set examples/storefront/evals/storefront-tour   # :4881 / :4882
 ```
 
-`--publisher-dir` must be absolute: the script runs from elsewhere and a
-relative path resolves against the wrong directory.
+Each returns once its server answers, and keeps it running after the shell
+exits. `--stop` stops it.
 
-**3. Check the answer key still matches the data.** Free, and it refuses the
+**2. Check the answer key still matches the data.** Free, and it refuses the
 run rather than spending on a drifted key.
 
 ```bash
-python3 skills/eval-answer/scripts/verify_goldens.py \
-    --set examples/storefront/evals/storefront-tour \
-    --publisher http://localhost:4881 --environment truth
+bun run eval -- verify --set examples/storefront/evals/storefront-tour
 ```
 
-`--environment truth` is not optional; the default is `samples` and every
-case 404s without it.
-
-**4. Run the arm.** About $3 for twelve cases with sonnet answering and
+**3. Run the arm.** About $3 for twelve cases with sonnet answering and
 judging. It first measures **coverage** -- whether the model can express an
 answer to each question at all, read from the model with no answerer and no
 warehouse -- because a question the model cannot express was never winnable,
@@ -118,57 +106,37 @@ and a score that cannot separate those from wrong answers is not worth much.
 `--no-coverage` skips it.
 
 ```bash
-python3 skills/eval-loop/scripts/run_baseline.py \
-    --set examples/storefront/evals/storefront-tour \
-    --out examples/storefront/evals/storefront-tour/runs/baseline-01 \
-    --environment examples --package storefront \
-    --publisher http://localhost:4000 --mcp-url http://localhost:4040/mcp \
-    --truth-publisher http://localhost:4881 --truth-environment truth \
-    --model-repo examples/storefront --skills-root . \
-    --label baseline-03 --max-turns 40 --parallel 4
+bun run eval -- run --set examples/storefront/evals/storefront-tour \
+    --label baseline-01 --max-turns 40
 ```
 
-The run directory holds the transcripts, the verdicts and the diagnosis. It is
-not committed here, so copy it somewhere durable if you want to keep it.
+The run goes to `~/.malloy-eval/storefront-tour/runs/baseline-01`, outside
+this repository. It holds the transcripts, the verdicts and the pins, and the
+path is printed at the start.
 
-**5. Diagnose what failed**, and only then build the report: the run package
-reads `clusters.jsonl`, so building first gives you empty cluster views.
+**4. Diagnose what failed.**
 
 ```bash
-python3 skills/eval-diagnose/scripts/diagnose.py \
-    --run examples/storefront/evals/storefront-tour/runs/baseline-01 \
-    --set examples/storefront/evals/storefront-tour \
-    --model-dir examples/storefront \
-    --environment examples --package storefront \
-    --verdicts no_match,near_match
+bun run eval -- diagnose --set examples/storefront/evals/storefront-tour \
+    --label baseline-01 --verdicts no_match,near_match
 ```
 
-**6. Build the report and open it.**
+**5. Build the report.** It refuses a run that has not been diagnosed, then
+prints the command that registers the report and its two URLs: the case
+matrix, and the notebook of aggregate tables.
 
 ```bash
-python3 skills/eval-loop/scripts/build_run_package.py \
-    --run examples/storefront/evals/storefront-tour/runs/baseline-01 \
-    --set examples/storefront/evals/storefront-tour --out /tmp/eval-baseline-03
-curl -sS -X POST http://localhost:4000/api/v0/environments/examples/packages \
-    -H 'content-type: application/json' \
-    -d '{"name":"eval-baseline-03","location":"/tmp/eval-baseline-03"}'
+bun run eval -- package --set examples/storefront/evals/storefront-tour \
+    --label baseline-01
 ```
-
-Two artifacts, and they live in **different path spaces** -- guessing one from
-the other is a 404:
-
-- the case matrix, an in-package HTML app:
-  `http://localhost:4000/environments/examples/packages/eval-baseline-03/`
-- the aggregate notebook, a model rendered by the Console:
-  `http://localhost:4000/examples/eval-baseline-03/eval_run.malloynb`
 
 Then write the run up per `skill:eval-report`. It is your report on your run;
 it does not belong in this directory.
 
 ## Running it on your own questions
 
-Replace `as-received/questions.md` and `cases.jsonl`, point `set.json` at your
-package, and drop the goldens. A set of bare questions runs: the answers it
+Replace `as-received/questions.md` and `cases.jsonl`, point `eval.toml` at
+your package and truth package, and drop the goldens. A set of bare questions runs: the answers it
 produces are what keys get derived from, and
 `verify_goldens.py --promote` fixes them afterwards. `skill:eval-import` is
 that job in full.
