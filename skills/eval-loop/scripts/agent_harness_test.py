@@ -13,6 +13,7 @@ import inspect
 import pathlib
 import sys
 import unittest
+import urllib.error
 from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -362,6 +363,84 @@ class TheRetrievalGateIsWired(unittest.TestCase):
             self.assertEqual(rb.run_retrieval_gate(self.ns(rejudge=True)),
                              "not run (no answering phase)")
 
+    def test_a_401_is_named_not_retried(self):
+        # The probe carries no credentials and no CLI login reaches it, so
+        # waiting buys another 401. Retrying one spends twelve tries at ten
+        # seconds each to arrive at "retrieval is not ready", which blames the
+        # retriever for an auth failure.
+        def denied(_a):
+            raise rb.AuthRequired(401, "https://hosted/mcp")
+        with mock.patch.object(rb, "wait_retrieval_ready", denied):
+            note = rb.run_retrieval_gate(self.ns())
+        self.assertIn("not run", note)
+        self.assertIn("401", note)
+        self.assertIn("NOT confirmed", note)
+
+    def test_a_401_does_not_abort_the_run(self):
+        # It is the gate that cannot run, not the arm that must not.
+        def denied(_a):
+            raise rb.AuthRequired(403, "https://hosted/mcp")
+        with mock.patch.object(rb, "wait_retrieval_ready", denied):
+            rb.run_retrieval_gate(self.ns())      # no SystemExit
+
+    def test_the_probes_reply_is_a_confirmation_and_says_it_is_only_one(self):
+        # The reachability probe's call went through the CLI, so it WAS
+        # authenticated. A local run gets two confirmations; this gets one, and
+        # a weaker check must not read back as the same check.
+        def boom(_a):
+            raise AssertionError("made a second, unauthenticated probe")
+        with mock.patch.object(rb, "wait_retrieval_ready", boom):
+            note = rb.run_retrieval_gate(
+                self.ns(probe_payload={"retrieval": "semantic"}))
+        self.assertIn("ready:", note)
+        self.assertIn("1 confirmation", note)
+
+    def test_a_lexical_probe_reply_still_waits(self):
+        # One lexical read is exactly the cold-start case the gate exists for.
+        with mock.patch.object(rb, "wait_retrieval_ready",
+                               lambda _a: (True, "semantic retrieval ready")):
+            note = rb.run_retrieval_gate(
+                self.ns(probe_payload={"retrieval": "lexical"}))
+        self.assertNotIn("1 confirmation", note)
+
+
+class AuthIsNotAColdIndex(unittest.TestCase):
+    """`retrieval_probe` separates "refused me" from "not warm yet"."""
+
+    def probe(self, code):
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        err = urllib.error.HTTPError("http://x/mcp", code, "no", {}, None)
+
+        def boom(*_a, **_kw):
+            raise err
+        with mock.patch.object(rb, "mcp_call", boom):
+            return rb.retrieval_probe(a)
+
+    def test_401_and_403_are_auth(self):
+        for code in (401, 403):
+            with self.subTest(code=code):
+                with self.assertRaises(rb.AuthRequired) as e:
+                    self.probe(code)
+                self.assertEqual(e.exception.code, code)
+
+    def test_another_http_error_is_left_alone(self):
+        # A 503 IS worth retrying, so it must not take the auth path.
+        with self.assertRaises(urllib.error.HTTPError):
+            self.probe(503)
+
+    def test_waiting_does_not_swallow_it(self):
+        # A bare `except Exception` in `wait_retrieval_ready` would catch it
+        # and record "probe failed", which reads as a warming index.
+        def denied(_a):
+            raise rb.AuthRequired(401, "http://x/mcp")
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        with mock.patch.object(rb, "retrieval_probe", denied), \
+             mock.patch.object(rb.time, "sleep", lambda _s: None):
+            with self.assertRaises(rb.AuthRequired):
+                rb.wait_retrieval_ready(a, tries=12, pause=0)
+
 
 class ReadOnlyRoles(unittest.TestCase):
     def test_diagnose_and_cluster_block_the_shell_too(self):
@@ -372,6 +451,63 @@ class ReadOnlyRoles(unittest.TestCase):
         self.assertIn("Bash", diagnose.READ_ONLY)
         for tool in ah.NO_EDITS:
             self.assertIn(tool, diagnose.READ_ONLY)
+
+
+
+class TaskToolsAreBlocked(unittest.TestCase):
+    """The newer task-management surface joins the blocklist.
+
+    `--allowedTools` grants permission without restricting availability, so the
+    denylist is the only lever. `Task` was on it; TaskCreate/Get/List/Update
+    were not, and alone flagged every attempt in a 37-case run.
+    """
+
+    def test_the_task_management_tools_are_always_blocked(self):
+        for name in ("Task", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+                     "TaskOutput", "TaskStop"):
+            self.assertIn(name, ah.ALWAYS_BLOCKED, name)
+
+
+class VerdictScanner(unittest.TestCase):
+    """`last_json_object` is how a diagnosis reaches `diagnose.py`.
+
+    It counted braces by hand, which cannot see that a brace sits inside a
+    string or a comment. `eval-diagnose` asks its agent to READ MALLOY SOURCE
+    and reason over it before emitting the verdict last, so one stray `{` in a
+    quoted snippet left the depth counter above zero for the rest of the reply
+    and a perfectly good trailing verdict read as no object at all. The case
+    then came back `unparseable` and left the denominator. It routes through
+    `json_scan` now, the one scanner in this harness.
+    """
+
+    REPLY = (
+        'Looking at the model:\n\n```malloy\n'
+        'source: orders is duckdb.table(\'o\') extend {\n'
+        '  # a brace in a comment: "{"\n'
+        '  measure: total is sum(amount)\n'
+        '}\n```\n\n'
+        'Verdict:\n{"code": "NOT-RETURNED", "owner": "model"}\n')
+
+    def test_a_brace_in_a_quoted_snippet_does_not_eat_the_verdict(self):
+        self.assertEqual(ah.last_json_object(self.REPLY),
+                         {"code": "NOT-RETURNED", "owner": "model"})
+
+    def test_it_takes_the_LAST_object_because_the_verdict_comes_last(self):
+        text = '{"draft": 1} thinking... {"final": 2}'
+        self.assertEqual(ah.last_json_object(text), {"final": 2})
+
+    def test_prose_with_no_object_is_none(self):
+        self.assertIsNone(ah.last_json_object("no verdict here {not json"))
+
+    def test_a_json_array_is_not_a_verdict(self):
+        self.assertIsNone(ah.last_json_object("[1, 2, 3]"))
+
+    def test_it_is_the_shared_scanner_not_a_second_copy(self):
+        # The drift this harness spent several commits removing. If a local
+        # brace-counter comes back, this is what says so.
+        import json_scan
+        self.assertEqual(ah.last_json_object(self.REPLY),
+                         json_scan.json_objects(self.REPLY)[-1])
 
 
 if __name__ == "__main__":

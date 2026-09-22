@@ -40,7 +40,8 @@ all of them for every run is how a skill stops being read.
 | a golden is wrong, doubted, or out of step with the model | `reference/golden-side-door.md` |
 | auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
 | deciding whether an edit stays | `reference/acceptance-check.md` |
-| about to quote a number, or set the noise band | `reference/measurement.md` |
+| about to quote a number, set the band, or read a set's flips | `reference/measurement.md` |
+| the run finished and someone has to read it | `skill:eval-report` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
 
 Read the file, do not work from the summary here. The acceptance-check rules and
@@ -57,9 +58,21 @@ produces a confident wrong answer rather than an error.
 | **d. improve** | One smallest model edit, then the acceptance check | improve writes `candidate`; you write `acceptance_check`. Revert on reject. |
 | **e. checkpoint** | Git commit after an accepted acceptance check | `checkpoint` event, then the commit |
 
+Every run then **reports** (below). A run whose result exists only as JSONL and
+a scrolled-away console summary has not been delivered.
+
 **scrape** and **run** share a letter but are not the same job. Scrape writes
 cases. Run writes attempts. Do not invent questions and score
 them in one breath.
+
+**Step d is `skill:eval-improve`, not a hand edit plus another arm.** The
+failure mode is specific and it has happened: the edits were made by hand,
+published, and validated by re-running the whole arm -- with the answer key
+repaired in the same window. No `candidate`, `acceptance_check` or `checkpoint`
+event exists in that run's ledger, and the resulting move cannot be attributed
+to the model, the key, or the answerer. Re-running a whole arm after changing
+two things is the one thing the acceptance check exists to replace: it scores
+the edit against dev AND holdout, and it is cheaper than the arm.
 
 ### Scrape, minimally
 
@@ -291,6 +304,29 @@ the run measure something other than what it names:
    under a published version, which is what makes it a pin. Check which you have
    before deciding how much of this you need.
 
+   **Look for a set and for prior runs before you author either.** A minute of
+   `find . -name cases.jsonl`, a glance at `evals/*/runs/` and at your host's
+   own transcripts for this repo. Two sessions fourteen minutes apart built the
+   same 29-case answer key from scratch, because the first had committed
+   nothing before it was deleted and the second had no way to know it existed.
+   Roughly a working day was spent twice, and three specific things were
+   rediscovered at cost: the MCP login flow, the retrieval gate's 401, and a
+   judge-rendering bug that had already cost $17 of arm once. The two keys,
+   independently authored from the same questions, differ by about ten points
+   on comparable answers -- which is the available measure of how much a key
+   depends on its author, and a reason to reuse one rather than rebuild it.
+
+   **Audit the set's entity ids before the first arm.** `verify_goldens.py`
+   checks that each id names something in the model; `check_findable.py` checks
+   that a search of its own kind actually returns it. Both are free of model
+   calls. An id that fails either scores a retrieval miss on every run, and the
+   miss reads as the model's fault.
+
+   **Commit the set before you spend money on an arm**, and keep durable
+   outputs in the repository. A findings document in `~/Downloads` is gone the
+   first time somebody tidies up; the set, the run directory and the write-up
+   belong in git beside the model.
+
 2. The server must be up with retrieval tracing on, so a call's ranked results
    can be recovered afterwards (open-source Publisher: `PUBLISHER_MCP_TRACE=retrieval`).
    Confirm a trace lookup is available (absent means tracing is off).
@@ -331,6 +367,44 @@ the run measure something other than what it names:
    whole run. Raising a call budget mid-run moved mean outcomes on an unchanged
    model.
 
+   The call budget is `--max-turns`, written to `run.json` as `maxTurns`.
+   **Size it from a pilot rather than taking the default of 30.** Run the three
+   cheapest cases uncapped (`--max-turns 100`) and set the cap at twice their
+   maximum. A set whose questions need two or three sources joined does not fit
+   a cap sized for single-source lookups: on one such set the completed
+   attempts had a median of 17 turns and a 90th percentile of 26 against a cap
+   of 30, and four cases died at it. A cap 15% above the 90th percentile of
+   completed work is not a safety margin. Note also that `malloy-analysis` tells
+   the answerer to persist -- retry a phrasing, let a small query settle whether
+   a field exists -- so a tight cap and that instruction are in direct conflict.
+
+   **Do not change the model and the measuring instrument in the same step.**
+   Those are two different axes and only one of them is cheap to separate.
+
+   Batching MODEL edits is fine and expected. Clustering exists so that one
+   edit closes several cases, and an arm per fix does not survive contact with
+   arithmetic: 20 fixes over 100 cases is 2,000 answers, and at the measured
+   $0.33 a case on a proxied warehouse that is $660 of answering to attribute
+   what the acceptance check attributes for the price of the affected cases
+   plus holdout. Budget five arms for a defensible claim (a baseline, two for
+   the A/A, two post-edit), not one per edit, and let `skill:eval-improve`
+   carry each cluster.
+
+   The instrument is the other axis: the answer key, the judge and its prompt,
+   the answerer model, the skills. Move one of those together with the model
+   and there is nothing left holding still, so the result measures neither. On
+   the run this comes from, nine model commits and a re-derived answer key
+   landed between two arms, and the move from 20% to 39% belongs to no one --
+   not because two model edits were batched, but because the ruler changed at
+   the same time as the thing being measured. A key repair mid-improve is not
+   forbidden; it ends that comparison, so re-baseline rather than quoting a
+   delta across it.
+
+   The answerer model is instrument too, and it is the one most often left
+   unstated. The same 23-case set read 12 match / 11 near / 0 no_match on one
+   model and 8 / 4 / 15 on a smaller one. No statement about "the agent's"
+   capability means anything until two arms name the same answerer.
+
 7. Generate every answerer prompt from the stored case in `cases.jsonl`.
    Never retype the question. A truncated retype is indistinguishable from a
    real question downstream.
@@ -350,6 +424,31 @@ the run measure something other than what it names:
    cases, and only after the score event exists.
 6. `skill:eval-improve` only when this run includes improve, and only for
    `owner: model`. Then run the acceptance check. On accept, checkpoint.
+
+## Report the run, or nobody can read it
+
+A run directory is JSONL. It is a record, not a result, and the console summary
+scrolls away. **Every run ends by producing something a person can open**, and
+that job is `skill:eval-report`: it builds the servable run package (the case
+matrix app and the aggregate notebook) and gives the template for the write-up.
+
+Read it at the end of every run, including a run that failed. The standing
+complaint about this loop is that "a bunch of stuff happens and it is hard to
+know the actual results", and a ledger nobody renders is why.
+
+Two rules from it are worth repeating here, because they are the ones a
+conductor skips:
+
+- **Separate a MODEL failure from an EVAL failure.** A wrong answer and a
+  broken measurement look identical in a pass rate and have nothing else in
+  common. An arm holding a truncated, contaminated or environment-failed
+  attempt has no rate to quote at all.
+- **Say when a step did not run, and why.** `improve` not running because every
+  cluster came back `owner: agent-skill` is a RESULT, and it reads identically
+  to having forgotten unless it is written down.
+
+Keep the write-up in the repository beside the set, not in a chat log and not
+in `~/Downloads`.
 
 ## Checkpoint
 
@@ -400,7 +499,16 @@ conductor. Do not:
 
 - The model is the only thing improve edits. No question text, qids, or
   expected values in any name, doc, or comment.
-- When the environment misbehaves, stop. Never diagnose a sick system.
+- When the environment misbehaves, stop. Never diagnose a sick system. The
+  harness is part of the environment: a known-broken measurement does not
+  become quotable by being finished. Measured against this directive, an arm
+  already paid for gets quoted anyway -- it happened three times in one run,
+  once with the confound stated in the same message that started the arm -- so
+  the harness now enforces the parts it can. A run with a truncated or
+  contaminated attempt prints no pass rate and records `status: incomplete`,
+  and `flip_table.py` names what one arm left unscored that the other did not.
+  Read `run_error` on the attempts
+  and the INCOMPLETE line before quoting any number.
 - When a subagent disagrees with you, probe. Do not win by authority.
 - When a rule here is wrong, change this file and note it on the run.
 
@@ -411,5 +519,6 @@ conductor. Do not:
   the judge.
 - `skill:eval-diagnose`: component, owner, issue events. No edit.
 - `skill:eval-improve`: smallest model edit, probe receipts, no self-accept.
+- `skill:eval-report`: the run package and the write-up a person reads.
 - The `malloy-analysis` skill: what the blind answerer follows. It is installed
   from the `analysis` manifest group, not the `eval` group.

@@ -68,13 +68,20 @@ Every failure carries exactly one **where to fix**, so these counts sum to the
 run's failure count. If they ever do not, the attribution has a hole and the two
 tables below disagree with each other.
 
-- **query construction** -- retrieval delivered everything; the agent wrote the
-  query wrong. Fix the skill.
-- **retrieval ranking** -- the entity exists and search did not return it. Fix
-  ranking.
 - **model coverage** -- there was nothing to return. Add the entity.
+- **not retrieved** -- a search of the right kind went out and the entity did
+  not come back. Two live causes and the run cannot separate them: the docs do
+  not describe it the way the question phrases it, or the search wording was
+  off. eval-diagnose decides which.
+- **never asked** -- no search asked for that kind of entity at all, so nothing
+  of that kind could come back. Mechanical, and the agent's.
+- **delivered, wrong** -- retrieval delivered everything and the answer is still
+  wrong. The agent's or the docs'; eval-diagnose decides, sufficiency first.
 - **refusal behaviour** -- the model genuinely cannot answer, and the agent
   answered anyway instead of declining.
+- **coverage not measured** -- a miss on a case with no measured coverage label.
+  Retrieval's or the model's, and nothing says which, so it is charged to
+  neither.
 >>>malloy
 run: failures_by_where_to_fix
 >>>markdown
