@@ -27,6 +27,13 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 
 ## Build sequence
 
+0. **CHECK THE PACKAGE CAN SERVE A DASHBOARD AT ALL.** If its root holds an `index.malloy`, that
+   file is the package's surface, and a dashboard's file is not something it can `export`, so the
+   dashboard you are about to write will compile and then be withheld. Every package made by the
+   scaffolder has that file, so this is the common case, not the corner one. Serving dashboards
+   there means declaring an `explores` in `publisher.json` naming `index.malloy` and every dashboard
+   file, which overrides the convention. Settle that first: it is a different curation shape for the
+   package, not a line to add at the end. See "Read the lint" for the warning it produces otherwise.
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
    `get_context` if you have it, otherwise the REST model endpoint or the `.malloy` files.
    Never guess a name. A guessed field in a query fails the whole package load, not just that one
@@ -459,9 +466,12 @@ fix. A package has a surface in two ways, and the second is easy to miss because
 records it:
 
 - the package's `publisher.json` carries an `explores` list, and the dashboard's file is not on it;
-- the package root holds an **`index.malloy`**, which IS the surface. Adding that file to a package
-  that has dashboards withholds every one of them, because a dashboard's file is not something an
-  `index.malloy` exports.
+- the package root holds an **`index.malloy`**, which IS the surface. This bites in both
+  directions, and a dashboard's file is not something an `index.malloy` exports either way: adding
+  that file to a package that has dashboards withholds every one of them, and adding a dashboard to
+  a package that already has one (every scaffolded package does) means it is never served. The fix
+  is the same in both directions, and it is not an edit to `index.malloy`: declare an `explores` in
+  `publisher.json` naming `index.malloy` and every dashboard file.
 
 Either way the surface is what matters, not the `queryableSources` setting, which is `declared` by
 default; a package with neither withholds nothing. Where there is a surface, a `suggest` source has
