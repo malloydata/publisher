@@ -1,0 +1,21 @@
+{
+ "qid": "storefront-tour-customer-count-basis",
+ "truthQuery": "run: t_customers -> { aggregate: customers_on_file is count() }",
+ "verifyQuery": "run: t_order_items -> { aggregate: customers_with_orders is count(customer_id) }",
+ "truthRows": [
+  {
+   "customers_on_file": 1000
+  }
+ ],
+ "verifyRows": [
+  {
+   "customers_with_orders": 974
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "on file 1000 vs with orders 974; both defensible, criteria golden"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}
