@@ -31,6 +31,51 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — compiling at the default scope no longer accepts text that declares its own data roots (ACTION REQUIRED)
+
+`POST /…/compile` and the `compile_model` MCP tool default to `scope: "append"`,
+where the submitted text is a fragment checked against a model that is already
+published. Malloy resolves a source's schema at COMPILE time -- `duckdb.sql(…)`
+sends a `DESCRIBE` before any query runs, and `connection.table(…)` fetches the
+table's schema the same way -- so a compile-only endpoint still reached the
+database, the filesystem and the network on the caller's behalf. Against DuckDB's
+external access that made unrestricted compile an oracle rather than a check:
+`read_csv('/etc/…')` distinguished an existing file from a missing one by its
+error and named the columns of whatever it read, and `read_csv('https://…')`
+issued the request. No rows were returned, so the exposure was disclosure and
+SSRF rather than extraction.
+
+Append text is now compiled under the same restricted mode `/…/query` already
+applies. These are refused with a 400:
+
+- `import`
+- `connection.table(…)` and `connection.sql(…)`
+- `given:` declarations
+- `##!` compiler flags
+- the raw-SQL function forms: `name!type(…)`, `sql_number`, `sql_string` and the
+  rest of that family
+
+**Migration.** Those constructs belong in a model file, so send text declaring
+them at `scope: "file"` (validating an edit to one file) or `scope: "package"`
+(checking every file as saved). Neither is restricted. Two workflows this
+changes in practice: validating a not-yet-saved dashboard, which opens with an
+`import`, and validating a new source rooted in a table -- including the
+`source:` line `search_database_schema` hands back. Both want `"file"`.
+
+Compiling at `append` also now requires the model named in the URL to load,
+because the fragment is judged against that model's published surface and there
+is nothing to judge it against otherwise. A model that does not exist, or that
+does not itself compile, answers 400 with the model's own problems; a model
+whose table schema cannot be fetched answers **503** rather than 400, since that
+is a data source being unreachable rather than a bad request.
+
+`file` and `package` are unchanged and still unrestricted. `scope` is a
+caller-chosen request field with no authorization difference between its values,
+so this keeps fragment authoring on the model's published surface rather than
+containing a caller who can simply ask for another scope.
+
+---
+
 ## [0.5.0] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
 
 `proxy.ssh.hostKey` pins the bastion's host key. When it was omitted the tunnel

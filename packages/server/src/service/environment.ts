@@ -168,6 +168,28 @@ function getPackageAdmissionRejectionsCounter(): Counter {
    );
    return packageAdmissionRejectionsCounter;
 }
+let compileRefusalsCounter: Counter | null = null;
+/**
+ * Append-scope compile refusals, by reason.
+ *
+ * Both reasons answer 4xx or 5xx on the same endpoint, so without the label a
+ * dependency outage and a caller sending forbidden text are one indistinguishable
+ * spike -- and the one that needs paging looks like the one that does not.
+ * `restricted_construct` is the caller's text; `base_model_load_failed` is the
+ * named model failing to load, which includes the schema-fetch case that answers
+ * 503.
+ */
+function getCompileRefusalsCounter(): Counter {
+   if (compileRefusalsCounter) return compileRefusalsCounter;
+   compileRefusalsCounter = publisherMeter().createCounter(
+      "publisher_compile_refusals_total",
+      {
+         description:
+            "Compiles refused at append scope, labelled by reason and environment",
+      },
+   );
+   return compileRefusalsCounter;
+}
 
 /**
  * Visible for tests; production code never calls this. Resets the
@@ -979,9 +1001,16 @@ export class Environment {
                // inside the container, so returning it would answer "does this
                // file exist, and is it readable" for any path a caller names,
                // which is the shape of oracle this gate exists to close.
-               logger.error("Compile gate could not load the base model", {
+               // `warn`, not `error`: a caller typo in `modelPath` reaches here,
+               // and an unauthenticated 400 must not emit ERROR at whatever rate
+               // a caller likes.
+               logger.warn("Compile gate could not load the base model", {
                   modelPath,
                   error,
+               });
+               getCompileRefusalsCounter().add(1, {
+                  environment: this.environmentName,
+                  reason: "base_model_load_failed",
                });
                if (error instanceof MalloyError) {
                   // The base model itself is broken, or its schema could not be
@@ -1020,11 +1049,25 @@ export class Environment {
                      `"${modelName}" could not be loaded to check it against.`,
                );
             }
-            await assertNoRestrictedConstructs(
-               runtime,
-               baseModel,
-               source ?? "",
-            );
+            try {
+               await assertNoRestrictedConstructs(
+                  runtime,
+                  baseModel,
+                  source ?? "",
+               );
+            } catch (error) {
+               // Counted here rather than inside the gate so both reasons share
+               // one instrument and one label set. Only the refusal is counted:
+               // anything else the gate rethrows is an infrastructure failure it
+               // deliberately does not convert into a caller-facing verdict.
+               if (error instanceof CompileRefusedError) {
+                  getCompileRefusalsCounter().add(1, {
+                     environment: this.environmentName,
+                     reason: "restricted_construct",
+                  });
+               }
+               throw error;
+            }
          }
 
          // Attempt to compile
