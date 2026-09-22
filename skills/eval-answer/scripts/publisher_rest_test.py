@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Tests for publisher_rest. Stdlib only: python3 publisher_rest_test.py"""
+import json
 import os
 import unittest
+import unittest.mock
 
+import publisher_rest
 from publisher_rest import rows_from_result, uncell
 
 
@@ -71,6 +74,59 @@ class RowsFromResultTests(unittest.TestCase):
                     "array_value": [record({"number_value": 2022})]})])
         self.assertEqual(rows_from_result(body),
                          [{"brand": "Levi's", "by_year": [{"c0": 2022}]}])
+
+
+class CompactJson(unittest.TestCase):
+    """The request asks for compact rows, which is what recovers the names
+    inside a nest.
+
+    The typed envelope does not repeat field names below the top level, so a
+    nested record came back keyed `c0`, `c1`. A golden written the way its
+    author ran the query -- with the real column names -- then read as DRIFT,
+    and drift blocks an arm. Publisher has answered this all along; the
+    request just never asked.
+    """
+
+    def send(self, body):
+        """Capture the request `query()` builds, and hand back `body`."""
+        seen = {}
+
+        class Resp:
+            def read(self_): return json.dumps(body).encode()
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): return False
+
+        def fake(req, timeout=None):
+            seen["payload"] = json.loads(req.data.decode())
+            return Resp()
+
+        with unittest.mock.patch.object(publisher_rest.urllib.request,
+                                        "urlopen", fake):
+            rows = publisher_rest.query("http://x", "e", "p", "m.malloy",
+                                        "run: x -> { ... }")
+        return seen["payload"], rows
+
+    def test_the_request_asks_for_compact_rows(self):
+        payload, _ = self.send({"result": "[]"})
+        self.assertIs(payload["compactJson"], True)
+        self.assertEqual(payload["query"], "run: x -> { ... }")
+
+    def test_a_nest_keeps_its_field_names(self):
+        # What the server returns under compactJson: `result` is a JSON
+        # STRING of plain rows, nested names intact.
+        body = {"result": json.dumps(
+            [{"carrier": "WN", "n": 2,
+              "top_dest": [{"destination_code": "PHX", "d": 1}]}])}
+        _, rows = self.send(body)
+        self.assertEqual(rows[0]["top_dest"], [{"destination_code": "PHX",
+                                                "d": 1}])
+        self.assertNotIn("c0", rows[0]["top_dest"][0])
+
+    def test_the_envelope_path_still_works(self):
+        # Kept as a fallback: a server that ignores the flag still parses.
+        body = envelope(["n"], [record({"number_value": 7})])
+        _, rows = self.send(body)
+        self.assertEqual(rows, [{"n": 7}])
 
 
 if __name__ == "__main__":

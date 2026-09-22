@@ -65,6 +65,8 @@ import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
    buildServeShapeModelForBindings,
+   liftDerivedSources,
+   type ServeShapeGiven,
    buildVirtualMap,
    extractJoins,
    extractRefinements,
@@ -75,6 +77,8 @@ import {
    type RollupShapeGroup,
    sliceSourceRange,
    type ServeBinding,
+   type DerivedSourceLift,
+   type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
 } from "./materialization_serve_transform";
@@ -99,6 +103,7 @@ import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
+   hasCallerAuthorizeAnnotation,
    findLegacyStringGates,
    referencedGivenNames,
    validateAuthorizeProbes,
@@ -120,7 +125,7 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { malloyGivenToApi, type MalloyGiven } from "./given";
+import { gateGivenSource, malloyGivenToApi, type MalloyGiven } from "./given";
 import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
@@ -216,17 +221,21 @@ function denyUnlessAdmitted(
    label: string,
 ): void {
    if (resolution.shape === "lock") {
-      if (
-         decideLock(
-            resolution.condition.e,
-            (id) => resolution.givenNamesById.get(id),
-            givens,
-         ) === "admit"
-      ) {
+      const outcome = decideLock(
+         resolution.condition.e,
+         (id) => resolution.givenNamesById.get(id),
+         givens,
+      );
+      if (outcome === "admit") {
          recordLockDecision("admitted");
          return;
       }
-      recordLockDecision("denied_by_lock");
+      // Both refusals are the same 403 to the caller; only the label differs,
+      // so an operator can alert on a gate that could not be decided without
+      // firing on one that is working.
+      recordLockDecision(
+         outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
+      );
       throw new AccessDeniedError(`Access denied for source "${label}".`);
    }
    recordLockDecision("denied_unresolvable");
@@ -1905,6 +1914,8 @@ export class Model {
    private async assertRequestDeclaredEntryPointIsNotLaundered(
       runnable: QueryMaterializer,
       query: string,
+      givens: Record<string, GivenValue>,
+      graftScope: GraftScope | undefined,
    ): Promise<void> {
       // Nothing to launder unless this model actually declares a gate.
       if (!this.declaresAnyGate()) return;
@@ -1929,16 +1940,105 @@ export class Model {
          entryPoint,
          buildDerivationBaseMap(stripMalloyCommentsAndLiterals(query)),
       );
-      if (proof.proven) return;
+      if (proof.proven) {
+         // Every gated base the chain reached must be a lock this caller
+         // satisfies. A lock is decided, not attached, so once it admits there
+         // is nothing left for the alias to strip — which is why an admitted
+         // one proves the branch that a row filter cannot. A filter reaching
+         // here has no graft target (the entry point is ephemeral, so
+         // `resolveGraftTarget` has no `modelDef.contents` key for it), so it
+         // is refused rather than silently dropped.
+         for (const base of proof.gatedBases) {
+            for (const entry of this.entryPointGatesBySource.get(base) ?? []) {
+               const resolution = this.modelDef
+                  ? await this.resolveGateShape(
+                       entry,
+                       this.modelDef,
+                       graftScope,
+                    )
+                  : ({ shape: "rejected", cause: undefined } as const);
+               if (resolution.shape === "row_level") {
+                  this.denyLaunderedEntryPoint(
+                     entryPoint,
+                     "row_filter_not_graftable",
+                     base,
+                  );
+               }
+               // Throws the same opaque refusal, labelled with the ephemeral
+               // entry point rather than the gated base it reached, and books
+               // its own lock counters.
+               denyUnlessAdmitted(resolution, givens, entryPoint);
+            }
+         }
+         return;
+      }
+      this.denyLaunderedEntryPoint(entryPoint, proof.reason, proof.at);
+   }
+
+   /**
+    * Decide, before compiling, every lock reachable from an entry point THIS
+    * REQUEST declared.
+    *
+    * Deliberately not a proof and never denies on its own: a chain it cannot
+    * read just gates nothing here, and
+    * {@link assertRequestDeclaredEntryPointIsNotLaundered} still decides it
+    * after compilation. The only thing this buys is ORDER — a refused caller
+    * hears "denied" instead of the compiler's opinion of a column name on a
+    * source they may not read.
+    */
+   private async assertLocksOnRequestDeclaredBases(
+      entryPoint: string,
+      query: string,
+      givens: Record<string, GivenValue>,
+      bypassAuthorize?: boolean,
+   ): Promise<void> {
+      if (!this.declaresAnyGate()) return;
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      const seen = new Set<string>();
+      // No run target (`/compile` on text that only DECLARES sources) has no
+      // one place to start, so every name the text declares is a root. The walk
+      // decides the same locks either way; it just cannot be anchored.
+      const worklist = entryPoint ? [entryPoint] : [...basesOf.keys()];
+      for (let i = 0; i < worklist.length; i++) {
+         const name = worklist[i];
+         if (seen.has(name)) continue;
+         seen.add(name);
+         if (seen.size > REQUEST_CHAIN_MAX_NAMES) return;
+         if (this.entryPointGatesBySource.has(name)) {
+            try {
+               // Names a source the request's own text derives from, so
+               // reporting it back tells the caller nothing they did not write.
+               await this.assertAuthorized(name, givens, bypassAuthorize);
+            } catch (error) {
+               // A refusal must not answer for a source the caller cannot even
+               // see: the conversion has to resolve the target at least as well
+               // as the gate that denied it, and the callers' own conversions
+               // read surface syntax, which cannot see through this alias. So
+               // convert HERE, on the base actually gated — a hidden one is a
+               // 404, not a 403 naming it.
+               if (error instanceof AccessDeniedError) {
+                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+               }
+               throw error;
+            }
+            continue;
+         }
+         for (const base of basesOf.get(name) ?? []) worklist.push(base);
+      }
+   }
+
+   /** The one refusal for a request-declared entry point, and its audit line. */
+   private denyLaunderedEntryPoint(
+      entryPoint: string,
+      reason: string,
+      at: string,
+   ): never {
       recordRowLevelGateDecision("denied_by_gate");
       logger.debug(
          "Request-declared entry point in a gated model is not provably ungated; denying",
-         {
-            modelPath: this.modelPath,
-            entryPoint,
-            reason: proof.reason,
-            at: proof.at,
-         },
+         { modelPath: this.modelPath, entryPoint, reason, at },
       );
       // Names the compiled entry point the request itself declared — never the
       // gate's column, nor which gated source it may have reached.
@@ -1994,13 +2094,15 @@ export class Model {
       entryPoint: string,
       basesOf: Map<string, Set<string>>,
    ):
-      | { proven: true; reason?: undefined; at?: undefined }
+      | { proven: true; gatedBases: readonly string[] }
       | {
            proven: false;
-           reason: "reaches_gated_source" | "chain_not_established";
+           reason: "chain_not_established";
            at: string;
+           gatedBases?: undefined;
         } {
       const seen = new Set<string>();
+      const gatedBases: string[] = [];
       const worklist = [entryPoint];
       for (let i = 0; i < worklist.length; i++) {
          const name = worklist[i];
@@ -2013,17 +2115,15 @@ export class Model {
          }
          const modelGates = this.entryPointGatesBySource.get(name);
          if (modelGates !== undefined) {
-            if (modelGates.length > 0) {
-               return {
-                  proven: false,
-                  reason: "reaches_gated_source",
-                  at: name,
-               };
-            }
-            // A model-declared ungated source: this branch is proven, and the
-            // walk stops here rather than following the AUTHOR's own
-            // derivations, which is what keeps the documented model-authored
-            // fail-open intact.
+            // A gated base does not disprove the chain on its own: a LOCK that
+            // admits this caller leaves nothing to graft, so aliasing the
+            // source launders nothing. Collected for the caller to decide;
+            // anything that is not an admitting lock still denies there.
+            if (modelGates.length > 0) gatedBases.push(name);
+            // A model-declared source: this branch is resolved, and the walk
+            // stops here rather than following the AUTHOR's own derivations,
+            // which is what keeps the documented model-authored fail-open
+            // intact.
             continue;
          }
          const bases = basesOf.get(name);
@@ -2032,7 +2132,7 @@ export class Model {
          }
          for (const base of bases) worklist.push(base);
       }
-      return { proven: true };
+      return { proven: true, gatedBases };
    }
 
    /**
@@ -2165,6 +2265,8 @@ export class Model {
             await this.assertRequestDeclaredEntryPointIsNotLaundered(
                runnable,
                options.callerQueryText,
+               givens,
+               graftScope,
             );
          }
          return runnable;
@@ -2823,7 +2925,21 @@ export class Model {
       text: string,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.assertAuthorized(extractRunTargetSourceName(text), givens);
+      const target = extractRunTargetSourceName(text);
+      await this.assertAuthorized(target, givens);
+      // The same caller-declared-alias gap the query path closes, and it bites
+      // harder here: `/compile` answers WITH the compiler's diagnostics, so a
+      // lock that is not decided first makes them readable for a source the
+      // caller is refused. Text with no `run:` resolves no target and is walked
+      // anyway — a bare `source: s is locked extend { … }` is exactly the shape
+      // that reaches the compiler with nothing gated.
+      if (!hasCallerAuthorizeAnnotation(text)) {
+         await this.assertLocksOnRequestDeclaredBases(
+            target ?? "",
+            text,
+            givens,
+         );
+      }
    }
 
    /**
@@ -3057,18 +3173,23 @@ export class Model {
                // .contents[sourceName]` is the same struct the probe was
                // grafted onto, so `refSummary` is already resolved against
                // it either way.
-               onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+               onOwnRowLevelConditionCompiled: (
+                  sourceName,
+                  condition,
+                  route,
+               ) => {
                   const struct = compiledModelDef.contents[sourceName];
                   if (!struct || !isSourceDef(struct)) return;
                   validateSourceLineGateGivenUsage(
                      sourceName,
+                     route,
                      struct,
                      condition.refSummary as ExpandableRefSummary | undefined,
                      condition.e,
                      compiledModelDef,
                      (cause, detail) => {
                         recordRowLevelGateRejected(cause);
-                        logger.warn("Row-level #(access_filter) gate warning", {
+                        logger.warn(`#(${route}) gate warning`, {
                            packageName,
                            modelPath,
                            sourceName,
@@ -3540,16 +3661,19 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
-         // The EFFECTIVE gate per source, inheritance already resolved by the
-         // extraction, so a suggest over a gated source learns which givens its
-         // gate reads. `source.authorize` is scoped to the `authorize` route
-         // only (see `ExtractedSource.authorize`'s doc), so a given
-         // referenced only by a `#(authorize)` term is not suggested
-         // — a known, accepted gap.
+         // The EFFECTIVE gates per source on both routes, inheritance already
+         // resolved by the extraction, so a suggest over a gated source learns
+         // which givens its gates read. See `gateGivenSource`.
          new Map(
             (this.sources ?? []).flatMap((source) =>
                source.name
-                  ? [[source.name, source.authorize ?? []] as const]
+                  ? [
+                       [
+                          source.name,
+                          gateGivenSource(this.sources ?? [], source.name) ??
+                             [],
+                       ] as const,
+                    ]
                   : [],
             ),
          ),
@@ -4280,7 +4404,20 @@ export class Model {
       );
    }
 
-   private async loadServeShapeQuery(queryString: string): Promise<{
+   private async loadServeShapeQuery(
+      queryString: string,
+      /**
+       * The request's given values, passed to the origin probe below.
+       *
+       * The probe compiles the query to decide whether a rollup answered it, and
+       * compiling resolves every given the shape declares. A given with no
+       * DEFAULT — which is every `#(secure)` attribute, since a scalar cannot be
+       * secure and a set-valued one is server-set — has nothing to resolve to at
+       * that point, so the probe threw and the whole tier fell back to live for
+       * exactly the sources that carry a row-level boundary.
+       */
+      givens?: Record<string, GivenValue>,
+   ): Promise<{
       runnable: QueryMaterializer;
       virtualMap: VirtualMap;
       /**
@@ -4371,7 +4508,7 @@ export class Model {
       // so without this the error would escape at prepare/run instead of at the
       // caller's try, defeating the safe fallback. Cheap relative to the run. The
       // serve shape is pure virtual sources, so no buildManifest is needed.
-      const probeSQL = await runnable.getSQL({ virtualMap });
+      const probeSQL = await runnable.getSQL({ virtualMap, givens });
       // The rollup members' physical paths, quoted exactly as the virtualMap
       // substitutes them, so this compares like with like rather than re-deriving
       // the quoting and drifting from it.
@@ -4452,7 +4589,15 @@ export class Model {
                          }
                        : b,
                  );
-         const materializer = this.buildServeShapeMaterializer(shaped, groups);
+         // Derived entry points ride the richest rung only. They are the most
+         // that can be carried, and confining them here is what bounds the blast
+         // radius: every rung below is byte-identical to the shape this package
+         // compiled before lifting existed.
+         const materializer = this.buildServeShapeMaterializer(
+            shaped,
+            groups,
+            tier === 0 ? this.liftedDerivedSources(enriched) : [],
+         );
          // The last tier is virtual bases plus their filters. Unlike the tiers
          // above it, it can fail: a filter that cannot be reproduced (one
          // reaching through a join whose target is not materialized, or over a
@@ -4592,14 +4737,53 @@ export class Model {
       return servable;
    }
 
+   /**
+    * This model's given surface, in the shape the serve-shape model declares.
+    *
+    * `Model.givens` has already collapsed inheritance from imports, so this is
+    * the same surface a live query binds against — which is the point: the
+    * transient shape should accept exactly the givens the author's model
+    * accepts, no more and no less.
+    *
+    * A given whose type cannot be rendered is DROPPED rather than guessed. The
+    * cost is bounded and safe: a re-emitted `where:` that reads it then fails to
+    * compile, the binding is withheld, and the query serves live. Guessing a
+    * type would instead compile a filter that silently coerces.
+    */
+   private serveShapeGivens(): ServeShapeGiven[] {
+      const out: ServeShapeGiven[] = [];
+      for (const given of this.givens ?? []) {
+         if (typeof given.name !== "string" || given.name.length === 0)
+            continue;
+         if (typeof given.type !== "string" || given.type.length === 0)
+            continue;
+         out.push({
+            name: given.name,
+            type: given.type,
+            defaultText:
+               typeof given.default === "string" ? given.default : undefined,
+         });
+      }
+      return out;
+   }
+
    /** Build the transient serve-shape materializer for a set of bindings. */
    private buildServeShapeMaterializer(
       bindings: ServeBinding[],
       rollupGroups: RollupShapeGroup[] = [],
+      /**
+       * Non-persisted sources to carry over these bindings. Defaulted empty so
+       * every probe path — the per-binding filter probe especially — compiles
+       * the bindings ALONE: a lift failing there would withhold a binding that
+       * serves perfectly well on its own.
+       */
+      derived: DerivedSourceLift[] = [],
    ): ModelMaterializer {
       const { modelText } = buildServeShapeModelForBindings(
          bindings,
          rollupGroups,
+         this.serveShapeGivens(),
+         derived,
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -4644,40 +4828,40 @@ export class Model {
     * parsing that text; views are emitted optimistically and pruned by the
     * shape-compile escalation in {@link compileServeShape} if they don't hold.
     */
-   private serveBindingsWithRefinements(
-      // No default. This function resolves a binding back into the AUTHOR's model
-      // — by name, for its field list — which a rollup cannot survive: its source
-      // name names nothing there, so the fields come back undefined and the
-      // binding is dropped. Defaulting to `this.serveBindings` would hand the
-      // whole set, rollups included, to any future caller that omitted the
-      // argument. Every caller states which set it means.
-      bindings: ServeBinding[],
-   ): ServeBinding[] {
-      const contents = (
-         this.modelDef as
-            | {
-                 contents?: Record<
-                    string,
-                    {
-                       sourceID?: unknown;
-                       fields?: unknown[];
-                       filterList?: unknown[];
-                    }
-                 >;
-              }
-            | undefined
-      )?.contents;
-      // sourceID -> author source name, for the join materialization gate.
+   /**
+    * The compiled-model facts the serve shape is assembled from: this model's
+    * `contents`, a sourceID index over it, and a reader that recovers a
+    * declaration's verbatim text from the author's file by location.
+    *
+    * Shared by the refinement extraction and the derived-source lift so the two
+    * read ONE view of the model. The file cache lives per call, which is what
+    * keeps a package's sources from re-reading the same file once each.
+    */
+   private authorModelLift(): {
+      contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
+      sourceNameById: Map<string, string>;
+      liftText: (location: SourceLocation) => string | undefined;
+   } {
+      const contents =
+         (
+            this.modelDef as
+               | {
+                    contents?: Record<
+                       string,
+                       DerivedSourceDef & { sourceID?: unknown }
+                    >;
+                 }
+               | undefined
+         )?.contents ?? {};
+      // sourceID -> author source name, for the join materialization gate and
+      // for resolving what a derived source extends.
       const sourceNameById = new Map<string, string>();
-      for (const [name, def] of Object.entries(contents ?? {})) {
+      for (const [name, def] of Object.entries(contents)) {
          if (typeof def?.sourceID === "string") {
             sourceNameById.set(def.sourceID, name);
          }
       }
-      const materializedSourceNames = new Set(
-         bindings.map((b) => b.sourceName),
-      );
-      // Cache each source file's text (or null when unreadable) across bindings.
+      // Cache each source file's text (or null when unreadable) across lookups.
       const fileCache = new Map<string, string | null>();
       const liftText = (location: SourceLocation): string | undefined => {
          if (!location?.url?.startsWith("file:")) return undefined;
@@ -4694,6 +4878,46 @@ export class Model {
          const text = fileCache.get(location.url);
          return text ? sliceSourceRange(text, location.range) : undefined;
       };
+      return { contents, sourceNameById, liftText };
+   }
+
+   /**
+    * The non-persisted sources that can be carried onto the shape over the
+    * supplied bindings — the entry points a caller's own term lives on.
+    *
+    * Carried at the RICHEST tier only (see {@link compileServeShape}). That is
+    * what makes this strictly additive: a lift that does not compile costs its
+    * own rung and nothing else, and every tier below is the shape this package
+    * already got, so a package serving today serves identically if the lift
+    * fails.
+    */
+   private liftedDerivedSources(bindings: ServeBinding[]): DerivedSourceLift[] {
+      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      return liftDerivedSources({
+         contents,
+         sourceNameById,
+         // Bases a lift may extend: the FRESH bindings it is handed.
+         shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
+         // Candidates are excluded against EVERY binding, including the ones
+         // freshness withheld — see `boundSourceNames`.
+         boundSourceNames: new Set(this.serveBindings.map((b) => b.sourceName)),
+         liftText,
+      });
+   }
+
+   private serveBindingsWithRefinements(
+      // No default. This function resolves a binding back into the AUTHOR's model
+      // — by name, for its field list — which a rollup cannot survive: its source
+      // name names nothing there, so the fields come back undefined and the
+      // binding is dropped. Defaulting to `this.serveBindings` would hand the
+      // whole set, rollups included, to any future caller that omitted the
+      // argument. Every caller states which set it means.
+      bindings: ServeBinding[],
+   ): ServeBinding[] {
+      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      const materializedSourceNames = new Set(
+         bindings.map((b) => b.sourceName),
+      );
       return (
          bindings
             .map((b) => {
@@ -4942,6 +5166,31 @@ export class Model {
             givens ?? {},
             bypassAuthorize,
          );
+         // A caller-declared alias (`source: s is gated extend {}`) names an
+         // entry point this model never declared, so the gate above matches
+         // nothing and the caller's own compile errors would answer before any
+         // lock did — the schema oracle this whole early gate exists to close.
+         // Decide the locks the request's OWN derivations reach, from its text,
+         // before compiling. A chain this cannot read is left to the
+         // post-compile check ({@link
+         // assertRequestDeclaredEntryPointIsNotLaundered}), which is the
+         // fail-closed one; this is only ever an earlier, opaquer refusal.
+         // Text carrying an annotation at all is left to the forgery rejecter
+         // below, whose refusal is the specific one ("not permitted in
+         // caller-submitted text") and whose counter is the one operators read.
+         // Skipping opens nothing: the post-compile check still decides.
+         if (
+            query &&
+            !hasCallerAuthorizeAnnotation(query) &&
+            !this.entryPointGatesBySource.has(earlySource)
+         ) {
+            await this.assertLocksOnRequestDeclaredBases(
+               earlySource,
+               query,
+               givens ?? {},
+               bypassAuthorize,
+            );
+         }
       }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
@@ -5133,7 +5382,10 @@ export class Model {
          // row-level-gated entry point, per the pre-check just above.
          if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
             try {
-               const shaped = await this.loadServeShapeQuery(queryString);
+               const shaped = await this.loadServeShapeQuery(
+                  queryString,
+                  querySurfaceGivens,
+               );
                runnable = shaped.runnable;
                serveVirtualMap = shaped.virtualMap;
                serveShapeBindings = shaped.bindings;
@@ -5431,12 +5683,24 @@ export class Model {
       let executionTime = 0;
       let queryResults;
       let appliedQueryMetadata: QueryMetadata | undefined;
-      // Same reason as effectiveBuildManifest: the serve shape is built from
-      // given-FREE sources, so it surfaces no `given:` and Malloy rejects any
-      // supplied name with "unknown given" — a spurious 400, past the routing
-      // fallback, on a query that should just serve from storage. Nothing in the
-      // shape can read them; the authorize gate above already saw the full set.
-      const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
+      // Passed through whether or not the query routes. The serve shape declares
+      // this model's whole given surface (see `serveShapeGivens`), so a supplied
+      // name resolves there exactly as it does live — and it MUST be passed,
+      // because a materialized source's re-emitted `where:` may read one. That
+      // term was left out of the build on the promise that the read puts it
+      // back; dropping the value here would read the artifact unfiltered, which
+      // is every caller's rows.
+      //
+      // Withholding them was right while the shape was built from given-free
+      // sources: it surfaced no `given:`, so any supplied name met Malloy's
+      // "unknown given" as a spurious 400 past the routing fallback. Declaring
+      // the surface is what removes that, and it removes it in both directions —
+      // a name this model does not declare is still rejected, as it is live.
+      //
+      // A grafted row filter never reaches the shape at all:
+      // `routingBlockedByRowLevelGate` above vetoes routing outright whenever
+      // the QUERY's own entry point carries a gate.
+      const effectiveGivens = querySurfaceGivens;
       try {
          // The prepared result is also where the executing connection's name
          // comes from, which is what makes the connection's default metadata
@@ -5507,10 +5771,12 @@ export class Model {
          //    mixed set is normal and a sibling must not decide this query;
          //  - never for a client error (a bad given) or an abort, where a retry
          //    would just reproduce it or defy the caller;
-         //  - the retry re-supplies the REAL givens. The storage path suppresses
-         //    them because the shape is built from given-free sources; the live
-         //    source may filter on them, and running it without them would serve
-         //    unfiltered rows.
+         //  - the retry re-supplies the REAL givens. It always did for the live
+         //    source, which may filter on them — running it without them would
+         //    serve unfiltered rows. The storage path now supplies them too (the
+         //    shape declares the model's given surface), so the two paths carry
+         //    the same values and this retry changes only where the rows come
+         //    from.
          const canDegradeToLive =
             !!serveVirtualMap &&
             !!liveRunnable &&

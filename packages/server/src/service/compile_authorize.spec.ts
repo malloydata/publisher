@@ -504,6 +504,26 @@ export { customers, visible_gated }`,
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
+   it("decides the alias's lock BEFORE compiling, so /compile is not a schema oracle", async () => {
+      // /compile answers WITH the compiler's diagnostics, so ordering is the
+      // whole guarantee here: a refused caller aliasing the source and naming a
+      // column that does not exist must hear the denial, never which names
+      // resolve on a source they cannot read.
+      const err = await env
+         .compileSource(
+            "pkg",
+            "index.malloy",
+            "source: mine is visible_gated extend {}\nrun: mine -> { group_by: no_such_field }",
+            false,
+         )
+         .then(
+            () => undefined,
+            (e: Error) => e,
+         );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
+   });
+
    it("ADMITS the hidden source once the gate's given is supplied — denyHiddenAsNotQueryable scrubs a denial, it is not an access check", async () => {
       // `denyHiddenAsNotQueryable` (environment.ts) runs the gate first and
       // only converts to `NotQueryableError` when the gate itself threw

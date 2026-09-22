@@ -78,9 +78,11 @@ The boundary applies to the **query** surface (`getQueryResults` and the MCP que
 stays authorable. The consequence is that `/compile` can reveal a hidden source's schema, and with
 `includeSql` its SQL. It does not cover raw retrieval by exact path either — a hidden model's file
 text and its compiled metadata are still fetchable by path. Both are by design. Use `#(authorize)`
-when the contents themselves must be protected rather than merely removed from discovery. A source
-that is both hidden and gated still answers `/compile` with the boundary's generic 404, so the
-exemption cannot be used to enumerate gated names.
+when the contents themselves must be protected rather than merely removed from discovery: a lock is
+truth-evaluated on `/compile`, so a refused caller gets a 403 and no SQL. `#(access_filter)` is not,
+because it decides rows and `/compile` returns none. A source that is both hidden and locked still
+answers `/compile` with the boundary's generic 404, so the exemption cannot be used to enumerate
+gated names.
 
 ## Runnable example
 

@@ -85,10 +85,10 @@ export interface ExtractedSource {
    filters: ExtractedFilter[] | undefined;
    givens: unknown;
    /**
-    * Effective `#(authorize)` expressions gating this source: its own — or,
-    * when it declares none, the nearest `extend` ancestor's. Undefined only
-    * when nothing gates the source. Surfaced for introspection; enforcement
-    * happens server-side.
+    * Effective `#(authorize)` LOCK expressions gating this source: its own —
+    * or, when it declares none, the nearest `extend` ancestor's. Undefined
+    * only when no lock gates the source. Surfaced for introspection;
+    * enforcement happens server-side.
     *
     * "Effective" has to include the inherited case or this understates
     * protection, and a consumer treating an absent value as "unrestricted" — the
@@ -96,18 +96,16 @@ export interface ExtractedSource {
     * any stray annotation.
     *
     * Scoped to the `authorize` ROUTE only — a source gated solely by
-    * `#(authorize)` reports `undefined` here even though it is
-    * enforced (via the internal `authorizeMap`, which carries both routes).
-    * The `authorize` route's own effective texts are reported
-    * separately, in `accessFilter` below.
+    * `#(access_filter)` reports `undefined` here even though it is enforced
+    * (via the internal `authorizeMap`, which carries both routes). Those texts
+    * are reported separately, in `accessFilter` below. A consumer asking only
+    * "is this source gated at all" must read BOTH fields.
     */
    authorize: string[] | undefined;
    /**
-    * Effective `#(authorize)` expressions gating this source, mirroring
-    * `authorize` above but for the `authorize` route ONLY — a
-    * convenience-form `#(authorize)` body (a pure source-level predicate
-    * written on the `authorize` route) reports under `authorize`, not here.
-    * Undefined when nothing on this route gates the source, even if
+    * Effective `#(access_filter)` ROW-FILTER expressions for this source,
+    * mirroring `authorize` above but for the `access_filter` route ONLY.
+    * Undefined when nothing on this route filters the source, even if
     * `authorize` is present.
     */
    accessFilter: string[] | undefined;

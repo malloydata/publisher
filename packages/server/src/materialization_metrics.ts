@@ -55,6 +55,14 @@ export type EligibilityRefusalReason =
    | "free_parameter"
    | "given"
    | "given_in_persisted_query"
+   | "dynamic_projection"
+   | "dynamic_join"
+   | "dynamic_joined_where"
+   | "partition_without_storage"
+   | "partition_column_unknown"
+   | "partition_column_not_public"
+   | "merge_key_scope_unresolved"
+   | "preaggregate_over_dynamic_source"
    | "authorize"
    | "not_duckdb_portable"
    | "public_surface_unknown";
@@ -241,9 +249,15 @@ const attributionSkippedCounter = lazyCounter(
 );
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
-   "storage= materialization-eligibility refusals. Label: reason " +
-      "('free_parameter'|'given'|'authorize'|'not_duckdb_portable'|" +
-      "'public_surface_unknown').",
+   "materialization-eligibility refusals, both tiers. Label: reason " +
+      "('free_parameter'|'given_in_persisted_query'|'dynamic_projection'|" +
+      "'dynamic_join'|'dynamic_joined_where'|'partition_without_storage'|" +
+      "'partition_column_unknown'|'partition_column_not_public'|" +
+      "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
+      "'authorize'|'partition'|'not_duckdb_portable'|" +
+      "'public_surface_unknown'). 'given' is retained on the enum for records " +
+      "that carry it and is no longer produced: where a given sits decides the " +
+      "outcome, so one reason covering every placement cannot be raised.",
 );
 const serveShapeTierDropCounter = lazyCounter(
    "publisher_storage_serve_shape_tier_drop_total",

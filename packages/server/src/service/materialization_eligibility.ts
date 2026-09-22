@@ -6,7 +6,31 @@ import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
 import type { AnnotationNote } from "./annotations";
 import { parseAuthorizeAnnotation } from "./authorize";
-import type { PersistSourceGateOutcome } from "./build_plan";
+import { deriveColumns, type PersistSourceGateOutcome } from "./build_plan";
+import {
+   buildSubstitutesAGiven,
+   classifyDynamicTerms,
+   readTimeDynamicTerms,
+   type DynamicTerm,
+} from "./persist_dynamic_terms";
+import { resolvePartitionColumns } from "./persist_partition";
+
+/**
+ * What an eligible source carries into the build and the serve shape: the
+ * extend-block `where:` terms the build leaves out and the read must put back,
+ * and the columns the destination table is laid out by.
+ *
+ * Returned rather than re-derived because the two travel together and are
+ * decided by the same pass: a term is only strippable because the gate proved
+ * where it sits, and a partition column is only usable because the gate
+ * resolved it against the relation that same build will write.
+ */
+export interface PersistDynamicPlan {
+   /** Terms absent from the build, re-applied per caller at read. */
+   terms: DynamicTerm[];
+   /** Declared `partition=` columns, resolved and ordered. Empty for none. */
+   partitionColumns: string[];
+}
 
 /**
  * Compile-time eligibility gate for materializing a persist source into a
@@ -24,14 +48,24 @@ import type { PersistSourceGateOutcome } from "./build_plan";
  *     is a *template* instantiated per query — there is no single relation to
  *     freeze. Parameters bound to a constant are fine (the relation is fixed,
  *     and the bound value already distinguishes the content address).
- *  2. **No given references — a security refusal.** Givens bind at the
+ *  2. **Every given in a position the build would bake in.** Givens bind at the
  *     runtime/query layer and are the documented mechanism for row-level access
- *     control (RLAC). A source filtered by a given (`where: tenant_id = $TENANT`)
- *     materialized once and served frozen would leak one tenant's rows to every
- *     tenant. This check fails closed: if the source references any given, it is
- *     refused, no exceptions.
- *  3. **No `#(authorize)` gate — a security refusal.** An authorize expression
- *     is a per-request *who-can-query* gate evaluated at query time. The served
+ *     control (RLAC), so a value frozen into the artifact is one tenant's slice
+ *     served to every tenant. What decides this is WHERE the given sits, not
+ *     that there is one: a term in the source's extend-block `where:` is left
+ *     out of the build by Malloy and re-applied when the artifact is read, with
+ *     the caller's own value, so it is stripped and recorded here rather than
+ *     refused; a given anywhere else is substituted while the build runs, at the
+ *     declaration default, and is refused naming its position. See
+ *     {@link classifyDynamicTerms}. Fails closed: a given this pass cannot place
+ *     is a refusal.
+ *
+ *     The stripped terms are the gate's OUTPUT, not just its finding. A source
+ *     is admitted on the promise that every one of them is put back at read, so
+ *     the serve shape has to declare their givens and re-emit their text; a
+ *     routed query that could not do both must not route.
+ *  3. **No gate on either route — a security refusal.** An `#(authorize)` lock
+ *     and an `#(access_filter)` row filter are both evaluated per request. The served
  *     virtual shape of a materialized source carries no gate to evaluate, so a
  *     materialized authorize-gated source would be served to everyone,
  *     bypassing the gate. Fails closed on anything it cannot read.
@@ -66,15 +100,19 @@ import type { PersistSourceGateOutcome } from "./build_plan";
  * a raw-source scan would miss inherited declarations), so it must run after
  * compilation and before the build.
  *
+ * @param annotationFields the source's `#@ persist` key=value fields, which is
+ *   where `partition=` is read from.
+ * @returns the terms the build strips and the columns it lays the table out by.
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source and the
  *   specific reason, so the author can either fix the source or drop `storage=`.
  */
 export function assertMaterializationEligible(
    persistSource: PersistSource,
-): void {
+   annotationFields: Record<string, string>,
+): PersistDynamicPlan {
    const sourceName = persistSource.name;
 
-   // Fail closed, like referencesGiven / referencesAuthorize below: an unreadable
+   // Fail closed, like the given classification / referencesAuthorize below: an unreadable
    // parameter surface is a refusal, not an assumed absence of free parameters.
    let unbound: string[];
    try {
@@ -106,18 +144,29 @@ export function assertMaterializationEligible(
       });
    }
 
-   if (referencesGiven(persistSource)) {
-      recordEligibilityRefused("given");
+   // Where the given sits, not whether there is one. A term in the source's
+   // extend-block `where:` is absent from the build and re-applied when the
+   // artifact is read, with the caller's own value — so it is stripped and
+   // recorded rather than refused. Every other position is refused, naming
+   // itself. See {@link classifyDynamicTerms} for the split and what establishes
+   // it.
+   const classified = classifyDynamicTerms(persistSource);
+   if (!classified.ok) {
+      recordEligibilityRefused(classified.reason);
       throw new MaterializationEligibilityError({
-         reason: "given",
+         reason: classified.reason,
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: it references a given. Givens bind per query and are ` +
-            `used for row-level access control, so a materialized-once table ` +
-            `served to everyone would leak filtered rows across tenants. This ` +
-            `is refused for safety. Serve this source live (drop 'storage=').`,
+            `destination: ${classified.detail}.`,
       });
    }
+
+   assertMergeKeyScopeResolvable(
+      persistSource,
+      readTimeDynamicTerms(persistSource),
+      annotationFields,
+      `Source '${sourceName}'`,
+   );
 
    if (referencesAuthorize(persistSource)) {
       recordEligibilityRefused("authorize");
@@ -125,13 +174,30 @@ export function assertMaterializationEligible(
          reason: "authorize",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: it is protected by an authorize gate (its own or a ` +
-            `joined source's). An authorize expression is evaluated per request; ` +
-            `a materialized-once table served frozen carries no gate, so it would ` +
-            `be served to everyone, bypassing authorization. This is refused for ` +
-            `safety. Serve this source live (drop 'storage=').`,
+            `destination: it is protected by a gate — #(authorize) or ` +
+            `#(access_filter), its own or a joined source's. Both are evaluated ` +
+            `per request; a materialized-once table served frozen carries no ` +
+            `gate, so it would be served to everyone, bypassing authorization. ` +
+            `This is refused for safety. Serve this source live (drop ` +
+            `'storage=').`,
       });
    }
+
+   // Last, because it is the only check here that is not about isolation: a
+   // `partition=` names a file layout, and a source that fails one of the
+   // refusals above has a problem worth reporting ahead of a mistyped column.
+   const partition = resolvePartitionColumns(persistSource, annotationFields);
+   if (!partition.ok) {
+      recordEligibilityRefused(partition.reason);
+      throw new MaterializationEligibilityError({
+         reason: partition.reason,
+         message:
+            `Source '${sourceName}' cannot be materialized into a storage ` +
+            `destination: ${partition.detail}.`,
+      });
+   }
+
+   return { terms: classified.terms, partitionColumns: partition.columns };
 }
 
 /**
@@ -140,10 +206,11 @@ export function assertMaterializationEligible(
  * warehouse). Deliberately narrow: it checks ONLY the `#(authorize)` condition
  * from {@link assertMaterializationEligible}, reusing the same `referencesAuthorize`
  * walk rather than duplicating it, and does NOT apply that function's other
- * rules (`referencesGiven`, unbound parameters). Those other rules exist
- * because a *storage destination* — a separate DuckDB/DuckLake table — cannot
- * represent a per-query given or a free parameter; a colocated build has no
- * such constraint (it is still one relation per source, computed once, in the
+ * rules (the given classification, unbound parameters). Those other rules exist
+ * because a *storage destination* — a separate DuckDB/DuckLake table — is read
+ * through a re-declared serve shape that has to carry a stripped term back, and
+ * cannot represent a free parameter at all; a colocated build has no such
+ * constraint (it is still one relation per source, computed once, in the
  * source's own warehouse), so applying them here would refuse a large set of
  * packages that build and serve correctly today.
  *
@@ -197,12 +264,88 @@ export function assertMaterializationEligible(
  *   annotation to remove, and the alternative of moving the gate to a source
  *   that is not materialized.
  */
+/**
+ * Refuse a `merge_key=` whose match cannot be scoped to the caller's rows.
+ *
+ * The author chose `merge_key=` against the source as WRITTEN, filtered to one
+ * caller. The artifact is the unfiltered relation, so that key is ambiguous over
+ * it and an unscoped MERGE reaches — and overwrites — other callers' rows. The
+ * apply closes this by folding the stripped terms' own columns into the match.
+ *
+ * It can only do that when every stripped term contributes a column of this
+ * source. A term reaching through a join names no column of the stored table, and
+ * scoping by the REMAINING terms would narrow the match without closing it, which
+ * is the worst of the three outcomes: it looks scoped and is not. So the source is
+ * refused instead, and the refusal is here rather than in the apply because a
+ * publish is where an author can still act on it.
+ */
+function assertMergeKeyScopeResolvable(
+   persistSource: PersistSource,
+   terms: readonly { code: string; columns: string[] }[],
+   annotationFields: Record<string, string>,
+   what: string,
+): void {
+   if (!annotationFields.merge_key?.trim()) return;
+   // Resolved against the STORED columns, not taken as written. A term names a
+   // field as the author wrote it, and an extend-block `dimension:` is read-time
+   // — so `where: computed_org = $ORG` names something the build never
+   // materializes. Unresolved, that column reaches the merge's `ON` and every
+   // refresh fails against a table with no such column.
+   const stored = new Set(
+      deriveColumns(persistSource)
+         .map((column) => column.name)
+         .filter((name): name is string => typeof name === "string"),
+   );
+   const unscopable = terms.filter(
+      (term) =>
+         term.columns.length === 0 ||
+         term.columns.some((name) => !stored.has(name)),
+   );
+   if (unscopable.length === 0) return;
+   recordEligibilityRefused("merge_key_scope_unresolved");
+   throw new MaterializationEligibilityError({
+      reason: "merge_key_scope_unresolved",
+      message:
+         `${what} cannot be materialized: it declares 'merge_key=' and is ` +
+         `scoped by a term this pass cannot express as a predicate over the ` +
+         `stored table's own columns (${unscopable
+            .map((term) => `'${term.code}'`)
+            .join(", ")}). An incremental refresh matches rows by the merge ` +
+         `key, and the stored table holds every caller's rows, so the match ` +
+         `must also carry the scoping columns or it would update rows ` +
+         `belonging to other callers. Scope this source with a term over its ` +
+         `own columns, or drop 'merge_key=' to refresh by watermark range.`,
+   });
+}
+
 export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
    origin: "persist" | "preaggregate" = "persist",
    gateOutcome?: PersistSourceGateOutcome,
+   annotationFields: Record<string, string> = {},
 ): void {
+   // `partition=` is meaningless without `storage=`, and this is the only gate
+   // that sees a source declaring one — `assertMaterializationEligible` runs
+   // only once a storage destination has resolved, so a colocated source
+   // carrying the key would otherwise reach a build that silently ignores it.
+   // A colocated build CTASes into the customer's own warehouse, where the
+   // table layout is that warehouse's DDL.
+   const partition = resolvePartitionColumns(persistSource, annotationFields);
+   if (!partition.ok) {
+      recordEligibilityRefused(partition.reason);
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}'`
+            : `Source '${sourceName}'`;
+      throw new MaterializationEligibilityError({
+         reason: partition.reason,
+         message:
+            `${what} cannot be materialized (colocated '#@ persist'): ` +
+            `${partition.detail}.`,
+      });
+   }
+
    // A given INSIDE the persisted query is frozen at its default and served to
    // every caller; one in the source's `filterList` is applied at read with the
    // caller's value and is the documented form (docs/row-level-access.md). Only
@@ -214,11 +357,41 @@ export function assertColocatedPersistNotAuthorizeGated(
    // frozen when a source is DERIVED from a parameterized one, which is a
    // different shape with its own gate.)
    if (buildSubstitutesAGiven(persistSource)) {
+      // A rollup refuses here today, but for a reason aimed at something else,
+      // and the advice that reason carries leads nowhere: it tells the author to
+      // move the given into the source's extend block, where for a rollup it
+      // ALREADY is. A rollup is `source -> { group_by; aggregate }`, so it is the
+      // rollup READING the source that applies the extend-block `where:` and
+      // bakes the value.
+      //
+      // Named separately because nothing else would hold this if the reason it
+      // currently rides on stopped applying. A rollup binding deliberately
+      // bypasses `serveBindingsWithRefinements` — its synthesized name resolves
+      // to nothing in the author's model — so a rollup gets no filter
+      // re-emission, no given declarations, and therefore no fail-closed shape
+      // compile either. If the rollup build ever learned to strip its base's
+      // read-time terms, which reads as an optimization rather than a security
+      // change, a rollup over a caller-scoped source would aggregate across every
+      // caller and serve that to all of them with nothing in the path to notice.
+      // An aggregate over other callers' rows is exactly what a rollup is good at
+      // computing.
+      if (origin === "preaggregate") {
+         recordEligibilityRefused("preaggregate_over_dynamic_source");
+         throw new MaterializationEligibilityError({
+            reason: "preaggregate_over_dynamic_source",
+            message:
+               `Pre-aggregation rollup '${sourceName}' cannot be materialized: ` +
+               `the source it rolls up is scoped by a given. Building the rollup ` +
+               `reads that source, which applies its extend-block \`where:\` and ` +
+               `substitutes the given's default — so the rollup would hold one ` +
+               `caller's aggregate and serve it to everyone. Unlike a persisted ` +
+               `source, a rollup has no read-time re-application to put the term ` +
+               `back. Drop the '#@ preaggregate' from this measure, or roll up a ` +
+               `source that is not caller-scoped.`,
+         });
+      }
       recordEligibilityRefused("given_in_persisted_query");
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}'`
-            : `Source '${sourceName}'`;
+      const what = `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
          reason: "given_in_persisted_query",
          message:
@@ -233,6 +406,29 @@ export function assertColocatedPersistNotAuthorizeGated(
             `Otherwise stop persisting this source.`,
       });
    }
+
+   // The colocated artifact is widened exactly as the storage one is — the build
+   // persists the query alone, so an extend-block `where:` is not in it — and
+   // incremental runs on colocated tables. Same hazard, same rule. The only
+   // difference is that some target warehouses refuse the ambiguous MERGE
+   // themselves (Postgres does; DuckDB does not), which is a property of the
+   // customer's warehouse rather than a guarantee we can offer.
+   //
+   // Read off the source's own filters rather than off the classification. The
+   // classification answers whether this source may be materialized and returns
+   // no terms when the answer is no — but the two gates refuse different sets,
+   // and this one deliberately admits the positional cases the storage gate
+   // refuses. Taking terms from it here would hand back an empty scope for a
+   // source that is caller-scoped, and an empty scope reads as "nothing to
+   // scope".
+   assertMergeKeyScopeResolvable(
+      persistSource,
+      readTimeDynamicTerms(persistSource),
+      annotationFields,
+      origin === "preaggregate"
+         ? `Pre-aggregation rollup '${sourceName}'`
+         : `Source '${sourceName}'`,
+   );
 
    if (!referencesAuthorize(persistSource)) return;
 
@@ -256,9 +452,9 @@ export function assertColocatedPersistNotAuthorizeGated(
    const gated =
       origin === "preaggregate"
          ? `the source '${sourceName}' rolls up is protected by an ` +
-           `authorize gate (its own, a joined source's, or inherited ` +
+           `#(authorize) gate (its own, a joined source's, or inherited ` +
            `from a source it derives from)`
-         : `it is protected by an authorize gate (its own, a joined ` +
+         : `it is protected by an #(authorize) gate (its own, a joined ` +
            `source's, or inherited from a source it derives from)`;
    // The relaxation's common refusal is now the join/inherited case: the gate
    // is ALREADY on a source that is not materialized (a joined-in or
@@ -348,195 +544,8 @@ function unboundParameterNames(persistSource: PersistSource): string[] {
    return unbound;
 }
 
-/**
- * Whether the compiled source (transitively) references any given. Fail-closed:
- * walks the compiled source definition for both of Malloy's given signals —
- * a non-empty `refSummary.givenUsage` (populated on filters and expressions by
- * the reference-tracking walker) and any `given` / `givenReference` IR node —
- * anywhere in the source's filter list, field expressions, or nested pipeline.
- *
- * A generic bounded walk (rather than reading a single well-known field) is
- * deliberate: a given can hide in a field expression or a nested view, not just
- * a top-level `where:`, and missing one is a tenant-isolation breach. The walk
- * is depth- and visited-bounded so a cyclic IR graph cannot hang it, and any
- * introspection failure is treated as "references a given" (fail closed).
- */
-function referencesGiven(persistSource: PersistSource): boolean {
-   try {
-      return walkForGiven(persistSource._sourceDef, new WeakSet(), 0);
-   } catch {
-      // Fail closed: if we cannot prove the source is given-free, refuse it.
-      return true;
-   }
-}
-
-/**
- * Whether the BUILD substitutes a given's value into the relation it writes.
- *
- * That is the question, and the compiler answers it directly: a query source's
- * `query.givenUsage` is the transitive summary of the givens its pipeline
- * actually reads. Non-empty means a value was substituted while producing the
- * persisted relation — and the only value available then is the declaration
- * default, so the artifact holds one caller's slice and the read path, which
- * swaps only the `FROM`, serves it to everyone. Empty means the given is applied
- * when the source is READ, with the caller's own value, which is the documented
- * form (docs/row-level-access.md).
- *
- * What the marker provably covers, checked against `getSQL()`: a segment's own
- * references, a join's `on:` and filters, an atomic field's references, and
- * turtles. It does NOT cover a given bound as a source argument, which
- * {@link argumentBindsAGiven} handles separately — and that gap was found by
- * probing, so treat this list as what has been shown rather than as exhaustive.
- * The shapes it was checked on:
- *
- *   baked        `where:` in the query · a given in a `group_by` · the input
- *                source's own `where:` · a dimension, measure or join declared
- *                on the INPUT source that the query READS
- *   not baked    `where:`, dimension, measure or join in the persist source's
- *                own extend block · the same declared on the input source and
- *                NOT read by the query
- *
- * The last row is why this reads `givenUsage` rather than walking the IR.
- * `query.structRef` inlines the input source's whole definition, so a structural
- * walk refuses every derivation of a base that merely OFFERS a given-filtered
- * join — a base joining a visibility source, with persisted derivations over it
- * using different subsets, is an ordinary shape. And the walk cannot be narrowed
- * to fix it: for a dimension the query reads, the given sits in
- * `structRef.fields`, exactly where an unread one sits.
- *
- * The walk survives as the fallback for when the marker is absent or unreadable
- * — a non-query source has no `query` at all — and it excludes the two top-level
- * keys that are read-time by construction, `filterList` and the source's own
- * `fields`. Unreadable IR refuses, as {@link referencesGiven} does.
- */
-/**
- * Whether a given is bound into the relation as a source ARGUMENT.
- *
- * `pp(x is $ORG_ID) -> { … }` substitutes the given while constructing the
- * source the query reads, so the predicate lands in the build SQL — byte
- * identical to writing the given inside the query. It reaches none of the
- * places {@link buildSubstitutesAGiven}'s marker is collected from (a segment's
- * `refSummary`, a join's `on:`/`filterList`, an atomic field's `refSummary`),
- * because it binds at `structRef` construction rather than by being referenced,
- * so the marker reads empty while the build bakes the default.
- *
- * Any `arguments` holder anywhere under the query is searched, not just the
- * query's own. That descent is load-bearing rather than defensive: a given
- * binding a JOINED source declared on the input sits under `structRef.fields`,
- * and the marker reads empty for it even when the query reads the join and the
- * build SQL carries the predicate. Checking only the query's own holders admits
- * that shape — measured, and a fail-open.
- *
- * It has a cost, accepted deliberately: the same base with a parameterized
- * given-filtered join the query does NOT read is refused too, though nothing
- * reaches the build. That is the over-refusal the marker approach exists to
- * avoid, reappearing in the one place the marker cannot see. Refusing a source
- * that does not bake loses a tier; admitting one that does loses a tenant's
- * isolation, so the descent stays until a signal precise enough to tell the two
- * apart exists.
- *
- * A CONSTANT argument — `pp(x is 1)` — bakes too and is left alone: it is a
- * concrete instantiation with no per-caller binding, which is exactly the shape
- * `parameter-eligibility` admits. Only a given is a refusal.
- */
-function argumentBindsAGiven(node: unknown, depth = 0): boolean {
-   if (depth > MAX_GIVEN_WALK_DEPTH) {
-      throw new Error("argument walk exceeded max depth");
-   }
-   if (node === null || typeof node !== "object") return false;
-   if (Array.isArray(node)) {
-      return node.some((item) => argumentBindsAGiven(item, depth + 1));
-   }
-   for (const [key, value] of Object.entries(node)) {
-      if (
-         (key === "arguments" || key === "sourceArguments") &&
-         walkForGiven(value, new WeakSet(), 0)
-      ) {
-         return true;
-      }
-      if (argumentBindsAGiven(value, depth + 1)) return true;
-   }
-   return false;
-}
-
-function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
-   try {
-      const def = persistSource._sourceDef as unknown;
-      if (def === null || typeof def !== "object") {
-         throw new Error("compiled source definition is not readable");
-      }
-      const query = (def as { query?: unknown }).query;
-      if (query !== null && typeof query === "object") {
-         const usage = (query as { givenUsage?: unknown }).givenUsage;
-         // Transitive where a single field's own `refSummary` is not, which is
-         // the whole reason it is read here — but it summarises what the
-         // pipeline REFERENCES, and a source argument binds without being
-         // referenced. So an empty marker is only trusted once the argument
-         // holders are clear; see {@link argumentBindsAGiven}.
-         if (Array.isArray(usage) && usage.length > 0) return true;
-         if (argumentBindsAGiven(query)) return true;
-         if (Array.isArray(usage)) return false;
-      }
-      const {
-         filterList: _sourceFilters,
-         fields: _queryTimeFields,
-         ...relation
-      } = def as Record<string, unknown>;
-      return walkForGiven(relation, new WeakSet(), 0);
-   } catch {
-      return true;
-   }
-}
-
 /** Max IR depth to walk; deep enough for real sources, a hang backstop. */
 const MAX_GIVEN_WALK_DEPTH = 200;
-
-function walkForGiven(
-   node: unknown,
-   seen: WeakSet<object>,
-   depth: number,
-): boolean {
-   if (depth > MAX_GIVEN_WALK_DEPTH) {
-      // Refuse rather than risk an unbounded structure hiding a given.
-      throw new Error("given-usage walk exceeded max depth");
-   }
-   if (node === null || typeof node !== "object") return false;
-   if (seen.has(node as object)) return false;
-   seen.add(node as object);
-
-   if (Array.isArray(node)) {
-      for (const item of node) {
-         if (walkForGiven(item, seen, depth + 1)) return true;
-      }
-      return false;
-   }
-
-   const record = node as Record<string, unknown>;
-
-   // A given declaration or reference IR node.
-   const nodeKind = record.node;
-   if (nodeKind === "given" || nodeKind === "givenReference") return true;
-   if (record.givenRef !== undefined) return true;
-
-   // Reference-tracking summary: a non-empty givenUsage means this fragment
-   // reads a given (the precise, per-fragment signal). It appears either nested
-   // under refSummary (per-fragment) OR as a bare `givenUsage` on a query/struct
-   // node — treat a non-empty array in EITHER shape as a hit, so the walk stays
-   // correct if a future compiler keeps only the summary and prunes the embedded
-   // `node:'given'` leaves.
-   const refSummary = record.refSummary as
-      | { givenUsage?: unknown[] }
-      | undefined;
-   if (refSummary?.givenUsage && refSummary.givenUsage.length > 0) return true;
-   if (Array.isArray(record.givenUsage) && record.givenUsage.length > 0) {
-      return true;
-   }
-
-   for (const value of Object.values(record)) {
-      if (walkForGiven(value, seen, depth + 1)) return true;
-   }
-   return false;
-}
 
 /**
  * Whether the compiled source (transitively) carries an `#(authorize)` gate —

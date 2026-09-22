@@ -206,7 +206,7 @@ export function recordRowLevelGateRejected(
       "publisher_authorize_row_level_rejected_total",
       {
          description:
-            "Row-level `#(authorize)` gates that were refused, warned about, or could not be resolved. Label: cause (" +
+            "Row-level `#(access_filter)` gates that were refused, warned about, or could not be resolved. Label: cause (" +
             // Derived from the union, not retyped beside it — the retyped
             // version had already drifted a cause behind.
             ROW_LEVEL_GATE_REJECTION_CAUSES.map((c) => `'${c}'`).join("|") +

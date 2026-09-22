@@ -6,7 +6,10 @@ import { describe, expect, it } from "bun:test";
 import {
    readGivenControlSpec,
    attachSuggestGivenNames,
+   gateGivenSource,
+   malloyGivenToApi,
    suggestGivenLookup,
+   type MalloyGiven,
    type MalloyGivenApi,
 } from "./given";
 import {
@@ -758,6 +761,40 @@ describe("readStartingGivens", () => {
    });
 });
 
+describe("gateGivenSource", () => {
+   // Both routes gate a query the same way: a lock given the request omits is
+   // an unsupplied gate given (403), and a filter given it omits cannot be
+   // grafted. A dropdown's own query is an ordinary query, so it needs both.
+   const sources = [
+      { name: "locked", authorize: ["'finance' in $GROUPS"] },
+      { name: "filtered", accessFilter: ["org_id = $ORG"] },
+      {
+         name: "both",
+         authorize: ["'finance' in $GROUPS"],
+         accessFilter: ["org_id = $ORG"],
+      },
+      { name: "ungated" },
+   ];
+
+   it("reads BOTH routes, so neither route's givens go unsuggested", () => {
+      expect(gateGivenSource(sources, "both")).toEqual([
+         "'finance' in $GROUPS",
+         "org_id = $ORG",
+      ]);
+      // Each alone: reading only `authorize` left a migrated source's filter
+      // controls asking for options without the parameter the graft needs.
+      expect(gateGivenSource(sources, "filtered")).toEqual(["org_id = $ORG"]);
+      expect(gateGivenSource(sources, "locked")).toEqual([
+         "'finance' in $GROUPS",
+      ]);
+   });
+
+   it("is empty for an ungated source and undefined for an unknown one", () => {
+      expect(gateGivenSource(sources, "ungated")).toEqual([]);
+      expect(gateGivenSource(sources, "ghost")).toBeUndefined();
+   });
+});
+
 describe("suggestGivenLookup", () => {
    // A minimal ModelDef: one gated source scoped by a given, one query over it.
    const modelDef = {
@@ -831,5 +868,60 @@ describe("suggestGivenLookup", () => {
       );
       expect(givens[0].suggest?.givenNames).toEqual(["REGION"]);
       expect(givens[1].suggest?.givenNames).toBeUndefined();
+   });
+});
+
+describe("malloyGivenToApi: array type rendering", () => {
+   // A set-valued given is how a `#(secure)` attribute is declared — a scalar
+   // cannot be one, because it has no value that fails closed. So this is the
+   // shape every row-level access boundary uses.
+   //
+   // `type.type` for an array is the bare discriminator `array`, with the
+   // element type in `elementTypeDef`. Rendering the discriminator alone loses
+   // it and produces text that is not valid Malloy, which breaks any consumer
+   // that re-DECLARES a given from this field rather than merely displaying it.
+   it("renders the element type, not the bare discriminator", () => {
+      const given = {
+         name: "ORG_IDS",
+         type: { type: "array", elementTypeDef: { type: "number" } },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(given).type).toBe("number[]");
+   });
+
+   it("renders a string set", () => {
+      const given = {
+         name: "REGIONS",
+         type: { type: "array", elementTypeDef: { type: "string" } },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(given).type).toBe("string[]");
+   });
+
+   it("leaves a scalar and a filter alone", () => {
+      const scalar = {
+         name: "N",
+         type: { type: "number" },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(scalar).type).toBe("number");
+      const filter = {
+         name: "F",
+         type: { type: "filter expression", filterType: "string" },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(filter).type).toBe("filter<string>");
+   });
+
+   it("falls back to the discriminator when element info is missing", () => {
+      // A future record given, or an array whose element type cannot be read:
+      // rendering something invented would be worse than rendering the type's
+      // own name.
+      const rec = {
+         name: "R",
+         type: { type: "record" },
+         annotations: { forRoute: () => [] },
+      } as unknown as MalloyGiven;
+      expect(malloyGivenToApi(rec).type).toBe("record");
    });
 });

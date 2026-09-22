@@ -587,8 +587,8 @@ function collectEntryPointGatesForRoute(
  * `graftScope` is `undefined` only when the caller has nothing to graft
  * against at all (no compiled model, or — for a notebook cell — no earlier
  * cell to graft onto); that always rejects here, same as an unresolvable
- * graft target — every gate is a row filter now, and a filter with nowhere to
- * attach cannot be enforced.
+ * graft target: an `#(access_filter)` is a filter, and a filter with nowhere
+ * to attach cannot be enforced.
  */
 export async function resolveGateShape(
    entry: GateEntry,
@@ -640,10 +640,9 @@ export async function resolveGateShape(
    );
    // No key to graft anything onto — an ad-hoc/ephemeral run target (an
    // independently recompiled `/compile` model, a notebook cell's `source:
-   // mine is base_locked extend {…}`) can fail this resolution. Every gate is
-   // a row filter now, and a filter with nowhere to attach cannot be
-   // enforced, so this rejects rather than attempting a fallback
-   // classification.
+   // mine is base_locked extend {…}`) can fail this resolution. Both routes
+   // need the lifted condition this target supplies, so this rejects rather
+   // than attempting a fallback classification.
    if (!graftTarget) {
       return { shape: "rejected" };
    }

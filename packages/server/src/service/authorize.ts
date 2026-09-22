@@ -26,11 +26,11 @@
  * gets a clear refusal instead of a silently-ignored annotation.
  *
  * **What counts as the tag is Malloy's answer, not a regex of ours.** A note is
- * a gate iff Malloy routes it to `authorize` or, for the source-level route
- * this module also defines ({@link AUTHORIZE_ROUTE}), to
- * `authorize` ({@link noteRoute}), which admits the block form
- * `#|(authorize)` and the other bracket pairs
- * (`#[authorize]`, `#<authorize>`, `#{authorize}`) and excludes near misses like
+ * a gate iff Malloy routes it to `authorize` ({@link AUTHORIZE_ROUTE}, the
+ * lock) or to `access_filter` ({@link ACCESS_FILTER_ROUTE}, the row filter)
+ * ({@link noteRoute}), which admits the block form `#|(authorize)` and the
+ * other bracket pairs (`#[authorize]`, `#<authorize>`, `#{authorize}`, and the
+ * same four for `access_filter`) and excludes near misses like
  * `# (authorize)` (route `''`, Malloy's reserved MOTLY namespace) and
  * `#( authorize )` (malformed prefix). Publisher must not decide any of that for
  * itself: honouring a spelling Malloy routes elsewhere cements a divergence from
@@ -300,6 +300,17 @@ export function authorizeAnnotationRoute(text: string): string | undefined {
  * model an author is compile-checking through `/compile`. That is the intended
  * direction, so the message has to tell an author what to do instead.
  */
+/**
+ * Whether {@link assertNoCallerAuthorizeAnnotation} would reject this text.
+ *
+ * Exported so a caller that wants to defer to that rejection can ask with the
+ * SAME predicate rather than a near-copy: a narrower one lets a spelling it
+ * misses answer through the other path instead.
+ */
+export function hasCallerAuthorizeAnnotation(callerText: string): boolean {
+   return AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText);
+}
+
 export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
    if (!AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText)) return;
    // A caller-input rejection, so 400 — not ModelCompilationError's 424, which
@@ -617,15 +628,17 @@ export function assertNoMisplacedAuthorizeAnnotations(
  * before setting it. This map is internal-only.
  *
  * Each group carries the ANNOTATION ROUTE it was collected under
- * (`AUTHORIZE_ROUTES`) — `"authorize"` (a row-level gate) or
- * `"authorize"` (a rule about the caller that ANDs with the row-level
- * gate). Grafting and probing treat every group identically regardless of
- * route — both compile through the same `where:` probe — so `route` is read
- * only by the collection/own-wins logic upstream ({@link
+ * (`CANONICAL_AUTHORIZE_ROUTES`) — `"authorize"` (the lock: a rule about the
+ * caller, refused with a 403 before any graft) or `"access_filter"` (the row
+ * filter, grafted as a `where:`). The route decides how a group is ENFORCED,
+ * so it must be carried, never collapsed: `resolveGateShape` returns a `lock`
+ * shape for the first and a `row_level` shape for the second, and grafting a
+ * lock as a `where:` would answer a refused caller with a fabricated 200. It
+ * is also read by the collection/own-wins logic upstream ({@link
  * ../service/gate_classification}'s `gateExprsForOwnAnnotations`,
  * `collectEntryPointGates`) and by grammar validation ({@link
- * ../service/gate_classification}'s `assertAuthorizeGrammarValid`), which must
- * enforce the authorize body restriction and keep own-wins-over-ancestor
+ * ../service/gate_classification}'s `assertAuthorizeGrammarValid`), which
+ * enforces each route's body restriction and keeps own-wins-over-ancestor
  * scoped per route rather than letting one route's own declaration shed the
  * other's inherited gate.
  */
@@ -1019,6 +1032,13 @@ export async function validateAuthorizeProbes(
       onOwnRowLevelConditionCompiled?: (
          sourceName: string,
          condition: CompiledGateCondition,
+         /**
+          * The route the gate was collected under. Both routes are lifted and
+          * checked here, so a message that names one of them has to be told
+          * which — naming the wrong annotation points an author at a line
+          * they did not write.
+          */
+         route: string,
       ) => void;
    },
 ): Promise<void> {
@@ -1044,9 +1064,9 @@ export async function validateAuthorizeProbes(
          } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             // Own-vs-inherited is decided PER ROUTE: a source that owns
-            // `#(authorize)` but only inherits `#(authorize)` (or
-            // vice versa) must not have the inherited route's unexpressible
-            // group blamed on it.
+            // `#(authorize)` but only inherits `#(access_filter)` (or vice
+            // versa) must not have the inherited route's unexpressible group
+            // blamed on it.
             const ownNotes = ownNotesOf.get(sourceName)?.get(route) ?? [];
             if (ownNotes.length === 0) {
                options.onRowLevelGateRejected?.("entry_point_unexpressible");
@@ -1055,7 +1075,7 @@ export async function validateAuthorizeProbes(
             }
             throw new ModelCompilationError({
                message:
-                  `Invalid #(authorize) annotation on source "${sourceName}" ` +
+                  `Invalid #(${route}) annotation on source "${sourceName}" ` +
                   `[${exprs.join(" and ")}]: ${detail}`,
             });
          }
@@ -1070,7 +1090,7 @@ export async function validateAuthorizeProbes(
          // compile here and turned out to reference a defaulted given —
          // that is refused regardless of who wrote the annotation, because
          // this entry point is what would serve the rows.
-         options.onOwnRowLevelConditionCompiled?.(sourceName, condition);
+         options.onOwnRowLevelConditionCompiled?.(sourceName, condition, route);
       }
    }
 }

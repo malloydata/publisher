@@ -29,6 +29,12 @@ Concretely:
   Anyone who can reach the port can list packages, compile Malloy, and run queries against every
   connected database. This is deliberate and documented — network isolation or an authenticating
   gateway is the intended control, not anything in the process.
+- **A query reaches the host, not just the warehouse.** DuckDB runs in-process with its own
+  defaults, so a model can read and write local files and open network connections. That is what
+  lets a package read the Parquet beside it, and on a single-tenant deployment it is ordinary. It
+  also means **one worker must not serve two tenants unless something in front of it rejects
+  caller-supplied Malloy first** -- see Known gaps below for why the sandbox settings are not the
+  answer and what is.
 - **Package content is first-party code.** A package's models, notebooks, and `public/` files are
   treated as code the operator chose to run, the same way you would treat your own web app
   deployed on your own origin. Publisher does not scan, sandbox, or vet them.
@@ -43,13 +49,14 @@ Concretely:
   registration; it has no authentication of its own, so on a reachable server it sits behind the
   same gateway or is closed by the same setting. An attacker who can reach it can already register
   a package, so it opens no door that was shut.
-- **Governance is mostly a modeling concern.** `#(access_filter)`, given-scoped
+- **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, `explores`, and `queryableSources` constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
   a given is whatever the caller sends.
   One request-level exception, and it is load-bearing: `x-publisher-bypass-authorize` carrying
-  the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips `#(access_filter)` evaluation outright, for
-  trusted data-management callers (indexers). With that variable unset the bypass is refused, so
+  the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips gate evaluation on BOTH routes outright —
+  the `#(authorize)` lock as well as the `#(access_filter)` filter — for trusted data-management
+  callers (indexers). With that variable unset the bypass is refused, so
   the default is closed; a deployment that configures the secret and reaches untrusted callers
   should still strip the header at its edge — see
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md). It is the one place where a
@@ -178,6 +185,30 @@ remotely. Publisher has no tenant model to scope these tools against, so until i
 control is a deployment constraint rather than code: a worker reachable by more than one tenant
 must not expose MCP. The REST surface has no equivalent: every route is addressed under a
 specific environment, and none returns the whole set.
+
+**6. A shared worker must restrict caller-supplied Malloy itself, because DuckDB reaches the
+filesystem and the network by design.** Publisher creates its per-package DuckDB sandbox with
+DuckDB's defaults, so `enable_external_access` is on: a model can read a local file with
+`read_text('/etc/passwd')`, write one with `COPY ... TO`, or reach an address with
+`read_csv('http://169.254.169.254/...')`. On a single-tenant deployment that is not a gap -- it
+is the operator using their own machine, and the same capability is what lets a package read the
+CSV sitting beside it.
+
+It becomes a gap the moment one worker process serves more than one tenant, because those reads
+happen on a host holding another tenant's data. The control belongs at the layer that knows a
+request is untrusted, which Publisher does not: **a multi-tenant deployment must reject
+caller-supplied Malloy constructs before they reach compile.** Malloy's restricted mode is the
+mechanism -- it refuses `.sql()`, `.table()`, `import` and `given:` -- and the query path already
+uses it via `loadRestrictedQuery`. An egress policy denying link-local is the network-layer
+backstop that survives a restricted-mode bypass.
+
+Do not reach for DuckDB's own `securityPolicy` to close this. `sandboxed` sets
+`enable_external_access=false` and adds an `allowed_directories` carve-out, but DuckDB resolves a
+relative path against the process working directory for its permission check rather than against
+`file_search_path` -- so `duckdb.table('data/sales.csv')`, which is how a package addresses its
+own files, is refused. Measured against the connector: absolute paths pass, relative ones do not,
+and `allowed_paths` does not rescue them. Publisher compiles packages in `worker_threads` sharing
+one process working directory, so per-package `chdir` is not available either.
 
 ## If isolation gets built
 

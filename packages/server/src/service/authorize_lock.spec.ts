@@ -86,48 +86,61 @@ describe("decideLock — the accepted shapes", () => {
    });
 });
 
-describe("decideLock — everything else denies", () => {
-   it("an unset, absent or null given denies rather than throwing", () => {
+describe("decideLock — everything else refuses", () => {
+   // Nothing below admits. The label separates the two refusals: `deny` is the
+   // gate's own rule turning a caller away, `unresolvable` is the gate failing
+   // to decide at all — a drift between the load-time grammar and this walk.
+   // Both are the same 403; only `unresolvable` means something is wrong, and
+   // it is the one an operator alerts on. Every case asserts the exact label,
+   // so a regression that relabels a broken gate as routine fails here.
+   const refuses = (outcome: string) => expect(outcome).not.toBe("admit");
+
+   it("an unset, absent or null given is unresolvable, not a throw", () => {
       // `null` is the one that mattered: reaching `(null).some(...)` is a
       // TypeError, which surfaces as a 500 instead of the 403 every other
       // unadmitted shape gets.
       const expr = paren(inGiven(GROUPS_ID, "finance"));
-      expect(decide(expr, {})).toBe("deny");
+      refuses(decide(expr, {}));
+      expect(decide(expr, {})).toBe("unresolvable");
       expect(decide(expr, { GROUPS: null as unknown as GivenValue })).toBe(
-         "deny",
+         "unresolvable",
       );
       expect(decide(expr, { GROUPS: undefined as unknown as GivenValue })).toBe(
-         "deny",
+         "unresolvable",
       );
    });
 
-   it("a given id that resolves to no name on this model denies", () => {
+   it("a given id that resolves to no name on this model is unresolvable", () => {
       // The cross-import-hop case: the lift reports the gate unexpressible at
       // this entry point, and the decision agrees rather than admitting on a
       // value it happened to find under a same-spelled name.
       const expr = paren(eq(str("admin"), given("given/9:ELSEWHERE")));
-      expect(decide(expr, { ELSEWHERE: "admin" })).toBe("deny");
+      refuses(decide(expr, { ELSEWHERE: "admin" }));
+      expect(decide(expr, { ELSEWHERE: "admin" })).toBe("unresolvable");
    });
 
-   it("an unknown node kind denies — the allowlist is positive", () => {
-      expect(
-         decide(
-            paren({
-               node: "or",
-               kids: { left: { node: "true" }, right: { node: "true" } },
-            }),
-            {},
-         ),
-      ).toBe("deny");
+   it("an unknown node kind is unresolvable — the allowlist is positive", () => {
+      // A node kind the grammar should never have let through is drift, not a
+      // caller being refused, so it must not book as routine.
+      const or = paren({
+         node: "or",
+         kids: { left: { node: "true" }, right: { node: "true" } },
+      });
+      refuses(decide(or, {}));
+      expect(decide(or, {})).toBe("unresolvable");
       expect(decide(paren({ node: "not", e: { node: "false" } }), {})).toBe(
-         "deny",
+         "unresolvable",
       );
-      expect(decide(paren({ node: "someFutureNode" }), {})).toBe("deny");
-      expect(decide(undefined, {})).toBe("deny");
-      expect(decide(null, {})).toBe("deny");
+      expect(decide(paren({ node: "someFutureNode" }), {})).toBe(
+         "unresolvable",
+      );
+      expect(decide(undefined, {})).toBe("unresolvable");
+      expect(decide(null, {})).toBe("unresolvable");
    });
 
-   it("a negated membership denies even when the caller is not a member", () => {
+   it("a negated membership is an ordinary deny, not a broken gate", () => {
+      // W2 warns at load and leaves the model servable, so this shape is an
+      // author's choice refusing a caller — routine, not something to alert on.
       expect(
          decide(paren(inGiven(GROUPS_ID, "finance", true)), {
             GROUPS: ["sales"],
@@ -135,17 +148,18 @@ describe("decideLock — everything else denies", () => {
       ).toBe("deny");
    });
 
-   it("arity mismatches deny — `=` is scalar, `in` is list", () => {
+   it("arity mismatches are unresolvable — `=` is scalar, `in` is list", () => {
+      // Load refuses these as a 424, so one arriving here is drift.
       expect(
          decide(paren(eq(str("admin"), given(ROLE_ID))), {
             ROLE: ["admin"] as unknown as GivenValue,
          }),
-      ).toBe("deny");
+      ).toBe("unresolvable");
       expect(
          decide(paren(inGiven(GROUPS_ID, "finance")), {
             GROUPS: "finance" as unknown as GivenValue,
          }),
-      ).toBe("deny");
+      ).toBe("unresolvable");
    });
 
    it("comparison is exact and case-sensitive, not the warehouse's collation", () => {
@@ -159,9 +173,10 @@ describe("decideLock — everything else denies", () => {
       ).toBe("deny");
    });
 
-   it("a cycle in the node graph denies rather than hanging", () => {
+   it("a cycle in the node graph is unresolvable rather than hanging", () => {
       const cyclic: { node: string; e?: unknown } = { node: "()" };
       cyclic.e = cyclic;
-      expect(decide(cyclic, {})).toBe("deny");
+      refuses(decide(cyclic, {}));
+      expect(decide(cyclic, {})).toBe("unresolvable");
    });
 });

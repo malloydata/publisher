@@ -128,6 +128,7 @@ import {
    type MalloyGiven,
    type MalloyGivenApi,
    attachSuggestGivenNames,
+   gateGivenSource,
    suggestGivenLookup,
 } from "../service/given";
 import { ignoreDotfiles } from "../utils";
@@ -762,15 +763,11 @@ async function compileMalloyModel(
    } = extractSources(modelDef, givens);
    // Now that each source's EFFECTIVE gate is known, say which givens each
    // `suggest` needs in its request. In place, so the copies on `sources` see it.
-   //
-   // `source.authorize` is scoped to the `authorize` route only (see
-   // `ExtractedSource.authorize`'s doc), so a given referenced only by a
-   // `#(authorize)` term is not suggested — a known, accepted gap.
    attachSuggestGivenNames(
       givens,
       suggestGivenLookup(
          modelDef,
-         (name) => sources.find((source) => source.name === name)?.authorize,
+         (name) => gateGivenSource(sources, name),
          new Set((givens ?? []).map((given) => given.name)),
       ),
    );
@@ -827,11 +824,12 @@ async function compileMalloyModel(
       // resolved against it either way. The worker has no logger (see this
       // function's doc), so a warning rides the same wire channel as
       // `onRowLevelGateUnexpressible` above.
-      onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+      onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
          const struct = modelDef.contents[sourceName];
          if (!struct || !isSourceDef(struct)) return;
          validateSourceLineGateGivenUsage(
             sourceName,
+            route,
             struct,
             condition.refSummary as ExpandableRefSummary | undefined,
             condition.e,
@@ -839,7 +837,7 @@ async function compileMalloyModel(
             (cause, detail) => {
                recordRowLevelGateRejected(cause);
                authorizeWarningCollection.warnings.push(
-                  `Row-level #(access_filter) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                  `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
                );
             },
          );
@@ -1004,9 +1002,7 @@ async function compileNotebookModel(
          finalGivens,
          suggestGivenLookup(
             finalModelDef,
-            (name) =>
-               extracted.sources.find((source) => source.name === name)
-                  ?.authorize,
+            (name) => gateGivenSource(extracted.sources, name),
             new Set((finalGivens ?? []).map((given) => given.name)),
          ),
       );
@@ -1050,11 +1046,12 @@ async function compileNotebookModel(
          onRowLevelGateUnexpressible:
             authorizeWarningCollection.onRowLevelGateUnexpressible,
          // See the identical check in `compileMalloyModel` above.
-         onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+         onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
             const struct = finalCompiledModelDef.contents[sourceName];
             if (!struct || !isSourceDef(struct)) return;
             validateSourceLineGateGivenUsage(
                sourceName,
+               route,
                struct,
                condition.refSummary as ExpandableRefSummary | undefined,
                condition.e,
@@ -1062,7 +1059,7 @@ async function compileNotebookModel(
                (cause, detail) => {
                   recordRowLevelGateRejected(cause);
                   authorizeWarningCollection.warnings.push(
-                     `Row-level #(access_filter) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                     `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
                   );
                },
             );

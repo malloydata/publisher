@@ -10,10 +10,10 @@ SPDX-License-Identifier: MIT
 
 # A host-supplied binding must not bypass row-level access control
 
-A `given` binds per query — it is row-level access control. The build gate therefore
-refuses to materialize a given-referencing source (`givens-refused` pins that), because
-one table built once and served to everyone hands every caller the rows that were
-filtered for whoever built it.
+A `given` binds per query — it is row-level access control. The build gate refuses to
+materialize a source whose given the BUILD would substitute (`givens-refused` pins
+that), because the predicate then sits INSIDE the frozen relation with one caller's
+value in it, and every later caller is handed those rows.
 
 **The rule: that guarantee must not depend on the host getting its manifest right.**
 A host is authoritative about *which table backs which source* — it owns generations
@@ -29,9 +29,17 @@ manifest still points at a real, correct table until convergence catches up.
 Givens are the shape that needs this. `#(access_filter)` does not: it is evaluated on the
 original model surface before routing is chosen (`model.ts` `assertAuthorized`, then
 `assertAuthorizedForAllSources`), and a non-portable shape self-corrects through the
-fallback ladder. The serve transform has no `given` handling at all, and the storage
-serve path deliberately supplies no given values, so once a binding is accepted
-nothing downstream can re-impose the filter.
+fallback ladder.
+
+Nothing downstream can re-impose this filter, and it is worth being precise about why,
+because the serve shape DOES re-apply a source's own terms — that is how a
+tenant-scoped source is served per caller
+(`partitioned-mz/tenant-scoped-source-serves-per-caller`). What it re-applies is the
+source's `filterList`. `scoped_rollup` has none: its given was read while the relation
+was built, so the predicate was substituted into the artifact and there is no term left
+on the source to re-emit. A filter inside frozen rows cannot be re-applied over them.
+That is the same property that makes this shape a build refusal, so a binding for it has
+to be refused too.
 
 This scenario builds a legitimate given-FREE source, then binds the given-FILTERED
 source to that same real table and queries it with `REGION=US`. A live serve returns
@@ -82,11 +90,12 @@ source: all_rollup is base -> {
   aggregate: t is amount.sum()
 }
 
-// INELIGIBLE: row-level filtered by a given. Annotated, and query-shaped, so it is
-// a build root Malloy hands to the plan — but the storage-tier eligibility gate
-// refuses it there (`givens-refused` pins the same refusal on the build path), so it
-// lands in `refusedSources` and never reaches `sources`. No honest manifest can
-// carry this source.
+// INELIGIBLE: the persisted query READS `scoped`'s given-filtered `where:`, so the
+// build would bake `$REGION`'s value into the artifact. Annotated, and query-shaped,
+// so it is a build root Malloy hands to the plan — but the storage-tier eligibility
+// gate refuses it there (`givens-refused` pins the same refusal on the build path),
+// so it lands in `refusedSources` and never reaches `sources`. No honest manifest
+// can carry this source.
 source: scoped is base extend {
   where: region ~ $REGION
 }
@@ -127,9 +136,9 @@ all, and the bind path can only report that it was never examined.
 
 Expect:
 
-| source        | tier    | reason |
-| ------------- | ------- | ------ |
-| scoped_rollup | storage | given  |
+| source        | tier    | reason                   |
+| ------------- | ------- | ------------------------ |
+| scoped_rollup | storage | given_in_persisted_query |
 
 ## Query the eligible source
 

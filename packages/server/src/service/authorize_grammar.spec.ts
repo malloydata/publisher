@@ -189,6 +189,46 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
          "operator_arity_mismatch",
       );
    });
+
+   // `malloyGivenToApi` renders a list-typed given by its ELEMENT type
+   // (`number[]`, `string[]`) and falls back to a bare `array` only when the
+   // element type is missing. Both are lists here.
+   //
+   // This is pinned because the two halves live in different files and moved in
+   // different changes: when the rendering gained element types, this check
+   // still matched the bare `array` alone, so every set-valued given read as a
+   // scalar. A set-valued given is how each `#(secure)` attribute is declared,
+   // so that refused `in` on the gates that carry a row-level boundary and
+   // failed those models at load.
+   it("reads both list renderings as lists — the bare one and `<element>[]`", () => {
+      for (const rendering of ["array", "number[]", "string[]"]) {
+         const givens = new Map([["GROUPS", rendering]]);
+         expectCause("org_id = $GROUPS", givens, "operator_arity_mismatch");
+         expect(
+            parseAuthorizeGrammarBody(
+               "s",
+               "org_id in $GROUPS",
+               givens,
+               ACCESS_FILTER_ROUTE,
+            ),
+         ).toBeDefined();
+      }
+   });
+
+   it("a scalar rendering is still a scalar, so `in` is still refused", () => {
+      // The widening must not turn every type into a list: `=` has to keep
+      // working, or the check admits nothing.
+      const givens = new Map([["REGION", "string"]]);
+      expectCause("region in $REGION", givens, "operator_arity_mismatch");
+      expect(
+         parseAuthorizeGrammarBody(
+            "s",
+            "region = $REGION",
+            givens,
+            ACCESS_FILTER_ROUTE,
+         ),
+      ).toBeDefined();
+   });
 });
 
 describe("parseAuthorizeGrammarBody — #(authorize) route", () => {

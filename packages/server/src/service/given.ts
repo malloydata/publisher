@@ -34,7 +34,12 @@ import { motlyTag, tagNumeric, tagText } from "./motly";
  */
 export interface MalloyGiven {
    readonly name: string;
-   readonly type: { type: string; filterType?: string };
+   readonly type: {
+      type: string;
+      filterType?: string;
+      /** Present when `type` is `array`; carries the element's own type def. */
+      elementTypeDef?: { type: string };
+   };
    readonly annotations: Annotations;
 }
 
@@ -236,21 +241,29 @@ export function readGivenControlSpec(
  * (plain `#` tags, `#"` doc strings, `##!` pragmas), which aren't part
  * of the given's surface contract.
  *
- * Type rendering: `GivenTypeDef` is typed as `AtomicTypeDef |
- * FilterExpressionParamTypeDef`, but Malloy's grammar only emits
- * the scalar parameter types (`string` | `number` | `boolean` |
- * `date` | `timestamp` | `timestamptz` | `filter expression` |
- * `error`) for given declarations today. If the grammar expands
- * to allow array or record givens, the bare `type.type`
- * discriminator (`'array'`, `'record'`) will land in the wire
- * response with no element info — revisit when that happens.
+ * Type rendering: a scalar renders as its own name (`string`,
+ * `number`, `boolean`, `date`, `timestamp`, `timestamptz`,
+ * `error`), a filter as `filter<…>`, and an ARRAY as
+ * `<element>[]` — `number[]`, `string[]`.
+ *
+ * The array case is not decoration. A set-valued given is how a
+ * `#(secure)` attribute is declared (a scalar cannot be one: it
+ * has no value that fails closed), so it is the shape every
+ * row-level access boundary uses. Rendering the bare `array`
+ * discriminator loses the element type and yields text that is
+ * not valid Malloy, which breaks any consumer that re-declares a
+ * given from this field rather than merely displaying it — the
+ * storage tier's serve shape does exactly that. A `record`
+ * given, if the grammar gains one, still renders bare.
  */
 export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
    const type = given.type;
    const renderedType =
       type.type === "filter expression"
          ? `filter<${type.filterType}>`
-         : type.type;
+         : type.type === "array" && type.elementTypeDef?.type
+           ? `${type.elementTypeDef.type}[]`
+           : type.type;
    const allNotes = given.annotations.forRoute(undefined);
    return {
       name: given.name,
@@ -302,19 +315,42 @@ export interface SuggestGivenLookup {
 }
 
 /**
+ * The gate expressions a `suggest` over `name` must supply givens for: BOTH
+ * routes, unioned.
+ *
+ * A dropdown's own query is an ordinary query against the source, so it meets
+ * the same two gates. A lock given it omits is an unsupplied gate given and
+ * denies (403); a filter given it omits cannot be grafted. Reading one route
+ * here is what left a migrated source's controls showing "Options
+ * unavailable".
+ */
+export function gateGivenSource(
+   sources: readonly {
+      name?: string | undefined;
+      authorize?: string[] | undefined;
+      accessFilter?: string[] | undefined;
+   }[],
+   name: string,
+): readonly string[] | undefined {
+   const source = sources.find((candidate) => candidate.name === name);
+   if (!source) return undefined;
+   return [...(source.authorize ?? []), ...(source.accessFilter ?? [])];
+}
+
+/**
  * Build the lookup a `suggest` is resolved against, from a compiled model.
  *
  * A source's names are the givens its own `where:` reads plus the ones its
- * EFFECTIVE `#(authorize)` gate reads; the caller supplies the gate expressions
- * per source because inheritance (`extend` of a gated base) is resolved by
- * `extractSourcesFromModelDef`, not here. A named query's names are its own
+ * EFFECTIVE gates read on BOTH routes; the caller supplies the gate expressions
+ * per source (see {@link gateGivenSource}) because inheritance (`extend` of a
+ * gated base) is resolved by `extractSourcesFromModelDef`, not here. A named query's names are its own
  * `givenUsage` plus its source's. `surfaced`, when given, narrows every answer
  * to names the entry can actually bind, since sending any other guarantees an
  * "unknown given" error.
  */
 export function suggestGivenLookup(
    modelDef: ModelDef,
-   authorizeBySource: (source: string) => readonly string[] | undefined,
+   gatesBySource: (source: string) => readonly string[] | undefined,
    surfaced?: ReadonlySet<string>,
 ): SuggestGivenLookup {
    const registry = modelDef.givens ?? {};
@@ -325,7 +361,7 @@ export function suggestGivenLookup(
          const name = obj.as || obj.name;
          const refs = new Set<string>();
          collectGivenRefs(obj.filterList, refs);
-         for (const expr of authorizeBySource(name) ?? []) {
+         for (const expr of gatesBySource(name) ?? []) {
             for (const given of referencedGivenNames(expr)) refs.add(given);
          }
          bySource.set(name, Array.from(refs));
