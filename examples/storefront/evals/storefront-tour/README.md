@@ -72,8 +72,9 @@ declaring a field to quiet a checker changes the thing being measured.
 
 ## Run it
 
-From a clone, with Node 20+, Bun and Python 3.11+. Every command reads
-`eval.toml`, so none of them takes a server flag. Build once:
+From a clone, with Node 20+, Bun, Python 3.11+ and a Java runtime (the SDK
+build runs openapi-generator). Every command reads `eval.toml`, so none of
+them takes a server flag. Build once:
 
 ```bash
 bun install && bun run build
@@ -89,7 +90,8 @@ bun run eval -- serve truth --set examples/storefront/evals/storefront-tour   # 
 ```
 
 Each returns once its server answers, and keeps it running after the shell
-exits. `--stop` stops it.
+exits. `--stop` stops it. Export `EMBEDDING_API_KEY` before serving the model:
+without it retrieval is lexical, and the start line says so.
 
 **2. Check the answer key still matches the data.** Free, and it refuses the
 run rather than spending on a drifted key.
