@@ -525,12 +525,12 @@ export function readDashboardModelFacts(
    modelDef: ModelDef,
    surfacedGivenNames: string[],
    /**
-    * The EFFECTIVE `#(authorize)` expressions per source, from the model's
-    * extracted sources, so a suggest over a gated source knows which givens
-    * its gate reads. Absent means no source is gated, which is what a caller
-    * without the extraction (a test) gets.
+    * The EFFECTIVE gate expressions per source on BOTH routes, from the
+    * model's extracted sources, so a suggest over a gated source knows which
+    * givens its gates read. Absent means no source is gated, which is what a
+    * caller without the extraction (a test) gets.
     */
-   authorizeBySource?: ReadonlyMap<string, readonly string[]>,
+   gatesBySource?: ReadonlyMap<string, readonly string[]>,
 ): DashboardModelFacts {
    const registry = modelDef.givens ?? {};
    const surfaced = new Set(surfacedGivenNames);
@@ -631,7 +631,7 @@ export function readDashboardModelFacts(
       drills,
       suggestGivens: suggestGivenLookup(
          modelDef,
-         (source) => authorizeBySource?.get(source),
+         (source) => gatesBySource?.get(source),
          surfaced,
       ),
    };

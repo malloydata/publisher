@@ -181,7 +181,7 @@ describe("Package.create via worker pool", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
@@ -192,12 +192,75 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          const apiModel = (await model!.getModel()) as {
             sources?: { name?: string; authorize?: string[] }[];
          };
-         // The worker compiled the authorize probe (no throw) and surfaced the
-         // effective expression list — proves worker-path validation runs.
+         // The worker validated the gate (no throw) and surfaced the effective
+         // expression list — proves worker-path validation runs.
          expect(apiModel.sources?.[0]?.authorize).toEqual([
-            "$ROLE = 'analyst'",
+            "'analyst' = $ROLE",
          ]);
-         expect(model!.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+         expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("validates and surfaces a `#(authorize) true` admit-all gate through the worker — the notebook branch's load-assert copy stays in step with Model.create", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "gated.malloynb"),
+         `>>>malloy
+#(authorize) true
+source: gated is duckdb.sql("select 1 as id") extend {}`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("gated.malloynb");
+         // The worker's notebook branch compiled the admit-all probe (no
+         // throw) and surfaced the effective expression — proves the
+         // notebook's own `assertAuthorizeGrammarValid` call agrees with
+         // Model.create's on `true`.
+         expect(model!.getAuthorize("gated")).toEqual(["true"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("splits #(authorize) and #(access_filter) into separate wire fields through the worker", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "split.malloy"),
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+  ROLE :: string[]
+
+#(access_filter) id in $DENY
+#(authorize) 'finance' in $ROLE
+source: gated is duckdb.sql("select 1 as id") extend {}`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("split.malloy");
+         const apiModel = (await model!.getModel()) as {
+            sources?: {
+               name?: string;
+               authorize?: string[];
+               accessFilter?: string[];
+            }[];
+         };
+         // Each route's own text lands under its OWN wire field — neither
+         // leaks into the other, on the worker path exactly as it does
+         // in-process (Model.create).
+         expect(apiModel.sources?.[0]?.accessFilter).toEqual(["id in $DENY"]);
+         expect(apiModel.sources?.[0]?.authorize).toEqual([
+            "'finance' in $ROLE",
+         ]);
+         expect(model!.getAccessFilter("gated")).toEqual(["id in $DENY"]);
+         expect(model!.getAuthorize("gated")).toEqual(["'finance' in $ROLE"]);
       } finally {
          await duckdb.close();
       }
@@ -212,7 +275,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 given:
   ROLE :: string
 
-#(authorize) $NOPE = 'x'
+#(authorize) 'x' = $NOPE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
@@ -243,7 +306,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
@@ -254,7 +317,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          // compileNotebookModel ran authorize validation (no throw) and
          // surfaced the gate — the notebook compile path was previously
          // unexercised by tests.
-         expect(model!.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+         expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
       } finally {
          await duckdb.close();
       }
@@ -270,7 +333,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 given:
   ROLE :: string
 
-#(authorize) $NOPE = 'x'
+#(authorize) 'x' = $NOPE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 

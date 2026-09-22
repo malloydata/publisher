@@ -155,7 +155,7 @@ source: tracks is base_source extend {
 given:
   ROLE :: string is 'x'
 
-#(authorize) id = 1 and $ROLE = 'x'
+#(access_filter) id = 1 and $ROLE = 'x'
 source: broken is duckdb.sql("select 1 as id") extend {
 }`,
       );

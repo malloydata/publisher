@@ -315,19 +315,42 @@ export interface SuggestGivenLookup {
 }
 
 /**
+ * The gate expressions a `suggest` over `name` must supply givens for: BOTH
+ * routes, unioned.
+ *
+ * A dropdown's own query is an ordinary query against the source, so it meets
+ * the same two gates. A lock given it omits is an unsupplied gate given and
+ * denies (403); a filter given it omits cannot be grafted. Reading one route
+ * here is what left a migrated source's controls showing "Options
+ * unavailable".
+ */
+export function gateGivenSource(
+   sources: readonly {
+      name?: string | undefined;
+      authorize?: string[] | undefined;
+      accessFilter?: string[] | undefined;
+   }[],
+   name: string,
+): readonly string[] | undefined {
+   const source = sources.find((candidate) => candidate.name === name);
+   if (!source) return undefined;
+   return [...(source.authorize ?? []), ...(source.accessFilter ?? [])];
+}
+
+/**
  * Build the lookup a `suggest` is resolved against, from a compiled model.
  *
  * A source's names are the givens its own `where:` reads plus the ones its
- * EFFECTIVE `#(authorize)` gate reads; the caller supplies the gate expressions
- * per source because inheritance (`extend` of a gated base) is resolved by
- * `extractSourcesFromModelDef`, not here. A named query's names are its own
+ * EFFECTIVE gates read on BOTH routes; the caller supplies the gate expressions
+ * per source (see {@link gateGivenSource}) because inheritance (`extend` of a
+ * gated base) is resolved by `extractSourcesFromModelDef`, not here. A named query's names are its own
  * `givenUsage` plus its source's. `surfaced`, when given, narrows every answer
  * to names the entry can actually bind, since sending any other guarantees an
  * "unknown given" error.
  */
 export function suggestGivenLookup(
    modelDef: ModelDef,
-   authorizeBySource: (source: string) => readonly string[] | undefined,
+   gatesBySource: (source: string) => readonly string[] | undefined,
    surfaced?: ReadonlySet<string>,
 ): SuggestGivenLookup {
    const registry = modelDef.givens ?? {};
@@ -338,7 +361,7 @@ export function suggestGivenLookup(
          const name = obj.as || obj.name;
          const refs = new Set<string>();
          collectGivenRefs(obj.filterList, refs);
-         for (const expr of authorizeBySource(name) ?? []) {
+         for (const expr of gatesBySource(name) ?? []) {
             for (const given of referencedGivenNames(expr)) refs.add(given);
          }
          bySource.set(name, Array.from(refs));
