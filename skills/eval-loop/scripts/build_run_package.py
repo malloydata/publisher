@@ -36,6 +36,7 @@ from typing import Any
 TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-run-package"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
+import config  # noqa: E402
 from score_retrieval import delivery, groups, score_case  # noqa: E402
 from flip_table import counts_toward_score, outcome  # noqa: E402  (same directory)
 
@@ -536,17 +537,81 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             "steps": len(steps_rows)}
 
 
+def enclosing_package(out: pathlib.Path) -> pathlib.Path | None:
+    """The Malloy package `out` would sit inside, if any.
+
+    The built package is itself a Malloy package. Nested in another one, its
+    model resolves `data/*.csv` against the OUTER package's root, and the outer
+    package goes into loadErrors and serves nothing. That happened to
+    `storefront` once.
+    """
+    for parent in out.resolve().parents:
+        if (parent / "publisher.json").exists():
+            return parent
+    return None
+
+
+def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
+                  out: pathlib.Path) -> list[str]:
+    """The registration command and both URLs, which are in different path spaces.
+
+    Registered on the truth server when the set has one. The package holds the
+    answer key, and the truth server is the one the answerer has no route to.
+    """
+    run = read_json(run_dirs[0] / "run.json")
+    base = cfg.truth_publisher()
+    env = cfg.get("truth", "environment")
+    note = []
+    if not base:
+        base = run.get("publisher") or cfg.model_publisher()
+        env = run.get("environment") or cfg.get("model", "environment") or "<env>"
+        note = ["# this is the MODEL server: the package holds the answer key,",
+                "# so remove it before the next run answers from this server"]
+    name = out.name
+    body = json.dumps({"name": name, "location": str(out.resolve())})
+    return [*note,
+            f"curl -sS -X POST {base}/api/v0/environments/{env}/packages \\",
+            f"    -H 'content-type: application/json' -d '{body}'",
+            f"# case matrix: {base}/environments/{env}/packages/{name}/",
+            f"# notebook:    {base}/{env}/{name}/eval_run.malloynb"]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", action="append", required=True, type=pathlib.Path,
                     help="run directory with events.jsonl; repeat for an A/B")
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("--out", type=pathlib.Path, default=None,
+                    help="default: <workdir>/packages/eval-<run>, outside the "
+                         "repository")
+    ap.add_argument("--without-diagnosis", action="store_true",
+                    help="build from runs with no clusters.jsonl. The cluster "
+                         "views are then empty, or show the mechanical "
+                         "candidates, which are not a diagnosis")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    out = a.out or cfg.workdir() / "packages" / f"eval-{a.run[0].name}"
 
-    counts = build(a.run, a.set_dir, a.out)
-    print(f"{a.out}")
+    outer = enclosing_package(out)
+    if outer:
+        raise SystemExit(
+            f"{out} is inside the Malloy package {outer}. Built there, it puts "
+            f"that package into loadErrors. Fix: pass an --out outside any "
+            f"package, or omit it for {cfg.workdir() / 'packages'}")
+    undiagnosed = [r for r in a.run if not (r / "clusters.jsonl").exists()]
+    if undiagnosed and not a.without_diagnosis:
+        raise SystemExit(
+            "no clusters.jsonl in " + ", ".join(str(r) for r in undiagnosed)
+            + ": the report's cluster views would be empty. Fix: run "
+              "diagnose.py on each run first, or pass --without-diagnosis")
+
+    counts = build(a.run, a.set_dir, out)
+    lines = serving_lines(cfg, a.run, out)
+    (out / "README.md").write_text(
+        "# Serving this report\n\n```bash\n" + "\n".join(lines) + "\n```\n")
+    print(f"{out}")
     print("  " + ", ".join(f"{v} {k}" for k, v in counts.items()))
+    print("\n".join(lines))
     return 0
 
 
