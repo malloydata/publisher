@@ -210,7 +210,9 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
  * callers refuse on ambiguity rather than picking one -- but the argument for
  * owning the guarantee rather than documenting it is the same.
  */
-export function buildDerivationBaseMap(query: string): Map<string, Set<string>> {
+export function buildDerivationBaseMap(
+   query: string,
+): Map<string, Set<string>> {
    const basesOf = new Map<string, Set<string>>();
    const text = stripMalloyCommentsAndLiterals(query);
    // `\w` is ASCII-only, so `café` matched nothing; identifiers use the
