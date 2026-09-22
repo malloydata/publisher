@@ -273,6 +273,12 @@ class Roles(unittest.TestCase):
                 self.assertIn("the model server serves it to the answerer",
                               str(e.exception))
 
+    def test_a_keyless_server_says_it_ranks_lexically(self):
+        self.assertIn("ranks get_context lexically", serve.retrieval_note({}))
+        self.assertIn("lexically",
+                      serve.retrieval_note({"EMBEDDING_API_KEY": "  "}))
+        self.assertIsNone(serve.retrieval_note({"EMBEDDING_API_KEY": "k"}))
+
     def test_a_role_on_the_other_roles_port_is_refused(self):
         cfg = serve.config.load(a_set(TOML))
         err = serve.port_clash(cfg, "truth", 4000, 4882)

@@ -45,7 +45,7 @@ script takes passes through.
 #    if it does not reach `ready`: the sync is lazy, so without it the first
 #    cases are answered LEXICALLY and the run reports that as the model's
 #    number.
-eval.py serve model --set <set> --trace-retrieval --warm-retrieval \
+eval.py serve model --set <set> --warm-retrieval \
   [--allow-proxy]   # required for a `publisher`-type (proxied) connection
 eval.py serve truth --set <set> [--allow-proxy]
 
