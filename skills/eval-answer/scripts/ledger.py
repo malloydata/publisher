@@ -67,6 +67,7 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      "mcp_tool_uses", "final_query_source",
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
+                     "cache_write_tokens", "skills_invoked",
                      "cost_usd", "num_turns", "wall_seconds", "run_error", "at"},
     },
     "tool_call": {
@@ -85,7 +86,13 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # errors, while a replay under another report's filter values returns
         # real rows for the wrong population. Keeping all three on the event
         # is what lets a re-execution be audited from the ledger at all.
-        "optional": {"targets", "rankedSummary", "error", "traceId",
+        # `target_shapes` is one row per search target -- its type, and whether
+        # it carried search text -- beside `targets`, which is the terms
+        # searched for and drops a target that carried none. Without it the
+        # bare-target rate is not recomputable from a run directory, only from
+        # transcripts, and transcripts get pruned.
+        "optional": {"targets", "target_shapes", "scopes", "rankedSummary",
+                     "error", "traceId",
                      "query", "modelPath", "filterParams", "retrieval_mode",
                      "at"},
     },
@@ -97,7 +104,14 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         "optional": {"judge_version", "rubric_sha", "golden_revision",
                      "artifactPath", "confidence", "column_pairing",
                      "contaminated", "gold_status", "gold_note",
-                     "must_not_use_hits", "judge_verdict", "at"},
+                     "must_not_use_hits", "judge_verdict",
+                     # What this case's judge call cost. Collected per case and
+                     # discarded on the write path until now, so the run could
+                     # report what judging cost in total and never which case
+                     # was expensive -- and a case that spent its whole turn
+                     # budget without producing a verdict is the one worth
+                     # finding.
+                     "judge_cost_usd", "at"},
     },
     "retrieval_score": {
         "required": {"intentId", "term"},
@@ -157,17 +171,44 @@ RUN_RECOMMENDED = {"judgeModel", "judgeVersion", "datasetVersion", "modelSha",
 RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "modelGitSha", "mcpUrl", "publisher", "predictionsReExecuted",
                 "serverVersion", "diagnoserModel", "improverModel",
-                "rubricSha", "setName", "targetVersion", "scope", "mode",
+                "rubricSha",
+                # The prompt the judge was SHOWN, hashed. `rubricSha` covers
+                # the judge's skill file and not the harness's own prompt
+                # template, so two runs whose prompts differed compared as the
+                # same judge -- the blind spot that let a golden-rendering
+                # defect run for three arms with every test passing.
+                "judgePromptSha", "setName", "targetVersion", "scope", "mode",
                 "traceMode",
+                # The answerer's cap and timeout, as the run actually ran them.
+                # `eval-loop` step 6 lists "call budget" among the pins to
+                # freeze for a whole arm, and nothing wrote one, so no two runs
+                # could be compared on the setting that decides whether a case
+                # got to finish at all. `callBudget` stays for runs written
+                # before this, and is not the same field: it was never
+                # populated by this harness.
+                "maxTurns", "answererTimeout",
+                # How many attempts never reached a verdict for a reason that
+                # is the HARNESS's, not the model's. Both leave the denominator
+                # and both suppress the pass rate (`incomplete` below).
+                "truncated", "contaminated",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
+                # The run whose attempts this run's answerer cost was COPIED
+                # from, when it did not spawn an answerer at all (a re-judge, a
+                # rebuild, a `--from`). Null when this run paid. Summing
+                # `answererCostUsd` across run files double-counts without it:
+                # one re-judge reported $17.56 of answering that never happened.
+                "answererCostCopiedFrom",
+                # Set when a rebuild reused saved verdicts, so `judgeCostUsd`
+                # is the ORIGINAL judging spend rather than this run's zero.
+                "judgeCostCopiedFrom",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
                 "improverManifest", "doubtedGoldens",
                 "packageSha", "servedRevision", "datasetSha",
                 "staleEntityNames",
                 "retrievalMode", "retrievalCalls", "retrievalGate",
-                "reExecution",
+                "reExecution", "coverageReport",
                 "modelRepo"} | RUN_RECOMMENDED
 
 
@@ -306,14 +347,29 @@ def skills_git_sha(root: pathlib.Path | None = None) -> str | None:
     the `skillsVersion` pin. Defaults to this checkout; pass the external
     --skills-root when the doctrine came from elsewhere (a Publisher checkout).
     The skills ARE the doctrine the agents load, so a run that cannot name
-    their version cannot take part in a comparison."""
-    d = pathlib.Path(root) if root else pathlib.Path(__file__).resolve().parent
+    their version cannot take part in a comparison.
+
+    `-dirty` is decided over the SKILLS PATH, not the whole repository. It used
+    to be the whole tree, so every run ever taken read `-dirty` -- including
+    runs taken before anything was edited -- because a checkout picks up stray
+    untracked files as a matter of course. A marker that cannot distinguish
+    "someone left a scratch file in the repo root" from "the judge prompt was
+    rewritten between these two arms" is not a pin, and the runs that carry it
+    cannot be told apart on the one thing it exists to record."""
+    # Resolved, always: the path is used BOTH as git's working directory and as
+    # its pathspec, and a relative one means different things in those two
+    # positions. Passed `skills`, git ran in `skills/` and then looked for
+    # `skills/skills`, which matches nothing -- so every tree read clean and
+    # the marker silently stopped working in the other direction.
+    d = (pathlib.Path(root) if root
+         else pathlib.Path(__file__).resolve().parent).resolve()
     try:
         head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
                               capture_output=True, text=True, timeout=10)
         if head.returncode != 0:
             return None
-        dirty = subprocess.run(["git", "-C", str(d), "status", "--porcelain"],
+        dirty = subprocess.run(["git", "-C", str(d), "status", "--porcelain",
+                                "--", str(d)],
                                capture_output=True, text=True, timeout=10)
         return head.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:  # noqa: BLE001

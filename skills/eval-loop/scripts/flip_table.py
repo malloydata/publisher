@@ -59,13 +59,43 @@ def outcome(verdict: str | None) -> str:
     return "neither"
 
 
+# A golden a person has established is WRONG. Its verdict says nothing about
+# the model -- the answer was scored against a key that does not hold -- so it
+# leaves every aggregate.
+EXCLUDED_GOLD = {"verified_wrong"}
+
+
+def counts_toward_score(gold_status: str | None) -> bool:
+    """Does this score belong in the run's aggregates?
+
+    Exported for the same reason `outcome` is. `run_baseline.py` dropped
+    `verified_wrong` before counting, `eval_run.malloy` did not, and the
+    package's own doc comment on `gold_status` said it did -- so one
+    `verified_wrong` golden made the printed pass rate and the notebook's
+    `pass_rate` disagree (92.31% against 91.67% on a real 13-case run) with
+    nothing to say which was right. One rule, three readers: this function,
+    the `counts` column `build_run_package.py` writes from it, and the
+    measures in `eval_run.malloy` that filter on that column.
+    """
+    return gold_status not in EXCLUDED_GOLD
+
+
 def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     """qid -> the scored outcome, for cases this run actually scored."""
     out: dict[str, dict[str, Any]] = {}
+    queries: dict[str, str | None] = {}
     for line in (run / "events.jsonl").read_text().splitlines():
         if not line.strip():
             continue
         e = json.loads(line)
+        if e.get("kind") == "attempt":
+            # The query the arm actually ran. A flip is a matched pair -- same
+            # question, same model, one right answer and one wrong one -- and
+            # the diff between the two queries is what isolates the cause. It
+            # was not read here, so the richest evidence in the run was the one
+            # thing the flip table did not print.
+            queries[e["qid"]] = e.get("final_query")
+            continue
         if e.get("kind") != "score":
             continue
         v = e.get("verdict")
@@ -73,6 +103,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "verdict": v,
             "confidence": e.get("confidence"),
             "reason": (e.get("reason") or "")[:200],
+            "final_query": queries.get(e["qid"]),
             # near_match and needs_human are neither: counting either as a fail
             # would manufacture a flip every time the judge hedged in one run
             # and not the other.
@@ -80,6 +111,30 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "passed": {"pass": True, "fail": False}.get(outcome(v)),
         }
     return out
+
+
+def query_diff(a: dict[str, Any], b: dict[str, Any], la: str, lb: str) -> str:
+    """The two queries a flipped case ran, side by side.
+
+    The count says a case moved; this says what moved it. On a real set five
+    flips over 28 cases read as an 18% churn rate, and the five turned out to
+    be one question asked two ways -- two discrete query idioms, one returning
+    443 rows and the other 2. Reading the diff would have handed over the
+    finding; averaging the five hid it. The queries were already in the ledger
+    and this table had never printed them.
+
+    Identical queries are worth saying too: then the flip is downstream of the
+    query, in the judge or in the data, and that is a different search.
+    """
+    qa, qb = (a.get("final_query") or "").strip(), (b.get("final_query") or "").strip()
+    if not qa and not qb:
+        return "     (neither arm recorded a final query)"
+    if qa == qb:
+        return ("     both arms ran the SAME query, so the flip is downstream "
+                "of it:\n     the judge, the rubric, or non-determinism in the "
+                "data.")
+    return (f"     {la} ran:\n       " + qa.replace("\n", "\n       ") +
+            f"\n     {lb} ran:\n       " + qb.replace("\n", "\n       "))
 
 
 def cost(run: Path) -> dict[str, float]:
@@ -112,6 +167,47 @@ def config(run: Path) -> dict[str, Any]:
 COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
               "answererModel", "judgeModel", "answererManifest",
               "retrievalMode", "modelGitSha", "targetVersion")
+
+
+def completeness_note(ca: dict, cb: dict, la: str, lb: str,
+                      A: dict, B: dict) -> int:
+    """Say which cases one arm excluded and the other scored. Never refuses.
+
+    This REPLACED a refusal, and the refusal was wrong. It rested on the claim
+    that an excluded case "reads as a flip", and it does not: a flip requires a
+    real pass or fail on BOTH sides (`a_only` / `b_only` below), so a case
+    carrying `verdict: null` on either side lands in `unscored` and contributes
+    to no flip count. The pairing already handles this, and the header already
+    prints "N cases, M scored in both, K not". Refusing a 99-versus-100 pair
+    threw away 99 good comparisons to avoid a distortion that was not there.
+
+    What IS worth saying is the asymmetry, which nothing named before. The
+    excluded cases are not a random sample: an attempt truncates BECAUSE it ran
+    long, so the cases one arm drops are its hard ones, and the surviving
+    comparison is over an easier subset than the case list suggests. That is a
+    caveat to carry into the number, not a reason to withhold it.
+
+    An `aborted` arm needs nothing here either: it stopped early, so its cases
+    are absent rather than unscored, and the existing "the runs do not cover
+    the same cases" check already exits 1 on it.
+    """
+    for label, cfg, mine, theirs in ((la, ca, A, B), (lb, cb, B, A)):
+        excluded = [q for q in sorted(set(mine) & set(theirs))
+                    if mine[q]["passed"] is None
+                    and theirs[q]["passed"] is not None]
+        if not excluded:
+            continue
+        why = ", ".join(
+            [f"{len(cfg.get('truncated') or [])} truncated"]
+            * bool(cfg.get("truncated"))
+            + [f"{len(cfg.get('contaminated') or [])} contaminated"]
+            * bool(cfg.get("contaminated"))) or "unscored"
+        print(f"\n  ! {label} left {len(excluded)} case(s) unscored that "
+              f"the other arm scored ({why}): {', '.join(excluded)}")
+        print("    They are out of the flips above, so the comparison holds --"
+              " but an attempt truncates BECAUSE it ran long, so these are not"
+              " a random sample of the set.")
+    return 0
 
 
 def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
@@ -402,13 +498,21 @@ def main() -> int:
               f"  ({', '.join(f'{v} {k}' for k, v in sorted(tally.items()))})")
 
     if a_only or b_only:
-        print(f"\nthe flips\n---------")
+        print(f"\nthe disagreement set\n--------------------")
+        print("  Read these before averaging them. A flip is a case where the "
+              "agent found\n  two paths and the model did not make one of them "
+              "obviously right, which is\n  a model-quality signal and a "
+              "matched pair: same question, same model, one\n  right answer "
+              "and one wrong one. The band says how much movement there is;\n"
+              "  these say what it IS.\n")
         for q in a_only:
             print(f"  {q}\n     {la}: {A[q]['verdict']}  ->  "
                   f"{lb}: {B[q]['verdict']}\n     {B[q]['reason'][:150]}")
+            print(query_diff(A[q], B[q], la, lb))
         for q in b_only:
             print(f"  {q}\n     {la}: {A[q]['verdict']}  ->  "
-                  f"{lb}: {B[q]['verdict']}\n     {B[q]['reason'][:150]}")
+                  f"{lb}: {B[q]['verdict']}\n     {A[q]['reason'][:150]}")
+            print(query_diff(A[q], B[q], la, lb))
 
     if a_args.targets:
         targeted_report(a_args, A, B, la, lb,
@@ -443,6 +547,7 @@ def main() -> int:
 
     gate = retrieval_gate(cfg_a, cfg_b, la, lb,
                           a_args.allow_retrieval_mismatch)
+    completeness_note(cfg_a, cfg_b, la, lb, A, B)
 
     ca, cb = cost(a_args.a), cost(a_args.b)
     print(f"\ncost\n----")

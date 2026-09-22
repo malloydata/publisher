@@ -18,7 +18,7 @@ On the case:
 | `split` | rarely present | you choose, and freeze it at import |
 | `source` | how it arrived: the filename, or the log query | say `unknown` rather than guessing a provenance |
 | `golden` | see the classification table in `SKILL.md` | absent. A case with no golden is legitimate |
-| `expectedEntities` | almost never present | leave it out. Guessing which fields an answer needs invents a retrieval expectation nobody stated, and it scores as a retrieval miss forever |
+| `expectedEntities` | almost never present | leave it out. Guessing which fields an answer needs invents a retrieval expectation nobody stated, and it scores as a retrieval miss forever. The one exception is a key you derived yourself (`SKILL.md`, Deriving a key yourself): then you are not guessing, you are recording what you used |
 
 `expectedEntities` is the one most worth leaving empty. A wrong `required` id
 cannot be delivered by any run, so it reads as a model failure on every case

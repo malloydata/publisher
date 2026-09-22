@@ -30,7 +30,11 @@ python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/s
 #     every run. Pass --model on a platform target too, from a checkout of the
 #     served version, since the harness cannot see the model text there.
 #     Exits 3 when set.json names no truthPackage: the audits ran, no
-#     golden was re-derived, and 0 would have claimed otherwise.
+#     golden was re-derived, and 0 would have claimed otherwise. With
+#     --definitions <ledger> (verify_definitions.py), a set whose every
+#     value-bearing case rests on validated definitions exits 0 instead:
+#     the composition rule, values not re-derived but their definitions
+#     checked.
 python3 skills/eval-answer/scripts/verify_goldens.py \
   --set <repo>/evals/ecommerce --publisher http://localhost:4881 \
   --model <repo>/ecommerce --target-package ecommerce

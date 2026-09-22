@@ -15,6 +15,18 @@ Watch for these common mistakes throughout the analysis workflow. When you encou
 ### Wrong grain / fan-out
 Using dimensions or measures from a joined source that has a finer grain than the base source can silently multiply rows, inflating aggregates. For example, aggregating revenue while grouping by a line-item field may double- or triple-count totals. If your query touches fields from a joined source, compare `count(key_field)` to `count()`: if the row count is significantly higher than the distinct key count, you likely have fan-out.
 
+That check reads in ONE direction only. `count(joined.field)` is a distinct count evaluated at the joined source's grain, so for an ordinary many-to-one join it is much SMALLER than `count()`, and that is the expected, correct result -- not missing data. Ten thousand flights joined to four hundred aircraft give `count(aircraft.tail_num)` of 400, and nothing is wrong. Do not read a low value as a coverage problem and do not abandon the answer over it. **Coverage is measured at the base grain**, by counting base rows whose joined value is null:
+
+```malloy
+run: flights -> {
+  aggregate:
+    all_rows is count()
+    missing is count() { where: aircraft.aircraft_models.seats = null }
+}
+```
+
+An agent once refused a correct answer it had already computed because `count(aircraft.tail_num)` returned 36 against 17,875 flights; measured at the base grain, zero flights were missing a seat value.
+
 ### Invented entity names
 Never guess field names. Use only the exact field paths defined in the model (find them with `get_context`). A plausible-sounding name that does not exist in the model will produce an error, or worse, silently reference the wrong field.
 

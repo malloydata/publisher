@@ -50,9 +50,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                       / "eval-answer" / "scripts"))
+from json_scan import json_objects  # noqa: E402
 
 SKILL_REF = re.compile(r"skill:([a-z0-9][a-z0-9-]*)")
 
@@ -81,6 +86,10 @@ ALWAYS_BLOCKED = (
     # does); seen 2026-09-01 on the first platform smoke, where they alone
     # flagged the attempt contaminated.
     "ListMcpResourcesTool", "ReadMcpResourceDirTool", "ReadMcpResourceTool",
+    # The same shape, one host surface later: granted when the runner is
+    # launched detached, and they alone flagged every attempt in a 37-case run.
+    # `Task` was blocked; the newer task-management tools were not.
+    "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
 )
 
 # The role-dependent half, and the reason it cannot join ALWAYS_BLOCKED:
@@ -370,26 +379,18 @@ def build_workspace(skills: Iterable[str],
 
 
 def last_json_object(text: str) -> dict[str, Any] | None:
-    """The last balanced {...} in the text; agents narrate before the payload."""
-    depth, start, best = 0, None, None
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            if depth == 0:
-                continue
-            depth -= 1
-            if depth == 0 and start is not None:
-                best = text[start:i + 1]
-    if best is None:
-        return None
-    try:
-        obj = json.loads(best)
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
+    """The last JSON object in the text; agents narrate before the payload.
+
+    Delegates to `json_scan`, the one scanner in this harness, rather than
+    counting braces here. Depth counting cannot see that a brace is inside a
+    string or a comment, so one stray `{` in a quoted Malloy snippet -- which
+    is what `eval-diagnose` asks an agent to read and reason over -- left the
+    depth permanently above zero and made a perfectly good trailing verdict
+    read as no object at all. The diagnosis then came back `unparseable` and
+    the case left the denominator.
+    """
+    objs = json_objects(text)
+    return objs[-1] if objs else None
 
 
 def spawn_agent(prompt: str, *, skills: Iterable[str],
