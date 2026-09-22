@@ -86,10 +86,10 @@ Wrong: `pick('Premium') { ... }` (that's not Malloy syntax).
 **Window functions with `calculate:`:** running totals, `lag()`, `lead()`, and other window operations belong in `calculate:`, not `aggregate:`.
 ```malloy
 run: source -> {
-  group_by: month is order_date.month
+  group_by: order_month is order_date.month
   aggregate: revenue
   calculate: prev_month_revenue is lag(revenue)
-  order_by: month
+  order_by: order_month
 }
 ```
 
@@ -127,15 +127,15 @@ where: order_date >= @2020-01-01
 
 ### Truncation accessors return timestamps, not integers
 
-`order_date.month` returns a month-truncated timestamp (e.g., `2025-06-01 00:00:00`), useful for `group_by:`. It is NOT a 1-12 integer, and it cannot be chained: writing `order_date.month.day` fails. Stop at the first truncation.
+`order_date.month` returns a month-truncated timestamp (e.g., `2025-06-01 00:00:00`), useful for `group_by:`. It is NOT a 1-12 integer.
 
-Available truncations: `.year`, `.quarter`, `.month`, `.week`, `.day`, `.hour`, `.minute`, `.second`. Stop at the first.
+Available truncations: `.year`, `.quarter`, `.month`, `.week`, `.day`, `.hour`, `.minute`, `.second`.
 
-### `month`, `year`, `day`, `quarter` are reserved words
+### `month`, `year`, `day`, `quarter` are reserved as names
 
-Don't try to extract a numeric month with a function call: `month(order_date)`, `year(order_date)`, etc. fail to parse in `where:` because the names are reserved. The same names can also break aliases:
+They cannot name an output field. The functions are fine: `month(order_date)` extracts 1-12 anywhere, including `where:`.
 
-Wrong: `group_by: month is order_date.month`  →  parse error
+Wrong: `group_by: month is order_date.month`  →  `'month' is a reserved word, so to use it as a name you must quote it`
 Right: `group_by: order_month is order_date.month`
 Right (when a column is literally named `month`): `` group_by: `month` ``
 
@@ -251,7 +251,7 @@ run: source -> {
 }
 ```
 
-Charts render only the **first** aggregate. For multiple measures on one chart, place `# y` above the `aggregate:` keyword or use the `y=['a','b']` shorthand. A misplaced chart annotation (e.g., inside `{ }`) typically produces the error *"field is a bar chart, but is not a repeated record"*.
+Charts render only the **first** aggregate. For multiple measures on one chart, place `# y` above the `aggregate:` keyword or use the `y=['a','b']` shorthand. A chart annotation left as the last line inside `{ }` fails with *"Parser enountered unexpected statement type 'unimplemented'"* (the compiler's spelling); one after the closing `}` fails with *"Object annotation not connected to any object"*.
 
 Read the `malloy-charts` skill for chart types, properties, data shape requirements, and selection guidance.
 
@@ -262,11 +262,10 @@ Read the error against the tables above and below. Most failures match a known p
 | Error message | Likely cause / fix |
 |---|---|
 | `Cannot compare a timestamp to a number` | Comparing `date.year` to an integer. Use `date >= @2020-01-01` instead. |
-| `no viable alternative at input '<word>'` | Two common causes: a reserved keyword used as an alias or as a function call (e.g., `month is ...`, `month(date_field)`) - rename, backtick, or use `date_field.month` / a `?`-apply filter instead; or a semicolon used to separate fields within a clause - fields under one `aggregate:`/`group_by:` are comma- or newline-separated, never `;` (the error points at the field right after the `;`). |
+| `no viable alternative at input '<word>'` | Often a `;` between fields within one clause - fields under one `aggregate:`/`group_by:` are comma- or newline-separated (the error points at the field right after the `;`). |
 | `'<field_name>' is not defined` | Field doesn't exist in the source. Re-check against the model definition; you may have stripped a join prefix. |
-| `missing {DAY, HOUR, MINUTE, MONTH, QUARTER, SECOND, WEEK, YEAR}` | Chained date property too deep (e.g., `.month.something`). Stop at the first truncation. |
 | `field is a bar chart, but is not a repeated record` | Chart annotation placed inside `{ }`. Move `# bar_chart` above `run:` / `view:` / `nest:`. |
-| `Parser encountered unexpected statement` | Unsupported feature, or syntax placed where Malloy doesn't allow it (e.g., `pick` inside a nested view). |
+| `Parser enountered unexpected statement` | Spelled that way by the compiler. Most often a chart annotation left as the last line inside `{ }` - move it above `run:`. Also syntax Malloy doesn't allow in that position (e.g., `pick` inside a nested view). |
 | Query silently returns zero rows | Filter value mismatch (case, spelling, format). Run a distinct-values query on the dimension to confirm the literal. |
 
 ## Syntax Help
