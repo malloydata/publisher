@@ -1,0 +1,10 @@
+{
+  "name": "storefront-tour",
+  "description": "Ten hand-authored natural-language questions over the bundled storefront package, written to vary grain, join depth, filter shape and answerability. Three ask for a concept the model does not define, one is deliberately ambiguous, and one has a silent wrong answer a careless grouping produces -- so a run has a score, a coverage gap, a construction error and an eval failure to tell apart.",
+  "datasetVersion": 1,
+  "targetModelPath": "storefront.malloy",
+  "targetPackage": "storefront",
+  "sourceNote": "Authored directly as a markdown numbered list in as-received/questions.md; one case per list item, question text copied byte for byte. No goldens arrived with them: every key here is derived by the conductor, first as DuckDB SQL over the raw parquet and then as Malloy through the truth package, and promoted only where the two agree.",
+  "truthPackage": "storefront-tour-truth",
+  "truthModel": "truth.malloy"
+}

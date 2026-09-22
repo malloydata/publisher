@@ -1,0 +1,22 @@
+{
+ "qid": "storefront-tour-top-customer-spend",
+ "truthQuery": "run: t_order_items -> { group_by: customer_id; aggregate: spend is sale_price.sum(); order_by: spend desc; limit: 1 }",
+ "verifyQuery": "run: t_order_items -> { where: customer_id = 884; aggregate: spend is sale_price.sum() }",
+ "truthRows": [
+  {
+   "customer_id": 884,
+   "spend": 8817.56
+  }
+ ],
+ "verifyRows": [
+  {
+   "spend": 8817.56
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "8817.56 vs 8817.56"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}
