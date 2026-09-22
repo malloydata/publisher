@@ -547,7 +547,8 @@ class MainWiring(unittest.TestCase):
                         lambda *a, **k: err.append(" ".join(map(str, a)))
                         if k.get("file") is sys.stderr else None):
             cc.main(["--set", str(d), "--publisher", "http://p",
-                     "--package", "pkg", "--parallel", "1",
+                     "--environment", "env", "--package", "pkg",
+                     "--parallel", "1",
                      "--out", str(d / "out.json"), *extra])
         return prompts, json.loads((d / "out.json").read_text()), "\n".join(err)
 
