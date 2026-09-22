@@ -1680,7 +1680,7 @@ describe("deriveSelfInstructions", () => {
       ).deriveSelfInstructions(compiled, undefined, {});
    }
 
-   /** A colocated (no `storage=`) fakeSource carrying an #(authorize) gate. */
+   /** A colocated (no `storage=`) fakeSource carrying an #(access_filter) gate. */
    const authorizeGatedColocated = fakeSource({
       name: "s1",
       sourceEntityId: "c1c1c1c1c1c1c1c1",

@@ -717,9 +717,9 @@ forms a valid DuckDB source.
 
 These are the checks derivable from the compiled source and the built schema
 alone. One more belongs here and **is enforced**: a source protected by
-`#(authorize)` — directly, or transitively through a join or derivation — is
+`#(access_filter)` — directly, or transitively through a join or derivation — is
 refused, because the serve path rebinds it to a virtual source whose shape
-carries no `#(authorize)` annotation, so the gate can't be evaluated on the
+carries no `#(access_filter)` annotation, so the gate can't be evaluated on the
 served table. The check walks the compiled source for the gate and fails
 closed: a source it cannot prove gate-free is refused.
 
@@ -750,7 +750,7 @@ there the table lives in your own warehouse; a `storage=` destination may be a
 separate, shared store). If a column is genuinely sensitive, **don't rely on
 `except:` for a `storage=` source — filter it out in the SQL** so it never lands
 in the store. This is the same "sensitive data crossing into the tier's store"
-concern as the `#(authorize)` note above.
+concern as the `#(access_filter)` note above.
 
 ---
 

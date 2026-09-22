@@ -45,30 +45,45 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
  * caller-authored text for filter inheritance -- a filter-protected source
  * carries its filter requirements when read under a derived name.
  *
- * `source:`-only, last-declaration-wins, and it reads RAW text. It therefore
- * misreads caller text in BOTH directions, and neither is theoretical:
- *  - a declaration spelled inside a string literal becomes an edge, and
- *    last-wins lets it REPLACE the real base for that name;
- *  - a comment between `is` and the base (`source: mine is -- c\n protected`)
- *    ERASES the edge, which the compiler still reads around.
+ * `source:`-only and last-declaration-wins. It reads STRIPPED text, so the two
+ * misreads this map used to carry are closed: a declaration spelled inside a
+ * string literal is no longer an edge that last-wins could use to REPLACE a
+ * real base, and a comment between `is` and the base no longer ERASES one.
  *
- * Both misreads are why the query boundary no longer reads this map: a replaced
+ * Those misreads are why the query boundary stopped reading this map: a replaced
  * edge re-pointed a name from the hidden base it really derives from to a
- * curated one and bought admission. Use {@link buildDerivationBaseMap} over
- * {@link stripMalloyCommentsAndLiterals} on any path where an edge grants
- * access.
+ * curated one and bought admission. That boundary still uses
+ * {@link buildDerivationBaseMap}, which is set-valued and refuses on ambiguity;
+ * this map stays last-wins and single-valued because
+ * {@link Model.resolveFilterSource} needs ONE source name to inject filters
+ * from. Prefer that one on any path where an edge grants access.
  *
- * The sole remaining caller, {@link Model.resolveFilterSource}, passes stripped
- * text for the same reason, so neither misread is reachable through it. Keep it
- * that way: this function reads whatever text it is handed, so it is only as
- * sound as its caller's input.
+ * Strips its own input rather than trusting the caller to have done it. A
+ * documented "pass me stripped text" precondition would hold only until the
+ * next caller, and the failure is silent in the unsafe direction -- a missed
+ * edge means no filter is injected, on a path with no post-compile backstop.
+ * {@link stripMalloyCommentsAndLiterals} blanks to spaces, so it is idempotent
+ * and a caller that already stripped pays a second scan and nothing else.
  */
 export function buildSourceAliasMap(query: string): Map<string, string> {
    const aliasOf = new Map<string, string>();
-   const declRe =
-      /source\s*:\s*(?:`([^`]+)`|(\w+))\s+is\s+(?:`([^`]+)`|(\w+))/g;
+   const text = stripMalloyCommentsAndLiterals(query);
+   // The same identifier and declaration shapes {@link buildDerivationBaseMap}
+   // reads, for the same reason: each is legal grammar the compiler links and a
+   // narrower pattern silently declined to. `\w` is ASCII-only, so `café` went
+   // unmatched; a parameter list after the name and a parenthesised base are
+   // both ordinary. Missing an edge here is silent in the unsafe direction --
+   // no filter is injected and the caller sees unfiltered rows with no error --
+   // so the pattern matching the compiler's reading is what the guarantee rests
+   // on. Deliberately still `source:`-only and single-valued: this feeds
+   // `resolveFilterSource`, which needs exactly one base to inject from.
+   const ident = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
+   const declRe = new RegExp(
+      String.raw`source\s*:\s*${ident}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${ident}`,
+      "gu",
+   );
    let match: RegExpExecArray | null;
-   while ((match = declRe.exec(query)) !== null) {
+   while ((match = declRe.exec(text)) !== null) {
       aliasOf.set(match[1] ?? match[2], match[3] ?? match[4]);
    }
    return aliasOf;
@@ -188,10 +203,18 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
  * Does NOT replace {@link buildSourceAliasMap}, which survives for
  * `resolveFilterSource`'s filter-inheritance walk.
  *
- * Expects text already passed through {@link stripMalloyCommentsAndLiterals}.
+ * Strips its own input, for the reason {@link buildSourceAliasMap} gives: a
+ * documented precondition holds only until the next caller, and the strip is
+ * idempotent, so a caller that already stripped pays a second scan and nothing
+ * else. The stakes are lower here than there -- this map is set-valued and its
+ * callers refuse on ambiguity rather than picking one -- but the argument for
+ * owning the guarantee rather than documenting it is the same.
  */
-export function buildDerivationBaseMap(text: string): Map<string, Set<string>> {
+export function buildDerivationBaseMap(
+   query: string,
+): Map<string, Set<string>> {
    const basesOf = new Map<string, Set<string>>();
+   const text = stripMalloyCommentsAndLiterals(query);
    // `\w` is ASCII-only, so `café` matched nothing; identifiers use the
    // Unicode property classes instead. An optional parameter list after the
    // name (`mine(p::string) is …`) and an optional `(` before the base
