@@ -62,11 +62,16 @@ while the next question was still ranked lexically, because readiness was
 derived from cached rows covering the current entity NAMES and rows outlive a
 reload. On such a build, `ready` here is necessary but not sufficient.
 
-Two flags name the two things a run needs that are off by default:
---allow-proxy sets PUBLISHER_ALLOW_PROXY_CONNECTIONS=true (a `publisher`-type
+--allow-proxy sets PUBLISHER_ALLOW_PROXY_CONNECTIONS=true: a `publisher`-type
 connection is refused without it, and the server still reports `serving` with
-load_errors=1); --trace-retrieval sets PUBLISHER_MCP_TRACE=retrieval, without
-which failures cannot be attributed.
+load_errors=1. --trace-retrieval sets PUBLISHER_MCP_TRACE=retrieval, which
+open-source Publisher does not read: it has no trace store, and attribution
+reads each call's rankedSummary, copied at capture. The flag is kept so older
+commands still parse.
+
+A server started without EMBEDDING_API_KEY ranks get_context lexically, and
+the start line says so. A retrieval number from it is not comparable with a
+semantic run.
 """
 from __future__ import annotations
 
@@ -317,6 +322,15 @@ def write_config(root: pathlib.Path, wanted: dict) -> bool:
     return before is not None and before != wanted
 
 
+def retrieval_note(env: dict[str, str]) -> str | None:
+    """The warning for a server that will rank lexically, or None."""
+    if (env.get("EMBEDDING_API_KEY") or "").strip():
+        return None
+    return ("  ! no EMBEDDING_API_KEY: this server ranks get_context lexically, "
+            "so a run against it measures the lexical matcher. Its retrieval "
+            "numbers are not comparable with a semantic run")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -417,6 +431,9 @@ def main(argv: list[str] | None = None) -> int:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
     seed, why = init_decision(root, a.reinit, changed)
     print(why)
+    note = retrieval_note(env) if a.role != "truth" else None
+    if note:
+        print(note)
     cmd = server_cmd(server, root, a.port, a.mcp_port, seed)
     log = (root / "publisher.log").open("a")
     p = subprocess.Popen(

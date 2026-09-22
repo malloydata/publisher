@@ -50,7 +50,7 @@ script takes passes through.
 #    unset; without it every ranking is lexical, the warm-up reports
 #    `cooldown`, and the provider's own error is only in publisher.log
 #    (grep Embedding).
-eval.py serve model --set <set> --trace-retrieval --warm-retrieval \
+eval.py serve model --set <set> --warm-retrieval \
   [--allow-proxy]   # required for a `publisher`-type (proxied) connection
 eval.py serve truth --set <set> [--allow-proxy]
 
