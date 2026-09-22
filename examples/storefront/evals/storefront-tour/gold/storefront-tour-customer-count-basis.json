@@ -1,21 +1,21 @@
 {
  "qid": "storefront-tour-customer-count-basis",
- "truthQuery": "run: t_customers -> { aggregate: customers_on_file is count() }",
- "verifyQuery": "run: t_order_items -> { aggregate: customers_with_orders is count(customer_id) }",
+ "truthQuery": "run: t_order_items -> { where: status = 'Complete'; aggregate: delivered_customers is count(customer_id) }",
+ "verifyQuery": "run: t_order_items -> { group_by: customer_id; aggregate: complete_lines is count() { where: status = 'Complete' } } -> { where: complete_lines > 0; aggregate: delivered_customers is count() }",
  "truthRows": [
   {
-   "customers_on_file": 1000
+   "delivered_customers": 943
   }
  ],
  "verifyRows": [
   {
-   "customers_with_orders": 974
+   "delivered_customers": 943
   }
  ],
  "agreement": {
   "agree": true,
-  "note": "on file 1000 vs with orders 974; both defensible, criteria golden"
+  "note": "943 both ways; model can produce 974 or 1,000, neither is 943"
  },
- "derivedAt": "2026-09-21",
+ "derivedAt": "2026-09-22",
  "truthPackage": "storefront-tour-truth"
 }

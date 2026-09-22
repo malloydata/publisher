@@ -34,10 +34,16 @@ the model does not encode, however well documented the model's fields are.
   buying calendar and does not move.
 - **Net** of cancellations and returns means excluding lines with status
   `Cancelled` or `Returned`. Gross includes them.
+- A **customer** is someone who has placed an order that was **delivered**.
+  Not merely someone on file, and not someone whose only orders were
+  cancelled or returned. In this data that is a line with status `Complete`.
 
-## A question with two right answers
+## Why question 12 is not a counting question
 
-Question 12 is here because the model does not resolve it and neither does the
-business. "Customers" can mean the 1,000 people on file or the 974 who have
-placed at least one order, and both are defensible. The set does not pick one:
-it judges whether the answer SAYS which one it used.
+The business counts a customer as someone it has actually delivered to: 943
+people. The model offers 1,000 (rows on file) and 974 (anyone with an order
+line), and nothing in it expresses delivery. So the question has one right
+answer that the model cannot produce, and the two numbers it CAN produce are
+both wrong. The `customers` source is documented as "People who have placed
+orders", which is wrong for the 26 rows that never ordered and wronger still
+against the definition the business uses.
