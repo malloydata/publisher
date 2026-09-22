@@ -1,6 +1,19 @@
-# A run is output, not source. Keeping one here also breaks the package:
-# build_run_package.py writes an eval_run.malloy whose duckdb.table("data/...")
-# paths resolve against the STOREFRONT package root, so a committed run package
-# puts storefront itself into loadErrors and it serves nothing.
-# Build runs outside the repo (the README uses /tmp).
-*/runs/
+# What a run leaves behind splits in two, and only one half belongs in git.
+#
+# COMMITTED: the record -- run.json (the pins: model sha, judge version,
+# dataset version, cap), events.jsonl (every attempt, verdict and tool call),
+# clusters.jsonl and diagnoses.jsonl, the model snapshot, and the write-up.
+# Together they are what makes a past number re-readable. Twenty-two runs of
+# another set kept 40MB of transcripts and lost every run.json, so the scores
+# survived with nothing saying what produced them.
+#
+# IGNORED: the bulk and the derived. artifacts/ is the per-case transcripts and
+# judge replies -- 2.7MB of a 3.1MB run, re-readable from events.jsonl for the
+# parts that matter. A built report package is derived from the record by
+# build_run_package.py, and worse, it is a Malloy package: nested inside
+# examples/storefront its eval_run.malloy resolves duckdb.table('data/*.csv')
+# against the STOREFRONT package root, which puts storefront itself into
+# loadErrors and it serves nothing. Build it into /tmp.
+*/runs/*/artifacts/
+*/runs/**/run-package-*/
+run-package-*/
