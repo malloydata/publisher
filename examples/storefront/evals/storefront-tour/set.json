@@ -1,6 +1,6 @@
 {
   "name": "storefront-tour",
-  "description": "Ten hand-authored natural-language questions over the bundled storefront package, written to vary grain, join depth, filter shape and answerability. Three ask for a concept the model does not define, one is deliberately ambiguous, and one has a silent wrong answer a careless grouping produces -- so a run has a score, a coverage gap, a construction error and an eval failure to tell apart.",
+  "description": "Ten hand-authored natural-language questions over the bundled storefront package, written to vary grain, join depth, filter shape and answerability. Three ask for a concept the model does not define, one is deliberately ambiguous, and one has a silent wrong answer a careless grouping produces -- Every case is `dev`: the set is a walkthrough meant to be run whole, so nothing is withheld from diagnosis. There is no holdout, which means it cannot defend an acceptance check on a model edit without being re-split first. So a run has a score, a coverage gap, a construction error and an eval failure to tell apart.",
   "datasetVersion": 1,
   "targetModelPath": "storefront.malloy",
   "targetPackage": "storefront",
