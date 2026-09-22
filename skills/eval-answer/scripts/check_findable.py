@@ -355,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                          "both directions.")
     ap.add_argument("--out", default=None,
                     help="write the per-entity rows as JSON")
-    ap.add_argument("--index-wait", type=int, default=120,
+    ap.add_argument("--index-wait", type=int, default=300,
                     help="seconds to wait for the embedding index to be ready "
                          "before searching (needs --publisher). 0 to skip the "
                          "wait, which risks reading the lexical matcher as a "
