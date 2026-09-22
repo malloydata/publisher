@@ -17,7 +17,7 @@
 // A shared chart palette so every view in this model renders on-brand.
 ## theme.palette.series = ["#4f46e5", "#7c3aed", "#ec4899", "#10b981", "#f59e0b", "#06b6d4"]
 
-#(doc) People who have placed orders — one row per customer, keyed by `customer_id`
+#(doc) Everyone on the customer file — one row per customer, keyed by `customer_id`. Not all of them have ordered: 26 have no order line at all
 source: customers is duckdb.table('data/customers.parquet') extend {
   primary_key: customer_id
   #(doc) Distinct customers
