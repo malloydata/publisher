@@ -94,6 +94,28 @@ aggregate: avg_price is avg(price), statuses is count(status)
 
 Check the field's type in the `get_context` result before aggregating it. A name that reads numeric (`order_number`, `zip`, `account_id`) is very often typed string.
 
+## A Measure Is Already an Aggregate
+
+```malloy
+// WRONG: "Aggregate expression cannot be aggregate" - flight_count is a measure
+run: flights -> { aggregate: busiest is max(flight_count) }
+// RIGHT: aggregate per group, then take the max in a second stage
+run: flights -> { group_by: carrier, aggregate: n is flight_count } -> { aggregate: busiest is max(n) }
+```
+
+The message does not name the field. When it appears, look for a model measure you wrapped in another aggregate. If you only need the top row, skip the second stage: `order_by: n desc` with `limit: 1`.
+
+## Window Braces Bind to the Function
+
+```malloy
+// WRONG: "`partition_by` is not supported for this kind of expression"
+calculate: share is sum_cumulative(n) / region_total { partition_by: region, order_by: n desc }
+// RIGHT: the brace goes directly after the window function call
+calculate: share is sum_cumulative(n) { partition_by: region, order_by: n desc } / region_total
+```
+
+For a within-group share, compute the denominator in `aggregate:` (`region_total is all(count(), region)`). A window's `{ partition_by }` does not apply to `all()`.
+
 ## Dotted Paths Must Name a Declared Join
 
 ```malloy
@@ -156,36 +178,33 @@ where: is_us = true, party ? 'Democrat' | 'Republican'
 
 `and` works in some arrangements (when the alternation is the second operand) but produces a confusing `'logical operator' Can't use type string` compile error when the alternation comes first. The comma form is unambiguous in every position, so just use it.
 
-## Query Clauses Are Newline-Separated
-
-Do not use trailing commas between query clauses. Each clause goes on its own line.
+## Strings: Apostrophes and Concatenation
 
 ```malloy
-// WRONG: trailing comma before limit
-run: source -> { group_by: status, aggregate: n is count(), limit: 10 }
-// RIGHT: newline-separated
-run: source -> {
-  group_by: status
-  aggregate: n is count()
-  limit: 10
-}
+// WRONG: "no viable alternative at input 's'" - the apostrophe ends the literal
+where: name = 'Mac's Diner'
+// RIGHT
+where: name = "Mac's Diner"
+
+// WRONG: "unexpected '+'" / "no viable alternative at input '||'"
+group_by: route is origin ++ '-' ++ destination
+// RIGHT: there is no concatenation operator
+group_by: route is concat(origin, '-', destination)
 ```
 
-Clauses: `group_by:`, `aggregate:`, `nest:`, `order_by:`, `limit:`, `where:`, `having:`, `select:`, `calculate:`
+## A Semicolon Inside a Clause Ends It
 
-## Fields Within a Clause: Commas or Newlines, Never Semicolons
-
-Semicolons are not a separator anywhere in Malloy. Multiple fields under one `aggregate:` / `group_by:` are separated by commas (inline) or newlines (one per line); a `;` fails with `no viable alternative at input '<next-field>'` pointing at the field right after it.
+Between clauses a newline, comma or `;` all work. Within one clause, separate fields with commas or newlines: a `;` closes the clause, and the next field is orphaned.
 
 ```malloy
-// WRONG: semicolons between fields
+// WRONG: "no viable alternative at input 'charters'"
 run: schools -> { aggregate: total is count(); charters is count() { where: is_charter } }
-// RIGHT: commas inline...
+// RIGHT
 run: schools -> { aggregate: total is count(), charters is count() { where: is_charter } }
-// ...or newlines
-run: schools -> {
-  aggregate:
-    total is count()
-    charters is count() { where: is_charter }
-}
 ```
+
+The same message appears for an unnamed aggregate after the first: `aggregate: n, max(x)` fails at `max`. Name every entry.
+
+## Compiles, Then Refused by the Warehouse
+
+`Query execution failed: ...` means the Malloy compiled and the warehouse rejected the SQL, often over a type. The position it quotes is in the generated SQL, not in your query. BigQuery, for example, will not partition a window function on a FLOAT64 column. `partition_by:` takes only a field name, so cast in `group_by:` (`season_key is season::string`) and partition on `season_key`, or fix the type in the model.
