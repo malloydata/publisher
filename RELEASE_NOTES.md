@@ -153,7 +153,7 @@ a placeholder without going through the package loader. The refusal itself is un
 deliberately fail-closed: falling back to uncurated on a typo would expose sources the author
 curated away.
 
-## [Unreleased] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
+## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
 
 **Two annotations, one question each, and two different answers when they say no.**
 
