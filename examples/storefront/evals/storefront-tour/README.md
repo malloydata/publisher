@@ -22,6 +22,53 @@ Every golden is `verified`: derived once as SQL over the raw parquet, once as
 Malloy through the truth package, on axes that differ, and promoted only where
 the two agreed.
 
+## Some of these SHOULD fail
+
+A perfect score here would mean the set was not worth running. Three questions
+ask for business knowledge that `storefront.malloy` does not encode, and
+against the bundled model they are expected to come back wrong. That is the
+measurement, not a defect in the model and not a bug in the set.
+
+**Do not fix the model to make them pass.** The eval exists to show the gap
+between what the business means and what the model says. Closing it by hand
+deletes the finding and leaves a set that proves nothing. If you want the gap
+closed, close it through `skill:eval-improve` behind an acceptance check, and
+expect these cases to flip — that flip is the evidence the edit worked.
+
+| Question | The business means | The model offers | Why it cannot get there |
+|---|---|---|---|
+| What were our summer sales in 2025? | 25 May – 15 Sep, the sales calendar: **$267,423** | a date column and a revenue measure | no field, given, filter or doc expresses a season, so an agent reads "summer" as June–August and lands 25% low |
+| How many customers do we have? | people the company has **delivered** to: **943** | `customer_count`, which returns 974 through `order_items` and 1,000 on the customers source | nothing expresses delivery. 966 and 960 are the other near misses |
+| What were net sales in 2025, excluding cancelled and returned items? | **$834,216** | `total_sales`, which carries no status filter and returns gross | reachable, because `status` is a dimension — this one tests whether the agent builds the filter rather than trusting the named measure |
+
+The conventions themselves are written down in
+[`as-received/questions.md`](as-received/questions.md), as part of the material
+the questions arrived with. They are deliberately nowhere in the model.
+
+### One wrong doc, left wrong on purpose
+
+`storefront.malloy` documents its `customers` source as "People who have placed
+orders". That is false for 26 of the 1,000 rows, which have no order line at
+all. It stays as it is: a model that misdescribes its own table is exactly the
+condition the customer question is measuring, and correcting the sentence here
+would hide it. A run should surface it; `skill:eval-improve` is where it gets
+fixed, if you decide to fix it.
+
+### Two warnings that are expected
+
+Every run reports both, and neither is a defect:
+
+- `verify_goldens.py` warns that `signup_date` and `retail_price` "appear
+  nowhere in the served model". They are columns the sources expose implicitly
+  from the parquet, invisible to a grep of the `.malloy`.
+- `check_coverage.py` marks `signup-cohort-2025` and `avg-discount` as not
+  answerable, for the same reason — it judges from the model text. Both cases
+  pass. This drags reported coverage down by two and is a limitation of the
+  coverage check, not of the model.
+
+Do not declare those fields to silence either warning: the cases pass, and
+declaring a field to quiet a checker changes the thing being measured.
+
 ## Run it
 
 From a clone, with Node 20+ and Bun. Four terminals' worth of setup, then one
