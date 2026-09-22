@@ -59,6 +59,7 @@ sys.path.insert(0, str(HERE))
 
 from json_scan import json_objects  # noqa: E402
 from verify_goldens import model_text as local_model_text  # noqa: E402
+from check_findable import compiled_entities  # noqa: E402
 
 # The `claude -p` invocation lives once, in the harness, rather than being
 # rewritten here. It costs this script a reach into a sibling skill, which the
@@ -148,6 +149,30 @@ def rest_model_text(base: str, environment: str, package: str,
     return "\n\n".join(out)
 
 
+def compiled_surface(base: str, environment: str, package: str) -> str:
+    """The fields the COMPILED model exposes, which the source text does not name.
+
+    A Malloy source picks up every column of its table without declaring one of
+    them, so `products.retail_price` and `customers.signup_date` appear nowhere
+    in the `.malloy` and are fully queryable. A judge shown only source text
+    reads those as absent and returns COVERAGE on a question the model answers
+    -- measured, two of this skill's three false gaps on one set.
+
+    Empty string when the compiled model cannot be read, which is honest: the
+    prompt then says the list is unavailable rather than implying the text is
+    the whole surface.
+    """
+    declared = compiled_entities(base, environment, package)
+    if not declared:
+        return ""
+    lines = []
+    for src in sorted(declared):
+        fields = sorted(f for f in declared[src] if not f.startswith("source:"))
+        if fields:
+            lines.append(f"{src}: " + ", ".join(fields))
+    return "\n".join(lines)
+
+
 # --- the judgement -----------------------------------------------------------
 
 PROMPT = """You are measuring whether a semantic model can EXPRESS an answer to
@@ -157,7 +182,27 @@ there are no rows here and no way to run anything. Judge the model text only.
 THE MODEL (every source, dimension, measure and doc comment it defines):
 {model}
 
+FIELDS THE COMPILED MODEL EXPOSES: {surface}
+
+A Malloy source exposes every column of its table whether or not the text
+declares it, so this list is the authority on what EXISTS and the text above is
+the authority on what is DOCUMENTED. A field here but not in the text is real
+and queryable -- it is undocumented, not absent, and undocumented is not
+COVERAGE. When this list is unavailable, say so in your reasoning and do not
+treat the text as the whole surface.
+
 THE QUESTION: {question}
+
+WHAT THE BUSINESS MEANS BY IT: {conventions}
+
+These are the definitions the question is asked under, and they are not
+negotiable readings you may substitute a reasonable one for. If a convention
+here names a window, a basis or a filter that no entity in the model expresses,
+the model cannot answer this question however well its parts are documented --
+that is `CONVENTION` when the underlying data is present and `COVERAGE` when it
+is not. Judging against your own reading of an ambiguous word, when the
+business has already defined it, is how this check passes a question the model
+demonstrably cannot answer.
 
 CONCEPTS THE QUESTION NEEDS: {concepts}
 
@@ -329,7 +374,10 @@ def majority(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
                allowed: tuple[str, ...]) -> dict[str, Any]:
     concepts = case.get("requiresConcepts") or []
-    prompt = PROMPT.format(model=model, question=case.get("question", ""),
+    prompt = PROMPT.format(model=model,
+                           surface=getattr(a, "surface", "") or "(unavailable)",
+                           conventions=getattr(a, "conventions", "") or "(none stated)",
+                           question=case.get("question", ""),
                            concepts=", ".join(concepts) or "(none named)")
     if len(prompt) > MAX_PROMPT:
         # The way out depends on the mode. `--model-path` narrows a
@@ -668,6 +716,36 @@ def main(argv: list[str] | None = None) -> int:
                              f"{a.environment}/{a.package}")
     else:
         raise SystemExit("pass --model <path>, or --publisher with --package")
+
+    # The compiled surface names the columns a source exposes without declaring
+    # them. Only REST can supply it; a --model run reads text off disk and has
+    # no compiled model to ask, and the prompt is told so rather than being let
+    # to assume the text is everything.
+    a.surface = ""
+    if a.publisher and a.package:
+        try:
+            a.surface = compiled_surface(a.publisher, a.environment, a.package)
+        except (urllib.error.URLError, OSError, json.JSONDecodeError):
+            a.surface = ""
+    if not a.surface:
+        print("! no compiled field list (needs --publisher): a column a source "
+              "exposes implicitly will read as absent", file=sys.stderr)
+
+    # What the question's words MEAN, from the set. A convention the model does
+    # not encode is the thing this check exists to find, and a judge that does
+    # not know the business defines "summer" as a date window will substitute
+    # its own reading and pass the question.
+    a.conventions = ""
+    set_json = a.set_dir / "set.json"
+    if set_json.exists():
+        try:
+            conv = (json.loads(set_json.read_text()) or {}).get("conventions")
+        except (json.JSONDecodeError, OSError):
+            conv = None
+        if isinstance(conv, list):
+            a.conventions = "\n".join(f"- {c}" for c in conv if c)
+        elif isinstance(conv, str):
+            a.conventions = conv
 
     # What was measured, pinned by content. Coverage is sold as a per-version
     # trend, and a trend needs each point tied to the bytes behind it: a

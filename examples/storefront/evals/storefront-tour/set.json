@@ -1,6 +1,11 @@
 {
   "name": "storefront-tour",
   "description": "Twelve hand-authored natural-language questions over the bundled storefront package, written to vary grain, join depth, filter shape and answerability. Three ask for a business convention the model does not encode -- the company's summer window, net of cancellations and returns, and what counts as a customer -- one is deliberately open, and one has a silent wrong answer a careless grouping produces. Every case is `dev`: the set is a walkthrough meant to be run whole, so nothing is withheld from diagnosis. There is no holdout, so it cannot defend an acceptance check on a model edit without being re-split first.",
+  "conventions": [
+    "Summer is the company's sales season, 25 May to 15 September inclusive. It is set by the buying calendar, not by the weather or the calendar quarter, and it does not move.",
+    "Net of cancellations and returns means excluding order lines whose status is Cancelled or Returned. Gross includes them.",
+    "A customer is someone who has placed an order that was DELIVERED -- not merely someone on the customer file, and not someone whose only orders were cancelled or returned."
+  ],
   "datasetVersion": 1,
   "targetModelPath": "storefront.malloy",
   "targetPackage": "storefront",

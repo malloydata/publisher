@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import check_coverage as cc  # noqa: E402
@@ -213,7 +214,7 @@ class Prompt(unittest.TestCase):
     def test_it_takes_the_fields_judge_case_formats(self):
         import re
         self.assertEqual(set(re.findall(r"\{(\w+)\}", cc.PROMPT)),
-                         {"model", "question", "concepts"})
+                         {"model", "surface", "conventions", "question", "concepts"})
 
     def test_it_asks_for_the_enumeration_the_verdict_rests_on(self):
         self.assertIn("list every candidate in the model", cc.PROMPT.lower())
@@ -428,3 +429,45 @@ class ModelIdentity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompiledSurface(unittest.TestCase):
+    """The judge is shown the fields a source exposes without declaring them.
+
+    A Malloy source picks up every column of its table, so retail_price and
+    signup_date appear nowhere in the .malloy and are fully queryable. Shown
+    only source text, the judge called both absent and returned COVERAGE on two
+    questions the model answers correctly -- two of three false gaps on one
+    measured set.
+    """
+
+    def test_it_lists_fields_per_source(self):
+        with mock.patch.object(cc, "compiled_entities", return_value={
+                "products": {"source:products", "dimension:retail_price",
+                             "dimension:cost"},
+                "customers": {"source:customers", "dimension:signup_date"}}):
+            out = cc.compiled_surface("http://p", "env", "pkg")
+        self.assertIn("products: dimension:cost, dimension:retail_price", out)
+        self.assertIn("customers: dimension:signup_date", out)
+        # The source marker is not a field and would only add noise.
+        self.assertNotIn("source:products", out)
+
+    def test_an_unreadable_model_is_empty_not_a_guess(self):
+        with mock.patch.object(cc, "compiled_entities", return_value=None):
+            self.assertEqual(cc.compiled_surface("http://p", "env", "pkg"), "")
+
+
+class ConventionsInThePrompt(unittest.TestCase):
+    """The prompt states what the question's words mean to the business.
+
+    Without it the judge substitutes its own reading of an ambiguous word --
+    "customers" as anyone with an order line -- and passes a question the model
+    demonstrably cannot answer, which is the failure this check exists to find.
+    """
+
+    def test_the_prompt_tells_the_judge_not_to_substitute_its_own_reading(self):
+        self.assertIn("negotiable readings you may substitute", cc.PROMPT)
+        self.assertIn("CONVENTION", cc.PROMPT)
+
+    def test_the_prompt_says_undocumented_is_not_absent(self):
+        self.assertIn("undocumented, not absent", cc.PROMPT)
