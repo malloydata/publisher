@@ -25,17 +25,19 @@ The `malloy` index is the case that forces the distinction, and it follows the s
 
 ## Where these come from
 
-Most of these skills are **shared, open-source Malloy skills**, and **this repository is their source of truth.** The mechanism that carries them to `ms2data/agent-skills` is being settled in `ms2data/service#6177`; edit them here either way.
+Most of these skills are **shared, open-source Malloy skills**, and **this repository is their only copy.** Credible serves them from the published `@malloy-publisher/skills` package: its Code Assist API pins a version of that package and routes every `malloy-*` name to it. `ms2data/agent-skills` holds only Credible's own `credible-*` skills and the manifests that combine the two.
+
+So a change here reaches Credible in two steps: publish a new version of `@malloy-publisher/skills`, then bump `skills_version` in `ms2data/service`'s `infrastructure/malloy-versions.json`. **Do not open a mirror PR against `ms2data/agent-skills`.** Nothing reads a `malloy-*` skill from that repo, and its tests fail on one.
 
 Two rules make it work:
 
-- **`credible-*` skills never land here.** Anything named `credible-*` in the upstream repo is specific to Credible's hosted engine and is never copied into this open-source repo. The copy keys off the `credible-` prefix. If you ever see a `credible-*` file under this tree, it is a stray: it should be git-ignored, not committed (`git ls-files | grep credible-` must stay empty).
+- **`credible-*` skills never land here.** Anything named `credible-*` is specific to Credible's hosted engine and lives only in `ms2data/agent-skills`. If you ever see a `credible-*` file under this tree, it is a stray: it should be git-ignored, not committed (`git ls-files | grep credible-` must stay empty).
 - **Shared skills carry no answers specific to Credible's hosted engine.** They describe generic Malloy and the open-source Publisher only, with no hosted draft/publish flow, retrieval-engine annotations (`#(index)`/`#(agent-hidden)`), or hosted-engine tools like `execute_query_draft`. Open-source Publisher features (`publisher.json` `explores`/`queryableSources`, `export {}`) are fair game. The Publisher-only authoring tools `compile_model` / `reload_package` stay in the host/router skills, not the shared set (see the tool-names section below).
 
 ## Shared vs Publisher-specific
 
-- **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
-- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI) and `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
+- **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
+- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI) and `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
 
 ## Evaluation skills
 
@@ -43,39 +45,17 @@ Two rules make it work:
 of questions with goldens computed from raw tables, a blind answerer over the model, a judge, a
 diagnosis of each failure, and one smallest model edit gated by a re-run. `eval-import` comes
 before all of it: it turns a question list, in whatever shape it arrived, into a set, and decides
-what each arriving key is actually worth. They are shared skills
-(upstream: `ms2data/agent-skills`) and ship in the `eval` group. Their Python scripts import each
+what each arriving key is actually worth. They ship in the `eval` group. Their Python scripts import each
 other by path from `skills/eval-answer/scripts`, so they run in place from a checkout, not from the
 pack. `manifests/publisher-local.json`'s groups are what the loop installs for the
 agents it spawns: the blind answerer, the agent under measurement, loads `analysis`, and the
 improver loads `eval-improve` plus `modeling`. Neither loads the `eval` group, which is what keeps
 the judge's rubric and the acceptance check away from the agents they score. The engine-side evaluation of `get_context` itself (fixed-term replay,
 contract probes) is deliberately **not** here: it is Credible's question about its hosted engine and
-lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
+lives in Credible's own repo. `credibledata/malloy-samples#23` is a set anyone can run the
 loop on.
 
-The seven eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
-skill. The upstream copy has drifted before and it matters more here than elsewhere, because the
-scripts are the harness: a run made with a stale copy produces a ledger that reads as current and
-is not.
-
-**Record the commit you mirrored FROM, in the upstream PR and in upstream's README.** Without it
-nobody downstream can tell a deliberate pin from drift, and "identical to Publisher" ages into a
-false claim the day the next commit lands here. A sync that names its source SHA is checkable in one
-line; one that does not costs a reviewer a `diff -r` against a guess.
-
-Two files exist only upstream and are not part of the set: `eval-loop/scripts/run_all.py` (a
-sequencing orchestrator, which `skill:eval-loop` forbids) and `eval-answer/reference/judge.md` (now
-`skill:eval-judge`). Delete them when mirroring rather than copying them back.
-
-**`eval-answer/scripts/mcp_client.py` is the exception, and this file used to say to delete it.**
-It is not mirrored -- it does not exist here -- but it is imported by upstream's engine-side
-`eval-retrieval`, which ships to no customer and therefore has no copy here to keep it alive.
-Deleting it on a sync broke both of that skill's entry points outright
-(`ModuleNotFoundError: No module named 'mcp_client'`), which is the shape of mistake this list
-exists to prevent and caused instead. **Leave anything upstream-only alone unless you have checked
-that nothing upstream imports it**; "not part of the set" is a statement about what we own, not a
-licence to remove it.
+No Credible manifest lists the eval skills, so they are not mirrored anywhere.
 
 ## Tool names in shared skills
 
@@ -94,9 +74,9 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 
 ## Adding or updating a skill
 
-- **Edit a shared skill here.** This repo is the source of truth for them. The mechanism that carries them to Credible is being settled in `ms2data/service#6177`; **until it lands, mirror a shared-skill edit into `ms2data/agent-skills` by hand**, or the two copies drift.
+- **Edit a shared skill here, and only here.** Credible picks it up when it bumps its pin on `@malloy-publisher/skills` (see "Where these come from"). There is no copy in `ms2data/agent-skills` to update.
 - **Register it in [`manifests/publisher-local.json`](../manifests/publisher-local.json).** An unregistered skill ships through no channel, and `manifest.spec.ts` fails rather than letting that pass quietly.
-- **`malloy-dashboards` is not a shared skill.** `agent-skills` carries a file by the same name written for its own surfaces; the two describe the same feature and are not copies of each other. Do not copy it in either direction.
+- **`malloy-dashboards` is not a shared skill.** Credible's dashboard skill is `credible-dashboards` in `ms2data/agent-skills`, written for its own surfaces. The two describe the same feature and are not copies of each other.
 - **A `description` has two budgets, and `packages/skills/src/manifest.spec.ts` holds both.** Every shipped skill stays under 1024 characters, the frontmatter budget a host loader reads. The eight shared skills that a downstream plugin packages -- `malloy-analysis`, `malloy-analysis-pitfalls`, `malloy-charts`, `malloy-gotchas-queries`, `malloy-gotchas-rendering`, `malloy-patterns`, `malloy-phrase-detection`, `malloy-queries` -- stay under 200, because that build rewrites the `description:` line in place at 200 and appends an ellipsis. It does that silently, so a description written past 200 loses its tail on the surface where a description matters most: `malloy-analysis` shipped for several releases with its own trigger clause cut off. Lead with the trigger condition and the budget is rarely tight.
 - **Any edit under `skills/` means regenerating the MCP bundle** (`cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills`) and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree. The bundle is committed indented so that two PRs touching different skills merge cleanly; if you do hit a conflict in it, resolve it by regenerating from the merged `skills/` tree, never by editing the JSON by hand.
 - A new skill directory needs a `.claude/skills/<name>` symlink (`ln -s ../../skills/<name> .claude/skills/<name>`) so Claude Code discovers it.
