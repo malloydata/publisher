@@ -102,7 +102,8 @@ class Config:
             return None
         return BUILTIN.get((section, key))
 
-    def need(self, value: Any, section: str, key: str, flag: str) -> Any:
+    def need(self, value: Any, section: str, key: str,
+             flag: str | None = None) -> Any:
         """`value` if given, else the config's, else an error that says what to set."""
         if value is not None:
             return value
@@ -113,7 +114,7 @@ class Config:
         raise ConfigError(
             f"No {what} {key.replace('_', ' ')} for set '{self.set_name}'. "
             f"Fix: add `{key} = \"<value>\"` under [{section}] in "
-            f"{self.file_hint}, or pass {flag}.")
+            f"{self.file_hint}" + (f", or pass {flag}." if flag else "."))
 
     # Derived values. A URL is derived from its port unless the file names one,
     # so a port is written once and every script that needs it agrees.

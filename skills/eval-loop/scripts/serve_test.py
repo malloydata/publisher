@@ -221,5 +221,71 @@ class ServerCmd(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--mcp_port") + 1], "4102")
 
 
+def a_set(toml: str, truth_package: bool = True) -> pathlib.Path:
+    d = pathlib.Path(tempfile.mkdtemp(prefix="serve-set-"))
+    (d / "set.json").write_text(json.dumps({"name": "s", "truthPackage": "s-truth"}))
+    (d / "eval.toml").write_text(toml)
+    (d / "pkg").mkdir()
+    if truth_package:
+        (d / "truth-package").mkdir()
+    return d
+
+
+TOML = """
+[model]
+environment = "examples"
+package = "storefront"
+repo = "pkg"
+port = 4000
+mcp_port = 4040
+[truth]
+port = 4881
+mcp_port = 4882
+"""
+
+
+class Roles(unittest.TestCase):
+    def test_the_model_role_serves_the_model_package(self):
+        d = a_set(TOML)
+        got = serve.role_config(serve.config.load(d), "model")
+        self.assertEqual(got, {"frozenConfig": False, "environments": [
+            {"name": "examples", "connections": [], "packages": [
+                {"name": "storefront", "location": str((d / "pkg").resolve())}]}]})
+
+    def test_the_truth_role_serves_only_the_truth_package(self):
+        # This is the heredoc the tour README used to have people paste.
+        d = a_set(TOML)
+        got = serve.role_config(serve.config.load(d), "truth")
+        self.assertEqual(got, {"frozenConfig": False, "environments": [
+            {"name": "truth", "connections": [], "packages": [
+                {"name": "s-truth",
+                 "location": str((d / "truth-package").resolve())}]}]})
+
+    def test_a_role_on_the_other_roles_port_is_refused(self):
+        cfg = serve.config.load(a_set(TOML))
+        err = serve.port_clash(cfg, "truth", 4000, 4882)
+        self.assertIn("which the model server uses", err)
+        self.assertIsNone(serve.port_clash(cfg, "truth", 4881, 4882))
+
+    def test_a_changed_config_forces_init(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        self.assertFalse(serve.write_config(root, {"a": 1}))   # first write
+        self.assertFalse(serve.write_config(root, {"a": 1}))   # unchanged
+        self.assertTrue(serve.write_config(root, {"a": 2}))
+        (root / serve.DB_NAME).write_text("")
+        seed, why = serve.init_decision(root, reinit=False, config_changed=True)
+        self.assertTrue(seed)
+        self.assertIn("publisher.config.json changed", why)
+
+    def test_a_relative_publisher_dir_is_resolved_before_use(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        with mock.patch.object(serve, "alive", return_value=False):
+            with self.assertRaises(SystemExit) as e:
+                serve.main(["--server-root", str(root),
+                            "--publisher-dir", "no/such/server"])
+        self.assertIn(str(pathlib.Path("no/such/server").resolve()),
+                      str(e.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

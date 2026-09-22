@@ -8,6 +8,18 @@
 
   python3 serve.py --stop --server-root <scratch>/evalroot
 
+  python3 serve.py --role model|truth --set <set-dir> [--reinit] [--stop]
+
+WITH --role
+
+The set's eval.toml (skills/eval-answer/scripts/config.py) supplies the ports,
+the server root (under the set's workdir) and this clone's packages/server.
+The script writes the server's publisher.config.json itself: for `model`, the
+[model] environment serving the package at [model] repo; for `truth`, the
+[truth] environment serving set.json's truthPackage from truth-package/. It
+refuses a role whose ports collide with the other role's, because the truth
+server exists so the answerer cannot reach it.
+
 WHY THIS EXISTS
 
 The doctrine has always said "serve the model persistently, not `&` from a
@@ -68,6 +80,10 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                       / "eval-answer" / "scripts"))
+import config  # noqa: E402
+
 
 def alive(port: int) -> bool:
     try:
@@ -103,9 +119,16 @@ def alive(port: int) -> bool:
 DB_NAME = "publisher.db"
 
 
-def init_decision(root: pathlib.Path, reinit: bool) -> tuple[bool, str]:
+def init_decision(root: pathlib.Path, reinit: bool,
+                  config_changed: bool = False) -> tuple[bool, str]:
     """Whether to pass `--init`, and the line that says why."""
     db = root / DB_NAME
+    if config_changed and db.exists():
+        # The server reads publisher.config.json only under --init, so a
+        # config this script just rewrote would otherwise be ignored.
+        return True, ("publisher.config.json changed: re-reading it with "
+                      "--init; the semantic index re-embeds on the first "
+                      "get_context")
     if reinit and db.exists():
         return True, (f"--reinit: dropping {DB_NAME} and re-reading "
                       f"publisher.config.json; the semantic index re-embeds "
@@ -228,14 +251,67 @@ def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
     return [*cmd, "--init"] if seed else cmd
 
 
-def main() -> int:
+def role_config(cfg: config.Config, role: str) -> dict:
+    """The publisher.config.json a role's server serves: one environment, one package."""
+    if role == "model":
+        env = cfg.need(None, "model", "environment")
+        name = cfg.need(None, "model", "package")
+        location = cfg.need(None, "model", "repo")
+    else:
+        env = cfg.get("truth", "environment")
+        name = cfg.set_meta.get("truthPackage")
+        if not name:
+            raise SystemExit(f"{cfg.set_dir / 'set.json'} names no truthPackage, "
+                             f"so there is nothing to serve as truth. "
+                             f"init_truth_package.py scaffolds one.")
+        location = cfg.truth_package_dir()
+        if not location.is_dir():
+            raise SystemExit(f"no truth package at {location}. Fix: set "
+                             f"[truth] package_dir in {cfg.file_hint}")
+    return {"frozenConfig": False, "environments": [
+        {"name": env, "connections": [],
+         "packages": [{"name": name, "location": str(location)}]}]}
+
+
+def port_clash(cfg: config.Config, role: str, port: int, mcp_port: int) -> str | None:
+    """Why this role may not bind these ports, or None."""
+    other = "truth" if role == "model" else "model"
+    theirs = {cfg.get(other, "port"), cfg.get(other, "mcp_port")} - {None}
+    if theirs & {port, mcp_port}:
+        return (f"--role {role} would bind {port}/{mcp_port}, which the {other} "
+                f"server uses. The truth server must be a separate server the "
+                f"answerer cannot reach. Fix: give [model] and [truth] "
+                f"different ports in {cfg.file_hint}")
+    return None
+
+
+def write_config(root: pathlib.Path, wanted: dict) -> bool:
+    """Write publisher.config.json; True when it differs from what was there."""
+    path = root / "publisher.config.json"
+    try:
+        before = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        before = None
+    path.write_text(json.dumps(wanted, indent=2) + "\n")
+    return before is not None and before != wanted
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--server-root", required=True, type=pathlib.Path)
+    ap.add_argument("--role", choices=("model", "truth"),
+                    help="serve this role for --set, configured from its eval.toml")
+    ap.add_argument("--set", dest="set_dir", type=pathlib.Path,
+                    help="the eval set (with --role)")
+    ap.add_argument("--server-root", type=pathlib.Path,
+                    help="required without --role")
     ap.add_argument("--publisher-dir", type=pathlib.Path,
-                    help="Publisher's packages/server directory (holds dist/server.mjs)")
-    ap.add_argument("--port", type=int, default=4811)
-    ap.add_argument("--mcp-port", type=int, default=4040)
+                    help="Publisher's packages/server directory (holds "
+                         "dist/server.mjs). With --role, defaults to this clone's")
+    ap.add_argument("--port", type=int, default=None, help="default 4811, or "
+                    "the role's port in eval.toml")
+    ap.add_argument("--mcp-port", type=int, default=None, help="default 4040, or "
+                    "the role's mcp_port in eval.toml")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
     ap.add_argument("--reinit", action="store_true",
@@ -254,7 +330,24 @@ def main() -> int:
     ap.add_argument("--package", help="package to warm (--warm-retrieval)")
     ap.add_argument("--stop", action="store_true",
                     help="stop the server recorded in <server-root>/publisher.pid")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
+
+    cfg = None
+    if a.role:
+        if not a.set_dir:
+            ap.error("--role needs --set")
+        cfg = config.load(a.set_dir)
+        a.server_root = a.server_root or cfg.server_root(a.role)
+        a.publisher_dir = a.publisher_dir or cfg.publisher_dir()
+        a.port = a.port or cfg.get(a.role, "port")
+        a.mcp_port = a.mcp_port or cfg.get(a.role, "mcp_port")
+        if a.role == "model" and a.warm_retrieval:
+            a.environment = a.environment or cfg.get("model", "environment")
+            a.package = a.package or cfg.get("model", "package")
+    elif not a.server_root:
+        ap.error("--server-root is required without --role")
+    a.port = a.port or 4811
+    a.mcp_port = a.mcp_port or 4040
 
     root = a.server_root.resolve()
     pidfile = root / "publisher.pid"
@@ -275,7 +368,12 @@ def main() -> int:
     if a.warm_retrieval and not (a.environment and a.package):
         raise SystemExit("--warm-retrieval needs --environment and --package")
     if not a.publisher_dir:
-        raise SystemExit("--publisher-dir is required to start")
+        raise SystemExit("--publisher-dir is required to start. Build Publisher "
+                         "in this clone (bun run build), or set [paths] "
+                         "publisher_dir in the set's eval.toml")
+    # Resolved: it is also the child's cwd, so a relative path would be read
+    # twice over, once from here and once from inside itself.
+    a.publisher_dir = a.publisher_dir.resolve()
     server = a.publisher_dir / "dist" / "server.mjs"
     if not server.exists():
         raise SystemExit(f"{server} not found; build Publisher first")
@@ -283,13 +381,20 @@ def main() -> int:
         raise SystemExit(f"something already answers on port {a.port}; use another "
                          f"port or --stop the recorded server first")
 
+    if cfg is not None:
+        clash = port_clash(cfg, a.role, a.port, a.mcp_port)
+        if clash:
+            raise SystemExit(clash)
+
     root.mkdir(parents=True, exist_ok=True)
+    changed = (write_config(root, role_config(cfg, a.role))
+               if cfg is not None else False)
     env = {**os.environ, "SERVER_ROOT": str(root)}
     if a.allow_proxy:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
     if a.trace_retrieval:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
-    seed, why = init_decision(root, a.reinit)
+    seed, why = init_decision(root, a.reinit, changed)
     print(why)
     cmd = server_cmd(server, root, a.port, a.mcp_port, seed)
     log = (root / "publisher.log").open("a")
