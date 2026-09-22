@@ -150,6 +150,12 @@ the package answering differently than its author expects:
   key is the one path that curates on the strength of a file, so it reports what it withholds and
   how to opt out (`"explores": []`). A package whose `index.malloy` is its only model hides nothing
   and says nothing.
+- **The surface disappeared.** A reload that leaves a package with no surface where it had one --
+  a deleted or renamed `index.malloy` -- warns once, naming what was published and how to restore
+  it. Without it the change is invisible: an uncurated package looks exactly like one that was
+  never curated. An explicit `"explores": []` is not this case; the author asked for it and gets
+  the opt-out message instead.
+
 - **A malformed `explores`** is not a warning at all: it fails the package load, like an invalid
   `scope`. Ignoring it would resolve to no surface and publish every source the key was meant to
   withhold, and keeping the entries that parse would serve a surface the author did not write.

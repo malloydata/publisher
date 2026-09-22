@@ -353,6 +353,38 @@ export class Package {
     * index.malloy at all. It must never gate behavior: the surface behaves
     * identically whichever source produced it.
     */
+   /**
+    * Set by {@link Environment} on the reload where this package's surface
+    * disappeared. See {@link setSurfaceWidenedWarning}.
+    */
+   private surfaceWidenedWarning: string | undefined;
+
+   /**
+    * Report that this package was curated a moment ago and is not any more.
+    *
+    * Losing a surface is the one curation change nothing else reports. Every
+    * other transition leaves something behind to look at: a surface that
+    * APPEARS warns at load, a malformed `explores` refuses the load, a broken
+    * surface file fails the reload and is reported stale. But deleting or
+    * renaming `index.malloy` simply resolves to no surface, which is an
+    * ordinary uncurated package, and an uncurated package has nothing to say
+    * about itself. The sources that file was withholding are listed and
+    * queryable again from that moment, and the author who deleted a file they
+    * thought was theirs to delete is told nothing.
+    *
+    * Only the Environment can see it, because it needs the surface from BEFORE
+    * the reload and a Package only knows its own. It is a transition, so it is
+    * said once, on the reload that caused it, which is when it is actionable;
+    * a later reload of an already-uncurated package has nothing to report.
+    *
+    * This is curation, not access control -- nothing gated by `#(authorize)`
+    * becomes reachable, and hiding was never denying. What widens is what is
+    * listed and what answers by name.
+    */
+   public setSurfaceWidenedWarning(message: string): void {
+      this.surfaceWidenedWarning = message;
+   }
+
    private surfaceIsIndexModel(): boolean {
       const explores = this.packageMetadata.explores;
       return (
@@ -1139,6 +1171,12 @@ export class Package {
          // above, and more urgently: the 404s it causes name models that are
          // not themselves broken, so nothing else points at the cause.
          ...this.brokenSurfaceWarnings(),
+         // The surface this package had before the last reload is gone. Rides
+         // the API because it is the only record: an uncurated package looks
+         // exactly like one that was never curated.
+         ...(this.surfaceWidenedWarning !== undefined
+            ? [{ message: this.surfaceWidenedWarning }]
+            : []),
          // A within-package persist-target collision spans two or more sources, so
          // there is no single subject field; the message names them. Surfaced here
          // (alongside the load-path log) so an operator can see it on the status

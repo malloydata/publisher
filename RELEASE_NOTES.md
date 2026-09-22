@@ -124,6 +124,17 @@ can meet by surprise; every other curation path already reported itself. A packa
 `index.malloy` is its only model withholds nothing and stays quiet, and notebooks do not count as
 something withheld, because they are always listed and never subject to the boundary.
 
+**A package says so when its published surface disappears.** Deleting or renaming a root
+`index.malloy` resolves to no surface, which is an ordinary uncurated package, so the sources it was
+withholding are listed and queryable by name again and nothing else reports it. Every other curation
+change already left something to look at: a surface that appears warns at load, a malformed
+`explores` refuses the load, a broken surface file fails the reload and is reported stale. The
+reload that drops a surface now carries a warning naming what was published, what that means, and
+how to restore it or keep the package open deliberately (`"explores": []`). Said once, on the reload
+that caused it, because it reports a change rather than a state. This is curation, not access
+control: what widens is what is listed and what answers by name, and a source gated by
+`#(authorize)` stays gated.
+
 **A malformed `explores` fails the package load.** `"explores": "orders.malloy"` (the
 missing-brackets typo) or an array with a non-string element is refused, with a message naming the
 value and the fix, and the package is not served. It is not ignored: ignoring it resolves to no
