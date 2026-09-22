@@ -486,7 +486,7 @@ The `storage=` tier applies the same rule, and only that rule — see the storag
 
 ---
 
-## [Unreleased] — an incremental refresh can no longer write another caller's rows
+## [0.5.1] — an incremental refresh can no longer write another caller's rows
 
 **This fixes a bug that is reachable today**, on a colocated `#@ persist`. If a source is scoped by a given and also declares `merge_key=`, its incremental refresh could match rows belonging to other callers — and update them.
 
@@ -504,7 +504,7 @@ Scoping is all-or-nothing. A term that names no column of the source — one rea
 
 ---
 
-## [Unreleased] — a tenant-scoped source can be materialized into a storage destination
+## [0.5.1] — a tenant-scoped source can be materialized into a storage destination
 
 A source scoped to the caller — `where: org_id = $ORG_ID` — was refused for `storage=` outright, because any given reference was a refusal. That took the tier away from every multi-tenant model, which is most of the models worth materializing. Such a source now builds **once**, holding every tenant's rows, and is served per caller.
 
