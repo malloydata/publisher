@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — per-user visibility through a materialized grant table
+## [Unreleased] — per-user visibility through a materialized grant table, and a public wrapper served from its fact
 
 **A storage-materialized source may join a grant table that is itself scoped by givens.** The
 visibility idiom — an org-scoped source joining an org-and-user-scoped grant table, with a dimension
@@ -46,6 +46,12 @@ the grant table rebuilds — see [materialization](docs/materialization.md#per-u
 The same rule lets a plain extension of a materialized source (`source: v is opps extend { join_one: …;
 where: g.user_id = $USER_ID }`) be served from its parent's table, which previously required
 `#@ -persist` and so served live.
+
+**A public wrapper over a materialized private fact is served from the fact's table.** A source whose
+query reads a persisted source (`orders is _orders_fact -> { select: * }`) has no binding of its own,
+so on a storage destination it was an undefined name on the serve shape and every query naming it
+served live. The wrapper is now carried onto the shape verbatim when everything it reads is on the
+shape; one that reaches a warehouse table or an unmaterialized source still serves live.
 
 **New plan field:** `PersistSourcePlan.joinedTerms` names each caller-scoped join, the joined source,
 and the terms its binding re-applies. A consumer with a strict client of the build plan must add it.

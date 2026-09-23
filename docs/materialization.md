@@ -53,6 +53,23 @@ source: summary_fresh is order_summary extend {
 
 Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
 
+### A query over a persisted source
+
+A source whose query reads a persisted source — the private-fact / public-wrapper idiom — is not a build target of its own, but it reads the stored table too:
+
+```malloy
+#@ persist name="orders_fact" storage=lake
+source: _orders_fact is raw_orders -> { select: * } extend {
+  where: org_id = $ORG_ID
+}
+
+// Served from orders_fact's table, with the fact's where: applied per caller.
+source: orders is _orders_fact -> { select: * }
+source: totals is _orders_fact -> { group_by: org_id; aggregate: n is count() }
+```
+
+On a storage destination the wrapper is carried onto the serve shape verbatim, over the rebound fact, when everything it reads is itself on the shape. A wrapper whose query or joins reach a source that is not materialized there — a warehouse table, or a persisted source whose table is stale past its window — is served live instead.
+
 ### `#(access_filter)`-gated sources and materialization
 
 A source protected by a `#(access_filter)` gate — its own, or one carried from a joined or derived
