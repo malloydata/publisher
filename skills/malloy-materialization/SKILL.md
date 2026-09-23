@@ -100,12 +100,13 @@ A gated source **can** be persisted, but only on one tier and only in one shape,
 careful about is not refused by anything - you have to decide it.
 
 - **`storage=` and `#@ preaggregate` always refuse a gated source**, naming it. The build skips a refused
-  source and builds the rest of the package, recording the refusal on the run (`manifest.refused`); the run
-  fails with a 422 only when every source it targeted was refused, or when `sourceNames` named this one. (`#@ persist storage=<name>` is the tier that materializes into a separate registered storage
-  destination and serves from there, rather than building in the source's own connection; `#@ preaggregate`
-  stores a rollup Publisher derives from a measure you annotated with a grain, rather than a source you
-  wrote.) A rollup also groups *across* the gated column, so it could not be row-filtered afterwards even
-  in principle.
+  source, records it on the run (`metadata.refusedSources`), and builds the rest of the package. A run fails
+  on a refusal only when every authored source it targeted was refused, or when `sourceNames` named this one;
+  a refused rollup never fails it. (`#@ persist storage=<name>` is the tier that materializes into a separate
+  registered storage destination and serves from there, rather than building in the source's own connection;
+  `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated with a grain, rather than a
+  source you wrote.) A rollup also groups *across* the gated column, so it could not be row-filtered afterwards
+  even in principle.
 - **A colocated `#@ persist` (no `storage=`) is admitted** when the gate is provably the entry point's
   **own row filter**. It is refused when the gate is reached only through a join, inherited from a base
   the compiler cannot attribute cleanly, or does not classify as a row filter at all. The gate is found

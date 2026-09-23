@@ -1080,7 +1080,7 @@ export class MaterializationService {
          const {
             entries,
             failures,
-            refused: buildRefused,
+            sourcesRefused: instructedRefused,
          } = await this.executeInstructedBuild(
             compiled,
             environment,
@@ -1111,6 +1111,7 @@ export class MaterializationService {
                },
             },
             incremental,
+            Object.values(derivedRefused),
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
@@ -1118,10 +1119,14 @@ export class MaterializationService {
             failures,
             carried,
          );
-         const refused = { ...derivedRefused, ...buildRefused };
-         const sourcesRefused = Object.keys(refused).length;
+         // What auto-run skipped rides the run's free-form metadata, not the
+         // manifest: a refused source binds no table, and the manifest is what a
+         // strict-schema caller parses. An orchestrated refusal is in `failures`
+         // instead, where that caller already looks.
+         const sourcesRefused =
+            Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
-         await this.commitManifest(id, entries, failures, refused, {
+         await this.commitManifest(id, entries, failures, {
             forceRefresh: opts.forceRefresh,
             sourceNames: opts.sourceNames ?? null,
             mode,
@@ -1129,6 +1134,9 @@ export class MaterializationService {
             sourcesBuilt,
             sourcesReused,
             ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
+            ...(Object.keys(derivedRefused).length > 0
+               ? { refusedSources: derivedRefused }
+               : {}),
             durationMs,
          });
 
@@ -1139,18 +1147,23 @@ export class MaterializationService {
             await this.autoLoadManifest(environment, packageName, entries);
          }
 
-         recordSourcesOutcome("built", sourcesBuilt);
-         recordSourcesOutcome("reused", sourcesReused);
-         if (sourcesFailed > 0) {
-            recordSourcesOutcome("failed", sourcesFailed);
-         }
-         recordSourcesOutcome("refused", sourcesRefused);
-         // A run that lost or refused sources is a partial success, not a
-         // success: the manifest it committed is missing tables a consumer
-         // expected, and a refused source serves live until its model changes.
-         const partial = sourcesFailed > 0 || sourcesRefused > 0;
+         recordSourcesOutcome("built", sourcesBuilt, mode);
+         recordSourcesOutcome("reused", sourcesReused, mode);
+         // An instructed refusal is in `failures` but metered once, as refused.
+         recordSourcesOutcome(
+            "failed",
+            sourcesFailed - instructedRefused,
+            mode,
+         );
+         recordSourcesOutcome("refused", sourcesRefused, mode);
+         // A run that lost sources is a partial success, not a success: the
+         // manifest it committed is missing tables a consumer expected. A
+         // refusal auto-run skipped is not a loss: it is a property of the
+         // model, reported by the build plan before any run, and would make
+         // every run of that package partial until the model changed.
+         const partial = sourcesFailed > 0;
          this.recordRun(mode, partial ? "partial" : "success", startedAt);
-         logger[partial ? "warn" : "info"](
+         logger[partial || sourcesRefused > 0 ? "warn" : "info"](
             sourcesFailed > 0
                ? "Materialization build complete with failed sources"
                : sourcesRefused > 0
@@ -1191,7 +1204,8 @@ export class MaterializationService {
     *
     * A source the eligibility gate refuses is returned in `refused` rather than
     * instructed. It throws instead when `sourceNames` targets it, or when every
-    * source the run targets was refused, so nothing is left to build or reuse.
+    * authored source the run targets was refused, so nothing is left to build or
+    * reuse. A refused rollup never causes the throw.
     */
    private deriveSelfInstructions(
       compiled: CompiledBuildPlan,
@@ -1292,7 +1306,10 @@ export class MaterializationService {
                           : "colocated",
                      compiled.sourceModelPaths?.[persistSource.sourceID],
                   );
-                  refusals.push(err);
+                  // A rollup is recorded but never makes the run fail: it asked
+                  // for nothing an author can see, so a package whose only
+                  // refused work is a rollup has nothing to answer for.
+                  if (!isRollup) refusals.push(err);
                   logger.warn(
                      "Skipping a persist source the eligibility gate refuses",
                      {
@@ -1891,10 +1908,18 @@ export class MaterializationService {
       // The run's incremental context, when any source declared incremental
       // refresh. Undefined leaves every source on the full-rebuild path.
       incremental?: IncrementalRunContext,
+      // Sources auto-run refused before instructing anything. Named only in the
+      // error of a run whose every instructed source failed, so that error
+      // accounts for every source the run did not build.
+      priorRefusals: RefusedSource[] = [],
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
-      refused: Record<string, RefusedSource>;
+      /**
+       * Instructed sources the eligibility gate refused. Each is also in
+       * `failures`; the count is kept apart so a refusal is metered as one.
+       */
+      sourcesRefused: number;
    }> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -1994,7 +2019,6 @@ export class MaterializationService {
       const retainedThisRun: ManifestEntry[] = [];
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
-      const refused: Record<string, RefusedSource> = {};
       const refusals: MaterializationEligibilityError[] = [];
       const builtSources: string[] = [];
       // What this run has already written, keyed by the physical table rather than
@@ -2140,13 +2164,15 @@ export class MaterializationService {
                }
                if (!instruction) continue;
 
-               // A refusal here SKIPS the source rather than failing the run,
-               // for the same reason auto-run does (deriveSelfInstructions): the
-               // run throws only when every instructed source was refused. A host
-               // that builds from the build plan never instructs a source the plan
-               // refused, so reaching the catch means the plan and this gate
-               // disagreed; the warning and the `refused` source count are how
-               // that shows up without costing the sources that were fine.
+               // A refusal here fails THIS source, not the run, for the same
+               // reason auto-run skips one (deriveSelfInstructions): the run
+               // throws only when every instructed source was refused. It is
+               // reported in `failures`, not skipped silently, because the caller
+               // asked for this table and an absent entry reads as "built". A
+               // host that builds from the build plan never instructs a source the
+               // plan refused, so reaching the catch means the plan and this gate
+               // disagreed; the warning and the orchestrated `refused` source
+               // count are how that shows up.
                try {
                   // Enforce the eligibility gate for any storage-targeted build,
                   // including orchestrated (host-supplied) instructions — the publisher
@@ -2189,28 +2215,44 @@ export class MaterializationService {
                } catch (err) {
                   if (!(err instanceof MaterializationEligibilityError))
                      throw err;
-                  if (!refused[persistSource.sourceID]) {
-                     refused[persistSource.sourceID] = refusalRecord(
-                        persistSource,
-                        err,
-                        compiled.preaggregatePlans?.[persistSource.sourceID]
-                           ? "preaggregate"
-                           : orchestratedInstruction?.destination &&
-                               getPersistStorageMode() !== "off"
-                             ? "storage"
-                             : "colocated",
-                        compiled.sourceModelPaths?.[persistSource.sourceID],
-                     );
+                  // Keyed by the address the caller dispatched: a refused source
+                  // may have no content address of its own (getSQL throws for a
+                  // given or a free parameter), and the instruction's is the one
+                  // the caller staked a claim for and resolves failures by.
+                  const failedKey =
+                     sourceEntityId ?? instruction.sourceEntityId;
+                  if (!failures[failedKey]) {
+                     const reason = errMessage(err);
                      refusals.push(err);
                      logger.warn(
-                        "Skipping an instructed source the eligibility gate refuses",
+                        "Instructed source refused by the eligibility gate",
                         {
                            packageName: owner?.packageName,
                            sourceName: persistSource.name,
                            physicalTableName: instruction.physicalTableName,
-                           reason: errMessage(err),
+                           reason,
                         },
                      );
+                     failures[failedKey] = {
+                        sourceEntityId: failedKey,
+                        sourceName: persistSource.name,
+                        materializedTableId: instruction.materializedTableId,
+                        physicalTableName: instruction.physicalTableName,
+                        reason,
+                        connectionName: persistSource.connectionName,
+                        ...(instruction.destination
+                           ? { storageDestinationName: instruction.destination }
+                           : {}),
+                     };
+                     // Mirrored into `entries` for the `ManifestEntry.error`
+                     // deprecation window, as the build-failure path below does.
+                     entries[failedKey] = {
+                        sourceEntityId: failedKey,
+                        sourceName: persistSource.name,
+                        physicalTableName: instruction.physicalTableName,
+                        materializedTableId: instruction.materializedTableId,
+                        error: reason,
+                     } as ManifestEntry;
                   }
                   continue;
                }
@@ -2516,9 +2558,8 @@ export class MaterializationService {
             throw new Error(
                [
                   ...failedReasons,
-                  ...Object.values(refused).map(
-                     (r) => `${r.name}: ${r.message}`,
-                  ),
+                  ...refusals.map((e) => e.message),
+                  ...priorRefusals.map((r) => r.message),
                ].join("; "),
             );
          }
@@ -2547,7 +2588,7 @@ export class MaterializationService {
          throw err;
       }
 
-      return { entries, failures, refused };
+      return { entries, failures, sourcesRefused: refusals.length };
    }
 
    /**
@@ -4010,7 +4051,6 @@ export class MaterializationService {
       id: string,
       entries: Record<string, ManifestEntry>,
       failures: Record<string, SourceFailure>,
-      refused: Record<string, RefusedSource>,
       metadata: Record<string, unknown>,
    ): Promise<void> {
       await this.transition(id, "MANIFEST_ROWS_READY");
@@ -4021,7 +4061,6 @@ export class MaterializationService {
          // that records no failures and one that records an empty set are the
          // same fact, and the absent key is the one every earlier manifest has.
          ...(Object.keys(failures).length > 0 ? { failures } : {}),
-         ...(Object.keys(refused).length > 0 ? { refused } : {}),
          strict: false,
       };
       await this.transition(id, "MANIFEST_FILE_READY", {

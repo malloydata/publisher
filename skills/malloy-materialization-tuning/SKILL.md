@@ -50,7 +50,7 @@ The history is where cost lives. Each run records its trigger, timing, and how m
   In the JSON, read:
   - `metadata.durationMs`: how long the build took.
   - `metadata.sourcesBuilt` vs `metadata.sourcesReused`: how much work each run actually did. A run that is nearly all _reused_ is cheap; one that is nearly all _built_ every time is where cost accumulates.
-  - `metadata.sourcesRefused` and `manifest.refused`: sources the eligibility gate skipped. Each one serves live on every query, so a refused source the user expected to be persisted is a finding in its own right; its entry's `message` says what to change.
+  - `metadata.sourcesRefused` and `metadata.refusedSources`: sources the eligibility gate skipped. Each one serves live on every query, so a refused source the user expected to be persisted is a finding in its own right; its entry's `message` says what to change.
   - `metadata.trigger`: `SCHEDULER` (a cron fired it) or `ON_DEMAND`.
   - `manifest.entries[*]`: the persisted sources: `sourceName`, `physicalTableName`, `realization`.
 

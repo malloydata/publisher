@@ -637,8 +637,10 @@ refuses them at build time rather than producing a subtly wrong table. The
 refusal is known when the model compiles, and the build plan reports it under
 `refusedSources`. A run **skips** a refused source and builds the rest of the
 package: the run completes (`MANIFEST_FILE_READY`), the refused source serves
-live, and the run records it in `manifest.refused` with the gate's message and
-counts it in `metadata.sourcesRefused`. One refused source never costs its
+live, and the run records it in `metadata.refusedSources` with the gate's
+message and counts it in `metadata.sourcesRefused`. (A build with caller-supplied
+`buildInstructions` reports an instructed refusal in the manifest's `failures`
+instead, since that caller asked for the table.) One refused source never costs its
 siblings their freshness.
 
 A run **fails** on a refusal in only two cases: every source it targeted was
@@ -672,7 +674,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
   -H 'content-type: application/json' -d '{"forceRefresh": true}' >/dev/null
 MZID=$(curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations | jq -r '.[0].id')
 curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/$MZID \
-  | jq '{status, built: .metadata.sourcesBuilt, refused: .metadata.sourcesRefused, reasons: [.manifest.refused[] | {name, reason, message}]}'
+  | jq '{status, built: .metadata.sourcesBuilt, refused: .metadata.sourcesRefused, reasons: [.metadata.refusedSources[] | {name, reason, message}]}'
 ```
 
 ```json

@@ -286,9 +286,9 @@ export type SourceFailure = components["schemas"]["SourceFailure"];
 
 /**
  * One persist source a run did not attempt because the eligibility gate refused
- * it. The same shape the build plan reports under `refusedSources`, keyed by
- * sourceID in `BuildManifest.refused` because a refused source may have no
- * content address to key it by.
+ * it. The same shape the build plan reports under `refusedSources`; auto-run
+ * records its refusals in the run's `metadata.refusedSources`, keyed by sourceID
+ * because a refused source may have no content address to key it by.
  */
 export type RefusedSource = components["schemas"]["RefusedSource"];
 

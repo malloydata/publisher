@@ -84,7 +84,7 @@ export interface MaterializationMetadata {
    /**
     * Persist sources the eligibility gate refused, so the run skipped them and
     * they serve live. Absent when the run refused nothing; the refused sources
-    * themselves are named in the manifest's `refused` map.
+    * themselves are named in `refusedSources`, beside this count.
     */
    sourcesRefused?: number;
 }
