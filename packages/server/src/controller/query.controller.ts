@@ -80,7 +80,10 @@ export class QueryController {
       const model = p.getModel(modelPath);
 
       if (!model) {
-         throw new ModelNotFoundError(`${modelPath} does not exist`);
+         // Worded exactly as the refusal for a model that exists but is off the
+         // package's surface (Model.assertQueryBoundaryEarly), so a 404 cannot
+         // be used to tell a hidden file from a missing one.
+         throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
       } else {
          const {
             result,

@@ -251,7 +251,7 @@ and is refused rather than ignored without it (`partition_without_storage`).
 Admitting a proven row-level gate applies unconditionally. The refusal it relaxes never fired at
 _load_: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
 package with a colocated `#@ persist` on a `#(access_filter)`-gated source already loads, appears in
-`plan.sources`, and serves live — what 422'd was its _materialization run_, not the package.
+`plan.sources`, and serves live — what was refused was its _materialization_, not the package.
 
 **So such packages already exist.** On upgrade, a run that used to fail succeeds when the gate proves
 row-level and attributed to the entry point, and the next auto-run or scheduled build materializes the
@@ -261,7 +261,8 @@ from a possibly-stale artifact afterwards, subject to the staleness below.
 The given refusal above runs the other way, and such packages may also already exist. On upgrade a
 colocated `#@ persist` whose persisted query references a given stops materializing: the package
 still loads and the source still serves — live, correctly, per caller — but its next materialization
-run 422s, and an artifact built before the upgrade is unbound on the next reload rather than served.
+run skips it and records the refusal, and an artifact built before the upgrade is unbound on the next
+reload rather than served.
 The remedy is to move the given out of the persisted query, which the refusal message names.
 
 What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the

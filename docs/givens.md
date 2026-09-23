@@ -161,7 +161,7 @@ elsewhere (`import { NAME } from "…"`).
 
 ### Introspection
 
-Givens declared on a model appear on `CompiledModel.givens` and on each `Source.givens` in the API response. For the bundled [`governed-analytics/orders.malloy`](../examples/governed-analytics/orders.malloy):
+Givens declared on a model appear on `CompiledModel.givens` and on each `Source.givens` in the API response. The bundled `governed-analytics` package publishes its surface through [`index.malloy`](../examples/governed-analytics/index.malloy), which imports `orders.malloy` and exports `sales`, so address the API at the surface file — `orders.malloy` is off it and answers 404. Givens declared in an imported file reach the surface unchanged:
 
 ```json
 {
@@ -226,7 +226,7 @@ The `execute_query` tool accepts a `givens` parameter on the same wire shape:
 {
   "environmentName": "examples",
   "packageName": "governed-analytics",
-  "modelPath": "orders.malloy",
+  "modelPath": "index.malloy",
   "query": "run: sales -> by_region",
   "givens": {
     "REGION": "us-east"

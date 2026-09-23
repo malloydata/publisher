@@ -72,7 +72,7 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 | 5. Build Base Sources | `skill:malloy-model` | Write fully documented base source files (one per table), check diagnostics. Read `skill:malloy-document` for doc standards. |
 | 6. Build Joined Sources | `skill:malloy-model` | Write fully documented joined source files, validate. Read `skill:malloy-document` for doc standards. |
 | 7. Review | (none) | Present the review checklist below; user confirms or corrects |
-| 8. Curate | `skill:malloy-model` | Propose access controls (`explores`, `queryableSources`, access modifiers); always propose, the user decides whether to apply |
+| 8. Curate | `skill:malloy-model` | Propose the published surface (an `index.malloy` with `export { ... }`) and access controls (access modifiers, gates); always propose, the user decides whether to apply |
 
 ### The pauses are the point
 

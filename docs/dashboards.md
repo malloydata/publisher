@@ -270,9 +270,12 @@ needs its own ordering or filtering. **The source or query has to resolve in the
 so import it there: a dashboard that surfaces a given whose suggest names something it cannot see
 is a package warning at load, not a surprise when someone opens the dropdown.
 
-In a package that [curates its surface](discovery-and-access.md) (`explores` plus
-`queryableSources: "declared"`), resolving is not enough: an option list is an ordinary query, so
-the source or query behind it must also be _queryable_ from the dashboard file, which under curation
+In a package that [curates its surface](discovery-and-access.md), resolving is not enough. A
+package curates when its `publisher.json` has an `explores` list, or when its root holds an
+`index.malloy` (every scaffolded package does). An `index.malloy` cannot export a dashboard file,
+so a package curated only by that file withholds every dashboard: declare an `explores` naming
+`index.malloy` and each dashboard file to serve them. Under curation an option list is an ordinary
+query, so the source or query behind it must also be _queryable_ from the dashboard file, which
 means exported from it. Re-export what the controls read, and note that an explicit `export { … }`
 replaces the default "everything top-level", so the dashboard's own query belongs on the list too:
 
@@ -281,8 +284,8 @@ export { governed_overview, region_suggest, status_suggest }
 ```
 
 Leave a suggest off and only that dropdown comes up empty; leave the dashboard's own query off and
-the grid stops loading. A package with no `explores` has curation off, so importing what the suggest
-names is enough for a `source=`.
+the grid stops loading. A package with no `explores` and no root `index.malloy` has curation off,
+so importing what the suggest names is enough for a `source=`.
 
 It is not enough for a `query=`. An import is not transitive, so a suggest query resolves by _name_
 while the source it reads does not: the file compiles, the package loads, the manifest lists the
@@ -556,7 +559,8 @@ that never appears, a click that goes nowhere. Broadly, they cover:
   Publisher does not read, `dashboard_columns=` included.
 - **Tags that did not parse**, on the dashboard or on a `given:` declaration, which otherwise lose
   their whole line in silence.
-- **Curation.** A dashboard whose entry file is not listed in `explores` under
+- **Curation.** A dashboard whose entry file is off the package's surface (not listed in
+  `explores`, or not the surface in a package curated by its root `index.malloy`) under
   `queryableSources: "declared"`, so its queries would be refused. It is not served.
 - **Renderer tags the validator rejects.**
 

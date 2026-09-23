@@ -197,6 +197,7 @@ describe("scaffold: default package", () => {
          "sales/publisher.json",
          "sales/malloy-config.json",
          "sales/sales.malloy",
+         "sales/index.malloy",
          "sales/data/sales.csv",
          "publisher.config.json",
          "package.json",
@@ -293,6 +294,56 @@ describe("scaffold: default package", () => {
       );
       expect(model).toContain("duckdb.table('data/sales.csv')");
       expect(model).toContain("source: sales is");
+   });
+});
+
+describe("scaffold: the published surface", () => {
+   test("writes an index.malloy that imports the model and exports its source", () => {
+      const result = run();
+      expect(result.indexFile).toBe("index.malloy");
+      const index = fs.readFileSync(
+         path.join(tmp, "sales/index.malloy"),
+         "utf8",
+      );
+      expect(index).toContain('import "sales.malloy"');
+      expect(index).toContain("export { sales }");
+   });
+
+   test("publisher.json still declares no explores -- the file is the surface", () => {
+      run();
+      expect(readJson("sales/publisher.json")).not.toHaveProperty("explores");
+      expect(readJson("sales/publisher.json")).not.toHaveProperty(
+         "queryableSources",
+      );
+   });
+
+   test("the briefing's curl targets the surface, not the model file", () => {
+      // The surface is the query boundary, so a model file off it answers 404.
+      // A briefing naming sales.malloy would hand every new user an example
+      // that fails on first run.
+      run();
+      const briefing = agentsFile();
+      expect(briefing).toContain("/models/index.malloy/query");
+      expect(briefing).not.toContain("/models/sales.malloy/query");
+   });
+
+   test("a package named 'index' gets one file, not two that collide", () => {
+      // On a case-insensitive filesystem "Index.malloy" and "index.malloy"
+      // are the same file, so writing both would destroy one of them.
+      const result = run({ name: "index" });
+      expect(result.modelFile).toBe("index.malloy");
+      expect(result.indexFile).toBe("index.malloy");
+      const model = fs.readFileSync(
+         path.join(tmp, "index/index.malloy"),
+         "utf8",
+      );
+      // The model file IS the surface. It declares no `export { ... }`, and a
+      // file with none exports every top-level source it declares, so the one
+      // source is published without a second file to write it down in.
+      expect(model).toContain("source: index is");
+      expect(model).not.toContain("export {");
+      // And the briefing still points somewhere real.
+      expect(agentsFile()).toContain("/models/index.malloy/query");
    });
 });
 

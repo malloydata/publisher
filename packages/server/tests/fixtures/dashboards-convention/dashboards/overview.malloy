@@ -1,0 +1,5 @@
+import "../orders.malloy"
+
+# dashboard
+# artifact name="overview" title="Overview"
+query: overview is orders -> by_status

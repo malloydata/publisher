@@ -1,6 +1,6 @@
 ---
 name: malloy-analysis
-description: The workflow for answering a data question over a Malloy semantic model - a metric, breakdown, trend or chart - from get_context discovery through execute_query to verified delivery.
+description: "Read before your first get_context call on any business or data question. The required workflow, not background: which source, which rows, how to verify. Skipping it causes confident wrong answers."
 ---
 
 <!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->

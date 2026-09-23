@@ -10,6 +10,20 @@ export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 
 /**
+ * Conventional name for the model file that declares a package's published
+ * surface. When a package root holds one and its publisher.json declares no
+ * `explores`, the discovery surface is defaulted to this file, so what it
+ * `export { ... }`s is what the package lists and what callers may query.
+ *
+ * A fixed name rather than a configurable one, matching Malloyyo, whose project
+ * entry point is the same hardcoded filename. The point of a convention is that
+ * a reader can predict a package's entry point without opening its manifest,
+ * which only holds if there is exactly one place to look. See
+ * {@link resolveExplores}.
+ */
+export const INDEX_MODEL_NAME = "index.malloy";
+
+/**
  * Normalize a package-relative model path so author-written `explores`
  * entries compare equal to the paths produced by `listPackageFiles`
  * (forward slashes, no leading "./"). Shared by every input channel — the

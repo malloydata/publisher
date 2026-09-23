@@ -80,6 +80,163 @@ does not parse on its own cannot be checked on its own.
 caller-chosen request field with no authorization difference between its values,
 so this keeps fragment authoring on the model's published surface rather than
 containing a caller who can simply ask for another scope.
+## [Unreleased] — a refused persist source is skipped, and no longer fails the whole run
+
+**Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
+
+**Now:** a run skips a refused source and builds everything else. The run completes (`MANIFEST_FILE_READY`) and serves the refused source live, as before. Auto-run records each refused source in `metadata.refusedSources`, keyed by sourceID in the same shape as the build plan's `refusedSources`, and counts it in `metadata.sourcesRefused`. A build with caller-supplied `buildInstructions` reports an instructed source the gate refuses in the manifest's existing `failures`, under the instruction's `sourceEntityId`, with the gate's message as its `reason` and the new `SourceFailure.refused: true`, since that caller asked for the table; its siblings still build. `refused` tells a caller that retries failures this one will not clear until the model changes. It is the only schema addition, and it is optional.
+
+A run still fails on a refusal when there is nothing else to build, because every source it targeted was refused, or when `sourceNames` names a refused source, because that caller asked for exactly the table that cannot be built. When several sources are refused, the error names all of them, not only the first in plan order. A refused `#@ preaggregate` rollup is recorded but never fails a run, as before.
+
+**What to check.** Anything that read a `FAILED` run as the signal that a package holds an ineligible source should read `metadata.refusedSources` instead; the build plan's `refusedSources` reports the same refusals before any run. An auto-run whose only shortfall is refusals is metered `success`, since a refusal is a property of the model rather than of the run. An orchestrated run with an instructed refusal is metered `partial`, because that refusal is one of its `failures`: the caller asked for the table and did not get it. `publisher_materialization_sources_total` gains `outcome="refused"` and a `mode` label (`auto` | `orchestrated`) on every outcome. With `mode="orchestrated"` the refused count should stay at zero: a caller that builds from the build plan never instructs a source the plan refused, so a nonzero count means the plan and the build disagreed about a source.
+
+## [Unreleased] — a package's `index.malloy` is its published surface
+
+Put an `index.malloy` at a package root, `import` your models, and `export { … }` the sources you
+publish. What it exports is what Publisher lists **and** what callers may query. `publisher.json`
+needs no key at all.
+
+```
+sales/
+  publisher.json     { "name": "sales" }
+  index.malloy       import "orders.malloy"
+                     export { orders }
+  orders.malloy      declares `orders` and `orders_staging`
+```
+
+`orders_staging` still compiles, and other models can import, join and extend it, but it is not
+listed and a direct query against it answers 404. `create-malloy-package` now scaffolds the file, so
+a new package is curated from its first boot, and `examples/governed-analytics` has been converted:
+it is the package that proved the convention can express a surface that used to need two manifest
+keys.
+
+**If you already have a package with a root `index.malloy` and no `explores`, this changes what it
+serves.** That file becomes the surface, so your other models drop out of listings, `export { … }`
+curation starts applying inside it, and **sources it does not export stop answering by name** — with
+a 404 that is deliberately indistinguishable from "does not exist", because a 403 would confirm a
+hidden name. Take an inventory before upgrading:
+
+```bash
+API=http://localhost:4000/api/v0
+for env in $(curl -s $API/environments | jq -r '.[].name'); do
+  for pkg in $(curl -s "$API/environments/$env/packages" | jq -r '.[].name'); do
+    curl -s "$API/environments/$env/packages/$pkg/models" \
+      | jq -e 'map(.path) | index("index.malloy")' >/dev/null \
+      && echo "$env/$pkg has a root index.malloy"
+  done
+done
+```
+
+**To keep a package exactly as it was, add `"explores": []` to its own `publisher.json`.** An empty
+array is read as a deliberate "do not curate" and suppresses the convention, so listings, `export {}`
+filtering and query access are all unchanged. It has to go in the package source: setting it through
+the API writes into the server's `publisher_data/` copy, which `--init`, a fresh server root, or a
+replica that re-copies the package all revert, and a deployment with `"frozenConfig": true` refuses
+the call outright.
+
+Two shapes to watch for:
+
+- **An aggregator index.** If your `index.malloy` is all `import`s and no `export { … }`, it exports
+  nothing, so the package lists one model with no sources and looks empty. Add an `export { … }`
+  naming what you publish, or take the `"explores": []` route.
+- **A package with `dashboards/`.** A dashboard is served only when its file is a query entry point,
+  and a dashboard file is not something an `index.malloy` can export — dashboards are files, not
+  sources. So adding an `index.malloy` to a package that has dashboards **withholds every one of
+  them**. The load warning now says so and names the fix, which is to declare an explicit `explores`
+  listing both `index.malloy` and each dashboard file. None of the bundled examples is affected.
+
+Do **not** rename the file to opt out. Renaming changes the model's identity, so
+`…/models/index.malloy` starts returning 404, and if any sibling `import`s `"index.malloy"` the
+dangling import fails the compile, which takes the **whole package** out of service rather than just
+that file. Declaring `explores` with your old file list is not an opt-out either: it turns on
+`export {}` filtering, which is a larger change than the one you are undoing.
+
+### `explores` and `queryableSources` are deprecated, and still work
+
+Nothing is removed. Both keys behave exactly as before and both are now marked `deprecated` in the
+OpenAPI spec. A load-time warning naming the replacement goes only to the uses the convention
+replaces: an `explores` naming one file, and `queryableSources: "declared"`.
+
+Keep `explores` for the one thing the convention cannot express: a surface spanning **several**
+files, which includes `index.malloy` plus the dashboard files it cannot export. That use gets no
+deprecation warning. An explicit `explores` always wins, and a package with both an `index.malloy` and an
+`explores` that omits it carries a warning rather than the server guessing.
+
+**`index.malloy` does not replace `queryableSources: "all"`**, so `"all"` gets no deprecation
+warning. `"all"` is the only way to curate listings *without* refusing queries, and a
+surface derived from an `index.malloy` always enforces the boundary, because `queryableSources`
+defaults to `"declared"`. If you want listings-only curation, keep both keys.
+
+The `explores` field in a package response may now be a value the server derived rather than one the
+author wrote, and the response does not distinguish the two — deliberately, because nothing
+downstream treats them differently. **A derived surface is never written back to `publisher.json`.**
+A client that GETs a whole package object, edits a field and PATCHes the object back re-sends the
+derived list, and the server recognizes it and declines to persist it. Writing it would look inert —
+an explicit `["index.malloy"]` and a derived one behave identically — right up until the file is
+renamed: the convention follows the rename, a frozen key does not, and the package would then list
+and serve nothing. A PATCH that names a genuinely different surface is persisted as before.
+
+**A package curated by the convention alone says so at load.** When a root `index.malloy` becomes
+the surface with no `explores` in `publisher.json`, the package carries a warning naming what that
+withholds and how to opt out (`"explores": []`, which is the only opt-out: renaming or deleting the
+file widens the surface silently and breaks every import naming it). It is the one path that curates
+a package on the strength of a file rather than a manifest key, so it is the one an existing package
+can meet by surprise; every other curation path already reported itself. A package whose
+`index.malloy` is its only model withholds nothing and stays quiet, and notebooks do not count as
+something withheld, because they are always listed and never subject to the boundary.
+
+**A package says so when its published surface disappears.** Deleting or renaming a root
+`index.malloy` resolves to no surface, which is an ordinary uncurated package, so the sources it was
+withholding are listed and queryable by name again and nothing else reports it. Every other curation
+change already left something to look at: a surface that appears warns at load, a malformed
+`explores` refuses the load, a broken surface file fails the reload and is reported stale. The
+reload that drops a surface now carries a warning naming what was published, what that means, and
+how to restore it or keep the package open deliberately (`"explores": []`). Said once, on the reload
+that caused it, because it reports a change rather than a state. That includes the reload a
+materialization run or manifest rebind makes, not only `reload_package`, the watcher and
+`?reload=true`. A server restart has no "before" to compare against, so a surface deleted while the
+server was down widens without this warning. This is curation, not access
+control: what widens is what is listed and what answers by name, and a source gated by
+`#(authorize)` stays gated.
+
+**A malformed `explores` fails the package load.** `"explores": "orders.malloy"` (the
+missing-brackets typo) or an array with a non-string element is refused, with a message naming the
+value and the fix, and the package is not served. It is not ignored: ignoring it resolves to no
+surface at all, which publishes every source the key was written to withhold, and an absent package
+is visible in `loadErrors` where a silently-uncurated one is not. This restores the behavior the key
+had before the convention, when a non-string entry threw out of path normalization.
+
+**A broken surface explains the 404s it causes.** A package whose surface files all fail to compile
+exposes nothing, so *every* model in it, including the ones that compiled, is refused by name with a
+404 that reads as "does not exist". It now carries a warning naming the broken files and how many
+working models they took down. This is a narrow case by design: a compile error at first load fails
+the package outright, and a failed reload from the watcher, `reload_package` or `?reload=true` keeps
+the last good model serving and reports `stale: true` with the compile error, so neither empties the
+surface. The gap is the materialization and manifest rebind paths, which replace a failed model with
+a placeholder without going through the package loader. The refusal itself is unchanged and
+deliberately fail-closed: falling back to uncurated on a typo would expose sources the author
+curated away.
+
+**A notebook path no longer skips the query boundary.** In a curated package, a query sent to a
+`.malloynb` path used to bypass the surface entirely, so `run: hidden_source` addressed to a
+notebook read any source that notebook imported, from any hidden file. That request now answers 404,
+the same as it does addressed to any other file. Notebooks are still always listed, and their own
+cells still run as written, including cells that read a hidden source the notebook imports. Only
+query text a caller sends to the notebook's path is affected. This predates the `index.malloy`
+convention and applied to any package with an `explores`.
+
+**A missing model and a hidden one answer with the same 404.** A REST query to a model path that
+does not exist now answers `No queryable model "<path>".`, the text a model that exists but is off
+the surface already returned. It used to answer `<path> does not exist`, so the two messages told a
+hidden file from a missing one. The status is unchanged, and MCP already answered both the same way.
+
+**A dashboard tile the surface will refuse is reported at load.** A dashboard can be listed and
+compile cleanly while a tile reads a source only an unlisted file declares. Compile is exempt from
+the boundary, so the author sees nothing wrong until the tile answers 404 after publishing. The usual
+cause is an import: listing a file publishes what it declares, not what it imports. Each such tile
+now carries a package warning with severity `error`, on every load and reload, including the reload
+`reload_package` runs and the one after a dashboard save. The warning names the tile and both fixes.
+A tile whose source cannot be read from its text is not reported rather than guessed at.
 
 ## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
 

@@ -86,13 +86,13 @@ know it worked when the agent's first Malloy query returns data.
 ## Query it
 
 The web UI at http://localhost:4000 is the quickest look. For a check you can script,
-every model is queryable over REST at
-`POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`. Run one of
-the starter model's views by name:
+a package's published models are queryable over REST at
+`POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`. Address the
+package's surface, `index.malloy`, and run one of the starter model's views by name:
 
 ```bash
 curl -s -X POST \
-  http://localhost:4000/api/v0/environments/default/packages/sales/models/sales.malloy/query \
+  http://localhost:4000/api/v0/environments/default/packages/sales/models/index.malloy/query \
   -H 'Content-Type: application/json' \
   -d '{"sourceName": "sales", "queryName": "by_category", "compactJson": true}' \
   | jq -r .result
@@ -144,6 +144,10 @@ sales/                   the package
                          resolution differs from Publisher's (machine-specific
                          absolute path; drop it and open the editor at sales/ instead
                          if you commit the package)
+  index.malloy           the published surface: imports the model below and
+                         `export`s its source. What it exports is what Publisher
+                         lists and what may be queried, so no manifest key is
+                         needed; leave a source out to keep it internal
   sales.malloy           a starter model over the sample data
   data/sales.csv         the sample data
 ```

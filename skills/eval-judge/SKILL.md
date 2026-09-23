@@ -5,7 +5,7 @@ description: 'Decide whether ONE answer matches its golden, and say whether you 
 
 # The judge
 
-JUDGE_VERSION: 5
+JUDGE_VERSION: 6
 
 This skill IS the judge. One fresh judge subagent is spawned per attempt, with
 this skill installed in its workspace and the case materials in its prompt. It
@@ -118,6 +118,27 @@ Output, exactly this shape:
    reading that produced it, that is `no_match`. Use `near_match` only when you
    can name the rubric clause that makes the difference defensible.
 
+   **A rubric clause cannot make a wrong VALUE defensible, and a clause that
+   tries is a defect in the rubric rather than a licence to you.** `near_match`
+   turns on the answer being right under a reading the QUESTION allows -- a tie
+   broken the other way, a grain the question left open, a basis the question
+   never fixed. It does not turn on the answer being transparent about how it
+   got a figure the question did not ask for. Those two look alike in a rubric
+   and are opposites in a report: one is a number a reader can act on, the
+   other is a number a reader would act on wrongly. Naming the method makes a
+   wrong figure DIAGNOSABLE, which is worth having, and it is not partial
+   credit.
+
+   The test, before you write `near_match` on a case with a value: would a
+   reader who acted on this figure be wrong? If yes, it is `no_match` however
+   plainly the answer explained itself, and however the rubric is worded. Say
+   in `why` that you are overriding a rubric clause, so the clause gets fixed.
+   This rule exists because a set shipped one: a question asked for sales over
+   the company's season, the answer gave the meteorological window 25% lower
+   and said which window it used, and a clause granting `near_match` for a
+   stated window kept a materially wrong answer out of the pass rate
+   entirely -- the arm reported 100%.
+
    It is a third outcome because as a pass it was a large share of the measured
    noise: the same unchanged answer reads `match` in one run and `near_match`
    in the next, and the pass rate moves although nothing did. A verdict whose
@@ -163,6 +184,29 @@ Output, exactly this shape:
    every number right, was once scored down for not showing the campaign
    total; the question had never asked for one. A rubric that means "campaign
    total only" must say so as `REQUIRED`, and the question should say so too.
+
+### Rubric markers
+
+A case rubric marks its alternate readings and disclosures with the words
+below, and each word fixes the verdict. Apply them as written; do not re-weigh
+a reading the rubric has already classified. (`reference/writing-rubrics.md`
+is where authors are told to use them; this table is the judge's half.)
+
+| Marker | Verdict | Meaning |
+|---|---|---|
+| `PREFERRED` | `match` | The reading the golden encodes. |
+| `ACCEPT` | `match` | Equally right: a different but faithful route to the same claim. Check the figure against the golden the way the clause says to. |
+| `DIVERGENT` | `near_match` | Defensible and not what was asked for. Never `no_match`, however clearly the answer committed to it. |
+| `WRONG` | `no_match` | Plausible and incorrect; the clause usually names the trap. |
+| `REQUIRED` | omitted: `no_match` | A disclosure without which the number misleads. |
+| `CREDITED` | omitted: `match` | Context a good analyst adds; its absence costs nothing. |
+
+Measured on an unchanged answer, rubric and golden: an answer whose
+recommended figure the rubric marked `DIVERGENT` scored `near_match` under
+one judge and `no_match` under the next, because the judge had never been
+told what the word meant and weighed the commitment instead. An unmarked
+clause is `CREDITED` (the author's bug, not yours to repair by inventing a
+requirement).
 
 ### Anchors
 

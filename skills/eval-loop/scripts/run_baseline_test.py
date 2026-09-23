@@ -77,6 +77,23 @@ class FinalQuery(unittest.TestCase):
             rb.pick_final_query(["run: a -> answer"] * 2, calls, text)[2],
             "answer.malloy")
 
+    def test_a_declared_query_matches_however_it_was_laid_out(self):
+        # The executed query is one line with semicolons; the answer prints the
+        # same query on several lines. Before, they never compared equal and
+        # the harness graded the probe that ran last.
+        ran = "run: a -> { where: x = 1; aggregate: n is count() }"
+        calls = [
+            {"tool": "execute_query", "query": ran,
+             "modelPath": "m.malloy", "error": None},
+            {"tool": "execute_query", "query": "run: a -> probe",
+             "modelPath": "p.malloy", "error": None},
+        ]
+        text = ("The filtered total.\n\n```malloy\nrun: a -> {\n  where: x = 1\n"
+                "  aggregate: n is count()\n}\n```")
+        self.assertEqual(
+            rb.pick_final_query([ran, "run: a -> probe"], calls, text),
+            (ran, "declared", "m.malloy"))
+
     def test_a_call_that_named_no_file_reports_none(self):
         # The server resolved the file from its own default, so the run's
         # default is the closer guess than a file another call named.
@@ -1199,27 +1216,62 @@ class RunSummary(unittest.TestCase):
     def test_no_report_keeps_the_pointer(self):
         self.assertIn("not measured here", "\n".join(self.lines()))
 
+    def rows(self, spec):
+        """Cascade input built the way the harness builds it.
+
+        The fixtures here were hand-written dicts, and a hand-written cascade
+        can describe a state `cascade()` cannot produce -- which is how a
+        display bug survived its own test. Build the rows, let `cascade()`
+        count them.
+        """
+        out = []
+        for coverage, recall, failed, n in spec:
+            out += [{"coverage": coverage, "recall": recall, "failed": failed,
+                     "verdict": "no_match" if failed else "match"}] * n
+        return rb.cascade(out)
+
     def test_the_cascade_reads_as_a_funnel_with_owners(self):
-        lines = self.lines(cascade={
-            "total": 49, "not covered": 6, "unmeasured": 2,
-            "no entities named": 0, "not retrieved": 5,
-            "delivered, wrong": 6, "delivered, right": 30, "not scored": 0})
+        lines = self.lines(cascade=self.rows([
+            ("absent", None, True, 6),       # a known coverage gap
+            ("unknown", 1.0, True, 2),       # coverage never measured
+            ("covered", 0.5, True, 5),       # retrieved short
+            ("covered", 1.0, True, 6),       # delivered, wrong
+            ("covered", 1.0, False, 30),     # delivered, right
+        ]))
         text = "\n".join(lines)
         self.assertIn("cascade       49 cases", text)
         self.assertIn("covered?      41 yes, 6 no (model gap), 2 unmeasured", text)
-        # The rung must not assert the docs: a miss is the docs OR the search
-        # wording, and only diagnose separates them. This assertion is here
-        # because the label was renamed in score_retrieval and the display line
-        # in this file was missed, so the two disagreed in a shipped commit.
-        self.assertIn("retrieved?    36 yes, 5 no (the entity exists and did "
+        # 43 rows carried a recall (49 less the 6 coverage gaps), 5 fell short.
+        # The rung counts what recall MEASURED, not what the funnel let through.
+        self.assertIn("retrieved?    38 yes, 5 no (the entity exists and did "
                       "not come back", text)
         self.assertNotIn("(documentation", text)
-        # And a delivered-but-wrong answer names no owner until diagnose runs.
         self.assertIn("correct?      30 yes, 6 no (delivered, wrong", text)
         self.assertIn("diagnose decides", text)
-        # It heads the COVERAGE & RETRIEVAL layer, above the retrieval-mode line.
         self.assertLess(self.index_of(lines, "cascade"),
                         self.index_of(lines, "  retrieval "))
+
+
+    def test_unmeasured_coverage_does_not_zero_the_retrieval_rung(self):
+        """check_coverage is a separate spend, so most runs have none.
+
+        `cascade()` is an elif chain: a row whose coverage was never measured
+        stops at the first rung and never reaches the recall check, so
+        `not retrieved` is structurally 0. A display that subtracted it from a
+        denominator therefore reported EVERY retrieval as a success -- 12
+        cases, three at recall 0.5, printing "retrieved? 12 yes, 0 no". The
+        rung reads a tally kept outside the chain.
+        """
+        text = "\n".join(self.lines(cascade=self.rows([
+            ("unknown", 1.0, False, 10),
+            ("unknown", 0.5, False, 1),
+            ("unknown", None, False, 1),
+        ])))
+        self.assertIn("covered?      0 yes, 0 no (model gap), 12 unmeasured", text)
+        self.assertIn("retrieved?    10 yes, 1 no", text)
+        self.assertNotIn("retrieved?    12 yes", text)
+        self.assertNotIn("retrieved?    0 yes", text)
+
 
     def test_no_cascade_prints_nothing(self):
         self.assertNotIn("cascade", "\n".join(self.lines()))
@@ -1468,6 +1520,16 @@ class GitSha(unittest.TestCase):
             rb.git_sha(pathlib.Path("sub"), scope=pathlib.Path("sub"))
             .endswith("-dirty"))
 
+    def test_dirt_outside_the_scope_is_not_the_models(self):
+        # A scratch file at the repo root: the tree is dirty, the model is not.
+        # Scoped to the package directory the marker says so; unscoped it
+        # stamps a clean model -dirty, which is what every run pin used to read.
+        (self.repo / "scratch.txt").write_text("notes\n")
+        self.assertFalse(
+            rb.git_sha(pathlib.Path("."), scope=pathlib.Path("sub"))
+            .endswith("-dirty"))
+        self.assertTrue(rb.git_sha(pathlib.Path(".")).endswith("-dirty"))
+
     def test_a_relative_path_still_marks_dirt(self):
         self.dirty()
         self.assertTrue(
@@ -1526,6 +1588,151 @@ class GoldenCheckScope(unittest.TestCase):
         self.assertIn("qids", src)
         self.assertIn('c["qid"] in qids', src)
 
+class CoverageByDefault(unittest.TestCase):
+    """Coverage is measured unless asked not to.
+
+    It answers the first of the four questions a run reports -- can the model
+    express an answer at all -- and it is the one that says whether a failure
+    was ever winnable. Left to a follow-up command it went unrun, and the
+    covered? rung came back blank on every real run.
+    """
+
+    def ns(self, **kw):
+        a = argparse.Namespace(
+            coverage=None, no_coverage=False, rebuild=False,
+            out=pathlib.Path("/tmp/does-not-matter"),
+            set_dir=pathlib.Path("evals/e"), publisher="http://p",
+            environment="env", package="pkg", timeout=60,
+            parallel=4, only=None, rejudge=False)
+        for k, v in kw.items():
+            setattr(a, k, v)
+        return a
+
+    def test_it_runs_when_no_report_was_given(self):
+        a = self.ns()
+        with mock.patch.object(rb, "subprocess") as sp, \
+             mock.patch.object(pathlib.Path, "exists", return_value=True):
+            sp.run.return_value = argparse.Namespace(returncode=0)
+            out = rb.measure_coverage(a)
+        self.assertIsNotNone(out)
+        cmd = sp.run.call_args[0][0]
+        self.assertIn("--publisher", cmd)
+        self.assertIn("http://p", cmd)
+        # Through REST, so it needs no local checkout and stays valid for every
+        # arm against this model version.
+        self.assertNotIn("--model", cmd)
+        self.assertIn("--parallel", cmd)
+
+    def test_only_narrows_coverage_as_it_narrows_the_arm(self):
+        """A one-case re-run paid a claude -p call for every case in the set."""
+        a = self.ns(only="q1,q2")
+        with mock.patch.object(rb, "subprocess") as sp, \
+             mock.patch.object(pathlib.Path, "exists", return_value=True):
+            sp.run.return_value = argparse.Namespace(returncode=0)
+            rb.measure_coverage(a)
+        cmd = sp.run.call_args[0][0]
+        self.assertIn("--only", cmd)
+        self.assertIn("q1,q2", cmd)
+
+    def test_a_failure_does_not_kill_the_arm(self):
+        """Losing one rung must not cost the answerers."""
+        a = self.ns()
+        with mock.patch.object(rb, "subprocess") as sp:
+            sp.run.return_value = argparse.Namespace(returncode=1)
+            self.assertIsNone(rb.measure_coverage(a))
+
+
+class OffloadedToolResult(unittest.TestCase):
+    """A response spilled to a file is not an empty response.
+
+    A get_context result too large for the model's context is written to a
+    file and replaced by a notice naming the path. The answerer reads the file
+    and is unaffected; the ledger used to parse the notice, find no JSON, and
+    record an empty entity list -- a total retrieval miss on a call that
+    returned in full. One arm printed 86.4% recall against an actual 95%, and
+    diagnose then explained the phantom miss with an index-readiness story
+    that was false.
+    """
+
+    def test_the_body_is_read_back_from_the_named_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "big.txt"
+            p.write_text(json.dumps({"sources": [], "retrieval": "semantic"}))
+            out = rb.offloaded_json(
+                f"Error: result exceeds maximum allowed tokens. "
+                f"Output has been saved to {p}")
+        self.assertEqual(out, {"sources": [], "retrieval": "semantic"})
+
+    def test_an_unreadable_path_is_none_not_empty(self):
+        self.assertIsNone(rb.offloaded_json("saved to /nope/does-not-exist.txt"))
+
+    def test_an_ordinary_result_is_not_mistaken_for_an_offload(self):
+        self.assertIsNone(rb.offloaded_json('{"sources": []}'))
 
 if __name__ == "__main__":
     unittest.main()
+
+class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
+    """`--rebuild --only <qid>` re-derives one case. It used to write the whole
+    ledger from that one case, and a 29-case arm read as a 1-case arm."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.path = self.tmp / "events.jsonl"
+        self.old = [{"kind": "attempt", "qid": "a", "sample": 1},
+                    {"kind": "score", "qid": "a", "verdict": "match"},
+                    {"kind": "attempt", "qid": "b", "sample": 1},
+                    {"kind": "score", "qid": "b", "verdict": "no_match"}]
+        self.path.write_text("".join(json.dumps(e) + "\n" for e in self.old))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_only_the_named_cases_lines_are_replaced(self):
+        new = [{"kind": "attempt", "qid": "b", "sample": 1},
+               {"kind": "score", "qid": "b", "verdict": "match"}]
+        rb.store_events(self.path, new, replaced_qids={"b"})
+        got = [json.loads(l) for l in self.path.read_text().splitlines()]
+        self.assertEqual(got, self.old[:2] + new)
+
+    def test_a_full_write_still_replaces_everything(self):
+        new = [{"kind": "attempt", "qid": "c", "sample": 1}]
+        rb.store_events(self.path, new, None)
+        got = [json.loads(l) for l in self.path.read_text().splitlines()]
+        self.assertEqual(got, new)
+
+
+class PersistedStubIsTheResult(unittest.TestCase):
+    """Above a size the CLI decides, a tool result reaches the answerer as a
+    stub naming a file. Reading the stub as the payload scored 14 of 74
+    get_context calls on one arm as zero entities delivered."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def block(self, text):
+        return {"content": [{"type": "text", "text": text}]}
+
+    def test_the_persisted_output_stub_resolves_to_the_saved_blocks(self):
+        saved = self.tmp / "r.json"
+        saved.write_text(json.dumps([{"type": "text", "text": "ranked: a, b, c"}]))
+        stub = (f"<persisted-output>\nFull output saved to: {saved}\n\n"
+                f"Preview (first 2KB):\nranked: a")
+        self.assertEqual(rb.result_text(self.block(stub)), "ranked: a, b, c")
+
+    def test_the_token_cap_spelling_resolves_to_the_saved_text(self):
+        saved = self.tmp / "r.txt"
+        saved.write_text("ranked: a, b, c")
+        stub = ("Error: result (68,820 characters across 1 line) exceeds maximum "
+                f"allowed tokens. Output has been saved to {saved}.")
+        self.assertEqual(rb.result_text(self.block(stub)), "ranked: a, b, c")
+
+    def test_a_stub_whose_file_is_gone_is_left_as_it_was(self):
+        stub = f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n"
+        self.assertEqual(rb.result_text(self.block(stub)), stub)
+
+    def test_an_ordinary_result_is_unchanged(self):
+        self.assertEqual(rb.result_text(self.block("{\"sources\": []}")), "{\"sources\": []}")

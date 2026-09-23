@@ -17,19 +17,21 @@ mechanism — power three things at once:
 - **Row-level access** — the same `#(access_filter)` gate that admits the caller also scopes _which
   rows_ they see, with no separate `where:`. → [row-level-access.md](../../docs/row-level-access.md)
 
-…plus **discovery curation** — `orders_base` lives in a file not listed in `explores`, so it's hidden
-and not directly queryable, while the public models still import it.
-→ [discovery-and-access.md](../../docs/discovery-and-access.md)
+…plus **discovery curation** — `index.malloy` is the package's published surface. It exports `sales`
+and `orders_secured` and not `orders_base`, so the base source is hidden and a direct query against
+it is refused, while the public models still import and extend it. No `publisher.json` key is
+involved. → [discovery-and-access.md](../../docs/discovery-and-access.md)
 
 ## Files
 
 | File              | Role                                                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `orders.parquet`  | ~4,900 orders over two years across 3 regions × 3 tenants × 3 statuses (no credentials — DuckDB reads it directly). |
-| `internal.malloy` | `orders_base`, the shared base source. **Not** in `explores` → hidden + not directly queryable.                     |
+| `index.malloy`    | The published surface: imports the two models below and `export { sales, orders_secured }`. Queries go here.        |
+| `internal.malloy` | `orders_base`, the shared base source. **Not** exported → hidden + not directly queryable.                          |
 | `orders.malloy`   | `REGION` / `MIN_AMOUNT` givens and the `sales` source (interactive controls + `# dashboard`).                       |
-| `secured.malloy`  | `TENANTS` given and `orders_secured` — a row-level `#(access_filter)` gate alone.                                       |
-| `publisher.json`  | `explores` + `queryableSources: "declared"` — the discovery/query boundary.                                         |
+| `secured.malloy`  | `TENANTS` given and `orders_secured` — a row-level `#(access_filter)` gate alone.                                   |
+| `publisher.json`  | Name and description only. The surface comes from `index.malloy`, so there is no key to set.                        |
 
 ## Run it
 
@@ -74,11 +76,11 @@ All queries go to
 API=http://localhost:4000/api/v0/environments/examples/packages/governed-analytics/models
 
 # Givens scope the data (empty REGION filter = all regions):
-curl -s -X POST $API/orders.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: sales -> by_region","givens":{"REGION":"us-east"}}'
 
 # Authorize: no identity → 403
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_status"}'                          # → 403
 
 # Send TENANTS on every request. The gate references it, and it may not
@@ -88,19 +90,19 @@ curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
 # the list simply sees every tenant.
 
 # Authorize + row-level: a caller resolved to all three tenants sees all three…
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme","globex","initech"]}}'  # → 3 tenants
 
 # …a caller resolved to one tenant sees only its own rows.
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme"]}}'   # → 1 tenant
 
 # A tenant off the allow-list is admitted nowhere: 200 with zero rows, not 403.
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["nope"]}}'   # → 0 rows
 
 # Discovery: orders_base is hidden and not a valid query target → 404
-curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_base -> { aggregate: c is count() }"}'          # → 404
 ```
 
@@ -115,4 +117,4 @@ Each file in this package maps to a docs page:
 - [givens.md](../../docs/givens.md) — runtime parameters (`REGION`, `MIN_AMOUNT`) and the Parameters panel.
 - [authorize.md](../../docs/authorize.md) — `#(access_filter)` source gates (who can query).
 - [row-level-access.md](../../docs/row-level-access.md) — given-scoped `where:` (which rows a caller sees).
-- [discovery-and-access.md](../../docs/discovery-and-access.md) — `explores` / `queryableSources` curation.
+- [discovery-and-access.md](../../docs/discovery-and-access.md) — `index.malloy` curation and the query boundary.
