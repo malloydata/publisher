@@ -80,7 +80,7 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `,
@@ -98,19 +98,50 @@ source: gated is base -> { select: org_id } extend {}
       });
    });
 
+   it("classifies TWO AND'd groups on one entry point — own gate plus the query-source base's — rejecting when EITHER can't express", async () => {
+      // Restores the two-groups-on-one-source case the neighbor test below
+      // used to say was inexpressible under the old string form's
+      // at-most-one-gate refusal. `derived` both declares its own
+      // `#(authorize)` and, via the query-source derivation, inherits
+      // `base`'s — two separate (AND'd) `GateEntry` results from
+      // `collectEntryPointGates`, not one flattened list (see `AuthorizeMap`'s
+      // doc). `classifyPersistSourceGate` must reject the whole entry point
+      // when EITHER group can't be classified against this deps surface, not
+      // just the one it happens to walk into first.
+      const { modelDef, materializer, sources } = await compileModel(
+         `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+  REGION :: string
+
+#(access_filter) org_id = $ORG
+source: base is duckdb.sql("select 1 as org_id, 'x' as region") extend {}
+
+#(access_filter) region = $REGION
+#@ persist name="derived"
+source: derived is base -> { select: org_id, region } extend {}
+`,
+      );
+      const restrictedDeps = createGateClassificationDeps([]);
+      const outcome = await classifyPersistSourceGate(
+         sources.derived,
+         modelDef,
+         materializer,
+         restrictedDeps,
+         "m.malloy",
+      );
+      expect(outcome.classification).toBe("rejected");
+   });
+
    it("records rejected when a query-source derivation inherits an ancestor's gate whose given is off THIS deps surface", async () => {
-      // Replaces the old string form's "two AND'd groups, one rejects" case:
-      // that shape OR'd two independently-authored `#(authorize)` annotations
-      // on one source — a source may declare at most one `#(authorize)` block
-      // (`findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`), so a
-      // second, differently-scoped gate can no longer be expressed on the
-      // same source at all. What still needs pinning here is that `derived`'s
-      // inherited copy of `base`'s gate (carried in via the query-source
-      // derivation, same mechanism `collectEntryPointGates` uses for every
-      // other inheritance case in this file) is re-checked against THIS
-      // CALL's own given surface, not the compiling model's, and is rejected
-      // rather than silently admitted when the given the inherited gate
-      // references isn't on it (`unreachable_given` — see
+      // `derived`'s inherited copy of `base`'s gate (carried in via the
+      // query-source derivation, same mechanism `collectEntryPointGates`
+      // uses for every other inheritance case in this file) is re-checked
+      // against THIS CALL's own given surface, not the compiling model's,
+      // and is rejected rather than silently admitted when the given the
+      // inherited gate references isn't on it (`unreachable_given` — see
       // `resolveGateShape`'s doc for why the deps struct, not the compiled
       // model, is the actual given surface used at classification time).
       const { modelDef, materializer, sources } = await compileModel(
@@ -120,7 +151,7 @@ source: gated is base -> { select: org_id } extend {}
 given:
   ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: base is duckdb.sql("select 1 as org_id") extend {}
 
 #@ persist name="derived"
@@ -150,7 +181,7 @@ source: derived is base extend {}
 given:
   ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: locked is duckdb.sql("select 1 as org_id")
 
 #@ persist name="joiner"
@@ -185,10 +216,10 @@ given:
   ORG :: number
   DEPT :: number
 
-#(authorize) dept_id = $DEPT
+#(access_filter) dept_id = $DEPT
 source: locked is duckdb.sql("select 1 as dept_id") extend {}
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="joiner"
 source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
    join_one: locked on x = locked.dept_id
@@ -244,7 +275,7 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
 given:
   ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: locked is duckdb.sql("select 1 as org_id, 1 as x") extend {}
 
 #@ persist name="derived"
@@ -284,7 +315,7 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `,

@@ -22,6 +22,7 @@ import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
    API_PREFIX,
+   INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
@@ -29,6 +30,7 @@ import {
 import {
    BadRequestError,
    ModelCompilationError,
+   NotQueryableError,
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
@@ -315,16 +317,117 @@ export class Package {
    /**
     * Push the discovery-curation policy down onto each Model. Curation (file
     * listing via `explores` and within-file `export {}` filtering) is enabled
-    * only when `explores` is declared in publisher.json — absent/empty
-    * `explores` preserves legacy listings. Re-derived on reload and metadata
-    * PATCH (the inputs can change there).
+    * whenever the package resolves a non-empty surface. That surface is either
+    * an `explores` the author wrote in publisher.json or one derived from a
+    * root `index.malloy`, and this code cannot tell the two apart by design
+    * (see resolveExplores) — so "no `explores` key" does NOT mean "uncurated".
+    * No surface at all preserves legacy listings. Re-derived on reload and
+    * metadata PATCH (the inputs can change there).
     */
-   /** True when the package opts into curated discovery via a non-empty
-    *  `explores`. Single source of truth so the curation/boundary/listing
+   /** True when the package has a non-empty resolved surface, whoever
+    *  authored it. Single source of truth so the curation/boundary/listing
     *  derivations can't drift out of sync. */
    private exploresDeclared(): boolean {
       const explores = this.packageMetadata.explores;
       return !!(explores && explores.length > 0);
+   }
+
+   /**
+    * The "surface widened" notice, set on the reload that lost this package's
+    * surface. See {@link noteSurfaceChangeFrom}.
+    */
+   private surfaceWidenedWarning: string | undefined;
+
+   /**
+    * Report that this package was curated a moment ago and is not any more.
+    *
+    * Losing a surface is the one curation change nothing else reports. Every
+    * other transition leaves something behind to look at: a surface that
+    * APPEARS warns at load, a malformed `explores` refuses the load, a broken
+    * surface file fails the reload and is reported stale. But deleting or
+    * renaming `index.malloy` simply resolves to no surface, which is an
+    * ordinary uncurated package, and an uncurated package has nothing to say
+    * about itself. The sources that file was withholding are listed and
+    * queryable again from that moment, and the author who deleted a file they
+    * thought was theirs to delete is told nothing.
+    *
+    * `previousSurface` is the resolved `explores` from before the reload. Every
+    * path that replaces this package's surface calls this: an in-place
+    * {@link reloadAllModels} (materialization, manifest rebind) passes its own
+    * surface from before it re-read the tree, and a full reload in
+    * {@link Environment} passes the surface of the package it replaces. A
+    * process restart has no "before", so it cannot report this.
+    *
+    * Only `undefined` counts as lost, and the distinction is the whole point:
+    *
+    *  - `undefined` is "no `explores` key and no root index.malloy", which is
+    *    what deleting or renaming the surface file resolves to. Nobody asked
+    *    for it and nothing else says it happened.
+    *  - `[]` is an author writing `"explores": []`, the documented opt-out.
+    *    They asked for exactly this and already get a warning saying so.
+    *
+    * It is a transition, so it is said once, on the reload that caused it; the
+    * next reload of an already-uncurated package clears it.
+    *
+    * This is curation, not access control -- nothing gated by `#(authorize)`
+    * becomes reachable, and hiding was never denying. What widens is what is
+    * listed and what answers by name.
+    */
+   public noteSurfaceChangeFrom(previousSurface: string[] | undefined): void {
+      this.surfaceWidenedWarning = undefined;
+      if (
+         !previousSurface ||
+         previousSurface.length === 0 ||
+         this.packageMetadata.explores !== undefined
+      ) {
+         return;
+      }
+      const message =
+         `This package published "${previousSurface.join('", "')}" before the last ` +
+         `reload and publishes no surface now, so every model in it is listed ` +
+         `and queryable by name again, including the sources that surface was ` +
+         `withholding. A surface file that was deleted or renamed is the usual ` +
+         `cause. If that was intended, nothing to do. If not, restore the file ` +
+         `(under its original name -- the name IS the surface), or declare an ` +
+         `"explores" in publisher.json naming what this package should ` +
+         `publish. To keep the package open deliberately, write ` +
+         `"explores": [], which says so and stops this notice.`;
+      this.surfaceWidenedWarning = message;
+      logger.warn(`Package ${this.packageName} no longer publishes a surface`, {
+         packageName: this.packageName,
+         detail: message,
+      });
+   }
+
+   /**
+    * True when this package's surface is its `index.malloy`, which is what the
+    * convention produces when the manifest declares no `explores`.
+    *
+    * Derived from the tree and the resolved surface rather than from a stored
+    * origin, deliberately: nothing records where a surface came from, and
+    * nothing should. The question this answers is not "who wrote it" but "is
+    * there an index.malloy the author is looking at", and that has the same
+    * answer either way.
+    *
+    * It is therefore TRUE for a hand-written `explores: ["index.malloy"]`, and
+    * a remedy this selects has to hold for that author too. The file is the
+    * same; the manifest key is not, and a remedy that says to delete the file
+    * without also clearing the key would leave that package listing nothing.
+    * Every message below is worded to cover both.
+    *
+    * Used ONLY to pick the wording of a warning's remedy. Every message that
+    * says "add it to 'explores'" is advice with no target for a package that
+    * has no such key, and a dashboard file cannot be exported from an
+    * index.malloy at all. It must never gate behavior: the surface behaves
+    * identically whichever source produced it.
+    */
+   private surfaceIsIndexModel(): boolean {
+      const explores = this.packageMetadata.explores;
+      return (
+         this.models.has(INDEX_MODEL_NAME) &&
+         explores?.length === 1 &&
+         explores[0] === INDEX_MODEL_NAME
+      );
    }
 
    /** The declared explore set, or null when discovery is uncurated. */
@@ -349,11 +452,14 @@ export class Package {
     * Derived once here (and on reload) rather than per query: the policy only
     * changes when the manifest is (re)read.
     *
-    * Policy: queryable == discoverable. The boundary is inert unless `explores`
-    * is declared (no curated surface ⇒ nothing to restrict) AND
+    * Policy: queryable == discoverable. The boundary is inert unless the
+    * package resolved a surface (no curated surface ⇒ nothing to restrict) AND
     * `queryableSources` is "declared" (the default; "all" decouples the axes).
-    * When active, a model file is a query entry point only if it is listed in
-    * `explores`; within-file curation (`export {}`) is read off each Model.
+    * A surface derived from a root `index.malloy` arms it exactly as a written
+    * `explores` does, so an absent manifest key does not mean an inert
+    * boundary. When active, a model file is a query entry point only if it is
+    * on that surface; within-file curation (`export {}`) is read off each
+    * Model.
     */
    private applyQueryBoundaryToModels(): void {
       const exploresDeclared = this.exploresDeclared();
@@ -1096,6 +1202,17 @@ export class Package {
          // shape this closes was a package reporting exploresWarnings: none
          // while listed files surfaced nothing (HANDOFF CR-5).
          ...this.emptyDiscoveryWarnings(),
+         // The whole surface failed to compile, so every model in the package
+         // is refused by name. Rides the API for the same reason as the line
+         // above, and more urgently: the 404s it causes name models that are
+         // not themselves broken, so nothing else points at the cause.
+         ...this.brokenSurfaceWarnings(),
+         // The surface this package had before the last reload is gone. Rides
+         // the API because it is the only record: an uncurated package looks
+         // exactly like one that was never curated.
+         ...(this.surfaceWidenedWarning !== undefined
+            ? [{ message: this.surfaceWidenedWarning }]
+            : []),
          // A within-package persist-target collision spans two or more sources, so
          // there is no single subject field; the message names them. Surfaced here
          // (alongside the load-path log) so an operator can see it on the status
@@ -1527,9 +1644,11 @@ export class Package {
    }
 
    /**
-    * Declared `explores` (publisher.json) that don't resolve to a real
-    * `.malloy` model in this package, each with an actionable reason. Empty
-    * when explores is absent/empty or every entry resolves.
+    * Surface entries that don't resolve to a real `.malloy` model in this
+    * package, each with an actionable reason. Empty when there is no surface
+    * or every entry resolves. In practice this can only fire for an `explores`
+    * an author wrote: a surface derived from a root `index.malloy` names a
+    * file that was just read off disk, so it always resolves.
     *
     * The listing already fails safe — a non-resolving entry matches no model in
     * `listModels`, so it hides rather than exposes. This surfaces *why*, so the
@@ -1551,7 +1670,7 @@ export class Package {
             problems.push({
                entry,
                reason:
-                  `notebooks are always public and cannot be explores. ` +
+                  `notebooks are always listed and cannot be explores. ` +
                   `Fix: remove it, and list a ${MODEL_FILE_SUFFIX} model file instead.`,
             });
          } else if (!malloyModels.has(entry)) {
@@ -2064,20 +2183,125 @@ export class Package {
             warnings.push({
                model: modelPath,
                message:
-                  `Model "${modelPath}" is listed in explores but exposes ` +
-                  `nothing: its export closure surfaces no sources or named ` +
-                  `queries (typically an import-only file, or an export {} ` +
-                  `that filters everything out). Add e.g. ` +
-                  `'export { source_name }' to surface sources on this ` +
-                  `model, or remove it from explores.`,
+                  `Model "${modelPath}" is on this package's discovery ` +
+                  `surface but exposes nothing: its export closure surfaces ` +
+                  `no sources or named queries (typically an import-only ` +
+                  `file, or an export {} that filters everything out). Add ` +
+                  `e.g. 'export { source_name }' to surface sources on this ` +
+                  `model, or ` +
+                  (this.surfaceIsIndexModel()
+                     ? `delete the file AND any "explores" entry naming it. ` +
+                       `Deleting the file alone returns the package to ` +
+                       `listing every model only when no "explores" was ` +
+                       `written; where one was, it would be left naming a ` +
+                       `model that no longer exists and the package would ` +
+                       `list nothing.`
+                     : `remove it from explores.`),
             });
          }
       }
       return warnings;
    }
 
+   /**
+    * One message when every model on this package's surface failed to compile.
+    *
+    * The curated surface is the union of what the listed models export, so a
+    * surface that does not compile exports nothing, and the boundary then
+    * refuses every model in the package -- including the ones that compiled
+    * perfectly well -- with the same 404 a model that does not exist gets.
+    *
+    * NARROW ON PURPOSE, because the edit paths an author uses already report
+    * this better than a warning could:
+    *
+    *  - FIRST LOAD: a compile error fails the whole package. It is absent, and
+    *    named in `/status` loadErrors. Nothing serves an empty surface.
+    *  - RELOAD, whether from the chokidar watcher, MCP `reload_package` or REST
+    *    `?reload=true`: all three go through `Environment.loadPackage`, which
+    *    keeps the last good compiled model serving and records a
+    *    `staleCompileErrors` entry, so `/status` reports the package with
+    *    `stale: true` AND the compile error. The surface never empties.
+    *
+    * What is left is {@link reloadAllModels} called directly -- the
+    * materialization / manifest rebind paths (`reloadAllModelsForPackage`,
+    * `bindManifest`). Those replace a model that fails to compile with a
+    * placeholder and do NOT go through `loadPackage`, so they are the one way
+    * to reach a package that is serving, is not stale, and whose surface
+    * exports nothing. Rare, and the only path where nothing else would say so.
+    *
+    * Deliberately NOT a fallback to uncurated. Falling open on a typo would
+    * expose sources the author curated away, which is worse than refusing them;
+    * the gap is that the refusal is unexplained, so this explains it.
+    * {@link emptyDiscoveryWarnings} does not cover this -- it skips a model
+    * that failed to compile, by design, so that a compile error is reported
+    * once rather than twice.
+    */
+   public brokenSurfaceWarnings(): Array<{ model: string; message: string }> {
+      const exploreSet = this.exploreSet();
+      if (!exploreSet || exploreSet.size === 0) return [];
+      const surface = Array.from(this.models.entries()).filter(
+         ([modelPath]) =>
+            modelPath.endsWith(MODEL_FILE_SUFFIX) && exploreSet.has(modelPath),
+      );
+      if (surface.length === 0) return [];
+      // Only when NOTHING on the surface compiled. One broken file beside a
+      // working one still leaves a surface, and that file's own error is
+      // report enough.
+      if (!surface.every(([, model]) => !!model.getCompilationError())) {
+         return [];
+      }
+      // Models off the surface that compiled FINE, which is the count worth
+      // reporting: they are the ones refused for someone else's typo. A hidden
+      // model that failed to compile of its own accord was not taken down by
+      // this, and has its own error on the listing.
+      const collateral = Array.from(this.models.entries()).filter(
+         ([modelPath, model]) =>
+            modelPath.endsWith(MODEL_FILE_SUFFIX) &&
+            !exploreSet.has(modelPath) &&
+            !model.getCompilationError(),
+      ).length;
+      // ONE message, however many files the surface spans. Emitting it per
+      // file would have each copy claim to be the whole surface, which is only
+      // true when the surface is one file.
+      const [firstPath] = surface[0];
+      const subject =
+         surface.length === 1
+            ? `Model "${firstPath}" is this package's whole discovery surface ` +
+              `and failed to compile`
+            : `Every model on this package's discovery surface ` +
+              `(${surface.map(([p]) => `"${p}"`).join(", ")}) failed to ` +
+              `compile`;
+      return [
+         {
+            model: firstPath,
+            message:
+               `${subject}, so the package exposes nothing: every model in ` +
+               `it, including the ${collateral} that compiled, is now refused ` +
+               `by name with a 404 that reads as "does not exist". Fix the ` +
+               `compile error${surface.length === 1 ? "" : "s"} to restore ` +
+               `them -- ` +
+               surface
+                  .map(
+                     ([modelPath, model]) =>
+                        `${modelPath}: ` +
+                        `${model.getCompilationError()?.message ?? "unknown error"}`,
+                  )
+                  .join("; "),
+         },
+      ];
+   }
+
    /** Log {@link emptyDiscoveryWarnings}; shared by load and reload. */
    private logEmptyDiscoveryWarnings(): void {
+      for (const warning of this.brokenSurfaceWarnings()) {
+         logger.warn(
+            `Package ${this.packageName} has a broken discovery surface`,
+            {
+               packageName: this.packageName,
+               detail: warning.message,
+            },
+         );
+      }
       for (const warning of this.emptyDiscoveryWarnings()) {
          logger.warn(`Package ${this.packageName} has a blank-looking model`, {
             packageName: this.packageName,
@@ -2330,7 +2554,9 @@ export class Package {
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
       // reflect edited explores without a full Package.create.
+      const previousSurface = this.packageMetadata.explores;
       this.packageMetadata.explores = outcome.packageMetadata.explores;
+      this.noteSurfaceChangeFrom(previousSurface);
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
       this.packageMetadata.manifestLocation =
@@ -2375,10 +2601,11 @@ export class Package {
    }
 
    public async listModels(): Promise<ApiModel[]> {
-      // When `explores` is declared in publisher.json, only those models
-      // form the public surface; every other .malloy file still compiles for
-      // import/join resolution but is hidden from the listing. Absent/empty →
-      // every model is listed (backward-compatible default). Notebooks are
+      // When the package resolved a surface — an `explores` in publisher.json
+      // or a root `index.malloy` — only those models are listed; every other
+      // .malloy file still compiles for import/join resolution but is hidden.
+      // No surface → every model is listed (backward-compatible default), but
+      // note that means no surface, not merely no manifest key. Notebooks are
       // unaffected (see listNotebooks) — they are always public.
       const exploreSet = this.exploreSet();
       const values = await Promise.all(
@@ -2411,7 +2638,8 @@ export class Package {
    /**
     * Whether a model file may be a top-level query target, the FILE-LEVEL half
     * of the policy `applyQueryBoundaryToModels` pushes onto each Model: inert
-    * unless `explores` is declared AND `queryableSources` is `"declared"`.
+    * unless the package resolved a surface (written or derived from a root
+    * `index.malloy`) AND `queryableSources` is `"declared"`.
     *
     * Read here because a dashboard is only worth serving if the queries its
     * manifest advertises can actually run.
@@ -2738,6 +2966,52 @@ export class Package {
    }
 
    /**
+    * A served dashboard whose tile reads a source the surface does not
+    * publish. The dashboard lists and every tile compiles, because /compile is
+    * exempt from the boundary, so the author sees nothing wrong until the tile
+    * answers 404 after publishing. Typical cause: the dashboard file imports a
+    * file that is not listed, and listing a file admits what it declares, not
+    * what it imports.
+    *
+    * Asks the query endpoint's own pre-compile gate, so the lint and the query
+    * cannot disagree about a tile. That gate refuses only a target it can pin
+    * from the text; a tile it cannot read is left alone rather than guessed at.
+    */
+   private lintTilesAgainstSurface(
+      modelPath: string,
+      manifest: DashboardManifest,
+   ): ApiPackageWarning[] {
+      const model = this.models.get(modelPath);
+      if (!model || !manifest.tiles) return [];
+      const findings: ApiPackageWarning[] = [];
+      for (const tile of manifest.tiles) {
+         try {
+            model.assertQueryBoundaryEarly(
+               undefined,
+               undefined,
+               `run: ${tile.query}`,
+            );
+         } catch (error) {
+            if (!(error instanceof NotQueryableError)) throw error;
+            findings.push({
+               model: modelPath,
+               subject: manifest.name,
+               message:
+                  `tile "${tile.query}" reads a source this package's surface ` +
+                  `does not publish, so the tile answers 404 once served, ` +
+                  `although the file compiles. Listing a file publishes what ` +
+                  `it declares, not what it imports. Fix: list the file that ` +
+                  `declares the source in 'explores', or import it into a ` +
+                  `listed file such as "${INDEX_MODEL_NAME}" and add it to ` +
+                  `that file's export { … }.`,
+               severity: "error",
+            });
+         }
+      }
+      return findings;
+   }
+
+   /**
     * Run the dashboard lint across the package once discovery has settled.
     *
     * Never throws: a lint failure must not cost the package its dashboards. The
@@ -2831,20 +3105,39 @@ export class Package {
                   });
                }
             }
+            // The remedy has to name a key the author can actually edit. A
+            // package whose surface came from the index.malloy convention has
+            // no 'explores' to add to, and a dashboard file is not something
+            // an index.malloy can export -- dashboards are files, not sources
+            // -- so "add it to 'explores'" is advice with no target there.
+            // Detected from the tree rather than from a stored origin: the
+            // question is whether there is an index.malloy the author is
+            // looking at, and that is the same answer whether they wrote the
+            // key or the server derived it.
+            const remedy = this.surfaceIsIndexModel()
+               ? `This package's surface is "${INDEX_MODEL_NAME}", and a ` +
+                 `dashboard file cannot be exported from it -- dashboards are ` +
+                 `files, not sources. To serve this one, declare (or extend) ` +
+                 `an 'explores' in publisher.json listing both ` +
+                 `"${INDEX_MODEL_NAME}" and "${modelPath}"; an explicit key ` +
+                 `overrides the convention. Or set ` +
+                 `queryableSources: "all" to keep the curated surface for ` +
+                 `discovery only.`
+               : `Add it to 'explores', or set queryableSources: "all" to ` +
+                 `keep the curated surface for discovery only.`;
             warnings.push({
                model: modelPath,
                subject: name,
                message:
-                  `is a dashboard, but "${modelPath}" is not listed in ` +
-                  `'explores' and this package sets ` +
+                  `is a dashboard, but "${modelPath}" is not part of this ` +
+                  `package's discovery surface and this package sets ` +
                   `queryableSources: "declared", so its query would be ` +
-                  `refused. It is not served. Add it to 'explores', or set ` +
-                  `queryableSources: "all" to keep the curated surface for ` +
-                  `discovery only. Listing it is not always sufficient on its ` +
-                  `own: the queryable sources are the union of every listed ` +
-                  `file's export closure, so a tile reading a source that only ` +
-                  `an UNLISTED file exports is still refused. List that file ` +
-                  `too, or re-export the source from one already listed.`,
+                  `refused. It is not served. ${remedy} Listing it is not ` +
+                  `always sufficient on its own: the queryable sources are ` +
+                  `the union of every listed file's export closure, so a tile ` +
+                  `reading a source that only an UNLISTED file exports is ` +
+                  `still refused. List that file too, or re-export the source ` +
+                  `from one already listed.`,
                severity: "warn",
             });
          }
@@ -2855,6 +3148,14 @@ export class Package {
                : lintUndiscoveredDashboard(facts);
             for (const finding of findings) {
                warnings.push({ model: modelPath, ...finding });
+            }
+            if (manifest) {
+               for (const finding of this.lintTilesAgainstSurface(
+                  modelPath,
+                  manifest,
+               )) {
+                  warnings.push(finding);
+               }
             }
          }
          // Drill tags live on model dimensions, not on any one dashboard, so

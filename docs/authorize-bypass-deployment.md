@@ -5,7 +5,8 @@ SPDX-License-Identifier: MIT
 
 # Deploying with the authorize bypass
 
-Publisher accepts a request header that **skips `#(authorize)` gate evaluation**:
+Publisher accepts a request header that **skips gate evaluation on both routes** — the
+`#(authorize)` lock as well as the `#(access_filter)` row filter:
 
 ```
 x-publisher-bypass-authorize: <the configured secret>
@@ -63,7 +64,7 @@ no-ops is worse than not claiming the control, because it reads as protection.
 
 Publisher has no tenant boundary of its own, so your application's authorization still decides
 which packages a caller reaches. What the header removes is the **in-model** gating: role- or
-row-level policy *within* data the caller is otherwise entitled to reach. That is the residual
+row-level policy _within_ data the caller is otherwise entitled to reach. That is the residual
 case to reason about if the strip is missing — not cross-tenant access.
 
 ## Tell whether a bypass happened
@@ -84,15 +85,19 @@ finding. Two cautions:
 `packageName`. This is what an investigation reads once the counter moves. `sourceName` is
 `"(query)"` when the target could not be resolved.
 
-Neither signal records *who* sent the header — Publisher does not know. If you need caller
+Neither signal records _who_ sent the header — Publisher does not know. If you need caller
 attribution, log it at the hop that sets the header, and join on package + model.
 
-Three other counters are not bypass signals — they cover gate outcomes on requests that did *not*
-bypass — but are worth knowing apart from `publisher_authorize_bypass_total` when reading a
-dashboard: `publisher_authorize_row_level_total` (labelled `decision`: `denied_by_gate` |
+Four other counters are not bypass signals — they cover gate outcomes on requests that did _not_
+bypass, and one that fires at load — but are worth knowing apart from
+`publisher_authorize_bypass_total` when reading a dashboard:
+`publisher_authorize_row_level_total` (labelled `decision`: `denied_by_gate` |
 `empty_after_filter`) and `publisher_authorize_row_level_rejected_total` (labelled `cause`) cover
 row-level gates; `publisher_authorize_guard_rejected_total` (labelled `field`) counts 400s for a
-caller-declared `#(authorize)` annotation. See
+caller-declared `#(access_filter)` annotation; and `publisher_authorize_admit_all_total` (labelled
+`route`) counts the sources that declare an unconditional `true` admit-all, at package load. That
+last one is the other side of this page's concern — the bypass header turns every gate off for one
+request, an admit-all turns one gate off for every request — so read the two together. See
 [authorize.md § Row-level gate metrics](authorize.md#row-level-gate-metrics) for the full label
 values.
 
@@ -108,6 +113,6 @@ ever set it.
 The bypass is an interim answer. The shape that keeps the decision with the model author is
 identity-bound givens ([docs/authorize.md § Security
 model](authorize.md#security-model)) — a reserved system given the caller cannot set, so an author
-writes `#(authorize) $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a source they never opted
+writes `#(access_filter) $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a source they never opted
 in stays gated. This header instead removes gating globally for callers you trust wholesale.
 When identity-bound givens land, expect this to narrow or be withdrawn.

@@ -145,13 +145,20 @@ export interface CompiledBuildPlan {
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
 }
 
-/** {@link CompiledBuildPlan.sourceGateOutcomes}'s per-source classification. */
+/** {@link CompiledBuildPlan.sourceGateOutcomes}'s per-source classification:
+ *  whether every gate on the entry point RESOLVED, not which route it was
+ *  written on. `"row_level"` is the name the colocated relaxation was built
+ *  under and is kept so a stored plan still reads; an `#(authorize)` lock
+ *  lands there too. That is deliberate — this decides whether a source may be
+ *  BUILT, and the lock is decided per request at serve time, where
+ *  `Model.queryEntryPointHasRowLevelGate` blocks routing to frozen rows on ANY
+ *  collected gate regardless of route. */
 export type PersistSourceGateClassification = "row_level" | "rejected";
 
 /**
- * `classification` is the entry-point gate's enforcement shape, per
- * `gate_classification.ts`'s vocabulary (every `#(authorize)` gate is a row
- * predicate). `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
+ * `classification` is whether the entry point's gates resolved to something
+ * enforceable, per `gate_classification.ts`'s vocabulary.
+ * `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
  * deep walk finds a note reachable only through a join — see that function's
  * doc for why that must gate the relaxation independently of
  * `classification`: `collectEntryPointGates` does not trace joins, so a
@@ -760,13 +767,16 @@ function detectDroppedPersistSources(
  * mints a new given identity per call).
  *
  * Gate GROUPS: each `GateEntry` `collectEntryPointGates` returns is one AND'd
- * group (its own OR-disjunction already folded by `resolveGateShape`'s
+ * group (its own conjunction already folded by `resolveGateShape`'s
  * `gateFilterText`); groups are classified independently here and combined
  * with enforcement's own dominance rule — refuse if ANY group rejects, else
  * `row_level`. No entry-point gate at all (`groups.length === 0`) is
  * vacuously `row_level` (no group to reject) — the source is unrestricted at
  * its entry point; `attributed` is what still catches a gate hiding behind a
- * join in that case.
+ * join in that case. A repeated `#(authorize)` term that any ONE of its
+ * siblings can't express (materialization-ineligible) now rejects the whole
+ * group, where before a source could declare at most one term — narrower
+ * than before, not looser.
  *
  * Fails CLOSED: a throw anywhere in classification (this function's own
  * `try`, not `resolveGateShape`'s internal one — that already degrades a
@@ -1081,7 +1091,7 @@ export function deriveBuildPlan(
          // executeInstructedBuild): a declared `storage=` gets the full,
          // unconditional storage-destination gate; a plain `#@ persist` gets the
          // colocated gate, which — unlike the storage one — admits a proven
-         // row-level, fully-attributed `#(authorize)` gate. Using the storage
+         // resolved, fully-attributed gate. Using the storage
          // gate for every source regardless of declared tier (the existing
          // `SourceEligibility.refused`, kept for its own serve-binding purpose)
          // would misreport a now-buildable colocated source as refused.

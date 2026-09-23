@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
 import {
    API_PREFIX,
+   INDEX_MODEL_NAME,
    normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    README_NAME,
@@ -1847,6 +1848,9 @@ export class Environment {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
                existingPackage.getMalloyConfig().shutdown("close"),
             );
+            _package.noteSurfaceChangeFrom(
+               existingPackage.getPackageMetadata().explores,
+            );
          }
          this.packages.set(packageName, _package);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
@@ -2584,11 +2588,30 @@ export class Environment {
          // overwritten when the caller explicitly provides them; otherwise the
          // existing on-disk value is preserved via the spread (an undefined here
          // must not erase it).
+         // A convention-derived surface is never written. A GET of an
+         // index.malloy-curated package echoes the surface the server derived,
+         // so an ordinary read-modify-write PATCH -- one that meant to change
+         // only the description -- hands that derived value back, and writing
+         // it would freeze a surface that tracks the file into a key that does
+         // not. The two behave identically until the file is renamed or
+         // replaced: the convention then follows it, while the frozen key names
+         // a model that no longer exists, and the package silently lists and
+         // serves nothing. Recognizable because it is the exact value the
+         // convention produces, in a manifest that declares no `explores` (a
+         // surface naming a file that is not there was already rejected
+         // upstream by formatInvalidExplores, so the file exists). Declaring it
+         // by hand buys nothing the convention does not already give.
+         const echoesDerivedSurface =
+            existingManifest.explores === undefined &&
+            Array.isArray(metadata.explores) &&
+            metadata.explores.length === 1 &&
+            metadata.explores[0] === INDEX_MODEL_NAME;
+
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
-            ...(metadata.explores !== undefined
+            ...(metadata.explores !== undefined && !echoesDerivedSurface
                ? { explores: metadata.explores }
                : {}),
             ...(metadata.queryableSources !== undefined

@@ -118,6 +118,27 @@ Output, exactly this shape:
    reading that produced it, that is `no_match`. Use `near_match` only when you
    can name the rubric clause that makes the difference defensible.
 
+   **A rubric clause cannot make a wrong VALUE defensible, and a clause that
+   tries is a defect in the rubric rather than a licence to you.** `near_match`
+   turns on the answer being right under a reading the QUESTION allows -- a tie
+   broken the other way, a grain the question left open, a basis the question
+   never fixed. It does not turn on the answer being transparent about how it
+   got a figure the question did not ask for. Those two look alike in a rubric
+   and are opposites in a report: one is a number a reader can act on, the
+   other is a number a reader would act on wrongly. Naming the method makes a
+   wrong figure DIAGNOSABLE, which is worth having, and it is not partial
+   credit.
+
+   The test, before you write `near_match` on a case with a value: would a
+   reader who acted on this figure be wrong? If yes, it is `no_match` however
+   plainly the answer explained itself, and however the rubric is worded. Say
+   in `why` that you are overriding a rubric clause, so the clause gets fixed.
+   This rule exists because a set shipped one: a question asked for sales over
+   the company's season, the answer gave the meteorological window 25% lower
+   and said which window it used, and a clause granting `near_match` for a
+   stated window kept a materially wrong answer out of the pass rate
+   entirely -- the arm reported 100%.
+
    It is a third outcome because as a pass it was a large share of the measured
    noise: the same unchanged answer reads `match` in one run and `near_match`
    in the next, and the pass rate moves although nothing did. A verdict whose

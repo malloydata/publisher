@@ -41,7 +41,7 @@
 
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { ownLevelNotes, ownLevelNoteTexts } from "./annotations";
-import { collectAuthorizeExprs } from "./authorize";
+import { collectAuthorizeExprsForRoute } from "./authorize";
 
 /**
  * Link budget for {@link ancestorGateExprs}'s derivation walk. Exceeding it
@@ -124,16 +124,39 @@ export function resolveDeclaredSource(
  * Fail-closed on unreadable IR: an exhausted `annotations.inherits` walk (the
  * cap was hit) or an `unresolvable` registry link returns `["false"]` rather
  * than `[]` — the chain exists and was not read to its end, so "no gate" would
- * be a silent allow on a source whose base may be locked.
+ * be a silent allow on a source whose base may be locked. That sentinel is
+ * synthesized on EITHER route, not only the `authorize` route: because
+ * own-wins-over-ancestor is decided independently per route (an ancestor with
+ * its own `#(authorize)` note but no `#(authorize)` one resolves one
+ * route right there and sends only the other further up the chain), the two
+ * routes' walks over the same struct can diverge before either one reaches
+ * this same unreadable branch — a `authorize` call cannot rely on an
+ * `authorize` call (over the same struct, same modelDef) having already
+ * denied via its own `["false"]`, because it may never have reached this
+ * branch at all. Synthesizing on both risks folding two `false` filters into
+ * one grafted materializer for the same query instead of one — harmless
+ * (still zero rows, same `AccessDeniedError`) and, per the per-query
+ * `recordRowLevelGateDecision` call sites, does not double the metric either.
+ *
+ * `route` filters every level's own notes to that route ONLY
+ * ({@link collectAuthorizeExprsForRoute}) — this is what makes
+ * own-wins-over-ancestor PER ROUTE: an ancestor's `#(authorize)` note
+ * does not satisfy a caller asking for `route === "authorize"`, so the walk
+ * correctly continues past it (or falls through to the fail-closed sentinel)
+ * rather than treating an unrelated route's note as "no gate here, stop".
  */
 export function ancestorGateExprs(
    struct: SourceDef,
    modelDef: ModelDef | undefined,
+   route: string,
    seen: Set<SourceDef> = new Set(),
 ): string[] {
    let inherited = struct.annotations?.inherits;
    for (let depth = 0; inherited && depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const exprs = collectAuthorizeExprs(ownLevelNoteTexts(inherited));
+      const exprs = collectAuthorizeExprsForRoute(
+         ownLevelNoteTexts(inherited),
+         route,
+      );
       if (exprs.length > 0) return exprs;
       inherited = inherited.inherits;
    }
@@ -142,18 +165,22 @@ export function ancestorGateExprs(
    // hop: `seen` (struct identity) is what stops a cycle, so truncating the
    // recursion would just lose a gate two declarations up (fail open).
    seen.add(struct);
-   if (seen.size > ANCESTOR_WALK_MAX_DEPTH) return ["false"];
+   if (seen.size > ANCESTOR_WALK_MAX_DEPTH) {
+      return ["false"];
+   }
    const declared = resolveDeclaredSource(struct, modelDef);
    // A registry entry we found but could not read is NOT the same as "this
    // struct has no base" — it means the link to a base exists and the walk
    // failed to follow it, so the gate on the other end is unknown. Deny.
-   if (declared.kind === "unresolvable") return ["false"];
+   if (declared.kind === "unresolvable") {
+      return ["false"];
+   }
    // A CYCLE returns `[]` ("no gate here"), not `["false"]`, and that is sound
    // because of a CALLER PRECONDITION, not because a cycle is harmless in
    // itself. Every call site reads the struct's OWN gate first and only calls
    // this walk when that came back empty (`./gate_classification`'s
    // `gateExprsForOwnAnnotations`, `extractSourcesFromModelDef`'s
-   // `ownGates.length === 0`). So on an A->B->A cycle the struct at the far
+   // per-route own-exprs check). So on an A->B->A cycle the struct at the far
    // end is either an ancestor whose own notes the line below has already
    // read, or the starting struct itself — whose own gate the caller read
    // before calling. Nothing is skipped either way.
@@ -164,12 +191,13 @@ export function ancestorGateExprs(
    // read — that read IS the precondition, and losing it turns this `[]` into a
    // real fail-open with nothing else to catch it.
    if (declared.kind === "none" || seen.has(declared.source)) return [];
-   const exprs = collectAuthorizeExprs(
+   const exprs = collectAuthorizeExprsForRoute(
       ownLevelNoteTexts(declared.source.annotations),
+      route,
    );
    return exprs.length > 0
       ? exprs
-      : ancestorGateExprs(declared.source, modelDef, seen);
+      : ancestorGateExprs(declared.source, modelDef, route, seen);
 }
 
 /**
@@ -251,19 +279,25 @@ export function resolveCompositeResolvedBase(
  * `@malloydata/malloy` — the same by-reference copy this module's header
  * documents for `extend {}`). Reading the member's own notes without
  * excluding that copy would fold the base's gate INTO the member's own group
- * — one source's disjunction polluted with another source's condition, which
- * reintroduces the identical AND-becomes-OR leak one level down even after
- * the two hops are kept as separate groups. `parentOwnNotes` — the base's own
- * notes, by IDENTITY — is subtracted from the member's own notes before they
- * are read, exactly the discriminator `Model.findSourceByOwnAnnotationIdentity`
+ * — one source's conjunction polluted with another source's condition, which
+ * reintroduces the base's term under the member's attribution one level down
+ * even after the two hops are kept as separate groups. `parentOwnNotes` — the
+ * base's own notes, by IDENTITY — is subtracted from the member's own notes
+ * before they are read, exactly the discriminator
+ * `Model.findSourceByOwnAnnotationIdentity`
  * (`service/model.ts`) already uses for the analogous join-field question.
+ *
+ * `route` is threaded through every own-notes read and every recursive call —
+ * see {@link ancestorGateExprs}'s doc for why own-wins-over-ancestor and the
+ * fail-closed sentinel both have to be decided PER ROUTE.
  */
 export function effectiveAncestorGateExprs(
    struct: SourceDef,
    modelDef: ModelDef | undefined,
+   route: string,
    seen: Set<SourceDef> = new Set(),
 ): string[][] {
-   const direct = ancestorGateExprs(struct, modelDef, new Set(seen));
+   const direct = ancestorGateExprs(struct, modelDef, route, new Set(seen));
    if (direct.length > 0) return [direct];
    if (seen.has(struct)) return [];
    seen.add(struct);
@@ -271,15 +305,26 @@ export function effectiveAncestorGateExprs(
    const base = resolveQuerySourceBase(struct, modelDef);
    if (!base) {
       const duck = struct as unknown as { type: string };
-      if (duck.type === "query_source") groups.push(["false"]);
+      // The fail-closed sentinel, synthesized on BOTH routes — see
+      // `ancestorGateExprs`'s doc for why own-wins-over-ancestor is decided
+      // per route, so a `authorize` call cannot rely on the
+      // `authorize` call over the same struct having already denied here.
+      // Closes a structural gap in the walk rather than a documented live
+      // leak: the two routes' walks over the same struct can diverge before
+      // either reaches this branch, but every construction found so far
+      // fails package load before a served model can exercise it.
+      if (duck.type === "query_source") {
+         groups.push(["false"]);
+      }
    } else if (!seen.has(base)) {
-      const ownExprs = collectAuthorizeExprs(
+      const ownExprs = collectAuthorizeExprsForRoute(
          ownLevelNoteTexts(base.annotations),
+         route,
       );
       groups.push(
          ...(ownExprs.length > 0
             ? [ownExprs]
-            : effectiveAncestorGateExprs(base, modelDef, seen)),
+            : effectiveAncestorGateExprs(base, modelDef, route, seen)),
       );
    }
    const composite = resolveCompositeResolvedBase(struct);
@@ -288,13 +333,14 @@ export function effectiveAncestorGateExprs(
       const compositeOwnNotes = ownLevelNotes(composite.annotations).filter(
          (note) => !parentOwnNotes.includes(note),
       );
-      const compositeOwn = collectAuthorizeExprs(
+      const compositeOwn = collectAuthorizeExprsForRoute(
          compositeOwnNotes.map((note) => note.text),
+         route,
       );
       groups.push(
          ...(compositeOwn.length > 0
             ? [compositeOwn]
-            : effectiveAncestorGateExprs(composite, modelDef, seen)),
+            : effectiveAncestorGateExprs(composite, modelDef, route, seen)),
       );
    }
    return groups;

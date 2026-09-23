@@ -528,7 +528,17 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
          # pins that identity never caught it because every row it builds
          # supplies a required entity.
          "passed_not_covered": 0, "passed_not_retrieved": 0,
-         "passed_unmeasured": 0, "passed_no_entities_named": 0}
+         "passed_unmeasured": 0, "passed_no_entities_named": 0,
+         # Recall, tallied OUTSIDE the funnel. The funnel is an elif chain, so a
+         # row whose coverage was never measured stops at rung 1 and never
+         # reaches the recall check -- `not retrieved` is then structurally 0,
+         # and a display that subtracts it from a denominator reports every
+         # retrieval as a success. That is what happened: 12 cases, coverage
+         # unknown, three of them at recall 0.5, printed "retrieved? 12 yes, 0
+         # no". These two count every row whose recall was actually computed and
+         # whose coverage is not a KNOWN gap, so the rung says what was measured
+         # whether or not coverage ran.
+         "recall_scored": 0, "recall_short": 0}
     for r in rows:
         cov = r["coverage"]
         passed = not r["failed"] and r["verdict"] not in UNSCORED
@@ -550,6 +560,9 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
             c["delivered, wrong"] += 1
         else:
             c["delivered, right"] += 1
+        if cov not in MEASURED_GAPS and r["recall"] is not None:
+            c["recall_scored"] += 1
+            c["recall_short"] += r["recall"] < 1.0
     return c
 
 
