@@ -451,9 +451,11 @@ export class FrozenConfigError extends Error {
 }
 
 /**
- * A request was denied by a source's `#(authorize)` gate (HTTP 403). Thrown by
- * the runtime authorize check when no in-scope expression evaluates true for
- * the supplied givens (including when a referenced given has no value).
+ * A request was refused access to a source (HTTP 403), for one of two reasons:
+ * an `#(authorize)` lock the supplied givens do not satisfy, or either route's
+ * gate failing to apply at all (an unresolvable shape, nothing to attach to, a
+ * referenced given with no value). An `#(access_filter)` that simply matches no
+ * row is NOT this — that is a 200 with the caller's (empty) rows.
  */
 export class AccessDeniedError extends Error {
    constructor(message: string) {

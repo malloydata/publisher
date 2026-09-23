@@ -21,7 +21,7 @@ That check reads in ONE direction only. `count(joined.field)` is a distinct coun
 run: flights -> {
   aggregate:
     all_rows is count()
-    missing is count() { where: aircraft.aircraft_models.seats = null }
+    missing is count() { where: aircraft.aircraft_models.seats is null }
 }
 ```
 

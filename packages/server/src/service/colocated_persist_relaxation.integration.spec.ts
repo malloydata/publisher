@@ -128,7 +128,7 @@ async function buildAndBindColocated(
    });
 }
 
-describe("colocated persist + row-level #(authorize): compose end to end", () => {
+describe("colocated persist + row-level #(access_filter): compose end to end", () => {
    it(
       "a direct entry-point gate: two principals see DIFFERENT rows from the SAME bound artifact",
       async () => {
@@ -142,7 +142,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (1, 20), (2, 30), (2, 40)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="orders"
 source: orders is base -> { select: org_id, amount } extend {}
 `,
@@ -199,7 +199,7 @@ source: orders is base -> { select: org_id, amount } extend {}
 
 given: ORG :: number
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 source: locked is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """) extend {}
@@ -239,16 +239,27 @@ source: derived is locked extend {} -> { select: org_id, amount }
    );
 
    it(
-      "an always-false gate produces a bound artifact with zero rows for every principal",
+      "an empty-array given filters the bound artifact to zero rows, not just the live source",
       async () => {
+         // `GROUPS: []` is a SUPPLIED value, not an unbound given — `in`
+         // against an empty array compiles to a live `WHERE FALSE`, which
+         // must run against whichever tier actually serves the read. This
+         // proves the graft reaches the bound PERSISTED artifact, not only
+         // a live recompute: `locked_out_materialized` seeds rows for both
+         // org_id 1 and 2, so a result of `[]` can only come from the gate's
+         // filter actually applying to that bound table, never from a
+         // coincidentally-empty seed.
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given: GROUPS :: number[]
 
 source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) false
+#(access_filter) org_id in $GROUPS
 #@ persist name="locked_out"
 source: locked_out is base -> { select: org_id, amount } extend {}
 `,
@@ -263,6 +274,7 @@ source: locked_out is base -> { select: org_id, amount } extend {}
          const rows = await run(
             pkg,
             "run: locked_out -> { select: org_id, amount }",
+            { GROUPS: [] },
          );
          expect(rows).toEqual([]);
       },
@@ -282,7 +294,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="orders"
 source: orders is base -> { select: org_id, amount } extend {}
 `,
@@ -339,7 +351,7 @@ source: raw is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="base_orders"
 source: base_orders is raw -> { select: org_id, amount }
 
@@ -394,7 +406,7 @@ given:
 // Members carry DISTINGUISHABLE amounts so the assertion can tell WHICH
 // member the composite resolved to; identical member data would pass even
 // if the ungated member_b won.
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: member_a is duckdb.sql("""
   SELECT * FROM (VALUES (7, 1), (8, 2)) AS t(org_id, amount)
 """) extend {}
@@ -432,31 +444,29 @@ source: comp is combo -> { select: org_id, amount }
    );
 
    it(
-      "a givenless fixed-value gate composes over a colocated persist the same way a $GROUPS gate does",
+      "a fixed-value gate composes over a colocated persist the same way a $GROUPS gate does",
       async () => {
-         // Distinct from the `$GROUPS` case above in the one way that
-         // matters here: this gate references NO given, so its whole value is
-         // known without a request. The graft must still be applied per query
-         // against the BOUND ARTIFACT rather than folded into the build — a
-         // fixed predicate is the one shape an optimizer would be tempted to
-         // push into the CREATE-TABLE-AS, which would bake one caller's view
-         // into the shared artifact. The row set below proves it filtered
-         // the artifact's rows (amount 1000, not the defining query's 10).
-         //
-         // It also loads with W1 (`source_line_gate_no_given_reference`)
-         // warning, since a givenless gate is a fixed predicate rather than
-         // an access rule — that is the warning's intended shape, not a
-         // failure. W1's own producing coverage lives in
-         // `source_line_authorize_integration.spec.ts`.
+         // Every gate references a given now (a givenless fixed predicate is
+         // not expressible in the grammar), so this exercises the SAME
+         // caller-supplied value on every call, rather than a truly
+         // givenless one. The graft must still be applied per query against
+         // the BOUND ARTIFACT rather than folded into the build — a
+         // predicate that happens to be constant across this test's calls is
+         // exactly the shape an optimizer would be tempted to push into the
+         // CREATE-TABLE-AS, which would bake one caller's view into the
+         // shared artifact. The row set below proves it filtered the
+         // artifact's rows (amount 1000, not the defining query's 10).
          const pkg = await loadPackageFiles({
-            "model.malloy": `##! experimental.persistence
+            "model.malloy": `##! experimental { persistence givens }
+
+given: ORG :: string
 
 source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 'org1', 10), (2, 'org2', 20)) AS t(id, org_id, amount)
 """)
 
 #@ persist name="orders"
-#(authorize) org_id = 'org1'
+#(access_filter) org_id = $ORG
 source: orders is base -> { select: id, org_id, amount } extend {
 }
 `,
@@ -471,6 +481,7 @@ source: orders is base -> { select: id, org_id, amount } extend {
          const rows = await run(
             pkg,
             "run: orders -> { select: org_id, amount }",
+            { ORG: "org1" },
          );
          expect(rows).toEqual([{ org_id: "org1", amount: 1000 }]);
       },
@@ -499,7 +510,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 'org1', 10), (2, 'org2', 20)) AS t(id, org_id, amount)
 """)
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 #@ persist name="orders"
 source: orders is base -> { select: id, org_id, amount }
 `,
@@ -551,7 +562,7 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="orders"
 source: orders is base -> { select: amount }
 `,

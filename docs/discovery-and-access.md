@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 # Discovery surface & query boundary
 
 > What this is: how a package controls **which** models and sources are visible and queryable. This
-> is a different axis from [givens](givens.md)-based access control: it shapes the *surface* (what
+> is a different axis from [givens](givens.md)-based access control: it shapes the _surface_ (what
 > exists and what is a valid query target) regardless of who is asking. To gate **who** may query a
 > source by caller identity, see [authorize.md](authorize.md); to scope **which rows** they see, see
 > [row-level-access.md](row-level-access.md).
@@ -42,11 +42,11 @@ within a listed file are shown.
 
 ## Query boundary — `queryableSources`
 
-Controls whether that discovery surface is *also* a query boundary. `"declared"` (the default) makes
+Controls whether that discovery surface is _also_ a query boundary. `"declared"` (the default) makes
 **queryable == discoverable**: when `explores` is declared, only `explores` files are valid query
 entry points, and the queryable sources are the union of those files' `export {}` closures — so a
 source exported by any listed file stays queryable whichever listed model path a request addresses it
-through. Admission is by *declaration*, not by name: a request clears only when the model it names
+through. Admission is by _declaration_, not by name: a request clears only when the model it names
 resolves the name to the very source a listed file exported, so a same-named source declared in a
 hidden file is not admitted by the coincidence. Every other source still compiles, imports, joins,
 and extends, but a direct query against it is denied with a `404` (indistinguishable from a
@@ -63,20 +63,22 @@ every source queryable by name; switch to `"declared"` when ready to enforce the
 
 > **`explores`/`export {}` are a discovery filter; `queryableSources` decides if they also gate
 > queries; `#(authorize)` is the identity gate.** With `queryableSources: "all"`, hiding a source
-> only removes it from listings — it stays queryable by name. To restrict *who* can query (as opposed
-> to *what* is queryable), gate the source with `#(authorize)` (see [authorize.md](authorize.md));
-> those gates are enforced against the complete source set and are never weakened by listing or
-> boundary curation.
+> only removes it from listings — it stays queryable by name. To restrict _who_ can query (as opposed
+> to _what_ is queryable), lock the source with `#(authorize)` (see [authorize.md](authorize.md));
+> to narrow _which rows_ an admitted caller sees, add `#(access_filter)`. Both are enforced against
+> the complete source set and are never weakened by listing or boundary curation.
 >
-> The `queryableSources` boundary applies to the *query* surface (`getQueryResults` and the MCP query
+> The `queryableSources` boundary applies to the _query_ surface (`getQueryResults` and the MCP query
 > tool). It does **not** gate `/compile` (or `compile_model`): compile is the authoring loop, so a
 > curated package stays authorable, and the boundary is discovery curation rather than access
 > control. The consequence is that `/compile` can reveal a hidden source's schema, and with
 > `includeSql` its SQL. It does **not** cover raw retrieval by exact path either — a hidden model's
 > file text and its compiled metadata are still fetchable by path — by design; use `#(authorize)`
-> when the contents themselves must be protected, not just removed from discovery. A source that is
-> both hidden and `#(authorize)`-gated still answers `/compile` with the boundary's generic `404`, so
-> the exemption cannot be used to enumerate gated names.
+> when the contents themselves must be protected, not just removed from discovery. `#(authorize)` is
+> the annotation that closes this: a lock is truth-evaluated on `/compile`, so a refused caller gets
+> a `403` and no SQL. `#(access_filter)` is not — it decides rows, and `/compile` returns none. A
+> source that is both hidden and locked still answers `/compile` with the boundary's generic `404`,
+> so the exemption cannot be used to enumerate gated names.
 
 ## Runnable example
 

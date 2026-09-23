@@ -110,7 +110,7 @@ source: spotlight_carrier is duckdb.table('data/carriers.parquet') extend {
 }
 ```
 
-Declare givens at the **top of the model file**, before the source that uses them, not in the notebook. `malloy-model` § Access Control covers the syntax and the `#(authorize)` gating story built on top of givens.
+Declare givens at the **top of the model file**, before the source that uses them, not in the notebook. `malloy-model` § Access Control covers the syntax and the `#(authorize)`/`#(access_filter)` gating story built on top of givens.
 
 ## Legacy: `#(filter)` annotations
 

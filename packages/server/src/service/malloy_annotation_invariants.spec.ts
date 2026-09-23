@@ -47,6 +47,7 @@ import {
 } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import * as fs from "fs";
 
 const ROOT = "file:///malloy-annotation-invariants-tests/";
@@ -152,13 +153,15 @@ describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", (
    // fixed in `effectiveAncestorGateExprs` (`gate_registry_walk.ts`): reading
    // the resolved member's own notes without first identity-subtracting the
    // composite parent's (`parentOwnNotes`/`compositeOwnNotes` there) folds
-   // TWO different sources' conditions into one OR'd list, silently turning
-   // this file's own AND-across-sources rule into an OR. If Malloy stops
-   // copying the composite parent's note onto the resolved member (or starts
-   // copying a re-parsed COPY instead of the same object), the identity
-   // subtraction in `effectiveAncestorGateExprs` stops matching anything,
-   // `compositeOwnNotes` silently includes the parent's note again, and the
-   // P0 leak reopens with no other signal.
+   // TWO different sources' conditions into one list attributed to a single
+   // source, silently misattributing which source declared which term (the
+   // fold result is harmless — both levels AND — but validation keyed on the
+   // wrong declaring source can pass a gate it should reject). If Malloy
+   // stops copying the composite parent's note onto the resolved member (or
+   // starts copying a re-parsed COPY instead of the same object), the
+   // identity subtraction in `effectiveAncestorGateExprs` stops matching
+   // anything, `compositeOwnNotes` silently includes the parent's note
+   // again, and the P0 leak reopens with no other signal.
    // -------------------------------------------------------------------
    it("composite: a resolved member's own notes include BOTH the composite parent's own note and the member's own, by reference", async () => {
       const modelDef = await compileModel(`##! experimental.composite_sources
@@ -167,12 +170,12 @@ describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", (
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) region = 'us'
+#(access_filter) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -217,12 +220,12 @@ source: qs is combo -> { group_by: org_id }
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) region = 'us'
+#(access_filter) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -260,7 +263,7 @@ source: qs is combo -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("extend {}: a trivial derivation shares the base's own note object by reference, at the TOP level (no .inherits demotion)", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: base is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: derived is base extend {}
@@ -290,10 +293,10 @@ source: derived is base extend {}
    // text. See the report for the pasted failing run.
    it("extend {}: two independently-declared sources with identical gate text are DISTINCT note objects (not shared)", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: indepA is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
 `);
       const indepA = modelDef.contents["indepA"] as StructDef;
@@ -325,10 +328,10 @@ source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
    // -------------------------------------------------------------------
    it("extend with its OWN #(authorize): the authored note is a distinct object, and the base's own note is demoted to .inherits", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: base3 is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) org_id > 5
+#(access_filter) org_id > 5
 source: derived3 is base3 extend {}
 `);
       const base3 = modelDef.contents["base3"] as StructDef;
@@ -367,7 +370,7 @@ source: derived3 is base3 extend {}
    // -------------------------------------------------------------------
    it("query_source: the struct itself carries no annotations at all", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: base4 is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: z4 is base4 -> { group_by: org_id }
@@ -404,7 +407,7 @@ source: z4 is base4 -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("join_one: an unannotated join copies the joined source's own gate note onto the join field, by reference", async () => {
       const modelDef = await compileModel(`
-#(authorize) org_id > 0
+#(access_filter) org_id > 0
 source: salaries is duckdb.sql("SELECT 7 as org_id, 1 as id") extend {}
 
 source: emp is duckdb.sql("SELECT 1 as id") extend {
@@ -523,6 +526,63 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
          expect(routesToAuthorize(text)).toBe(false);
       }
    });
+
+   // Same claim about Malloy's routing, for the two canonical route names. A
+   // rename only holds if the compiler actually routes the new spellings, and
+   // only those — `#(access_filter)` silently not routing would turn a locked
+   // source into one that serves every row, load-clean.
+   it.each([ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE])(
+      "annotation routing: exactly these spellings reach the `%s` route",
+      (route) => {
+         const at = {
+            url: `${ROOT}m.malloy`,
+            range: {
+               start: { line: 0, character: 0 },
+               end: { line: 0, character: 0 },
+            },
+         };
+         const routesTo = (text: string): boolean =>
+            new Annotations({ notes: [{ text, at }] }).forRoute(route).length >
+            0;
+
+         for (const text of [
+            `#(${route}) "x=1"`,
+            `##(${route}) "x=1"`,
+            `#|(${route}) "x=1"`,
+            `##|(${route}) "x=1"`,
+            `#[${route}] "x=1"`,
+            `#<${route}> "x=1"`,
+            `#{${route}} "x=1"`,
+         ]) {
+            expect(routesTo(text)).toBe(true);
+         }
+
+         // The near misses, including the hyphenated spelling this rename
+         // refuses rather than aliases, and the case variant — both are
+         // DIFFERENT routes as far as the compiler is concerned, which is
+         // exactly why publisher has to refuse them rather than ignore them.
+         // The sibling route is in here too: the two names must not collide.
+         const sibling =
+            route === AUTHORIZE_ROUTE ? ACCESS_FILTER_ROUTE : AUTHORIZE_ROUTE;
+         for (const text of [
+            `# (${route}) "x=1"`,
+            `## (${route}) "x=1"`,
+            `#( ${route} ) "x=1"`,
+            `#(${route} ) "x=1"`,
+            `#(${route})X "x=1"`,
+            `#${route} "x=1"`,
+            `#(${route.toUpperCase()}) "x=1"`,
+            `#(${route}d) "x=1"`,
+            ...(route.includes("_")
+               ? [`#(${route.replaceAll("_", "-")}) "x=1"`]
+               : []),
+            `#(${sibling}) "x=1"`,
+            "# bar_chart",
+         ]) {
+            expect(routesTo(text)).toBe(false);
+         }
+      },
+   );
 
    it("given: `_internal.defaultText` is the rendered default literal, and is absent when no default is declared", async () => {
       // This one does not pin a discriminator — it pins a private Malloy

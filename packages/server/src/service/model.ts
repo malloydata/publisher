@@ -99,19 +99,20 @@ import {
 } from "./annotations";
 import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
-   assertAtMostOneAuthorizeGate,
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
+   hasCallerAuthorizeAnnotation,
    findLegacyStringGates,
-   findMultipleAuthorizeGates,
    referencedGivenNames,
    validateAuthorizeProbes,
    type AuthorizeMap,
+   type AuthorizeOwnNotesMap,
    type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
    validateSourceLineGateGivenUsage,
@@ -124,7 +125,7 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { malloyGivenToApi, type MalloyGiven } from "./given";
+import { gateGivenSource, malloyGivenToApi, type MalloyGiven } from "./given";
 import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
@@ -158,7 +159,6 @@ import {
    type PreaggregateViolation,
 } from "./preaggregation_validation";
 import { derivedStructsReachable } from "./gate_registry_walk";
-import { containsPartitionAnnotationTag } from "./partition_annotation";
 // Aliased with an `Impl` suffix: `Model` declares its own private methods of
 // these same names (thin per-instance wrappers, see each one's doc) — an
 // unaliased import would only work today because a method body's unqualified
@@ -167,17 +167,18 @@ import { containsPartitionAnnotationTag } from "./partition_annotation";
 // than leaving a trap where converting one of those methods to an
 // arrow-function class property would recurse instead of delegating.
 import {
-   assertPartitionAnnotationsValid,
+   assertAuthorizeGrammarValid,
+   assertNoRetiredRouteMarkers,
    collectEntryPointGates as collectEntryPointGatesImpl,
+   collectRetiredRouteMarkers,
+   computeGivenDeclaredTypes,
    createGateClassificationDeps,
-   resolveEntryPointPartitions,
    resolveGateShape as resolveGateShapeImpl,
    resolveGraftTarget as resolveGraftTargetImpl,
-   resolvePartitionGraftEntries,
    type GateClassificationDeps,
    type GateEntry,
    type GraftScope,
-   type PartitionGraftEntry,
+   type RowLevelGraftEntry,
 } from "./gate_classification";
 import {
    collectSourceInfos,
@@ -185,14 +186,68 @@ import {
    extractSourcesFromModelDef,
 } from "./source_extraction";
 import {
+   recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
+   recordLockDecision,
    recordRowLevelGateDecision,
    recordRowLevelGateRejected,
    type AuthorizeBypassEntryPoint,
    type AuthorizeGuardField,
 } from "../authorize_metrics";
+import { decideLock } from "./authorize_lock";
 import { safeJoinUnderRoot } from "../path_safety";
+
+/**
+ * The shared tail of every gate resolution that is not a row filter: a
+ * `#(authorize)` lock is DECIDED, and anything else — or a lock that does not
+ * admit this caller — is a 403 naming only the source.
+ *
+ * One helper rather than a copy at each call site because the two callers
+ * (`assertAuthorized`'s pre-compile gate and `probeEntryPointGates`' walk) are
+ * not two decisions: the early gate exists to reach the SAME answer the
+ * compiled backstop reaches, and a divergence between them is a schema
+ * oracle, not an inconsistency.
+ */
+function denyUnlessAdmitted(
+   resolution:
+      | {
+           shape: "lock";
+           condition: { e?: unknown };
+           givenNamesById: ReadonlyMap<string, string>;
+        }
+      | { shape: "rejected"; cause?: RowLevelGateRejectionCause },
+   givens: Record<string, GivenValue>,
+   label: string,
+): void {
+   if (resolution.shape === "lock") {
+      const outcome = decideLock(
+         resolution.condition.e,
+         (id) => resolution.givenNamesById.get(id),
+         givens,
+      );
+      if (outcome === "admit") {
+         recordLockDecision("admitted");
+         return;
+      }
+      // Both refusals are the same 403 to the caller; only the label differs,
+      // so an operator can alert on a gate that could not be decided without
+      // firing on one that is working.
+      recordLockDecision(
+         outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
+      );
+      throw new AccessDeniedError(`Access denied for source "${label}".`);
+   }
+   recordLockDecision("denied_unresolvable");
+   // Also booked on the row-level counter: a gate refused at SHAPE resolution
+   // is a fail-closed rejection wherever it was resolved, and an operator
+   // reading `publisher_authorize_row_level_total{decision="denied_by_gate"}`
+   // must not have a whole class of them silently missing. `cause` is the
+   // separate, finer rejection label, not a substitute for it.
+   recordRowLevelGateDecision("denied_by_gate");
+   if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
+   throw new AccessDeniedError(`Access denied for source "${label}".`);
+}
 
 /**
  * What a request boundary contributes to a model query's per-query metadata: the
@@ -727,18 +782,29 @@ export class Model {
       } catch {
          this.entryPointGatesBySource = new Map();
       }
-      // Make introspection agree with enforcement. `sources[].authorize` is
-      // serialized to the API and read by downstream enforcers, so leaving the
-      // narrower value there reports a gated source as unrestricted — the more
-      // dangerous of the two possible errors. Mutating in place (rather than at
-      // the API boundary) keeps getSources()/getAuthorize()/the early gate on one
-      // answer instead of three.
+      // Make introspection agree with enforcement. `sources[].authorize` and
+      // `sources[].accessFilter` are serialized to the API and read by
+      // downstream enforcers, so leaving the narrower extraction-time value
+      // there reports a gated source as unrestricted — the more dangerous of
+      // the two possible errors. Mutating in place (rather than at the API
+      // boundary) keeps getSources()/getAuthorize()/the early gate on one
+      // answer instead of three. Split BY ROUTE — `authorize` gets only
+      // `AUTHORIZE_ROUTE` entries and `accessFilter` only
+      // `ACCESS_FILTER_ROUTE` ones — so the two wire fields cannot
+      // disagree with each other the way a single flattened list would.
       for (const source of this.sources ?? []) {
          if (!source.name) continue;
-         const exprs = this.entryPointGatesBySource
-            .get(source.name)
-            ?.flatMap((g) => g.exprs);
-         if (exprs && exprs.length > 0) source.authorize = exprs;
+         const gates = this.entryPointGatesBySource.get(source.name);
+         const exprsForRoute = (route: string): string[] | undefined => {
+            const exprs = gates
+               ?.filter((g) => g.route === route)
+               .flatMap((g) => g.exprs);
+            return exprs && exprs.length > 0 ? exprs : undefined;
+         };
+         const lockExprs = exprsForRoute(AUTHORIZE_ROUTE);
+         if (lockExprs) source.authorize = lockExprs;
+         const filterExprs = exprsForRoute(ACCESS_FILTER_ROUTE);
+         if (filterExprs) source.accessFilter = filterExprs;
       }
       // Guarded defensively: a malformed gate reachable only through a
       // join/derivation must not throw out of the constructor
@@ -779,7 +845,7 @@ export class Model {
    }
 
    /**
-    * Retain the runtime a row-level `#(authorize)` gate grafts through — see
+    * Retain the runtime a row-level `#(access_filter)` gate grafts through — see
     * {@link gateRuntime}. Called once by each construction path
     * (`Model.create`, `fromSerialized`) right after `new Model(...)`, rather
     * than threaded as a constructor parameter: the constructor already has
@@ -974,6 +1040,18 @@ export class Model {
    }
 
    /**
+    * Effective `#(access_filter)` expressions filtering a source's rows — the
+    * mirror of {@link getAuthorize} for the filter route ONLY. Same
+    * introspection-only caveats apply.
+    */
+   public getAccessFilter(sourceName: string): string[] {
+      return (
+         this.sources?.find((source) => source.name === sourceName)
+            ?.accessFilter ?? []
+      );
+   }
+
+   /**
     * Filter caller-supplied givens down to the ones safe to forward to the
     * REAL query's `getPreparedResult`/`run`. A caller may legitimately need
     * to supply a value only so a gate carried in from a derivation base can
@@ -1161,14 +1239,12 @@ export class Model {
    }
 
    /**
-    * Every struct {@link hasAnyAuthorizeNote} and {@link hasAnyPartitionNote}
-    * sweep for an annotation tag: every top-level `modelDef.contents` source,
-    * every non-reference `sourceRegistry` entry, plus everything reachable
-    * from those through a derivation hop ({@link derivedStructsReachable}).
-    * Extracted so the two sweeps — otherwise identical except for which tag
-    * they look for — can't drift apart on WHICH structs get walked, only on
-    * what they walk them for. See {@link hasAnyAuthorizeNote}'s doc for why
-    * this has to be a superset of what `collectEntryPointGates` can reach.
+    * Every struct {@link hasAnyAuthorizeNote} sweeps for an annotation tag:
+    * every top-level `modelDef.contents` source, every non-reference
+    * `sourceRegistry` entry, plus everything reachable from those through a
+    * derivation hop ({@link derivedStructsReachable}). See
+    * {@link hasAnyAuthorizeNote}'s doc for why this has to be a superset of
+    * what `collectEntryPointGates` can reach.
     */
    private reachableStructsForNoteSweep(modelDef: ModelDef): SourceDef[] {
       const structs: SourceDef[] = [];
@@ -1182,42 +1258,6 @@ export class Model {
       }
       structs.push(...derivedStructsReachable(structs, modelDef));
       return structs;
-   }
-
-   /** Memoized {@link hasAnyPartitionNote}; `undefined` until first asked. */
-   private anyPartitionNote: boolean | undefined;
-
-   /**
-    * Whether this model carries a `#(partition)` annotation ANYWHERE — the
-    * `#(partition)` counterpart of {@link hasAnyAuthorizeNote}, sharing its
-    * struct sweep ({@link reachableStructsForNoteSweep}) and its reasoning
-    * for why that sweep must be a superset of what a per-query walk
-    * (`resolveEntryPointPartitions`) can reach. Own annotations only — unlike
-    * the authorize sweep, this does not also check `struct.fields`, since
-    * `#(partition)` is a source-level-only annotation (see
-    * `partition_annotation.ts`'s module doc); a field can never carry one.
-    */
-   private hasAnyPartitionNote(): boolean {
-      if (this.anyPartitionNote !== undefined) return this.anyPartitionNote;
-      this.anyPartitionNote = ((): boolean => {
-         const modelDef = this.modelDef;
-         if (!modelDef) return false;
-         try {
-            for (const struct of this.reachableStructsForNoteSweep(modelDef)) {
-               if (
-                  containsPartitionAnnotationTag(
-                     annotationTexts(struct.annotations) ?? [],
-                  )
-               ) {
-                  return true;
-               }
-            }
-            return false;
-         } catch {
-            return true;
-         }
-      })();
-      return this.anyPartitionNote;
    }
 
    /**
@@ -1236,7 +1276,7 @@ export class Model {
     */
    public async assertAuthorized(
       sourceName: string | undefined,
-      _givens: Record<string, GivenValue>,
+      givens: Record<string, GivenValue>,
       bypassAuthorize = false,
       /**
        * The graft scope a row-level gate found here would classify/lift
@@ -1285,18 +1325,7 @@ export class Model {
                ? await this.resolveGateShape(entry, this.modelDef, graftScope)
                : ({ shape: "rejected", cause: undefined } as const);
             if (resolution.shape === "row_level") continue;
-            // Same decision counter `authorizeAndBindRunnable` books for its
-            // own fail-closed refusals: a rejection is a rejection wherever
-            // the gate was resolved, and an operator reading
-            // `publisher_authorize_row_level_total{decision=
-            // "denied_by_gate"}` must not have a whole class of them (every
-            // gate refused at SHAPE resolution) silently missing. `cause` is
-            // the separate, finer rejection label, not a substitute for it.
-            recordRowLevelGateDecision("denied_by_gate");
-            if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-            throw new AccessDeniedError(
-               `Access denied for source "${entry.label}".`,
-            );
+            denyUnlessAdmitted(resolution, givens, entry.label);
          }
          return;
       }
@@ -1357,8 +1386,9 @@ export class Model {
     *
     * Where several gates are collected (a derivation chain, a resolved
     * composite branch), semantics are AND across them: any one failing denies
-    * the query, while each source's own expression list stays an OR
-    * disjunction.
+    * the query, and each source's own expression list is ALSO AND — a
+    * repeated `#(authorize)` note on the same source conjoins, it does not
+    * offer a choice between arms.
     *
     * Runs UNCONDITIONALLY — NOT guarded by {@link hasAuthorize}, which only
     * inspects top-level `modelDef.contents` sources and so misses a gate
@@ -1416,8 +1446,9 @@ export class Model {
     *
     * Where several gates are collected (a derivation chain, a resolved
     * composite branch), semantics are AND across them: any one failing denies
-    * the query, while each source's own expression list stays an OR
-    * disjunction.
+    * the query, and each source's own expression list is ALSO AND — a
+    * repeated `#(authorize)` note on the same source conjoins, it does not
+    * offer a choice between arms.
     *
     * Runs UNCONDITIONALLY — NOT guarded by {@link hasAuthorize}, which only
     * inspects top-level `modelDef.contents` sources and so misses a gate
@@ -1443,10 +1474,7 @@ export class Model {
    ): Promise<{
       entryPointGates: GateEntry[];
       modelDef: ModelDef | undefined;
-      /** The run target's own compiled struct — see `resolveRunTargetStruct`.
-       *  Returned alongside the authorize walk's result so a caller
-       *  (`probeEntryPointGates`) can resolve `#(partition)` pairs for the
-       *  SAME entry point without a second `getPreparedQuery()` compile. */
+      /** The run target's own compiled struct — see `resolveRunTargetStruct`. */
       struct: SourceDef | undefined;
    }> {
       const ownSourceName =
@@ -1569,7 +1597,7 @@ export class Model {
             // this one in silence.
             const SEP = "\x1f";
             const keyOf = (entry: GateEntry): string =>
-               `${entry.label}${SEP}${entry.exprs.join(SEP)}${SEP}${entry.selfContained}`;
+               `${entry.label}${SEP}${entry.route}${SEP}${entry.exprs.join(SEP)}${SEP}${entry.selfContained}`;
             const byKey = new Map(
                entryPointGates.map((entry) => [keyOf(entry), entry]),
             );
@@ -1609,7 +1637,7 @@ export class Model {
 
    /**
     * Whether `runnable` (a value {@link authorizeAndBindRunnable} returned) has
-    * a row-level `#(authorize)` filter attached. Object-identity keyed
+    * a row-level `#(access_filter)` filter attached. Object-identity keyed
     * ({@link rowLevelFilteredRunnables}) rather than a field on `Model`, which
     * is shared across concurrently in-flight requests. Consulted by the query
     * and notebook paths to keep a filtered query off the storage-serve tier
@@ -1646,8 +1674,8 @@ export class Model {
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
       skipOwnSourceGate = false,
-   ): Promise<PartitionGraftEntry[]> {
-      const { entryPointGates, modelDef, struct } =
+   ): Promise<RowLevelGraftEntry[]> {
+      const { entryPointGates, modelDef } =
          await this.collectAuthorizeEntryPointGates(
             runnable,
             givens,
@@ -1662,11 +1690,7 @@ export class Model {
       // ~microsecond one-row DuckDB queries, so there is nothing worth deduping.
       // (Cycles/repeat structs are already pruned in collectEntryPointGates
       // by struct identity, so the list holds no literal duplicates.)
-      // Shared with `#(partition)` below — `PartitionGraftEntry` is the same
-      // {label, graftTarget, filterText, condition, givenNames} shape an
-      // authorize row-level classification produces, so both feed the one
-      // graft list `buildGraftedMaterializer` grafts as a unit.
-      const rowLevel: PartitionGraftEntry[] = [];
+      const rowLevel: RowLevelGraftEntry[] = [];
       for (const entry of entryPointGates) {
          const resolution = modelDef
             ? await this.resolveGateShape(entry, modelDef, graftScope)
@@ -1681,43 +1705,7 @@ export class Model {
             });
             continue;
          }
-         // Booked here as well as in `authorizeAndBindRunnable` — see the
-         // identical call in `assertAuthorized`: a gate refused at SHAPE
-         // resolution is still a fail-closed rejection, and leaving it out
-         // would make the decision counter under-report every one of them.
-         recordRowLevelGateDecision("denied_by_gate");
-         if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-         throw new AccessDeniedError(
-            `Access denied for source "${entry.label}".`,
-         );
-      }
-
-      // `#(partition)` composes with `#(authorize)` in the SAME `rowLevel`
-      // list — both graft onto the same target's `filterList`
-      // (`buildGraftedMaterializer`), so a partitioned AND authorize-gated
-      // source is filtered by both conjunctively, never one replacing the
-      // other. A partition pair with nowhere to graft denies (see
-      // `resolvePartitionGraftEntries`'s doc) rather than admitting the query
-      // unfiltered — the same fail-closed posture as a rejected authorize
-      // gate above.
-      try {
-         rowLevel.push(
-            ...(await resolvePartitionGraftEntries(
-               struct,
-               modelDef,
-               graftScope,
-               this.gateClassificationDeps(),
-            )),
-         );
-      } catch (err) {
-         recordRowLevelGateDecision("denied_by_gate");
-         logger.debug("Partition filter could not be resolved; denying", {
-            modelPath: this.modelPath,
-            error: err instanceof Error ? err.message : String(err),
-         });
-         throw new AccessDeniedError(
-            `Access denied for source "${(struct as { as?: string } | undefined)?.as ?? struct?.name ?? "unknown"}".`,
-         );
+         denyUnlessAdmitted(resolution, givens, entry.label);
       }
       return rowLevel;
    }
@@ -1740,11 +1728,15 @@ export class Model {
     * therefore not "storage routing attempted and then undone" — it is
     * "storage routing attempted and never undone."
     *
-    * Every gate is a row filter now (see `authorize.ts`'s module doc), so
-    * every gate found here blocks routing — there is no shape left that is
-    * safe to route around a `#(authorize)` annotation. Collecting the gate
-    * list is therefore the whole check: unlike before, nothing here needs to
-    * classify or resolve a graft for any of them.
+    * ROUTE-BLIND ON PURPOSE, and this is the invariant to protect: `gates`
+    * is tested for LENGTH, never for which route wrote each one. Both routes
+    * have to block routing, for different reasons that arrive at the same
+    * answer — an `#(access_filter)` would otherwise serve frozen rows with no
+    * `where:` grafted onto them, and an `#(authorize)` lock would never be
+    * decided at all, because the serve shape carries no annotation bytes for
+    * either. Narrowing this to one route is the bypass, not an optimization.
+    * Collecting the gate list is therefore the whole check: nothing here
+    * needs to classify or resolve a graft for any of them.
     *
     * Deliberately does NOT call `assertAuthorized`: this must never itself
     * evaluate or deny a gate (a routing decision must
@@ -1797,15 +1789,7 @@ export class Model {
                ),
             );
          }
-         // `#(partition)` is the SAME "serve-shape carries no row filter"
-         // hazard as an authorize gate (see `getQueryResults`'s
-         // `routingBlockedByRowLevelGate` doc) — no composite branch to walk
-         // here, since a partitioned composite is refused outright at publish
-         // (`assertPartitionAnnotationsValid`).
-         return (
-            gates.length > 0 ||
-            resolveEntryPointPartitions(struct, modelDef).length > 0
-         );
+         return gates.length > 0;
       } catch {
          // Cannot tell whether the entry point carries a row-level gate — and,
          // once this returns false, nothing downstream can catch a wrong
@@ -1930,6 +1914,8 @@ export class Model {
    private async assertRequestDeclaredEntryPointIsNotLaundered(
       runnable: QueryMaterializer,
       query: string,
+      givens: Record<string, GivenValue>,
+      graftScope: GraftScope | undefined,
    ): Promise<void> {
       // Nothing to launder unless this model actually declares a gate.
       if (!this.declaresAnyGate()) return;
@@ -1954,16 +1940,105 @@ export class Model {
          entryPoint,
          buildDerivationBaseMap(stripMalloyCommentsAndLiterals(query)),
       );
-      if (proof.proven) return;
+      if (proof.proven) {
+         // Every gated base the chain reached must be a lock this caller
+         // satisfies. A lock is decided, not attached, so once it admits there
+         // is nothing left for the alias to strip — which is why an admitted
+         // one proves the branch that a row filter cannot. A filter reaching
+         // here has no graft target (the entry point is ephemeral, so
+         // `resolveGraftTarget` has no `modelDef.contents` key for it), so it
+         // is refused rather than silently dropped.
+         for (const base of proof.gatedBases) {
+            for (const entry of this.entryPointGatesBySource.get(base) ?? []) {
+               const resolution = this.modelDef
+                  ? await this.resolveGateShape(
+                       entry,
+                       this.modelDef,
+                       graftScope,
+                    )
+                  : ({ shape: "rejected", cause: undefined } as const);
+               if (resolution.shape === "row_level") {
+                  this.denyLaunderedEntryPoint(
+                     entryPoint,
+                     "row_filter_not_graftable",
+                     base,
+                  );
+               }
+               // Throws the same opaque refusal, labelled with the ephemeral
+               // entry point rather than the gated base it reached, and books
+               // its own lock counters.
+               denyUnlessAdmitted(resolution, givens, entryPoint);
+            }
+         }
+         return;
+      }
+      this.denyLaunderedEntryPoint(entryPoint, proof.reason, proof.at);
+   }
+
+   /**
+    * Decide, before compiling, every lock reachable from an entry point THIS
+    * REQUEST declared.
+    *
+    * Deliberately not a proof and never denies on its own: a chain it cannot
+    * read just gates nothing here, and
+    * {@link assertRequestDeclaredEntryPointIsNotLaundered} still decides it
+    * after compilation. The only thing this buys is ORDER — a refused caller
+    * hears "denied" instead of the compiler's opinion of a column name on a
+    * source they may not read.
+    */
+   private async assertLocksOnRequestDeclaredBases(
+      entryPoint: string,
+      query: string,
+      givens: Record<string, GivenValue>,
+      bypassAuthorize?: boolean,
+   ): Promise<void> {
+      if (!this.declaresAnyGate()) return;
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      const seen = new Set<string>();
+      // No run target (`/compile` on text that only DECLARES sources) has no
+      // one place to start, so every name the text declares is a root. The walk
+      // decides the same locks either way; it just cannot be anchored.
+      const worklist = entryPoint ? [entryPoint] : [...basesOf.keys()];
+      for (let i = 0; i < worklist.length; i++) {
+         const name = worklist[i];
+         if (seen.has(name)) continue;
+         seen.add(name);
+         if (seen.size > REQUEST_CHAIN_MAX_NAMES) return;
+         if (this.entryPointGatesBySource.has(name)) {
+            try {
+               // Names a source the request's own text derives from, so
+               // reporting it back tells the caller nothing they did not write.
+               await this.assertAuthorized(name, givens, bypassAuthorize);
+            } catch (error) {
+               // A refusal must not answer for a source the caller cannot even
+               // see: the conversion has to resolve the target at least as well
+               // as the gate that denied it, and the callers' own conversions
+               // read surface syntax, which cannot see through this alias. So
+               // convert HERE, on the base actually gated — a hidden one is a
+               // 404, not a 403 naming it.
+               if (error instanceof AccessDeniedError) {
+                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+               }
+               throw error;
+            }
+            continue;
+         }
+         for (const base of basesOf.get(name) ?? []) worklist.push(base);
+      }
+   }
+
+   /** The one refusal for a request-declared entry point, and its audit line. */
+   private denyLaunderedEntryPoint(
+      entryPoint: string,
+      reason: string,
+      at: string,
+   ): never {
       recordRowLevelGateDecision("denied_by_gate");
       logger.debug(
          "Request-declared entry point in a gated model is not provably ungated; denying",
-         {
-            modelPath: this.modelPath,
-            entryPoint,
-            reason: proof.reason,
-            at: proof.at,
-         },
+         { modelPath: this.modelPath, entryPoint, reason, at },
       );
       // Names the compiled entry point the request itself declared — never the
       // gate's column, nor which gated source it may have reached.
@@ -2019,13 +2094,15 @@ export class Model {
       entryPoint: string,
       basesOf: Map<string, Set<string>>,
    ):
-      | { proven: true; reason?: undefined; at?: undefined }
+      | { proven: true; gatedBases: readonly string[] }
       | {
            proven: false;
-           reason: "reaches_gated_source" | "chain_not_established";
+           reason: "chain_not_established";
            at: string;
+           gatedBases?: undefined;
         } {
       const seen = new Set<string>();
+      const gatedBases: string[] = [];
       const worklist = [entryPoint];
       for (let i = 0; i < worklist.length; i++) {
          const name = worklist[i];
@@ -2038,17 +2115,15 @@ export class Model {
          }
          const modelGates = this.entryPointGatesBySource.get(name);
          if (modelGates !== undefined) {
-            if (modelGates.length > 0) {
-               return {
-                  proven: false,
-                  reason: "reaches_gated_source",
-                  at: name,
-               };
-            }
-            // A model-declared ungated source: this branch is proven, and the
-            // walk stops here rather than following the AUTHOR's own
-            // derivations, which is what keeps the documented model-authored
-            // fail-open intact.
+            // A gated base does not disprove the chain on its own: a LOCK that
+            // admits this caller leaves nothing to graft, so aliasing the
+            // source launders nothing. Collected for the caller to decide;
+            // anything that is not an admitting lock still denies there.
+            if (modelGates.length > 0) gatedBases.push(name);
+            // A model-declared source: this branch is resolved, and the walk
+            // stops here rather than following the AUTHOR's own derivations,
+            // which is what keeps the documented model-authored fail-open
+            // intact.
             continue;
          }
          const bases = basesOf.get(name);
@@ -2057,7 +2132,7 @@ export class Model {
          }
          for (const base of bases) worklist.push(base);
       }
-      return { proven: true };
+      return { proven: true, gatedBases };
    }
 
    /**
@@ -2190,6 +2265,8 @@ export class Model {
             await this.assertRequestDeclaredEntryPointIsNotLaundered(
                runnable,
                options.callerQueryText,
+               givens,
+               graftScope,
             );
          }
          return runnable;
@@ -2366,6 +2443,12 @@ export class Model {
            condition: FilterCondition;
            givenNames: readonly string[];
         }
+      | {
+           shape: "lock";
+           condition: FilterCondition;
+           givenNames: readonly string[];
+           givenNamesById: ReadonlyMap<string, string>;
+        }
       | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
    > {
       const result = await resolveGateShapeImpl(
@@ -2387,7 +2470,7 @@ export class Model {
       // instead. Additive and idempotent (a `Set`), and always runs BEFORE
       // the graft this same request builds is ever executed, cache hit or
       // miss — safe to widen unconditionally.
-      if (result.shape === "row_level") {
+      if (result.shape !== "rejected") {
          for (const name of result.givenNames) {
             this.authorizeReferencedGivenNames.add(name);
          }
@@ -2842,7 +2925,21 @@ export class Model {
       text: string,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.assertAuthorized(extractRunTargetSourceName(text), givens);
+      const target = extractRunTargetSourceName(text);
+      await this.assertAuthorized(target, givens);
+      // The same caller-declared-alias gap the query path closes, and it bites
+      // harder here: `/compile` answers WITH the compiler's diagnostics, so a
+      // lock that is not decided first makes them readable for a source the
+      // caller is refused. Text with no `run:` resolves no target and is walked
+      // anyway — a bare `source: s is locked extend { … }` is exactly the shape
+      // that reaches the compiler with nothing gated.
+      if (!hasCallerAuthorizeAnnotation(text)) {
+         await this.assertLocksOnRequestDeclaredBases(
+            target ?? "",
+            text,
+            givens,
+         );
+      }
    }
 
    /**
@@ -3003,12 +3100,13 @@ export class Model {
             const queryResult = Model.getQueries(modelDef);
             queries = queryResult.queries;
 
-            // A composite source that itself declares `#(partition)` cannot
-            // graft — see `assertPartitionAnnotationsValid`'s doc. Checked
+            // A leftover marker from a retired annotation route (e.g.
+            // `#(partition)`) parses fine to Malloy but is enforced by
+            // nothing — see `assertNoRetiredRouteMarkers`'s doc. Checked
             // first: it is a load-time authoring mistake, not an authorize
             // shape, so it should not read as a stranger error from the
             // authorize checks below.
-            assertPartitionAnnotationsValid(modelDef);
+            assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
 
             // A `#(authorize)` annotation in a position nothing enforces (a
             // top-level `query:` statement, or a field inside a `source:`
@@ -3030,11 +3128,16 @@ export class Model {
                recordRowLevelGateRejected("legacy_string_gate"),
             );
             assertNoLegacyStringGate(legacyStringGates);
-            // A source may declare at most one `#(authorize)` block — see
-            // `findMultipleAuthorizeGates`'s doc. Same check as the
-            // package-load worker.
-            assertAtMostOneAuthorizeGate(
-               findMultipleAuthorizeGates(sourceResult.authorizeOwnNotes),
+            // The body grammar — see `assertAuthorizeGrammarValid`'s doc.
+            // Checked before `validateAuthorizeProbes` so a grammar violation
+            // gets its own message instead of a raw Malloy compile error.
+            assertAuthorizeGrammarValid(
+               modelDef,
+               sourceResult.authorizeMap,
+               sourceResult.authorizeOwnNotes,
+               computeGivenDeclaredTypes(givens),
+               (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
+               sourceResult.attributedAuthorizeOwnNotes,
             );
             // Translation-time validation of #(authorize) annotations (shared
             // with the package-load worker so both compile paths validate
@@ -3060,7 +3163,7 @@ export class Model {
                // losing it silently.
                onRowLevelGateUnexpressible: (sourceName, detail) =>
                   logger.warn(
-                     "Row-level #(authorize) gate not expressible at this entry point; every query against it will be denied",
+                     "Row-level #(access_filter) gate not expressible at this entry point; every query against it will be denied",
                      { packageName, modelPath, sourceName, detail },
                   ),
                // G4/W1/W2 for the SOURCE-LINE form, run at EVERY entry
@@ -3070,18 +3173,23 @@ export class Model {
                // .contents[sourceName]` is the same struct the probe was
                // grafted onto, so `refSummary` is already resolved against
                // it either way.
-               onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+               onOwnRowLevelConditionCompiled: (
+                  sourceName,
+                  condition,
+                  route,
+               ) => {
                   const struct = compiledModelDef.contents[sourceName];
                   if (!struct || !isSourceDef(struct)) return;
                   validateSourceLineGateGivenUsage(
                      sourceName,
+                     route,
                      struct,
                      condition.refSummary as ExpandableRefSummary | undefined,
                      condition.e,
                      compiledModelDef,
                      (cause, detail) => {
                         recordRowLevelGateRejected(cause);
-                        logger.warn("Row-level #(authorize) gate warning", {
+                        logger.warn(`#(${route}) gate warning`, {
                            packageName,
                            modelPath,
                            sourceName,
@@ -3553,13 +3661,19 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
-         // The EFFECTIVE gate per source, inheritance already resolved by the
-         // extraction, so a suggest over a gated source learns which givens its
-         // gate reads.
+         // The EFFECTIVE gates per source on both routes, inheritance already
+         // resolved by the extraction, so a suggest over a gated source learns
+         // which givens its gates read. See `gateGivenSource`.
          new Map(
             (this.sources ?? []).flatMap((source) =>
                source.name
-                  ? [[source.name, source.authorize ?? []] as const]
+                  ? [
+                       [
+                          source.name,
+                          gateGivenSource(this.sources ?? [], source.name) ??
+                             [],
+                       ] as const,
+                    ]
                   : [],
             ),
          ),
@@ -5052,6 +5166,31 @@ export class Model {
             givens ?? {},
             bypassAuthorize,
          );
+         // A caller-declared alias (`source: s is gated extend {}`) names an
+         // entry point this model never declared, so the gate above matches
+         // nothing and the caller's own compile errors would answer before any
+         // lock did — the schema oracle this whole early gate exists to close.
+         // Decide the locks the request's OWN derivations reach, from its text,
+         // before compiling. A chain this cannot read is left to the
+         // post-compile check ({@link
+         // assertRequestDeclaredEntryPointIsNotLaundered}), which is the
+         // fail-closed one; this is only ever an earlier, opaquer refusal.
+         // Text carrying an annotation at all is left to the forgery rejecter
+         // below, whose refusal is the specific one ("not permitted in
+         // caller-submitted text") and whose counter is the one operators read.
+         // Skipping opens nothing: the post-compile check still decides.
+         if (
+            query &&
+            !hasCallerAuthorizeAnnotation(query) &&
+            !this.entryPointGatesBySource.has(earlySource)
+         ) {
+            await this.assertLocksOnRequestDeclaredBases(
+               earlySource,
+               query,
+               givens ?? {},
+               bypassAuthorize,
+            );
+         }
       }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
@@ -5219,11 +5358,7 @@ export class Model {
             // cannot hit. This is NOT the `hasAuthorize()` trap warned about
             // further down — see `hasAnyAuthorizeNote`'s doc for why the two
             // predicates differ and why only this one is safe to skip on.
-            // `#(partition)` gets the identical veto — it too grafts a row
-            // filter the serve-shape model carries no bytes for (see
-            // `hasAnyPartitionNote`'s doc) — so both note kinds have to be
-            // checked before the walk can be skipped.
-            (this.hasAnyAuthorizeNote() || this.hasAnyPartitionNote()) &&
+            this.hasAnyAuthorizeNote() &&
             (await this.queryEntryPointHasRowLevelGate(runnable));
          // Recorded HERE, once, rather than in each tier's block below: the
          // pre-aggregation guard runs no compile attempt of its own and calls
@@ -5562,10 +5697,9 @@ export class Model {
       // the surface is what removes that, and it removes it in both directions —
       // a name this model does not declare is still rejected, as it is live.
       //
-      // `#(partition)` needs no special case: `routingBlockedByRowLevelGate`
-      // above vetoes routing outright whenever the QUERY's own entry point
-      // carries that annotation or an authorize gate, so a grafted row filter
-      // never reaches the shape at all.
+      // A grafted row filter never reaches the shape at all:
+      // `routingBlockedByRowLevelGate` above vetoes routing outright whenever
+      // the QUERY's own entry point carries a gate.
       const effectiveGivens = querySurfaceGivens;
       try {
          // The prepared result is also where the executing connection's name
@@ -6764,8 +6898,8 @@ export class Model {
       filterMap: Map<string, FilterDefinition[]>;
       authorizeMap: AuthorizeMap;
       misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-      authorizeOwnNotes: Map<string, AnnotationNote[]>;
-      attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
+      authorizeOwnNotes: AuthorizeOwnNotesMap;
+      attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
    } {
       // Shared with the package-load worker — see service/source_extraction.ts.
       // The service path logs filter parse failures; the worker stays silent.
