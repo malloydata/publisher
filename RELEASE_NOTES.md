@@ -31,6 +31,16 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a refused persist source is skipped, and no longer fails the whole run
+
+**Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
+
+**Now:** a run skips a refused source and builds everything else. The run completes (`MANIFEST_FILE_READY`) and serves the refused source live, as before. Auto-run records each refused source in `metadata.refusedSources`, keyed by sourceID in the same shape as the build plan's `refusedSources`, and counts it in `metadata.sourcesRefused`. A build with caller-supplied `buildInstructions` reports an instructed source the gate refuses in the manifest's existing `failures`, under the instruction's `sourceEntityId`, with the gate's message as its `reason` and the new `SourceFailure.refused: true`, since that caller asked for the table; its siblings still build. `refused` tells a caller that retries failures this one will not clear until the model changes. It is the only schema addition, and it is optional.
+
+A run still fails on a refusal when there is nothing else to build, because every source it targeted was refused, or when `sourceNames` names a refused source, because that caller asked for exactly the table that cannot be built. When several sources are refused, the error names all of them, not only the first in plan order. A refused `#@ preaggregate` rollup is recorded but never fails a run, as before.
+
+**What to check.** Anything that read a `FAILED` run as the signal that a package holds an ineligible source should read `metadata.refusedSources` instead; the build plan's `refusedSources` reports the same refusals before any run. An auto-run whose only shortfall is refusals is metered `success`, since a refusal is a property of the model rather than of the run. An orchestrated run with an instructed refusal is metered `partial`, because that refusal is one of its `failures`: the caller asked for the table and did not get it. `publisher_materialization_sources_total` gains `outcome="refused"` and a `mode` label (`auto` | `orchestrated`) on every outcome. With `mode="orchestrated"` the refused count should stay at zero: a caller that builds from the build plan never instructs a source the plan refused, so a nonzero count means the plan and the build disagreed about a source.
+
 ## [Unreleased] — a package's `index.malloy` is its published surface
 
 Put an `index.malloy` at a package root, `import` your models, and `export { … }` the sources you

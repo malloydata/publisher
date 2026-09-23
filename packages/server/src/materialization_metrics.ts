@@ -125,7 +125,7 @@ const runDuration = lazyHistogram(
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused'|'failed').",
+   "Persist sources processed by a materialization run. Labels: outcome ('built'|'reused'|'failed'|'refused'), mode ('auto'|'orchestrated').",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -313,13 +313,19 @@ export function recordMaterializationRun(
  * Record how many persist sources a run built vs. reused (carried forward
  * unchanged via skip-if-unchanged). Lets a dashboard show the reuse ratio,
  * the main lever on materialization cost.
+ *
+ * `refused` counts sources the eligibility gate refused. With
+ * `mode="orchestrated"` it should stay at zero, because a host that builds from
+ * the build plan never instructs a source the plan refused; a nonzero count
+ * there means the plan and the build's own gate disagreed about a source.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused" | "failed",
+   outcome: "built" | "reused" | "failed" | "refused",
    count: number,
+   mode: MaterializationMode,
 ): void {
    if (count <= 0) return;
-   sourcesCounter().add(count, { outcome });
+   sourcesCounter().add(count, { outcome, mode });
 }
 
 /**
