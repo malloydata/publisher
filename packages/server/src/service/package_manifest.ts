@@ -454,10 +454,7 @@ export function resolveExplores(input: {
    //
    // Refusing is the only one of the four that neither widens the surface nor
    // invents intent, and an absent package is visible in `loadErrors` where a
-   // silently-uncurated one is not. It also restores the behavior this key had
-   // before the `index.malloy` convention, when a non-string entry threw out of
-   // `normalizeModelPath` -- the same outcome, now with a message that names the
-   // value and the fix.
+   // silently-uncurated one is not.
    if (
       declaredExplores !== undefined &&
       !(

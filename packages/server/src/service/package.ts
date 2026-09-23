@@ -2212,8 +2212,7 @@ export class Package {
     * perfectly well -- with the same 404 a model that does not exist gets.
     *
     * NARROW ON PURPOSE, because the edit paths an author uses already report
-    * this better than a warning could, and it took a run against a live server
-    * to establish which paths those are:
+    * this better than a warning could:
     *
     *  - FIRST LOAD: a compile error fails the whole package. It is absent, and
     *    named in `/status` loadErrors. Nothing serves an empty surface.
