@@ -80,6 +80,14 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
  * So the units stay different, and the gate instead refuses whenever it could
  * not parse what it was given.
  *
+ * What is ruled out above is the CONCATENATION, not the fragment. Running the
+ * real append compile as an unrestricted `extendModel` of the loaded base model
+ * -- the fragment alone, once, in place of both compiles -- is a live option: it
+ * would make the gate and the compile one unit and drop the second compile from
+ * inside the per-package mutex, at the cost of offsetting every diagnostic
+ * position by the model's line count. It is a larger change than this gate, and
+ * the parse-failure refusal is sufficient without it.
+ *
  * The gate is deliberately a separate compile from the one whose diagnostics
  * the caller receives. Restricted mode changes what compiles, so reusing its
  * result as the answer would change the positions and the problem set an

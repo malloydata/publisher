@@ -5682,12 +5682,17 @@ components:
             function forms (name!type(…), sql_number, sql_string and the rest
             of that family) are refused with a 400. Those belong in a model
             file, so validate text declaring them at "file" or "package", which
-            are not restricted. Compiling at "append" also requires the model
-            named in the URL to load: a model that does not exist, or that does
-            not itself compile, is a 400, and a model whose table schema cannot
-            be fetched is a 503 rather than a 400, since that is a data source
-            being unreachable rather than a bad request. An invalid scope value
-            is rejected with a 400 naming the valid set.
+            are not restricted. "append" text must also stand alone as
+            top-level Malloy: a bare view:, dimension: or measure:, and anything
+            that only parses as a continuation of the model's last statement,
+            is refused with a 400, because the check reads the submitted text by
+            itself. Wrap a view body in a top-level query:, or a field in a
+            throwaway source: check is <source> extend { … }. Compiling at
+            "append" also requires the model named in the URL to load: a model
+            that does not compile is a 400 carrying that model's own problems,
+            and a model that does not exist is a 400 that deliberately says only
+            that it could not be loaded. An invalid scope value is rejected with
+            a 400 naming the valid set.
         includeSql:
           type: boolean
           default: false
