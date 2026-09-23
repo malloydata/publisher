@@ -1644,3 +1644,32 @@ class OffloadedToolResult(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
+    """`--rebuild --only <qid>` re-derives one case. It used to write the whole
+    ledger from that one case, and a 29-case arm read as a 1-case arm."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.path = self.tmp / "events.jsonl"
+        self.old = [{"kind": "attempt", "qid": "a", "sample": 1},
+                    {"kind": "score", "qid": "a", "verdict": "match"},
+                    {"kind": "attempt", "qid": "b", "sample": 1},
+                    {"kind": "score", "qid": "b", "verdict": "no_match"}]
+        self.path.write_text("".join(json.dumps(e) + "\n" for e in self.old))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_only_the_named_cases_lines_are_replaced(self):
+        new = [{"kind": "attempt", "qid": "b", "sample": 1},
+               {"kind": "score", "qid": "b", "verdict": "match"}]
+        rb.store_events(self.path, new, replaced_qids={"b"})
+        got = [json.loads(l) for l in self.path.read_text().splitlines()]
+        self.assertEqual(got, self.old[:2] + new)
+
+    def test_a_full_write_still_replaces_everything(self):
+        new = [{"kind": "attempt", "qid": "c", "sample": 1}]
+        rb.store_events(self.path, new, None)
+        got = [json.loads(l) for l in self.path.read_text().splitlines()]
+        self.assertEqual(got, new)

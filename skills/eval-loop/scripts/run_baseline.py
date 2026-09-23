@@ -1242,6 +1242,26 @@ def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
     return queries[-1], "last", _model_path_of(queries[-1], runs)
 
 
+def store_events(path: pathlib.Path, events: list[dict[str, Any]],
+                 replaced_qids: set[str] | None = None) -> None:
+    """Write the arm's ledger, or splice a narrowed rebuild into it.
+
+    `--rebuild --only <qid>` re-derives the named cases and nothing else, and
+    it used to write `events.jsonl` from scratch: a 29-case arm became a
+    one-case arm after re-judging one case, its other 28 attempts and scores
+    gone (the artifacts stayed, which is how it was recovered). Downstream
+    nothing said so -- `flip_table --calibration` printed "0 flips over 1
+    cases" and `diagnose.py` found "no diagnosable failures". A narrowed
+    rebuild now replaces the named cases' lines and keeps the rest; a full
+    write (`replaced_qids` None) is unchanged.
+    """
+    if replaced_qids is None:
+        ledger.write_events(path, events)
+        return
+    ledger.replace_events(path, keep=lambda e: e.get("qid") not in replaced_qids,
+                          new=events)
+
+
 def retrieval_summary(attempts: Iterable[dict[str, Any]]
                       ) -> tuple[str, dict[str, int]]:
     """Which retriever answered this run's get_context calls, and the tally.
@@ -3389,7 +3409,8 @@ def main(argv: list[str] | None = None) -> int:
                           must_not_use_hits=mnu["hits"] or None,
                           artifactPath=f"artifacts/{qid}/judge.md"))
 
-    ledger.write_events(a.out / "events.jsonl", events)
+    store_events(a.out / "events.jsonl", events,
+                 {c["qid"] for c in cases} if (a.rebuild and a.only) else None)
 
     # near_match is neither a pass nor a fail: see flip_table.py. Reported on
     # its own line, because a set whose near_match count is climbing has rubrics
