@@ -500,7 +500,7 @@ export function recordEligibilityRefused(
  * A systematically-dropping source tells authors which refinements aren't
  * servable from storage.
  */
-export function recordServeShapeTierDrop(failedTier: number): void {
+export function recordServeShapeTierDrop(failedTier: number | "lifts"): void {
    serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
 }
 

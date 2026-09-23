@@ -9,6 +9,7 @@ import {
 } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import { givenScopedJoinTargets } from "./persist_dynamic_terms";
 import {
    recordEligibilityRefused,
    recordServeShapeTypeFallback,
@@ -1668,5 +1669,67 @@ export async function assertServesInDuckDB(
             `materialized into a DuckDB/DuckLake store must have a ` +
             `DuckDB-portable served shape.`,
       });
+   }
+}
+
+/**
+ * The bindings left once every binding with a caller-scoped join the serve shape
+ * cannot reproduce is withheld, to a fixpoint; and the names withheld.
+ *
+ * A join to a given-scoped source reproduces the caller's scope only through
+ * that source's own binding (see `joinedSourceRefusal`). It cannot be re-emitted
+ * when the target is not bound — stale past its window, never built, refused —
+ * nor when it is bound on a different destination, since one query cannot join
+ * across two connections; nor when the join is access-restricted, since
+ * restricted joins are never re-emitted while a public field may still read
+ * through them. Either way every
+ * field reading through the join fails the shape compile. Left in, that failure
+ * is answered by the serve-shape ladder, which thins EVERY binding in the model:
+ * one stale grant table would cost each sibling source its joins, dimensions and
+ * measures. Withholding the joining binding instead confines the cost to the
+ * source that needs the join, which serves live.
+ *
+ * To a fixpoint because withholding one binding removes it as a target: a source
+ * with a caller-scoped join to the withheld one is itself withheld next.
+ *
+ * Only caller-scoped joins. A join to an ordinary unmaterialized source keeps its
+ * existing treatment — skipped at extraction, with the ladder answering whatever
+ * reads through it.
+ */
+export function withholdUnreproducibleCallerScopedJoins(
+   bindings: ServeBinding[],
+   contents: Record<string, { fields?: unknown }> | undefined,
+   sourceNameById: ReadonlyMap<string, string>,
+): { kept: ServeBinding[]; withheld: string[] } {
+   let kept = bindings;
+   for (;;) {
+      const destinationOf = new Map(
+         kept.map((b) => [b.sourceName, b.destinationName]),
+      );
+      const next = kept.filter((b) =>
+         givenScopedJoinTargets(contents?.[b.sourceName]?.fields).every(
+            (sourceID) => {
+               const target =
+                  sourceID === undefined
+                     ? undefined
+                     : sourceNameById.get(sourceID);
+               return (
+                  target !== undefined &&
+                  destinationOf.has(target) &&
+                  destinationOf.get(target) === b.destinationName
+               );
+            },
+         ),
+      );
+      if (next.length === kept.length) {
+         const keptNames = new Set(kept.map((b) => b.sourceName));
+         return {
+            kept,
+            withheld: bindings
+               .map((b) => b.sourceName)
+               .filter((name) => !keptNames.has(name)),
+         };
+      }
+      kept = next;
    }
 }

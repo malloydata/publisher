@@ -21,7 +21,10 @@ The shape now carries each such wrapper verbatim over the rebound fact, when
 everything the wrapper reads is itself on the shape. The fact's own `where:`
 still applies per caller underneath it. A wrapper that reaches past the fact —
 here, a join to a warehouse table nothing materializes — is left off and serves
-live, which is the only thing it can do.
+live, which is the only thing it can do. So does one that reads through a join
+of the fact's own that the shape does not carry (`fr`, to the same warehouse
+table) — and it costs only itself: the other wrappers, and the fact's view,
+keep the tier.
 
 ## Publisher
 
@@ -57,7 +60,9 @@ source: regions is orders_pg.sql('SELECT region_id, region FROM public.wmf_regio
 #@ persist name="wmf_orders_fact" storage=lake
 source: _orders_fact is raw -> { select: * } extend {
   where: org_id = $ORG_ID
+  join_one: fr is regions on region_id = fr.region_id
   measure: total is amount.sum()
+  view: by_org is { group_by: org_id; aggregate: total }
 }
 
 source: orders is _orders_fact -> { select: * } extend {
@@ -69,6 +74,8 @@ source: totals is _orders_fact -> { group_by: org_id; aggregate: total }
 source: orders_by_region is _orders_fact -> { select: * } extend {
   join_one: r is regions on region_id = r.region_id
 }
+
+source: by_fact_region is _orders_fact -> { group_by: fr.region; aggregate: total }
 ```
 
 ## Publish
@@ -125,6 +132,39 @@ Expect:
 | ---------- | --------- |
 | 1          | 300       |
 
+## Query org 1 through the fact's view
+
+The fact's view is still on the shape: the wrapper that cannot compile was
+dropped alone, not by thinning every binding's views.
+
+```malloy
+run: _orders_fact -> by_org
+```
+
+givens: ORG_ID=1
+servedFrom: storage
+
+Expect:
+
+| org_id:int | total:num |
+| ---------- | --------- |
+| 1          | 300       |
+
+## Query org 1 by the fact's region
+
+```malloy
+run: by_fact_region -> { select: region, total; order_by: region }
+```
+
+givens: ORG_ID=1
+
+Expect:
+
+| region:text | total:num |
+| ----------- | --------- |
+| east        | 100       |
+| west        | 200       |
+
 ## Query org 1 by region
 
 ```malloy
@@ -175,3 +215,16 @@ Expect:
 | ----------- | ----- |
 | east        | 200   |
 | west        | 200   |
+
+## Query org 1 by the fact's region (again)
+
+Live too: it reads through `fr`, which the shape does not carry.
+
+givens: ORG_ID=1
+
+Expect:
+
+| region:text | total:num |
+| ----------- | --------- |
+| east        | 200       |
+| west        | 200       |

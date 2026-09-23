@@ -41,7 +41,9 @@ hold every caller's rows; the serve shape re-applies the grant table's terms per
 the join against that binding, so two users of one org get different answers from the same two
 tables. If the grant table's binding is withheld (stale past its window, unbuilt, refused), the
 sources joining it serve live and their siblings keep the tier. A revoked grant stays visible until
-the grant table rebuilds — see [materialization](docs/materialization.md#per-user-visibility-through-a-joined-grant-table).
+the grant table rebuilds: give the grant table a freshness window with `fallback="live"`, and do not
+refresh it incrementally, since a deleted grant is never re-read by a delta — see
+[materialization](docs/materialization.md#per-user-visibility-through-a-joined-grant-table).
 
 The same rule lets a plain extension of a materialized source (`source: v is opps extend { join_one: …;
 where: g.user_id = $USER_ID }`) be served from its parent's table, which previously required

@@ -210,14 +210,26 @@ colocated (no `storage=`), would itself be refused, or is joined through an inli
 (`join_one: g is grants extend { … }`), which compiles to an anonymous source nothing can bind.
 Declare the refinement on a named source and join that.
 
-When the joined source's binding is not on the shape — stale past its window, never built, or
-refused — the joining source is withheld with it and serves live, rather than serving
-`visible` over no grants. Its sibling sources are unaffected.
+When the joined source's binding cannot be reproduced on the shape — stale past its window, never
+built, refused, bound on a different destination, or declared with a non-public access modifier —
+the joining source is withheld with it and serves live, from current grants. Without that, every
+field reading through the join would fail the shape compile, and the fallback that answers a failed
+compile would cost every sibling source in the model its joins, dimensions and measures.
 
 **A revoked grant stays visible until the grant table rebuilds.** Here the frozen row data *is* the
-access decision, so the grant table's freshness is the revocation latency. Give it a short
-`freshness.window` with `freshness.fallback="live"`, so that once the grant table ages out the
-sources joining it are answered live, from current grants.
+access decision, so the grant table's freshness is the revocation latency — and the
+[gated-source staleness rules](#the-freshness-contract-for-a-gated-colocated-persist-source) apply to it in full:
+
+- **Give the grant table a freshness window with `fallback="live"`.** That is the only control that
+  bounds revocation: once the table ages past the window, the sources joining it are withheld and
+  answered live, whether or not a rebuild ever lands. A grant table with no window is never stale,
+  and serves a revoked grant for as long as its table exists.
+- **Do not refresh a grant table incrementally.** A revocation is usually a deleted row, and a
+  [delta](#incremental-refresh) reads only rows its watermark admits — a deleted row is never
+  re-read, so the stored grant survives every run. Rebuild it in full, or `reseed` it.
+- **The window is enforced from the freshness fields a control plane stamps on the manifest it
+  distributes.** A standalone Publisher's own post-build load binds its entries un-gated, so there
+  the window does not bound anything and only a rebuild does.
 
 The same rule serves an entry point declared as a plain extension: `source: visible is opps extend
 { join_one: … ; where: g.user_id = $USER_ID }` inherits `#@ persist`, builds nothing new (its build

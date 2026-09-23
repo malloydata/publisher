@@ -535,8 +535,11 @@ function declaresStorage(annotations: unknown): boolean {
 /**
  * The `sourceID`s of the given-scoped sources a field list joins — the targets
  * {@link joinedSourceRefusal} admits, and the ones whose absence from a serve
- * shape leaves a join that cannot be reproduced. A join to an inline refinement
- * has no `sourceID` and is reported as `undefined`, since nothing could bind it.
+ * shape leaves a join that cannot be reproduced. A join that could never be
+ * re-emitted is reported as `undefined`: one to an inline refinement, which has
+ * no `sourceID` and so nothing to bind, and one with a non-public access
+ * modifier, which the serve shape never re-emits (`extractJoins`) while a
+ * public field may still read through it.
  */
 export function givenScopedJoinTargets(
    fields: unknown,
@@ -547,8 +550,10 @@ export function givenScopedJoinTargets(
       if (field === null || typeof field !== "object") continue;
       const f = field as Record<string, unknown>;
       if (f.join === undefined || !readsAGiven(f, new WeakSet())) continue;
+      const restricted =
+         f.accessModifier != null && f.accessModifier !== "public";
       out.push(
-         typeof f.sourceID === "string" && f.sourceID.length > 0
+         !restricted && typeof f.sourceID === "string" && f.sourceID.length > 0
             ? f.sourceID
             : undefined,
       );

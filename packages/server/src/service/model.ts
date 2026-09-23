@@ -81,8 +81,8 @@ import {
    type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
+   withholdUnreproducibleCallerScopedJoins,
 } from "./materialization_serve_transform";
-import { givenScopedJoinTargets } from "./persist_dynamic_terms";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
 import type {
@@ -4594,6 +4594,57 @@ export class Model {
       const nothingToEscalate =
          rollupGroups.length === 0 &&
          !enriched.some((b) => (b.refinements ?? []).length > 0);
+      // Derived entry points ride the richest rung only, and are probed there
+      // first. A lift the eligibility checks passed can still fail to compile (a
+      // field path through a join of its base the shape does not carry), and a
+      // lift failure answered by the ordinary ladder would cost every binding its
+      // views. So a failing lift costs that lift: when the richest rung compiles
+      // without the lifts, they are re-added one at a time, in dependency order,
+      // keeping each that compiles. When it does not compile without them either,
+      // the lifts were not the cause and the ladder below runs without them.
+      let lifts = this.liftedDerivedSources(enriched);
+      if (lifts.length > 0) {
+         const probe = async (candidate: DerivedSourceLift[]) => {
+            const m = this.buildServeShapeMaterializer(
+               enriched,
+               tiers[0].groups,
+               candidate,
+            );
+            try {
+               await m.getModel();
+               return m;
+            } catch (err) {
+               return err instanceof Error ? err : new Error(String(err));
+            }
+         };
+         const withAll = await probe(lifts);
+         if (!(withAll instanceof Error)) return withAll;
+         recordServeShapeTierDrop("lifts");
+         const withNone = await probe([]);
+         const kept: DerivedSourceLift[] = [];
+         let best: ModelMaterializer | undefined;
+         if (!(withNone instanceof Error)) {
+            best = withNone;
+            for (const lift of lifts) {
+               const attempt = await probe([...kept, lift]);
+               if (attempt instanceof Error) continue;
+               kept.push(lift);
+               best = attempt;
+            }
+         }
+         logger.warn(
+            "Storage serve shape failed to compile with its lifted entry points; the ones that do not compile serve live",
+            {
+               model: this.modelPath,
+               dropped: lifts
+                  .filter((l) => !kept.includes(l))
+                  .map((l) => l.sourceName),
+               error: withAll.message,
+            },
+         );
+         if (best) return best;
+         lifts = [];
+      }
       const lastTier = tiers.length - 1;
       for (let tier = 0; tier <= lastTier; tier++) {
          const { keep, groups } = tiers[tier];
@@ -4610,14 +4661,13 @@ export class Model {
                          }
                        : b,
                  );
-         // Derived entry points ride the richest rung only. They are the most
-         // that can be carried, and confining them here is what bounds the blast
-         // radius: every rung below is byte-identical to the shape this package
-         // compiled before lifting existed.
+         // Derived entry points ride the richest rung only, and only if they
+         // survived the probe above. Every rung below is byte-identical to the
+         // shape this package compiled before lifting existed.
          const materializer = this.buildServeShapeMaterializer(
             shaped,
             groups,
-            tier === 0 ? this.liftedDerivedSources(enriched) : [],
+            tier === 0 ? lifts : [],
          );
          // The last tier is virtual bases plus their filters. Unlike the tiers
          // above it, it can fail: a filter that cannot be reproduced (one
@@ -4936,14 +4986,18 @@ export class Model {
       bindings: ServeBinding[],
    ): ServeBinding[] {
       const { contents, sourceNameById, liftText } = this.authorModelLift();
-      const materializedSourceNames = new Set(
-         withCallerScopedJoinsBound(
-            bindings,
-            contents,
-            sourceNameById,
-            this.modelPath,
-         ).map((b) => b.sourceName),
+      const { kept, withheld } = withholdUnreproducibleCallerScopedJoins(
+         bindings,
+         contents,
+         sourceNameById,
       );
+      if (withheld.length > 0) {
+         logger.warn(
+            "Withheld storage serve bindings whose caller-scoped join cannot be reproduced; those sources serve live",
+            { model: this.modelPath, withheld },
+         );
+      }
+      const materializedSourceNames = new Set(kept.map((b) => b.sourceName));
       return (
          bindings
             .filter((b) => materializedSourceNames.has(b.sourceName))
@@ -7283,59 +7337,4 @@ function hydrateMarkdownOnlyCells(
       // A code cell without a hydratable scope — surface text only.
       return { type: "code", text: sc.text };
    });
-}
-
-/**
- * The bindings left once every binding whose caller-scoped join has no target on
- * the shape is withheld, to a fixpoint.
- *
- * A join to a given-scoped source reproduces the caller's scope only through
- * that source's own binding (see `joinedSourceRefusal`). When the target is not
- * bound — stale past its window, never built, refused — the join cannot be
- * re-emitted, and every field reading through it fails the shape compile. Left
- * in, that failure is answered by the serve-shape ladder, which thins EVERY
- * binding in the model: one stale grant table would cost each sibling source its
- * joins, dimensions and measures. Withholding the dependent binding instead
- * confines the cost to the source that needs the missing table, which serves
- * live.
- *
- * To a fixpoint because withholding one binding removes it as a target: a source
- * with a caller-scoped join to the withheld one is itself withheld next.
- *
- * Only caller-scoped joins. A join to an ordinary unmaterialized source keeps its
- * existing treatment — skipped at extraction, with the ladder answering whatever
- * reads through it.
- */
-function withCallerScopedJoinsBound(
-   bindings: ServeBinding[],
-   contents: Record<string, { fields?: unknown }> | undefined,
-   sourceNameById: Map<string, string>,
-   modelPath: string,
-): ServeBinding[] {
-   let kept = bindings;
-   for (;;) {
-      const bound = new Set(kept.map((b) => b.sourceName));
-      const next = kept.filter((b) =>
-         givenScopedJoinTargets(contents?.[b.sourceName]?.fields).every(
-            (sourceID) => {
-               const target =
-                  sourceID === undefined
-                     ? undefined
-                     : sourceNameById.get(sourceID);
-               return target !== undefined && bound.has(target);
-            },
-         ),
-      );
-      if (next.length === kept.length) return kept;
-      logger.warn(
-         "Withheld storage serve bindings whose caller-scoped join target is not bound; those sources serve live",
-         {
-            model: modelPath,
-            withheld: kept
-               .filter((b) => !next.includes(b))
-               .map((b) => b.sourceName),
-         },
-      );
-      kept = next;
-   }
 }
