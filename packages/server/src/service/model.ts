@@ -3865,7 +3865,11 @@ export class Model {
             !this.derivesFromCurated(target, query) &&
             this.sources?.some((s) => s.name === target)
          ) {
-            throw new NotQueryableError(`No queryable source "${target}".`);
+            // The same words the compiled backstop uses for a name that does
+            // not exist. This branch fires only for a name the model DECLARES,
+            // so naming it here, and not there, would tell a caller which
+            // hidden names are real.
+            throw new NotQueryableError("Query target is not queryable.");
          }
       }
       return "deferred";

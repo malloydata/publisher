@@ -14,7 +14,7 @@ Most packages publish a curated surface, so a source being absent or refused is 
 
 | what you got | what it means | what to do |
 | --- | --- | --- |
-| **404**, "No queryable source" or "No queryable model" | the source is not on the package's published surface, or does not exist. The two are deliberately indistinguishable so that a refusal cannot be used to probe for hidden names | query something on the surface, or ask the package's author to publish it |
+| **404**, "No queryable source", "No queryable model" or "Query target is not queryable" | the source is not on the package's published surface, or does not exist. The two are deliberately indistinguishable so that a refusal cannot be used to probe for hidden names | query something on the surface, or ask the package's author to publish it |
 | **403**, "Access denied" | the source exists and is on the surface, but an `#(authorize)` gate did not admit you | supply the givens the gate reads, or accept that this caller may not read it |
 | **200** with zero rows | you were admitted, and an `#(access_filter)` narrowed the rows to none of them | this is a real answer. Report it as "no matching rows", never as an error |
 

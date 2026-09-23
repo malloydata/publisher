@@ -1007,6 +1007,45 @@ export { \`customer-orders\` }`,
       }
    });
 
+   it("declared: an ad-hoc refusal does not tell a hidden name from a missing one", async () => {
+      // The pre-compile gate refuses ad-hoc text only for a name the model
+      // declares, and it used to say that name back, while a name that does
+      // not exist reached the compiled backstop's generic message. The
+      // difference told a caller which hidden names are real. Checked on a
+      // .malloy path (helper is declared in index.malloy, not exported) and on
+      // a notebook path (base_source is visible to it through an import).
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      fs.writeFileSync(
+         path.join(tempDir, "report.malloynb"),
+         `>>>malloy\nimport "index.malloy"\nimport "base.malloy"`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const refusal = async (model: Model, query: string) => {
+         try {
+            await model.getQueryResults(undefined, undefined, query);
+         } catch (error) {
+            expect(error).toBeInstanceOf(NotQueryableError);
+            return (error as Error).message;
+         }
+         throw new Error(`"${query}" was admitted`);
+      };
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const [modelPath, hidden] of [
+            ["index.malloy", "helper"],
+            ["report.malloynb", "base_source"],
+         ]) {
+            const model = pkg.getModel(modelPath)!;
+            expect(await refusal(model, `run: ${hidden} -> hv`)).toBe(
+               await refusal(model, "run: no_such_source -> hv"),
+            );
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("declared: warns at load when a served dashboard's tile reads an unpublished source", async () => {
       // The dashboard is listed and compiles (/compile is exempt from the
       // boundary), so without this the author learns of the problem only when
