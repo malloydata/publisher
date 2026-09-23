@@ -1899,17 +1899,20 @@ paths:
         serving, so `error` is only reachable on the paths that keep per-model
         placeholders. Treat it as present-but-uncommon rather than the normal
         way a broken dashboard surfaces. When the package curates its query surface
-        (`queryableSources: "declared"`), a dashboard whose entry file is not in
-        `explores` is omitted, because its query and given names would not be
-        runnable; the omission is reported in the package's `warnings` as of the
+        (a surface from `explores` or from a root `index.malloy`, with
+        `queryableSources` left at `"declared"`), a dashboard whose entry file is
+        not on that surface is omitted, because its query and given names would
+        not be runnable. A root `index.malloy` cannot export a dashboard file,
+        so a package curated only by that file omits every dashboard; the omission is reported in the package's `warnings` as of the
         last load. A metadata `PATCH` that TIGHTENS curation takes effect on
         this listing immediately; one that relaxes it takes effect on the next
         package reload, because the withheld dashboards were never built into
         the cached set. Either way the matching warning is computed at load, so
         after a `PATCH` it appears only once the package reloads.
 
-        Where the boundary is active at all, which needs `explores` declared
-        AND `queryableSources` left at `"declared"`, being listed does not by
+        Where the boundary is active at all, which needs a surface (`explores`
+        declared, or a root `index.malloy`) AND `queryableSources` left at
+        `"declared"`, being listed does not by
         itself guarantee the dashboard runs: the queryable sources are the
         union of every listed file's `export {}` closure, so a dashboard whose
         tiles read a source that only an UNLISTED file exports is still served
@@ -3145,14 +3148,18 @@ components:
             degrade attribution. A refusal is the one materialization finding the
             build plan cannot also be read for: a refused `storage`/`colocated`
             source is ABSENT from `BuildPlan.sources`, so nothing there records
-            that the annotation was written at all. Discovery findings: a model listed in `explores` whose
-            export closure surfaces no sources or named queries, so it lists as
-            empty and renders a blank page. Dashboard findings: a
+            that the annotation was written at all. Discovery findings: a model
+            on the package's surface whose export closure surfaces no sources or
+            named queries, so it lists as empty and renders a blank page; a
+            surface whose every model failed to compile, so every model in the
+            package answers 404 by name; and, on the reload that caused it, a
+            package that had a surface and now has none, so every source that
+            surface withheld is listed and queryable by name again. Dashboard findings: a
             `dashboards/` file whose `# artifact` tag does not parse or does not
             describe a dashboard, a tile or suggest query that does not resolve,
             a `# drill` naming a destination that is not a dashboard, and a
             dashboard held back from the listing because its entry file is not
-            in `explores`. Two dashboard findings are about Publisher rather
+            on the package's surface. Two dashboard findings are about Publisher rather
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
