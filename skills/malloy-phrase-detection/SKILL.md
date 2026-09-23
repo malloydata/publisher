@@ -10,9 +10,9 @@ The `get_context` tool description defines each field and what a call returns. T
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
-**Scope of this skill:** the patterns below build `dimension` / `measure` / `view` targets. `dimensional_value` targets, on a server that supports them, are covered under "Value search, where the server supports it". Phrasing for `source` targets is covered at the end.
+**Scope of this skill:** the patterns below build `dimension` / `measure` / `view` / `dimensional_value` targets. Phrasing for `source` targets is covered at the end.
 
-**A note on matching:** `get_context` searches over the model (sources, fields, views, and their descriptions). Some servers can also search the categorical *values* stored in the data; check the tool's description. Where yours can't, find which literal values a categorical dimension holds by targeting the dimension, then querying its distinct values with `execute_query` (see the patterns below).
+**A note on matching:** `get_context` searches over the model (sources, fields, views, and their descriptions), and `dimensional_value` targets search the categorical *values* stored in the data. Some servers don't index values; check the tool's description. On one that doesn't, find a literal value by targeting its dimension, then querying its distinct values with `execute_query` (see "Where value search isn't available" below).
 
 ## Always send `search_text`
 
@@ -34,27 +34,26 @@ One target per concept is enough: the tool handles phrasing variants internally.
   - "total revenue" becomes `"the total revenue or sales amount"`
 - **`view`**: pre-built analysis. Include one whenever the question sounds like a canned report (summary, breakdown, top-N, trend).
   - "sales summary" becomes `"a summary of sales metrics"`
+- **`dimensional_value`**: a literal value the user named, stored in some dimension. `search_text` is the value itself, the one target where echoing the user's word is right.
+  - "CyberArk" stays `"CyberArk"`
+  - Best practice is to scope the call to the source that holds the value. An unscoped value search covers every indexed dimension in scope, so it is slow on a large package. If you truly don't know the source, you can leave the scope off, but expect a slow call.
 - **`source`**: data domain, for a question that names a subject area rather than fields (phrasing below).
 
-**Resolving categorical values.** When the user names a literal value like "premium" or "New York City", and your server has no value search (next paragraph), target the *dimension* it lives on (`"the subscription tier"`, `"the city where the subscriber lives"`). Then confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it. The data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
+**Resolving categorical values.** When the user names a literal value like "premium" or "New York City", send a `dimensional_value` target for it, scoped to its source once you know the source. Filter on the exact string it returns: the data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
 
-**Value search, where the server supports it.** Some `get_context` servers index the values stored in dimensions, and answer a `dimensional_value` target with the dimensions that hold a matching value. Check the tool's description to see whether yours does: a server without a value index may accept the target and return nothing. Where it works:
-
-- **Set a scope.** Best practice is to scope the call to the source that holds the value. An unscoped value search covers every indexed dimension in scope, so it is slow on a large package. If you truly don't know the source, you can leave the scope off, but expect a slow call.
-- **Send the value itself.** `search_text` on a `dimensional_value` target is the literal you are looking for (`"CyberArk"`), not a description of it. This is the one target where echoing the user's word is right.
-- **Fall back when a dimension's values aren't indexed.** Target the dimension and query its distinct values instead, as above.
+**Where value search isn't available.** Some servers have no value index and return nothing for a `dimensional_value` target, and on others a particular dimension's values may not be indexed. Then target the *dimension* the value lives on (`"the subscription tier"`, `"the city where the subscriber lives"`), and confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it.
 
 ## Non-obvious decomposition patterns
 
 These are the rules you won't apply correctly by default:
 
-1. **Adjective + noun, split.** "active users" becomes two dimension targets: one for the attribute (`"the status of the user account"`) and one for the noun (`"the user or account holder"`). Resolve the modifier ("active") to the exact stored value by querying the status dimension's distinct values with `execute_query`.
+1. **Adjective + noun, split.** "active users" becomes two dimension targets: one for the attribute (`"the status of the user account"`) and one for the noun (`"the user or account holder"`). Resolve the modifier ("active") to the exact stored value with a `dimensional_value` target, or the status dimension's distinct values where values aren't indexed.
 2. **Ambiguous concept, cover both types.** "rating", "duration", and the like could be either a dimension or a measure: create one target of each type.
 3. **Time references are dimensions.** "last year" becomes a dimension target for the relevant date field (`"the date the event occurred"`).
 4. **Numeric ranges are dimensions.** "aged 50", "revenue over $1M" become dimension targets; the comparison is applied in the query, not matched as text.
-5. **Categorical strings that look numeric are still dimensions.** "18-30", "<5 days", "tier 2" are stored as literal strings on a dimension. Target that dimension, then confirm the exact string with `execute_query`.
+5. **Categorical strings that look numeric are still dimensions.** "18-30", "<5 days", "tier 2" are stored as literal strings on a dimension. Target that dimension, then confirm the exact string with a `dimensional_value` target, or `execute_query` where values aren't indexed.
 6. **"Top N" without a named measure, add a ranking measure.** "top 6 products" becomes a measure for the ranking concept (`"the performance metric for a product"`) plus a dimension for the entity. If the measure is explicit ("top products by total sales"), use it directly and skip the generic ranking measure.
-7. **Multiple values for one concept, one dimension target.** Several values ("premium and basic") still map to a single dimension target for the parent field; enumerate the exact stored values with `execute_query`.
+7. **Multiple values for one concept, one dimension target.** Several values ("premium and basic") still map to a single dimension target for the parent field; confirm the exact stored values with `dimensional_value` targets, or `execute_query` where values aren't indexed.
 8. **The quantity asked for is a measure, even when nothing names it.** "How many titles were released in 2019?" is asking for a count, but no noun in it is the count: the visible phrases are the subject ("titles") and the filter ("2019"), and mapping only those yields a `source` and a `dimension` target with no way to answer. Always add a measure target for the quantity itself (`"the number of titles"`). This holds for every interrogative that IS the aggregation -- "how many", "how much", "how often" -- and it is the pattern most easily lost when a filter or grouping is the loud part of the sentence. Measured: an answerer got this right on "How many titles are in the dataset?" and dropped it on "How many titles were released in 2019?", where the year took the attention.
 9. **A population qualifier is a target, and so is the one the question omits.** Words like "real", "actual", "genuine", "live" or "production" are not filler: they name rows the model marks for exclusion. Target the flag itself (`"the flag marking synthetic, test or monitoring traffic"`), not just the noun they modify. Add one such target even when the question carries no qualifier at all, because a table of events, requests, sessions or logs usually holds test, internal or cancelled rows and nothing in the wording will say so. Resolve it to the model's own flag rather than inventing a filter on an id or a name; a hand-rolled exclusion and the documented one rarely select the same rows.
 
@@ -72,9 +71,9 @@ The targets for this question:
 | `dimension` | `"the tier of the subscription"` |
 | `view` | `"subscriber churn or retention analysis"` |
 
-Key moves: time ("last year") becomes a dimension on the cancellation date; "NYC" and "premium/basic subscribers" do not get their own value targets, they resolve to the city and tier dimensions. On a server with value search, a follow-up `dimensional_value` target scoped to `subscriptions` could confirm "NYC" instead of the distinct-values query. One `view` target is included to surface any canned churn analysis.
+Key moves: time ("last year") becomes a dimension on the cancellation date; "NYC" and "premium/basic subscribers" resolve to the city and tier dimensions in this first call, because the source is not known yet and an unscoped value search is slow. One `view` target is included to surface any canned churn analysis.
 
-The response returns the source these fields live on (here `subscriptions`) with the matched fields on its card. Then run `execute_query` to read the city and tier dimensions' distinct values and confirm the exact strings to filter on ("New York City" vs "NYC", "premium" vs "Premium").
+The response returns the source these fields live on (here `subscriptions`) with the matched fields on its card. Then send a second call scoped to `subscriptions`, with `dimensional_value` targets for `"NYC"`, `"premium"` and `"basic"`, to get the exact strings to filter on ("New York City" vs "NYC", "premium" vs "Premium"). Where values aren't indexed, run `execute_query` on the city and tier dimensions' distinct values instead.
 
 ## Authoring `search_text` for `source` targets
 
