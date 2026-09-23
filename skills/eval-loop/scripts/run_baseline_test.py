@@ -1520,6 +1520,16 @@ class GitSha(unittest.TestCase):
             rb.git_sha(pathlib.Path("sub"), scope=pathlib.Path("sub"))
             .endswith("-dirty"))
 
+    def test_dirt_outside_the_scope_is_not_the_models(self):
+        # A scratch file at the repo root: the tree is dirty, the model is not.
+        # Scoped to the package directory the marker says so; unscoped it
+        # stamps a clean model -dirty, which is what every run pin used to read.
+        (self.repo / "scratch.txt").write_text("notes\n")
+        self.assertFalse(
+            rb.git_sha(pathlib.Path("."), scope=pathlib.Path("sub"))
+            .endswith("-dirty"))
+        self.assertTrue(rb.git_sha(pathlib.Path(".")).endswith("-dirty"))
+
     def test_a_relative_path_still_marks_dirt(self):
         self.dirty()
         self.assertTrue(
