@@ -1054,3 +1054,34 @@ class HeldGoldensAreNotReDerived(unittest.TestCase):
             got, _, _ = check_value(self.case("provisional"), self.a)
         tq.assert_called_once()
         self.assertEqual(got, "ok")
+
+
+class ANotQueryableKeyNamesItsRootSource(unittest.TestCase):
+    """A set authored before its truth package existed replays packaged views;
+    the truth server answers 404 for each, and the bare message sent a reader
+    to the server instead of the golden."""
+
+    def test_the_root_source_and_the_remedy_are_in_the_detail(self):
+        a = argparse.Namespace(rewrite=False, publisher="http://x", environment="e",
+                               truth_package="t", truth_model="truth.malloy")
+        case = {"qid": "s-2", "golden": {"kind": "scalar", "status": "provisional",
+                                          "canonicalQuery": "run: orders -> { aggregate: n }",
+                                          "value": {"n": 1}}}
+        err = 'HTTP 404: {"code":404,"message":"Query target is not queryable."}'
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=(None, err)):
+            got, detail, _ = check_value(case, a)
+        self.assertEqual(got, "error")
+        self.assertIn("`orders`", detail)
+        self.assertIn("truth package", detail)
+
+    def test_any_other_error_is_reported_as_it_came(self):
+        a = argparse.Namespace(rewrite=False, publisher="http://x", environment="e",
+                               truth_package="t", truth_model="truth.malloy")
+        case = {"qid": "s-3", "golden": {"kind": "scalar", "status": "provisional",
+                                          "canonicalQuery": "run: t_a -> { aggregate: n }",
+                                          "value": {"n": 1}}}
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=(None, "HTTP 500: boom")):
+            got, detail, _ = check_value(case, a)
+        self.assertEqual((got, detail), ("error", "HTTP 500: boom"))

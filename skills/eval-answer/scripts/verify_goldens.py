@@ -253,6 +253,21 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     rows, err = try_query(a.publisher, a.environment, a.truth_package,
                           a.truth_model, q)
     if err:
+        if "not queryable" in err:
+            # The single most likely state of a set authored before its truth
+            # package existed: every key replays a packaged view (`run:
+            # orders -> ...`), and the truth server answers 404 "Query
+            # target is not queryable" 23 times with no hint that the query's
+            # root source is not a raw table. The message sent a reader to the
+            # server; the defect is in the golden.
+            m = re.match(r"\s*run:\s*([A-Za-z_]\w*)", q)
+            root = f"`{m.group(1)}`" if m else "its root source"
+            return ("error",
+                    f"canonicalQuery reads {root}, which the truth package does "
+                    f"not serve as queryable: either the truth model does not "
+                    f"declare it (a key derived through the model under test, "
+                    f"not the raw tables) or the query did not compile. "
+                    f"Re-derive the key through the truth package", None)
         return "error", err[:160], None
 
     want = g.get("value")
