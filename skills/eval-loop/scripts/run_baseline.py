@@ -2749,6 +2749,13 @@ def main(argv: list[str] | None = None) -> int:
                          "Publisher serves a copy under publisher_data/, so "
                          "there is no way to infer it; without this the run "
                          "carries modelSha, the content pin, and no git pin")
+    ap.add_argument("--model-dir", default=None, type=pathlib.Path,
+                    help="the package directory inside --model-repo the answerer "
+                         "was served from. The -dirty marker on modelGitSha is "
+                         "decided over this path, so an unrelated untracked file "
+                         "elsewhere in the repo (a scratch notebook, a run "
+                         "directory) does not stamp a clean model dirty. "
+                         "Recorded as modelDir; defaults to the whole repo")
     ap.add_argument("--skills-root", default=None,
                     help="a checkout holding skills/ and manifests/ to load the "
                          "answerer's and judge's doctrine from -- a Publisher "
@@ -3261,7 +3268,8 @@ def main(argv: list[str] | None = None) -> int:
         # those bytes are versioned, and it is absent rather than wrong when
         # nobody said where that is.
         modelRepo=str(a.model_repo) if a.model_repo else None,
-        modelGitSha=(git_sha(a.model_repo, scope=a.model_repo)
+        modelDir=str(a.model_dir) if a.model_dir else None,
+        modelGitSha=(git_sha(a.model_repo, scope=a.model_dir or a.model_repo)
                      if a.model_repo else None),
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),
