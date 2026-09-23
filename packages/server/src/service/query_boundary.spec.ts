@@ -40,7 +40,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
-import { NotQueryableError } from "../errors";
+import { NotQueryableError, OffSurfaceError } from "../errors";
 import type { Model } from "./model";
 import { Package } from "./package";
 
@@ -1007,13 +1007,68 @@ export { \`customer-orders\` }`,
       }
    });
 
-   it("declared: an ad-hoc refusal does not tell a hidden name from a missing one", async () => {
-      // The pre-compile gate refuses ad-hoc text only for a name the model
-      // declares, and it used to say that name back, while a name that does
-      // not exist reached the compiled backstop's generic message. The
-      // difference told a caller which hidden names are real. Checked on a
-      // .malloy path (helper is declared in index.malloy, not exported) and on
-      // a notebook path (base_source is visible to it through an import).
+   // The pre-compile gate refuses ad-hoc text only for a name the model
+   // declares, while a name that does not exist reaches the compiled backstop.
+   // Where a gate exists the two must read identically, or the difference tells
+   // a caller which hidden names are real. Checked on a .malloy path (helper is
+   // declared in index.malloy, not exported) and on a notebook path
+   // (base_source is visible to it through an import).
+   const refusal = async (model: Model, query: string) => {
+      try {
+         await model.getQueryResults(undefined, undefined, query);
+      } catch (error) {
+         expect(error).toBeInstanceOf(NotQueryableError);
+         return error as Error;
+      }
+      throw new Error(`"${query}" was admitted`);
+   };
+   const adHocPaths = [
+      ["index.malloy", "helper"],
+      ["report.malloynb", "base_source"],
+   ] as const;
+
+   it("declared: in a model with a gate, an ad-hoc refusal does not tell a hidden name from a missing one", async () => {
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      // Any #(authorize) in the model keeps every refusal generic, including
+      // for the ungated helper: the check is per model, and errs to generic.
+      const index = path.join(tempDir, "index.malloy");
+      fs.writeFileSync(
+         index,
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id") extend {
+  view: lv is { aggregate: c is count() }
+}
+` +
+            fs
+               .readFileSync(index, "utf8")
+               .replace("export { customers }", "export { customers, locked }"),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "report.malloynb"),
+         `>>>malloy\nimport "index.malloy"\nimport "base.malloy"`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const [modelPath, hidden] of adHocPaths) {
+            const model = pkg.getModel(modelPath)!;
+            const hiddenRefusal = await refusal(model, `run: ${hidden} -> hv`);
+            expect(hiddenRefusal).not.toBeInstanceOf(OffSurfaceError);
+            expect(hiddenRefusal.message).toBe(
+               (await refusal(model, "run: no_such_source -> hv")).message,
+            );
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: in a model with no gate, an ad-hoc refusal of a hidden name says it is off the surface", async () => {
+      // Nothing is gated, so there is nothing for the generic 404 to protect:
+      // /compile already answers a hidden name differently from a missing one.
+      // A modeler querying a source they just wrote needs the reason, not a
+      // message that reads as a typo.
       writeManifest({ explores: ["index.malloy"] });
       writeLayeredModels();
       fs.writeFileSync(
@@ -1021,26 +1076,49 @@ export { \`customer-orders\` }`,
          `>>>malloy\nimport "index.malloy"\nimport "base.malloy"`,
       );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
-      const refusal = async (model: Model, query: string) => {
-         try {
-            await model.getQueryResults(undefined, undefined, query);
-         } catch (error) {
-            expect(error).toBeInstanceOf(NotQueryableError);
-            return (error as Error).message;
-         }
-         throw new Error(`"${query}" was admitted`);
-      };
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         for (const [modelPath, hidden] of [
-            ["index.malloy", "helper"],
-            ["report.malloynb", "base_source"],
-         ]) {
+         for (const [modelPath, hidden] of adHocPaths) {
             const model = pkg.getModel(modelPath)!;
-            expect(await refusal(model, `run: ${hidden} -> hv`)).toBe(
-               await refusal(model, "run: no_such_source -> hv"),
+            const hiddenRefusal = await refusal(model, `run: ${hidden} -> hv`);
+            expect(hiddenRefusal).toBeInstanceOf(OffSurfaceError);
+            expect(hiddenRefusal.message).toBe(
+               `Query target is not queryable. It is not on this package's ` +
+                  `published surface, "index.malloy": only what that file ` +
+                  `exports is queryable, and only through it. Fix: import it ` +
+                  `in "index.malloy", add it to that file's export { ... }, ` +
+                  `and address the query to "index.malloy".`,
             );
+            // A name that does not exist is still just refused: there is no
+            // surface to point it at, and the advice would send a typo hunting.
+            const missing = await refusal(model, "run: no_such_source -> hv");
+            expect(missing).not.toBeInstanceOf(OffSurfaceError);
+            expect(missing.message).toBe("Query target is not queryable.");
          }
+
+         // A named source and a hidden file explain themselves the same way;
+         // a named source that does not exist does not.
+         const index = pkg.getModel("index.malloy")!;
+         const named = await index
+            .getQueryResults("helper", "hv", undefined)
+            .catch((e: Error) => e);
+         expect(named).toBeInstanceOf(OffSurfaceError);
+         expect((named as Error).message).toStartWith(
+            'No queryable source "helper". It is not on this package\'s published surface',
+         );
+         const unknown = await index
+            .getQueryResults("nope", "hv", undefined)
+            .catch((e: Error) => e);
+         expect(unknown).not.toBeInstanceOf(OffSurfaceError);
+         expect((unknown as Error).message).toBe('No queryable source "nope".');
+         const hiddenFile = await pkg
+            .getModel("base.malloy")!
+            .getQueryResults(undefined, undefined, "run: base_source -> v")
+            .catch((e: Error) => e);
+         expect(hiddenFile).toBeInstanceOf(OffSurfaceError);
+         expect((hiddenFile as Error).message).toStartWith(
+            'No queryable model "base.malloy". It is not on this package\'s published surface',
+         );
       } finally {
          await duckdb.close();
       }

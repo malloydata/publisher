@@ -492,6 +492,27 @@ export class NotQueryableError extends Error {
    }
 }
 
+/**
+ * A query-boundary refusal that says why: the target is real, it is off the
+ * package's published surface, and the message names that surface and the fix.
+ *
+ * Only thrown when the model that refused carries no `#(authorize)` gate
+ * anywhere. The generic NotQueryableError exists so a hidden GATED source is
+ * indistinguishable from a missing one. An ungated hidden source has nothing to
+ * protect that way: curation is not access control, and `/compile` (exempt from
+ * the boundary) already answers a hidden file differently from a missing one.
+ * Without the reason, a modeler who saves a new file and queries it reads the
+ * 404 as a typo.
+ *
+ * Still a NotQueryableError, so it still maps to 404.
+ */
+export class OffSurfaceError extends NotQueryableError {
+   constructor(message: string) {
+      super(message);
+      this.name = "OffSurfaceError";
+   }
+}
+
 export class MaterializationNotFoundError extends Error {
    constructor(message: string) {
       super(message);

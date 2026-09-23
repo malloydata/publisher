@@ -527,6 +527,10 @@ export class Package {
          packageCuratedSources = sources;
          packageCuratedQueries = queries;
       }
+      const offSurfaceHint =
+         mode === "declared" && exploresDeclared && exploreSet
+            ? this.offSurfaceHint([...exploreSet])
+            : undefined;
       for (const [modelPath, model] of this.models) {
          model.setQueryBoundary({
             mode,
@@ -534,8 +538,33 @@ export class Package {
             isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
             packageCuratedSources,
             packageCuratedQueries,
+            offSurfaceHint,
          });
       }
+   }
+
+   /**
+    * What an explainable query-boundary refusal appends (see Model.notQueryable):
+    * which files are the surface and how to publish something on it. Worded per
+    * shape because a package curated by its index.malloy has no "explores" to
+    * add anything to.
+    */
+   private offSurfaceHint(surface: string[]): string {
+      if (this.surfaceIsIndexModel()) {
+         return (
+            `It is not on this package's published surface, ` +
+            `"${INDEX_MODEL_NAME}": only what that file exports is queryable, ` +
+            `and only through it. Fix: import it in "${INDEX_MODEL_NAME}", add ` +
+            `it to that file's export { ... }, and address the query to ` +
+            `"${INDEX_MODEL_NAME}".`
+         );
+      }
+      return (
+         `It is not on this package's published surface, the models ` +
+         `publisher.json "explores" lists (${JSON.stringify(surface.sort())}): ` +
+         `only what those files export is queryable, and only through them. ` +
+         `Fix: export it from a listed model and address the query to that model.`
+      );
    }
 
    static async create(

@@ -121,7 +121,7 @@ describe("a package whose published surface disappears", () => {
       expect(widenedWarning(await getPackage())).toBeUndefined();
    });
 
-   it("answers a hidden model and a missing one with the same 404", async () => {
+   it("says why a hidden model is refused, and refuses a missing one plainly", async () => {
       const refuse = async (model: string) => {
          const res = await fetch(`${pkgApi()}/models/${model}/query`, {
             method: "POST",
@@ -132,12 +132,20 @@ describe("a package whose published surface disappears", () => {
          return { status: res.status, message: body.message };
       };
       // internal.malloy exists and is off the surface; nope.malloy does not
-      // exist. The bodies differ only by the path the caller sent.
+      // exist. Nothing in this package is gated, so the hidden file's 404 says
+      // it is off the surface and names the fix (a modeler who just saved it
+      // would otherwise read a typo). A gated model keeps the generic 404;
+      // query_boundary.spec.ts pins that half.
       const hidden = await refuse("internal.malloy");
       const missing = await refuse("nope.malloy");
       expect(hidden).toEqual({
          status: 404,
-         message: 'No queryable model "internal.malloy".',
+         message:
+            'No queryable model "internal.malloy". It is not on this ' +
+            'package\'s published surface, "index.malloy": only what that ' +
+            "file exports is queryable, and only through it. Fix: import it " +
+            'in "index.malloy", add it to that file\'s export { ... }, and ' +
+            'address the query to "index.malloy".',
       });
       expect(missing).toEqual({
          status: 404,

@@ -53,6 +53,7 @@ import {
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
+   OffSurfaceError,
    PayloadTooLargeError,
 } from "../errors";
 import { getPersistStorageMode } from "../config";
@@ -587,6 +588,10 @@ export class Model {
        *  Package.applyQueryBoundaryToModels. */
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
+      /** The sentence an explainable refusal appends: which files are the
+       *  surface and how to put something on it. Worded by the Package, which
+       *  knows whether the surface is an index.malloy or an explores list. */
+      offSurfaceHint?: string;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    /** Per-query freshness resolver, pushed down by the owning Package (see
     *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
@@ -3708,8 +3713,31 @@ export class Model {
       isQueryEntryPoint: boolean;
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
+      offSurfaceHint?: string;
    }): void {
       this.queryBoundary = policy;
+   }
+
+   /**
+    * A boundary refusal. Explains itself ({@link OffSurfaceError}) only when
+    * `explainable` (the target is real) AND no `#(authorize)` gate is findable
+    * anywhere in this model; otherwise it is the generic 404 that cannot be told
+    * apart from a missing name. {@link hasAnyAuthorizeNote} answers true for
+    * unreadable IR, so every doubt lands on the generic side.
+    */
+   private notQueryable(
+      refusal: string,
+      explainable: boolean,
+   ): NotQueryableError {
+      const hint = this.queryBoundary.offSurfaceHint;
+      if (explainable && hint && !this.hasAnyAuthorizeNote()) {
+         return new OffSurfaceError(`${refusal} ${hint}`);
+      }
+      return new NotQueryableError(refusal);
+   }
+
+   private declaresSource(name: string): boolean {
+      return this.sources?.some((s) => s.name === name) ?? false;
    }
 
    /**
@@ -3827,7 +3855,10 @@ export class Model {
       // notebook's cells run through executeNotebookCell, which never reaches
       // this gate, so what is refused here is only text a caller wrote.
       if (!isQueryEntryPoint && !this.isNotebook()) {
-         throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
+         throw this.notQueryable(
+            `No queryable model "${this.modelPath}".`,
+            true,
+         );
       }
 
       // A named query/view is an author-exported entry point (the author chose
@@ -3843,13 +3874,27 @@ export class Model {
          // gates the request.
          if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
          if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
-         throw new NotQueryableError(`No queryable query "${queryName}".`);
+         // With a source named, the source is what is off the surface, so the
+         // refusal names it (both are the caller's own words, echoed back).
+         if (sourceName) {
+            throw this.notQueryable(
+               `No queryable source "${sourceName}".`,
+               this.declaresSource(sourceName),
+            );
+         }
+         throw this.notQueryable(
+            `No queryable query "${queryName}".`,
+            (this.queries ?? []).some((q) => q.name === queryName),
+         );
       }
 
       // An explicitly-named source: admit iff curated.
       if (sourceName) {
          if (this.isCuratedSource(sourceName)) return "cleared";
-         throw new NotQueryableError(`No queryable source "${sourceName}".`);
+         throw this.notQueryable(
+            `No queryable source "${sourceName}".`,
+            this.declaresSource(sourceName),
+         );
       }
 
       // Ad-hoc text: positively deny only a surface-resolved target that is a
@@ -3863,13 +3908,12 @@ export class Model {
             target &&
             !this.isCuratedSource(target) &&
             !this.derivesFromCurated(target, query) &&
-            this.sources?.some((s) => s.name === target)
+            this.declaresSource(target)
          ) {
-            // The same words the compiled backstop uses for a name that does
-            // not exist. This branch fires only for a name the model DECLARES,
-            // so naming it here, and not there, would tell a caller which
-            // hidden names are real.
-            throw new NotQueryableError("Query target is not queryable.");
+            // The same words the compiled backstop uses, and not the name: in a
+            // gated model this branch must not tell a caller which hidden names
+            // are real. notQueryable adds the reason only where nothing is gated.
+            throw this.notQueryable("Query target is not queryable.", true);
          }
       }
       return "deferred";
@@ -3899,13 +3943,19 @@ export class Model {
       if (mode === "all" || !exploresDeclared) return;
       // A notebook passes the file-level check (see assertQueryBoundaryEarly).
       if (!isQueryEntryPoint && !this.isNotebook()) {
-         throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
+         throw this.notQueryable(
+            `No queryable model "${this.modelPath}".`,
+            true,
+         );
       }
       if (compiledSource) {
          if (this.isCuratedSource(compiledSource)) return;
          if (query && this.derivesFromCurated(compiledSource, query)) return;
       }
-      throw new NotQueryableError("Query target is not queryable.");
+      throw this.notQueryable(
+         "Query target is not queryable.",
+         compiledSource !== undefined,
+      );
    }
 
    /**

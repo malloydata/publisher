@@ -13,6 +13,7 @@ import {
    ModelCompilationError,
    EnvironmentNotFoundError,
    NotQueryableError,
+   OffSurfaceError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ResponseUnserializableError,
@@ -63,6 +64,18 @@ export function classifyToolError(
    identifier: string,
    error: unknown,
 ): ErrorDetails {
+   if (error instanceof OffSurfaceError) {
+      // Checked before the not-found branch, which would drop this message and
+      // tell the agent to check its spelling. The message names the surface and
+      // the fix, and is only ever built where nothing is gated (see the class).
+      return {
+         message: error.message,
+         suggestions: [
+            "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
+            "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      } satisfies ErrorDetails;
+   }
    if (
       error instanceof EnvironmentNotFoundError ||
       error instanceof PackageNotFoundError ||

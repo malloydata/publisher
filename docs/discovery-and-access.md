@@ -64,13 +64,22 @@ purpose. Curation hides; `#(authorize)` denies; hiding is not denying.
 
 | the caller's situation            | the mechanism                                              | the answer                                                                |
 | --------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------- |
-| the source is off the surface     | not in any listed file's `export { … }` closure            | **404**, deliberately indistinguishable from a source that does not exist |
+| the source is off the surface     | not in any listed file's `export { … }` closure            | **404**, saying why, unless a gate is in play (below)                     |
 | the source is locked to them      | [`#(authorize)`](authorize.md) their givens do not satisfy | **403**                                                                   |
 | the source is row-scoped for them | [`#(access_filter)`](row-level-access.md)                  | **200**, with their rows — zero of them if it admits none                 |
 
 The 404 is deliberate: a 403 would confirm that a hidden name exists, which is how a curated
 package becomes an enumeration oracle. Because curation is not an identity gate, it is also not the
 tool for protecting contents — see the caveats below.
+
+What the 404 says depends on whether a gate is in play. When the model that refused the query
+carries no `#(authorize)` anywhere, the 404 says the target is off the surface, names the surface
+file, and gives the fix. A modeler who saves a new file and queries it would otherwise read a typo,
+and there is nothing to hide: `/compile` already answers a hidden file differently from a missing
+one. When the model carries a gate, every refusal is the plain `No queryable model "…"`,
+`No queryable source "…"` or `Query target is not queryable.`, worded exactly as for a name that
+does not exist, so a hidden gated name cannot be told from a missing one. A name that does not exist
+always gets the plain form.
 
 ## Curating, and what curation is not
 
@@ -109,7 +118,7 @@ exported by nothing, so both public sources still extend it while a direct query
 ```bash
 API=http://localhost:4000/api/v0/environments/examples/packages/governed-analytics/models
 curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_base -> { aggregate: c is count() }"}'   # → 404 (indistinguishable from non-existent)
+  -d '{"query":"run: orders_base -> { aggregate: c is count() }"}'   # → 404, "not on this package's published surface"
 ```
 
 ## The older form: `explores` and `queryableSources`
