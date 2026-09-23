@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a package's `index.malloy` is its published surface
+## [0.7.0] — a package's `index.malloy` is its published surface
 
 Put an `index.malloy` at a package root, `import` your models, and `export { … }` the sources you
 publish. What it exports is what Publisher lists **and** what callers may query. `publisher.json`
