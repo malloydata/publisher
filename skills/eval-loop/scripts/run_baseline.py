@@ -1183,7 +1183,14 @@ _FENCE = re.compile(r"```(?:malloy)?\s*\n(.*?)```", re.S | re.I)
 
 
 def _norm(q: str) -> str:
-    return " ".join((q or "").split())
+    """One spelling for one query. Malloy takes a newline OR a semicolon
+    between clauses; the executed query (one line in the tool call) carries
+    semicolons and the block the answer prints carries newlines, so the two
+    never compared equal and `declared` never fired -- the harness fell through
+    to `last_ok` and re-executed a probe. On one acceptance arm that read a
+    model edit as a regression: the answer led with the filtered figure and
+    the harness graded the unfiltered probe it ran afterwards."""
+    return " ".join((q or "").replace(";", " ").split())
 
 
 def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:

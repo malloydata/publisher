@@ -77,6 +77,23 @@ class FinalQuery(unittest.TestCase):
             rb.pick_final_query(["run: a -> answer"] * 2, calls, text)[2],
             "answer.malloy")
 
+    def test_a_declared_query_matches_however_it_was_laid_out(self):
+        # The executed query is one line with semicolons; the answer prints the
+        # same query on several lines. Before, they never compared equal and
+        # the harness graded the probe that ran last.
+        ran = "run: a -> { where: x = 1; aggregate: n is count() }"
+        calls = [
+            {"tool": "execute_query", "query": ran,
+             "modelPath": "m.malloy", "error": None},
+            {"tool": "execute_query", "query": "run: a -> probe",
+             "modelPath": "p.malloy", "error": None},
+        ]
+        text = ("The filtered total.\n\n```malloy\nrun: a -> {\n  where: x = 1\n"
+                "  aggregate: n is count()\n}\n```")
+        self.assertEqual(
+            rb.pick_final_query([ran, "run: a -> probe"], calls, text),
+            (ran, "declared", "m.malloy"))
+
     def test_a_call_that_named_no_file_reports_none(self):
         # The server resolved the file from its own default, so the run's
         # default is the closer guess than a file another call named.
