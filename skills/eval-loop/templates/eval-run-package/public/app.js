@@ -92,9 +92,19 @@ function pill(v) {
   return `<span class="pill ${esc(v)}">${esc(verdictLabel[v] || v.replace('_', ' '))}</span>`;
 }
 
+/* The entities this answer needed, one dot each, and the count in front.
+   The dots alone made a reader count them to learn the one thing that
+   matters -- how many of the needed entities came back -- and the four
+   shades read as four verdicts rather than as one binary with three ways
+   of arriving at it. The fraction says it outright; the shades stay for
+   HOW each one was delivered, which the legend explains. */
 function dots(required) {
   if (!required || !required.length) return '';
-  return '<span class="dots">' + required.map(e =>
+  const got = required.filter(e => e.status !== 'missing').length;
+  const all = got === required.length;
+  return `<span class="dots"><span class="recall${all ? '' : ' short'}"`
+    + ` title="${got} of ${required.length} needed entities came back">`
+    + `${got}/${required.length}</span>` + required.map(e =>
     `<i class="dot ${esc(e.status)}" title="${esc(e.entity_id)} — ${esc(e.status)}"></i>`)
     .join('') + '</span>';
 }
@@ -145,7 +155,18 @@ function predictionBlock(p) {
       cells(l).map((c, i) => [cols[i] || `c${i}`, isFinite(c) && c !== '' ? Number(c) : c])));
     return rowsTable(rows);
   }
-  return `<div class="box mute">${esc(t)}</div>`;
+  // Malloy renders a result with no grouping as `name ------ value`, one line
+  // per field and not a pipe in sight, so it used to miss both branches above
+  // and land in the raw fallback: a lone number shown as
+  // `check_sum --------- 213939.33999999976`, full width, dashes and all.
+  // Through rowsTable it is a one-row table with the column named and the
+  // number formatted, which is what every other result here looks like.
+  const scalar = t.split('\n').map(l => l.match(/^\s*([^\s|]+)\s+-{3,}\s+(.*\S)\s*$/))
+    .filter(Boolean);
+  if (scalar.length && scalar.length === t.split('\n').filter(l => l.trim()).length)
+    return rowsTable([Object.fromEntries(scalar.map(([, k, v]) =>
+      [k, isFinite(v) && v !== '' ? Number(v) : v]))]);
+  return `<div class="box mute rawtext">${esc(t)}</div>`;
 }
 
 /* Enough markdown for an agent's answer: fences, tables, bold, code, headings, bullets. */
@@ -280,7 +301,8 @@ async function loadCase(qid) {
   const d0 = detail[0];
   let html = `<div><h3>Reference answer</h3>${goldenBlock(d0)}`;
   if (d0.rubric || d0.must_state)
-    html += `<details class="sub" style="margin-top:8px"><summary>Rubric</summary>
+    html += `<details class="sub" style="margin-top:8px"><summary><span
+      class="caret">&#9654;</span>Rubric &mdash; how this answer was judged</summary>
       <div class="box" style="margin-top:6px">${d0.rubric ? esc(d0.rubric) : ''}${
         d0.must_state ? `<br><br><b>Must state.</b> ${esc(d0.must_state)}` : ''}</div></details>`;
   html += '</div>';
@@ -318,10 +340,13 @@ async function loadCase(qid) {
         than on what the answer claims.</p>${predictionBlock(d.prediction)}`
         : `<h3>Re-executed rows</h3><p class="cap">None. The judge scored this
         attempt from its answer text and the reference answer alone.</p>`}
-      <h3>The attempt, step by step</h3>
+      <details class="trace"><summary><span class="caret">&#9654;</span>The attempt,
+        step by step<span class="mute"> &middot; ${mine.length || 1} step${
+          (mine.length || 1) === 1 ? '' : 's'}</span></summary>
       <div class="timeline">${mine.length ? mine.map(stepHtml).join('')
         : `<div class="step text"><div class="prose">${md(d.answer)}</div></div>${
             d.final_query ? `<div class="step execute_query"><span class="k">final query</span><pre>${esc(d.final_query)}</pre></div>` : ''}`}</div>
+      </details>
       ${d.transcript ? `<div class="qid" style="margin-top:10px">transcript: ${esc(d.transcript)}</div>` : ''}
     </div>`;
   }

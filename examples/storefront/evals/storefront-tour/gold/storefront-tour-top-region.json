@@ -1,0 +1,22 @@
+{
+ "qid": "storefront-tour-top-region",
+ "truthQuery": "run: t_order_items extend { join_one: t_customers on customer_id = t_customers.customer_id } extend { join_one: t_regions on t_customers.state = t_regions.state } -> { group_by: region is t_regions.region; aggregate: revenue is sale_price.sum(); order_by: revenue desc; limit: 1 }",
+ "verifyQuery": "run: t_order_items extend { join_one: t_customers on customer_id = t_customers.customer_id } extend { join_one: t_regions on t_customers.state = t_regions.state } -> { where: t_regions.region = 'South'; aggregate: revenue is sale_price.sum() }",
+ "truthRows": [
+  {
+   "region": "South",
+   "revenue": 781182.0799999975
+  }
+ ],
+ "verifyRows": [
+  {
+   "revenue": 781182.0799999975
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "781182.0799999975 vs 781182.0799999975"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

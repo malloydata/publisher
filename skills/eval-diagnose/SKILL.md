@@ -220,6 +220,21 @@ If the agent could not reasonably have known to ask, that is a model gap.
 | `GUIDANCE-NOT-RETRIEVED` | entities came back, governing guidance did not | model: put guidance on the entities agents search for |
 | `GUIDANCE-DECLINED` | guidance was retrieved and judged inapplicable | model: state the business default, not a caveat |
 
+**Before diagnosing a `NOT-RETURNED`, check the call actually returned
+nothing.** The `tool_call` event carries `retrieval_mode` and `rankedSummary`.
+A `rankedSummary` of `null` means the response could not be read, not that it
+was empty -- a body too large for the model's context is written to a file, and
+the run records no summary for it. There is nothing to diagnose there: say the
+call was not measured.
+
+And **never attribute a miss to the embedding index unless `retrieval_mode`
+says `lexical`.** The mode is recorded per call precisely so this is checkable.
+A diagnosis once explained a phantom empty result with "the index was not ready
+yet" on a run whose index was ready before the first question and whose
+response did hold results; the empty list was a parsing bug in the harness. An
+unverifiable cause that sounds right is worse than `needs_human`, because it
+closes the finding.
+
 A missing join is coverage, not an agent-call miss. The model has to volunteer
 relationships. A declared join is not a retrieval entity; do not look for it in
 `get_context` results.
