@@ -354,6 +354,18 @@ def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
     return f"{stem}-{n:02d}"
 
 
+def imply_flags(a: argparse.Namespace) -> argparse.Namespace:
+    """`--rejudge` is `--rebuild`'s answer half plus a fresh judge, so it sets
+    `rebuild`. Without this, `--rejudge` alone reached every `if a.rebuild`
+    gate as a fresh run: it spawned a new answerer per case ($0.33 each) against
+    the flag's own help text, and with `--only` it took the ledger's full-write
+    path and left a 12-case run holding one case. `--from` already set both;
+    this makes the bare flag mean what it says."""
+    if getattr(a, "rejudge", False):
+        a.rebuild = True
+    return a
+
+
 def existing_run_refusal(out: pathlib.Path) -> str | None:
     """Why a fresh arm may not write into `out`, or None when it may.
 
@@ -2831,9 +2843,10 @@ def main(argv: list[str] | None = None) -> int:
                          "delete events.jsonl, find -name judge.md -delete) was "
                          "done three times on one set")
     ap.add_argument("--rejudge", action="store_true",
-                    help="with --rebuild: reuse the answers but score them "
-                         "again, for a judge or rubric change")
+                    help="reuse the saved answers but score them again, for a "
+                         "judge or rubric change. Implies --rebuild")
     a = ap.parse_args(argv)
+    imply_flags(a)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
     a.hosted_tools = hosted_tools(

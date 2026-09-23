@@ -1736,6 +1736,31 @@ class PersistedStubIsTheResult(unittest.TestCase):
         self.assertEqual(rb.result_text(self.block("{\"sources\": []}")), "{\"sources\": []}")
 
 
+class RejudgeImpliesRebuild(unittest.TestCase):
+    """`--rejudge` alone answered every case again and, with `--only`, wrote
+    the ledger from the one case. It is rebuild's answer half plus a fresh
+    judge, and every gate reads `a.rebuild`."""
+
+    def test_rejudge_sets_rebuild(self):
+        a = rb.imply_flags(argparse.Namespace(rejudge=True, rebuild=False))
+        self.assertTrue(a.rebuild)
+
+    def test_rebuild_alone_is_unchanged(self):
+        a = rb.imply_flags(argparse.Namespace(rejudge=False, rebuild=True))
+        self.assertTrue(a.rebuild)
+        self.assertFalse(a.rejudge)
+
+    def test_neither_flag_stays_a_fresh_run(self):
+        a = rb.imply_flags(argparse.Namespace(rejudge=False, rebuild=False))
+        self.assertFalse(a.rebuild)
+
+    def test_a_narrowed_rejudge_splices_the_ledger(self):
+        # The splice decision reads (rebuild and only); with rebuild implied,
+        # a `--rejudge --only <qid>` keeps the other cases' lines.
+        a = rb.imply_flags(argparse.Namespace(rejudge=True, rebuild=False, only="q2"))
+        self.assertTrue(a.rebuild and a.only)
+
+
 class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
     """CI runs this file as a script, `python3 <file>`, and `unittest.main()`
     runs what is defined so far and exits. A test class written below the
