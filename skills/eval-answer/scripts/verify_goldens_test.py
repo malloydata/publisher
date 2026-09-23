@@ -1021,3 +1021,36 @@ class NumericRendering(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeldGoldensAreNotReDerived(unittest.TestCase):
+    """An `ambiguous` or `invalid` golden is a person's judgement. Running the
+    value check on one reported an error on every audit, `verify()` counted the
+    error as drift, and the arm refused to start."""
+
+    def setUp(self):
+        self.a = argparse.Namespace(rewrite=False, publisher="http://x",
+                                    environment="e", truth_package="t",
+                                    truth_model="truth.malloy")
+
+    def case(self, status):
+        return {"qid": "s-1", "golden": {"kind": "scalar", "status": status,
+                                          "canonicalQuery": "run: model -> { aggregate: n }",
+                                          "value": {"n": 1}}}
+
+    def test_a_held_golden_is_skipped_with_the_reason(self):
+        for status in ("ambiguous", "invalid"):
+            with self.subTest(status=status):
+                with unittest.mock.patch.object(verify_goldens, "try_query") as tq:
+                    got, detail, rows = check_value(self.case(status), self.a)
+                tq.assert_not_called()
+                self.assertEqual(got, "skipped")
+                self.assertIn(status, detail)
+                self.assertIn("side door", detail)
+
+    def test_a_provisional_golden_with_a_query_still_runs(self):
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=([{"n": 1}], None)) as tq:
+            got, _, _ = check_value(self.case("provisional"), self.a)
+        tq.assert_called_once()
+        self.assertEqual(got, "ok")

@@ -218,6 +218,16 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
         # canonicalQuery" and count as an error, so a set with one criteria
         # golden failed its own audit with exit 1.
         return "skipped", "criteria: the clauses are the key, nothing to re-derive", None
+    if g.get("status") in ("ambiguous", "invalid"):
+        # A held golden is settled by a person through the golden side door
+        # and never re-derived (`promotion_blocker` says the same). Running the
+        # value check on it printed HTTP 404 on every audit for a key whose
+        # canonicalQuery read the model under test, `verify()` counted that
+        # error as drift, and `run_baseline` refused to start the arm -- with
+        # `--refresh` as the suggested remedy, which cannot fix an error.
+        return ("skipped",
+                f"{g['status']}: settled by a person through the golden side "
+                f"door, not re-derived", None)
     if not q:
         # A PROVISIONAL golden with no query is young, not wrong, and it is
         # exactly what `eval-import` produces from a set that arrived as
