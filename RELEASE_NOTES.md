@@ -31,6 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+
 ## [Unreleased] — compiling at the default scope no longer accepts text that declares its own data roots (ACTION REQUIRED)
 
 `POST /…/compile` and the `compile_model` MCP tool default to `scope: "append"`,
@@ -80,8 +81,8 @@ caller-chosen request field with no authorization difference between its values,
 so this keeps fragment authoring on the model's published surface rather than
 containing a caller who can simply ask for another scope.
 
----
-## [Unreleased] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
+## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
+
 
 **Two annotations, one question each, and two different answers when they say no.**
 
