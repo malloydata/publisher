@@ -44,6 +44,12 @@ The manifest must exist and parse as JSON: a directory without a `publisher.json
 package, and a manifest that fails to parse fails the package load. Beyond that, every field is
 optional; `{}` is a valid manifest.
 
+One filename is special. If the package root holds an `index.malloy`, that file is the package's
+published surface: listings return it and whatever it `export`s, the other models become building
+blocks, and a direct query against a source it does not export is refused. It is the
+no-configuration way to curate a package, and it stays entirely optional. See
+[discovery-and-access.md](discovery-and-access.md).
+
 ## The manifest: publisher.json
 
 The fields the server reads:
@@ -52,8 +58,8 @@ The fields the server reads:
 | --- | --- |
 | `name` | Conventionally the package's name, but the server never surfaces it: the registered name (config entry or API call) wins in API URLs and responses. |
 | `description` | Shown in the Publisher UI and in API responses. |
-| `explores` | Curates which models are discoverable. See [discovery-and-access.md](discovery-and-access.md). |
-| `queryableSources` | `"declared"` (the default) or `"all"`: the query boundary. See [discovery-and-access.md](discovery-and-access.md). |
+| `explores` | **Deprecated, still honored.** Names the discovery surface and the query boundary. An `index.malloy` replaces it; keep it only for a surface spanning several files. See [discovery-and-access.md](discovery-and-access.md). |
+| `queryableSources` | **Deprecated, still honored.** `"declared"` (the default) or `"all"`. `index.malloy` does *not* replace `"all"`, which is the only way to curate listings without refusing queries. See [discovery-and-access.md](discovery-and-access.md). |
 | `materialization` | Persisted-source build policy (`schedule`, `freshness`). Package root only. See [materialization.md](materialization.md). |
 | `scope` | `"package"` (the default) or `"version"`. Any other value fails the package load. |
 

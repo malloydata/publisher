@@ -1,0 +1,26 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// ─────────────────────────────────────────────────────────────────────────
+// This package's published surface.
+//
+// Publisher reads a root index.malloy as the list of what a package
+// publishes, so publisher.json declares no "explores" and no
+// "queryableSources". What this file exports is what is listed AND what may
+// be queried: `sales` and `orders_secured` are the surface, and
+// `orders_base` (internal.malloy) is not. The two sources below extend it,
+// but a direct `run: orders_base -> ...` is refused with a 404,
+// indistinguishable from a source that does not exist.
+//
+// Bare imports rather than `import { sales } from ...`: a bare import merges
+// the imported file's namespace one hop, which is what carries REGION,
+// MIN_AMOUNT and TENANTS onto this model's given surface. A gate can only
+// reference a given on the entry model's own surface, and this file is now
+// the entry model. See docs/discovery-and-access.md.
+// ─────────────────────────────────────────────────────────────────────────
+##! experimental.givens
+
+import "orders.malloy"
+import "secured.malloy"
+
+export { sales, orders_secured }

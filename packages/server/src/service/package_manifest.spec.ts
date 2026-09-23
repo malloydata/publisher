@@ -7,11 +7,179 @@ import {
    parsePackageMaterialization,
    parsePackageScope,
    queryMetadataParseWarnings,
+   resolveExplores,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "./package_manifest";
 
 describe("service/package_manifest", () => {
+   describe("resolveExplores", () => {
+      const resolve = (
+         declaredExplores: unknown,
+         modelPaths: readonly string[],
+         declaredQueryableSources?: unknown,
+      ) =>
+         resolveExplores({
+            declaredExplores,
+            declaredQueryableSources,
+            modelPaths,
+         });
+
+      it("defaults the surface to a root index.malloy when no explores is declared", () => {
+         expect(
+            resolve(undefined, ["index.malloy", "orders.malloy"]).explores,
+         ).toEqual(["index.malloy"]);
+      });
+
+      it("says so when the convention curates a package on the file alone", () => {
+         // The one path that arms curation with nothing in publisher.json
+         // asking for it, so it is the one an upgrading package meets by
+         // surprise. It must name the consequence and the opt-out.
+         const text = resolve(undefined, [
+            "index.malloy",
+            "orders.malloy",
+         ]).warnings.join("\n");
+         expect(text).toContain("is its published surface");
+         expect(text).toContain("404");
+         expect(text).toContain('"explores": []');
+         // Renaming is NOT an opt-out -- it widens the surface silently and
+         // breaks every import naming the file. RELEASE_NOTES says so; the
+         // load-time message must not steer the other way.
+         expect(text).not.toMatch(/or rename the file/);
+         expect(text).toContain("Do NOT rename or delete the file");
+      });
+
+      it("counts models, not notebooks, when deciding something is withheld", () => {
+         // filterModelPaths also yields .malloynb, and a notebook is always
+         // listed and never subject to the boundary, so this package hides
+         // nothing and must stay quiet.
+         expect(
+            resolve(undefined, ["index.malloy", "report.malloynb"]).warnings,
+         ).toEqual([]);
+      });
+
+      it("stays quiet when the index.malloy is the only model", () => {
+         // Nothing is withheld, so there is nothing to report.
+         expect(resolve(undefined, ["index.malloy"]).warnings).toEqual([]);
+      });
+
+      it("leaves a package with no index.malloy uncurated", () => {
+         expect(
+            resolve(undefined, ["orders.malloy", "internal.malloy"]).explores,
+         ).toBeUndefined();
+      });
+
+      it("prefers an explicit explores and says the index file is left out", () => {
+         const { explores, warnings } = resolve(
+            ["orders.malloy"],
+            ["index.malloy", "orders.malloy"],
+         );
+         expect(explores).toEqual(["orders.malloy"]);
+         // Names the file and the declared set, so the author can see which of
+         // the two they wrote is actually in force.
+         const omission = warnings.find((w) =>
+            w.startsWith("This package has an"),
+         );
+         expect(omission).toContain("index.malloy");
+         expect(omission).toContain('["orders.malloy"]');
+      });
+
+      it("treats an empty explores as a deliberate opt-out that suppresses the convention", () => {
+         const { explores, warnings } = resolve([], ["index.malloy"]);
+         expect(explores).toEqual([]);
+         // Nothing is hidden by an empty surface, so there is no disagreement
+         // to report.
+         expect(warnings.some((w) => w.startsWith("This package has an"))).toBe(
+            false,
+         );
+         // And this author must NOT be told to delete the key: beside an
+         // index.malloy the empty array is the documented opt-out, so deleting
+         // it would curate and bound the package they asked to leave open.
+         const text = warnings.join("\n");
+         expect(text).toContain("keeping this package uncurated");
+         expect(text).toContain("do NOT delete the key");
+         expect(text).not.toContain("then delete the key");
+      });
+
+      it("treats an empty explores as the opt-out with no index.malloy too", () => {
+         // There is no convention to suppress here, but it is still the
+         // supported "do not curate" state. The deprecation must not reach it:
+         // its advice ends "it curates and enforces exactly as the key does",
+         // which is false of an empty array, so following it would curate a
+         // package the author deliberately left open.
+         const text = resolve([], ["orders.malloy"]).warnings.join("\n");
+         expect(text).toContain("keeping this package uncurated");
+         expect(text).not.toContain("then delete the key");
+      });
+
+      it("only counts a root index.malloy, not a nested one", () => {
+         expect(
+            resolve(undefined, ["reports/index.malloy", "orders.malloy"])
+               .explores,
+         ).toBeUndefined();
+      });
+
+      it("refuses to load a package whose explores is malformed", () => {
+         // `explores` decides what is REACHABLE, so a half-understood value is
+         // not half-applied. Ignoring it would resolve to no surface at all and
+         // publish every source the author curated away, which is the one
+         // direction this key must never fail in.
+         expect(() => resolve("orders.malloy", ["orders.malloy"])).toThrow(
+            /Invalid "explores"/,
+         );
+         // A single bad element condemns the array: keeping the rest would
+         // serve a surface the author did not write.
+         expect(() => resolve(["orders.malloy", 7], ["orders.malloy"])).toThrow(
+            /Invalid "explores"/,
+         );
+         expect(() => resolve([null], ["orders.malloy"])).toThrow();
+      });
+
+      it("names the value and the fix when it refuses", () => {
+         expect(() => resolve(["orders.malloy", 7], ["orders.malloy"])).toThrow(
+            /expected an array of model paths, got \["orders.malloy",7\]/,
+         );
+         expect(() => resolve("orders.malloy", ["orders.malloy"])).toThrow(
+            /Fix: "explores": \["index.malloy"\]/,
+         );
+      });
+
+      it("keeps a well-formed empty array out of the refusal", () => {
+         // [] is the documented opt-out, not a malformation.
+         expect(() => resolve([], ["orders.malloy"])).not.toThrow();
+      });
+
+      it("tells a queryableSources author to delete it, but never tells the 'all' author that", () => {
+         const declared = resolve(undefined, ["index.malloy"], "declared");
+         expect(declared.warnings.join("\n")).toContain("Delete it.");
+
+         // "all" is the one thing the convention cannot express: it curates
+         // listings without refusing queries. With no replacement there is
+         // nothing to deprecate it in favor of, so it gets no notice at all.
+         const all = resolve(
+            ["orders.malloy", "customers.malloy"],
+            ["orders.malloy", "customers.malloy"],
+            "all",
+         );
+         expect(all.warnings).toEqual([]);
+      });
+
+      it("names a replacement only for a one-file explores", () => {
+         const one = resolve(["orders.malloy"], ["orders.malloy"]);
+         expect(one.warnings.join("\n")).toContain(
+            '"explores" in publisher.json is deprecated',
+         );
+
+         // Several files is what the convention cannot express, and it is how
+         // dashboards are served beside an index.malloy, so it is not nagged.
+         const several = resolve(
+            ["index.malloy", "dashboards/overview.malloy"],
+            ["index.malloy", "dashboards/overview.malloy"],
+         );
+         expect(several.warnings).toEqual([]);
+      });
+   });
+
    describe("resolvePackageScope", () => {
       it("reads the canonical materialization.scope with no warning", () => {
          expect(resolvePackageScope(undefined, { scope: "version" })).toEqual({

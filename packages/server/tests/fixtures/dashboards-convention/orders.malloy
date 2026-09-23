@@ -1,0 +1,7 @@
+source: orders is duckdb.sql("select 1 as id, 100 as amt, 'a' as status") extend {
+  measure: total is amt.sum()
+  view: by_status is {
+    group_by: status
+    aggregate: total
+  }
+}
