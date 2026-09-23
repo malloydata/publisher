@@ -23,6 +23,13 @@ WHAT IT PRODUCES
                      the header comment says to; the script will not guess
                      semantics, because guessed semantics are exactly what a
                      truth package exists to exclude.
+                     A key that composes two tables (the top N by one
+                     measure, then another measure over those rows) is written
+                     as a raw per-key rollup declared in truth.malloy --
+                     `source: t_x_by_key is t_x -> { group_by: key; aggregate:
+                     ... }` -- joined from an `extend` in the canonical query.
+                     A raw aggregate by key is not semantics, and the
+                     Publisher refuses a join declared inline in a query.
   publisher.json     the truth package, named, with the standard description.
   publisher.config.json  (--publisher-config) a Publisher server config
                      serving ONLY the truth package, for the second server the
@@ -133,6 +140,9 @@ def main() -> int:
         "//     own doc for where each comes from",
         "//   - raw-column dimensions for anything nested (a VARIANT column, a JSON",
         "//     path) that a golden query will need to group by",
+        "//   - a raw per-key rollup (`source: t_x_by_key is t_x -> { group_by: key;",
+        "//     aggregate: ... }`) wherever a key composes two tables, joined from an",
+        "//     `extend` in the canonical query: the server refuses an inline join",
         "// Keep column names in the warehouse's own case so a golden query reads as",
         "// a warehouse query, not as a model query.",
         "",
