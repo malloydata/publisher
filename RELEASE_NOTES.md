@@ -131,7 +131,10 @@ change already left something to look at: a surface that appears warns at load, 
 `explores` refuses the load, a broken surface file fails the reload and is reported stale. The
 reload that drops a surface now carries a warning naming what was published, what that means, and
 how to restore it or keep the package open deliberately (`"explores": []`). Said once, on the reload
-that caused it, because it reports a change rather than a state. This is curation, not access
+that caused it, because it reports a change rather than a state. That includes the reload a
+materialization run or manifest rebind makes, not only `reload_package`, the watcher and
+`?reload=true`. A server restart has no "before" to compare against, so a surface deleted while the
+server was down widens without this warning. This is curation, not access
 control: what widens is what is listed and what answers by name, and a source gated by
 `#(authorize)` stays gated.
 

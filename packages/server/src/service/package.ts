@@ -333,6 +333,73 @@ export class Package {
    }
 
    /**
+    * The "surface widened" notice, set on the reload that lost this package's
+    * surface. See {@link noteSurfaceChangeFrom}.
+    */
+   private surfaceWidenedWarning: string | undefined;
+
+   /**
+    * Report that this package was curated a moment ago and is not any more.
+    *
+    * Losing a surface is the one curation change nothing else reports. Every
+    * other transition leaves something behind to look at: a surface that
+    * APPEARS warns at load, a malformed `explores` refuses the load, a broken
+    * surface file fails the reload and is reported stale. But deleting or
+    * renaming `index.malloy` simply resolves to no surface, which is an
+    * ordinary uncurated package, and an uncurated package has nothing to say
+    * about itself. The sources that file was withholding are listed and
+    * queryable again from that moment, and the author who deleted a file they
+    * thought was theirs to delete is told nothing.
+    *
+    * `previousSurface` is the resolved `explores` from before the reload. Every
+    * path that replaces this package's surface calls this: an in-place
+    * {@link reloadAllModels} (materialization, manifest rebind) passes its own
+    * surface from before it re-read the tree, and a full reload in
+    * {@link Environment} passes the surface of the package it replaces. A
+    * process restart has no "before", so it cannot report this.
+    *
+    * Only `undefined` counts as lost, and the distinction is the whole point:
+    *
+    *  - `undefined` is "no `explores` key and no root index.malloy", which is
+    *    what deleting or renaming the surface file resolves to. Nobody asked
+    *    for it and nothing else says it happened.
+    *  - `[]` is an author writing `"explores": []`, the documented opt-out.
+    *    They asked for exactly this and already get a warning saying so.
+    *
+    * It is a transition, so it is said once, on the reload that caused it; the
+    * next reload of an already-uncurated package clears it.
+    *
+    * This is curation, not access control -- nothing gated by `#(authorize)`
+    * becomes reachable, and hiding was never denying. What widens is what is
+    * listed and what answers by name.
+    */
+   public noteSurfaceChangeFrom(previousSurface: string[] | undefined): void {
+      this.surfaceWidenedWarning = undefined;
+      if (
+         !previousSurface ||
+         previousSurface.length === 0 ||
+         this.packageMetadata.explores !== undefined
+      ) {
+         return;
+      }
+      const message =
+         `This package published "${previousSurface.join('", "')}" before the last ` +
+         `reload and publishes no surface now, so every model in it is listed ` +
+         `and queryable by name again, including the sources that surface was ` +
+         `withholding. A surface file that was deleted or renamed is the usual ` +
+         `cause. If that was intended, nothing to do. If not, restore the file ` +
+         `(under its original name -- the name IS the surface), or declare an ` +
+         `"explores" in publisher.json naming what this package should ` +
+         `publish. To keep the package open deliberately, write ` +
+         `"explores": [], which says so and stops this notice.`;
+      this.surfaceWidenedWarning = message;
+      logger.warn(`Package ${this.packageName} no longer publishes a surface`, {
+         packageName: this.packageName,
+         detail: message,
+      });
+   }
+
+   /**
     * True when this package's surface is its `index.malloy`, which is what the
     * convention produces when the manifest declares no `explores`.
     *
@@ -354,38 +421,6 @@ export class Package {
     * index.malloy at all. It must never gate behavior: the surface behaves
     * identically whichever source produced it.
     */
-   /**
-    * Set by {@link Environment} on the reload where this package's surface
-    * disappeared. See {@link setSurfaceWidenedWarning}.
-    */
-   private surfaceWidenedWarning: string | undefined;
-
-   /**
-    * Report that this package was curated a moment ago and is not any more.
-    *
-    * Losing a surface is the one curation change nothing else reports. Every
-    * other transition leaves something behind to look at: a surface that
-    * APPEARS warns at load, a malformed `explores` refuses the load, a broken
-    * surface file fails the reload and is reported stale. But deleting or
-    * renaming `index.malloy` simply resolves to no surface, which is an
-    * ordinary uncurated package, and an uncurated package has nothing to say
-    * about itself. The sources that file was withholding are listed and
-    * queryable again from that moment, and the author who deleted a file they
-    * thought was theirs to delete is told nothing.
-    *
-    * Only the Environment can see it, because it needs the surface from BEFORE
-    * the reload and a Package only knows its own. It is a transition, so it is
-    * said once, on the reload that caused it, which is when it is actionable;
-    * a later reload of an already-uncurated package has nothing to report.
-    *
-    * This is curation, not access control -- nothing gated by `#(authorize)`
-    * becomes reachable, and hiding was never denying. What widens is what is
-    * listed and what answers by name.
-    */
-   public setSurfaceWidenedWarning(message: string): void {
-      this.surfaceWidenedWarning = message;
-   }
-
    private surfaceIsIndexModel(): boolean {
       const explores = this.packageMetadata.explores;
       return (
@@ -2520,7 +2555,9 @@ export class Package {
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
       // reflect edited explores without a full Package.create.
+      const previousSurface = this.packageMetadata.explores;
       this.packageMetadata.explores = outcome.packageMetadata.explores;
+      this.noteSurfaceChangeFrom(previousSurface);
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
       this.packageMetadata.manifestLocation =

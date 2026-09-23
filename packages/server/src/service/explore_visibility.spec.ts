@@ -539,6 +539,38 @@ export { customers }`,
       }
    });
 
+   it("reports a lost surface on an in-place reload, and only once", async () => {
+      // The materialization / manifest rebind paths reload the SAME Package
+      // rather than swapping in a new one, so the notice has to be raised here
+      // or it is never raised: a later full reload compares against a surface
+      // this reload has already cleared.
+      writeManifest({});
+      writeLayeredModels();
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const widened = () =>
+            (pkg.getPackageMetadata().warnings ?? []).find((w) =>
+               (w.message ?? "").includes("publishes no surface now"),
+            );
+         await pkg.reloadAllModels({});
+         expect(widened()).toBeUndefined();
+
+         fs.unlinkSync(path.join(tempDir, "index.malloy"));
+         await pkg.reloadAllModels({});
+         expect(pkg.getPackageMetadata().explores).toBeUndefined();
+         expect(widened()?.message).toContain(
+            'This package published "index.malloy" before the last reload',
+         );
+
+         await pkg.reloadAllModels({});
+         expect(widened()).toBeUndefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("reports a multi-file surface once, and counts only what compiled", async () => {
       // Two broken files on one surface used to produce two messages, each
       // claiming to BE the whole surface, and the collateral count included

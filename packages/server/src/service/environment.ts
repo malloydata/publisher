@@ -1848,7 +1848,9 @@ export class Environment {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
                existingPackage.getMalloyConfig().shutdown("close"),
             );
-            this.reportSurfaceWidened(packageName, existingPackage, _package);
+            _package.noteSurfaceChangeFrom(
+               existingPackage.getPackageMetadata().explores,
+            );
          }
          this.packages.set(packageName, _package);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
@@ -2210,47 +2212,6 @@ export class Environment {
          const had = pkg.hasBoundTableNameManifest();
          if (!has && !had) return;
          await pkg.reloadAllModels(manifest);
-      });
-   }
-
-   /**
-    * Say so when a reload leaves a package with no published surface where it
-    * had one a moment ago, which is the only curation change nothing else
-    * reports. See {@link Package.setSurfaceWidenedWarning} for why.
-    *
-    * Only `undefined` counts, and the distinction is the whole point:
-    *
-    *  - `undefined` is "no `explores` key and no root index.malloy", which is
-    *    what deleting or renaming the surface file resolves to. Nobody asked
-    *    for it and nothing else says it happened.
-    *  - `[]` is an author writing `"explores": []`, the documented opt-out.
-    *    They asked for exactly this and already get a warning saying so.
-    *
-    * Curation only, not access control: what widens is what is listed and what
-    * answers by name. A source gated by `#(authorize)` stays gated.
-    */
-   private reportSurfaceWidened(
-      packageName: string,
-      previous: Package,
-      next: Package,
-   ): void {
-      const before = previous.getPackageMetadata().explores;
-      const after = next.getPackageMetadata().explores;
-      if (!before || before.length === 0 || after !== undefined) return;
-      const message =
-         `This package published "${before.join('", "')}" before the last ` +
-         `reload and publishes no surface now, so every model in it is listed ` +
-         `and queryable by name again, including the sources that surface was ` +
-         `withholding. A surface file that was deleted or renamed is the usual ` +
-         `cause. If that was intended, nothing to do. If not, restore the file ` +
-         `(under its original name -- the name IS the surface), or declare an ` +
-         `"explores" in publisher.json naming what this package should ` +
-         `publish. To keep the package open deliberately, write ` +
-         `"explores": [], which says so and stops this notice.`;
-      next.setSurfaceWidenedWarning(message);
-      logger.warn(`Package ${packageName} no longer publishes a surface`, {
-         packageName,
-         detail: message,
       });
    }
 
