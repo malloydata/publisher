@@ -161,6 +161,14 @@ cells still run as written, including cells that read a hidden source the notebo
 query text a caller sends to the notebook's path is affected. This predates the `index.malloy`
 convention and applied to any package with an `explores`.
 
+**A dashboard tile the surface will refuse is reported at load.** A dashboard can be listed and
+compile cleanly while a tile reads a source only an unlisted file declares. Compile is exempt from
+the boundary, so the author sees nothing wrong until the tile answers 404 after publishing. The usual
+cause is an import: listing a file publishes what it declares, not what it imports. Each such tile
+now carries a package warning with severity `error`, on every load and reload, including the reload
+`reload_package` runs and the one after a dashboard save. The warning names the tile and both fixes.
+A tile whose source cannot be read from its text is not reported rather than guessed at.
+
 ## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
 
 **Two annotations, one question each, and two different answers when they say no.**

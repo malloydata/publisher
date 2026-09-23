@@ -1003,6 +1003,97 @@ export { \`customer-orders\` }`,
       }
    });
 
+   it("declared: warns at load when a served dashboard's tile reads an unpublished source", async () => {
+      // The dashboard is listed and compiles (/compile is exempt from the
+      // boundary), so without this the author learns of the problem only when
+      // the tile 404s after publishing. raw.malloy is not listed; the
+      // dashboard imports it, and listing a file publishes what it declares,
+      // not what it imports.
+      fs.writeFileSync(
+         path.join(tempDir, "raw.malloy"),
+         `source: raw_data is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+export { raw_data }`,
+      );
+      const writeIndex = (exported: string) =>
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "raw.malloy"
+source: customers is duckdb.sql("select 1 as id") extend {
+  measure: k is count()
+  view: v is { aggregate: k }
+}
+export { ${exported} }`,
+         );
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards", "dash.malloy"),
+         `## artifact { title="Dash" tiles=["raw_data -> v", "customers -> v"] }
+import { raw_data } from "../raw.malloy"
+import { customers } from "../index.malloy"`,
+      );
+      const tileWarnings = (pkg: Package) =>
+         (pkg.getPackageMetadata().warnings ?? []).filter((w) =>
+            (w.message ?? "").includes("does not publish"),
+         );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         writeManifest({
+            explores: ["index.malloy", "dashboards/dash.malloy"],
+         });
+         writeIndex("customers");
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const dash = pkg.getModel("dashboards/dash.malloy")!;
+
+         // One finding, for the one tile the surface refuses, and it agrees
+         // with what the query endpoint actually does.
+         const found = tileWarnings(pkg);
+         expect(found).toHaveLength(1);
+         expect(found[0]).toMatchObject({
+            model: "dashboards/dash.malloy",
+            subject: "dash",
+            severity: "error",
+         });
+         expect(found[0].message).toContain('tile "raw_data -> v"');
+         await expect(
+            dash.getQueryResults(undefined, undefined, "run: raw_data -> v"),
+         ).rejects.toThrow(NotQueryableError);
+
+         // The remedy the warning names works: re-exported from a listed
+         // file, the tile runs and the warning is gone.
+         writeIndex("customers, raw_data");
+         const fixed = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(tileWarnings(fixed)).toEqual([]);
+         const ran = await fixed
+            .getModel("dashboards/dash.malloy")!
+            .getQueryResults(undefined, undefined, "run: raw_data -> v");
+         expect(ran.result.data).toBeDefined();
+
+         // Nothing is refused under "all", so there is nothing to warn about.
+         writeIndex("customers");
+         writeManifest({
+            explores: ["index.malloy", "dashboards/dash.malloy"],
+            queryableSources: "all",
+         });
+         const open = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(tileWarnings(open)).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    // -- "all" mode (decoupled) --------------------------------------------
 
    it("all: explores gates discovery only — hidden file/source stay queryable", async () => {

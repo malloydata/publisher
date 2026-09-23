@@ -1916,8 +1916,11 @@ paths:
         while those queries are refused. The fix is to list that file too, or
         to re-export the source from one already listed. It is served rather
         than withheld because withholding on a guess would hide dashboards that
-        do work. Under `"all"` nothing is refused, so the situation does not
-        arise.
+        do work. Each such tile is reported in the package's `warnings` with
+        severity `error`, as of the last load, naming the tile. The check reads
+        the tile's source from its text, so a tile written in a form it cannot
+        read is not reported. Under `"all"` nothing is refused, so the
+        situation does not arise.
       parameters:
         - name: environmentName
           in: path

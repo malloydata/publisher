@@ -30,6 +30,7 @@ import {
 import {
    BadRequestError,
    ModelCompilationError,
+   NotQueryableError,
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
@@ -2929,6 +2930,52 @@ export class Package {
    }
 
    /**
+    * A served dashboard whose tile reads a source the surface does not
+    * publish. The dashboard lists and every tile compiles, because /compile is
+    * exempt from the boundary, so the author sees nothing wrong until the tile
+    * answers 404 after publishing. Typical cause: the dashboard file imports a
+    * file that is not listed, and listing a file admits what it declares, not
+    * what it imports.
+    *
+    * Asks the query endpoint's own pre-compile gate, so the lint and the query
+    * cannot disagree about a tile. That gate refuses only a target it can pin
+    * from the text; a tile it cannot read is left alone rather than guessed at.
+    */
+   private lintTilesAgainstSurface(
+      modelPath: string,
+      manifest: DashboardManifest,
+   ): ApiPackageWarning[] {
+      const model = this.models.get(modelPath);
+      if (!model || !manifest.tiles) return [];
+      const findings: ApiPackageWarning[] = [];
+      for (const tile of manifest.tiles) {
+         try {
+            model.assertQueryBoundaryEarly(
+               undefined,
+               undefined,
+               `run: ${tile.query}`,
+            );
+         } catch (error) {
+            if (!(error instanceof NotQueryableError)) throw error;
+            findings.push({
+               model: modelPath,
+               subject: manifest.name,
+               message:
+                  `tile "${tile.query}" reads a source this package's surface ` +
+                  `does not publish, so the tile answers 404 once served, ` +
+                  `although the file compiles. Listing a file publishes what ` +
+                  `it declares, not what it imports. Fix: list the file that ` +
+                  `declares the source in 'explores', or import it into a ` +
+                  `listed file such as "${INDEX_MODEL_NAME}" and add it to ` +
+                  `that file's export { … }.`,
+               severity: "error",
+            });
+         }
+      }
+      return findings;
+   }
+
+   /**
     * Run the dashboard lint across the package once discovery has settled.
     *
     * Never throws: a lint failure must not cost the package its dashboards. The
@@ -3065,6 +3112,14 @@ export class Package {
                : lintUndiscoveredDashboard(facts);
             for (const finding of findings) {
                warnings.push({ model: modelPath, ...finding });
+            }
+            if (manifest) {
+               for (const finding of this.lintTilesAgainstSurface(
+                  modelPath,
+                  manifest,
+               )) {
+                  warnings.push(finding);
+               }
             }
          }
          // Drill tags live on model dimensions, not on any one dashboard, so
