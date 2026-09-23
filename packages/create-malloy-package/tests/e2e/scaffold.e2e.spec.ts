@@ -329,6 +329,49 @@ describe("generated project serves against a real server", () => {
       expect(rows[0].record_value[0].number_value).toBe(3);
    });
 
+   test("the probe the xlsx model's comment describes compiles in index.malloy", async () => {
+      // Follows STEP 1 of the generated comment against the real compiler: the
+      // probe source goes into index.malloy and its name joins the export line
+      // already there. A second export statement naming the source again fails
+      // with "'budget' already appears in an export statement".
+      const pkgDir = path.join(tmp, "budget");
+      const model = fs.readFileSync(path.join(pkgDir, "budget.malloy"), "utf8");
+      const snippet = model
+         .slice(model.indexOf("STEP 1"), model.indexOf("Two reasons"))
+         .split("\n")
+         .filter((line) => line.startsWith("//   "))
+         .map((line) => line.slice("//   ".length).replace(/\s+--.*$/, ""));
+      const exportLine = snippet.find((line) => line.startsWith("export {"));
+      expect(exportLine).toBe("export { budget, budget_probe }");
+      const probe = snippet.filter((line) => line !== exportLine).join("\n");
+
+      const index = fs.readFileSync(path.join(pkgDir, "index.malloy"), "utf8");
+      expect(index).toContain("export { budget }");
+      const edited = index.replace(
+         "export { budget }",
+         `${probe}\n\n${exportLine}`,
+      );
+      const compile = (source: string) =>
+         postJson<{
+            status: string;
+            problems: { severity: string; message: string }[];
+         }>(
+            `${api()}/environments/default/packages/budget/models/index.malloy/compile`,
+            { source, scope: "file" },
+         );
+      const res = await compile(edited);
+      expect(res.problems.filter((p) => p.severity === "error")).toEqual([]);
+      expect(res.status).toBe("success");
+
+      // Why the comment says to edit that line: appending the snippet as a
+      // second export statement does not compile.
+      const appended = await compile(`${index}\n${probe}\n\n${exportLine}\n`);
+      expect(appended.status).toBe("error");
+      expect(appended.problems.map((p) => p.message)).toContain(
+         "'budget' already appears in an export statement",
+      );
+   });
+
    test("the query the generated briefing prints is one the server answers", async () => {
       // The briefing is what an agent reads first. If its example curl names a
       // path the boundary refuses, every new user's first request 404s -- so

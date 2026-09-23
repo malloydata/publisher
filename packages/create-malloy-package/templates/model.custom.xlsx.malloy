@@ -17,8 +17,9 @@
 //
 // STEP 1: look at the sheet, because the fix needs three things this file cannot
 // tell you: which sheet, which row the header is on, and which column marks a
-// real row. Add this to the bottom of `index.malloy` -- NOT to this file --
-// reload the package, then query `index.malloy` and run
+// real row. Add the probe source below to `index.malloy` -- NOT to this file --
+// and add `{{sourceName}}_probe` to the `export { ... }` line already there.
+// Reload the package, then query `index.malloy` and run
 // `{{sourceName}}_probe -> peek`. Delete it once you have what you need.
 //
 //   source: {{sourceName}}_probe is duckdb.sql("""
@@ -30,7 +31,7 @@
 //     view: peek is { select: *; limit: 25 }
 //   }
 //
-//   export { {{sourceName}}, {{sourceName}}_probe }   -- add the probe here too
+//   export { {{sourceName}}, {{sourceName}}_probe }   -- the existing line, probe added
 //
 // Two reasons it goes there and not here. Raw SQL has to be part of a model at
 // all: Publisher refuses it in an ad-hoc query ("`duckdb.sql(...)` cannot be
@@ -39,7 +40,9 @@
 // against this file is refused with a 404, and a source this package does not
 // export is refused even when the query goes to the right file. Putting the
 // probe in `index.malloy` and naming it in `export { ... }` satisfies both.
-// Take it back out of the export list when you delete it.
+// Edit the export line that is already there rather than adding a second one:
+// Malloy refuses a name that two export statements both list. Take the probe
+// back out of that line when you delete it.
 //
 // `peek` prints the first 25 rows exactly as they sit in the sheet, banner rows
 // and all, so you can count down to the real header row and see which column
