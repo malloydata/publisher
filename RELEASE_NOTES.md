@@ -164,6 +164,11 @@ cells still run as written, including cells that read a hidden source the notebo
 query text a caller sends to the notebook's path is affected. This predates the `index.malloy`
 convention and applied to any package with an `explores`.
 
+**A missing model and a hidden one answer with the same 404.** A REST query to a model path that
+does not exist now answers `No queryable model "<path>".`, the text a model that exists but is off
+the surface already returned. It used to answer `<path> does not exist`, so the two messages told a
+hidden file from a missing one. The status is unchanged, and MCP already answered both the same way.
+
 **A dashboard tile the surface will refuse is reported at load.** A dashboard can be listed and
 compile cleanly while a tile reads a source only an unlisted file declares. Compile is exempt from
 the boundary, so the author sees nothing wrong until the tile answers 404 after publishing. The usual

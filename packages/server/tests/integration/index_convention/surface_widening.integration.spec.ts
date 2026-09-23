@@ -121,6 +121,30 @@ describe("a package whose published surface disappears", () => {
       expect(widenedWarning(await getPackage())).toBeUndefined();
    });
 
+   it("answers a hidden model and a missing one with the same 404", async () => {
+      const refuse = async (model: string) => {
+         const res = await fetch(`${pkgApi()}/models/${model}/query`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: "run: internal_scratch -> v" }),
+         });
+         const body = (await res.json()) as { message?: string };
+         return { status: res.status, message: body.message };
+      };
+      // internal.malloy exists and is off the surface; nope.malloy does not
+      // exist. The bodies differ only by the path the caller sent.
+      const hidden = await refuse("internal.malloy");
+      const missing = await refuse("nope.malloy");
+      expect(hidden).toEqual({
+         status: 404,
+         message: 'No queryable model "internal.malloy".',
+      });
+      expect(missing).toEqual({
+         status: 404,
+         message: 'No queryable model "nope.malloy".',
+      });
+   });
+
    it("reports the widening when the surface file is deleted", async () => {
       fs.unlinkSync(path.join(servedDir, "index.malloy"));
       const reload = await fetch(`${pkgApi()}?reload=true`);
