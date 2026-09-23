@@ -980,7 +980,11 @@ export { \`customer-orders\` }`,
          // base.malloy is not listed, and it exports everything, so the
          // notebook's import can see base_source. Seeing it is not admission.
          await expect(
-            notebook.getQueryResults(undefined, undefined, "run: base_source -> v"),
+            notebook.getQueryResults(
+               undefined,
+               undefined,
+               "run: base_source -> v",
+            ),
          ).rejects.toThrow(NotQueryableError);
          await expect(
             notebook.getQueryResults("base_source", "v", undefined),
@@ -1082,12 +1086,7 @@ import { customers } from "../index.malloy"`,
             explores: ["index.malloy", "dashboards/dash.malloy"],
             queryableSources: "all",
          });
-         const open = await Package.create(
-            "env",
-            "pkg",
-            tempDir,
-            malloyConfig,
-         );
+         const open = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(tileWarnings(open)).toEqual([]);
       } finally {
          await duckdb.close();
