@@ -1634,7 +1634,7 @@ export class Package {
             problems.push({
                entry,
                reason:
-                  `notebooks are always public and cannot be explores. ` +
+                  `notebooks are always listed and cannot be explores. ` +
                   `Fix: remove it, and list a ${MODEL_FILE_SUFFIX} model file instead.`,
             });
          } else if (!malloyModels.has(entry)) {

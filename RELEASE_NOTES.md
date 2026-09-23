@@ -153,6 +153,14 @@ a placeholder without going through the package loader. The refusal itself is un
 deliberately fail-closed: falling back to uncurated on a typo would expose sources the author
 curated away.
 
+**A notebook path no longer skips the query boundary.** In a curated package, a query sent to a
+`.malloynb` path used to bypass the surface entirely, so `run: hidden_source` addressed to a
+notebook read any source that notebook imported, from any hidden file. That request now answers 404,
+the same as it does addressed to any other file. Notebooks are still always listed, and their own
+cells still run as written, including cells that read a hidden source the notebook imports. Only
+query text a caller sends to the notebook's path is affected. This predates the `index.malloy`
+convention and applied to any package with an `explores`.
+
 ## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
 
 **Two annotations, one question each, and two different answers when they say no.**

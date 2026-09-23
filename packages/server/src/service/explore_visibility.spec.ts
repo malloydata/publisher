@@ -683,7 +683,7 @@ export { customers }`,
             "report.malloynb",
          ]);
          expect(pkg.formatInvalidExplores()).toMatch(
-            /report\.malloynb.*notebooks are always public/s,
+            /report\.malloynb.*notebooks are always listed/s,
          );
       } finally {
          await duckdb.close();

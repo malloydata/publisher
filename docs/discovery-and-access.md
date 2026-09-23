@@ -36,6 +36,11 @@ before this convention existed.
   file still compiles for import and join resolution, but is hidden. Notebooks are always listed
   regardless (they can't be imported, so they have nothing to hide behind).
 
+  Listed is not a way around the surface. A notebook's own cells run as the author wrote them, so
+  a cell can read a source the notebook imports from a hidden file. A query a caller sends to the
+  notebook's path is held to the surface like one sent to any other file: `run: hidden_source`
+  addressed to `report.malloynb` answers 404 exactly as it does addressed to `index.malloy`.
+
 - **Within a file — `export { … }`.** The discovery accessors list only the model's re-export
   closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` expose. A model
   with **no** `export { … }` exports all of its locally-declared top-level sources; declaring

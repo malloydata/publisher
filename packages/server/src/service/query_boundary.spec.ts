@@ -958,24 +958,46 @@ export { \`customer-orders\` }`,
       }
    });
 
-   it("declared: a notebook is exempt from the boundary (always public)", async () => {
-      // The /compile path runs assertQueryBoundaryEarly against the target
-      // model; a notebook is never in `explores`, so without an explicit
-      // exemption it would 404 — contradicting "notebooks are always public".
+   it("declared: text sent to a notebook path reaches only the package surface", async () => {
+      // A notebook is always listed, but it is not a way around the surface.
+      // Its cells may read what it imports (they run through
+      // executeNotebookCell, the author's saved text); query text a caller
+      // sends to its path is held to the surface like any other file's.
+      // Before this, the notebook path skipped the boundary entirely, so an
+      // ad-hoc `run:` addressed to it read every source it imported.
       writeManifest({ explores: ["index.malloy"] });
       writeLayeredModels();
+      fs.writeFileSync(
+         path.join(tempDir, "report.malloynb"),
+         `>>>malloy\nimport "index.malloy"\nimport "base.malloy"\n` +
+            `>>>malloy\nrun: base_source -> v`,
+      );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const notebook = pkg.getModel("report.malloynb");
-         expect(notebook).toBeDefined();
-         // Boundary is inert for notebooks even though it's not an explore.
-         expect(
-            notebook!.assertQueryBoundaryEarly(undefined, undefined, "run: x"),
-         ).toBe("cleared");
-         expect(() =>
-            notebook!.assertQueryBoundaryCompiled("anything", "run: x"),
-         ).not.toThrow();
+         const notebook = pkg.getModel("report.malloynb")!;
+
+         // base.malloy is not listed, and it exports everything, so the
+         // notebook's import can see base_source. Seeing it is not admission.
+         await expect(
+            notebook.getQueryResults(undefined, undefined, "run: base_source -> v"),
+         ).rejects.toThrow(NotQueryableError);
+         await expect(
+            notebook.getQueryResults("base_source", "v", undefined),
+         ).rejects.toThrow(NotQueryableError);
+
+         // What the surface publishes answers through the notebook path too.
+         const published = await notebook.getQueryResults(
+            undefined,
+            undefined,
+            "run: customers -> v",
+         );
+         expect(published.result.data).toBeDefined();
+
+         // The author's own cell still runs, although it reads base_source.
+         const cell = await notebook.executeNotebookCell(1);
+         expect(cell.type).toBe("code");
+         expect(cell.result).toBeDefined();
       } finally {
          await duckdb.close();
       }

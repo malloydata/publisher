@@ -3774,7 +3774,13 @@ export class Model {
 
    /** Named-query counterpart of {@link isCuratedSource}. */
    private isCuratedQuery(name: string): boolean {
-      if ((this.getQueries() ?? []).some((q) => q.name === name)) return true;
+      // Same reason as ownCuratedSourceNames: a notebook's own queries are run
+      // through the cell endpoint, not admitted by name here.
+      if (
+         !this.isNotebook() &&
+         (this.getQueries() ?? []).some((q) => q.name === name)
+      )
+         return true;
       return this.admittedByPackage(
          name,
          this.queryBoundary.packageCuratedQueries,
@@ -3789,8 +3795,9 @@ export class Model {
     * `#(authorize)` is the orthogonal *who* axis, and both must pass. Denials
     * are a generic 404 ({@link NotQueryableError}) so a hidden target is
     * indistinguishable from a non-existent one. Inert unless `explores` is
-    * declared AND mode is "declared" (the default). Notebooks are exempt
-    * (always public) and never call this.
+    * declared AND mode is "declared" (the default). A notebook path is always
+    * an entry point, but only the package surface is curated there: the
+    * notebook's own view, which includes what it imports, admits nothing.
     *
     * This step runs before compilation so a denied target can't be probed via
     * compile errors (schema oracle), and it only POSITIVELY denies — explicit
@@ -3807,10 +3814,6 @@ export class Model {
       queryName?: string,
       query?: string,
    ): "cleared" | "deferred" {
-      // Notebooks are always public — they can't be explores and are never
-      // gated by the boundary. (/compile does not reach this gate at all; it
-      // is exempt from the boundary — see Environment.compileSource.)
-      if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return "cleared";
       const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
       // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
       // boundary is discovery-only; everything compiled stays queryable.
@@ -3818,8 +3821,12 @@ export class Model {
 
       // File-level: a non-`explores` model file is not a query entry point.
       // This is the robust line — the file is named by the request URL, so
-      // there is nothing to resolve and nothing to evade.
-      if (!isQueryEntryPoint) {
+      // there is nothing to resolve and nothing to evade. A notebook passes
+      // it, because notebooks are always listed, but the text sent to it is
+      // then held to the package surface below like any other file's: a
+      // notebook's cells run through executeNotebookCell, which never reaches
+      // this gate, so what is refused here is only text a caller wrote.
+      if (!isQueryEntryPoint && !this.isNotebook()) {
          throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
       }
 
@@ -3884,11 +3891,10 @@ export class Model {
       compiledSource: string | undefined,
       query?: string,
    ): void {
-      // Notebooks are always public (mirrors assertQueryBoundaryEarly).
-      if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return;
       const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
-      if (!isQueryEntryPoint) {
+      // A notebook passes the file-level check (see assertQueryBoundaryEarly).
+      if (!isQueryEntryPoint && !this.isNotebook()) {
          throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
       }
       if (compiledSource) {
@@ -3928,7 +3934,17 @@ export class Model {
     *  package-wide closure is applied separately and identity-checked (see
     *  {@link isCuratedSource}); it is deliberately not merged in here, so this
     *  stays the one set whose membership needs no identity proof. */
+   private isNotebook(): boolean {
+      return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
+   }
+
    private ownCuratedSourceNames(): Set<string> {
+      // A notebook is never on the surface, so nothing it declares or imports
+      // is curated by being visible to it: its cells can see a hidden file's
+      // sources through an import, and counting those would let query text
+      // sent to the notebook's path reach them. Only the package-wide surface
+      // admits there.
+      if (this.isNotebook()) return new Set();
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
