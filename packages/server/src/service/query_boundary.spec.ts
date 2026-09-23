@@ -1100,6 +1100,7 @@ import { customers } from "../index.malloy"`,
             severity: "error",
          });
          expect(found[0].message).toContain('tile "raw_data -> v"');
+         expect(found[0].message).toContain('such as "index.malloy"');
          await expect(
             dash.getQueryResults(undefined, undefined, "run: raw_data -> v"),
          ).rejects.toThrow(NotQueryableError);
@@ -1127,6 +1128,36 @@ import { customers } from "../index.malloy"`,
          });
          const open = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(tileWarnings(open)).toEqual([]);
+
+         // The example file comes from the key. index.malloy is on disk but
+         // unlisted here, so importing into it would publish nothing, and the
+         // warning must not suggest it.
+         writeManifest({ explores: ["dashboards/dash.malloy"] });
+         const unlisted = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         const unlistedFound = tileWarnings(unlisted);
+         expect(unlistedFound).toHaveLength(2);
+         for (const finding of unlistedFound) {
+            expect(finding.message).not.toContain("index.malloy");
+            expect(finding.message).toContain("a file you list there");
+         }
+
+         // With no key, the surface is index.malloy alone. The dashboard is
+         // held back before this lint runs, so its remedy never needs the
+         // index.malloy wording the held-back warning has.
+         writeManifest({});
+         const convention = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(convention.getDashboard("dash")).toBeUndefined();
+         expect(tileWarnings(convention)).toEqual([]);
       } finally {
          await duckdb.close();
       }
