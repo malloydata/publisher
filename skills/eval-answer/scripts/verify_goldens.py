@@ -149,6 +149,7 @@ import urllib.parse
 from typing import Any
 
 from check_must_not_use import candidate as must_not_use_candidate
+from json_scan import json_objects  # noqa: E402
 from publisher_rest import get_json, try_query  # the direct paths to a Publisher
 
 _TABLE_REF = re.compile(r"""duckdb\.table\(\s*['"](?:\.\./)?data/(\w+)\.\w+['"]\s*\)""")
@@ -518,9 +519,13 @@ def promotion_blocker(case: dict[str, Any], set_dir: pathlib.Path) -> str | None
     return None
 
 
-# A figure is a number a reader would check: 8,817.56, 943, 25%. Years and
-# small ordinals are not -- "top 3", "2025" -- so they do not raise a finding.
-FIGURE = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d{3,})")
+# A figure is a number a reader would check. Two digits is the floor, not three:
+# the incident this exists for turned on "80 orders", and a rule that skipped it
+# would have skipped the only number that mattered. Single digits stay out, so
+# "top 3" and "one of two" do not fire. Years still match, which over-reports --
+# the cost is one cheap verdict of `unverifiable`, against the cost of missing a
+# wrong figure, which is a judge blessing an answer the set forbids.
+FIGURE = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d{2,})")
 
 
 def criteria_figure_findings(case: dict[str, Any]) -> list[str]:
@@ -559,6 +564,107 @@ def criteria_figure_findings(case: dict[str, Any]) -> list[str]:
                        f"rows for the rubric-figure check and no value to re-derive. "
                        f"Query each one at the grain this rubric requires, or drop it")
     return out
+
+
+# The prompt is here rather than in a template file because it is short and
+# because the thing it must not do -- accept a figure it did not query -- is
+# stated in it, where a reader of this function will see it.
+FIGURE_JUDGE = """A sentence from an evaluation answer key quotes a number. Your job
+is to find out whether that number is true, by querying the data yourself.
+
+THE SENTENCE: {sentence}
+
+THE FIGURE TO CHECK: {figure}
+
+You have a Malloy package of RAW TABLES -- no measures, no joins, no modelling --
+served at {publisher}, environment {environment}, package {package}, model
+{model}. Query it with:
+
+  curl -s -X POST {publisher}/api/v0/environments/{environment}/packages/{package}/models/{model}/query \\
+    -H 'content-type: application/json' -d '{{"query":"run: ...","compactJson":true}}'
+
+Read the sentence for what the figure MEANS -- which rows, which grain, which
+filter -- and write the query that computes it. The grain is the trap: a count
+"per customer" is not a count per customer NAME if two customers share one, and
+an answer key has already shipped a figure that was three people summed by name.
+
+Return ONLY a JSON object:
+
+{{"query": "the Malloy you ran",
+  "rows": "what it returned, verbatim",
+  "computed": "the number your query produced",
+  "verdict": "confirmed | contradicted | unverifiable",
+  "why": "one sentence"}}
+
+`confirmed` only when your query produced this figure. `contradicted` when it
+produced a different one -- say both. `unverifiable` when the sentence does not
+pin down what to compute; do not guess a reading and confirm it."""
+
+
+def verify_figures(case: dict[str, Any], a: argparse.Namespace,
+                   run=None) -> list[dict[str, Any]]:
+    """Query each figure a criteria golden quotes, and record the receipt.
+
+    `criteria_figure_findings` says nobody can check these. This checks them:
+    it hands an agent the sentence, the figure and the truth package, and asks
+    it to compute the number and show its working. The receipt is the point --
+    a verdict with no query behind it replaces an unchecked figure with an
+    asserted one, and the error this exists to catch (a per-customer count
+    summed by customer NAME) is obvious in the query and invisible in the
+    verdict.
+
+    Returns one record per figure. Never raises: a figure that could not be
+    checked is reported as such, because refusing the audit over a prose
+    sentence would block the arm this audit exists to protect.
+    """
+    # Resolved once, and only when nobody injected a runner: `agent_harness`
+    # lives in the eval-loop skill, so importing it at module scope would make
+    # this file unimportable wherever that skill is not beside it.
+    if run is None:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                               / "eval-loop" / "scripts"))
+        from agent_harness import run_cli
+        run = run_cli
+    out = []
+    g = case.get("golden") or {}
+    if g.get("kind") != "criteria":
+        return out
+    for field, text in (("rubric", g.get("rubric")),
+                        ("verification.note", (g.get("verification") or {}).get("note"))):
+        if not isinstance(text, str):
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            for fig in sorted(set(FIGURE.findall(sentence))):
+                prompt = FIGURE_JUDGE.format(
+                    sentence=sentence.strip(), figure=fig,
+                    publisher=a.publisher, environment=a.environment,
+                    package=a.truth_package,
+                    model=(a.truth_model or "truth.malloy"))
+                rec = {"qid": case["qid"], "field": field, "figure": fig,
+                       "sentence": sentence.strip()}
+                try:
+                    reply = run(["claude", "-p", prompt,
+                                 "--model", a.figure_model],
+                                cwd=None, timeout=300)
+                    body = next(iter(json_objects(_reply_text(reply))), None)
+                except Exception as exc:                      # noqa: BLE001
+                    body = None
+                    rec["error"] = str(exc)[:200]
+                if not isinstance(body, dict):
+                    rec.update(verdict="unverifiable",
+                               why="the checker returned no readable JSON")
+                else:
+                    rec.update({k: body.get(k) for k in
+                                ("query", "rows", "computed", "verdict", "why")})
+                out.append(rec)
+    return out
+
+
+def _reply_text(reply: Any) -> str:
+    """`run_cli` returns a tuple on the CLI path and a string when stubbed."""
+    if isinstance(reply, tuple):
+        return next((x for x in reply if isinstance(x, str) and x.strip()), "")
+    return reply if isinstance(reply, str) else ""
 
 
 def axis_findings(case: dict[str, Any], set_dir: pathlib.Path) -> list[str]:
@@ -1055,6 +1161,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
 
     tally: dict[str, int] = {}
     findings: list[str] = []
+    figure_receipts: list[dict[str, Any]] = []
     refreshed: list[str] = []
     promoted: list[str] = []
     attested: list[str] = []
@@ -1064,7 +1171,19 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     for c in chosen:
         findings += rubric_number_findings(c)
         findings += axis_findings(c, set_dir)
-        findings += criteria_figure_findings(c)
+        # Without --verify-figures this only REPORTS that a figure cannot be
+        # checked. With it, each one is queried and the query printed, so a
+        # confirmation can be read rather than taken on trust.
+        if getattr(a, "verify_figures", False) and a.publisher and a.truth_package:
+            for rec in verify_figures(c, a):
+                figure_receipts.append(rec)
+                if rec.get("verdict") != "confirmed":
+                    findings.append(
+                        f"review {c['qid']}: the figure {rec['figure']} in its "
+                        f"{rec['field']} is {rec.get('verdict', 'unchecked')} -- "
+                        f"{rec.get('why') or rec.get('error') or 'no reason given'}")
+        else:
+            findings += criteria_figure_findings(c)
     findings += rubric_alternative_findings(chosen)
     findings += stale_rubric_claims(chosen, model_definitions(model))
     findings += unknown_name_findings(chosen, model_text(model))
@@ -1220,6 +1339,23 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         for n in promotion_notes:
             print(f"    {n}")
 
+    # The receipt is the deliverable. A verdict with no query behind it swaps
+    # an unchecked figure for an asserted one, and the mistake this exists to
+    # catch -- counting per customer NAME rather than per customer -- is plain
+    # in the query and invisible in the verdict.
+    if figure_receipts and not quiet:
+        print(f"\n  {len(figure_receipts)} quoted figure(s) checked against the "
+              f"truth package:")
+        for r in figure_receipts:
+            mark = {"confirmed": "ok", "contradicted": "WRONG"}.get(
+                r.get("verdict"), "?")
+            print(f"    [{mark}] {r['qid']} {r['field']}: {r['figure']}"
+                  f" -- computed {r.get('computed')!r}")
+            if r.get("query"):
+                print(f"           query: {str(r['query'])[:160]}")
+            if r.get("why"):
+                print(f"           {r['why']}")
+
     drifted = tally.get("diff", 0) + tally.get("error", 0)
     if not quiet:
         print("\n" + ("  ".join(f"{k}={v}" for k, v in sorted(tally.items()))
@@ -1297,6 +1433,14 @@ def main() -> int:
                          "golden.status; without it an imported set stays "
                          "unscorable forever. Prints why each unpromoted golden "
                          "was left alone")
+    ap.add_argument("--verify-figures", action="store_true",
+                    help="query every figure a criteria golden quotes and print "
+                         "the query behind each verdict. Costs one agent call "
+                         "per figure. Without it those figures are only "
+                         "REPORTED as uncheckable, which is what let a note "
+                         "quoting three customers summed by name reach a judge")
+    ap.add_argument("--figure-model", default="sonnet",
+                    help="the model that checks a quoted figure")
     ap.add_argument("--attest", default=None, metavar="TEXT",
                     help="with --promote: vouch for goldens that re-derived "
                          "cleanly but carry no second derivation. TEXT names "

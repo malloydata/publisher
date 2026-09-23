@@ -1019,5 +1019,75 @@ class NumericRendering(unittest.TestCase):
         # an exact compare rather than being guessed at.
         self.assertFalse(close_enough("C: 75.70", "C: 75.7", None))
 
+class VerifyQuotedFigures(unittest.TestCase):
+    """Query the numbers a prose answer key quotes, and keep the query.
+
+    The case this exists for: a criteria golden's note said "by order count it
+    is Amelia Cohen (80 orders)". 80 was three customers who share a name,
+    summed by name -- the exact grouping the neighbouring case forbids -- and
+    she was not top even so. Nothing checked it, because a criteria golden has
+    no value to re-derive and no rows for the figure check to read.
+    """
+
+    def case(self, note):
+        return {"qid": "q1", "golden": {"kind": "criteria", "rubric": "prose",
+                                        "verification": {"note": note}}}
+
+    def args(self):
+        return argparse.Namespace(
+            publisher="http://truth", environment="truth",
+            truth_package="t-truth", truth_model="truth.malloy",
+            figure_model="sonnet")
+
+    def test_a_contradicted_figure_is_reported_with_its_query(self):
+        reply = json.dumps({
+            "query": "run: t_order_items -> { group_by: customer_id; "
+                     "aggregate: n is count(order_id) }",
+            "rows": "884 | 43", "computed": "43",
+            "verdict": "contradicted",
+            "why": "at customer_id grain the top is 43, not 80; 80 sums three "
+                   "customers who share a name"})
+        out = verify_goldens.verify_figures(self.case("By order count it is Amelia Cohen (80 orders)."),
+                                self.args(), run=lambda *a, **k: reply)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["verdict"], "contradicted")
+        self.assertEqual(out[0]["figure"], "80")
+        # The query is the receipt: the grouping error is visible in it and
+        # invisible in the verdict alone.
+        self.assertIn("group_by: customer_id", out[0]["query"])
+
+    def test_the_sentence_travels_with_the_figure(self):
+        """A bare number cannot be checked; what it MEANS is in its sentence."""
+        seen = {}
+        def run(cmd, **kw):
+            seen["prompt"] = cmd[2]
+            return json.dumps({"verdict": "confirmed", "computed": "943"})
+        verify_goldens.verify_figures(self.case("A customer is one we delivered to: 943 of them."),
+                          self.args(), run=run)
+        self.assertIn("943", seen["prompt"])
+        self.assertIn("delivered to", seen["prompt"])
+
+    def test_an_unreadable_reply_is_unverifiable_not_confirmed(self):
+        out = verify_goldens.verify_figures(self.case("The total was 8,817.56 last year."),
+                                self.args(), run=lambda *a, **k: "not json at all")
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+
+    def test_a_crash_does_not_take_down_the_audit(self):
+        def boom(*a, **k):
+            raise RuntimeError("cli exploded")
+        out = verify_goldens.verify_figures(self.case("We sold 12,345 units."),
+                                self.args(), run=boom)
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertIn("cli exploded", out[0]["error"])
+
+    def test_a_golden_holding_a_value_is_not_this_check(self):
+        """Those re-derive through their own canonicalQuery already."""
+        rows = verify_goldens.verify_figures(
+            {"qid": "q2", "golden": {"kind": "scalar", "value": {"n": 943},
+                                     "rubric": "about 943"}},
+            self.args(), run=lambda *a, **k: "{}")
+        self.assertEqual(rows, [])
+
+
 if __name__ == "__main__":
     unittest.main()
