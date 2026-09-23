@@ -1601,8 +1601,18 @@ export class MaterializationService {
       // stamps freshness (dataAsOf/window/fallback) on the wire manifest it
       // distributes, not on this in-memory post-build load, so these sources are
       // bound un-gated (always serve the freshly-built table).
+      // A failed source is mirrored into `entries` for the `ManifestEntry.error`
+      // deprecation window, under the physical name it was HEADED for. With
+      // auto-run's stable names that is the previous generation's real table,
+      // so binding it would serve stale rows as fresh; like every other read
+      // boundary, this one skips it.
+      const builtEntries = Object.fromEntries(
+         Object.entries(entries).filter(
+            ([, entry]) => !isLegacyFailedEntry(entry),
+         ),
+      );
       const manifestEntries: FreshnessManifest = {};
-      for (const [sourceEntityId, entry] of Object.entries(entries)) {
+      for (const [sourceEntityId, entry] of Object.entries(builtEntries)) {
          // Storage entries serve cross-connection via the virtual-source
          // bindings (below), NOT the same-connection manifest substitution —
          // putting one here would make the original model try to substitute the
@@ -1631,7 +1641,7 @@ export class MaterializationService {
          // for a package with no storage= sources (deriveServeBindings → []).
          await environment.bindPackageStorageServeBindings(
             packageName,
-            entries,
+            builtEntries,
          );
          recordAutoLoadOutcome("success");
          logger.info("Auto-run: loaded manifest into package models", {

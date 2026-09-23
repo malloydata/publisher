@@ -1294,12 +1294,8 @@ describe("autoLoadManifest", () => {
       ctx = createMocks();
    });
 
-   it("binds every entry it is given, since a failed source is not one", () => {
-      // This is the path that rewrites a query's FROM. It binds what `entries`
-      // holds without asking whether each one built, which is only safe because
-      // a failed source is reported in `failures` and never reaches here -- so
-      // the coverage that matters is the producer's split (below), not a filter
-      // on this side.
+   it("binds an entry that built", () => {
+      // This is the path that rewrites a query's FROM.
       const reload = sinon.stub().resolves();
       const environment = {
          reloadAllModelsForPackage: reload,
@@ -1324,6 +1320,44 @@ describe("autoLoadManifest", () => {
 
       const bound = reload.firstCall?.args[1] ?? {};
       expect(Object.keys(bound)).toContain("ok");
+   });
+
+   it("does not bind a failed source mirrored into entries", async () => {
+      // During the `ManifestEntry.error` deprecation window a failed source is
+      // also written into `entries`, under the physical name it was headed for.
+      // Auto-run names are stable, so that name is the previous generation's
+      // table: binding it would serve stale rows as though this run built them.
+      const reload = sinon.stub().resolves();
+      const bindStorage = sinon.stub().resolves();
+      const environment = {
+         reloadAllModelsForPackage: reload,
+         bindPackageStorageServeBindings: bindStorage,
+      };
+
+      await (
+         ctx.service as unknown as {
+            autoLoadManifest: (
+               env: unknown,
+               pkg: string,
+               entries: Record<string, unknown>,
+            ) => Promise<void>;
+         }
+      ).autoLoadManifest(environment, "pkg", {
+         ok: {
+            sourceEntityId: "ok",
+            sourceName: "healthy",
+            physicalTableName: "ok_v1",
+         },
+         bad: {
+            sourceEntityId: "bad",
+            sourceName: "broken",
+            physicalTableName: "bad",
+            error: "Permission denied while writing to dataset analytics",
+         },
+      });
+
+      expect(Object.keys(reload.firstCall.args[1])).toEqual(["ok"]);
+      expect(Object.keys(bindStorage.firstCall.args[1])).toEqual(["ok"]);
    });
 });
 
