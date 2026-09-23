@@ -31,6 +31,165 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
+
+**Two annotations, one question each, and two different answers when they say no.**
+
+| Annotation         | The question                              | A denial is              |
+| ------------------ | ----------------------------------------- | ------------------------ |
+| `#(authorize)`     | may this caller reach this source at all? | **403**                  |
+| `#(access_filter)` | which rows may they see, once they may?   | **200**, with their rows |
+
+**This is a semantic flip, not a rename.** `#(authorize)` shipped as the row filter in every
+release from 0.2.0 through 0.4.1. It now means the lock. There is no alias, no deprecation period
+and no fallback: read this section before upgrading, because a model that keeps loading can still
+change what it serves.
+
+**Why the plain word moved.** A filter denies by matching no rows, which is honest — there really
+are none for that caller. A gate that decides whether they may reach the source at all cannot deny
+that way: `#(authorize) false` grafted as `where: false` makes `SELECT sum(salary) … WHERE FALSE`
+one row of `NULL`, and `count()` zero. That is a fabricated answer about data the caller was
+refused. The lock is decided instead, before their query is compiled, and returns a 403. The row
+filter takes the name the surrounding world already uses — Looker and Omni both say
+`access_filter`, and Spring Security splits `@PreAuthorize` from `@PreFilter`.
+
+### What to do before upgrading
+
+Both migrations are mechanical, and the second is the one that does not announce itself.
+
+1. **A row-shaped gate must move to `#(access_filter)`.** `#(authorize) org_id in $GROUPS` is
+   **refused at load** with a message naming the rewrite. Loud, and safe: the package does not
+   serve until it is fixed.
+2. **A caller-shaped gate keeps loading and starts answering 403.** `#(authorize) 'finance' in
+$GROUPS` is already a lock by shape, so nothing refuses it — but a non-member who used to get
+   200 with zero rows now gets a 403. **Anything keying on the status code — an alert, a retry
+   rule, a client branch, a dashboard panel, a notebook cell — sees a different answer after
+   upgrade.** This is the change to audit for, and there is no load error to find it for you:
+   `grep` for `#(authorize)` bodies whose left side is a quoted literal.
+
+Both names are snake_case, matching Malloy's own multi-word tags (`bar_chart`, `shape_map`). The
+hyphenated spellings are refused at load naming the snake one, deliberately rather than aliased, so
+exactly one spelling reaches a model and an audit that greps for gates cannot under-report.
+
+**Rolling back is only safe if models roll back first.** No release before this one knows
+`#(access_filter)`, and an unknown annotation route loads clean and serves every row. Downgrade
+below this version with `#(access_filter)` in a published model and that gate silently stops
+existing. Roll the models back first.
+
+### The name declares the scope; nothing is inferred
+
+The annotation you write says which question you are answering, and the body must conform or the
+model does not load:
+
+- `#(authorize)` takes `'<literal>' <op> $GIVEN`, plus the `true`/`false` sentinels. A field path on
+  the left is refused (`row_level_term_in_authorize`).
+- `#(access_filter)` takes `field_path <op> $GIVEN`. A literal on the left is refused
+  (`source_level_term_in_access_filter`), and so is either sentinel (`sentinel_in_access_filter`).
+
+**The mirror refusal is a security fix, not tidiness.** Until now the check ran one way only: a row
+term on the caller route was refused, but a caller-shaped body on the ROW route was legal and
+grafted as a constant predicate. So `#(authorize) 'finance' in $GROUPS` — the released spelling —
+answered a non-member with 200 and zero rows. That is the fabricated answer this whole change
+exists to remove, and it was reachable on the route nobody was looking at.
+
+Both sentinels now live on the lock alone. `#(authorize) false` is how you lock a base;
+`#(authorize) true` is how an extension re-opens one, since a source declaring no gate inherits its
+ancestor's. `#(access_filter) false` is refused naming `#(authorize) false` — a total deny that
+answers 200 with zero rows is exactly what the split removes. **The locked-base idiom is therefore
+rewritten, not renamed:** every `false` base moves to the lock, and every re-opening extension to
+`#(authorize) true`. See [docs/authorize.md](docs/authorize.md).
+
+### The gate body parses a narrow grammar
+
+The body was, until now, any Malloy boolean expression handed to the compiler unmodified —
+including shapes that only failed at request time (a scalar/array mismatch against a warehouse
+conversion error) or that loaded with a warning instead of a refusal (a negated membership test).
+It now parses one or more terms joined only by `and`, with `<op>` fixed by the given's declared
+arity (`in` for a list, `=` for a scalar). Anything else — `or`, `not`, `!=`, ordering comparisons,
+a function call, a bare field reference, a literal on the right of a row-level term, an arity
+mismatch — is refused at load with a named cause. Every ordinary term must reference a given, so
+`#(access_filter) 1 = 1` is refused; combine what used to be one `or`-joined gate into two
+extension sources, each with its own conjunctive gate — see
+[docs/authorize.md § OR semantics](docs/authorize.md#or-semantics).
+
+**A source may now declare more than one note on a route, and repeats AND together instead of
+failing the load.** `assertAtMostOneAuthorizeGate` refused a second note outright in every released
+version from 0.2.0 through 0.4.1, so no model that loads on a released version already has two of a
+source's own notes to reinterpret; this is new capability, not a reinterpretation. Separately, and
+more consequential: **a two-note declaring ancestor two or more `import` hops away now ANDs both
+notes where it previously did not.** That case moves served rows silently, with no load error, so
+it is worth auditing for rather than trusting to surface on its own.
+
+### Three more behaviour changes the flip carries
+
+**`/compile` evaluates the lock.** If reaching a source is what the word means, reading its SQL is
+reaching it — so a caller the lock refuses cannot compile against that source, and `includeSql`
+returns nothing. This closes a documented exposure (a gate referencing no given was admitted on
+`/compile` whichever way it resolved, and returned the source's ungrafted SQL). The cost is real:
+an author outside the group can no longer compile-check a locked source. `#(access_filter)` keeps
+deciding on presence rather than value.
+
+**The lock does not use the warehouse's collation.** It is decided in publisher, so `'Finance'` no
+longer matches `['finance']`. On a MySQL tenant, whose default collation is case-insensitive, a
+gate of this shape used to admit that caller. Fail-closed, but a real change — normalize case where
+you resolve identity into givens.
+
+**A denied caller's compile errors are no longer a schema oracle.** The lock is decided before the
+caller's query compiles, so probing a locked source with a non-existent field returns the 403
+rather than "field is not defined". That holds when the request declares its own alias for the
+source (`source: s is locked extend {}`), through a chain of them, and on `/compile` as well as
+`/query` — each reaches the compiler by a different route, and all of them decide the lock first.
+
+The same rule cuts the other way for a caller the lock **admits**: an alias over a locked source is
+served, exactly as the model-declared source would be. A source whose only gate is
+`#(authorize) true` is therefore no more restrictive than an ungated one, which is what the
+deliberately-open marker has to mean. An `#(access_filter)` still cannot be carried through a
+request-declared alias — there is no graft target for it — so that refusal is unchanged.
+
+### Metrics
+
+`publisher_authorize_lock_total` is new, labelled `decision` (`admitted`, `denied_by_lock`,
+`denied_unresolvable`). Only the last is a signal something is wrong; the middle one is the feature
+working. It is a separate counter rather than a third value on
+`publisher_authorize_row_level_total`, whose `denied_by_gate` is documented as the fail-closed
+"could not apply the gate" case operators alert on — folding routine 403s in would fire that alert
+on ordinary traffic.
+
+**One dashboard-breaking change, and it is a change of MEANING rather than a disappearance.**
+`publisher_authorize_admit_all_total`'s `route` label still reports `authorize`, but in 0.4.1 that
+value meant the ROW route's admit-all and now means the LOCK's. A query matching
+`route="authorize"` keeps returning data and is counting something different.
+
+### `#(partition)` is removed
+
+It predated `given:`/`#(access_filter)` as Publisher's own tenant-scoping annotation and has been
+redundant with a row-level gate since that landed. A model still carrying it — on a `source:` line,
+on a field inside one, reached through a join, on a top-level `query:`, or as a file-level
+`##(partition)` — fails to load, naming it, with no fallback interpretation. Migrate it to an
+equivalent `#(access_filter)` gate (or a scoping `where:`, if the intent was convenience rather
+than a boundary — see [docs/row-level-access.md](docs/row-level-access.md)) before upgrading.
+
+### For consumers generating clients from this spec
+
+Five operations now declare `403` in `api-doc.yaml` — `post-querydata`,
+`post-querydata-in-package`, `execute-query-model`, `execute-notebook-cell` and
+`compile-model-source`. All five could already reach an `AccessDeniedError`; the spec did not say
+so, so a generated client had no branch for it. Regenerate before upgrading.
+
+### Also
+
+`get_context` drops a source whose gate is an unconditional `false` from its listing entirely,
+rather than reporting it as queryable and letting an agent learn only from the refusal. Every other
+gate keeps being reported as before, because a caller's givens over that MCP path are untrusted and
+evaluating a real rule there would be forgeable.
+
+One risk worth flagging for anyone who kept a retired-form quoted-string gate declared outside a
+package's own tree (see [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates)):
+that gate was already denying every request with no compile-time hint, and nothing here changes it
+— a leftover marker of that shape stays inert rather than becoming newly enforced, so it will not
+surface as a load failure on upgrade. Search for it explicitly rather than relying on the release
+to find it.
+
 ## [0.5.0] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
 
 `proxy.ssh.hostKey` pins the bastion's host key. When it was omitted the tunnel
@@ -130,7 +289,7 @@ explicit `PUBLISHER_HOST` so `--host` still moves both together, then
 
 Credentials are never returned on a read, so a system distributing the same connection to several
 Publishers could not confirm any of them was still holding the credential it last sent: a read tells
-a Publisher holding *some* password from one holding *none*, not one holding last month's from one
+a Publisher holding _some_ password from one holding _none_, not one holding last month's from one
 holding the current one.
 
 `Connection.configEtag` is a new optional string the writer owns. Publisher stores it with the
@@ -140,10 +299,11 @@ against what you would send now. A different tag, or none, means that Publisher 
 configuration. A write that does not carry a tag clears it, so a client that ignores the field is
 unaffected and a config changed outside your writer stops hiding behind a tag it no longer matches.
 
-It is deliberately not `fingerprint`, which identifies the *data* a connection reaches and excludes
+It is deliberately not `fingerprint`, which identifies the _data_ a connection reaches and excludes
 credentials so rotation does not re-address artifacts: two configs differing only by password share
 a fingerprint, which is the case this exists to catch. [docs/connections.md](docs/connections.md)
 has the comparison and the limits.
+
 ## [0.4.1] — the dashboard editor is not the only writer, and the browser is not the only store
 
 `DocumentStorage` exists so the host decides where an authored document goes, but the

@@ -162,12 +162,17 @@ export { customers }`,
 
    it("keeps enforcing a hidden source's authorize gate (curation ≠ access)", async () => {
       // base_source is hidden from index.malloy's listing (not re-exported),
-      // but it carries its own #(authorize) gate. Curation must not drop that
+      // but it carries its own #(access_filter) gate. Curation must not drop that
       // gate: getAuthorize reads the COMPLETE source list, not the curated view.
       writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
-         `#(authorize) true
+         `##! experimental.givens
+
+given:
+  ID :: number
+
+#(access_filter) id = $ID
 source: base_source is duckdb.sql("select 1 as id") extend {}`,
       );
       fs.writeFileSync(
@@ -193,7 +198,7 @@ export { customers }`,
          ]);
 
          // Enforcement: the hidden source's gate is still in force.
-         expect(model.getAuthorize("base_source")).toEqual(["true"]);
+         expect(model.getAccessFilter("base_source")).toEqual(["id = $ID"]);
       } finally {
          await duckdb.close();
       }

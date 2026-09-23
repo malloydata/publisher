@@ -223,7 +223,7 @@ Step 1 is only for a cold start. Once you know the environment and package, whet
 
 ## 5. Skills
 
-The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `malloy-getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness. Most of these are shared, open-source Malloy skills kept in sync with an upstream repo; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills line up with the ones this server registers.
+The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `malloy-getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness. Most of these are shared, open-source Malloy skills that Credible also serves, from the published `@malloy-publisher/skills` package; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills line up with the ones this server registers.
 
 ## 6. Iterating on a model (watch mode)
 

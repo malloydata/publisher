@@ -55,7 +55,7 @@ const compileShape = {
       .record(z.unknown())
       .optional()
       .describe(
-         "Given values for the model's given: block. Also required to satisfy any #(authorize) gate on the target model, whether or not includeSql is set.",
+         "Given values for the model's given: block. Also required to satisfy any authorize gate on the target model, whether or not includeSql is set.",
       ),
 };
 
@@ -64,10 +64,10 @@ const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use t
 ## Scopes (the scope parameter)
 - "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
-- "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and #(authorize) still gates caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
+- "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and authorize gates still apply to caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
 
 ## Parameters
-- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and #(authorize) values. Caller source may not declare #(authorize).
+- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and authorize-gate values. Caller source may not declare an access-control gate — neither #(authorize) nor #(access_filter).
 
 ## Response
 { status: "success"|"error", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file the diagnostic points at (which can be pre-existing content, not your source). status is "error" only when an error-severity diagnostic exists; errors are also stated in a plain text block.`;

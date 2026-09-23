@@ -4,8 +4,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
+   recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
+   recordLockDecision,
    recordRowLevelGateDecision,
    recordRowLevelGateRejected,
    resetAuthorizeGuardTelemetryForTesting,
@@ -88,6 +90,40 @@ describe("authorize_metrics", () => {
       ).toBe(1);
    });
 
+   it("publisher_authorize_lock_total ticks per call, labeled by decision", async () => {
+      // The two denials are separate labels on purpose: both are a 403, but
+      // only `denied_unresolvable` means the gate could not be decided, and it
+      // is the one worth alerting on. Folding either into the other — or onto
+      // `publisher_authorize_row_level_total`, whose `denied_by_gate` an
+      // operator already alerts on — makes routine traffic page someone.
+      recordLockDecision("admitted");
+      recordLockDecision("denied_by_lock");
+      recordLockDecision("denied_by_lock");
+      recordLockDecision("denied_unresolvable");
+
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "admitted",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "denied_by_lock",
+         }),
+      ).toBe(2);
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "denied_unresolvable",
+         }),
+      ).toBe(1);
+      // A lock decision must not land on the row-level counter.
+      expect(
+         await harness.collectCounter("publisher_authorize_row_level_total", {
+            decision: "denied_by_gate",
+         }),
+      ).toBe(0);
+   });
+
    it("publisher_authorize_row_level_rejected_total ticks per call, labeled by cause", async () => {
       recordRowLevelGateRejected("unreachable_given");
       recordRowLevelGateRejected("unreachable_given");
@@ -126,5 +162,48 @@ describe("authorize_metrics", () => {
             { cause: "legacy_string_gate" },
          ),
       ).toBe(1);
+   });
+
+   it("publisher_authorize_admit_all_total ticks per call, labeled by route", async () => {
+      recordAuthorizeAdmitAllGate("access_filter");
+      recordAuthorizeAdmitAllGate("access_filter");
+      recordAuthorizeAdmitAllGate("authorize");
+
+      expect(
+         await harness.collectCounter("publisher_authorize_admit_all_total", {
+            route: "access_filter",
+         }),
+      ).toBe(2);
+      expect(
+         await harness.collectCounter("publisher_authorize_admit_all_total", {
+            route: "authorize",
+         }),
+      ).toBe(1);
+   });
+
+   it("resetAuthorizeGuardTelemetryForTesting drops the cached admit-all instrument", async () => {
+      recordAuthorizeAdmitAllGate("access_filter");
+      expect(
+         await harness.collectCounter("publisher_authorize_admit_all_total", {
+            route: "access_filter",
+         }),
+      ).toBe(1);
+
+      resetAuthorizeGuardTelemetryForTesting();
+      const freshHarness = await startMetricsHarness();
+      try {
+         // A fresh provider with no prior emissions sees nothing until this
+         // call re-inits the instrument against it — proves the OLD cached
+         // instrument (bound to the first harness's reader) was dropped.
+         recordAuthorizeAdmitAllGate("access_filter");
+         expect(
+            await freshHarness.collectCounter(
+               "publisher_authorize_admit_all_total",
+               { route: "access_filter" },
+            ),
+         ).toBe(1);
+      } finally {
+         await freshHarness.shutdown();
+      }
    });
 });

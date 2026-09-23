@@ -49,13 +49,14 @@ Concretely:
   registration; it has no authentication of its own, so on a reachable server it sits behind the
   same gateway or is closed by the same setting. An attacker who can reach it can already register
   a package, so it opens no door that was shut.
-- **Governance is mostly a modeling concern.** `#(authorize)`, given-scoped
+- **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, `explores`, and `queryableSources` constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
   a given is whatever the caller sends.
   One request-level exception, and it is load-bearing: `x-publisher-bypass-authorize` carrying
-  the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips `#(authorize)` evaluation outright, for
-  trusted data-management callers (indexers). With that variable unset the bypass is refused, so
+  the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips gate evaluation on BOTH routes outright —
+  the `#(authorize)` lock as well as the `#(access_filter)` filter — for trusted data-management
+  callers (indexers). With that variable unset the bypass is refused, so
   the default is closed; a deployment that configures the secret and reaches untrusted callers
   should still strip the header at its edge — see
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md). It is the one place where a
@@ -67,28 +68,29 @@ worth building when it closes a boundary, not when it decorates one of several o
 is why the custom JSX dashboard sandbox was cut after it was built and working — see
 [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md#custom-jsx-components-cut).
 
-## Row-level authorize: rows are protected, the schema is not
+## Row-level access: rows are protected, the schema is not
 
-**Every** `#(authorize)` gate is a row filter (see
-[authorize.md § Row-level gates](authorize.md#row-level-gates)) — there is no longer a whole-source
-class that admits or rejects a source outright. The gate's expression is grafted onto the source and
-evaluated with the query, so a caller it admits nowhere reads zero rows rather than being refused.
-It is a deliberate trade, stated plainly rather than left to be discovered:
+This section is about `#(access_filter)` specifically. It is a row filter (see
+[authorize.md § Row-level gates](authorize.md#row-level-gates)): its expression is grafted onto the
+source and evaluated with the query, so a caller it matches nowhere reads zero rows rather than
+being refused. `#(authorize)` is the other route and does not make this trade — it is decided
+before the caller's query compiles and answers 403. The trade below is the price of a filter, and
+a source that should not answer schema questions to outsiders wants a lock as well:
 
-- **Rows are protected; the schema is not.** A gated source is readable-but-empty rather than
-  403 for a caller the gate admits nowhere. Any caller with package read can therefore name a
-  gated source, compile against it, and enumerate its columns through compile errors. That is
-  accepted on purpose — resolving a gate out of untrusted text before compiling it is exactly the
+- **Rows are protected; the schema is not.** A filtered source is readable-but-empty rather than
+  403 for a caller it matches nowhere. Any caller with package read can therefore name such a
+  source, compile against it, and enumerate its columns through compile errors. That is accepted
+  on purpose — resolving a gate out of untrusted text before compiling it is exactly the
   resolution-from-text this design already refuses elsewhere (see
-  [authorize.md § Security model](authorize.md#security-model)).
-- **403 becomes 200-with-zero-rows.** A caller the retired whole-source gate would have rejected
-  outright now gets a successful, empty response. That is wire-visible: a consumer keying its own
-  logic on the 403 status must be checked and updated before upgrading a deployment it serves. A 403
-  now means only that the gate could not be _attached_ — not that a caller was denied by it.
-- **Fail-closed is the only backstop.** A row filter has no boolean admission to fall back on the
-  way the retired whole-source gate did, so every path that cannot _apply_ the filter denies instead — a
-  gate whose column doesn't resolve at the entry point, an unresolved given, a compile that
-  throws. There is no "serve unfiltered" failure mode.
+  [authorize.md § Security model](authorize.md#security-model)). Adding `#(authorize)` closes it
+  for the caller the lock refuses, since that decision happens first.
+- **A filter's denial is 200-with-zero-rows.** A consumer keying its own logic on a 403 does not
+  see it. On this route a 403 means only that the filter could not be _attached_ — not that a
+  caller was denied by it.
+- **Fail-closed is the only backstop.** A row filter has no boolean admission to fall back on, so
+  every path that cannot _apply_ it denies instead — a gate whose column doesn't resolve at the
+  entry point, an unresolved given, a compile that throws. There is no "serve unfiltered" failure
+  mode.
 - **The gate's own structure is still scrubbed.** Accepting schema disclosure above is not
   accepting ACL-model disclosure: a gate reading `childtable.name` names a relationship the caller
   may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
