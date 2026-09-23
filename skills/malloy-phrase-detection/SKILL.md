@@ -10,9 +10,9 @@ The `get_context` tool description defines each field and what a call returns. T
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
-**Scope of this skill:** the patterns below build `dimension` / `measure` / `view` targets. Phrasing for `source` targets is covered at the end.
+**Scope of this skill:** the patterns below build `dimension` / `measure` / `view` targets. `dimensional_value` targets, on a server that supports them, are covered under "Value search, where the server supports it". Phrasing for `source` targets is covered at the end.
 
-**A note on matching:** `get_context` searches over the model (sources, fields, views, and their descriptions), not the distinct categorical *values* stored in the data. To find which literal values a categorical dimension holds, target the dimension, then query its distinct values with `execute_query` (see the patterns below).
+**A note on matching:** `get_context` searches over the model (sources, fields, views, and their descriptions). Some servers can also search the categorical *values* stored in the data; check the tool's description. Where yours can't, find which literal values a categorical dimension holds by targeting the dimension, then querying its distinct values with `execute_query` (see the patterns below).
 
 ## Always send `search_text`
 
@@ -36,7 +36,13 @@ One target per concept is enough: the tool handles phrasing variants internally.
   - "sales summary" becomes `"a summary of sales metrics"`
 - **`source`**: data domain, for a question that names a subject area rather than fields (phrasing below).
 
-**Resolving categorical values (no value-search target in v1).** When the user names a literal value like "premium" or "New York City", target the *dimension* it lives on (`"the subscription tier"`, `"the city where the subscriber lives"`). Then confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it. The data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
+**Resolving categorical values.** When the user names a literal value like "premium" or "New York City", and your server has no value search (next paragraph), target the *dimension* it lives on (`"the subscription tier"`, `"the city where the subscriber lives"`). Then confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it. The data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
+
+**Value search, where the server supports it.** Some `get_context` servers index the values stored in dimensions, and answer a `dimensional_value` target with the dimensions that hold a matching value. Check the tool's description to see whether yours does: a server without a value index may accept the target and return nothing. Where it works:
+
+- **Set a scope.** Best practice is to scope the call to the source that holds the value. An unscoped value search covers every indexed dimension in scope, so it is slow on a large package. If you truly don't know the source, you can leave the scope off, but expect a slow call.
+- **Send the value itself.** `search_text` on a `dimensional_value` target is the literal you are looking for (`"CyberArk"`), not a description of it. This is the one target where echoing the user's word is right.
+- **Fall back when a dimension's values aren't indexed.** Target the dimension and query its distinct values instead, as above.
 
 ## Non-obvious decomposition patterns
 
@@ -66,7 +72,7 @@ The targets for this question:
 | `dimension` | `"the tier of the subscription"` |
 | `view` | `"subscriber churn or retention analysis"` |
 
-Key moves: time ("last year") becomes a dimension on the cancellation date; "NYC" and "premium/basic subscribers" do not get their own value targets, they resolve to the city and tier dimensions. One `view` target is included to surface any canned churn analysis.
+Key moves: time ("last year") becomes a dimension on the cancellation date; "NYC" and "premium/basic subscribers" do not get their own value targets, they resolve to the city and tier dimensions. On a server with value search, a follow-up `dimensional_value` target scoped to `subscriptions` could confirm "NYC" instead of the distinct-values query. One `view` target is included to surface any canned churn analysis.
 
 The response returns the source these fields live on (here `subscriptions`) with the matched fields on its card. Then run `execute_query` to read the city and tier dimensions' distinct values and confirm the exact strings to filter on ("New York City" vs "NYC", "premium" vs "Premium").
 
