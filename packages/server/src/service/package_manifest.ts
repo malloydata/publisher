@@ -478,12 +478,15 @@ export function resolveExplores(input: {
       ? declaredExplores.map((entry) => normalizeModelPath(entry as string))
       : undefined;
 
-   if (declaredQueryableSources !== undefined) {
-      warnings.push(
-         declaredQueryableSources === "all"
-            ? QUERYABLE_SOURCES_ALL_DEPRECATION
-            : QUERYABLE_SOURCES_DEPRECATION,
-      );
+   // `"all"` is not warned about. It is the only way to curate listings
+   // WITHOUT refusing queries, and the convention has no equivalent: a surface
+   // it derives always arms the boundary, because `queryableSources` defaults
+   // to `"declared"`. A use with no replacement gets no deprecation notice.
+   if (
+      declaredQueryableSources !== undefined &&
+      declaredQueryableSources !== "all"
+   ) {
+      warnings.push(QUERYABLE_SOURCES_DEPRECATION);
    }
 
    if (declared !== undefined) {
@@ -501,7 +504,10 @@ export function resolveExplores(input: {
          // exactly backwards here: deleting it hands the surface to the file
          // the author opted out of. Say what it is doing instead.
          warnings.push(EXPLORES_EMPTY_SUPPRESSES_CONVENTION);
-      } else {
+      } else if (declared.length === 1) {
+         // Only a one-file surface has a replacement to name. Several files is
+         // what the convention cannot express, and it is also the documented
+         // way to serve dashboards beside an index.malloy.
          warnings.push(EXPLORES_DEPRECATION);
       }
       // Only worth reporting a disagreement when there is one to report. An
@@ -582,8 +588,7 @@ const EXPLORES_DEPRECATION =
    `you publish, then delete the key. The file is the surface, it is checked ` +
    `by the compiler rather than by a path list, and it curates and enforces ` +
    `exactly as the key does. The key still works and is not going away in this ` +
-   `release. Keep it for the one thing the convention cannot express: a ` +
-   `surface spanning several files.`;
+   `release.`;
 
 /**
  * Said for `"explores": []` in a package that HAS a root index.malloy.
@@ -622,21 +627,3 @@ const QUERYABLE_SOURCES_DEPRECATION =
    `the default, so the key changes nothing, and an "${INDEX_MODEL_NAME}" ` +
    `gives the same curated-and-enforced surface with no manifest field at all. ` +
    `Delete it. The key still works and is not going away in this release.`;
-
-/**
- * The `"all"` variant, and it must NOT say `index.malloy` replaces it.
- *
- * `"all"` is the only way to curate listings WITHOUT refusing queries, and the
- * convention has no equivalent: a surface it derives always arms the boundary,
- * because `queryableSources` defaults to `"declared"`. Telling this author to
- * switch would be telling them to start returning 404s, so the advice is the
- * opposite of the one above — keep both keys.
- */
-const QUERYABLE_SOURCES_ALL_DEPRECATION =
-   `"queryableSources": "all" in publisher.json is deprecated, and an ` +
-   `"${INDEX_MODEL_NAME}" does NOT replace it. "all" curates listings while ` +
-   `leaving every source queryable by name; a surface derived from an ` +
-   `"${INDEX_MODEL_NAME}" refuses unlisted sources with a 404, because ` +
-   `"queryableSources" defaults to "declared". If you want listings-only ` +
-   `curation, keep this key and keep an explicit "explores" alongside it. Both ` +
-   `still work and are not going away in this release.`;

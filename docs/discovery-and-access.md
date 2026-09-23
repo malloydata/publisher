@@ -114,8 +114,11 @@ curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \
 
 ## The older form: `explores` and `queryableSources`
 
-Both keys still work and are not going away in this release. Both are deprecated, and a package
-declaring either gets a load-time warning naming the replacement.
+Both keys still work and are not going away in this release. Both are deprecated where the
+convention replaces them, and only there does a package get a load-time warning naming the
+replacement: an `explores` naming one file, and `queryableSources: "declared"`. The two uses the
+convention cannot replace, an `explores` naming several files and `queryableSources: "all"`, stay
+supported and load without a deprecation warning.
 
 - **`explores`** — an optional `string[]` of `.malloy` file paths, relative to the package root,
   naming the surface. Reach for it for the one thing `index.malloy` cannot express: a surface

@@ -81,7 +81,7 @@ What it exports is what agents discover **and** what may be queried. Everything 
 
 ### The older manifest fields
 
-Both still work and are not going away in this release. Both are deprecated, and a package declaring either gets a load-time warning naming the replacement. Do not add them to a new package.
+Both still work and are not going away in this release. Both are deprecated where `index.malloy` replaces them, and a package using them that way gets a load-time warning naming the replacement. The two uses it cannot replace, an `explores` naming several files and `queryableSources: "all"`, stay supported without a warning. Do not add either key to a new package that does not need one of those two.
 
 ```json
 {

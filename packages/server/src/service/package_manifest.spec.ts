@@ -154,13 +154,29 @@ describe("service/package_manifest", () => {
          expect(declared.warnings.join("\n")).toContain("Delete it.");
 
          // "all" is the one thing the convention cannot express: it curates
-         // listings without refusing queries. Advising this author to switch
-         // would start returning 404s, so the message must say the opposite.
-         const all = resolve(["orders.malloy"], ["orders.malloy"], "all");
-         const allText = all.warnings.join("\n");
-         expect(allText).toContain("does NOT replace it");
-         expect(allText).toContain("keep an explicit");
-         expect(allText).not.toContain("Delete it.");
+         // listings without refusing queries. With no replacement there is
+         // nothing to deprecate it in favor of, so it gets no notice at all.
+         const all = resolve(
+            ["orders.malloy", "customers.malloy"],
+            ["orders.malloy", "customers.malloy"],
+            "all",
+         );
+         expect(all.warnings).toEqual([]);
+      });
+
+      it("names a replacement only for a one-file explores", () => {
+         const one = resolve(["orders.malloy"], ["orders.malloy"]);
+         expect(one.warnings.join("\n")).toContain(
+            '"explores" in publisher.json is deprecated',
+         );
+
+         // Several files is what the convention cannot express, and it is how
+         // dashboards are served beside an index.malloy, so it is not nagged.
+         const several = resolve(
+            ["index.malloy", "dashboards/overview.malloy"],
+            ["index.malloy", "dashboards/overview.malloy"],
+         );
+         expect(several.warnings).toEqual([]);
       });
    });
 

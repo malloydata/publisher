@@ -94,15 +94,17 @@ that file. Declaring `explores` with your old file list is not an opt-out either
 
 ### `explores` and `queryableSources` are deprecated, and still work
 
-Nothing is removed. Both keys behave exactly as before, both are now marked `deprecated` in the
-OpenAPI spec, and a package declaring either gets a load-time warning naming the replacement.
+Nothing is removed. Both keys behave exactly as before and both are now marked `deprecated` in the
+OpenAPI spec. A load-time warning naming the replacement goes only to the uses the convention
+replaces: an `explores` naming one file, and `queryableSources: "declared"`.
 
 Keep `explores` for the one thing the convention cannot express: a surface spanning **several**
-files. An explicit `explores` always wins, and a package with both an `index.malloy` and an
+files, which includes `index.malloy` plus the dashboard files it cannot export. That use gets no
+deprecation warning. An explicit `explores` always wins, and a package with both an `index.malloy` and an
 `explores` that omits it carries a warning rather than the server guessing.
 
-**`index.malloy` does not replace `queryableSources: "all"`**, and its warning says so rather than
-advising a switch. `"all"` is the only way to curate listings *without* refusing queries, and a
+**`index.malloy` does not replace `queryableSources: "all"`**, so `"all"` gets no deprecation
+warning. `"all"` is the only way to curate listings *without* refusing queries, and a
 surface derived from an `index.malloy` always enforces the boundary, because `queryableSources`
 defaults to `"declared"`. If you want listings-only curation, keep both keys.
 

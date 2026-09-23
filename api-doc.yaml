@@ -3104,10 +3104,12 @@ components:
             model's `export {}` closure. Every other .malloy file still
             compiles for import/join resolution but is hidden. Notebooks are
             always listed regardless of this field.
-            DEPRECATED, still honored: a root `index.malloy` is the surface
-            when this key is absent, and gives the same listing and the same
-            boundary with no manifest field. Keep the key only for a surface
-            spanning several files, which the convention cannot express.
+            DEPRECATED for a one-file surface, still honored: a root
+            `index.malloy` is the surface when this key is absent, and gives the
+            same listing and the same boundary with no manifest field. A surface
+            spanning several files is what the convention cannot express, so
+            that use stays supported, with no replacement and no deprecation
+            warning at load.
             This value MAY have been derived by the server from a root
             `index.malloy` rather than written by the package author, and the
             response does not distinguish the two — deliberately, because
@@ -3326,8 +3328,9 @@ components:
             curated-and-enforced surface with no manifest field.
             `"all"` is the exception: `index.malloy` does NOT replace it,
             because a surface derived from one always enforces the boundary.
-            To curate listings without refusing queries, keep both this key and
-            an explicit `explores`.
+            It stays supported with no deprecation warning at load. To curate
+            listings without refusing queries, keep both this key and an
+            explicit `explores`.
         manifestLocation:
           type: ["string", "null"]
           description: |
