@@ -46,17 +46,16 @@ let secretPath: string;
 let absentPath: string;
 
 /** Copies a shipped example package into the environment under test. */
-async function installExample(
-   name: string,
-   sourceDir: string,
-): Promise<void> {
+async function installExample(name: string, sourceDir: string): Promise<void> {
    await env.installPackage(name, async (stagingPath) => {
       await fs.cp(sourceDir, stagingPath, { recursive: true });
    });
 }
 
 beforeAll(async () => {
-   rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-continuation-"));
+   rootDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "publisher-continuation-"),
+   );
    secretPath = path.join(rootDir, "secret.csv");
    absentPath = path.join(rootDir, "no-such-file.csv");
    await fs.writeFile(secretPath, "ssn,holder\n111-11-1111,alice\n");
@@ -76,8 +75,14 @@ const compileAppend = (
    modelPath: string,
    source: string,
 ): Promise<{ problems: unknown[] }> =>
-   env.compileSource(pkg, modelPath, source, false, undefined, "append") as
-      Promise<{ problems: unknown[] }>;
+   env.compileSource(
+      pkg,
+      modelPath,
+      source,
+      false,
+      undefined,
+      "append",
+   ) as Promise<{ problems: unknown[] }>;
 
 /** The error a compile threw, or a failure when it unexpectedly succeeded. */
 async function refusalFor(
@@ -244,7 +249,9 @@ describe("append scope on a shipped package still serves ordinary work", () => {
          "storefront.malloy",
          "run: order_items -> { group_by: no_such_column }",
       );
-      const withPosition = (problems as { at?: { range?: { start?: { line?: number } } } }[])
+      const withPosition = (
+         problems as { at?: { range?: { start?: { line?: number } } } }[]
+      )
          .map((p) => p.at?.range?.start?.line)
          .filter((line): line is number => typeof line === "number");
       expect(withPosition.length).toBeGreaterThan(0);

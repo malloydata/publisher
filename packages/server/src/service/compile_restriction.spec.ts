@@ -312,11 +312,13 @@ source: published is duckdb.sql("select 1 as id") extend {
          // curated model deliberately did not, so it is refused rather than
          // honoured for the duration of one compile.
          const error = await refusalFor(
-            '##! experimental.sql_functions\nrun: base_source -> { group_by: id }',
+            "##! experimental.sql_functions\nrun: base_source -> { group_by: id }",
             "append",
          );
          expect(error).toBeInstanceOf(CompileRefusedError);
-         expect(error.message).toContain("compiler-flag annotations are not permitted");
+         expect(error.message).toContain(
+            "compiler-flag annotations are not permitted",
+         );
       });
 
       it("names the offending construct", async () => {
