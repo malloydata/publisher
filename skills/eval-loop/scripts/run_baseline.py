@@ -486,22 +486,39 @@ def format_rows(rows: list[dict], limit: int = 60) -> str:
 # did not measure. Seen twice in one arm: 86.4% printed against 95% actual, and
 # diagnose went on to explain the phantom miss with an index-readiness story
 # that was not true.
-OFFLOADED = re.compile(r"(?:saved to|written to)\s+(/[^\s'\"]+)")
+# One note, one regex, one reader. The CLI names the file it spilled a result
+# to in two spellings ("<persisted-output> ... Full output saved to: <path>" and
+# "Output has been saved to <path>.txt."), sometimes with a colon, sometimes
+# with a trailing period. Two regexes and two readers for this one concept
+# handled those differently, and a rebuild after the CLI's temporary file was
+# gone matched one, missed the other, and scored the call as zero entities.
+SAVED_TO = re.compile(
+    r"(?:saved to|written to):?\s+(/[^\s'\"]+?)\.?(?=\s|$)", re.S)
+OFFLOADED = SAVED_TO   # the name the call sites grew up with
+
+
+def saved_result(text: str) -> tuple[pathlib.Path | None, str | None]:
+    """(path, body) for a result the host spilled to a file.
+
+    (None, None) when the text names no file; (path, None) when it names one
+    that cannot be read, which is the ordinary state of a rebuild since the
+    CLI's tool-results/ files are temporary; (path, body) when it can. Only
+    ever reads a path the host itself named in the result it returned.
+    """
+    m = SAVED_TO.search(text or "")
+    if not m:
+        return None, None
+    path = pathlib.Path(m.group(1))
+    try:
+        return path, path.read_text()
+    except OSError:
+        return path, None
 
 
 def offloaded_json(text: str) -> dict[str, Any] | None:
-    """The response body a host spilled to a file, read back, or None.
-
-    Only ever reads a path the host itself named in the result it returned.
-    """
-    m = OFFLOADED.search(text or "")
-    if not m:
-        return None
-    try:
-        body = pathlib.Path(m.group(1)).read_text()
-    except OSError:
-        return None
-    return resource_json(body)
+    """The response body a host spilled to a file, read back, or None."""
+    _, body = saved_result(text)
+    return resource_json(body) if body is not None else None
 
 
 def resource_json(text: str) -> dict[str, Any] | None:
@@ -609,37 +626,33 @@ def path_breaches(events: list[dict[str, Any]],
 # Two spellings, from two CLI paths: the persisted-output stub, and the MCP
 # token-cap error ("result ... exceeds maximum allowed tokens. Output has been
 # saved to <path>"). Both leave the whole payload on disk.
-PERSISTED_STUB = re.compile(
-    r"(?:<persisted-output>.*?Full output saved to|Output has been saved to):? "
-    r"(/\S+?\.(?:json|txt))\.?(?=\s|$)", re.S)
-
-
 def result_text(block: dict[str, Any]) -> str:
-    """The text of one tool_result block, with a persisted stub resolved.
+    """The text of one tool_result block, with a spilled result read back.
 
-    Above a size the CLI decides, a tool result reaches the answerer as a
-    `<persisted-output>` stub: a file path and a 2 KB preview. Measured on the
-    first arm against a real model, 14 of 74 get_context results (53 to 70 KB each) arrived that
-    way, and the answerer followed the path with Read every time. Reading the
-    stub as the payload scored those calls as zero entities delivered, which
-    is the opposite of what happened: the whole ranking was on disk. So when
-    the stub names a file that still exists, its content is the result.
+    Above a size the CLI decides, a tool result reaches the answerer as a note
+    naming a file plus a 2 KB preview. Measured on the first arm against a real
+    model, 14 of 74 get_context results (53 to 70 KB each) arrived that way and
+    the answerer followed the path with Read every time. Reading the note as
+    the payload scored those calls as zero entities delivered. When the file is
+    still there its content is the result; when it is gone (the CLI's
+    tool-results/ files are temporary, so a later rebuild always lands here)
+    the note comes back unchanged and the caller records the call as
+    unmeasured through `saved_result`, never as zero.
     """
     text = _raw_result_text(block)
-    m = PERSISTED_STUB.search(text)
-    if m:
-        path = pathlib.Path(m.group(1))
-        if path.exists():
-            try:
-                blocks = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
-                return path.read_text()
-            if isinstance(blocks, list):
-                return "\n".join(b.get("text", "") for b in blocks
-                                 if isinstance(b, dict) and b.get("type") == "text")
-            if isinstance(blocks, dict) and blocks.get("type") == "text":
-                return blocks.get("text", "")
-    return text
+    _, body = saved_result(text)
+    if body is None:
+        return text
+    try:
+        blocks = json.loads(body)
+    except json.JSONDecodeError:
+        return body
+    if isinstance(blocks, list):
+        return "\n".join(b.get("text", "") for b in blocks
+                         if isinstance(b, dict) and b.get("type") == "text")
+    if isinstance(blocks, dict) and blocks.get("type") == "text":
+        return blocks.get("text", "")
+    return body
 
 
 def _raw_result_text(block: dict[str, Any]) -> str:
@@ -2035,8 +2048,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     # back rather than scoring the notice as an empty response.
                     if payload is None:
                         payload = offloaded_json(text)
-                    if payload is None and OFFLOADED.search(text or ""):
-                        # Named a file we could not read. Record NO summary
+                    if payload is None and saved_result(text)[0] is not None:
+                        # Named a file we could not read (a rebuild after the
+                        # CLI's temporary file is gone). Record NO summary
                         # rather than an empty one: unmeasured is the truth,
                         # and a zero here is a miss the run did not observe.
                         calls.append({**info,

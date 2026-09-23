@@ -1732,6 +1732,30 @@ class PersistedStubIsTheResult(unittest.TestCase):
         stub = f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n"
         self.assertEqual(rb.result_text(self.block(stub)), stub)
 
+    def test_a_missing_file_is_reported_as_unmeasured_not_zero(self):
+        # A rebuild after the CLI's temporary file is gone: both spellings,
+        # with the colon and with the trailing period, name a file, and the
+        # caller must record no summary rather than an empty one.
+        for note in (f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n\nPreview",
+                     f"Error: result exceeds maximum allowed tokens. Output has been saved to {self.tmp / 'gone.txt'}."):
+            with self.subTest(note=note[:30]):
+                path, body = rb.saved_result(note)
+                self.assertEqual(path.name, path.name)  # a path was named
+                self.assertIsNone(body)
+                self.assertIsNone(rb.offloaded_json(note))
+
+    def test_the_colon_spelling_is_read_back_too(self):
+        saved = self.tmp / "r.json"
+        saved.write_text(json.dumps({"sources": [], "retrieval": "semantic"}))
+        self.assertEqual(rb.offloaded_json(f"Full output saved to: {saved}\n"),
+                         {"sources": [], "retrieval": "semantic"})
+
+    def test_an_unreadable_file_is_not_read_twice(self):
+        # The path is a directory: the read raises OSError, and the note comes
+        # back as it was instead of a second read raising out of the handler.
+        stub = f"<persisted-output>\nFull output saved to: {self.tmp}\n"
+        self.assertEqual(rb.result_text(self.block(stub)), stub)
+
     def test_an_ordinary_result_is_unchanged(self):
         self.assertEqual(rb.result_text(self.block("{\"sources\": []}")), "{\"sources\": []}")
 
