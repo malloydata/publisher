@@ -122,13 +122,12 @@ def golden_display(g: dict[str, Any]) -> str:
 _IDENT = re.compile(r"(?<![A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_])")
 
 
-def _result_text(block: dict[str, Any]) -> str:
-    c = block.get("content")
-    if isinstance(c, str):
-        return c
-    if isinstance(c, list):
-        return "\n".join(x.get("text", "") for x in c if isinstance(x, dict))
-    return ""
+# The run viewer used to keep its own copy of the raw reader, so a get_context
+# result the CLI had spilled to a file showed the "<persisted-output>" note as
+# its detail and no result count. run_baseline.result_text reads the file back
+# when it is still there; when it is gone the note stays, and the summary the
+# ledger recorded (none, for an unmeasured call) is what the viewer shows.
+from run_baseline import result_text as _result_text  # noqa: E402  (same directory)
 
 
 def _payload(text: str) -> Any:
