@@ -77,6 +77,16 @@ class FinalQuery(unittest.TestCase):
             rb.pick_final_query(["run: a -> answer"] * 2, calls, text)[2],
             "answer.malloy")
 
+    def test_a_semicolon_inside_a_literal_is_not_a_separator(self):
+        # Two queries that both ran, one filtering on 'Books;Media' and one on
+        # 'Books Media', must stay two queries, or the declared block resolves
+        # to whichever ran later.
+        a = "run: t -> { where: cat = 'Books;Media'; aggregate: n }"
+        b = "run: t -> { where: cat = 'Books Media'; aggregate: n }"
+        self.assertNotEqual(rb._norm(a), rb._norm(b))
+        self.assertEqual(rb._norm("run: t -> { where: x = 1; aggregate: n }"),
+                         rb._norm("run: t -> {\n  where: x = 1\n  aggregate: n\n}"))
+
     def test_a_declared_query_matches_however_it_was_laid_out(self):
         # The executed query is one line with semicolons; the answer prints the
         # same query on several lines. Before, they never compared equal and

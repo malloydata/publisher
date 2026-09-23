@@ -1268,8 +1268,26 @@ def _norm(q: str) -> str:
     never compared equal and `declared` never fired -- the harness fell through
     to `last_ok` and re-executed a probe. On one acceptance arm that read a
     model edit as a regression: the answer led with the filtered figure and
-    the harness graded the unfiltered probe it ran afterwards."""
-    return " ".join((q or "").replace(";", " ").split())
+    the harness graded the unfiltered probe it ran afterwards.
+
+    Only a `;` outside a string literal is a clause separator. Replacing every
+    one made `'Books;Media'` and `'Books Media'` the same query, and the
+    declared block could then resolve to the wrong one of two that ran."""
+    out: list[str] = []
+    quote: str | None = None
+    for ch in (q or ""):
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+        elif ch == ";":
+            out.append(" ")
+        else:
+            out.append(ch)
+    return " ".join("".join(out).split())
 
 
 def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
