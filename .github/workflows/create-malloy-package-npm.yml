@@ -445,6 +445,17 @@ jobs:
           # confusing "npm was briefly unavailable" with "the server dropped
           # --host". --max-time is on npx's side via npm's own timeouts; the retry
           # bounds the total.
+          #
+          # Run from an empty directory, not the checkout. In the checkout, npx
+          # resolves the package from the workspace's own node_modules whenever
+          # the pin equals the version packages/server/package.json declares,
+          # and that copy has no dist/, so --help dies with "malloy-publisher:
+          # not found". The two match on any dispatch after a release's stamp
+          # PR has merged, and inside a release when this reads `latest` before
+          # the new server is visible on npm, which is how the 0.7.0 release
+          # failed. Assigned first, then cd, for the reason the smoke step gives.
+          NPX_DIR="$(mktemp -d)"
+          cd "$NPX_DIR"
           USAGE=""
           npx_ok=0
           for attempt in 1 2 3; do

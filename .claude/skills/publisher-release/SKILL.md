@@ -289,6 +289,13 @@ publish, so the substituted value would be a release behind and every generated
 workspace would pin the previous server. **If that `needs:` is ever narrowed back
 to `prepare` alone, this breaks silently rather than loudly.**
 
+The `needs:` is not enough on its own, because npm can take minutes to show a
+version after it publishes. In 0.7.0 `latest` read 0.7.0 seven minutes after
+`publish-npm` finished. So `publish-packages.sh` also waits, up to 15 minutes, for
+the server's `latest` to read the new version before dispatching the scaffolder.
+If it gives up, the scaffolder was not dispatched: dispatch
+`create-malloy-package-npm.yml` on main once `latest` reads the new version.
+
 ### 3. Sanity-check the notes
 
 `gh-release` reads `RELEASE_NOTES.md` itself: it appends every `## [Unreleased]`
