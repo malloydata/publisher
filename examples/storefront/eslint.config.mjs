@@ -48,6 +48,7 @@ export default [
          "**/public/vendor/**",
          "**/examples/storefront/tests/**",
          "**/examples/storefront/evals/*/runs/**",
+         "**/examples/storefront/evals/**/run-package-*/**",
       ],
    },
    {

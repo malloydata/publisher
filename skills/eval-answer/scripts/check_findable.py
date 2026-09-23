@@ -375,17 +375,41 @@ def main(argv: list[str] | None = None) -> int:
     # the key. Three ids were reported missing that way on one set and all
     # three passed on a re-run. So wait for it, and say so when it cannot.
     if a.publisher and a.index_wait:
+        # The server's enum is indexing | ready | cooldown | too-many-entities.
+        # `cooldown` (the embedding provider failed recently) and
+        # `too-many-entities` (over the cap, permanently lexical) will never
+        # become `ready`, so waiting on them burns the whole timeout for a
+        # result that is knowable on the first read.
+        TERMINAL = ("ready", "cooldown", "too-many-entities")
+        # `indexing` does NOT clear on its own: the docs say it clears "once a
+        # get_context question triggers a sync, which is what builds the
+        # index". Polling the package resource never triggers one, so a wait
+        # that only polls is a guaranteed stall on a freshly loaded package.
+        # One ranking call first, as serve.py --warm-retrieval does.
+        try:
+            get_context(a.mcp_url, [{"target_type": "source"}],
+                        a.environment, a.package)
+        except (urllib.error.URLError, RuntimeError, OSError):
+            pass                      # the search below reports it properly
         deadline = time.monotonic() + a.index_wait
-        status = None
-        while time.monotonic() < deadline:
+        status = embedding_index_status(a.publisher, a.environment, a.package)
+        while status not in TERMINAL and status is not None \
+                and time.monotonic() < deadline:
+            time.sleep(2)
             status = embedding_index_status(a.publisher, a.environment,
                                             a.package)
-            if status in ("ready", "disabled", "unavailable", None):
-                break
-            time.sleep(2)
         if status is None:
             print("! the embedding index status could not be read; a miss "
                   "below may be the lexical matcher rather than the key",
+                  file=sys.stderr)
+        elif status == "too-many-entities":
+            print("! this package is over the embedding cap, so retrieval is "
+                  "permanently lexical here. The misses below are real for "
+                  "this server and say nothing about a semantic one",
+                  file=sys.stderr)
+        elif status == "cooldown":
+            print("! the embedding provider is in cooldown, so retrieval is "
+                  "lexical for now. Re-run rather than acting on a miss below",
                   file=sys.stderr)
         elif status != "ready":
             print(f"! the embedding index is {status!r} after "

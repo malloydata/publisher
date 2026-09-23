@@ -215,6 +215,10 @@ If the agent could not reasonably have known to ask, that is a model gap.
 |---|---|---|
 | `COVERAGE` | no representing entity anywhere | model |
 | `NOT-RETURNED` | it exists, the ask was on target, it never came back | model: labels, docs, synonyms, index |
+| `LOW-RANK` | returned, buried under noise the agent reasonably skipped | model |
+| `AMBIGUOUS` | several near-identical candidates | model: "use X for …, Y when …" |
+| `GUIDANCE-NOT-RETRIEVED` | entities came back, governing guidance did not | model: put guidance on the entities agents search for |
+| `GUIDANCE-DECLINED` | guidance was retrieved and judged inapplicable | model: state the business default, not a caveat |
 
 **Before diagnosing a `NOT-RETURNED`, check the call actually returned
 nothing.** The `tool_call` event carries `retrieval_mode` and `rankedSummary`.
@@ -230,10 +234,6 @@ yet" on a run whose index was ready before the first question and whose
 response did hold results; the empty list was a parsing bug in the harness. An
 unverifiable cause that sounds right is worse than `needs_human`, because it
 closes the finding.
-| `LOW-RANK` | returned, buried under noise the agent reasonably skipped | model |
-| `AMBIGUOUS` | several near-identical candidates | model: "use X for …, Y when …" |
-| `GUIDANCE-NOT-RETRIEVED` | entities came back, governing guidance did not | model: put guidance on the entities agents search for |
-| `GUIDANCE-DECLINED` | guidance was retrieved and judged inapplicable | model: state the business default, not a caveat |
 
 A missing join is coverage, not an agent-call miss. The model has to volunteer
 relationships. A declared join is not a retrieval entity; do not look for it in

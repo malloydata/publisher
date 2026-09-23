@@ -1,10 +1,12 @@
 # storefront-tour — the questions
 
-Ten natural-language questions over the bundled `storefront` package, authored
+Twelve natural-language questions over the bundled `storefront` package, authored
 by hand for the eval-loop walkthrough. Chosen to vary grain, join depth, filter
 shape and answerability, and deliberately NOT all answerable from the model as
-it stands: three of them ask for a concept `storefront.malloy` does not define,
-which is what gives the run something to diagnose.
+it stands: two ask for a business convention `storefront.malloy` does not
+encode, which is what gives the run something to diagnose. A third, net of
+cancellations, is reachable through the `status` dimension and tests whether
+the agent builds the filter rather than trusting a named measure.
 
 Question text below is the source of truth. `cases.jsonl` copies it byte for
 byte and seals it with `questionSha`.

@@ -1199,52 +1199,62 @@ class RunSummary(unittest.TestCase):
     def test_no_report_keeps_the_pointer(self):
         self.assertIn("not measured here", "\n".join(self.lines()))
 
+    def rows(self, spec):
+        """Cascade input built the way the harness builds it.
+
+        The fixtures here were hand-written dicts, and a hand-written cascade
+        can describe a state `cascade()` cannot produce -- which is how a
+        display bug survived its own test. Build the rows, let `cascade()`
+        count them.
+        """
+        out = []
+        for coverage, recall, failed, n in spec:
+            out += [{"coverage": coverage, "recall": recall, "failed": failed,
+                     "verdict": "no_match" if failed else "match"}] * n
+        return rb.cascade(out)
+
     def test_the_cascade_reads_as_a_funnel_with_owners(self):
-        lines = self.lines(cascade={
-            "total": 49, "not covered": 6, "unmeasured": 2,
-            "no entities named": 0, "not retrieved": 5,
-            "delivered, wrong": 6, "delivered, right": 30, "not scored": 0})
+        lines = self.lines(cascade=self.rows([
+            ("absent", None, True, 6),       # a known coverage gap
+            ("unknown", 1.0, True, 2),       # coverage never measured
+            ("covered", 0.5, True, 5),       # retrieved short
+            ("covered", 1.0, True, 6),       # delivered, wrong
+            ("covered", 1.0, False, 30),     # delivered, right
+        ]))
         text = "\n".join(lines)
         self.assertIn("cascade       49 cases", text)
         self.assertIn("covered?      41 yes, 6 no (model gap), 2 unmeasured", text)
-        # The rung must not assert the docs: a miss is the docs OR the search
-        # wording, and only diagnose separates them. This assertion is here
-        # because the label was renamed in score_retrieval and the display line
-        # in this file was missed, so the two disagreed in a shipped commit.
-        # 43 cases retrieval could be judged on (49 less the 6 known coverage
-        # gaps), less 5 misses. The 2 coverage-UNMEASURED cases count here:
-        # retrieval was measured on them even though coverage was not.
+        # 43 rows carried a recall (49 less the 6 coverage gaps), 5 fell short.
+        # The rung counts what recall MEASURED, not what the funnel let through.
         self.assertIn("retrieved?    38 yes, 5 no (the entity exists and did "
                       "not come back", text)
         self.assertNotIn("(documentation", text)
-        # And a delivered-but-wrong answer names no owner until diagnose runs.
         self.assertIn("correct?      30 yes, 6 no (delivered, wrong", text)
         self.assertIn("diagnose decides", text)
-        # It heads the COVERAGE & RETRIEVAL layer, above the retrieval-mode line.
         self.assertLess(self.index_of(lines, "cascade"),
                         self.index_of(lines, "  retrieval "))
+
 
     def test_unmeasured_coverage_does_not_zero_the_retrieval_rung(self):
         """check_coverage is a separate spend, so most runs have none.
 
-        When it has not run, every case is `unmeasured` and `covered` is 0.
-        Subtracting the misses from THAT printed `retrieved? 0 yes, 0 no` on a
-        run whose entity recall was measured on every case -- three zeroed
-        rungs reading as "nothing was measured" when only the first rung was
-        missing. Reported from a real run of the storefront tour set, which
-        showed 95.5% recall beside a cascade claiming it had retrieved nothing.
+        `cascade()` is an elif chain: a row whose coverage was never measured
+        stops at the first rung and never reaches the recall check, so
+        `not retrieved` is structurally 0. A display that subtracted it from a
+        denominator therefore reported EVERY retrieval as a success -- 12
+        cases, three at recall 0.5, printing "retrieved? 12 yes, 0 no". The
+        rung reads a tally kept outside the chain.
         """
-        # The storefront tour set's own shape: 11 cases carry expected
-        # entities and none has measured coverage, 1 names none at all.
-        text = "\n".join(self.lines(cascade={
-            "total": 12, "not covered": 0, "unmeasured": 11,
-            "no entities named": 1, "not retrieved": 1,
-            "delivered, wrong": 2, "delivered, right": 8, "not scored": 0}))
-        self.assertIn("covered?      0 yes, 0 no (model gap), 11 unmeasured",
-                      text)
-        # 11 judgeable (12 less the one naming no entities), less the 1 miss.
+        text = "\n".join(self.lines(cascade=self.rows([
+            ("unknown", 1.0, False, 10),
+            ("unknown", 0.5, False, 1),
+            ("unknown", None, False, 1),
+        ])))
+        self.assertIn("covered?      0 yes, 0 no (model gap), 12 unmeasured", text)
         self.assertIn("retrieved?    10 yes, 1 no", text)
+        self.assertNotIn("retrieved?    12 yes", text)
         self.assertNotIn("retrieved?    0 yes", text)
+
 
     def test_no_cascade_prints_nothing(self):
         self.assertNotIn("cascade", "\n".join(self.lines()))
@@ -1551,10 +1561,6 @@ class GoldenCheckScope(unittest.TestCase):
         self.assertIn("qids", src)
         self.assertIn('c["qid"] in qids', src)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
 class CoverageByDefault(unittest.TestCase):
     """Coverage is measured unless asked not to.
 
@@ -1569,7 +1575,8 @@ class CoverageByDefault(unittest.TestCase):
             coverage=None, no_coverage=False, rebuild=False,
             out=pathlib.Path("/tmp/does-not-matter"),
             set_dir=pathlib.Path("evals/e"), publisher="http://p",
-            environment="env", package="pkg", timeout=60)
+            environment="env", package="pkg", timeout=60,
+            parallel=4, only=None, rejudge=False)
         for k, v in kw.items():
             setattr(a, k, v)
         return a
@@ -1587,6 +1594,18 @@ class CoverageByDefault(unittest.TestCase):
         # Through REST, so it needs no local checkout and stays valid for every
         # arm against this model version.
         self.assertNotIn("--model", cmd)
+        self.assertIn("--parallel", cmd)
+
+    def test_only_narrows_coverage_as_it_narrows_the_arm(self):
+        """A one-case re-run paid a claude -p call for every case in the set."""
+        a = self.ns(only="q1,q2")
+        with mock.patch.object(rb, "subprocess") as sp, \
+             mock.patch.object(pathlib.Path, "exists", return_value=True):
+            sp.run.return_value = argparse.Namespace(returncode=0)
+            rb.measure_coverage(a)
+        cmd = sp.run.call_args[0][0]
+        self.assertIn("--only", cmd)
+        self.assertIn("q1,q2", cmd)
 
     def test_a_failure_does_not_kill_the_arm(self):
         """Losing one rung must not cost the answerers."""
@@ -1622,3 +1641,6 @@ class OffloadedToolResult(unittest.TestCase):
 
     def test_an_ordinary_result_is_not_mistaken_for_an_offload(self):
         self.assertIsNone(rb.offloaded_json('{"sources": []}'))
+
+if __name__ == "__main__":
+    unittest.main()

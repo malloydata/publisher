@@ -964,7 +964,12 @@ def measure_coverage(a: argparse.Namespace) -> str | None:
               / "eval-answer" / "scripts" / "check_coverage.py")
     cmd = [sys.executable, str(script), "--set", str(a.set_dir),
            "--publisher", a.publisher, "--environment", a.environment,
-           "--package", a.package, "--out", str(out)]
+           "--package", a.package, "--out", str(out),
+           "--parallel", str(a.parallel)]
+    # `--only` narrows the arm, so it must narrow this too: without it a
+    # one-case re-run paid a claude -p call for every case in the set.
+    if a.only:
+        cmd += ["--only", a.only]
     print("measuring coverage: can the model express each answer at all "
           "(reads the model; no answerer, no judge, no warehouse)", flush=True)
     try:
@@ -1293,18 +1298,15 @@ def cascade_lines(c: dict | None) -> list[str]:
         return []
     covered = (c["total"] - c["not covered"] - c["unmeasured"]
                - c["no entities named"])
-    # Retrieval does NOT inherit coverage's denominator. Coverage is optional
-    # (`check_coverage.py` is a separate spend), so when it has not run every
-    # case is `unmeasured`, `covered` is 0 -- and subtracting from that used to
-    # print `retrieved? 0 yes, 0 no` on a run whose entity recall was measured
-    # on every case. Three zeroed rungs read as "nothing was measured" when only
-    # the first rung was missing, which is the one thing this block exists to
-    # say clearly. So the retrieval rung counts every case retrieval could be
-    # judged on: coverage-unmeasured cases included, cases with no expected
-    # entities and known coverage gaps excluded. When coverage HAS run,
-    # `unmeasured` is 0 and this is the funnel it always was.
-    retrieval_base = c["total"] - c["not covered"] - c["no entities named"]
-    retrieved = retrieval_base - c["not retrieved"]
+    # Retrieval does NOT inherit coverage's denominator, and it must not be
+    # derived from the funnel either. `cascade()` is an elif chain: a row whose
+    # coverage was never measured stops at the first rung, so `not retrieved` is
+    # structurally 0 whenever coverage did not run, and computing the rung from
+    # it reports every retrieval as a success. `recall_scored` / `recall_short`
+    # are tallied outside the chain, over the rows whose recall was actually
+    # computed, which is what this rung is supposed to say.
+    retrieved = c.get("recall_scored", 0) - c.get("recall_short", 0)
+    not_retrieved = c.get("recall_short", 0)
     # A pass that stops on an earlier rung is reported there. Otherwise the
     # last rung reads as the pass count and disagrees with the headline.
     anyway = lambda n: f"; {n} answered correctly anyway" if n else ""
@@ -1324,7 +1326,7 @@ def cascade_lines(c: dict | None) -> list[str]:
     lines = [f"  cascade       {c['total']} cases",
              f"    covered?      {covered} yes, {c['not covered']} no (model "
              f"gap{anyway(c.get('passed_not_covered', 0))})" + covered_tail,
-             f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
+             f"    retrieved?    {retrieved} yes, {not_retrieved} no "
              f"(the entity exists and did not come back: the docs, or the "
              f"search wording; diagnose decides"
              f"{anyway(c.get('passed_not_retrieved', 0))})",
@@ -3137,7 +3139,11 @@ def main(argv: list[str] | None = None) -> int:
             f"--coverage {a.coverage} does not exist. It should be a "
             f"check_coverage.py --out report for the model version this run "
             f"answers from.")
-    if not a.coverage and not a.no_coverage and not a.rebuild:
+    # `--rejudge` re-scores saved answers and calls no answerer, so it must
+    # not re-measure coverage either; it does not set `rebuild` (only
+    # `--from` does), so it needs naming here.
+    if not a.coverage and not a.no_coverage and not a.rebuild \
+            and not getattr(a, 'rejudge', False):
         a.coverage = measure_coverage(a)
     coverage_report = coverage_report_summary(a.coverage) if a.coverage else None
 

@@ -518,6 +518,49 @@ def promotion_blocker(case: dict[str, Any], set_dir: pathlib.Path) -> str | None
     return None
 
 
+# A figure is a number a reader would check: 8,817.56, 943, 25%. Years and
+# small ordinals are not -- "top 3", "2025" -- so they do not raise a finding.
+FIGURE = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d{3,})")
+
+
+def criteria_figure_findings(case: dict[str, Any]) -> list[str]:
+    """Numbers quoted inside a `criteria` golden, which nothing can verify.
+
+    A criteria golden is exempt from both numeric checks and legitimately so:
+    it holds no value to re-derive, and the rubric-figure check compares
+    figures against the golden's ROWS, which it does not have. The clauses are
+    prose and prose cannot drift.
+
+    Its prose can still assert numbers, and then the exemption is a hole rather
+    than a simplification. This set shipped one: a criteria golden's note said
+    "by order count it is Amelia Cohen (80 orders)". Both halves were wrong --
+    at the grain the same rubric requires, the top by order count is the same
+    customer who tops spend, and 80 is three customers sharing a name, summed
+    by exactly the grouping the neighbouring case exists to forbid. Every check
+    passed it, because every check skips this kind of golden.
+
+    Reported as review, not failure: quoting a figure is often right, and the
+    point is that a human has to be the one who checked it.
+    """
+    g = case.get("golden") or {}
+    if g.get("kind") != "criteria":
+        return []
+    out = []
+    for field, text in (("rubric", g.get("rubric")),
+                        ("verification.note", (g.get("verification") or {}).get("note"))):
+        if not isinstance(text, str):
+            continue
+        figs = sorted(set(FIGURE.findall(text)))
+        if figs:
+            out.append(f"review {case['qid']}: the criteria golden's {field} quotes "
+                       f"{', '.join(figs[:6])}"
+                       f"{' and more' if len(figs) > 6 else ''}, and NOTHING in this "
+                       f"toolchain can check a figure in a criteria golden -- it has no "
+                       f"rows for the rubric-figure check and no value to re-derive. "
+                       f"Query each one at the grain this rubric requires, or drop it")
+    return out
+
+
 def axis_findings(case: dict[str, Any], set_dir: pathlib.Path) -> list[str]:
     g = case.get("golden") or {}
     if g.get("kind") == "unanswerable":
@@ -1021,6 +1064,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     for c in chosen:
         findings += rubric_number_findings(c)
         findings += axis_findings(c, set_dir)
+        findings += criteria_figure_findings(c)
     findings += rubric_alternative_findings(chosen)
     findings += stale_rubric_claims(chosen, model_definitions(model))
     findings += unknown_name_findings(chosen, model_text(model))
