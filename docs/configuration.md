@@ -263,22 +263,24 @@ What to know before turning it on:
 - Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
   carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` /
   `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows`, `totalEntities`,
-  `embeddedEntities`, and `lastSyncedAt`. Poll it until `ready` before measuring retrieval quality,
-  so you are not measuring a half-built index. `ready` means the index is warm, so the next
-  question about the package is ranked semantically: it is decided by the same completed sync the
-  search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports `indexing` until it
-  has re-embedded, and a restart reports `indexing` until the first question re-establishes the
+  `embeddedEntities`, and `lastSyncedAt`. Before measuring retrieval quality, send the package one
+  `get_context` question, then poll until `ready`, so you are not measuring a half-built index. Do
+  it in that order, and after every restart, not only for a new package. Only a question starts
+  the sync, and a restart forgets which syncs completed, so every package reads `indexing` after a
+  restart. A script that polls before asking anything waits forever. `ready` means the index is
+  warm, so the next question about the package is ranked semantically: it is decided by the same
+  completed sync the search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports
+  `indexing` until it has re-embedded, and a restart reports `indexing` until the first question re-establishes the
   sync, even though the vectors are still on disk. It describes the index, not the next response —
   a question whose own query embedding fails still falls back, with `retrieval_reason:
   provider-error`. Do not read readiness off `embeddedEntities == totalEntities`: those count
   coverage by entity name, so they can be equal while a doc edit is still unembedded. Nor off
   `embeddedRows`, which counts every cached vector under the current model regardless of its
   length, so a change to `EMBEDDING_DIMENSIONS` that no question has probed yet still counts the
-  old rows. Two things worth knowing: the sync runs on a `get_context` question, so a
-  package nothing has queried stays at `indexing` rather than warming on its own; and the first
-  read after a package loads or reloads builds that package's entity index, which is work a plain
-  metadata read would not otherwise do. It is absent when no provider is configured, and reading it
-  takes no locks, so polling cannot slow an indexing run.
+  old rows. The first read after a package loads or reloads builds that package's entity index
+  and its content fingerprint, which is work a plain metadata read would not otherwise do. After
+  that, a read is two row counts and never waits on a sync, so polling it in a loop is cheap. It is
+  absent when no provider is configured.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
   to lexical (with a warning in the server log) and retries after a cool-down. A package with more
   than 5,000 entities stays lexical.
