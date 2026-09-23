@@ -477,6 +477,61 @@ describe("trySemanticSearch", () => {
       expect(counts.get("beta")).toBe(1);
    });
 
+   it("re-syncs a doc edit that keeps the facet count, and ranks the new text", async () => {
+      // The test above adds a facet, so it would pass on a fingerprint of row
+      // keys alone. This one keeps every key and changes only the text, which
+      // only the content hash in the fingerprint can see. Without it the
+      // package keeps serving the first draft's vector.
+      //
+      // Frozen arrays, as get_context passes, so this also runs through the
+      // fingerprint cache: each draft is its own array and must miss.
+      const { provider, counts } = mapProvider({
+         ...ENTITY_VECTORS,
+         "alpha: first draft": [0, 1, 0],
+         "alpha: second draft": [0, 0, 1],
+         "find the second draft": [0, 0, 1],
+      });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "reload-doc-edit",
+         queries: [
+            {
+               targetIndex: 0,
+               text: "find the second draft",
+               kinds: ["measure"],
+            },
+         ],
+         limit: 10,
+      };
+
+      await searchReady({
+         ...base,
+         pkg: instance(),
+         entities: Object.freeze([
+            entity("alpha", "src", "first draft"),
+            entity("beta", "src"),
+         ]),
+      });
+      expect(counts.get("alpha: first draft")).toBe(1);
+
+      const edited = await searchReady({
+         ...base,
+         pkg: instance(),
+         entities: Object.freeze([
+            entity("alpha", "src", "second draft"),
+            entity("beta", "src"),
+         ]),
+      });
+      expect(counts.get("alpha: second draft")).toBe(1);
+      if (!("hits" in edited)) throw new Error("expected hits");
+      // Only the second draft's vector points at the query. The first
+      // draft's is orthogonal to it, so a hit here is the new text ranking.
+      expect(edited.hits.map((h) => h.name)).toEqual(["alpha"]);
+      expect(edited.hits[0].score).toBeCloseTo(1.0, 3);
+   });
+
    it("embeds a source resolvable at two paths once, and counts it once", async () => {
       const { provider, counts } = mapProvider({
          ...ENTITY_VECTORS,
