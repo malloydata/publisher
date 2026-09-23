@@ -28,13 +28,13 @@ The verdicts are `eval-diagnose`'s cause codes, verbatim and validated against
 its own table at startup, so a renamed code fails loudly here instead of
 quietly meaning nothing:
 
-  ok            a correct answer is expressible
-  COVERAGE      no representing entity anywhere
-  AMBIGUOUS     several near-identical candidates
-  NO-DISAMBIG   two plausible candidates, never resolved
-  CONVENTION    right data, wrong statistical or business convention: the
-                underlying numbers are present, no named measure expresses the
-                convention the question needs
+  MODELLED        one entity expresses the concept, unambiguously
+  MISSING         no query over this model could produce it
+  AMBIGUOUS       several candidates and no doc says which
+  RULE_UNWRITTEN  the data is there, the rule for combining it is not.
+                  (guessable) when the data forces the rule, (arbitrary) when
+                  it is a business decision nobody could derive
+  UNDERSPECIFIED  the QUESTION is unclear, not the model
 
 Exit 0 when the measurement ran, whatever it found. A low score is the result,
 not a failure. Exit 1 if it could not run.
@@ -86,9 +86,9 @@ JUDGE_BLOCKED = BLOCKED_TOOLS + ("Read", "Glob", "Grep", "Skill")
 
 # Parsed from the table rather than typed here, the same way diagnose.py does
 # it, so this cannot drift from the vocabulary it claims to reuse.
-CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z-]+)`\s*\|", re.M)
-FAIL_VERDICTS = ("COVERAGE", "AMBIGUOUS", "NO-DISAMBIG", "CONVENTION")
-OK = "ok"
+CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z_-]+)`\s*\|", re.M)
+FAIL_VERDICTS = ("MISSING", "AMBIGUOUS", "RULE_UNWRITTEN", "UNDERSPECIFIED")
+OK = "MODELLED"
 
 # A prompt cap, not a limit anyone should hit. The model text goes in argv, and
 # an over-long argv fails as an opaque OSError from the exec rather than as
@@ -188,35 +188,53 @@ A Malloy source exposes every column of its table whether or not the text
 declares it, so this list is the authority on what EXISTS and the text above is
 the authority on what is DOCUMENTED. A field here but not in the text is real
 and queryable -- it is undocumented, not absent, and undocumented is not
-COVERAGE. When this list is unavailable, say so in your reasoning and do not
+`MISSING`. When this list is unavailable, say so in your reasoning and do not
 treat the text as the whole surface.
 
 THE QUESTION: {question}
 
 WHAT THE BUSINESS MEANS BY IT: {conventions}
 
-These are the definitions the question is asked under, and they are not
-negotiable readings you may substitute a reasonable one for. If a convention
-here names a window, a basis or a filter that no entity in the model expresses,
-the model cannot answer this question however well its parts are documented --
-that is `CONVENTION` when the underlying data is present and `COVERAGE` when it
-is not. Judging against your own reading of an ambiguous word, when the
-business has already defined it, is how this check passes a question the model
+These are definitions of TERMS, not defaults for every question. Apply one only
+when THIS question uses the term it defines, or asks for a quantity that cannot
+be computed without it. A definition of "net" governs a question that says net;
+it does not make every revenue question a net question. A definition of
+"customer" governs a question that counts customers; it does not govern a
+question about categories that happens to involve people. Check, for each
+convention, whether this question actually invokes it, and ignore the ones it
+does not -- applying them all to everything turns every question into a gap and
+the measurement stops discriminating.
+
+Where the question DOES invoke one, it is not a reading you may substitute a
+more reasonable one for. If the convention names a window, a basis or a filter
+that no entity in the model expresses, the model cannot answer the question
+however well its parts are documented: `RULE_UNWRITTEN` when the underlying data
+is present, `MISSING` when it is not. Judging by your own reading of a word the
+business has already defined is how this check passes a question the model
 demonstrably cannot answer.
 
 CONCEPTS THE QUESTION NEEDS: {concepts}
 
 Decide ONE verdict:
 
-- `ok` -- a correct answer is expressible. Name the entities that express it.
-- `COVERAGE` -- no entity represents a needed concept anywhere in the model.
-- `AMBIGUOUS` -- several near-identical candidates, so which one is meant is a
-  coin toss.
-- `NO-DISAMBIG` -- two plausible candidates and nothing in the docs resolves
-  which the question means. The docs should answer that, not the reader.
-- `CONVENTION` -- the underlying data is present, but no named measure
-  expresses the statistical or business convention the question needs, so
-  anyone answering has to pick one and the model does not say which.
+- `MODELLED` -- one entity expresses it, unambiguously. Name that entity.
+- `MISSING` -- no query over this model could produce the concept. Not merely
+  that no measure is named for it: if the parts are present and only the
+  formula is absent, that is `RULE_UNWRITTEN`.
+- `AMBIGUOUS` -- several candidates and nothing says which this question means.
+  Judge the entities AND their docs: a `#(doc)` that resolves the choice makes
+  it `MODELLED`.
+- `RULE_UNWRITTEN` -- the data is present and the model does not encode the
+  rule for combining or filtering it, so whoever answers invents one. Say which
+  kind in `rule_kind`: `guessable` when the data forces the rule (list price
+  minus sale price is a discount, and any careful reader gets it), `arbitrary`
+  when it is a business decision nobody could derive (a season window, whether
+  revenue is net of tax). If a stated convention above names the rule and the
+  model does not encode it, that is `arbitrary` -- you know the rule only
+  because you were told.
+- `UNDERSPECIFIED` -- the QUESTION does not say what it means, so no model
+  could answer it as written. "Adjusted sales" with no statement of the
+  adjustment. Do not score this against the model.
 
 Work in this order. The enumeration is the job; skipping it is how this
 judgement goes wrong.
@@ -242,16 +260,14 @@ obvious the answer feels.
 
 Then the verdict follows mechanically:
 
-- Every quantity has exactly one candidate, or the model states which: `ok`.
-- Some quantity has no candidate at all: `COVERAGE`.
-- A quantity has several near-identical candidates: `AMBIGUOUS`.
-- A quantity has two plausible candidates and nothing resolves which:
-  `NO-DISAMBIG`.
+- Every quantity has exactly one candidate, or the model states which: `MODELLED`.
+- Some quantity cannot be produced by any query over this model: `MISSING`.
+- A quantity has several candidates and nothing resolves which: `AMBIGUOUS`.
 - The parts exist but the model names no measure for the combination the
   question asks for, so whoever answers must assemble it and choose a
-  convention: `CONVENTION`.
+  convention: `RULE_UNWRITTEN`.
 
-Three rules about that, because each is a way to reach `ok` wrongly:
+Three rules about that, because each is a way to reach `MODELLED` wrongly:
 
 1. **A question's words resembling a field's label is not the model resolving
    anything.** A question saying "total universe" and a measure labelled
@@ -259,8 +275,8 @@ Three rules about that, because each is a way to reach `ok` wrongly:
    also defensible and would give a materially different number, the model has
    not resolved it and you must not resolve it yourself.
 2. **Finding the numerator is not coverage.** If the numerator is named and the
-   denominator must be assembled or chosen, that is `CONVENTION` or
-   `NO-DISAMBIG`, never `ok`. Matching field names against the question is the
+   denominator must be assembled or chosen, that is `RULE_UNWRITTEN` or
+   `AMBIGUOUS`, never `MODELLED`. Matching field names against the question is the
    failure mode this measurement exists to remove.
 3. **A caveat is not a resolution.** A doc warning that a measure is easy to
    misuse still leaves the question open unless it says which reading this
@@ -272,12 +288,13 @@ Return ONLY a JSON object, no prose around it, keys in this order:
   "ruled_out": {{"<quantity>": "<the doc sentence eliminating the others, or null>"}},
   "resolved_by": "what in the model says which candidate, or null",
   "why": "one or two sentences naming the specific entity or the specific gap",
-  "verdict": "ok|COVERAGE|AMBIGUOUS|NO-DISAMBIG|CONVENTION",
+  "verdict": "MODELLED|MISSING|AMBIGUOUS|RULE_UNWRITTEN|UNDERSPECIFIED",
+  "rule_kind": "guessable|arbitrary, only when verdict is RULE_UNWRITTEN, else null",
   "entities": ["entity names that express it, or [] when it is not expressible"]}}
 
 The enumeration comes first because the verdict follows from it. Before you emit
 `verdict`, re-read `quantities` and `ruled_out`: if any quantity holds more than
-one candidate and its `ruled_out` entry is null, the verdict is not `ok`.
+one candidate and its `ruled_out` entry is null, the verdict is not `MODELLED`.
 """
 
 
@@ -316,7 +333,7 @@ def parse_reply(text: str, allowed: tuple[str, ...]) -> dict[str, Any]:
         unresolved = [q for q, c in quantities.items()
                       if isinstance(c, list) and len(c) > 1]
         if unresolved:
-            return {"verdict": "NO-DISAMBIG",
+            return {"verdict": "AMBIGUOUS",
                     "why": f"[several candidates for {', '.join(unresolved)} "
                            f"and nothing in the model resolves them] {why}",
                     "entities": ents, "quantities": quantities,
@@ -325,10 +342,18 @@ def parse_reply(text: str, allowed: tuple[str, ...]) -> dict[str, Any]:
     # whole value of this metric is that a pass can be checked against the model.
     if got == OK and not ents:
         return {"verdict": None,
-                "why": "ok without naming an entity that expresses the answer",
+                "why": "MODELLED without naming an entity that expresses it",
                 "entities": [], "quantities": quantities,
                 "resolved_by": resolved_by}
-    return {"verdict": got, "why": why, "entities": ents,
+    # `arbitrary` is the consequential half and the one a judge under-reports,
+    # so an unqualified RULE_UNWRITTEN is recorded as unknown rather than
+    # silently counted as the harmless kind.
+    kind = v.get("rule_kind")
+    if got != "RULE_UNWRITTEN":
+        kind = None
+    elif kind not in ("guessable", "arbitrary"):
+        kind = "unstated"
+    return {"verdict": got, "why": why, "entities": ents, "rule_kind": kind,
             "quantities": quantities, "resolved_by": resolved_by}
 
 
@@ -339,9 +364,9 @@ def majority(rows: list[dict[str, Any]]) -> dict[str, Any]:
     is a property of the case rather than noise to average away. One sample
     cannot tell a stable judgement from a marginal one, so a repeated run
     records both the verdict and what the samples actually were. (The fixture
-    below is not such a case: measured 2026-09-08 it read CONVENTION three times
+    below is not such a case: measured 2026-09-08 it read RULE_UNWRITTEN three times
     out of three. An EARLIER fixture, replaced when a customer model excerpt was
-    scrubbed from this file, read CONVENTION twice and `ok` once, which is where
+    scrubbed from this file, read RULE_UNWRITTEN twice and `MODELLED` once, which is where
     the tie rule came from.)
     """
     counts: dict[str, int] = {}
@@ -599,9 +624,9 @@ FIXTURE_CASE = {
     "question": "What was our first contact resolution rate last quarter?",
     "requiresConcepts": ["first contact resolution", "ticket population"],
 }
-FIXTURE_EXPECTED = ("CONVENTION", "NO-DISAMBIG")
+FIXTURE_EXPECTED = ("RULE_UNWRITTEN", "AMBIGUOUS")
 # Measured against THIS fixture on 2026-09-08, agent model sonnet, --repeat 3:
-#   fixture_first_contact_resolution_rate: CONVENTION
+#   fixture_first_contact_resolution_rate: RULE_UNWRITTEN
 #     (samples: CONVENTION, CONVENTION, CONVENTION)
 # Re-measure when the fixture, the prompt or the verdict vocabulary changes.
 # The tests below pin the fixture's SHAPE and cannot pin its verdict: the judge

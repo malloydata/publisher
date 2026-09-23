@@ -203,7 +203,7 @@ Prior `score` events are not rewritten. They keep the old `golden_revision`.
 | `NEVER-ASKED` | no utterance targeted a needed concept | agent-skill, and model if nothing would have prompted the ask |
 | `VAGUE` | compound or generic utterances, so nothing could rank | agent-skill |
 | `QUESTION-VOCAB` | utterances parroted the question where the data uses other words | agent-skill, and model if that vocabulary is undocumented |
-| `NO-DISAMBIG` | two plausible candidates, never resolved | model: docs should answer, not require the question |
+| `RULE_UNWRITTEN` | the data is present and the model does not encode the rule for combining or filtering it, so whoever answers invents one. Qualified `(guessable)` when the data forces the rule -- list price minus sale price -- and `(arbitrary)` when it is a business decision nobody could derive, such as a season window or whether revenue is net of tax. Only the stated conventions tell those apart: from the model alone the two look identical, and an unqualified reading defaults to the harmless one | model: write the rule down |
 | `ASSUMED` | assumed a scope or convention instead of checking | model if nothing warned; agent-skill otherwise |
 | `WRONG-TYPE-OR-SCOPE` | asked, but with the wrong target type or an empty/wrong scope | agent-skill |
 
@@ -213,10 +213,10 @@ If the agent could not reasonably have known to ask, that is a model gap.
 
 | Code | When | Owner |
 |---|---|---|
-| `COVERAGE` | no representing entity anywhere | model |
+| `MISSING` | no query over this model could produce the concept. Not merely "no named measure": if the parts are present and only the formula is absent, that is `RULE_UNWRITTEN` | model: add an entity, a dimension value, or a data source |
 | `NOT-RETURNED` | it exists, the ask was on target, it never came back | model: labels, docs, synonyms, index |
 | `LOW-RANK` | returned, buried under noise the agent reasonably skipped | model |
-| `AMBIGUOUS` | several near-identical candidates | model: "use X for …, Y when …" |
+| `AMBIGUOUS` | several candidates and nothing says which this question means. Judged over the entities AND their docs: a `#(doc)` that resolves the choice makes it `MODELLED`, which is why a sentence of documentation is usually the whole fix | model: "use X for …, Y when …" |
 | `GUIDANCE-NOT-RETRIEVED` | entities came back, governing guidance did not | model: put guidance on the entities agents search for |
 | `GUIDANCE-DECLINED` | guidance was retrieved and judged inapplicable | model: state the business default, not a caveat |
 
@@ -257,7 +257,7 @@ with both queries. Otherwise it is still `NOT-RETURNED` / `LOW-RANK`.
 | `SCOPE` | right entities, wrong population | model if the scope rule was undocumented |
 | `GRAIN` | right entities, wrong grain | model or agent-skill |
 | `FILTER-LITERAL` | filter literal did not match stored values | model (document the stored form) and agent-skill |
-| `CONVENTION` | right data, wrong statistical or business convention | model: expose a named measure |
+| `UNDERSPECIFIED` | the QUESTION is unclear, not the model -- "adjusted sales" that never says what the adjustment is, or a business that has not decided whether revenue includes tax | the asker, or whoever owns the definition. Never scored against the model |
 | `SYNTAX` | could not express it; execute errors; never submitted | agent-skill |
 
 ### model-definition

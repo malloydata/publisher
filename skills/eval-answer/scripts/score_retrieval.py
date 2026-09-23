@@ -130,9 +130,9 @@ UNATTRIBUTED = ("", "", "")
 # codes. The four must match `check_coverage.FAIL_VERDICTS`; the test pins that,
 # because this file stays stdlib-only and does not import it.
 MEASURED_GAPS = ("derivable", "absent",
-                 "COVERAGE", "AMBIGUOUS", "NO-DISAMBIG", "CONVENTION")
+                 "MISSING", "AMBIGUOUS", "RULE_UNWRITTEN", "UNDERSPECIFIED")
 # check_coverage.py's "a correct answer is expressible": the measured `covered`.
-MEASURED_OK = "ok"
+MEASURED_OK = "MODELLED"
 # A failure that is retrieval's or the model's, and nothing measured which. Its
 # own bucket, because the alternative was worse: with no authored `coverage`
 # label the case fell through to MODEL with the words "coverage is unknown, so
