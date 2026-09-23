@@ -31,6 +31,27 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — per-user visibility through a materialized grant table
+
+**A storage-materialized source may join a grant table that is itself scoped by givens.** The
+visibility idiom — an org-scoped source joining an org-and-user-scoped grant table, with a dimension
+that null-checks the join — was refused as `dynamic_joined_where`. It is now admitted when the joined
+source is itself persisted with `storage=`, joined by name, and admissible on its own. Both artifacts
+hold every caller's rows; the serve shape re-applies the grant table's terms per caller and re-emits
+the join against that binding, so two users of one org get different answers from the same two
+tables. If the grant table's binding is withheld (stale past its window, unbuilt, refused), the
+sources joining it serve live and their siblings keep the tier. A revoked grant stays visible until
+the grant table rebuilds — see [materialization](docs/materialization.md#per-user-visibility-through-a-joined-grant-table).
+
+The same rule lets a plain extension of a materialized source (`source: v is opps extend { join_one: …;
+where: g.user_id = $USER_ID }`) be served from its parent's table, which previously required
+`#@ -persist` and so served live.
+
+**New plan field:** `PersistSourcePlan.joinedTerms` names each caller-scoped join, the joined source,
+and the terms its binding re-applies. A consumer with a strict client of the build plan must add it.
+
+---
+
 ## [Unreleased] — a refused persist source is skipped, and no longer fails the whole run
 
 **Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
