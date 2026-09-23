@@ -87,6 +87,40 @@ export interface MaterializationMetadata {
     * themselves are named in `refusedSources`, beside this count.
     */
    sourcesRefused?: number;
+   /**
+    * The sources auto-run refused, keyed by sourceID. An orchestrated run
+    * reports its refusals in the manifest's `failures` instead, marked
+    * `refused`; {@link refusedSourcesOf} reads both.
+    */
+   refusedSources?: Record<string, { name: string; message: string }>;
+}
+
+/** One source a run did not build because the eligibility gate refused it. */
+export interface RunRefusal {
+   name: string;
+   message: string;
+}
+
+/**
+ * Every source the run refused, from either place a run records one: the
+ * metadata list auto-run writes, and the `failures` an orchestrated run marks
+ * `refused`. Sorted by name so the list reads the same on every render.
+ */
+export function refusedSourcesOf(
+   materialization: Materialization,
+): RunRefusal[] {
+   const fromMetadata = Object.values(
+      parseMetadata(materialization).refusedSources ?? {},
+   ).map((r) => ({ name: r.name, message: r.message }));
+   const fromFailures = Object.values(materialization.manifest?.failures ?? {})
+      .filter((f) => f.refused)
+      .map((f) => ({
+         name: f.sourceName ?? f.sourceEntityId,
+         message: f.reason,
+      }));
+   return [...fromMetadata, ...fromFailures].sort((a, b) =>
+      a.name.localeCompare(b.name),
+   );
 }
 
 /**

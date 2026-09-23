@@ -2537,6 +2537,8 @@ describe("executeInstructedBuild", () => {
          failures["cbadbbbbbbbbbbb"]?.reason,
          "and it must still say what went wrong",
       ).toContain("auth failed");
+      // A warehouse failure may clear on its own, so it is not marked permanent.
+      expect(failures["cbadbbbbbbbbbbb"]).not.toHaveProperty("refused");
    });
 
    it("still redacts a failed source's reason when the config is unavailable", async () => {
@@ -3485,6 +3487,8 @@ describe("executeInstructedBuild", () => {
             sourceName: "refused",
             physicalTableName: "refused_v1",
             materializedTableId: "mt-ref",
+            // Permanent until the model changes, so a caller need not retry it.
+            refused: true,
          });
          expect(result.failures["bref1bref1bref1b"].reason).toMatch(
             /authorize/i,

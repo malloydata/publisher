@@ -2249,6 +2249,9 @@ export class MaterializationService {
                         materializedTableId: instruction.materializedTableId,
                         physicalTableName: instruction.physicalTableName,
                         reason,
+                        // Marks the failure permanent, so a caller that retries
+                        // failures can tell it from one that may clear.
+                        refused: true,
                         connectionName: persistSource.connectionName,
                         ...(instruction.destination
                            ? { storageDestinationName: instruction.destination }

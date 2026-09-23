@@ -10,6 +10,7 @@ import {
    isActiveStatus,
    isTerminalStatus,
    parseMetadata,
+   refusedSourcesOf,
    sourcesSummary,
    statusColor,
    statusLabel,
@@ -196,5 +197,42 @@ describe("sourcesSummary", () => {
             " · ",
          ),
       ).toBe("5 built · 0 reused · 7 refused");
+   });
+});
+
+describe("refusedSourcesOf", () => {
+   it("reads auto-run's metadata list and orchestrated failures marked refused", () => {
+      const materialization = {
+         metadata: {
+            refusedSources: {
+               "b@m": { name: "b", message: "b is gated" },
+            },
+         },
+         manifest: {
+            entries: {},
+            failures: {
+               x: {
+                  sourceEntityId: "x",
+                  sourceName: "a",
+                  reason: "a reads a given",
+                  refused: true,
+               },
+               y: {
+                  sourceEntityId: "y",
+                  sourceName: "c",
+                  reason: "permission denied",
+               },
+            },
+         },
+      } as unknown as Materialization;
+
+      expect(refusedSourcesOf(materialization)).toEqual([
+         { name: "a", message: "a reads a given" },
+         { name: "b", message: "b is gated" },
+      ]);
+   });
+
+   it("is empty for a run that refused nothing", () => {
+      expect(refusedSourcesOf({} as Materialization)).toEqual([]);
    });
 });

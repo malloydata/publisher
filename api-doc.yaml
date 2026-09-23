@@ -6812,6 +6812,15 @@ components:
             failure. A consumer computes the same destination key a successful
             build would (`storageDestinationName ?? connectionName`) whether the
             source built or failed.
+        refused:
+          type: boolean
+          description: >-
+            True when the materialization-eligibility gate refused this source,
+            so the build was never attempted and `reason` is the gate's message.
+            A refusal is a property of the model, not of the run: retrying
+            returns the same answer until the model changes, unlike a warehouse
+            or compile failure, which may clear on its own. Absent for every
+            other failure.
 
     ManifestEntry:
       type: object
