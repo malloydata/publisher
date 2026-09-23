@@ -696,6 +696,58 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
    // implementation shuts down the outgoing singleton). Subsequent
    // tests in this describe would see a dead pool. afterAll only
    // resets the singleton to null, so this is safe at the tail.
+   // An unusable publisher.json is read inside the worker. It used to cross the
+   // pool boundary as a plain Error and be rewrapped as a 503 "worker pool
+   // unavailable", which a caller logs as a server outage. It is the author's
+   // mistake, so it must arrive as a 424 carrying the manifest's own message.
+   it.each([
+      [
+         "a malformed explores",
+         { explores: "index.malloy" },
+         /Invalid "explores"/,
+      ],
+      ["an unknown scope", { scope: "shared" }, /Invalid "scope"/],
+      [
+         "two scope homes that disagree",
+         { scope: "version", materialization: { scope: "package" } },
+         /Conflicting "scope"/,
+      ],
+   ])(
+      "answers %s in publisher.json with a 424, not a 503",
+      async (_label, manifest, message) => {
+         fs.writeFileSync(
+            path.join(tempDir, "publisher.json"),
+            JSON.stringify({ name: "pkg", ...manifest }),
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "trivial.malloy"),
+            `source: nums is duckdb.sql("select 1 as a")`,
+         );
+
+         const { PackageManifestError, internalErrorToHttpError } =
+            await import("../errors");
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const error = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            ).then(
+               () => undefined,
+               (e: Error) => e,
+            );
+            expect(error).toBeInstanceOf(PackageManifestError);
+            const http = internalErrorToHttpError(error!);
+            expect(http.status).toBe(424);
+            expect(http.json.message).toMatch(message);
+            expect(http.json.message).not.toMatch(/worker pool/);
+         } finally {
+            await duckdb.close();
+         }
+      },
+   );
+
    it("rewraps pool-infrastructure failures as ServiceUnavailableError (HTTP 503)", async () => {
       writeManifest();
       fs.writeFileSync(

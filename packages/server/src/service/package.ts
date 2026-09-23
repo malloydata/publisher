@@ -31,6 +31,7 @@ import {
    BadRequestError,
    ModelCompilationError,
    NotQueryableError,
+   PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
@@ -673,7 +674,8 @@ export class Package {
             // (shutting down, worker spawn failed, worker crashed,
             // RPC timeout) and the client should retry. Real Malloy
             // compile errors deserialised by the pool still carry
-            // their MalloyError / ModelCompilationError identity —
+            // their MalloyError / ModelCompilationError identity, and an
+            // unusable publisher.json its PackageManifestError identity —
             // let those bubble untouched so they keep their 4xx
             // mapping in `errors.ts`.
             const realError =
@@ -684,7 +686,8 @@ export class Package {
                     );
             if (
                realError instanceof MalloyError ||
-               realError instanceof ModelCompilationError
+               realError instanceof ModelCompilationError ||
+               realError instanceof PackageManifestError
             ) {
                throw realError;
             }
@@ -2465,7 +2468,8 @@ export class Package {
                : new Error(`Package-load worker pool failure: ${String(err)}`);
          if (
             realError instanceof MalloyError ||
-            realError instanceof ModelCompilationError
+            realError instanceof ModelCompilationError ||
+            realError instanceof PackageManifestError
          ) {
             throw realError;
          }

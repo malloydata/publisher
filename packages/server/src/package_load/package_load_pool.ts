@@ -82,7 +82,7 @@ import { Worker } from "node:worker_threads";
 import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
-import { ModelCompilationError } from "../errors";
+import { ModelCompilationError, PackageManifestError } from "../errors";
 import { logger } from "../logger";
 import type {
    PackageMaterializationConfig,
@@ -876,9 +876,10 @@ function serializeError(error: unknown): SerializedError {
 
 /**
  * Reconstitute an Error from a serialized payload. When the original
- * was a Malloy compile error we re-wrap as `ModelCompilationError` so
- * downstream `instanceof` checks (which decide e.g. HTTP 424 vs 500)
- * keep firing across the worker boundary.
+ * was a Malloy compile error we re-wrap as `ModelCompilationError`, and an
+ * unusable publisher.json as `PackageManifestError`, so downstream
+ * `instanceof` checks (which decide e.g. HTTP 424 vs 503) keep firing
+ * across the worker boundary.
  */
 export function deserializeError(serialized: SerializedError): Error {
    const err = new Error(serialized.message);
@@ -899,6 +900,11 @@ export function deserializeError(serialized: SerializedError): Error {
       );
       if (serialized.stack) wrapped.stack = serialized.stack;
       return wrapped;
+   }
+   if (serialized.name === "PackageManifestError") {
+      const manifestError = new PackageManifestError(serialized.message);
+      if (serialized.stack) manifestError.stack = serialized.stack;
+      return manifestError;
    }
    return err;
 }

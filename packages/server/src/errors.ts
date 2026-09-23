@@ -17,16 +17,9 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // missing feature, a cap that was reached, a timeout), which is true of most of
 // them but not all: the worker-pool and compile-worker throws behind 503
 // interpolate the underlying failure, so a crash message reaches the caller
-// there. Generalizing that one at the mapper would also blank a message the
-// caller needs to fix their own config, because the two are indistinguishable
-// by the time they arrive -- and the reason for that is worth stating exactly,
-// since it is fixable and this comment would otherwise outlive it. The pool's
-// wire shape DOES carry `name` and deserializeError restores it; what collapses
-// the two is that `BadRequestError` never sets `this.name`, where
-// AccessDeniedError, NotQueryableError, PayloadTooLargeError and
-// MaterializationEligibilityError all do. Give it a name and the mapper could
-// tell an unusable manifest from a worker crash. Until then the distinction
-// only exists at those throw sites, so the fix belongs there.
+// there. An unusable publisher.json no longer lands in that branch: it throws
+// PackageManifestError, whose `name` survives the pool's wire shape, so it maps
+// to 424 below instead of reading as a worker outage.
 //
 // So a NEW 5xx branch is a decision rather than a default: generalize it here
 // if its message comes from a driver, a worker, or the filesystem.
@@ -165,6 +158,8 @@ export function internalErrorToHttpError(error: Error) {
    } else if (error instanceof MaterializationEligibilityError) {
       return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
+      return httpError(424, error.message);
+   } else if (error instanceof PackageManifestError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
       // 502. A server-authored message (see ConnectionError.callerSafe) is
@@ -392,6 +387,23 @@ export class ModelCompilationError extends Error {
    // annotation failed) can reuse this 424 mapping without a separate class.
    constructor(error: { message: string }) {
       super(error.message);
+   }
+}
+
+/**
+ * The package's publisher.json cannot be used as written: a malformed
+ * `explores`, an unknown `scope`, or two `scope` homes that disagree. The
+ * package is not served until the author fixes the file.
+ *
+ * 424, like a model that does not compile: the request was fine, the package it
+ * depends on is not. It sets `name` because the manifest is read inside the
+ * package-load worker, and `name` is what deserializeError restores it from;
+ * without it the pool reports the author's typo as a 503 outage.
+ */
+export class PackageManifestError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "PackageManifestError";
    }
 }
 
