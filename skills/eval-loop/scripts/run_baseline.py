@@ -298,9 +298,27 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
         if scope is not None:
             cmd += ["--", str(scope)]
         dirty = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if dirty.returncode != 0:
+            # A scope outside the repo makes git exit 128 with empty stdout,
+            # which read as "clean" and dropped the marker on a dirty model.
+            # No pin beats a wrong one: the schema says absent is honest.
+            return None
         return head.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:  # noqa: BLE001
         return None
+
+
+def model_scope(repo: pathlib.Path | None, model_dir: pathlib.Path | None
+                ) -> pathlib.Path | None:
+    """The path the -dirty marker is decided over. A relative --model-dir is
+    resolved against --model-repo, not the working directory: given from
+    anywhere but the repo root it pointed outside the repo, git status exited
+    128 with empty stdout, and a dirty model pinned as clean."""
+    if repo is None:
+        return None
+    if model_dir is None:
+        return repo
+    return model_dir if model_dir.is_absolute() else repo / model_dir
 
 
 # --- Run naming --------------------------------------------------------------
@@ -2771,7 +2789,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="model within the package; defaults to set.json targetModelPath")
     ap.add_argument("--model-repo", default=None, type=pathlib.Path,
                     help="the git checkout the MODEL is versioned in, recorded "
-                         "as modelGitSha (dirty-marked over this path). The "
+                         "as modelGitSha (dirty-marked over --model-dir, or over "
+                         "this whole path without it). The "
                          "Publisher serves a copy under publisher_data/, so "
                          "there is no way to infer it; without this the run "
                          "carries modelSha, the content pin, and no git pin")
@@ -2780,8 +2799,9 @@ def main(argv: list[str] | None = None) -> int:
                          "was served from. The -dirty marker on modelGitSha is "
                          "decided over this path, so an unrelated untracked file "
                          "elsewhere in the repo (a scratch notebook, a run "
-                         "directory) does not stamp a clean model dirty. "
-                         "Recorded as modelDir; defaults to the whole repo")
+                         "directory) does not stamp a clean model dirty. A "
+                         "relative path is taken from --model-repo. Recorded as "
+                         "modelDir; defaults to the whole repo")
     ap.add_argument("--skills-root", default=None,
                     help="a checkout holding skills/ and manifests/ to load the "
                          "answerer's and judge's doctrine from -- a Publisher "
@@ -3296,7 +3316,7 @@ def main(argv: list[str] | None = None) -> int:
         # nobody said where that is.
         modelRepo=str(a.model_repo) if a.model_repo else None,
         modelDir=str(a.model_dir) if a.model_dir else None,
-        modelGitSha=(git_sha(a.model_repo, scope=a.model_dir or a.model_repo)
+        modelGitSha=(git_sha(a.model_repo, scope=model_scope(a.model_repo, a.model_dir))
                      if a.model_repo else None),
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),

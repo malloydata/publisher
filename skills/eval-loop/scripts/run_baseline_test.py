@@ -1530,6 +1530,21 @@ class GitSha(unittest.TestCase):
             .endswith("-dirty"))
         self.assertTrue(rb.git_sha(pathlib.Path(".")).endswith("-dirty"))
 
+    def test_a_scope_outside_the_repo_pins_nothing_rather_than_clean(self):
+        # git exits 128 with empty stdout for a pathspec outside the repo; that
+        # used to read as "clean" on a dirty model. No pin is the honest answer.
+        self.dirty()
+        outside = pathlib.Path(self.tmp) / "elsewhere"
+        outside.mkdir()
+        self.assertIsNone(rb.git_sha(pathlib.Path("."), scope=outside))
+
+    def test_a_relative_model_dir_resolves_against_the_repo(self):
+        repo = pathlib.Path("/r")
+        self.assertEqual(rb.model_scope(repo, pathlib.Path("packages/x")), repo / "packages/x")
+        self.assertEqual(rb.model_scope(repo, pathlib.Path("/abs/x")), pathlib.Path("/abs/x"))
+        self.assertEqual(rb.model_scope(repo, None), repo)
+        self.assertIsNone(rb.model_scope(None, pathlib.Path("packages/x")))
+
     def test_a_relative_path_still_marks_dirt(self):
         self.dirty()
         self.assertTrue(
