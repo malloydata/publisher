@@ -2,7 +2,12 @@
 """Scaffold a truth package from the model under test. Stdlib only.
 
   python3 init_truth_package.py --package <path/to/model/package> \\
-      --out <set>/../truth --name <set>-truth [--publisher-config <path>]
+      --out <outside the model package>/<set>-truth --name <set>-truth \\
+      [--publisher-config <path>]
+
+--out must not be inside --package. Publisher serves every .malloy under a
+package directory, so a truth package in there is served by the MODEL server
+to the answerer, whether or not a truth server is ever started.
 
 WHY
 
@@ -91,25 +96,37 @@ def stem(ref: str) -> str:
     return "t_" + re.sub(r"\W+", "_", last).strip("_").lower()
 
 
-def main() -> int:
+def nested_in(out: pathlib.Path, package: pathlib.Path) -> bool:
+    out, package = out.resolve(), package.resolve()
+    return out == package or package in out.parents
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--package", required=True, type=pathlib.Path,
                     help="the model package under test (holds publisher.json)")
     ap.add_argument("--out", required=True, type=pathlib.Path,
-                    help="where to write the truth package (a SIBLING of the set, "
-                         "never inside the served tree)")
+                    help="where to write the truth package: outside --package, "
+                         "or the model server serves it to the answerer")
     ap.add_argument("--name", required=True, help="truth package name, e.g. ir-truth")
     ap.add_argument("--publisher-config", type=pathlib.Path, default=None,
                     help="also write a Publisher server config serving only the "
                          "truth package, to this path")
     ap.add_argument("--environment", default="truth",
                     help="environment name in the generated server config")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     if not (a.package / "publisher.json").exists():
         raise SystemExit(f"{a.package} has no publisher.json; point --package at the "
                          f"model package root")
+    if nested_in(a.out, a.package):
+        raise SystemExit(
+            f"--out {a.out} is inside the model package {a.package}. Publisher "
+            f"serves every .malloy under a package directory, so the model "
+            f"server would serve the truth package to the answerer. Fix: write "
+            f"it outside {a.package.resolve()}, e.g. beside it, and set "
+            f"[truth] package_dir in the set's eval.toml")
     if (a.out / "truth.malloy").exists():
         raise SystemExit(f"{a.out / 'truth.malloy'} exists. The hand-added scope filters "
                          f"are the valuable part; delete it yourself if you mean to "

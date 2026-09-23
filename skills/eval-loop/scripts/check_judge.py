@@ -94,9 +94,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
     ap.add_argument("--fixtures", type=pathlib.Path, default=None,
                     help="default: <set>/judge-regressions.jsonl")
-    ap.add_argument("--publisher", default="http://localhost:4811")
-    ap.add_argument("--environment", default="samples")
-    ap.add_argument("--package", default=None, help="default: from set.json")
+    ap.add_argument("--publisher", default=None,
+                    help="default: [model] port in the set's eval.toml")
+    ap.add_argument("--environment", default=None,
+                    help="default: [model] environment in eval.toml")
+    ap.add_argument("--package", default=None,
+                    help="default: [model] package in eval.toml, else set.json "
+                         "targetPackage")
     ap.add_argument("--model-path", default=None, help="default: from set.json")
     ap.add_argument("--judge-model", default="sonnet")
     ap.add_argument("--skills-root", default=None,
@@ -139,7 +143,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = json.loads((a.set_dir / "set.json").read_text())
-    a.package = a.package or cfg.get("package") or "ecommerce"
+    conf = rb.config.load(a.set_dir)
+    a.publisher = a.publisher or conf.model_publisher()
+    a.environment = conf.need(a.environment, "model", "environment",
+                              "--environment")
+    # `targetPackage`, the set.json key. This read `package`, which no set
+    # carries, and fell back to a package from one particular set.
+    a.package = conf.need(a.package, "model", "package", "--package")
     # `targetModelPath` is the set.json key (ledger-schema.md:67) and what
     # run_baseline.py reads. `modelPath` is a real key ELSEWHERE -- on a case,
     # and on a run event -- so the wrong name here read as correct while always

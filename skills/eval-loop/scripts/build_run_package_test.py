@@ -71,7 +71,7 @@ class SourcesMatchTheCsvs(unittest.TestCase):
             json.dumps({"qid": "q1", "question": "how many?"}) + "\n")
         p = subprocess.run(
             [sys.executable, str(SCRIPT), "--run", str(run),
-             "--set", str(sset), "--out", str(out)],
+             "--set", str(sset), "--out", str(out), "--without-diagnosis"],
             capture_output=True, text=True, timeout=300)
         assert p.returncode == 0, p.stderr
         cls.data = out / "data"
@@ -150,7 +150,8 @@ class SourcesMatchTheCsvs(unittest.TestCase):
                 json.dumps({"qid": "q1", "question": "q?"}) + "\n")
             p = subprocess.run(
                 [sys.executable, str(SCRIPT), "--run", str(run),
-                 "--set", str(sset), "--out", str(out)],
+                 "--set", str(sset), "--out", str(out),
+                 "--without-diagnosis"],
                 capture_output=True, text=True, timeout=300)
             self.assertEqual(p.returncode, 0, p.stderr)
             head, first = self.rows("runs", out / "data")[:2]
@@ -161,6 +162,59 @@ class SourcesMatchTheCsvs(unittest.TestCase):
                 self.assertEqual(row[col], "")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class RefusalsAndServing(unittest.TestCase):
+    """The two ways a built report silently came out wrong, and its two URLs."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.run, self.sset = self.tmp / "run1", self.tmp / "set"
+        self.run.mkdir()
+        self.sset.mkdir()
+        (self.run / "run.json").write_text(json.dumps(RUN_JSON))
+        (self.run / "events.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in EVENTS) + "\n")
+        (self.sset / "set.json").write_text(json.dumps({"name": "s"}))
+        (self.sset / "cases.jsonl").write_text(
+            json.dumps({"qid": "q1", "question": "q?"}) + "\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def build(self, *extra):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "--run", str(self.run),
+             "--set", str(self.sset), *extra],
+            capture_output=True, text=True, timeout=300)
+
+    def test_a_run_without_a_diagnosis_is_refused(self):
+        p = self.build("--out", str(self.tmp / "pkg"))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("no clusters.jsonl", p.stderr)
+        self.assertIn("--without-diagnosis", p.stderr)
+        self.assertFalse((self.tmp / "pkg").exists())
+
+    def test_an_out_inside_a_malloy_package_is_refused(self):
+        (self.tmp / "model").mkdir()
+        (self.tmp / "model" / "publisher.json").write_text("{}")
+        p = self.build("--out", str(self.tmp / "model" / "evals" / "pkg"),
+                       "--without-diagnosis")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(f"inside the Malloy package {self.tmp.resolve() / 'model'}",
+                      p.stderr)
+
+    def test_both_urls_are_printed_and_written_on_the_truth_server(self):
+        (self.run / "clusters.jsonl").write_text("")
+        (self.sset / "eval.toml").write_text("[truth]\nport = 4881\n")
+        out = self.tmp / "pkg"
+        p = self.build("--out", str(out))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        want = ["# case matrix: http://localhost:4881/environments/truth/packages/pkg/",
+                "# notebook:    http://localhost:4881/truth/pkg/eval_run.malloynb"]
+        for line in want:
+            self.assertIn(line, p.stdout)
+            self.assertIn(line, (out / "README.md").read_text())
 
 
 if __name__ == "__main__":

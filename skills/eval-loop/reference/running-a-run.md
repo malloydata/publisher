@@ -8,21 +8,46 @@
 one fresh answerer per case with only the Publisher MCP tools, a contamination
 check, a judge, and a conformant `events.jsonl`.
 
+Every step reads the set's `eval.toml`: the model server's environment,
+package, repo and ports, and the truth server's. Write it once per set, beside
+`set.json`. Relative paths resolve against the file.
+
+```toml
+[model]                  # the Publisher the answerer queries
+environment = "<env>"
+package     = "<pkg>"
+repo        = "<path to the model package>"
+port        = 4811
+mcp_port    = 4040
+
+[truth]                  # a second Publisher, serving only the truth package
+environment = "truth"
+port        = 4881
+mcp_port    = 4882
+```
+
+No script defaults to any particular set's environment or package. A missing
+one stops with the key to add. Runs, built packages and server roots go under
+`~/.malloy-eval/<set>/` unless `[paths] workdir` says otherwise, never inside
+the repository: a run holds a `model.malloy` snapshot and a built package is a
+Malloy package, and nested in the package under test either can put that
+package into `loadErrors`. Each command below is `skills/eval-loop/scripts/eval.py`
+(`bun run eval --` from the repository root), and any flag the underlying
+script takes passes through.
+
 ```bash
-# 1. serve the model under test -- in its own session, so the shell's exit
-#    cannot take it down, and returning only once it answers a query.
+# 1. serve the model under test, and the TRUTH package on a second server the
+#    answerer has no route to. Each runs in its own session, so the shell's
+#    exit cannot take it down, and returns only once it answers a query. The
+#    script writes each server's publisher.config.json from eval.toml, and
+#    refuses a truth server on the model server's ports.
 #    --warm-retrieval also waits for the embedding index to settle and exits 3
 #    if it does not reach `ready`: the sync is lazy, so without it the first
 #    cases are answered LEXICALLY and the run reports that as the model's
 #    number.
-python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/server \
-  --server-root <root> --port 4811 --mcp-port 4040 --trace-retrieval \
-  --warm-retrieval --environment <env> --package <pkg> \
+eval.py serve model --set <set> --warm-retrieval \
   [--allow-proxy]   # required for a `publisher`-type (proxied) connection
-#    a second server for the TRUTH package, on other ports, that the answerer
-#    has no route to:
-python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/server \
-  --server-root <truthroot> --port 4881 --mcp-port 4882 [--allow-proxy]
+eval.py serve truth --set <set> [--allow-proxy]
 
 # 2a. audit the set against the package it is about to be scored on. Free, and
 #     it catches the failure that reads as a model regression: an entity id
@@ -35,9 +60,7 @@ python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/s
 #     value-bearing case rests on validated definitions exits 0 instead:
 #     the composition rule, values not re-derived but their definitions
 #     checked.
-python3 skills/eval-answer/scripts/verify_goldens.py \
-  --set <repo>/evals/ecommerce --publisher http://localhost:4881 \
-  --model <repo>/ecommerce --target-package ecommerce
+eval.py verify --set <set> --model <package> --target-package <pkg>
 
 # 2b. ONLY on a set whose keys are still provisional -- an imported one is,
 #     throughout, by design. Nothing else in this toolchain writes
@@ -46,55 +69,46 @@ python3 skills/eval-answer/scripts/verify_goldens.py \
 #     AND carries a second derivation, and prints the reason for every golden
 #     it left alone. `--refresh` is NOT this: it rewrites a drifted value and
 #     never touches a status.
-python3 skills/eval-answer/scripts/verify_goldens.py \
-  --set <repo>/evals/ecommerce --publisher http://localhost:4881 \
-  --target-package ecommerce --promote
+eval.py verify --set <set> --target-package <pkg> --promote
 
 # 2. smoke one case first ($0.13), then the arm. Goldens are re-derived from
 #    the truth server before either starts; a drifted set refuses to run.
-python3 skills/eval-loop/scripts/run_baseline.py \
-  --set <repo>/evals/ecommerce --out results/smoke --only <qid> --no-judge \
-  --truth-publisher http://localhost:4881
-python3 skills/eval-loop/scripts/run_baseline.py \
-  --set <repo>/evals/ecommerce --out results/<arm> \
-  --parallel 4 --truth-publisher http://localhost:4881 \
-  --model-repo <repo>   # the checkout the MODEL is versioned in, recorded as
-                        # modelGitSha. It cannot be inferred: Publisher serves
-                        # a copy under publisher_data/, whose surrounding tree
-                        # is the server's storage, not the model's history.
+#    [model] repo is recorded as modelGitSha. It cannot be inferred: Publisher
+#    serves a copy under publisher_data/, whose surrounding tree is the
+#    server's storage, not the model's history.
+eval.py run --set <set> --label smoke --only <qid> --no-judge
+eval.py run --set <set> --parallel 4
 #    the run names itself <set>-<phase>-<nn> (ecommerce-baseline-01, then -02
-#    for the second arm of the A/A). Pass --label only for a run that needs a
-#    human name; hand-typed arm names stop being readable within an afternoon.
+#    for the second arm of the A/A) and prints its directory. Pass --label
+#    only for a run that needs a human name; hand-typed arm names stop being
+#    readable within an afternoon.
 
 # 3. compare two arms, or two runs of one arm. It exits 2 when the arms used
 #    different retrievers, because those flips measure the retriever.
-python3 skills/eval-loop/scripts/flip_table.py --a results/<a> --b results/<b>
+python3 skills/eval-loop/scripts/flip_table.py --a <run a> --b <run b>
 
 # 3a. on an A/A, write the band into the set's calibration record. Nothing
 #     else may quote a band, and a band only covers runs whose pins match.
 python3 skills/eval-loop/scripts/flip_table.py \
-  --a results/aa-1 --b results/aa-2 --calibration \
-  >> <repo>/evals/ecommerce/CALIBRATION.md
+  --a <aa-1 run> --b <aa-2 run> --calibration >> <set>/CALIBRATION.md
 
 # 3b. check the JUDGE, not the model, after any change to the judge skill, a
 #     rubric, or what the judge is shown. It also reports which fixtures are
 #     unpinned and which decision classes nothing covers.
-python3 skills/eval-loop/scripts/check_judge.py \
-  --set <repo>/evals/ecommerce --repeat 3
+python3 skills/eval-loop/scripts/check_judge.py --set <set> --repeat 3
 
 # 4. FIRST: any golden in doubt, from the judge or the set. `jq .doubtedGoldens
-#    results/<arm>/run.json` -- non-empty means settle those through the golden
-#    side door before diagnosing, or you send a modelling agent at a model that
-#    is already right.
-python3 skills/eval-diagnose/scripts/diagnose.py \
-  --run results/<arm> --set <repo>/evals/ecommerce --model-dir <package>
+#    <run>/run.json` -- non-empty means settle those through the golden side
+#    door before diagnosing, or you send a modelling agent at a model that is
+#    already right. It probes the server the run recorded.
+eval.py diagnose --set <set> --label <label>
 #    (cluster_failures.py gives a free mechanical first look, as
 #     clusters-mechanical.jsonl; it groups by retrieval outcome and is not a
 #     diagnosis)
 
-# 5. build the browsable package
-python3 skills/eval-loop/scripts/build_run_package.py \
-  --run results/<a> --run results/<b> --set <repo>/evals/ecommerce --out <pkg>
+# 5. build the browsable package. Refused until every run has a diagnosis
+#    (--without-diagnosis overrides); pass --run twice for an A/B.
+eval.py package --set <set> --label <label>
 ```
 
 ### What the run prints at the end
@@ -115,11 +129,13 @@ Three layers, in this order, and the order is what makes it readable:
    read: `build_run_package.py` (a Malloy model over the run's CSVs,
    `eval_run.malloynb` for the aggregate tables, and an in-package HTML app for
    the case matrix and its per-case drawer), then a `POST .../packages` that
-   registers it on the Publisher already running, with no restart. It prints
-   the resulting URL with the run's own paths filled in.
+   registers it on a Publisher already running, with no restart.
+   `build_run_package.py` prints that command and both URLs with the run's own
+   paths filled in, and writes them into the package's README.md.
 
-   The POST lands the package in the environment the run used. Point it at
-   another if you would rather that package listing stay untouched.
+   The command registers the package on the TRUTH server when the set has
+   one. The package holds the answer key, and that is the server the answerer
+   has no route to.
 
 Order of magnitude for planning, **calibrated on ecommerce over local duckdb**:
 a Sonnet arm over a few dozen cases costs single-digit dollars and finishes in

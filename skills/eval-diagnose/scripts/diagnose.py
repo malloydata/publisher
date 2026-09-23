@@ -59,6 +59,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
                            manifest_skills, skills_roots, spawn_agent)
+import config  # noqa: E402
 import ledger  # noqa: E402
 import cluster_failures  # noqa: E402
 import score_retrieval  # noqa: E402
@@ -715,9 +716,11 @@ def main(argv: list[str] | None = None) -> int:
     # it justifies paying more on every future run.
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--cluster-model", default="opus")
-    ap.add_argument("--environment", default="samples")
-    ap.add_argument("--package", default="ecommerce")
-    ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
+    # Unset, these are what the run itself recorded, so a diagnosis probes the
+    # server the answers came from; then the set's eval.toml.
+    ap.add_argument("--environment", default=None)
+    ap.add_argument("--package", default=None)
+    ap.add_argument("--mcp-url", default=None)
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--timeout", type=int, default=900)
@@ -790,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="load only skill:eval-diagnose, as runs before "
                          "2026-09-01 did")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
     a.roots = skills_roots(a.skills_root)
     repo = a.roots[0].parent if a.skills_root else SKILLS_ROOT.parent
     if not a.manifest:
@@ -807,6 +812,12 @@ def main(argv: list[str] | None = None) -> int:
             run_meta = json.loads(rj.read_text())
         except json.JSONDecodeError:
             run_meta = {}
+    a.environment = cfg.need(a.environment or run_meta.get("environment"),
+                             "model", "environment", "--environment")
+    a.package = cfg.need(a.package or run_meta.get("package"),
+                         "model", "package", "--package")
+    a.mcp_url = a.mcp_url or run_meta.get("mcpUrl") or cfg.model_mcp_url()
+    a.model_dir = a.model_dir or cfg.get("model", "repo")
     if not a.scope and run_meta.get("scope"):
         a.scope = run_meta["scope"]
     a.scope_version = None
