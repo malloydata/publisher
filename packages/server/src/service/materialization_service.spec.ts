@@ -1408,11 +1408,16 @@ describe("commitManifest", () => {
       id: string,
       entries: Record<string, unknown>,
       failures: Record<string, unknown>,
+      refused: Record<string, unknown>,
       metadata: Record<string, unknown>,
    ) => Promise<void>;
 
    /** The manifest the run PERSISTED, read off the repository write. */
-   function persistedManifest(): { entries?: unknown; failures?: unknown } {
+   function persistedManifest(): {
+      entries?: unknown;
+      failures?: unknown;
+      refused?: unknown;
+   } {
       const call = ctx.repository.updateMaterialization
          .getCalls()
          .find((c) => c.args[1]?.manifest);
@@ -1443,6 +1448,7 @@ describe("commitManifest", () => {
                reason: "Permission denied while writing to dataset analytics",
             },
          },
+         {},
          { mode: "auto" },
       );
 
@@ -1476,10 +1482,55 @@ describe("commitManifest", () => {
             },
          },
          {},
+         {},
          { mode: "auto" },
       );
 
       expect(persistedManifest()).not.toHaveProperty("failures");
+      expect(persistedManifest()).not.toHaveProperty("refused");
+   });
+
+   it("persists each refused source, keyed by sourceID, beside the entries that built", async () => {
+      // A refused source has no table and may have no content address, so it
+      // is reported apart from both `entries` and `failures`. Without it on the
+      // stored manifest a run that skipped a source reads exactly like one where
+      // the source did not exist.
+      await (
+         ctx.service as unknown as { commitManifest: CommitFn }
+      ).commitManifest(
+         "mat-1",
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "ok_v1",
+            },
+         },
+         {},
+         {
+            "gated@file:///m.malloy": {
+               name: "gated",
+               sourceID: "gated@file:///m.malloy",
+               tier: "storage",
+               reason: "given",
+               message: "Source 'gated' cannot be materialized",
+            },
+         },
+         { mode: "auto" },
+      );
+
+      const manifest = persistedManifest();
+      expect(Object.keys(manifest.entries as object)).toEqual(["ok"]);
+      expect(manifest).not.toHaveProperty("failures");
+      expect(manifest.refused).toEqual({
+         "gated@file:///m.malloy": {
+            name: "gated",
+            sourceID: "gated@file:///m.malloy",
+            tier: "storage",
+            reason: "given",
+            message: "Source 'gated' cannot be materialized",
+         },
+      });
    });
 });
 
@@ -1773,6 +1824,136 @@ describe("deriveSelfInstructions", () => {
       });
    });
 
+   describe("a refused source beside admitted ones", () => {
+      type Derived = {
+         instructions: BuildInstruction[];
+         carried: Record<string, unknown>;
+         refused: Record<
+            string,
+            { name: string; tier: string; reason: string; message: string }
+         >;
+      };
+      function deriveWith(
+         compiled: unknown,
+         sourceNames?: string[],
+         priorEntries: Record<string, unknown> = {},
+      ): Derived {
+         return (
+            ctx.service as unknown as {
+               deriveSelfInstructions: (
+                  c: unknown,
+                  n: string[] | undefined,
+                  p: unknown,
+               ) => Derived;
+            }
+         ).deriveSelfInstructions(compiled, sourceNames, priorEntries);
+      }
+      const ok = fakeSource({ name: "ok", sourceEntityId: "a0a0a0a0a0a0a0a0" });
+      const gated = (name: string) =>
+         fakeSource({
+            name,
+            sourceEntityId: `${name}-c1c1c1c1c1c1`,
+            sourceDef: { blockNotes: ["#(authorize) true"] },
+         });
+
+      it("instructs the admitted source and records the refused one instead of throwing", () => {
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         const { instructions, refused } = deriveWith(compiled);
+
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "a0a0a0a0a0a0a0a0",
+         ]);
+         expect(Object.keys(refused)).toEqual(["refused"]);
+         expect(refused.refused).toMatchObject({
+            name: "refused",
+            tier: "colocated",
+         });
+         expect(refused.refused.message).toMatch(/authorize/i);
+      });
+
+      it("records a refused storage= source under the storage tier", () => {
+         process.env.PERSIST_STORAGE_MODE = "on";
+         try {
+            const compiled = compiledWith(
+               {
+                  ok,
+                  lake: fakeSource({
+                     name: "lake",
+                     sourceEntityId: "f1f1f1f1f1f1f1f1",
+                     annotationFields: { storage: "lake" },
+                     sourceDef: { blockNotes: ["#(authorize) true"] },
+                  }),
+               },
+               [["lake", "ok"]],
+            );
+
+            const { instructions, refused } = deriveWith(compiled);
+
+            expect(instructions).toHaveLength(1);
+            expect(refused.lake.tier).toBe("storage");
+            expect(refused.lake.message).toMatch(
+               /cannot be materialized into a storage destination/,
+            );
+         } finally {
+            delete process.env.PERSIST_STORAGE_MODE;
+         }
+      });
+
+      it("does not throw when every admitted source is reused rather than rebuilt", () => {
+         // Nothing is instructed, but the run still has a table to serve for
+         // `ok`, so the refusal must not turn an all-reused run into a failure.
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         const { instructions, carried, refused } = deriveWith(
+            compiled,
+            undefined,
+            {
+               a0a0a0a0a0a0a0a0: {
+                  sourceEntityId: "a0a0a0a0a0a0a0a0",
+                  physicalTableName: "ok",
+                  connectionName: "duckdb",
+               },
+            },
+         );
+
+         expect(instructions).toHaveLength(0);
+         expect(Object.keys(carried)).toEqual(["a0a0a0a0a0a0a0a0"]);
+         expect(Object.keys(refused)).toEqual(["refused"]);
+      });
+
+      it("still throws when sourceNames names the refused source", () => {
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         expect(() => deriveWith(compiled, ["refused", "ok"])).toThrow(
+            MaterializationEligibilityError,
+         );
+      });
+
+      it("throws naming every refused source when all of them are refused", () => {
+         const compiled = compiledWith(
+            { first: gated("first"), second: gated("second") },
+            [["first", "second"]],
+         );
+
+         let thrown: unknown;
+         try {
+            deriveWith(compiled);
+         } catch (err) {
+            thrown = err;
+         }
+         expect(thrown).toBeInstanceOf(MaterializationEligibilityError);
+         expect(String((thrown as Error).message)).toContain("'first'");
+         expect(String((thrown as Error).message)).toContain("'second'");
+      });
+   });
+
    // An incremental source is the one case where an unchanged content address
    // does NOT mean there is nothing to do: its data moves while its SQL stays
    // put. Carrying it forward here would strand the delta path behind a check it
@@ -2033,6 +2214,10 @@ describe("executeInstructedBuild", () => {
       failures: Record<
          string,
          { reason?: string; physicalTableName?: string; sourceName?: string }
+      >;
+      refused: Record<
+         string,
+         { name: string; tier: string; reason: string; message: string }
       >;
    };
 
@@ -3254,7 +3439,7 @@ describe("executeInstructedBuild", () => {
          expect(failures["bref1bref1bref1b"]).toBeUndefined();
       });
 
-      it("still 422s when the caller DOES instruct the refused source", async () => {
+      it("is skipped and recorded, and its siblings still build, when the caller DOES instruct it", async () => {
          const runSQL = sinon.stub().resolves();
          const connection = { runSQL } as unknown as MalloyConnection;
          const ok = fakeSource({
@@ -3264,7 +3449,53 @@ describe("executeInstructedBuild", () => {
          const refused = refusedColocated("bref1bref1bref1b");
          const compiled = compiledWith(
             { ok, refused },
-            [["ok"], ["refused"]],
+            [["refused"], ["ok"]],
+            new Map([["duckdb", connection]]),
+         );
+
+         const result = await callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bref1bref1bref1b",
+                  materializedTableId: "mt-ref",
+                  physicalTableName: "refused_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+         );
+
+         expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
+            "ok_v1",
+         );
+         expect(result.entries["bref1bref1bref1b"]).toBeUndefined();
+         expect(result.failures["bref1bref1bref1b"]).toBeUndefined();
+         expect(result.refused.refused).toMatchObject({
+            name: "refused",
+            tier: "colocated",
+         });
+         expect(
+            runSQL
+               .getCalls()
+               .some((c) => String(c.args[0]).includes("refused_v1")),
+            "a refused source must not be written",
+         ).toBe(false);
+      });
+
+      it("still 422s when every instructed source is refused", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const refused = refusedColocated("bref1bref1bref1b");
+         const compiled = compiledWith(
+            { refused },
+            [["refused"]],
             new Map([["duckdb", connection]]),
          );
 
@@ -3272,12 +3503,6 @@ describe("executeInstructedBuild", () => {
             callExecute(
                compiled,
                [
-                  {
-                     sourceEntityId: "b0k0k0k0k0k0k0k0",
-                     materializedTableId: "mt-ok",
-                     physicalTableName: "ok_v1",
-                     realization: "COPY",
-                  },
                   {
                      sourceEntityId: "bref1bref1bref1b",
                      materializedTableId: "mt-ref",
@@ -3288,6 +3513,7 @@ describe("executeInstructedBuild", () => {
                {},
             ),
          ).rejects.toThrow(MaterializationEligibilityError);
+         expect(runSQL.called).toBe(false);
       });
    });
 });
@@ -3968,16 +4194,21 @@ describe("runBuild (branch behavior)", () => {
          instructions,
       );
       expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({});
-      // The manifest is committed with both collections: entries (arg 1) and
-      // failures (arg 2), metadata last. Pinned positionally because these are
-      // sinon args -- asserting the metadata alone would keep passing if a later
-      // signature change fed the wrong collection into the persisted manifest.
+      // The manifest is committed with every collection: entries (arg 1),
+      // failures (arg 2) and refused (arg 3), metadata last. Pinned positionally
+      // because these are sinon args -- asserting the metadata alone would keep
+      // passing if a later signature change fed the wrong collection into the
+      // persisted manifest.
       expect(svc.commitManifest.firstCall.args[2]).toEqual({});
-      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+      expect(svc.commitManifest.firstCall.args[3]).toEqual({});
+      expect(svc.commitManifest.firstCall.args[4]).toMatchObject({
          mode: "orchestrated",
          sourcesBuilt: 1,
          sourcesReused: 0,
       });
+      expect(svc.commitManifest.firstCall.args[4]).not.toHaveProperty(
+         "sourcesRefused",
+      );
       // Orchestrated leaves distribution to the caller.
       expect(svc.autoLoadManifest.called).toBe(false);
    });
@@ -4021,7 +4252,7 @@ describe("runBuild (branch behavior)", () => {
       // strictUpstreams flows through as the strict flag (6th arg).
       expect(svc.executeInstructedBuild.firstCall.args[5]).toBe(true);
       // Reused upstreams are counted as carried, not built.
-      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+      expect(svc.commitManifest.firstCall.args[4]).toMatchObject({
          mode: "orchestrated",
          sourcesBuilt: 1,
          sourcesReused: 1,
@@ -4043,11 +4274,53 @@ describe("runBuild (branch behavior)", () => {
          new AbortController().signal,
       );
 
-      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+      expect(svc.commitManifest.firstCall.args[4]).toMatchObject({
          mode: "auto",
       });
       // Auto-run owns distribution: it loads the fresh manifest into the models.
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
+   });
+
+   it("commits a run's refused sources on the manifest and counts them in the metadata", async () => {
+      const svc = stubEngine();
+      const refused = {
+         gated: {
+            name: "gated",
+            sourceID: "gated",
+            tier: "storage",
+            reason: "given",
+            message: "Source 'gated' cannot be materialized",
+         },
+      };
+      (svc.executeInstructedBuild as sinon.SinonStub).resolves({
+         entries: {
+            "build-orders": {
+               sourceEntityId: "build-orders",
+               physicalTableName: '"orders_v1"',
+               connectionName: "duckdb",
+            },
+         },
+         failures: {},
+         refused,
+      });
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: [makeInstruction()],
+         },
+         new AbortController().signal,
+      );
+
+      expect(svc.commitManifest.firstCall.args[3]).toEqual(refused);
+      expect(svc.commitManifest.firstCall.args[4]).toMatchObject({
+         sourcesBuilt: 1,
+         sourcesRefused: 1,
+      });
    });
 
    // What the incremental context is told to do comes from `reseed` ALONE.

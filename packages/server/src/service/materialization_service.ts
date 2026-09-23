@@ -41,6 +41,7 @@ import {
    MaterializationUpdate,
    ManifestEntry,
    ManifestReference,
+   RefusedSource,
    ResourceRepository,
    SourceFailure,
 } from "../storage/DatabaseInterface";
@@ -431,6 +432,46 @@ export function tallySources(
       sourcesFailed: Object.keys(failures).length,
       sourcesReused: Object.keys(carried).filter((id) => !failures[id]).length,
    };
+}
+
+/**
+ * The record a run keeps for a source the eligibility gate refused, in the
+ * build plan's `RefusedSource` shape so the plan and the run report one refusal
+ * identically.
+ */
+function refusalRecord(
+   persistSource: PersistSource,
+   err: MaterializationEligibilityError,
+   tier: RefusedSource["tier"],
+   modelPath: string | undefined,
+): RefusedSource {
+   return {
+      name: persistSource.name,
+      sourceID: persistSource.sourceID,
+      ...(modelPath ? { modelPath } : {}),
+      tier,
+      reason: err.reason || "authorize",
+      message: errMessage(err),
+   };
+}
+
+/**
+ * The run-level refusal for a run whose every targeted source was refused, so
+ * there is nothing to build. One refusal is rethrown as it was raised; several
+ * are joined so the run names every source it could not build, not only the
+ * first in plan order.
+ */
+export function allSourcesRefusedError(
+   errors: MaterializationEligibilityError[],
+): MaterializationEligibilityError {
+   if (errors.length === 1) return errors[0];
+   const reason = errors.every((e) => e.reason === errors[0].reason)
+      ? errors[0].reason
+      : undefined;
+   return new MaterializationEligibilityError({
+      message: errors.map((e) => e.message).join("; "),
+      reason,
+   });
 }
 
 export function redactConnectionSecrets(
@@ -979,6 +1020,7 @@ export class MaterializationService {
 
          let instructions: BuildInstruction[];
          let carried: Record<string, ManifestEntry>;
+         let derivedRefused: Record<string, RefusedSource> = {};
          if (orchestrated) {
             instructions = opts.buildInstructions!;
             // Seed the build Manifest with the caller-supplied upstream
@@ -1023,7 +1065,11 @@ export class MaterializationService {
                     packageName,
                     id,
                  );
-            ({ instructions, carried } = this.deriveSelfInstructions(
+            ({
+               instructions,
+               carried,
+               refused: derivedRefused,
+            } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
@@ -1031,7 +1077,11 @@ export class MaterializationService {
             ));
          }
 
-         const { entries, failures } = await this.executeInstructedBuild(
+         const {
+            entries,
+            failures,
+            refused: buildRefused,
+         } = await this.executeInstructedBuild(
             compiled,
             environment,
             instructions,
@@ -1068,14 +1118,17 @@ export class MaterializationService {
             failures,
             carried,
          );
+         const refused = { ...derivedRefused, ...buildRefused };
+         const sourcesRefused = Object.keys(refused).length;
          const durationMs = Date.now() - startedAt;
-         await this.commitManifest(id, entries, failures, {
+         await this.commitManifest(id, entries, failures, refused, {
             forceRefresh: opts.forceRefresh,
             sourceNames: opts.sourceNames ?? null,
             mode,
             trigger: opts.trigger,
             sourcesBuilt,
             sourcesReused,
+            ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
             durationMs,
          });
 
@@ -1091,17 +1144,18 @@ export class MaterializationService {
          if (sourcesFailed > 0) {
             recordSourcesOutcome("failed", sourcesFailed);
          }
-         // A run that lost sources is a partial success, not a success: the
-         // manifest it committed is missing tables a consumer expected.
-         this.recordRun(
-            mode,
-            sourcesFailed > 0 ? "partial" : "success",
-            startedAt,
-         );
-         logger[sourcesFailed > 0 ? "warn" : "info"](
+         recordSourcesOutcome("refused", sourcesRefused);
+         // A run that lost or refused sources is a partial success, not a
+         // success: the manifest it committed is missing tables a consumer
+         // expected, and a refused source serves live until its model changes.
+         const partial = sourcesFailed > 0 || sourcesRefused > 0;
+         this.recordRun(mode, partial ? "partial" : "success", startedAt);
+         logger[partial ? "warn" : "info"](
             sourcesFailed > 0
                ? "Materialization build complete with failed sources"
-               : "Materialization build complete",
+               : sourcesRefused > 0
+                 ? "Materialization build complete with refused sources"
+                 : "Materialization build complete",
             {
                materializationId: id,
                packageName,
@@ -1109,6 +1163,7 @@ export class MaterializationService {
                sourcesBuilt,
                sourcesReused,
                sourcesFailed,
+               sourcesRefused,
                durationMs,
             },
          );
@@ -1133,6 +1188,10 @@ export class MaterializationService {
     * costs nothing when there is no work: the ledger, not the content address,
     * decides, and planIncrementalStep answers "nothing new" with a skip that is
     * cheaper than the rebuild the carry was avoiding.
+    *
+    * A source the eligibility gate refuses is returned in `refused` rather than
+    * instructed. It throws instead when `sourceNames` targets it, or when every
+    * source the run targets was refused, so nothing is left to build or reuse.
     */
    private deriveSelfInstructions(
       compiled: CompiledBuildPlan,
@@ -1142,10 +1201,13 @@ export class MaterializationService {
    ): {
       instructions: BuildInstruction[];
       carried: Record<string, ManifestEntry>;
+      refused: Record<string, RefusedSource>;
    } {
       const include = sourceNames ? new Set(sourceNames) : null;
       const instructions: BuildInstruction[] = [];
       const carried: Record<string, ManifestEntry> = {};
+      const refused: Record<string, RefusedSource> = {};
+      const refusals: MaterializationEligibilityError[] = [];
       const seen = new Set<string>();
 
       for (const graph of compiled.graphs) {
@@ -1174,70 +1236,72 @@ export class MaterializationService {
             }
 
             const destination = resolveStorageDestination(persistSource);
-            if (destination) {
-               // Gate BEFORE computeSourceEntityId: an unbound parameter or a
-               // given makes getSQL() (called inside computeSourceEntityId)
-               // throw opaquely, so the eligibility refusal must fire first to
-               // give a clean, actionable 422.
-               //
-               // A ROLLUP is SKIPPED rather than thrown for, and only a rollup.
-               // The throw is right for an authored source: the author asked for
-               // this table and a 422 naming their annotation is the answer. A
-               // rollup asked for nothing an author can see, its refusal is already
-               // reported in the build plan's `refusedSources`, and throwing here
-               // aborts the auto-run — so one ineligible rollup would stop every
-               // other source in the package building, on every tick, forever.
-               //
-               // Reachable only since rollups gained destinations: before that
-               // `resolveStorageDestination` returned undefined for one and this
-               // branch was never entered.
-               if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
-                  try {
-                     assertMaterializationEligible(
-                        persistSource,
-                        deriveAnnotationFields(persistSource),
-                     );
-                  } catch (err) {
-                     if (!(err instanceof MaterializationEligibilityError))
-                        throw err;
-                     logger.warn(
-                        "Skipping a pre-aggregation rollup the storage tier refuses",
-                        {
-                           sourceName: persistSource.name,
-                           reason: errMessage(err),
-                        },
-                     );
-                     continue;
-                  }
-               } else {
+            const isRollup =
+               !!compiled.preaggregatePlans?.[persistSource.sourceID];
+            // Gate BEFORE computeSourceEntityId: an unbound parameter or a given
+            // makes getSQL() (called inside computeSourceEntityId) throw
+            // opaquely, so the eligibility refusal must fire first.
+            //
+            // A refused source is SKIPPED and recorded, not thrown for. A
+            // refusal is a compile-time fact the build plan already reports, and
+            // throwing here aborts the whole run, so one ineligible source would
+            // stop every other source in the package refreshing, on every tick,
+            // until the model changed. The run throws only when there is nothing
+            // else to build (below), or when the caller named this source in
+            // `sourceNames` and so asked for exactly the table that cannot be
+            // built.
+            try {
+               if (destination) {
                   assertMaterializationEligible(
                      persistSource,
                      deriveAnnotationFields(persistSource),
                   );
+               } else {
+                  // No storage destination: this is the colocated `#@ persist`
+                  // path (a CTAS into the source's own warehouse). It is not
+                  // covered by assertMaterializationEligible above (that gate
+                  // only runs when a storage destination resolved), but it is
+                  // just as frozen as a storage build, so an authorize-gated
+                  // source materialized here would still be served to every
+                  // caller.
+                  //
+                  // The origin is passed so a REFUSED ROLLUP names
+                  // `#@ preaggregate` and not `#@ persist`: a rollup's name is
+                  // synthesized and appears nowhere in the author's model, so the
+                  // default message sends them hunting for a line they never
+                  // wrote. See the function's doc.
+                  assertColocatedPersistNotAuthorizeGated(
+                     persistSource,
+                     persistSource.name,
+                     isRollup ? "preaggregate" : "persist",
+                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                     deriveAnnotationFields(persistSource),
+                  );
                }
-            } else {
-               // No storage destination: this is the colocated `#@ persist`
-               // path (a CTAS into the source's own warehouse). It is not
-               // covered by assertMaterializationEligible above (that gate
-               // only runs when a storage destination resolved), but it is
-               // just as frozen as a storage build, so an authorize-gated
-               // source materialized here would still be served to every
-               // caller. Gate BEFORE computeSourceEntityId for the same
-               // reason as the storage case above.
-               //
-               // The origin is passed so a REFUSED ROLLUP names `#@ preaggregate`
-               // and not `#@ persist`: a rollup's name is synthesized and appears
-               // nowhere in the author's model, so the default message sends them
-               // hunting for a line they never wrote. See the function's doc.
-               assertColocatedPersistNotAuthorizeGated(
-                  persistSource,
-                  persistSource.name,
-                  compiled.preaggregatePlans?.[persistSource.sourceID]
-                     ? "preaggregate"
-                     : "persist",
-                  compiled.sourceGateOutcomes?.[persistSource.sourceID],
-                  deriveAnnotationFields(persistSource),
-               );
+            } catch (err) {
+               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (include) throw err;
+               if (!refused[persistSource.sourceID]) {
+                  refused[persistSource.sourceID] = refusalRecord(
+                     persistSource,
+                     err,
+                     isRollup
+                        ? "preaggregate"
+                        : destination
+                          ? "storage"
+                          : "colocated",
+                     compiled.sourceModelPaths?.[persistSource.sourceID],
+                  );
+                  refusals.push(err);
+                  logger.warn(
+                     "Skipping a persist source the eligibility gate refuses",
+                     {
+                        sourceName: persistSource.name,
+                        reason: errMessage(err),
+                     },
+                  );
+               }
+               continue;
             }
 
             const sourceEntityId = computeSourceEntityId(
@@ -1312,7 +1376,15 @@ export class MaterializationService {
          }
       }
 
-      return { instructions, carried };
+      if (
+         refusals.length > 0 &&
+         instructions.length === 0 &&
+         Object.keys(carried).length === 0
+      ) {
+         throw allSourcesRefusedError(refusals);
+      }
+
+      return { instructions, carried, refused };
    }
 
    /**
@@ -1822,6 +1894,7 @@ export class MaterializationService {
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
+      refused: Record<string, RefusedSource>;
    }> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -1921,6 +1994,8 @@ export class MaterializationService {
       const retainedThisRun: ManifestEntry[] = [];
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
+      const refused: Record<string, RefusedSource> = {};
+      const refusals: MaterializationEligibilityError[] = [];
       const builtSources: string[] = [];
       // What this run has already written, keyed by the physical table rather than
       // by the content address: the address says what a table CONTAINS, the
@@ -2065,43 +2140,79 @@ export class MaterializationService {
                }
                if (!instruction) continue;
 
-               // Enforce the eligibility gate for any storage-targeted build,
-               // including orchestrated (host-supplied) instructions — the publisher
-               // refuses an ineligible source into the tier itself, not on trust.
-               // Skipped when the mode is off: the refusal below owns that case.
-               if (
-                  orchestratedInstruction?.destination &&
-                  getPersistStorageMode() !== "off"
-               ) {
-                  assertMaterializationEligible(
-                     persistSource,
-                     deriveAnnotationFields(persistSource),
-                  );
-               } else {
-                  // The gate refusal above only fires for a STORAGE-targeted
-                  // build, so on its own it leaves every other instruction —
-                  // the colocated one with no destination, and any build while
-                  // the mode is off — unexamined. An orchestrated host chooses
-                  // the destination, so this path reaches that case with no
-                  // `#@ persist`-vs-`storage=` distinction to lean on; refuse
-                  // a gated source however it was instructed, unless its
-                  // compile-time gate outcome proves the colocated relaxation
-                  // applies (see `assertColocatedPersistNotAuthorizeGated`'s
-                  // doc). `else` rather than an unconditional call:
-                  // `assertMaterializationEligible` already runs the identical
-                  // `referencesAuthorize` IR walk, so calling both on the
-                  // storage path would walk every persist source's whole
-                  // `SourceDef` twice per build for an answer the first call
-                  // has already acted on.
-                  assertColocatedPersistNotAuthorizeGated(
-                     persistSource,
-                     persistSource.name,
-                     compiled.preaggregatePlans?.[persistSource.sourceID]
-                        ? "preaggregate"
-                        : "persist",
-                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
-                     deriveAnnotationFields(persistSource),
-                  );
+               // A refusal here SKIPS the source rather than failing the run,
+               // for the same reason auto-run does (deriveSelfInstructions): the
+               // run throws only when every instructed source was refused. A host
+               // that builds from the build plan never instructs a source the plan
+               // refused, so reaching the catch means the plan and this gate
+               // disagreed; the warning and the `refused` source count are how
+               // that shows up without costing the sources that were fine.
+               try {
+                  // Enforce the eligibility gate for any storage-targeted build,
+                  // including orchestrated (host-supplied) instructions — the publisher
+                  // refuses an ineligible source into the tier itself, not on trust.
+                  // Skipped when the mode is off: the refusal below owns that case.
+                  if (
+                     orchestratedInstruction?.destination &&
+                     getPersistStorageMode() !== "off"
+                  ) {
+                     assertMaterializationEligible(
+                        persistSource,
+                        deriveAnnotationFields(persistSource),
+                     );
+                  } else {
+                     // The gate refusal above only fires for a STORAGE-targeted
+                     // build, so on its own it leaves every other instruction —
+                     // the colocated one with no destination, and any build while
+                     // the mode is off — unexamined. An orchestrated host chooses
+                     // the destination, so this path reaches that case with no
+                     // `#@ persist`-vs-`storage=` distinction to lean on; refuse
+                     // a gated source however it was instructed, unless its
+                     // compile-time gate outcome proves the colocated relaxation
+                     // applies (see `assertColocatedPersistNotAuthorizeGated`'s
+                     // doc). `else` rather than an unconditional call:
+                     // `assertMaterializationEligible` already runs the identical
+                     // `referencesAuthorize` IR walk, so calling both on the
+                     // storage path would walk every persist source's whole
+                     // `SourceDef` twice per build for an answer the first call
+                     // has already acted on.
+                     assertColocatedPersistNotAuthorizeGated(
+                        persistSource,
+                        persistSource.name,
+                        compiled.preaggregatePlans?.[persistSource.sourceID]
+                           ? "preaggregate"
+                           : "persist",
+                        compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                        deriveAnnotationFields(persistSource),
+                     );
+                  }
+               } catch (err) {
+                  if (!(err instanceof MaterializationEligibilityError))
+                     throw err;
+                  if (!refused[persistSource.sourceID]) {
+                     refused[persistSource.sourceID] = refusalRecord(
+                        persistSource,
+                        err,
+                        compiled.preaggregatePlans?.[persistSource.sourceID]
+                           ? "preaggregate"
+                           : orchestratedInstruction?.destination &&
+                               getPersistStorageMode() !== "off"
+                             ? "storage"
+                             : "colocated",
+                        compiled.sourceModelPaths?.[persistSource.sourceID],
+                     );
+                     refusals.push(err);
+                     logger.warn(
+                        "Skipping an instructed source the eligibility gate refuses",
+                        {
+                           packageName: owner?.packageName,
+                           sourceName: persistSource.name,
+                           physicalTableName: instruction.physicalTableName,
+                           reason: errMessage(err),
+                        },
+                     );
+                  }
+                  continue;
                }
 
                // The manifest is keyed by the content sourceEntityId — what Malloy
@@ -2402,7 +2513,19 @@ export class MaterializationService {
          // nothing reclaimable still takes the same cleanup path as any other
          // total failure.
          if (builtSources.length === 0 && failedReasons.length > 0) {
-            throw new Error(failedReasons.join("; "));
+            throw new Error(
+               [
+                  ...failedReasons,
+                  ...Object.values(refused).map(
+                     (r) => `${r.name}: ${r.message}`,
+                  ),
+               ].join("; "),
+            );
+         }
+         // Every instructed source was refused, so there was nothing to build:
+         // the refusal is the run's answer, as it is for auto-run.
+         if (builtSources.length === 0 && refusals.length > 0) {
+            throw allSourcesRefusedError(refusals);
          }
       } catch (err) {
          // A part-way failure returns a manifest that records the sources which
@@ -2424,7 +2547,7 @@ export class MaterializationService {
          throw err;
       }
 
-      return { entries, failures };
+      return { entries, failures, refused };
    }
 
    /**
@@ -3887,6 +4010,7 @@ export class MaterializationService {
       id: string,
       entries: Record<string, ManifestEntry>,
       failures: Record<string, SourceFailure>,
+      refused: Record<string, RefusedSource>,
       metadata: Record<string, unknown>,
    ): Promise<void> {
       await this.transition(id, "MANIFEST_ROWS_READY");
@@ -3897,6 +4021,7 @@ export class MaterializationService {
          // that records no failures and one that records an empty set are the
          // same fact, and the absent key is the one every earlier manifest has.
          ...(Object.keys(failures).length > 0 ? { failures } : {}),
+         ...(Object.keys(refused).length > 0 ? { refused } : {}),
          strict: false,
       };
       await this.transition(id, "MANIFEST_FILE_READY", {

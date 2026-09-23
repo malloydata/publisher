@@ -99,8 +99,9 @@ Delete the smoke file and drop its table afterward.
 A gated source **can** be persisted, but only on one tier and only in one shape, and the thing to be
 careful about is not refused by anything - you have to decide it.
 
-- **`storage=` and `#@ preaggregate` always refuse a gated source**, with a 422 at build time naming the
-  source. (`#@ persist storage=<name>` is the tier that materializes into a separate registered storage
+- **`storage=` and `#@ preaggregate` always refuse a gated source**, naming it. The build skips a refused
+  source and builds the rest of the package, recording the refusal on the run (`manifest.refused`); the run
+  fails with a 422 only when every source it targeted was refused, or when `sourceNames` named this one. (`#@ persist storage=<name>` is the tier that materializes into a separate registered storage
   destination and serves from there, rather than building in the source's own connection; `#@ preaggregate`
   stores a rollup Publisher derives from a measure you annotated with a grain, rather than a source you
   wrote.) A rollup also groups *across* the gated column, so it could not be row-filtered afterwards even

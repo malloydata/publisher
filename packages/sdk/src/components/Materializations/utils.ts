@@ -81,6 +81,28 @@ export interface MaterializationMetadata {
    trigger?: "ON_DEMAND" | "SCHEDULER";
    sourcesBuilt?: number;
    sourcesReused?: number;
+   /**
+    * Persist sources the eligibility gate refused, so the run skipped them and
+    * they serve live. Absent when the run refused nothing; the refused sources
+    * themselves are named in the manifest's `refused` map.
+    */
+   sourcesRefused?: number;
+}
+
+/**
+ * The run's source counts, joined by `separator`. Refused sources are named
+ * only when there are some, so a clean run reads as it always has.
+ */
+export function sourcesSummary(
+   meta: MaterializationMetadata,
+   separator: string,
+): string {
+   const parts = [
+      `${meta.sourcesBuilt ?? 0} built`,
+      `${meta.sourcesReused ?? 0} reused`,
+   ];
+   if (meta.sourcesRefused) parts.push(`${meta.sourcesRefused} refused`);
+   return parts.join(separator);
 }
 
 export function parseMetadata(

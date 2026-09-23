@@ -10,6 +10,7 @@ import {
    isActiveStatus,
    isTerminalStatus,
    parseMetadata,
+   sourcesSummary,
    statusColor,
    statusLabel,
    triggerLabel,
@@ -178,5 +179,22 @@ describe("formatRelativeTime", () => {
    it("renders a dash when there is no instant", () => {
       expect(formatRelativeTime(null)).toBe("-");
       expect(formatRelativeTime(undefined)).toBe("-");
+   });
+});
+
+describe("sourcesSummary", () => {
+   it("reads as built and reused on a run that refused nothing", () => {
+      expect(sourcesSummary({ sourcesBuilt: 2, sourcesReused: 1 }, ", ")).toBe(
+         "2 built, 1 reused",
+      );
+   });
+
+   it("names the refused count when the run skipped a source", () => {
+      expect(
+         sourcesSummary(
+            { sourcesBuilt: 5, sourcesReused: 0, sourcesRefused: 7 },
+            " · ",
+         ),
+      ).toBe("5 built · 0 reused · 7 refused");
    });
 });

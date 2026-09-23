@@ -633,11 +633,19 @@ refused rather than silently recomputing — the build fails loudly instead. The
 ### Eligibility refusals (refused at build time)
 
 Some sources can't be safely materialized into a shared store, and Publisher
-refuses them at build time rather than producing a subtly wrong table. In the
-**auto-run** flow shown here the refusal surfaces as a **failed materialization**
-(`status: FAILED`, reason in `error`); the **orchestrated** build path (a
-caller-supplied `buildInstructions`) returns the same refusal synchronously as
-**HTTP 422**.
+refuses them at build time rather than producing a subtly wrong table. The
+refusal is known when the model compiles, and the build plan reports it under
+`refusedSources`. A run **skips** a refused source and builds the rest of the
+package: the run completes (`MANIFEST_FILE_READY`), the refused source serves
+live, and the run records it in `manifest.refused` with the gate's message and
+counts it in `metadata.sourcesRefused`. One refused source never costs its
+siblings their freshness.
+
+A run **fails** on a refusal in only two cases: every source it targeted was
+refused, so there is nothing to build, or `sourceNames` named a refused source,
+so the caller asked for exactly the table that cannot be built. Then the refusal
+surfaces as a **failed materialization** (`status: FAILED`, reason in `error`).
+The walkthroughs below use one of each.
 
 A given is refused when the **build** would substitute its value — here, because
 the persisted query itself reads it. A given in the source's extend block is a
@@ -663,24 +671,35 @@ curl -s "http://localhost:4000/api/v0/environments/examples/packages/persist-tut
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
   -H 'content-type: application/json' -d '{"forceRefresh": true}' >/dev/null
 MZID=$(curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations | jq -r '.[0].id')
-curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/$MZID | jq '{status, error}'
+curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/$MZID \
+  | jq '{status, built: .metadata.sourcesBuilt, refused: .metadata.sourcesRefused, reasons: [.manifest.refused[] | {name, reason, message}]}'
 ```
 
 ```json
 {
-  "status": "FAILED",
-  "error": "Source 'secret_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read."
+  "status": "MANIFEST_FILE_READY",
+  "built": 1,
+  "refused": 1,
+  "reasons": [
+    {
+      "name": "secret_rollup",
+      "reason": "given_in_persisted_query",
+      "message": "Source 'secret_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read."
+    }
+  ]
 }
 ```
 
-The build fails with a clear, actionable message — and the package keeps
-serving. The message names the move that fixes it: writing the source as
+The run completes: `daily_orders` from `orders.malloy` is rebuilt, and
+`secret_rollup` is skipped, serves live, and is listed with a clear, actionable
+message. The message names the move that fixes it: writing the source as
 `orders_g -> { aggregate: … } extend { where: region = $region_filter }` puts the
 term where the build leaves it out, and the source materializes. Remove
 `givens.malloy` and reload to continue.
 
 The other refusal is an **unbound (free) parameter** — a source with a free
-parameter is a template with no single relation to freeze:
+parameter is a template with no single relation to freeze. Naming it in
+`sourceNames` asks for exactly that table, so the run fails:
 
 ```bash
 cat > "$ENVDIR/persist-tutorial/paramtest.malloy" <<'MALLOY'

@@ -27,6 +27,7 @@ import {
    formatTimestamp,
    isActiveStatus,
    parseMetadata,
+   sourcesSummary,
    statusColor,
    statusLabel,
 } from "./utils";
@@ -135,7 +136,7 @@ export default function MaterializationDetailDialog({
                      />
                      <DetailField
                         label="Sources"
-                        value={`${meta.sourcesBuilt ?? 0} built · ${meta.sourcesReused ?? 0} reused`}
+                        value={sourcesSummary(meta, " · ")}
                      />
                      <DetailField
                         label="Force refresh"

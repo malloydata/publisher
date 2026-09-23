@@ -31,6 +31,16 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a refused persist source is skipped, and no longer fails the whole run
+
+**Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
+
+**Now:** a run skips a refused source and builds everything else. The run completes (`MANIFEST_FILE_READY`), and each refused source is recorded in the manifest's new `refused` map, keyed by sourceID in the same shape as the build plan's `refusedSources`, and counted in `metadata.sourcesRefused`. A refused source serves live, as it did before. This applies to auto-run and to builds with caller-supplied `buildInstructions`.
+
+A run still fails on a refusal when there is nothing else to build, because every source it targeted was refused, or when `sourceNames` names a refused source, because that caller asked for exactly the table that cannot be built. When several sources are refused, the error names all of them, not only the first in plan order.
+
+**What to check.** Anything that read a `FAILED` run as the signal that a package holds an ineligible source should read `manifest.refused` (or `metadata.sourcesRefused`) instead; the build plan's `refusedSources` reports the same refusals before any run. A run with refusals is metered as `partial` in `publisher_materialization_runs_total`, and `publisher_materialization_sources_total` gains `outcome="refused"`. On a caller-orchestrated build the latter should stay at zero: a caller that builds from the build plan never instructs a source the plan refused, so a nonzero count means the plan and the build disagreed about a source.
+
 ## [Unreleased] — a package's `index.malloy` is its published surface
 
 Put an `index.malloy` at a package root, `import` your models, and `export { … }` the sources you

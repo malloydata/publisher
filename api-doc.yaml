@@ -6754,6 +6754,20 @@ components:
             `entries`, so this is how a consumer tells a partial failure from a
             clean run and learns which source failed. Empty or absent on a run
             where every source built.
+        refused:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/RefusedSource"
+          description: >-
+            Map of sourceID ("sourceName@modelURL") to the persist sources this
+            run did not attempt because the eligibility gate refused them, in
+            the same shape `BuildPlan.refusedSources` reports. Keyed by sourceID
+            rather than sourceEntityId because a refused source may have no
+            content address: a free-parameter or given-referencing source
+            cannot produce the SQL one is computed from. A refusal skips only
+            that source, so the rest of the run builds; the run fails only when
+            every source it targeted was refused, or when `sourceNames` names a
+            refused source explicitly. Absent on a run that refused nothing.
         strict:
           type: boolean
           description: Whether unresolved references should error.
