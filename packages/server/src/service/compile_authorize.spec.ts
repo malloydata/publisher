@@ -27,31 +27,21 @@ given:
   ROLE :: string
   GROUPS :: number[]
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }
 
 source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend {
-  measure: c is count()
-}
-
-#(authorize) 1 = 1
-source: always_true is duckdb.sql("SELECT 1 as x") extend {
-  measure: c is count()
-}
-
-#(authorize) false
-source: always_false is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }
 `;
 
 /**
- * MODEL with every `#(authorize)` line removed.
+ * MODEL with every gate line removed, on BOTH routes.
  *
  * The tests below submit a caller edit that has dropped the author's gate, and
  * assert the on-disk gate denies anyway. They must drop ALL of them: a leftover
@@ -62,7 +52,11 @@ source: always_false is duckdb.sql("SELECT 1 as x") extend {
 const withoutGates = (model: string): string =>
    model
       .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#(authorize)"))
+      .filter(
+         (line) =>
+            !line.trimStart().startsWith("#(authorize)") &&
+            !line.trimStart().startsWith("#(access_filter)"),
+      )
       .join("\n");
 
 describe("compile-path authorize gate (compileSource)", () => {
@@ -126,55 +120,33 @@ describe("compile-path authorize gate (compileSource)", () => {
       expect(problems).toEqual([]);
    });
 
-   it("ADMITS at APPEND scope even when the given does NOT satisfy the gate — /compile decides on PRESENCE, not the value", async () => {
-      // The `checkOnly` decidable escape only asks whether the caller
-      // engaged with the gate (supplied SOME value for every given it
-      // reads), not whether that value would pass — the real row filter is
-      // evaluated against the actual value at RUN time, never here. `/compile`
-      // returns a schema, not rows, so admitting on presence alone reveals
-      // nothing a query wouldn't already answer with (possibly empty)
-      // filtered rows.
+   it("REFUSES at APPEND scope when the LOCK's given does not satisfy it — the lock is truth-evaluated on /compile", async () => {
+      // If "may this caller reach this source at all" is what `#(authorize)`
+      // means, then reading the source's SQL is reaching it. So the lock is
+      // evaluated here, not merely checked for presence. The accepted cost:
+      // an author outside the group can no longer compile-check a locked
+      // source.
+      await expect(
+         compile("run: gated -> { aggregate: c }", { ROLE: "nobody" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("ADMITS at APPEND scope once the LOCK's given satisfies it", async () => {
       const { problems } = await compile("run: gated -> { aggregate: c }", {
-         ROLE: "nobody",
+         ROLE: "analyst",
       });
       expect(problems).toEqual([]);
    });
 
-   it("ADMITS a row-field gate (`org_id`) at APPEND scope once its given is supplied", async () => {
-      // `row_gated`'s condition reads `org_id`, a real column — the fold-in
-      // still resolves the on-disk twin for it exactly as it does for the
-      // given-only "gated" case above, so the same decidable escape applies:
-      // `GROUPS` was supplied, so this compiles without running the query.
+   it("ADMITS a row-field #(access_filter) at APPEND scope on PRESENCE, not value", async () => {
+      // The other route keeps the `checkOnly` decidable escape: a filter has
+      // no whole-source answer to evaluate, and `/compile` returns a schema
+      // rather than rows, so admitting once the caller has engaged with the
+      // gate reveals nothing a query would not already answer with (possibly
+      // empty) filtered rows. `GROUPS: [-1]` matches nothing, and compiles.
       const { problems } = await compile("run: row_gated -> { aggregate: c }", {
-         GROUPS: [1],
+         GROUPS: [-1],
       });
-      expect(problems).toEqual([]);
-   });
-
-   it("ADMITS a gate referencing NO given (`authorized is 1 = 1`) with no given supplied at all", async () => {
-      // Routed defect fix: `givenNames.length === 0` is decidable by
-      // construction — there is no caller value left to wait on, since
-      // `/compile` executes nothing. Before the fix this denied (the
-      // dimension form's `literalAtoms` was hardcoded empty, so
-      // `constantTrue` could never be true), while the query path admitted
-      // every row for the identical gate — an inconsistency between the two
-      // enforcement points for the exact same access rule.
-      const { problems } = await compile(
-         "run: always_true -> { aggregate: c }",
-      );
-      expect(problems).toEqual([]);
-   });
-
-   it("ADMITS a gate referencing NO given that is constant `false` — /compile decides on PRESENCE, not the value, same as a supplied-but-wrong given", async () => {
-      // `givenNames.length === 0` is decidable regardless of which way the
-      // gate itself resolves — /compile never runs the query, so there is
-      // no row-truth to check here either way. The deny-everyone kill
-      // switch is a QUERY-path guarantee (a real run grafts `where: false`
-      // and gets zero rows, pinned in
-      // `row_level_authorize.integration.spec.ts`), not a `/compile` one.
-      const { problems } = await compile(
-         "run: always_false -> { aggregate: c }",
-      );
       expect(problems).toEqual([]);
    });
 
@@ -420,7 +392,7 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }`,
@@ -434,7 +406,7 @@ source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
             `##! experimental.givens
 import "secret.malloy"
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: visible_gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }
@@ -532,6 +504,26 @@ export { customers, visible_gated }`,
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
+   it("decides the alias's lock BEFORE compiling, so /compile is not a schema oracle", async () => {
+      // /compile answers WITH the compiler's diagnostics, so ordering is the
+      // whole guarantee here: a refused caller aliasing the source and naming a
+      // column that does not exist must hear the denial, never which names
+      // resolve on a source they cannot read.
+      const err = await env
+         .compileSource(
+            "pkg",
+            "index.malloy",
+            "source: mine is visible_gated extend {}\nrun: mine -> { group_by: no_such_field }",
+            false,
+         )
+         .then(
+            () => undefined,
+            (e: Error) => e,
+         );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
+   });
+
    it("ADMITS the hidden source once the gate's given is supplied — denyHiddenAsNotQueryable scrubs a denial, it is not an access check", async () => {
       // `denyHiddenAsNotQueryable` (environment.ts) runs the gate first and
       // only converts to `NotQueryableError` when the gate itself threw
@@ -561,23 +553,22 @@ export { customers, visible_gated }`,
       expect(sql).toBeUndefined();
    });
 
-   it("with includeSql AND a non-satisfying given, returns the hidden source's UNGRAFTED SQL — the widest point of the accepted trade", async () => {
-      // Same admission as above (presence, not value, decides), but now with
-      // `includeSql: true` and `ROLE: "nobody"` — a value that would fail the
-      // gate at run time. `/compile` never runs the query, so there is no row
-      // filter to apply here even for a value that would have failed one:
-      // the returned SQL is the plain compiled query, with no `$ROLE`
-      // reference at all. This is the actual shape of the residual the
-      // product owner accepted, not just that some string was returned.
-      const { problems, sql } = await env.compileSource(
-         "pkg",
-         "secret.malloy",
-         "run: hidden_gated -> { aggregate: c }",
-         true,
-         { ROLE: "nobody" },
-      );
-      expect(problems).toEqual([]);
-      expect(sql).toContain("FROM (SELECT 1 as x) as base");
-      expect(sql).not.toMatch(/ROLE|analyst|nobody/i);
+   it("with includeSql AND a non-satisfying given, returns NOTHING — the lock closed the widest point of the accepted trade", async () => {
+      // This test used to record the residual exposure: `includeSql: true`
+      // plus `ROLE: "nobody"` returned the hidden source's plain compiled SQL,
+      // because `/compile` admitted on the PRESENCE of a given rather than
+      // its value. Truth-evaluating the lock closes it. The refusal is the
+      // boundary's 404 rather than a 403 because the source is also hidden —
+      // a lock thrown outside `denyHiddenAsNotQueryable` would be an
+      // existence oracle, which is this describe block's whole subject.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "secret.malloy",
+            "run: hidden_gated -> { aggregate: c }",
+            true,
+            { ROLE: "nobody" },
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });

@@ -1,0 +1,22 @@
+{
+ "qid": "storefront-tour-net-sales-2025",
+ "truthQuery": "run: t_order_items -> { where: created_at.year = @2025 and status != 'Cancelled' and status != 'Returned'; aggregate: net_sales is sale_price.sum() }",
+ "verifyQuery": "run: t_order_items -> { where: created_at.year = @2025; aggregate: gross is sale_price.sum(), excluded is sale_price.sum() { where: status = 'Cancelled' or status = 'Returned' } }",
+ "truthRows": [
+  {
+   "net_sales": 834215.6199999977
+  }
+ ],
+ "verifyRows": [
+  {
+   "gross": 912857.1700000011,
+   "excluded": 78641.55000000008
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "gross 912857.17 less excluded 78641.55 = 834215.62"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

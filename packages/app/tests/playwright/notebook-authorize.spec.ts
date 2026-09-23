@@ -13,16 +13,19 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  * storefront example ships no gated model, so the spec writes its own
  * .malloy + .malloynb into the `storefront` package, reloads, and cleans up.
  *
- * The gated source requires `$role = 'analyst'`; `role` has no default, so on
- * load the cell fails resolving the given (HTTP 400, no cell result) and
- * grants once the user supplies `role = analyst` in the Parameters panel. The
- * query spotlights a single product in the Jeans category ("Cobalt Bootcut
- * Jean"), the visible signal that the gate passed.
+ * The gate is a LOCK: `#(authorize)` asks whether the caller may reach the
+ * source at all, so every way of not satisfying it is a 403 and the cell
+ * renders no result. `role` has no default, so on load the lock is unsatisfied
+ * and grants once the user supplies `role = analyst` in the Parameters panel.
+ * The query spotlights a single product in the Jeans category ("Cobalt Bootcut
+ * Jean"), the visible signal that the lock admitted.
  *
- * Note the three distinct outcomes, which earlier versions of this spec
- * conflated: an unsupplied given is a 400, a NON-matching given is a 200 with
- * zero rows (the gate verdict — a row-level gate filters, it does not refuse),
- * and a 403 means the gate could not be attached at all.
+ * One outcome, three ways to reach it, and the point of the spec is that the
+ * caller cannot tell them apart: the given is unset, the given is set to
+ * something the lock does not admit, or the lock could not be attached at all.
+ * All three are a 403 naming the source and nothing else. A row filter would
+ * be the other shape — `#(access_filter)` answers 200 with the caller's
+ * (empty) rows — and this source carries none.
  *
  * Run this against a normal server, not one started with `--watch-env examples`:
  * watch mode symlinks PKG_DIR to the tracked `examples/storefront` sources, so
@@ -41,7 +44,7 @@ const MODEL_SOURCE = `##! experimental.givens
 
 given: role :: string
 
-#(authorize) $role = 'analyst'
+#(authorize) 'analyst' = $role
 source: gated_products is duckdb.table('data/products.parquet') extend {
   primary_key: product_id
   view: spotlight is {
@@ -103,39 +106,37 @@ test.describe("notebook-authorize", () => {
       return parsed.data?.array_value ?? [];
    }
 
-   test("an unsupplied given is a 400 about the given, not a gate verdict", async ({
+   test("an unsupplied given is a 403 that names only the source", async ({
       baseURL,
    }) => {
-      // `role` has no default, so this fails resolving the given BEFORE any
-      // gate decision is reached — a 400, not the 403 this test used to
-      // assert. That earlier assertion passed for the wrong reason: the gate
-      // could not attach over the `import` at all, and an attach failure
-      // denies with exactly the 403 shape a real denial has. It therefore
-      // passed whether the feature worked or was completely dead.
+      // `role` has no default, so the lock has nothing to evaluate and denies.
+      // The message must name the source and stop there — leaking either the
+      // given's name or the literal it is compared against would tell an
+      // outsider how to satisfy a lock they were just refused.
       const res = await fetch(cellUrl(baseURL!));
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(403);
       const body = (await res.json()) as { message?: string };
-      expect(body.message).toContain("role");
-      // Still never leaks the gate expression, whatever the status.
+      expect(body.message).toContain("gated_products");
+      expect(body.message ?? "").not.toContain("analyst");
+      expect(body.message ?? "").not.toContain("role");
+   });
+
+   test("a non-matching given is a 403, indistinguishable from an unset one", async ({
+      baseURL,
+   }) => {
+      // The denial shape for a lock, and the case the whole route split exists
+      // for: `intern` is refused outright rather than served an empty result
+      // it could mistake for "this source holds no Jeans".
+      const res = await fetch(cellUrl(baseURL!, { role: "intern" }));
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { message?: string };
       expect(body.message ?? "").not.toContain("analyst");
    });
 
-   test("a non-matching given returns 200 with ZERO rows — the gate verdict", async ({
-      baseURL,
-   }) => {
-      // The actual denial shape for a row-level gate: not a status code, but
-      // an empty result on a source the caller may query. This is the case a
-      // status-only assertion cannot distinguish from success, and the one
-      // that fails outright if the gate never attaches.
-      const res = await fetch(cellUrl(baseURL!, { role: "intern" }));
-      expect(res.status).toBe(200);
-      expect(await cellRows(res)).toHaveLength(0);
-   });
-
    test("role = analyst returns the gated row", async ({ baseURL }) => {
-      // Asserts the ROW, not just the 200. A 200 carrying zero rows — which
-      // is what a silently-dropped gate or an over-broad filter produces —
-      // passed the previous status-only version of this test.
+      // Asserts the ROW, not just the 200: a 200 carrying zero rows is what a
+      // silently-dropped gate produces, and it would pass a status-only
+      // version of this test.
       const res = await fetch(cellUrl(baseURL!, { role: "analyst" }));
       expect(res.status).toBe(200);
       const rows = await cellRows(res);
@@ -154,11 +155,11 @@ test.describe("notebook-authorize", () => {
 
    test("UI: result is gated until the given is supplied", async ({ page }) => {
       // Wait on the actual denied cell response, not a fixed delay: the gated
-      // cell runs on load (role unset) and returns 400 — unset given, decided
-      // before any gate verdict. Arm the wait before
-      // opening so we can't miss it. A fixed timeout would either flake on a
-      // slow runner or — worse — let the `role` fill land while the notebook is
-      // still executing, where the change is recorded but not re-run.
+      // cell runs on load with `role` unset and the lock refuses it, 403. Arm
+      // the wait before opening so we can't miss it. A fixed timeout would
+      // either flake on a slow runner or — worse — let the `role` fill land
+      // while the notebook is still executing, where the change is recorded
+      // but not re-run.
       const deniedResponse = page.waitForResponse(
          (r) =>
             /\/notebooks\/.*authz_gate_notebook\.malloynb\/cells\/0/.test(
@@ -167,7 +168,7 @@ test.describe("notebook-authorize", () => {
          { timeout: 30_000 },
       );
       await openNotebook(page);
-      expect((await deniedResponse).status()).toBe(400);
+      expect((await deniedResponse).status()).toBe(403);
 
       // Execution finished (no spinner) and, denied, rendered no result.
       await expect(page.getByRole("progressbar")).toHaveCount(0);

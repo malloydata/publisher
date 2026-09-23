@@ -27,6 +27,13 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 
 ## Build sequence
 
+0. **CHECK THE PACKAGE CAN SERVE A DASHBOARD AT ALL.** If its root holds an `index.malloy`, that
+   file is the package's surface, and a dashboard's file is not something it can `export`, so the
+   dashboard you are about to write will compile and then be withheld. Every package made by the
+   scaffolder has that file, so this is the common case, not the corner one. Serving dashboards
+   there means declaring an `explores` in `publisher.json` naming `index.malloy` and every dashboard
+   file, which overrides the convention. Settle that first: it is a different curation shape for the
+   package, not a line to add at the end. See "Read the lint" for the warning it produces otherwise.
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
    `get_context` if you have it, otherwise the REST model endpoint or the `.malloy` files.
    Never guess a name. A guessed field in a query fails the whole package load, not just that one
@@ -437,8 +444,8 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
 Findings carry a `severity`, but `warn` is the ordinary default and tells you nothing about how bad
 one is. Read the text, not the severity and not the count. One message is worth recognising because
 it changes what the rest of the list means: **"Dashboard lint stopped early, so this list is
-incomplete"**. A dashboard withheld from `explores` also loses its own findings, so a short list for a
-withheld file is not a clean bill of health.
+incomplete"**. A dashboard withheld from the package's surface also loses its own findings, so a
+short list for a withheld file is not a clean bill of health.
 
 **Read the status the reload itself returns, not the listing.** One dashboard that fails to compile
 fails the whole package load, and the reload answers **424** with the compile error. A package that
@@ -453,11 +460,22 @@ at all appears there too, without `stale`, and is absent from the listing entire
 
 If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
 usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
-an untagged shared include. There is a second cause if the package's `publisher.json` carries an
-`explores` list: a dashboard whose file is missing from it is withheld rather than served, and the
-warning says so and names the fix. The list is what matters, not the `queryableSources` setting, which
-is `declared` by default; a package with no `explores` list withholds nothing. Where there is one, a
-`suggest` source has to be queryable as well as resolvable, so it needs to be on the list too.
+an untagged shared include. There is a second cause whenever the package has a curated surface: a
+dashboard whose file is off it is withheld rather than served, and the warning says so and names the
+fix. A package has a surface in two ways, and the second is easy to miss because no manifest field
+records it:
+
+- the package's `publisher.json` carries an `explores` list, and the dashboard's file is not on it;
+- the package root holds an **`index.malloy`**, which IS the surface. This bites in both
+  directions, and a dashboard's file is not something an `index.malloy` exports either way: adding
+  that file to a package that has dashboards withholds every one of them, and adding a dashboard to
+  a package that already has one (every scaffolded package does) means it is never served. The fix
+  is the same in both directions, and it is not an edit to `index.malloy`: declare an `explores` in
+  `publisher.json` naming `index.malloy` and every dashboard file.
+
+Either way the surface is what matters, not the `queryableSources` setting, which is `declared` by
+default; a package with neither withholds nothing. Where there is a surface, a `suggest` source has
+to be queryable as well as resolvable, so it needs to be reachable through it too.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
 separate warning for a tag that does not _parse_ is syntax only: it carries no

@@ -105,25 +105,16 @@ run: flights -> { group_by: carrier, aggregate: n is flight_count } -> { aggrega
 
 The message does not name the field. When it appears, look for a model measure you wrapped in another aggregate. If you only need the top row, skip the second stage: `order_by: n desc` with `limit: 1`.
 
-## `= null` Silently Matches Nothing
-
-```malloy
-// WRONG: may return zero rows with no error
-aggregate: missing is count() { where: seats = null }
-// RIGHT
-aggregate: missing is count() { where: seats is null }
-```
-
-Depending on the server this is either rejected or run as a filter that matches nothing, and a count of zero looks like an answer. Use `is null` / `is not null`.
-
 ## Window Braces Bind to the Function
 
 ```malloy
 // WRONG: "`partition_by` is not supported for this kind of expression"
-calculate: share is sum_cumulative(n) / all(n) { partition_by: region }
+calculate: share is sum_cumulative(n) / region_total { partition_by: region, order_by: n desc }
 // RIGHT: the brace goes directly after the window function call
-calculate: share is sum_cumulative(n) { partition_by: region } / all(n)
+calculate: share is sum_cumulative(n) { partition_by: region, order_by: n desc } / region_total
 ```
+
+For a within-group share, compute the denominator in `aggregate:` (`region_total is all(count(), region)`). A window's `{ partition_by }` does not apply to `all()`.
 
 ## Dotted Paths Must Name a Declared Join
 
@@ -216,4 +207,4 @@ The same message appears for an unnamed aggregate after the first: `aggregate: n
 
 ## Compiles, Then Refused by the Warehouse
 
-`Query execution failed: ...` means the Malloy compiled and the warehouse rejected the SQL, often over a type. The position it quotes is in the generated SQL, not in your query. BigQuery, for example, will not partition a window function on a FLOAT64 column; cast it (`partition_by: season::string`) or fix the type in the model.
+`Query execution failed: ...` means the Malloy compiled and the warehouse rejected the SQL, often over a type. The position it quotes is in the generated SQL, not in your query. BigQuery, for example, will not partition a window function on a FLOAT64 column. `partition_by:` takes only a field name, so cast in `group_by:` (`season_key is season::string`) and partition on `season_key`, or fix the type in the model.

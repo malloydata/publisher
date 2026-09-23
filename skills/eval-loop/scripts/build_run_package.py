@@ -396,7 +396,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             retr.append({"attempt_key": ak, "run_id": run_id, **r})
 
             exp = case.get("expectedEntities") or {}
-            required = {e for g in groups(exp) for e in g}
+            required_groups = groups(exp)
+            required = {e for g in required_groups for e in g}
             acceptable = set(exp.get("acceptable") or []) | required
             got: dict[str, None] = {}
             mine_tokens: list[str] = []
@@ -412,11 +413,23 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             # named in returned source docs (from the ledger when the run
             # recorded them, else from the transcript walked above).
             tokens = {t for t in mine_tokens} | set(_IDENT.findall(docs))
-            for eid in sorted(required):
+            # ONE ROW PER GROUP, not per entity. `groups()` is the unit recall
+            # is scored in -- a `requiredAnyOf` group is satisfied by any one
+            # member -- and flattening it here made the app's badge disagree
+            # with the recall metric printed beside it: a case with one
+            # `required` plus a three-way alternative rendered four dots and
+            # read `2/4` in red on a case whose recall was 2 of 2. Nine of the
+            # storefront set's twelve cases carry such a group.
+            RANK = {"exact": 0, "alias": 1, "in_docs": 2, "missing": 3}
+            for g in sorted(required_groups, key=lambda g: sorted(g)[0]):
+                best = min(((delivery(e, set(got), tokens), e) for e in g),
+                           key=lambda p: RANK.get(p[0], 3))
+                status, eid = best
                 required_rows.append({
                     "attempt_key": ak, "run_id": run_id, "qid": qid,
-                    "entity_id": eid,
-                    "status": delivery(eid, set(got), tokens)})
+                    "entity_id": eid if len(g) == 1 else
+                                 f"{eid} (any of {len(g)})",
+                    "status": status})
 
             roles: list[tuple[str, str]] = []
             roles += [(eid, "required") for eid in sorted(required)]

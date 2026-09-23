@@ -437,8 +437,15 @@ class Cascade(unittest.TestCase):
     # `passed_not_covered` and `passed_not_retrieved` OVERLAY the rungs: they
     # re-count rows already counted by "not covered" and "not retrieved". They
     # are not rungs and must never be added to them.
+    #
+    # `recall_scored` / `recall_short` are a parallel TALLY, not a rung either.
+    # The rungs are an elif chain, so a row whose coverage was never measured
+    # stops at the first one and its recall is never classified; these two
+    # count recall over every row that carried one, which is what the retrieval
+    # line reports. Same rows, counted on a second axis -- so they overlay.
     OVERLAY = ("total", "passed_not_covered", "passed_not_retrieved",
-               "passed_unmeasured", "passed_no_entities_named")
+               "passed_unmeasured", "passed_no_entities_named",
+               "recall_scored", "recall_short")
 
     def test_every_row_lands_on_exactly_one_rung(self):
         c = cascade(self.rows())

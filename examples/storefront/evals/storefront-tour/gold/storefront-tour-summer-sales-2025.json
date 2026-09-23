@@ -1,0 +1,22 @@
+{
+ "qid": "storefront-tour-summer-sales-2025",
+ "truthQuery": "run: t_order_items -> { where: created_at >= @2025-05-25 and created_at <= @2025-09-15; aggregate: summer_sales is sale_price.sum() }",
+ "verifyQuery": "run: t_order_items -> { where: created_at.year = @2025; aggregate: year_total is sale_price.sum(), outside_window is sale_price.sum() { where: created_at < @2025-05-25 or created_at > @2025-09-15 } }",
+ "truthRows": [
+  {
+   "summer_sales": 267422.5299999996
+  }
+ ],
+ "verifyRows": [
+  {
+   "year_total": 912857.1700000011,
+   "outside_window": 645434.6399999992
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "window 267422.53 vs complement 267422.53; jun-aug for contrast 213939.34"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

@@ -95,16 +95,23 @@ describe("Explore Visibility via worker pool", () => {
       );
    }
 
-   // A base module (never an explore) plus a curated index that imports it,
+   // A base module (never an explore) plus a curated surface that imports it,
    // joins through it, and re-exports only `customers`. `helper` is a second
-   // local source the index does NOT export — used to prove within-file curation.
-   function writeLayeredModels(): void {
+   // local source the surface does NOT export — used to prove within-file
+   // curation.
+   //
+   // The curated file's NAME is a parameter because "index.malloy" is no longer
+   // an arbitrary choice: a root file with that name IS the discovery surface
+   // when the manifest declares no `explores`. A test whose subject is the
+   // uncurated default has to name the file something else, or it is testing
+   // the convention instead.
+   function writeLayeredModels(curatedFile = "index.malloy"): void {
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
          `source: base_source is duckdb.sql("select 1 as id, 'x' as label")`,
       );
       fs.writeFileSync(
-         path.join(tempDir, "index.malloy"),
+         path.join(tempDir, curatedFile),
          `import "base.malloy"
 source: helper is duckdb.sql("select 1 as id")
 source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
@@ -162,12 +169,17 @@ export { customers }`,
 
    it("keeps enforcing a hidden source's authorize gate (curation ≠ access)", async () => {
       // base_source is hidden from index.malloy's listing (not re-exported),
-      // but it carries its own #(authorize) gate. Curation must not drop that
+      // but it carries its own #(access_filter) gate. Curation must not drop that
       // gate: getAuthorize reads the COMPLETE source list, not the curated view.
       writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
-         `#(authorize) true
+         `##! experimental.givens
+
+given:
+  ID :: number
+
+#(access_filter) id = $ID
 source: base_source is duckdb.sql("select 1 as id") extend {}`,
       );
       fs.writeFileSync(
@@ -193,31 +205,88 @@ export { customers }`,
          ]);
 
          // Enforcement: the hidden source's gate is still in force.
-         expect(model.getAuthorize("base_source")).toEqual(["true"]);
+         expect(model.getAccessFilter("base_source")).toEqual(["id = $ID"]);
       } finally {
          await duckdb.close();
       }
    });
 
-   it("lists every model and full sources when explores is absent (backward compatible)", async () => {
+   it("lists every model and full sources when nothing curates (backward compatible)", async () => {
       writeManifest();
-      writeLayeredModels();
+      // Deliberately NOT index.malloy: a package is uncurated only when it has
+      // neither an `explores` key nor a root index.malloy.
+      writeLayeredModels("surface.malloy");
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(await listedModelPaths(pkg)).toEqual([
             "base.malloy",
-            "index.malloy",
+            "surface.malloy",
          ]);
 
-         // No `explores` ⇒ export{} curation off; non-exported `helper` listed.
-         const apiModel = (await pkg.getModel("index.malloy")!.getModel()) as {
+         // Nothing curates ⇒ export{} curation off; non-exported `helper` listed.
+         const apiModel = (await pkg
+            .getModel("surface.malloy")!
+            .getModel()) as {
             sources?: { name?: string }[];
          };
          const names = (apiModel.sources ?? []).map((s) => s.name).sort();
          expect(names).toContain("customers");
          expect(names).toContain("helper");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("defaults the surface to a root index.malloy when explores is absent", async () => {
+      writeManifest(); // no explores at all
+      writeLayeredModels(); // writes index.malloy
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+
+         // Same listing the explicit `explores: ["index.malloy"]` produces in
+         // the first test of this file, from no manifest key at all.
+         expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
+
+         // And within-file curation is on, so `helper` is dropped exactly as
+         // it is under a declared surface.
+         const apiModel = (await pkg.getModel("index.malloy")!.getModel()) as {
+            sources?: { name?: string }[];
+         };
+         expect((apiModel.sources ?? []).map((s) => s.name).sort()).toEqual([
+            "customers",
+         ]);
+
+         // The derived entry always resolves, so it can never be an invalid
+         // explores entry -- getInvalidExplores has nothing to report.
+         expect(pkg.getInvalidExplores()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("prefers an explicit explores over the convention, and says so", async () => {
+      writeManifest({ explores: ["base.malloy"] });
+      writeLayeredModels(); // index.malloy exists but is not declared
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(await listedModelPaths(pkg)).toEqual(["base.malloy"]);
+
+         // The author wrote a file the convention would have used and a key
+         // that leaves it out. The key wins; nothing else would tell them.
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(
+            warnings.some(
+               (w) =>
+                  (w.message ?? "").includes("index.malloy") &&
+                  (w.message ?? "").includes("does not list it"),
+            ),
+         ).toBe(true);
       } finally {
          await duckdb.close();
       }
@@ -367,9 +436,12 @@ export { customers }`,
          expect(warnings.length).toBe(1);
          expect(warnings[0].model).toBe("consumer.malloy");
          expect(warnings[0].message).toContain(
-            `Model "consumer.malloy" is listed in explores but exposes nothing`,
+            `Model "consumer.malloy" is on this package's discovery surface but exposes nothing`,
          );
          expect(warnings[0].message).toContain("export { source_name }");
+         // This package DECLARES its surface, so the remedy names the key.
+         // A convention package has none, and gets "delete the file" instead.
+         expect(warnings[0].message).toContain("remove it from explores");
          // Advisory warnings also ride the package metadata (the QA gap:
          // exploresWarnings said none while a listed file surfaced nothing).
          expect(
@@ -393,6 +465,215 @@ export { customers }`,
          writeManifest({ explores: ["base.malloy"] });
          await pkg.reloadAllModels({});
          expect(pkg.emptyDiscoveryWarnings()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("explains itself when a broken index.malloy takes the whole package down", async () => {
+      // `reloadAllModels` DIRECTLY, which is the narrow path this warning is
+      // for: it installs a placeholder for the file that failed and does not
+      // go through Environment.loadPackage, so the package keeps serving with
+      // an empty surface and is never marked stale. Verified against a live
+      // server: first load fails the package outright (loadErrors), and every
+      // author-facing reload -- watcher, MCP reload_package, REST ?reload=true
+      // -- goes through loadPackage, which keeps the last good model and
+      // reports `stale: true` with the compile error. Only the materialization
+      // / manifest rebind paths land here.
+      writeManifest({});
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `source: orders is duckdb.sql("select 1 as id")\nexport { orders }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "orders.malloy"\nexport { orders }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.brokenSurfaceWarnings()).toEqual([]);
+
+         // Now break it the way an author does: a typo in the export list.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "orders.malloy"\nexport { ordrs }`,
+         );
+         await pkg.reloadAllModels({});
+
+         const warnings = pkg.brokenSurfaceWarnings();
+         expect(warnings.length).toBe(1);
+         expect(warnings[0].model).toBe("index.malloy");
+         // The point of the message: orders.malloy compiled fine and is still
+         // refused, and nothing else in the system says why.
+         expect(warnings[0].message).toContain(
+            "is this package's whole discovery surface and failed to compile",
+         );
+         expect(warnings[0].message).toContain("including the 1 that compiled");
+         // One message for the surface, not one per file on it.
+         expect(warnings.length).toBe(1);
+         expect(warnings[0].message).toContain("404");
+
+         // It must ride the API, not just the log: the operator sees the 404
+         // on orders.malloy, not the compile error on index.malloy.
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some((w) =>
+               (w.message ?? "").includes("whole discovery surface"),
+            ),
+         ).toBe(true);
+
+         // Deliberately still fail-CLOSED: a typo must not expose what the
+         // author curated away.
+         expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
+
+         // And it clears on the save that compiles.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "orders.malloy"\nexport { orders }`,
+         );
+         await pkg.reloadAllModels({});
+         expect(pkg.brokenSurfaceWarnings()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("reports a lost surface on an in-place reload, and only once", async () => {
+      // The materialization / manifest rebind paths reload the SAME Package
+      // rather than swapping in a new one, so the notice has to be raised here
+      // or it is never raised: a later full reload compares against a surface
+      // this reload has already cleared.
+      writeManifest({});
+      writeLayeredModels();
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const widened = () =>
+            (pkg.getPackageMetadata().warnings ?? []).find((w) =>
+               (w.message ?? "").includes("publishes no surface now"),
+            );
+         await pkg.reloadAllModels({});
+         expect(widened()).toBeUndefined();
+
+         fs.unlinkSync(path.join(tempDir, "index.malloy"));
+         await pkg.reloadAllModels({});
+         expect(pkg.getPackageMetadata().explores).toBeUndefined();
+         expect(widened()?.message).toContain(
+            'This package published "index.malloy" before the last reload',
+         );
+
+         await pkg.reloadAllModels({});
+         expect(widened()).toBeUndefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("reports a multi-file surface once, and counts only what compiled", async () => {
+      // Two broken files on one surface used to produce two messages, each
+      // claiming to BE the whole surface, and the collateral count included
+      // hidden models that had failed to compile on their own.
+      writeManifest({ explores: ["a.malloy", "b.malloy"] });
+      for (const name of ["a", "b"]) {
+         fs.writeFileSync(
+            path.join(tempDir, `${name}.malloy`),
+            `source: ${name}_src is duckdb.sql("select 1 as id")\nexport { ${name}_src }`,
+         );
+      }
+      fs.writeFileSync(
+         path.join(tempDir, "fine.malloy"),
+         `source: fine is duckdb.sql("select 1 as id")\nexport { fine }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "alsobroken.malloy"),
+         `source: ab is duckdb.sql("select 1 as id")\nexport { ab }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const name of ["a", "b"]) {
+            fs.writeFileSync(
+               path.join(tempDir, `${name}.malloy`),
+               `source: ${name}_src is duckdb.sql("select 1 as id")\nexport { nope }`,
+            );
+         }
+         // A hidden model broken on its own account: it was not taken down by
+         // the surface, so it must not be counted as collateral.
+         fs.writeFileSync(
+            path.join(tempDir, "alsobroken.malloy"),
+            `source: ab is duckdb.sql("select 1 as id")\nexport { nope }`,
+         );
+         await pkg.reloadAllModels({});
+
+         const warnings = pkg.brokenSurfaceWarnings();
+         expect(warnings.length).toBe(1);
+         expect(warnings[0].message).toContain(
+            "Every model on this package's discovery surface",
+         );
+         expect(warnings[0].message).not.toContain("whole discovery surface");
+         // fine.malloy only: alsobroken.malloy is broken on its own.
+         expect(warnings[0].message).toContain("including the 1 that compiled");
+         // Both compile errors are named, so the author has both to fix.
+         expect(warnings[0].message).toContain("a.malloy:");
+         expect(warnings[0].message).toContain("b.malloy:");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("gives a remedy that holds when explores names index.malloy by hand", async () => {
+      // surfaceIsIndexModel() is true here too, and "delete the file" alone
+      // would leave the key naming a model that no longer exists -- the
+      // package would then list NOTHING, the inverse of what it promises.
+      writeManifest({ explores: ["index.malloy"] });
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base_source is duckdb.sql("select 1 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "base.malloy"\nrun: base_source -> { group_by: id }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const warnings = pkg.emptyDiscoveryWarnings();
+         expect(warnings.length).toBe(1);
+         expect(warnings[0].message).toContain(
+            'delete the file AND any "explores" entry naming it',
+         );
+         expect(warnings[0].message).toContain("would list nothing");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("stays quiet when only PART of the surface is broken", async () => {
+      // One broken file beside a working one still leaves a surface, and that
+      // file's own compile error is report enough.
+      writeManifest({ explores: ["good.malloy", "bad.malloy"] });
+      fs.writeFileSync(
+         path.join(tempDir, "good.malloy"),
+         `source: good is duckdb.sql("select 1 as id")\nexport { good }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "bad.malloy"),
+         `source: bad is duckdb.sql("select 1 as id")\nexport { bad }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         fs.writeFileSync(
+            path.join(tempDir, "bad.malloy"),
+            `source: bad is duckdb.sql("select 1 as id")\nexport { baad }`,
+         );
+         await pkg.reloadAllModels({});
+         expect(pkg.brokenSurfaceWarnings()).toEqual([]);
       } finally {
          await duckdb.close();
       }
@@ -434,7 +715,7 @@ export { customers }`,
             "report.malloynb",
          ]);
          expect(pkg.formatInvalidExplores()).toMatch(
-            /report\.malloynb.*notebooks are always public/s,
+            /report\.malloynb.*notebooks are always listed/s,
          );
       } finally {
          await duckdb.close();

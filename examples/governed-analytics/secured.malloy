@@ -2,41 +2,34 @@
 // SPDX-License-Identifier: MIT
 
 // ─────────────────────────────────────────────────────────────────────────
-// Access control, built on the same givens mechanism.
+// Access control, built on the givens mechanism.
 //
-//   #(authorize)  decides WHETHER this caller may read the source at all.
-//                 Enforced as a row filter, so a caller it admits nowhere
-//                 gets 200 with zero rows, not a 403.
-//   where:        decides WHICH rows they see once allowed (row-level access).
+//   #(access_filter)  decides WHICH rows this caller may read. Enforced as a
+//                     row filter, so a caller it admits nowhere gets 200 with
+//                     zero rows, not a 403 — row-level access on its own here,
+//                     with no separate `where:` needed since the gate's own
+//                     predicate already scopes the rows.
 //
-// Both read caller-supplied givens (ROLE, TENANT). They are a real boundary
-// only behind a trusted tier that sets those givens from verified identity —
-// givens are caller-asserted. See docs/authorize.md and docs/row-level-access.md.
+// It reads a caller-supplied given (TENANTS). It is a real boundary only
+// behind a trusted tier that sets it from verified identity — givens are
+// caller-asserted. See docs/authorize.md and docs/row-level-access.md.
 // ─────────────────────────────────────────────────────────────────────────
 ##! experimental.givens
 
 import { orders_base } from "internal.malloy"
 
-// Neither given may carry a default: the gate below references both, and a
+// TENANTS may not carry a default: the gate below references it, and a
 // referenced given with a default is refused at load (a caller who supplies
-// nothing would otherwise silently resolve to that default). One consequence:
-// since `where:` also references both, a caller MUST supply both keys on every
-// request — even the one whose value the caller's path doesn't care about
-// (send it as "") — or Malloy refuses to resolve the unsupplied given at all
-// and the request is denied, rather than binding to an implicit empty default
-// the way the retired string form's example did.
+// nothing would otherwise silently resolve to that default). An admin caller
+// is not a separate role — it is simply handed every tenant on this list by
+// the trusted tier that resolves identity into givens.
 given:
-  ROLE :: string
-  TENANT :: string
+  TENANTS :: string[]
 
-// Authorization is a single disjunction: an admin override, plus a tenant
-// allow-list. Send both givens on every request (see the note above) — the one
-// not on the caller's path just fails to match. See docs/authorize.md.
-#(authorize) $ROLE = 'admin' or $TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'
+// Authorization: the caller may read only the tenants their identity was
+// resolved to. See docs/authorize.md.
+#(access_filter) tenant in $TENANTS
 source: orders_secured is orders_base extend {
-  // Row-level access: admins see everything; a tenant caller sees only its rows.
-  where: $ROLE = 'admin' or tenant = $TENANT
-
   measure:
     #(doc) Number of orders visible to this caller
     order_count is count()

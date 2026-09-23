@@ -139,7 +139,7 @@ layout that rewrites every tile at once, which was built and dropped by decision
 | Dashboard settings       | Timezone, run on load, auto-refresh, download defaults, themes, mobile layout                | Title, description, starting values, `autorun`, grid width; all editable in the builder                      | Runtime                   |
 | Editing model            | Explicit edit mode, explicit save, typically no undo                                         | Explicit save, undo/redo, diff before a structural save                                                      | Ahead                     |
 | What editing does        | Rewrites a database record; a code form, where one exists, is converted                      | Splices the authored file; comments survive                                                                  | Ahead                     |
-| Governance               | Access filters and user attributes through embedding                                         | Givens, row-level access and `#(authorize)` apply to every tile with no wiring                               | Ahead                     |
+| Governance               | Access filters and user attributes through embedding                                         | Givens, row-level access and `#(access_filter)` apply to every tile with no wiring                               | Ahead                     |
 | Storage and access       | Database with folder ACLs                                                                    | A storage provider seam; browser storage today; the package-file provider needs a write API                  | Platform                  |
 | Delivery                 | Schedules, alerts, PDF/CSV/PNG, signed embed                                                 | The file itself, saved into the package                                                                      | Platform                  |
 
@@ -370,7 +370,7 @@ rather than a notebook being a one-column dashboard.
 products — the Jupyter lineage and the hosted analytics notebooks built on it —
 this reaches parity on cells, markdown, charts as an attribute of a query,
 parameters, drill-through and code-visible files under version control, and is
-ahead on governance (givens, row-level access and `#(authorize)` apply to every
+ahead on governance (givens, row-level access and `#(access_filter)` apply to every
 cell with no wiring) and on the file being the notebook rather than an export
 of one. It does not attempt cells in other languages, a reactive dependency
 graph (the file is the dependency: a later cell reads an earlier definition

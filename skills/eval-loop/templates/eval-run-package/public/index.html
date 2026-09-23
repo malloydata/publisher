@@ -96,6 +96,9 @@
   .kind { font:400 12px "IBM Plex Mono",monospace; color:var(--mute); }
   .armcell { display:flex; align-items:center; justify-content:flex-end; gap:10px; }
   .dots { display:flex; gap:4px; align-items:center; }
+  .recall { font-family:"IBM Plex Mono",monospace; font-size:11.5px;
+            color:var(--mute); margin-right:3px; white-space:nowrap; }
+  .recall.short { color:var(--fail); font-weight:600; }
   .dot { width:10px; height:10px; border-radius:50%; display:inline-block; background:var(--na); }
   .dot.exact,.dot.alias { background:var(--pass); }
   .dot.alias { background:color-mix(in srgb,var(--pass) 60%,var(--surface)); }
@@ -166,8 +169,30 @@
   td.num { text-align:right; }
   tr:last-child td { border-bottom:0; }
   .more { font-size:12px; color:var(--mute); padding:6px 10px; }
-  details.sub summary { cursor:pointer; font-size:13px; color:var(--accent); list-style:none; }
-  details.sub summary::-webkit-details-marker { display:none; }
+  /* A bare coloured word did not read as clickable: it looks like a label, and
+     the rubric went unopened. Give every disclosure the same affordance the
+     case rows have -- a caret that turns, a border, and a hover state. */
+  details.sub summary, details.trace summary {
+    cursor:pointer; font-size:13px; color:var(--accent); list-style:none;
+    display:inline-flex; align-items:center; gap:7px;
+    border:1px solid var(--rule); border-radius:6px; padding:5px 10px;
+    background:var(--surface); user-select:none; }
+  details.sub summary:hover, details.trace summary:hover { border-color:var(--accent); }
+  details.sub summary::-webkit-details-marker,
+  details.trace summary::-webkit-details-marker { display:none; }
+  details.sub summary .caret, details.trace summary .caret { font-size:9px; }
+  details.sub[open] summary .caret, details.trace[open] summary .caret {
+    transform:rotate(90deg); }
+  /* The trace is the longest thing in the drawer and the least often wanted:
+     a reader opens a case for the verdict and the rows, and only then asks how
+     the agent got there. Collapsed, the judge's reasoning and the re-executed
+     rows sit above the fold. */
+  details.trace { margin-top:18px; }
+  details.trace > .timeline { margin-top:10px; }
+  /* Raw text the parsers could not turn into a table: keep it small and
+     wrapped rather than letting a long line set the drawer width. */
+  .rawtext { font-family:"IBM Plex Mono",monospace; font-size:12.5px;
+             white-space:pre-wrap; word-break:break-word; }
   .empty { color:var(--mute); font-style:italic; padding:20px; text-align:center; }
   .err { background:var(--fail-soft); border:1px solid var(--fail); color:var(--fail);
          padding:14px 16px; border-radius:6px; font-size:13.5px; }
@@ -190,11 +215,14 @@
     <span class="count" id="count"></span>
   </div>
   <div class="legend">
-    <span>Dots: the entities the golden answer depends on —</span>
-    <span><i class="dot exact"></i> returned as a ranked entity</span>
-    <span><i class="dot alias"></i> returned under a sibling source</span>
-    <span><i class="dot in_docs"></i> in a returned source's docs</span>
-    <span><i class="dot missing"></i> not returned</span>
+    <span><b>Retrieval</b>, per case: how many of the entities the right answer
+      needs came back from <code>get_context</code>. One dot each, and the
+      count in front &mdash; <span class="recall">3/3</span> means all of them.</span>
+    <span class="mute">The shade says how each one arrived:</span>
+    <span><i class="dot exact"></i> ranked directly</span>
+    <span><i class="dot alias"></i> under a sibling source</span>
+    <span><i class="dot in_docs"></i> named in a returned source's docs</span>
+    <span><i class="dot missing"></i> <b>did not come back</b></span>
   </div>
   <!-- Every case row carries two words from the SET, describing the question
        rather than how it went. Both were read as verdicts until they were

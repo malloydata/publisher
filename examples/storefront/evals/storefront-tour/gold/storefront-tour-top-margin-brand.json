@@ -1,0 +1,22 @@
+{
+ "qid": "storefront-tour-top-margin-brand",
+ "truthQuery": "run: t_order_items extend { join_one: t_products on product_id = t_products.product_id } extend { dimension: line_margin is sale_price - t_products.cost, line_markdown is t_products.retail_price - sale_price } -> { group_by: brand is t_products.brand; aggregate: margin_rate is line_margin.sum() / sale_price.sum(); order_by: margin_rate desc; limit: 1 }",
+ "verifyQuery": "run: t_order_items extend { join_one: t_products on product_id = t_products.product_id } extend { dimension: line_margin is sale_price - t_products.cost, line_markdown is t_products.retail_price - sale_price } -> { where: t_products.brand = 'Harbor'; aggregate: margin_rate is line_margin.sum() / sale_price.sum() }",
+ "truthRows": [
+  {
+   "brand": "Harbor",
+   "margin_rate": 0.5021976966213827
+  }
+ ],
+ "verifyRows": [
+  {
+   "margin_rate": 0.5021976966213827
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "0.5021976966213827 vs 0.5021976966213827"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

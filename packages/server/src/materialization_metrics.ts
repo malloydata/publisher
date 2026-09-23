@@ -64,7 +64,6 @@ export type EligibilityRefusalReason =
    | "merge_key_scope_unresolved"
    | "preaggregate_over_dynamic_source"
    | "authorize"
-   | "partition"
    | "not_duckdb_portable"
    | "public_surface_unknown";
 /**

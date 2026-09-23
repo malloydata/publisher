@@ -25,6 +25,30 @@ one exception is anything that qualifies THIS run's number -- a truncated
 attempt, a contaminated one, an unestablished answer key -- which the "Eval
 failures" section exists for.
 
+**Do not audit the harness. You were asked to measure a model.** This is the
+most common way this job goes wrong, and it does not look like going wrong: a
+run turns up something odd in a script, the odd thing is genuinely a bug, and
+the reply comes back as a critique of the tooling with the model's score
+somewhere underneath. The reader asked what their model scored. Answer that.
+
+So, unless the user asked you to work on the harness:
+
+- Do not read harness source to satisfy your own curiosity about a number.
+  Read it when a number you must report cannot be explained any other way, and
+  stop when it can.
+- Do not propose harness fixes, refactors, flags or "while I was in there"
+  improvements. Not in the report, not in the chat reply.
+- When a harness defect DID change this run's number, the report gets one
+  sentence: what the number should be and why. Not the mechanism, not the
+  file, not the fix.
+- Keep a defect that changed nothing out of the report entirely. Mention it
+  once in chat, in a line, and let the user decide whether they want it
+  chased.
+
+A harness bug you found and did not chase is not a loose end. It is the job
+being done. If the user wants it fixed they will say so, and then it is a
+different task with its own turn.
+
 ## Step 1: build the artifacts, before writing a word
 
 ```bash
@@ -63,6 +87,29 @@ not in `~/Downloads`, both of which have lost a findings document before.
 from the console.** A figure retyped from scrollback is a figure nobody can
 check, and the console rounds.
 
+### Keep it under a page and a half
+
+**Budget: about 80 lines, and 120 is the ceiling for a run with several
+distinct failures.** Reports have shipped at 200 and the length is not
+thoroughness -- it is the artifact links restated as prose, the cascade
+explained twice, and a paragraph apologising for a figure nobody disputed.
+A reader who wants the detail opens the case matrix, which is why step 1 builds
+it. What cannot be recovered from the artifacts is your judgement: what broke,
+why, and what to do. Spend the lines there.
+
+What earns its place: the headline, one row per case, one short entry per
+failure, the retrieval numbers, and the next steps. What does not: restating a
+number you already gave, explaining what a cascade is before showing it,
+defending a decision nobody questioned, or any section whose content is that
+nothing happened -- except "Eval failures", where "None." is the point.
+
+**Being brief is not being terse with the vocabulary.** The reader does not
+know what `near_match`, a cluster, recall or a holdout is, so the first time
+one appears, say what it means in the same sentence -- "`near_match`, which is
+excluded from the pass rate" -- and then use it. Cutting the explanations is
+how a short report becomes an unreadable one; cutting the restatements is how
+it becomes a good one.
+
 ### The template
 
 ```markdown
@@ -76,7 +123,7 @@ check, and the console rounds.
 - Target `<env>/<package>`, model `<modelPath>`, pinned `<modelSha or targetVersion>`
 - Answerer `<model>`, judge `<model>`, cap `<maxTurns>` turns
 - Steps run: scrape/run, eval<, diagnose><, improve>
-- Cost $X answerer + $Y judge
+- Cost $X answerer + $Y judge, N turns median / N p90, N entities delivered per answer
 
 ## The result
 
@@ -87,9 +134,15 @@ check, and the console rounds.
 
 [case matrix](<url>) - [aggregate tables](<url>)
 
-## Retrieval and coverage
+## Coverage, retrieval, accuracy, cost
 
-Covered? -> Retrieved? -> Correct?, with the per-arm numbers under each.
+**Coverage N of M** -- how many questions the model can express an answer to at
+all. **Entity recall N%** -- one number, first, before the cascade. It is the share
+of the entities an answer needed that retrieval actually handed the agent, and
+it is the headline of this section for the same reason the pass rate is the
+headline of the last one. Then the cascade: Covered? -> Retrieved? -> Correct?,
+with the per-arm numbers under each. Say in one clause what recall counts, then
+give the number.
 
 ## Model failures
 
@@ -118,10 +171,10 @@ these in order and put every one that fires into the list, with its command:
 
 | If the run shows | Then the next step is |
 |---|---|
-| `coverage: unmeasured` | run `check_coverage.py --set <set> --model <pkg> --out coverage.json`, then re-run with `--coverage` so it charges the failures |
+| `coverage: unmeasured` | the run was given `--no-coverage`, or the measurement failed and said so. It is measured by default, so say in "Eval failures" that this score cannot tell a model gap from a bad answer, and re-run without the flag |
 | `goldenCheck: skipped` or the set names no `truthPackage` | build one with `init_truth_package.py`; until then the goldens were derived through the model under test and certify themselves |
 | any golden still `provisional` | re-derive and `verify_goldens.py --promote` |
-| a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do |
+| a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do. A next step, not a section: it goes in this list and nowhere else in the report |
 | a passing case with recall below 1.0 | check whether `required` over-specifies one path |
 | `truncated` non-empty | re-run those cases at a higher cap with `--from` |
 | diagnose did not run | run it, or say the failures have no owner yet |
@@ -164,8 +217,23 @@ wrong answer. One entry each: what the answer said, what was right, and the
 mechanism in one sentence. Do not write a cluster id here; write what it got
 wrong.
 
-**Eval failures** are everything that stopped the run measuring the model.
-Report every one that occurred, with its count and its qids, and say plainly
+**Eval failures** are the things that stopped the run measuring the model, and
+**only** those. The test is one question: *did this cost a verdict, or make one
+untrustworthy?* If no, it does not appear in the report at any length.
+
+That rules out most of what is tempting to put here, and all of it has been put
+here on a real run: a `-dirty` model pin, a stale-entity-name warning that cost
+no case, a defect you hit in the harness and worked around, a setup step that
+took two tries, anything you would open with "worth knowing, though it changes
+no verdict". A reader wants to know what their model scored. Harness defects are
+real and belong in a harness issue, filed against the harness -- that is the
+skill's opening rule, and this section is where it gets broken.
+
+The section is usually two words. "**None.**" is a complete and good answer, and
+a reader who sees it learns exactly what they need to. Do not pad it into a
+paragraph explaining the absence.
+
+Report every one that DID occur, with its count and its qids, and say plainly
 that these are NOT evidence about the model:
 
 | What happened | How it reads in the ledger | Who fixes it |
@@ -184,11 +252,32 @@ harness prints `INCOMPLETE` and withholds the percentage; the report does the
 same. Give the counts and the re-run command instead of a number with a caveat,
 because the number is what gets repeated and the caveat is what gets dropped.
 
-## Retrieval and coverage belong in every report
+## The four measurements, and why a report carries all of them
 
-A pass rate says an answer was wrong. It does not say WHERE, and the three
-metrics that do are already in the run summary and the notebook. Report them,
-because a report that omits them makes every failure look like the model's:
+A pass rate says an answer was wrong. It does not say where, and on its own it
+makes every failure look like the model's. A run measures four things, in this
+order, and each one tells you whether the next is even a fair question:
+
+| | Measures | A failure here means |
+|---|---|---|
+| **a. Coverage** | can the data and the model express an answer at all | nothing downstream was winnable. Fix the model |
+| **b. Retrieval** | did `get_context` hand the agent the entities it needed | the model has it and the agent never saw it: the docs, or the search wording |
+| **c. Accuracy** | did the agent get the answer right | it had what it needed and still missed: the agent, or a doc that misleads |
+| **d. Cost** | dollars, turns, wall-clock, entities per answer | it works and cannot be afforded, which is its own kind of not working |
+
+**Coverage first, and a report without it is incomplete.** A model that cannot
+express an answer can never succeed at that question, so a pass rate quoted
+without coverage cannot distinguish a bad model from an unanswerable set.
+`run_baseline.py` measures it by default; if a run skipped it, say so in
+"Eval failures" and treat the score as provisional.
+
+**Cost is a result, not an aside.** Report dollars, the turn and call counts,
+and the entity payload per answer. An agent that answers correctly in 40 turns
+and 75 delivered entities per question is a different product from one that
+does it in 8 and 5, and only the report says which you have.
+
+Report them all, because a report that omits them makes every failure look
+like the model's:
 
 **Copy the cascade the run printed. Do not re-derive it.** `cascade_lines()`
 in `run_baseline.py` already renders every rung, and it carries one field a

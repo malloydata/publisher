@@ -465,6 +465,33 @@ def format_rows(rows: list[dict], limit: int = 60) -> str:
     return "\n".join(out)
 
 
+# A tool result too large for the model's context is not returned inline: the
+# host writes it to a file and hands back a notice naming the path. The
+# ANSWERER is unaffected -- it reads the file and carries on -- but the notice
+# is not JSON, so this module parsed nothing and recorded an empty entity list.
+# An empty list is not "nothing came back"; it scores as a total retrieval miss
+# on a call that returned a full response, and a run then reports a recall it
+# did not measure. Seen twice in one arm: 86.4% printed against 95% actual, and
+# diagnose went on to explain the phantom miss with an index-readiness story
+# that was not true.
+OFFLOADED = re.compile(r"(?:saved to|written to)\s+(/[^\s'\"]+)")
+
+
+def offloaded_json(text: str) -> dict[str, Any] | None:
+    """The response body a host spilled to a file, read back, or None.
+
+    Only ever reads a path the host itself named in the result it returned.
+    """
+    m = OFFLOADED.search(text or "")
+    if not m:
+        return None
+    try:
+        body = pathlib.Path(m.group(1)).read_text()
+    except OSError:
+        return None
+    return resource_json(body)
+
+
 def resource_json(text: str) -> dict[str, Any] | None:
     """The machine-readable part of a tool result. Publisher wraps it in a
     '[Resource from publisher at ...]' preamble; a hosted MCP may return
@@ -914,6 +941,52 @@ def resolve_target_version(scope: str | None, target_version: str | None
     return _strip_v(target_version, "--target-version")
 
 
+def measure_coverage(a: argparse.Namespace) -> str | None:
+    """Run check_coverage.py for this model version, into the run directory.
+
+    Coverage is the first of the four things a run reports -- can the model
+    express an answer at all, did retrieval deliver it, did the agent get it
+    right, what did it cost -- and the only one that says whether a failure
+    was ever winnable. A run that skips it cannot tell a model gap from a
+    retrieval miss from a bad answer, so it is measured rather than left to a
+    follow-up command nobody runs.
+
+    It reads the MODEL through the REST API, not the answers and not a local
+    checkout, so it needs no `--model-repo` and is valid for every arm against
+    this model version: keep the file and pass `--coverage` next time.
+
+    A failure here does not stop the arm. Coverage is one rung of the report,
+    and losing it is worth saying loudly and continuing; killing a run over a
+    side measurement would cost the answerers instead.
+    """
+    out = a.out / "coverage.json"
+    script = (pathlib.Path(__file__).resolve().parent.parent.parent
+              / "eval-answer" / "scripts" / "check_coverage.py")
+    cmd = [sys.executable, str(script), "--set", str(a.set_dir),
+           "--publisher", a.publisher, "--environment", a.environment,
+           "--package", a.package, "--out", str(out),
+           "--parallel", str(a.parallel)]
+    # `--only` narrows the arm, so it must narrow this too: without it a
+    # one-case re-run paid a claude -p call for every case in the set.
+    if a.only:
+        cmd += ["--only", a.only]
+    print("measuring coverage: can the model express each answer at all "
+          "(reads the model; no answerer, no judge, no warehouse)", flush=True)
+    try:
+        r = subprocess.run(cmd, timeout=a.timeout * 2)
+    except Exception as e:  # noqa: BLE001 -- any failure is the same call here
+        print(f"  ! coverage not measured ({e}); the covered? rung will be "
+              f"blank and no failure can be attributed to a model gap",
+              flush=True)
+        return None
+    if r.returncode != 0 or not out.exists():
+        print("  ! coverage not measured (check_coverage.py exited "
+              f"{r.returncode}); the covered? rung will be blank and no "
+              "failure can be attributed to a model gap", flush=True)
+        return None
+    return str(out)
+
+
 def run_retrieval_gate(a: argparse.Namespace) -> str:
     """Hold the arm until retrieval is steady, and say what happened.
 
@@ -1225,7 +1298,15 @@ def cascade_lines(c: dict | None) -> list[str]:
         return []
     covered = (c["total"] - c["not covered"] - c["unmeasured"]
                - c["no entities named"])
-    retrieved = covered - c["not retrieved"]
+    # Retrieval does NOT inherit coverage's denominator, and it must not be
+    # derived from the funnel either. `cascade()` is an elif chain: a row whose
+    # coverage was never measured stops at the first rung, so `not retrieved` is
+    # structurally 0 whenever coverage did not run, and computing the rung from
+    # it reports every retrieval as a success. `recall_scored` / `recall_short`
+    # are tallied outside the chain, over the rows whose recall was actually
+    # computed, which is what this rung is supposed to say.
+    retrieved = c.get("recall_scored", 0) - c.get("recall_short", 0)
+    not_retrieved = c.get("recall_short", 0)
     # A pass that stops on an earlier rung is reported there. Otherwise the
     # last rung reads as the pass count and disagrees with the headline.
     anyway = lambda n: f"; {n} answered correctly anyway" if n else ""
@@ -1245,7 +1326,7 @@ def cascade_lines(c: dict | None) -> list[str]:
     lines = [f"  cascade       {c['total']} cases",
              f"    covered?      {covered} yes, {c['not covered']} no (model "
              f"gap{anyway(c.get('passed_not_covered', 0))})" + covered_tail,
-             f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
+             f"    retrieved?    {retrieved} yes, {not_retrieved} no "
              f"(the entity exists and did not come back: the docs, or the "
              f"search wording; diagnose decides"
              f"{anyway(c.get('passed_not_retrieved', 0))})",
@@ -1875,6 +1956,18 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     calls.append({**info, "error": text[:300] if failed else None,
                                   "rankedSummary": None})
                 else:
+                    # The host may have spilled the body to a file. Read it
+                    # back rather than scoring the notice as an empty response.
+                    if payload is None:
+                        payload = offloaded_json(text)
+                    if payload is None and OFFLOADED.search(text or ""):
+                        # Named a file we could not read. Record NO summary
+                        # rather than an empty one: unmeasured is the truth,
+                        # and a zero here is a miss the run did not observe.
+                        calls.append({**info,
+                                      "error": text[:300] if failed else None,
+                                      "rankedSummary": None})
+                        continue
                     ids = entity_ids(payload or {})
                     # Which retriever answered, from the response that answered
                     # it: "semantic", "lexical" when the embedding path is down,
@@ -2645,6 +2738,11 @@ def main(argv: list[str] | None = None) -> int:
                          "in retrieval attribution, and run.json records which "
                          "report was read. Without it an unlabelled case is "
                          "attributed to nobody, not to the model")
+    ap.add_argument("--no-coverage", action="store_true",
+                    help="skip measuring coverage. The covered? rung goes "
+                         "blank and no failure can be attributed to a model "
+                         "gap, so a low score cannot be told from an "
+                         "unanswerable set")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -3025,15 +3123,28 @@ def main(argv: list[str] | None = None) -> int:
 
     retrieval_gate = run_retrieval_gate(a)
 
-    # Coverage is a read of the MODEL and costs a judge call per case, so the
-    # run does not measure it; it consumes a report made separately and says
-    # which one. A path that does not exist is refused here, not discovered as
-    # a traceback after the answerers have been paid for.
+    # Coverage is one of the four things a run measures -- whether the model
+    # can express an answer AT ALL, before any question of whether retrieval
+    # found it or the agent got it right. A model that cannot express an answer
+    # cannot succeed at it, so a run without coverage cannot say whether a
+    # failure was ever winnable. It is measured by default for that reason.
+    #
+    # It reads the MODEL, not the answers, so it is the same for every arm
+    # against one model version: pass `--coverage` to reuse a report you
+    # already have, and it is used as given. Otherwise the run measures it
+    # once, here, before the answerers are paid for -- a `claude -p` per case
+    # with no warehouse, no judge and no answerer. `--no-coverage` skips it.
     if a.coverage and not pathlib.Path(a.coverage).exists():
         raise SystemExit(
             f"--coverage {a.coverage} does not exist. It should be a "
             f"check_coverage.py --out report for the model version this run "
             f"answers from.")
+    # `--rejudge` re-scores saved answers and calls no answerer, so it must
+    # not re-measure coverage either; it does not set `rebuild` (only
+    # `--from` does), so it needs naming here.
+    if not a.coverage and not a.no_coverage and not a.rebuild \
+            and not getattr(a, 'rejudge', False):
+        a.coverage = measure_coverage(a)
     coverage_report = coverage_report_summary(a.coverage) if a.coverage else None
 
     # BEFORE the fresh run.json overwrites it: a rebuild reuses saved verdicts
