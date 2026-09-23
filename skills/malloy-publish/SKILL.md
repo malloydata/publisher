@@ -55,28 +55,47 @@ If it doesn't exist, create one. Suggest a package name based on the model conte
 
 ### Curating discovery & the query boundary (optional)
 
-By default a package exposes **everything**: every model is listed and every source is directly queryable. That's the right behavior for most packages, and it's the safe default: **omit these fields and nothing changes.** Reach for them when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on (or querying) them directly.
+A package with no `index.malloy` and no `explores` exposes **everything**: every model is listed and every source is directly queryable.
 
-Two optional fields opt the package into curation:
+To curate, add an **`index.malloy`** at the package root. Publisher reads it as the package's published surface, so no manifest field is involved:
+
+```malloy
+// index.malloy
+import "order_analysis.malloy"
+import "staging.malloy"
+
+export { orders, customers }
+```
+
+What it exports is what agents discover **and** what may be queried. Everything else still compiles, and other models can import, join and extend it, but a direct query against it is refused with a 404 - indistinguishable from a source that does not exist. Reach for this when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on, or querying, them directly.
+
+**Address queries to the surface.** Once a package has an `index.malloy`, `.../models/staging.malloy/query` is no longer a query entry point, *even for a source that file declares itself*. Use `.../models/index.malloy/query`. If you are debugging a refusal rather than authoring, `skill:malloy-source-unreachable` covers the three ways a source can be out of reach and how to tell them apart.
+
+**A surface can be layered.** An `index.malloy` may front a file that fronts another. A source re-exported through a chain of files stays queryable through the surface at any depth, because admission follows the declaration rather than the path taken to it.
+
+**Curation hides a landing point, not a column.** A published source may `join` an unpublished one, and a query grouping by a joined field returns that field's values normally. If a column must not be readable, do not join it into something you publish; gate it with `#(authorize)` instead.
+
+**Leaving a source out does not put it out of reach, but there is a condition.** `export { ... }` also decides what an *importing* file may see, which is Malloy's rule rather than Publisher's. A file that declares no `export` hands an importer everything it declares, so an unpublished source stays importable and joinable from the file that declares it. A file that *does* declare one hands over exactly that list: importing a file whose `export` omits a source and then naming it fails to compile with `Reference to undefined object`. Put an `export` on a mid-layer file only when you mean to narrow what its importers can build on, not just what Publisher lists.
+
+**About `export { … }`:** the surface filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, and the two compose. You usually don't write it in a leaf model: a file with **no** `export` exposes all of its own top-level sources. It must appear after the definitions it names. See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
+
+### The older manifest fields
+
+Both still work and are not going away in this release. Both are deprecated where `index.malloy` replaces them, and a package using them that way gets a load-time warning naming the replacement. The two uses it cannot replace, an `explores` naming several files and `queryableSources: "all"`, stay supported without a warning. Do not add either key to a new package that does not need one of those two.
 
 ```json
 {
   "name": "ecommerce",
-  "version": "0.0.1",
-  "description": "Orders, customers, and revenue analysis",
   "explores": ["order_analysis.malloy", "customer_health.malloy"],
-  "queryableSources": "declared"
+  "queryableSources": "all"
 }
 ```
 
-- **`explores`** (`string[]`) - an allowlist of **model file paths** (relative to the package root, not source or view names) whose models agents should discover and land on. Declaring it is the single opt-in for all discovery curation. With `explores` set, listings narrow to those files, and within each file to its `export { ... }` closure (below), so anything a listed file doesn't export is also dropped. Other files still compile, and can still be imported or joined, but are hidden from listings. Leaving `explores` **absent or empty** means every model is listed, unchanged from today, so existing packages don't break when this field is added. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`; publishing a package that has any is rejected, so fix the path before publishing.
-- **`queryableSources`** (`"declared"` | `"all"`, default `"declared"`) - the query boundary. Only takes effect once `explores` is set. `"declared"` makes queryable == discoverable: only the `explores` files and their `export {}` closure are valid top-level query targets; other sources still compile, import, and join, but a direct query against one is denied. `"all"` curates discovery only: every compiled source stays queryable even though `explores` narrows what's listed.
+- **`explores`** (`string[]`) - model file paths relative to the package root, naming the surface. Reach for it for the one thing `index.malloy` cannot express: a surface spanning **several** files. An explicit `explores` always wins over the convention, and a package with both an `index.malloy` and an `explores` that omits it carries a warning saying so. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`; publishing a package that has any is rejected, so fix the path before publishing. An explicit `"explores": []` means "do not curate" and suppresses the convention.
+- **`queryableSources`** (`"declared"` | `"all"`, default `"declared"`) - the query boundary. `"declared"` is already the default, so the key changes nothing. **`"all"` is the exception, and `index.malloy` does not replace it:** it curates listings while leaving every source queryable by name, and a surface derived from an `index.malloy` always enforces the boundary. If you want listings-only curation, keep both keys.
 
-**About `export { … }`:** `explores` filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, the two compose. You usually don't write it: a file with **no** `export` exposes all of its own top-level sources. Add `export { orders, customers }` to a file to expose only those and keep imported/scaffolding helpers out of discovery (it must appear after the definitions it names). See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
 
-**Why curate here:** declaring `explores` routes agents to the well-documented curated sources instead of raw tables, and `queryableSources: "declared"` keeps them from reaching the hidden sources by name. The two axes compose: list a file in `explores` for its models to be discoverable, and `export` a source within that file for it to be a landing point.
-
-> **Not access control.** `queryableSources` gates the query surface (the query endpoints, REST and MCP alike), not compile and not raw file retrieval by exact path: `/compile` and `compile_model` are deliberately exempt, because compile is the authoring loop and the boundary is discovery curation. It doesn't restrict *who* may query, only *what* is queryable by name. Queryable sources are the union of every `explores`-listed file's `export {}` closure, whichever listed model path a query addresses them through. To gate access by caller-supplied identity/role, use `#(authorize)` on the source (and `#(access_filter)` to scope rows), see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and these gates are independent layers.
+> **Not access control.** The surface gates the query surface (the query endpoints, REST and MCP alike), not compile and not raw file retrieval by exact path: `/compile` and `compile_model` are deliberately exempt, because compile is the authoring loop and the boundary is discovery curation. It doesn't restrict *who* may query, only *what* is queryable by name. Queryable sources are the union of every listed file's `export {}` closure, whichever listed model path a query addresses them through. To gate access by caller-supplied identity/role, use `#(authorize)` on the source (and `#(access_filter)` to scope rows), see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and these gates are independent layers.
 
 The manifest also carries a `scope` field (`"package"` | `"version"`, default `"package"`) controlling whether persisted/materialized artifacts are shared across published versions or owned by a single version, and a `materialization` field configuring that persistence policy (a cron `schedule` or a `freshness` window). Both are unrelated to discovery curation; there is no per-source `sharing` or `schedule` field, that was retired in favor of the single package-level `scope` and `materialization`.
 

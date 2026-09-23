@@ -669,11 +669,11 @@ API=http://localhost:4000/api/v0/environments/examples/packages/governed-analyti
 
 # No identity at all → denied with a 403: TENANTS never resolves, so the gate
 # never binds to evaluate against.
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_status"}'                                        # → 403
 
 # Resolved to every tenant → allowed (all rows).
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_status","givens":{"TENANTS":["acme","globex","initech"]}}'  # → 200
 ```
 
