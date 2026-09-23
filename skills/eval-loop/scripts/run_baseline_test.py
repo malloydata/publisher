@@ -1690,3 +1690,39 @@ class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
         rb.store_events(self.path, new, None)
         got = [json.loads(l) for l in self.path.read_text().splitlines()]
         self.assertEqual(got, new)
+
+
+class PersistedStubIsTheResult(unittest.TestCase):
+    """Above a size the CLI decides, a tool result reaches the answerer as a
+    stub naming a file. Reading the stub as the payload scored 14 of 74
+    get_context calls on one arm as zero entities delivered."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def block(self, text):
+        return {"content": [{"type": "text", "text": text}]}
+
+    def test_the_persisted_output_stub_resolves_to_the_saved_blocks(self):
+        saved = self.tmp / "r.json"
+        saved.write_text(json.dumps([{"type": "text", "text": "ranked: a, b, c"}]))
+        stub = (f"<persisted-output>\nFull output saved to: {saved}\n\n"
+                f"Preview (first 2KB):\nranked: a")
+        self.assertEqual(rb.result_text(self.block(stub)), "ranked: a, b, c")
+
+    def test_the_token_cap_spelling_resolves_to_the_saved_text(self):
+        saved = self.tmp / "r.txt"
+        saved.write_text("ranked: a, b, c")
+        stub = ("Error: result (68,820 characters across 1 line) exceeds maximum "
+                f"allowed tokens. Output has been saved to {saved}.")
+        self.assertEqual(rb.result_text(self.block(stub)), "ranked: a, b, c")
+
+    def test_a_stub_whose_file_is_gone_is_left_as_it_was(self):
+        stub = f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n"
+        self.assertEqual(rb.result_text(self.block(stub)), stub)
+
+    def test_an_ordinary_result_is_unchanged(self):
+        self.assertEqual(rb.result_text(self.block("{\"sources\": []}")), "{\"sources\": []}")

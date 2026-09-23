@@ -594,7 +594,43 @@ def path_breaches(events: list[dict[str, Any]],
     return list(r["reasons"])
 
 
+# Two spellings, from two CLI paths: the persisted-output stub, and the MCP
+# token-cap error ("result ... exceeds maximum allowed tokens. Output has been
+# saved to <path>"). Both leave the whole payload on disk.
+PERSISTED_STUB = re.compile(
+    r"(?:<persisted-output>.*?Full output saved to|Output has been saved to):? "
+    r"(/\S+?\.(?:json|txt))\.?(?=\s|$)", re.S)
+
+
 def result_text(block: dict[str, Any]) -> str:
+    """The text of one tool_result block, with a persisted stub resolved.
+
+    Above a size the CLI decides, a tool result reaches the answerer as a
+    `<persisted-output>` stub: a file path and a 2 KB preview. Measured on the
+    first arm against a real model, 14 of 74 get_context results (53 to 70 KB each) arrived that
+    way, and the answerer followed the path with Read every time. Reading the
+    stub as the payload scored those calls as zero entities delivered, which
+    is the opposite of what happened: the whole ranking was on disk. So when
+    the stub names a file that still exists, its content is the result.
+    """
+    text = _raw_result_text(block)
+    m = PERSISTED_STUB.search(text)
+    if m:
+        path = pathlib.Path(m.group(1))
+        if path.exists():
+            try:
+                blocks = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                return path.read_text()
+            if isinstance(blocks, list):
+                return "\n".join(b.get("text", "") for b in blocks
+                                 if isinstance(b, dict) and b.get("type") == "text")
+            if isinstance(blocks, dict) and blocks.get("type") == "text":
+                return blocks.get("text", "")
+    return text
+
+
+def _raw_result_text(block: dict[str, Any]) -> str:
     c = block.get("content")
     if isinstance(c, str):
         return c
