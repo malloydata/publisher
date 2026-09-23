@@ -2976,6 +2976,13 @@ export class Package {
     * Asks the query endpoint's own pre-compile gate, so the lint and the query
     * cannot disagree about a tile. That gate refuses only a target it can pin
     * from the text; a tile it cannot read is left alone rather than guessed at.
+    *
+    * The remedy does not branch on {@link surfaceIsIndexModel}, unlike the
+    * held-back remedy, because that case never reaches here: a surface of
+    * index.malloy alone lists no dashboards/ file, so every dashboard is held
+    * back first. Reaching here means 'explores' lists this dashboard. The
+    * example file named is one that key actually lists, because a root
+    * index.malloy it leaves out publishes nothing.
     */
    private lintTilesAgainstSurface(
       modelPath: string,
@@ -2983,6 +2990,13 @@ export class Package {
    ): ApiPackageWarning[] {
       const model = this.models.get(modelPath);
       if (!model || !manifest.tiles) return [];
+      const listedModel = (this.packageMetadata.explores ?? []).find(
+         (entry) =>
+            entry.endsWith(MODEL_FILE_SUFFIX) && !isDashboardModelPath(entry),
+      );
+      const importInto = listedModel
+         ? `a listed file such as "${listedModel}"`
+         : `a file you list there`;
       const findings: ApiPackageWarning[] = [];
       for (const tile of manifest.tiles) {
          try {
@@ -3000,10 +3014,10 @@ export class Package {
                   `tile "${tile.query}" reads a source this package's surface ` +
                   `does not publish, so the tile answers 404 once served, ` +
                   `although the file compiles. Listing a file publishes what ` +
-                  `it declares, not what it imports. Fix: list the file that ` +
-                  `declares the source in 'explores', or import it into a ` +
-                  `listed file such as "${INDEX_MODEL_NAME}" and add it to ` +
-                  `that file's export { … }.`,
+                  `it declares, not what it imports. Fix: add the file that ` +
+                  `declares the source to 'explores', keeping the entries ` +
+                  `already there, or import it into ${importInto} and add ` +
+                  `it to that file's export { … }.`,
                severity: "error",
             });
          }
