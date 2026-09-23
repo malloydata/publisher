@@ -406,7 +406,7 @@ export function entityRowKey(
  */
 export function uniqueByEntityKey<
    T extends { kind: string; name: string; source: string | undefined },
->(entities: T[]): T[] {
+>(entities: readonly T[]): T[] {
    const seen = new Set<string>();
    return entities.filter((e) => {
       const key = entityRowKey(e.kind, sourceColumn(e.source), e.name);
@@ -601,24 +601,40 @@ function providerKeyFor(provider: EmbeddingProvider): string {
 }
 
 /**
- * The fingerprint of an entity set, computed fresh every call.
- *
- * Deliberately NOT memoized on the Package instance. That version read the
- * cached value and ignored its `entities` argument, which is only correct
- * while every caller passes the same set for a given instance -- an
- * invariant nothing enforces. A caller that passed a SUBSET (a scope filter
- * leaking into the sync's input, say) would then be handed the full set's
- * fingerprint and silently read as synced, so the cache turned a wrong
- * argument into a wrong answer instead of a re-sync.
- *
- * The cost is one pass of entityFacets plus a sha256 per facet: measured at
- * 3ms for a 1,269-entity package, on a path whose next step is a network
- * embedding call with a 5s timeout. If that ever matters, cache it beside the
- * entity index it describes, where the set is genuinely immutable -- not here,
- * keyed on something that only usually implies it.
+ * Fingerprints already computed, keyed on the frozen entity array they
+ * describe. See fingerprintFor.
  */
-function fingerprintFor(entities: EmbeddableEntity[]): string {
-   return desiredFingerprint(desiredFacets(entities));
+const fingerprintCache = new WeakMap<readonly EmbeddableEntity[], string>();
+
+/**
+ * The fingerprint of an entity set: the value the sync records as
+ * `meta.synced.fingerprint` for the same set. Deduped here, as the sync's
+ * input is, so the caller may pass the per-path list.
+ *
+ * The cost is one pass of entityFacets plus a sha256 per facet, synchronous
+ * on the event loop: about 1ms for 1,269 docless entities, and over 500ms for
+ * 5,000 entities carrying MAX_DOC_CHARS of doc each. The search path and the
+ * status endpoint both need it on every call, so it is cached.
+ *
+ * Cached on the ARRAY, and only a frozen one. get_context's package index
+ * builds one frozen array per Package and passes that same array on every
+ * call, so a package pays the cost once per load. Keying on the Package
+ * instance instead would be wrong: that version returned the cached value
+ * whatever `entities` it was handed, so a caller passing a SUBSET (a scope
+ * filter leaking into the sync's input, say) got the full set's fingerprint
+ * and silently read as synced. A subset is a different array, so here it
+ * misses and is computed fresh. An unfrozen array could be edited after its
+ * fingerprint was cached, so it is never cached.
+ */
+function fingerprintFor(entities: readonly EmbeddableEntity[]): string {
+   const frozen = Object.isFrozen(entities);
+   const cached = frozen ? fingerprintCache.get(entities) : undefined;
+   if (cached !== undefined) return cached;
+   const fingerprint = desiredFingerprint(
+      desiredFacets(uniqueByEntityKey(entities)),
+   );
+   if (frozen) fingerprintCache.set(entities, fingerprint);
+   return fingerprint;
 }
 
 /**
@@ -1070,7 +1086,12 @@ export async function trySemanticSearch(args: {
    pkg: Package;
    environmentName: string;
    packageName: string;
-   entities: EmbeddableEntity[];
+   /**
+    * Every entity the package exposes to retrieval. Pass the same frozen
+    * array on every call for one package, so its fingerprint is computed
+    * once (see fingerprintFor).
+    */
+   entities: readonly EmbeddableEntity[];
    /**
     * One entry per search target that carries text, in the caller's order.
     * All of them are embedded in ONE provider request and scored in ONE pass
@@ -1157,7 +1178,9 @@ export async function trySemanticSearch(args: {
    // is searching, the generation moves and this call must not assert
    // anything about the (now-changed) table; see the re-check below.
    const entryGeneration = meta.generation;
-   const fingerprint = fingerprintFor(entities);
+   // The caller's array, not the deduped copy: the copy is new every call,
+   // so only the caller's array can hit the cache.
+   const fingerprint = fingerprintFor(args.entities);
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -1616,8 +1639,12 @@ export interface EmbeddingIndexStatus {
  * rows survive a restart and a reload, so name coverage reported `ready`
  * while the next question was still answered lexically.
  *
- * Derived, never authoritative: it takes no mutex and writes nothing, so
- * calling it cannot perturb or serialize behind a sync in flight.
+ * Derived, never authoritative: it takes no mutex and writes nothing, so it
+ * cannot serialize behind a sync in flight. Its CPU cost is the content
+ * fingerprint, which is cached per loaded package (see fingerprintFor): the
+ * first call after a load, from here or from a search, computes it, and
+ * every later call is two row counts and a lookup. Polling is cheap, but not
+ * free.
  *
  * Two DIFFERENT row rules live in this file, and collapsing them is the
  * mistake to avoid -- it has been made twice already, once on the sync diff
@@ -1646,7 +1673,7 @@ export async function getEmbeddingIndexStatus(
    provider: EmbeddingProvider,
    environmentName: string,
    packageName: string,
-   allEntities: EmbeddableEntity[],
+   allEntities: readonly EmbeddableEntity[],
 ): Promise<EmbeddingIndexStatus> {
    // Counted per cached entity, not per card: the same reason the search
    // path dedupes. See uniqueByEntityKey.
@@ -1702,7 +1729,7 @@ export async function getEmbeddingIndexStatus(
              meta &&
                isSynced(
                   meta,
-                  fingerprintFor(entities),
+                  fingerprintFor(allEntities),
                   providerKeyFor(provider),
                ) &&
                !meta.mutex.isLocked()

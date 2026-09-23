@@ -1753,7 +1753,7 @@ describe("get_context semantic retrieval", () => {
       //
       // What keeps it correct is that the scope is applied INSIDE the scan
       // (trySemanticSearch's `sourceName`), while the sync is handed the whole
-      // package: getContext passes Array.from(byId.values()), and the filtered
+      // package: getContext passes pkgIndex.retrievalEntities, and the filtered
       // list is a separate `inScope` used only for the enumeration tiers. This
       // pins that separation from the outside, where a future refactor that
       // collapsed the two would be caught.

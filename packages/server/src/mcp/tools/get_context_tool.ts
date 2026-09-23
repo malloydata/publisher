@@ -1791,6 +1791,14 @@ function collapseAliases(entities: Entity[]): Entity[] {
 interface PackageIndex {
    pkg: Package;
    byId: Map<string, Entity>;
+   /**
+    * `byId`'s values as one frozen array, the entity set handed to the
+    * semantic index. Every call for this Package passes this same array, which
+    * is what lets the index cache its content fingerprint instead of hashing
+    * every facet on each question and each status read (see fingerprintFor
+    * in embedding_index).
+    */
+   retrievalEntities: readonly Entity[];
    index: lunr.Index;
    entityCount: number;
    /** Per-source context, keyed by source name. Built once with the index. */
@@ -1937,6 +1945,7 @@ async function getPackageIndex(
    const built: PackageIndex = {
       pkg,
       byId,
+      retrievalEntities: Object.freeze(Array.from(byId.values())),
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
@@ -2357,7 +2366,7 @@ async function runContextQuery(
                   pkg: pkgIndex.pkg,
                   environmentName,
                   packageName,
-                  entities: Array.from(byId.values()),
+                  entities: pkgIndex.retrievalEntities,
                   // Each target carries the kinds it may claim, and the scan
                   // applies that BEFORE cutting the target's window. Applied
                   // here afterwards, a `measure` target whose nearest rows were
@@ -2825,6 +2834,6 @@ export async function getPackageEmbeddingStatus(
       provider,
       environmentName,
       packageName,
-      Array.from(pkgIndex.byId.values()),
+      pkgIndex.retrievalEntities,
    );
 }
