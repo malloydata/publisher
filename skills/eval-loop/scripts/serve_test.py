@@ -313,6 +313,39 @@ class Roles(unittest.TestCase):
         self.assertTrue(seed)
         self.assertIn("publisher.config.json changed", why)
 
+    def test_a_port_flag_that_disagrees_with_eval_toml_is_refused(self):
+        d = a_set(TOML)
+        with self.assertRaises(SystemExit) as e:
+            serve.main(["--role", "model", "--set", str(d), "--port", "4999"])
+        self.assertIn("every later step reads [model] port = 4000", str(e.exception))
+        self.assertIn("Fix: set `port = 4999` under [model]", str(e.exception))
+
+    def test_a_taken_mcp_port_is_refused_not_shared(self):
+        # The REST port is free and the MCP port is not: the case `alive`
+        # missed, where two servers ended up listening on one MCP port.
+        d = a_set(TOML)
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        server = root / "pub" / "dist" / "server.mjs"
+        server.parent.mkdir(parents=True)
+        server.write_text("")
+        with mock.patch.object(serve, "listening", side_effect=lambda p: p == 4040):
+            with self.assertRaises(SystemExit) as e:
+                serve.main(["--role", "model", "--set", str(d),
+                            "--server-root", str(root),
+                            "--publisher-dir", str(root / "pub")])
+        self.assertIn("port 4040 is already in use", str(e.exception))
+        self.assertIn("change `mcp_port` under [model]", str(e.exception))
+
+    def test_listening_sees_a_bound_socket(self):
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        try:
+            self.assertTrue(serve.listening(s.getsockname()[1]))
+        finally:
+            s.close()
+
     def test_a_relative_publisher_dir_is_resolved_before_use(self):
         root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
         with mock.patch.object(serve, "alive", return_value=False):

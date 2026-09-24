@@ -80,6 +80,7 @@ import json
 import os
 import pathlib
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -96,6 +97,21 @@ def alive(port: int) -> bool:
                                     timeout=3) as r:
             return r.status == 200
     except Exception:  # noqa: BLE001
+        return False
+
+
+def listening(port: int) -> bool:
+    """Something accepts connections on 127.0.0.1:port, HTTP or not.
+
+    Not `alive`: that asks for a Publisher REST route, and the MCP port answers
+    no such route. A second process can also bind 127.0.0.1 beside another's
+    0.0.0.0 on the same port, so a bind would succeed and the answerer's URL
+    would reach whichever the OS picks. A connect sees both.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
         return False
 
 
@@ -349,10 +365,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--publisher-dir", type=pathlib.Path,
                     help="Publisher's packages/server directory (holds "
                          "dist/server.mjs). With --role, defaults to this clone's")
-    ap.add_argument("--port", type=int, default=None, help="default 4811, or "
-                    "the role's port in eval.toml")
-    ap.add_argument("--mcp-port", type=int, default=None, help="default 4040, or "
-                    "the role's mcp_port in eval.toml")
+    ap.add_argument("--port", type=int, default=None, help="default 4811. With "
+                    "--role it is the role's port in eval.toml, and a different "
+                    "value is refused: later steps read the file")
+    ap.add_argument("--mcp-port", type=int, default=None, help="default 4040. "
+                    "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
     ap.add_argument("--reinit", action="store_true",
@@ -385,6 +402,18 @@ def main(argv: list[str] | None = None) -> int:
                 f"(an empty section takes ports 4881/4882).")
         a.server_root = a.server_root or cfg.server_root(a.role)
         a.publisher_dir = a.publisher_dir or cfg.publisher_dir()
+        # Every later step reads this role's ports from eval.toml, so a server
+        # started on others is one they cannot find, or one they find in its
+        # place: another Publisher left on the file's port.
+        for flag, key, given in (("--port", "port", a.port),
+                                 ("--mcp-port", "mcp_port", a.mcp_port)):
+            want = cfg.get(a.role, key)
+            if given is not None and given != want:
+                raise SystemExit(
+                    f"{flag} {given}: every later step reads [{a.role}] {key} = "
+                    f"{want} from {cfg.file_hint}, so it would not find this "
+                    f"server. Fix: set `{key} = {given}` under [{a.role}] there "
+                    f"and drop the flag.")
         a.port = a.port or cfg.get(a.role, "port")
         a.mcp_port = a.mcp_port or cfg.get(a.role, "mcp_port")
         if a.role == "model" and a.warm_retrieval:
@@ -423,9 +452,14 @@ def main(argv: list[str] | None = None) -> int:
     server = a.publisher_dir / "dist" / "server.mjs"
     if not server.exists():
         raise SystemExit(f"{server} not found; build Publisher first")
-    if alive(a.port):
-        raise SystemExit(f"something already answers on port {a.port}; use another "
-                         f"port or --stop the recorded server first")
+    for key, port in (("port", a.port), ("mcp_port", a.mcp_port)):
+        if listening(port):
+            fix = (f"change `{key}` under [{a.role}] in {cfg.file_hint}; every "
+                   f"later step reads the port from there"
+                   if cfg is not None else f"pass another --{key.replace('_', '-')}")
+            raise SystemExit(f"port {port} is already in use. If it is this "
+                             f"server from an earlier start, --stop it first; "
+                             f"otherwise {fix}.")
 
     if cfg is not None:
         clash = port_clash(cfg, a.role, a.port, a.mcp_port)
