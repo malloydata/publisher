@@ -6161,6 +6161,28 @@ components:
             The given names this term reads, in first-seen order. A reader must
             bind these for the term to apply; binding none applies each given's
             declared default, as a live query would.
+    JoinedTerms:
+      type: object
+      required: [alias, source, terms]
+      description: >-
+        A join to a given-scoped source, declared on a persisted source and read
+        per caller through the joined source's own artifact.
+      properties:
+        alias:
+          type: string
+          description: >-
+            The join's alias as the author wrote it. Dotted for a join reached
+            through another such join (`grant.team`).
+        source:
+          type: string
+          description: The joined source's name — itself a persisted source.
+        terms:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrippedTerm"
+          description: >-
+            The joined source's own stripped terms, which its binding re-applies
+            with the caller's values.
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
@@ -6265,6 +6287,25 @@ components:
             reader has to bind for it to be served correctly. The publisher's own
             serve path re-derives these from the compiled model rather than from
             here.
+        joinedTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/JoinedTerms"
+          description: >-
+            The joins declared on this source whose TARGET is scoped by a given —
+            one entry per such join, naming the joined source and the terms its
+            own artifact re-applies. Absent or empty means no field of this source
+            reads a caller-scoped join.
+
+
+            These terms are not stripped from THIS artifact: a join is not part of
+            a persist source's build, so this table holds the same rows with or
+            without it. They are what makes a field reading through the join
+            answer per caller (a visibility dimension that null-checks a grant
+            table, say), and they are applied only by the joined source's own
+            binding. So a reader serving this artifact must bind the joined source
+            too; without it, the join cannot be re-emitted and any query reading
+            through the alias must be served live.
         refresh:
           type: ["string", "null"]
           description: >-
