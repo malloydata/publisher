@@ -485,8 +485,11 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             for qid in c.get("qids") or []:
                 member_rows.append({"cluster_id": c.get("clusterId"), "qid": qid})
     if not cluster_rows:
-        print("  ! no clusters.jsonl in any run: the data app's cluster views "
-              "will be empty (run diagnose first)")
+        if all((rd / "clusters.jsonl").exists() for rd in run_dirs):
+            print("  no failure clusters: diagnose found nothing to diagnose")
+        else:
+            print("  ! no clusters.jsonl in any run: the data app's cluster "
+                  "views will be empty (run diagnose first)")
 
     write_csv(data / "runs.csv", runs, [
         "run_id", "label", "target", "model", "effort", "started",

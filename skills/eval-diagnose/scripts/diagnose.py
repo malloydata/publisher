@@ -877,6 +877,13 @@ def main(argv: list[str] | None = None) -> int:
     to_diagnose = failed + retrieval_only
     if not to_diagnose:
         print("no diagnosable failures in this run")
+        # An empty clusters.jsonl records "diagnosed, nothing to cluster", so
+        # the report builder does not refuse a run where everything passed.
+        # Only for a whole-run pass: a narrowed one (--only, --limit) did not
+        # look at every case, and an existing file keeps its clusters.
+        out = a.run / "clusters.jsonl"
+        if not (a.only or a.limit is not None) and not out.exists():
+            out.write_text("")
         return 0
 
     art = a.run / "artifacts"
