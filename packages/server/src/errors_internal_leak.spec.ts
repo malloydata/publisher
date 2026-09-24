@@ -10,11 +10,12 @@
 // internal error returns a generic body, with the detail logged server-side
 // rather than returned. The actionable 4xx client-error messages are unchanged.
 //
-// The permissive frame-ancestors default (Part B of the finding) is deferred: on
-// this deployment the app embeds a served data-app cross-origin and the router
-// forwards the worker CSP verbatim, so tightening the default to 'self' without a
-// paired PUBLISHER_FRAME_ANCESTORS override (or a router-side injection) would
-// break the embed. That change ships with the deployment coordination, not here.
+// The permissive frame-ancestors default (Part B of the finding) has since
+// shipped: the default is `'self'` and one middleware applies it to every
+// response, covered by `frame_ancestors.spec.ts`. The deployment coordination
+// this comment deferred it for is still real and is now the migration note --
+// an embedder that frames Publisher from another origin sets
+// PUBLISHER_FRAME_ANCESTORS to that origin, or the embed renders blank.
 
 import { describe, expect, it, spyOn } from "bun:test";
 import {
