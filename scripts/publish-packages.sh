@@ -190,6 +190,11 @@ registry_has() {
 # the silent wrong answer this exists to prevent.
 wait_for_server_latest() {
   local deadline errors=0 answer seen="(no answer yet)"
+  # A failure here returns 1 to the top-level publish_pkg call, and
+  # `set -e` ends the job there, so python-client is never reached.
+  # Re-running the job covers both: skills is skipped as already
+  # published, and this wait runs again.
+  local SERVER_LATEST_RECOVERY="Once \`npm view @malloy-publisher/server dist-tags.latest\` reads ${NEW_VERSION}, re-run THIS JOB (Re-run failed jobs). Do not re-run the whole release: that bumps and republishes sdk/app/server."
   deadline=$((SECONDS + SERVER_LATEST_BUDGET_SECONDS))
   while :; do
     if answer="$(npm view @malloy-publisher/server dist-tags.latest --prefer-online 2>&1)" \
@@ -207,16 +212,16 @@ wait_for_server_latest() {
       errors=$((errors + 1))
       echo_untrusted_output "$answer"
       if [ "$errors" -ge "$POLL_MAX_REGISTRY_ERRORS" ]; then
-        echo "::error title=Server pin::npm stopped answering for @malloy-publisher/server dist-tags.latest (${errors} consecutive failures), so create-malloy-package was NOT dispatched. Once that reads ${NEW_VERSION}, dispatch create-malloy-package-npm.yml on main."
-        echo "- \`create-malloy-package\` NOT dispatched: npm did not answer for the server's \`latest\`" >> "$GITHUB_STEP_SUMMARY"
+        echo "::error title=Server pin::npm stopped answering for @malloy-publisher/server dist-tags.latest (${errors} consecutive failures), so create-malloy-package was NOT dispatched, and neither was python-client after it. ${SERVER_LATEST_RECOVERY}"
+        echo "- \`create-malloy-package\` NOT dispatched: npm did not answer for the server's \`latest\`. \`python-client\` was not reached." >> "$GITHUB_STEP_SUMMARY"
         return 1
       fi
     fi
     [ "$SECONDS" -ge "$deadline" ] && break
     sleep "$POLL_SLEEP"
   done
-  echo "::error title=Server pin::@malloy-publisher/server latest still reads '${seen}', not ${NEW_VERSION}, after $((SERVER_LATEST_BUDGET_SECONDS / 60))m, so create-malloy-package was NOT dispatched: it would pin the previous server. Once \`npm view @malloy-publisher/server dist-tags.latest\` reads ${NEW_VERSION}, dispatch create-malloy-package-npm.yml on main."
-  echo "- \`create-malloy-package\` NOT dispatched: the server's npm \`latest\` never read ${NEW_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+  echo "::error title=Server pin::@malloy-publisher/server latest still reads '${seen}', not ${NEW_VERSION}, after $((SERVER_LATEST_BUDGET_SECONDS / 60))m, so create-malloy-package was NOT dispatched (it would pin the previous server), and neither was python-client after it. ${SERVER_LATEST_RECOVERY}"
+  echo "- \`create-malloy-package\` NOT dispatched: the server's npm \`latest\` never read ${NEW_VERSION}. \`python-client\` was not reached." >> "$GITHUB_STEP_SUMMARY"
   return 1
 }
 
@@ -485,12 +490,23 @@ publish_pkg() {
   # run, so link the filtered workflow view rather than a wrong run.
   local runs_url="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/${wf}?query=branch%3Amain"
 
+  # The scaffolder is told which server to pin rather than reading
+  # `latest` itself. The wait above proves only THIS runner's view of
+  # npm. The registry is cached per CDN edge (max-age=300), so the
+  # child's runners can still read the previous server for a few
+  # minutes, and a stale read there would publish a scaffolder pinned
+  # to it with nothing going red.
+  local inputs=()
+  if [ "$dir" = "create-malloy-package" ]; then
+    inputs=(-f "server_version=${NEW_VERSION}")
+  fi
+
   echo "::notice title=${name}::dispatching ${wf} on main to publish ${spec} (${runs_url})"
   # Aborting here is right: polling 25 minutes for a run that was never
   # created helps nobody. But under `set -e` a bare command would exit
   # the step with only gh's stderr and the notice above to go on, which
   # is the one exit from this function with no explanation of its own.
-  if ! out="$(gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref main 2>&1)"; then
+  if ! out="$(gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref main ${inputs[@]+"${inputs[@]}"} 2>&1)"; then
     echo_untrusted_output "$out"
     echo "::error title=${name}::could not dispatch ${wf} on main, so ${spec} was not published and nothing is waiting for it. Check that the workflow exists on main and still declares workflow_dispatch, then dispatch it yourself at ${runs_url}."
     echo "- \`${spec}\` NOT dispatched: the dispatch API call failed" >> "$GITHUB_STEP_SUMMARY"

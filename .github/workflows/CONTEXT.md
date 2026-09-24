@@ -609,8 +609,15 @@ That `needs:` is not enough on its own, because npm can take minutes to show a v
 `npm publish` returns. In 0.7.0, `publish-npm` finished at 19:09 and `latest` read 0.7.0 only at
 19:16, so the scaffolder read 0.6.0. So `publish-packages.sh` also waits, up to 15 minutes, for the
 server's `latest` to read the version the release shipped before it dispatches the scaffolder
-(`wait_for_server_latest`). If `latest` never gets there, the scaffolder is not dispatched and the job
-says why.
+(`wait_for_server_latest`). If `latest` never gets there, the scaffolder is not dispatched, `set -e`
+ends the job so python-client is not reached either, and the job says to re-run it once `latest` reads
+the new version.
+
+That wait proves only the release runner's view of npm. The registry is cached per CDN edge
+(`cache-control: public, max-age=300`), so the scaffolder's runners can read the previous `latest` for
+a few more minutes. So the release also dispatches the scaffolder with `server_version` set to the
+version it shipped. Both scaffolder jobs wait for their own `latest` to read it, and the pin step
+refuses anything else. A hand dispatch leaves the input empty and pins `latest` as before.
 
 The `--host` check runs `npx @malloy-publisher/server@<pin>` from an empty temporary directory, not
 the checkout. In the checkout, npx uses the workspace's own unbuilt `packages/server` whenever the pin
