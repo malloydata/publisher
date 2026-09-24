@@ -43,8 +43,9 @@ source gated with [`#(authorize)`](authorize.md) or scoped by [row-level access]
 can be explored from the Console instead of refusing with a 403.
 
 - A given left blank falls back to its declared default, and the result says which defaults it ran
-  with. A blank given with no default is still sent, since not every source reads every given; if
-  the server refuses the query, the Results Panel names the blank givens it may need.
+  with. Leaving a given with no default blank doesn't stop the Run, since not every source reads
+  every given; if the server refuses the query, the Results Panel names the blank givens it may
+  need.
 - The values live in the page URL (`?TENANT=acme`), so a parameterized exploration is a shareable
   link, and the maximized view shows the same values.
 - **Explore from here** on a dashboard tile, and a notebook cell's **Data sources** dialog, open the
