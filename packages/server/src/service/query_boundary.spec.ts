@@ -1067,6 +1067,14 @@ source: locked is duckdb.sql("select 1 as id") extend {
                .readFileSync(index, "utf8")
                .replace("export { customers }", "export { customers, locked }"),
       );
+      // The check is per model, so the hidden file needs its own gate for its
+      // whole-file refusal to have something to protect.
+      const base = path.join(tempDir, "base.malloy");
+      fs.writeFileSync(
+         base,
+         fs.readFileSync(base, "utf8") +
+            `\n#(authorize) false\nsource: base_locked is duckdb.sql("select 1 as id")\n`,
+      );
       fs.writeFileSync(
          path.join(tempDir, "report.malloynb"),
          `>>>malloy\nimport "index.malloy"\nimport "base.malloy"`,
@@ -1096,6 +1104,15 @@ source: locked is duckdb.sql("select 1 as id") extend {
          );
          expect(aliased).not.toBeInstanceOf(OffSurfaceError);
          expect(aliased.message).toBe("Query target is not queryable.");
+
+         // A whole hidden file that is gated gets the plain refusal, without
+         // the surface sentence that confirms the file is real.
+         const hiddenFile = await refusal(
+            pkg.getModel("base.malloy")!,
+            "run: base_source -> v",
+         );
+         expect(hiddenFile).not.toBeInstanceOf(OffSurfaceError);
+         expect(hiddenFile.message).toBe('No queryable model "base.malloy".');
       } finally {
          await duckdb.close();
       }

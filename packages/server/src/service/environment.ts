@@ -23,6 +23,7 @@ import {
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
+   ModelCompilationError,
    NotQueryableError,
    PackageManifestError,
    PackageNotFoundError,
@@ -838,9 +839,16 @@ export class Environment {
                         : { modelPath: modelName, source },
                });
             } catch (error) {
-               // An unusable publisher.json is the author's to fix, as on
-               // reload: it answers 424, not a worker outage.
-               if (error instanceof PackageManifestError) throw error;
+               // Same split as Package.loadViaWorker: compile errors and an
+               // unusable publisher.json keep their 4xx mapping, and only an
+               // infrastructure failure reads as a worker outage.
+               if (
+                  error instanceof MalloyError ||
+                  error instanceof ModelCompilationError ||
+                  error instanceof PackageManifestError
+               ) {
+                  throw error;
+               }
                throw new ServiceUnavailableError(
                   `Package compile worker unavailable: ${
                      error instanceof Error ? error.message : String(error)

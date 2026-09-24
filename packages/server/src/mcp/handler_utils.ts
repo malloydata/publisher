@@ -14,6 +14,7 @@ import {
    EnvironmentNotFoundError,
    NotQueryableError,
    OffSurfaceError,
+   PackageManifestError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ResponseUnserializableError,
@@ -73,6 +74,19 @@ export function classifyToolError(
          suggestions: [
             "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
             "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof PackageManifestError) {
+      // An unusable publisher.json, from reload_package or a package-scope
+      // compile_model. The internal branch would call it unexpected and say to
+      // retry, and the Malloy branch would send the agent to its .malloy files.
+      // The message already names the field and what was wrong with it.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient. The package's publisher.json is invalid, so retrying fails the same way until the file is fixed.",
+            "Fix the field the message names in publisher.json, then call reload_package.",
          ],
       } satisfies ErrorDetails;
    }
