@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One entry point for a local evaluation run. Stdlib only.
 
+  python3 eval.py check    --set <set-dir>         # every gap in the set, before anything starts
   python3 eval.py serve model --set <set-dir>      # the server the answerer queries
   python3 eval.py serve truth --set <set-dir>      # the answer key's server
   python3 eval.py verify   --set <set-dir>         # goldens still re-derive
@@ -30,7 +31,7 @@ for d in ("eval-answer", "eval-loop", "eval-diagnose"):
 
 import config  # noqa: E402
 
-VERBS = ("serve", "verify", "run", "diagnose", "package")
+VERBS = ("check", "serve", "verify", "run", "diagnose", "package")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -90,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"eval.py {verb}: --set <set-dir> is required")
         return 2
 
+    if verb == "check":
+        import check_set
+        return check_set.main(rest)
     if verb == "serve":
         import serve
         return serve.main(rest)
