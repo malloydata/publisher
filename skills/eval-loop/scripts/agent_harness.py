@@ -90,6 +90,11 @@ ALWAYS_BLOCKED = (
     # launched detached, and they alone flagged every attempt in a 37-case run.
     # `Task` was blocked; the newer task-management tools were not.
     "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+    # Granted to every headless session by the current CLI. Measured
+    # 2026-09-22 on the first smoke against a real model: it alone flagged the attempt
+    # contaminated on an answer that made two MCP calls and nothing else, and
+    # a judged arm would have voided all 24 verdicts.
+    "Artifact",
 )
 
 # The role-dependent half, and the reason it cannot join ALWAYS_BLOCKED:
