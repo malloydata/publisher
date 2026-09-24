@@ -1410,7 +1410,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
             print(f"    [{mark}] {r['qid']} {r['field']}: {r['figure']}"
                   f" -- computed {r.get('computed')!r}")
             if r.get("query"):
-                print(f"           query: {str(r['query'])[:160]}")
+                print(f"           query: {' '.join(str(r['query']).split())[:160]}")
             if r.get("why"):
                 print(f"           {r['why']}")
 
