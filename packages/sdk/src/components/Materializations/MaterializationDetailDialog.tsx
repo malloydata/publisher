@@ -27,6 +27,8 @@ import {
    formatTimestamp,
    isActiveStatus,
    parseMetadata,
+   refusedSourcesOf,
+   sourcesSummary,
    statusColor,
    statusLabel,
 } from "./utils";
@@ -47,6 +49,7 @@ export default function MaterializationDetailDialog({
    onClose,
 }: MaterializationDetailDialogProps) {
    const meta = materialization ? parseMetadata(materialization) : {};
+   const refused = materialization ? refusedSourcesOf(materialization) : [];
    const planSources = Object.values(buildPlan?.sources ?? {});
 
    return (
@@ -135,7 +138,7 @@ export default function MaterializationDetailDialog({
                      />
                      <DetailField
                         label="Sources"
-                        value={`${meta.sourcesBuilt ?? 0} built · ${meta.sourcesReused ?? 0} reused`}
+                        value={sourcesSummary(meta, " · ")}
                      />
                      <DetailField
                         label="Force refresh"
@@ -167,6 +170,49 @@ export default function MaterializationDetailDialog({
                         >
                            {materialization.error}
                         </Typography>
+                     </Box>
+                  )}
+
+                  {refused.length > 0 && (
+                     <Box
+                        sx={{
+                           borderRadius: 2,
+                           p: 2,
+                           mb: 3,
+                           border: "1px solid",
+                           borderColor: "warning.main",
+                        }}
+                     >
+                        <SectionLabel>
+                           <Box component="span" sx={{ color: "warning.main" }}>
+                              Refused sources
+                           </Box>
+                        </SectionLabel>
+                        <Typography
+                           variant="body2"
+                           color="text.secondary"
+                           sx={{ mb: 1 }}
+                        >
+                           Not built, because materializing them would be
+                           unsafe. They serve live until the model changes.
+                        </Typography>
+                        {refused.map((r) => (
+                           <Box key={r.name} sx={{ mt: 1 }}>
+                              <Typography
+                                 variant="body2"
+                                 sx={{ fontFamily: MONO_FONT_FAMILY }}
+                              >
+                                 {r.name}
+                              </Typography>
+                              <Typography
+                                 variant="body2"
+                                 color="text.secondary"
+                                 sx={{ whiteSpace: "pre-wrap" }}
+                              >
+                                 {r.message}
+                              </Typography>
+                           </Box>
+                        ))}
                      </Box>
                   )}
 

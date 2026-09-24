@@ -219,6 +219,16 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
         # canonicalQuery" and count as an error, so a set with one criteria
         # golden failed its own audit with exit 1.
         return "skipped", "criteria: the clauses are the key, nothing to re-derive", None
+    if g.get("status") in ("ambiguous", "invalid"):
+        # A held golden is settled by a person through the golden side door
+        # and never re-derived (`promotion_blocker` says the same). Running the
+        # value check on it printed HTTP 404 on every audit for a key whose
+        # canonicalQuery read the model under test, `verify()` counted that
+        # error as drift, and `run_baseline` refused to start the arm -- with
+        # `--refresh` as the suggested remedy, which cannot fix an error.
+        return ("skipped",
+                f"{g['status']}: settled by a person through the golden side "
+                f"door, not re-derived", None)
     if not q:
         # A PROVISIONAL golden with no query is young, not wrong, and it is
         # exactly what `eval-import` produces from a set that arrived as
@@ -244,6 +254,21 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     rows, err = try_query(a.publisher, a.environment, a.truth_package,
                           a.truth_model, q)
     if err:
+        if "not queryable" in err:
+            # The single most likely state of a set authored before its truth
+            # package existed: every key replays a packaged view (`run:
+            # orders -> ...`), and the truth server answers 404 "Query
+            # target is not queryable" 23 times with no hint that the query's
+            # root source is not a raw table. The message sent a reader to the
+            # server; the defect is in the golden.
+            m = re.match(r"\s*run:\s*([A-Za-z_]\w*)", q)
+            root = f"`{m.group(1)}`" if m else "its root source"
+            return ("error",
+                    f"canonicalQuery reads {root}, which the truth package does "
+                    f"not serve as queryable: either the truth model does not "
+                    f"declare it (a key derived through the model under test, "
+                    f"not the raw tables) or the query did not compile. "
+                    f"Re-derive the key through the truth package", None)
         return "error", err[:160], None
 
     want = g.get("value")

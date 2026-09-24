@@ -53,6 +53,23 @@ source: summary_fresh is order_summary extend {
 
 Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
 
+### A query over a persisted source
+
+A source whose query reads a persisted source — the private-fact / public-wrapper idiom — is not a build target of its own, but it reads the stored table too:
+
+```malloy
+#@ persist name="orders_fact" storage=lake
+source: _orders_fact is raw_orders -> { select: * } extend {
+  where: org_id = $ORG_ID
+}
+
+// Served from orders_fact's table, with the fact's where: applied per caller.
+source: orders is _orders_fact -> { select: * }
+source: totals is _orders_fact -> { group_by: org_id; aggregate: n is count() }
+```
+
+On a storage destination the wrapper is carried onto the serve shape verbatim, over the rebound fact, when everything it reads is itself on the shape. A wrapper whose query or joins reach a source that is not materialized there — a warehouse table, or a persisted source whose table is stale past its window — is served live instead.
+
 ### `#(access_filter)`-gated sources and materialization
 
 A source protected by a `#(access_filter)` gate — its own, or one carried from a joined or derived
@@ -152,16 +169,72 @@ it. It fires however the given reaches the query — including through the sourc
 `#@ persist source: r is scoped -> { … }` is refused too: the query reads `scoped`'s filter, so the
 value is substituted just the same.
 
-Three positions carry a given that this version does not admit even though the build leaves them out:
-a declared `dimension:` or `measure:` (`dynamic_projection`), a join's `on:` condition
-(`dynamic_join`), and a given-scoped source reached through a join (`dynamic_joined_where`). None is
-in the artifact, so none is a leak; they are refused because whether the serve shape reproduces them
-is a separate question from whether the build strips them. To scope by a joined source's own filter,
-enter through a non-persisted extension that declares the join, so the term is part of the query
-rather than of the artifact. Note what that costs today: such an entry point answers correctly
-but is **served live**, because a plain extension of a persisted source is currently treated as
-a build target of its own and refused, while `#@ -persist` opts out of reading the stored table.
-The arrangement is correct; it does not yet get the tier.
+Two positions carry a given that is refused even though the build leaves them out: a declared
+`dimension:` or `measure:` that reads a given itself (`dynamic_projection`), and a join's `on:`
+condition (`dynamic_join`). Neither is in the artifact, so neither is a leak; they are refused
+because the serve shape has nothing that binds the given per caller in that position.
+
+#### Per-user visibility through a joined grant table
+
+A join to a given-scoped source **is** admitted when that source is itself materialized into
+storage, joined by name, and admissible under these same rules. This is the visibility idiom: a
+source scoped to the caller's org joins a grant table scoped to the caller's org and user, and a
+dimension decides what the caller may see by null-checking the join.
+
+```malloy
+#@ persist name="grants" storage=lake partition="org_id"
+source: grants is raw_grants -> { select: * } extend {
+  where: org_id = $ORG_ID and user_id = $USER_ID
+}
+
+#@ persist name="opps" storage=lake partition="org_id"
+source: opps is raw_opps -> { select: * } extend {
+  where: org_id = $ORG_ID
+  join_one: g is grants on opp_id = g.opp_id
+  dimension:
+    visible is restricted = 0 or g.opp_id is not null
+    shown_name is pick name when visible else '[Hidden]'
+}
+```
+
+Neither artifact is filtered by user: a persisted source's joins and dimensions are not in its
+build, and `grants` leaves its `where:` out like any other. At read, the serve shape re-emits
+`grants` with its terms bound to the caller's values and re-emits the join against that binding,
+so `visible` is evaluated over exactly the grant rows the live query would join. The build plan
+reports the join under `joinedTerms`, beside the source's own `strippedTerms`, naming the joined
+source whose binding the per-caller answer depends on. The rule is transitive: a grant table that
+itself joins a further given-scoped source is held to it one level down.
+
+It is refused as `dynamic_joined_where` when the joined source is not persisted, is persisted
+colocated (no `storage=`), would itself be refused, or is joined through an inline refinement
+(`join_one: g is grants extend { … }`), which compiles to an anonymous source nothing can bind.
+Declare the refinement on a named source and join that.
+
+When the joined source's binding cannot be reproduced on the shape — stale past its window, never
+built, refused, bound on a different destination, or declared with a non-public access modifier —
+the joining source is withheld with it and serves live, from current grants. Without that, every
+field reading through the join would fail the shape compile, and the fallback that answers a failed
+compile would cost every sibling source in the model its joins, dimensions and measures.
+
+**A revoked grant stays visible until the grant table rebuilds.** Here the frozen row data *is* the
+access decision, so the grant table's freshness is the revocation latency — and the
+[gated-source staleness rules](#the-freshness-contract-for-a-gated-colocated-persist-source) apply to it in full:
+
+- **Give the grant table a freshness window with `fallback="live"`.** A window is the only control
+  that bounds revocation: once the table ages past it, the sources joining it are withheld and
+  answered live, whether or not a rebuild ever lands. (`fallback="fail"` drops to live the same way
+  today; `stale_ok` keeps serving the stale grants, so it bounds nothing.) A grant table with no window is never stale,
+  and serves a revoked grant for as long as its table exists.
+- **Do not refresh a grant table incrementally.** A revocation is usually a deleted row, and a
+  [delta](#incremental-refresh) reads only rows its watermark admits — a deleted row is never
+  re-read, so the stored grant survives every run. Rebuild it in full, or `reseed` it.
+- **The window is enforced from the freshness fields a control plane stamps on the manifest it
+  distributes.** A standalone Publisher's own post-build load binds its entries un-gated, so there
+  the window does not bound anything and only a rebuild does.
+
+The same rule serves an entry point declared as a plain extension: `source: visible is opps extend
+{ join_one: … ; where: g.user_id = $USER_ID }` inherits `#@ persist`, builds nothing new (its build
+is `opps`'s relation), and is served from `opps`'s table with its own join and term re-applied.
 
 A source that reaches a given-scoped source only through a join its persisted query never
 reads is admitted. That rests on the COMPILER: Malloy prunes an unread join out of the build
@@ -251,7 +324,7 @@ and is refused rather than ignored without it (`partition_without_storage`).
 Admitting a proven row-level gate applies unconditionally. The refusal it relaxes never fired at
 _load_: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
 package with a colocated `#@ persist` on a `#(access_filter)`-gated source already loads, appears in
-`plan.sources`, and serves live — what 422'd was its _materialization run_, not the package.
+`plan.sources`, and serves live — what was refused was its _materialization_, not the package.
 
 **So such packages already exist.** On upgrade, a run that used to fail succeeds when the gate proves
 row-level and attributed to the entry point, and the next auto-run or scheduled build materializes the
@@ -261,7 +334,8 @@ from a possibly-stale artifact afterwards, subject to the staleness below.
 The given refusal above runs the other way, and such packages may also already exist. On upgrade a
 colocated `#@ persist` whose persisted query references a given stops materializing: the package
 still loads and the source still serves — live, correctly, per caller — but its next materialization
-run 422s, and an artifact built before the upgrade is unbound on the next reload rather than served.
+run skips it and records the refusal, and an artifact built before the upgrade is unbound on the next
+reload rather than served.
 The remedy is to move the given out of the persisted query, which the refusal message names.
 
 What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the

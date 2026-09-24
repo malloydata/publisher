@@ -81,6 +81,7 @@ import {
    type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
+   withholdUnreproducibleCallerScopedJoins,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -4593,6 +4594,57 @@ export class Model {
       const nothingToEscalate =
          rollupGroups.length === 0 &&
          !enriched.some((b) => (b.refinements ?? []).length > 0);
+      // Derived entry points ride the richest rung only, and are probed there
+      // first. A lift the eligibility checks passed can still fail to compile (a
+      // field path through a join of its base the shape does not carry), and a
+      // lift failure answered by the ordinary ladder would cost every binding its
+      // views. So a failing lift costs that lift: when the richest rung compiles
+      // without the lifts, they are re-added one at a time, in dependency order,
+      // keeping each that compiles. When it does not compile without them either,
+      // the lifts were not the cause and the ladder below runs without them.
+      let lifts = this.liftedDerivedSources(enriched);
+      if (lifts.length > 0) {
+         const probe = async (candidate: DerivedSourceLift[]) => {
+            const m = this.buildServeShapeMaterializer(
+               enriched,
+               tiers[0].groups,
+               candidate,
+            );
+            try {
+               await m.getModel();
+               return m;
+            } catch (err) {
+               return err instanceof Error ? err : new Error(String(err));
+            }
+         };
+         const withAll = await probe(lifts);
+         if (!(withAll instanceof Error)) return withAll;
+         const withNone = await probe([]);
+         const kept: DerivedSourceLift[] = [];
+         let best: ModelMaterializer | undefined;
+         if (!(withNone instanceof Error)) {
+            best = withNone;
+            for (const lift of lifts) {
+               const attempt = await probe([...kept, lift]);
+               if (attempt instanceof Error) continue;
+               kept.push(lift);
+               best = attempt;
+            }
+         }
+         if (kept.length < lifts.length) recordServeShapeTierDrop("lifts");
+         logger.warn(
+            "Storage serve shape failed to compile with its lifted entry points; the ones that do not compile serve live",
+            {
+               model: this.modelPath,
+               dropped: lifts
+                  .filter((l) => !kept.includes(l))
+                  .map((l) => l.sourceName),
+               error: withAll.message,
+            },
+         );
+         if (best) return best;
+         lifts = [];
+      }
       const lastTier = tiers.length - 1;
       for (let tier = 0; tier <= lastTier; tier++) {
          const { keep, groups } = tiers[tier];
@@ -4609,14 +4661,13 @@ export class Model {
                          }
                        : b,
                  );
-         // Derived entry points ride the richest rung only. They are the most
-         // that can be carried, and confining them here is what bounds the blast
-         // radius: every rung below is byte-identical to the shape this package
-         // compiled before lifting existed.
+         // Derived entry points ride the richest rung only, and only if they
+         // survived the probe above. Every rung below is byte-identical to the
+         // shape this package compiled before lifting existed.
          const materializer = this.buildServeShapeMaterializer(
             shaped,
             groups,
-            tier === 0 ? this.liftedDerivedSources(enriched) : [],
+            tier === 0 ? lifts : [],
          );
          // The last tier is virtual bases plus their filters. Unlike the tiers
          // above it, it can fail: a filter that cannot be reproduced (one
@@ -4935,50 +4986,66 @@ export class Model {
       bindings: ServeBinding[],
    ): ServeBinding[] {
       const { contents, sourceNameById, liftText } = this.authorModelLift();
-      const materializedSourceNames = new Set(
-         bindings.map((b) => b.sourceName),
+      // Narrow the declared ::Shape to the source's PUBLIC columns: the build
+      // materializes every projected column (incl. `except:`-ed /
+      // access-restricted ones), so the captured schema can be wider than the
+      // source's public surface. Declaring a hidden column would expose it over
+      // storage when live hides it — always applied (even with no refinements),
+      // so the serve surface never widens the source's.
+      //
+      // Then drop any binding whose public schema is empty. Bindings are pushed
+      // to EVERY model in the package, so a model receives bindings for sources
+      // it doesn't define (defined in a sibling model) — those have no field list
+      // here, hence an empty narrowed schema. An empty `type: X__shape is {}` is
+      // a Malloy parse error that would fail the ENTIRE serve-shape model
+      // (breaking the base-only-always-compiles fallback invariant) and silently
+      // drop storage serving for this model's own sources too. Omitting them
+      // sends queries on an undefined source to live (where this model refuses
+      // them anyway) and keeps a source from being served through a model that
+      // doesn't declare it.
+      //
+      // Done FIRST, because everything below decides against the set of sources
+      // that will actually be on the shape: a join is re-emitted only when its
+      // target is in it, and a caller-scoped joiner is withheld when its target
+      // is not.
+      const onShape = bindings
+         .map((b) => ({
+            ...b,
+            schema: narrowSchemaToPublic(
+               b.schema,
+               contents?.[b.sourceName]?.fields,
+            ),
+         }))
+         .filter((b) => b.schema.length > 0);
+      const { kept, withheld } = withholdUnreproducibleCallerScopedJoins(
+         onShape,
+         contents,
+         sourceNameById,
       );
-      return (
-         bindings
-            .map((b) => {
-               const fields = contents?.[b.sourceName]?.fields;
-               // Narrow the declared ::Shape to the source's PUBLIC columns: the
-               // build materializes every projected column (incl. `except:`-ed /
-               // access-restricted ones), so the captured schema can be wider
-               // than the source's public surface. Declaring a hidden column
-               // would expose it over storage when live hides it — always applied
-               // (even with no refinements), so the serve surface never widens
-               // the source's.
-               const schema = narrowSchemaToPublic(b.schema, fields);
-               const refinements = [
-                  ...extractJoins(fields, {
-                     sourceNameById,
-                     materializedSourceNames,
-                     liftText,
-                  }),
-                  ...extractRefinements(fields),
-                  // The source's own `where:` clauses. Not part of the
-                  // materialized relation (the build SQL is the persisted
-                  // relation alone), so without these the shape serves rows the
-                  // source excludes.
-                  ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
-                  ...extractViews(fields, liftText),
-               ];
-               return { ...b, schema, refinements };
-            })
-            // Drop any binding whose public schema is empty. Bindings are pushed
-            // to EVERY model in the package, so a model receives bindings for
-            // sources it doesn't define (defined in a sibling model) — those have
-            // no field list here, hence an empty narrowed schema. An empty
-            // `type: X__shape is {}` is a Malloy parse error that would fail the
-            // ENTIRE serve-shape model (breaking the base-only-always-compiles
-            // fallback invariant) and silently drop storage serving for this
-            // model's own sources too. Omitting them sends queries on an
-            // undefined source to live (where this model refuses them anyway) and
-            // keeps a source from being served through a model that doesn't
-            // declare it.
-            .filter((b) => b.schema.length > 0)
-      );
+      if (withheld.length > 0) {
+         logger.warn(
+            "Withheld storage serve bindings whose caller-scoped join cannot be reproduced; those sources serve live",
+            { model: this.modelPath, withheld },
+         );
+      }
+      const materializedSourceNames = new Set(kept.map((b) => b.sourceName));
+      return kept.map((b) => {
+         const fields = contents?.[b.sourceName]?.fields;
+         const refinements = [
+            ...extractJoins(fields, {
+               sourceNameById,
+               materializedSourceNames,
+               liftText,
+            }),
+            ...extractRefinements(fields),
+            // The source's own `where:` clauses. Not part of the materialized
+            // relation (the build SQL is the persisted relation alone), so
+            // without these the shape serves rows the source excludes.
+            ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
+            ...extractViews(fields, liftText),
+         ];
+         return { ...b, refinements };
+      });
    }
 
    public async getQueryResults(
