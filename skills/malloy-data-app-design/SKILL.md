@@ -36,6 +36,18 @@ Answer these four before choosing anything. Ask the user what you cannot infer -
 
 If the user cannot name the decision, that is worth surfacing rather than papering over: an app without a decision behind it becomes a data dump, and no amount of design rescues it. Offer to build the most defensible general view for the audience and say plainly that is what you are doing.
 
+### If the app already exists
+
+Most requests are "make this better", not "build me one". The brief is the same, but an existing app carries constraints a new one does not, and you find them by looking rather than by asking:
+
+- **Find the tests and docs that describe the current app first.** A test that asserts exact label text, a README that names a section, a screenshot in a doc: any of these turns a wording change into a broken build. Search for the app's strings before you change them.
+- **Read the app against the brief you just wrote, not against your taste.** Say which tiles serve the decision, which do not, and which are missing. That list is the change; anything else is redecoration.
+- **Say what you are keeping.** A redesign that silently drops a tile someone relies on is worse than one that keeps it and explains why.
+
+### When nobody can answer
+
+You may be running unattended, or the person who asked is not reachable. Do not stall, and do not quietly skip the brief: **write it down, state the assumption it rests on, and build.** Put the brief where the work lands (a comment at the top of the tile definitions, a note in the app, the handover message), so the first reviewer sees what you assumed and can correct it in one reply. An unanswered question is a reason to record the assumption, not to abandon the step.
+
 ## 2. Pick the archetype
 
 Archetype drives layout, navigation, and how much depth is warranted. Pick one deliberately; do not default.

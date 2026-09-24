@@ -53,7 +53,9 @@ Reserve the semantic colours (positive/negative) for *values*, never for chrome.
 
 ## 3. Charts need craft, not just a correct type
 
-A correct chart type drawn with library defaults is the single biggest tell of a generated app. The chart is usually the largest object on the page and it is where the least design attention goes.
+A correct chart type drawn with library defaults is the single biggest tell of a generated app.
+
+**This section applies to a chart you draw by hand as well.** A small SVG written directly is often the right call for a sparkline, a gauge or a single annotated shape, and it does not escape any of the rules below: hand-drawn text still collides with the marks it labels, still needs a measured gutter, and still needs the grid turned down. The only thing that changes is that there is no library default to turn down, which makes it easier to get right and easier to forget. The chart is usually the largest object on the page and it is where the least design attention goes.
 
 - **Label the data directly.** A legend makes the reader look away from the marks and back again. Put the series name at the end of its line, the category on its bar, the notable points on the scatter. A legend is a fallback for when direct labelling genuinely will not fit. Expect to hand-write this: most chart libraries have no direct-label or annotation layer, so it is a small custom plugin drawing on the canvas. Two traps make the first attempt look broken - text drawn at the plot's right edge prints *over* the marks, so reserve a gutter in the layout and draw past the edge into it, and that gutter has to be **measured** with the same font or the longest label clips.
 - **A scatter where you cannot identify a point is a texture, not a chart.** Label the outliers and the extremes, at minimum. If the user has selected an entity, that point is accented and every other point recedes.

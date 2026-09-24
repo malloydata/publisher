@@ -42,6 +42,8 @@ function writeHash() {
 
 Use `replaceState`, not `pushState`, for filter changes: every tweak of a dropdown becoming a back-button step makes the back button useless. Reserve `pushState` for navigation the user would expect to undo, like opening a different page.
 
+**Key the URL on a name, not a position.** A row index or a group number is only stable if the query that produced it has a total order, and "sort by size" is not one: two groups of equal size come back in whichever order the warehouse returns them, so the index in the URL points at a different thing on each load. That failure is invisible in testing, because it needs a tie. Either key on something stable (the entity's name or id) or give the query a tie-breaker (`order_by: size desc, name`). Validating the value on read does not catch this, because the value is perfectly valid and simply means something else.
+
 **Validate on read.** A hash is user-editable, so treat it as untrusted input: check a page id against the known list and a period against the known set, and fall back to the default rather than trusting it into a query.
 
 ## Drill-down: the model side
@@ -78,7 +80,7 @@ Write down that you did this and why. A reader who later sees hand-built drill q
 
 ## Drill-down: the panel side
 
-An entity drawer has five parts. Skipping any one produces a bug that only shows up in use, not in a screenshot.
+An entity drawer has six parts. Skipping any one produces a bug that only shows up in use, not in a screenshot.
 
 ```js
 const drill = { entity: null, charts: [], returnFocus: null };
@@ -117,8 +119,9 @@ What each part prevents:
 1. **Return focus** - without it, closing the drawer drops a keyboard user at the top of the document, losing their place in a long table.
 2. **Focus trap** - without it, Tab walks out of the open drawer into the page behind it, which is invisible to a mouse user and completely breaks a keyboard one. Close on Escape too.
 3. **Stale-response guard** - the real bug. Click entity A, then quickly click entity B: A's slower query resolves last and paints A's numbers under B's title. It is intermittent, looks like bad data rather than a race, and is close to impossible to diagnose from a screenshot. Compare the entity you are about to paint against the one currently open, and drop the response if they differ.
-4. **Chart teardown** - most chart libraries keep a registry and attach resize listeners; reopening a drawer twenty times without destroying leaks memory and can leave ghost tooltips from the old instance.
-5. Also re-render the drawer when the global filter changes underneath it, or it silently shows numbers for a period the rest of the page has moved off.
+4. **A closed panel that still takes clicks.** If the drawer's own CSS sets `display` (a `grid` or `flex` layout on the panel itself), that wins over the `hidden` attribute, so the panel stays in the layout at zero opacity and swallows every click aimed at the page behind it. Nothing looks wrong; the app simply stops responding in that region. Guard it once, globally: `[hidden] { display: none !important }`.
+5. **Chart teardown** - most chart libraries keep a registry and attach resize listeners; reopening a drawer twenty times without destroying leaks memory and can leave ghost tooltips from the old instance.
+6. Also re-render the drawer when the global filter changes underneath it, or it silently shows numbers for a period the rest of the page has moved off.
 
 ## Cross-filtering (shared scope)
 
