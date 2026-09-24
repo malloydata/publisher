@@ -1,5 +1,6 @@
-# Where each step of a run finds its servers. Read by every eval script
-# through skills/eval-answer/scripts/config.py; a flag still overrides any of it.
+# Where each step of a run finds its servers. Read, through
+# skills/eval-answer/scripts/config.py, by every eval script that takes --set;
+# a flag still overrides any of it.
 
 [model]                  # the Publisher the answerer queries
 environment = "examples"

@@ -142,7 +142,6 @@ def main(argv: list[str] | None = None) -> int:
               f"an A/A pair disagreed on.")
         return 0
 
-    cfg = json.loads((a.set_dir / "set.json").read_text())
     conf = rb.config.load(a.set_dir)
     a.publisher = a.publisher or conf.model_publisher()
     a.environment = conf.need(a.environment, "model", "environment",
@@ -155,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     # and on a run event -- so the wrong name here read as correct while always
     # missing, silently checking the judge against a different model than the
     # set configures. Default matches run_baseline's for the same reason.
-    a.model_path = (a.model_path or cfg.get("targetModelPath")
+    a.model_path = (a.model_path or conf.set_meta.get("targetModelPath")
                     or "model.malloy")
     # run_judge reads these off the namespace; a fixture check never rebuilds
     # from a cache and always re-judges, which is the entire point of it.

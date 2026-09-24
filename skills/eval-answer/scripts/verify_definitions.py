@@ -71,7 +71,8 @@ USAGE
         --environment samples --package ecommerce --out evals/definitions/ecommerce.jsonl
     # after authoring check.query on the raw records:
     python3 verify_definitions.py --model m.malloy --ledger evals/definitions/ecommerce.jsonl \\
-        --publisher http://localhost:4811 --package ecommerce --model-path ecommerce.malloy
+        --publisher http://localhost:4811 --environment samples --package ecommerce \
+        --model-path ecommerce.malloy
 """
 from __future__ import annotations
 
@@ -689,8 +690,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--model {a.model} does not exist", file=sys.stderr)
         return CANNOT_RUN
     if a.publisher and not (a.environment and a.package and a.model_path):
-        print("--publisher needs --environment, --package and --model-path to "
-              "address a query", file=sys.stderr)
+        missing = [f for f, v in (("--environment", a.environment),
+                                  ("--package", a.package),
+                                  ("--model-path", a.model_path)) if not v]
+        print(f"--publisher needs --environment, --package and --model-path to "
+              f"address a query; missing {', '.join(missing)}. This script "
+              f"takes no --set, so it does not read eval.toml.", file=sys.stderr)
         return CANNOT_RUN
     if a.truth_publisher and not a.truth_package:
         print("--truth-publisher needs --truth-package", file=sys.stderr)

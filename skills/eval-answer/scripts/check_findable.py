@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Can a right-typed search actually retrieve each `required` entity? Stdlib only.
 
+  python3 check_findable.py --set <set-dir>   # server and names from its eval.toml
   python3 check_findable.py --set evals/faa-v1 --mcp-url http://localhost:4045/mcp \
       --environment samples --package faa
 
@@ -58,6 +59,7 @@ import urllib.request
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import config  # noqa: E402
 from mcp_payload import entity_hits  # noqa: E402
 
 # An entity kind, and the target type that can return it. The inverse of the
@@ -341,11 +343,15 @@ def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--mcp-url", required=True,
+    ap.add_argument("--mcp-url", default=None,
                     help="the MCP endpoint of the model UNDER TEST, not the "
-                         "truth server")
-    ap.add_argument("--environment", required=True)
-    ap.add_argument("--package", required=True)
+                         "truth server. Default: from [model] in the set's "
+                         "eval.toml")
+    ap.add_argument("--environment", default=None,
+                    help="Default: [model] environment in the set's eval.toml")
+    ap.add_argument("--package", default=None,
+                    help="Default: [model] package in the set's eval.toml, then "
+                         "set.json's targetPackage")
     ap.add_argument("--publisher", default=None,
                     help="REST URL of the same server, e.g. "
                          "http://localhost:4811. With it, each id is also "
@@ -361,6 +367,10 @@ def main(argv: list[str] | None = None) -> int:
                          "wait, which risks reading the lexical matcher as a "
                          "missing entity")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    a.environment = cfg.need(a.environment, "model", "environment", "--environment")
+    a.package = cfg.need(a.package, "model", "package", "--package")
+    a.mcp_url = a.mcp_url or cfg.model_mcp_url()
 
     f = a.set_dir / "cases.jsonl"
     if not f.exists():
