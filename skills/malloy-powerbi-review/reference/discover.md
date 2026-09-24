@@ -53,7 +53,9 @@ relationship 7f3a1c2e-9b44-4e18-a6d2-51c0f8e3b7a9
     toColumn: DimCustomer.CustomerKey
 ```
 
-Read that as **many-to-one, single-direction, active**. Only the interesting ones carry `crossFilteringBehavior`, `isActive: false`, or explicit cardinality, which makes them easy to spot. The relationship *name* is a GUID and means nothing.
+Read that as **many-to-one, single-direction, active**. Only the interesting ones carry `crossFilteringBehavior`, `isActive: false`, or explicit cardinality, which makes them easy to spot. The relationship *name* is a GUID and means nothing. In one real Microsoft-published model, all eight relationships were exactly three lines and the file contained not one cardinality, direction or active flag.
+
+**Identifiers containing spaces or punctuation are single-quoted**, and the quotes are part of the syntax rather than the name: `fromColumn: Operation.'Start Time'` is the column `Start Time` on table `Operation`. A naive split on `.` gets this wrong.
 
 The same shorthand applies to booleans across TMDL: `isHidden` on its own line implies `true`. A search for `isHidden: true` silently misses every object written that way.
 
@@ -100,7 +102,9 @@ partition Sales = m
                 ...
 ```
 
-`Server` and `Database` here are shared M expressions declared in `definition/expressions.tmdl`, not values. Read that file before concluding a partition does not name its source. Two other root files are worth knowing: `definition/cultures/` (locale, which affects date and decimal parsing on anything lifted out) and `definition/roles/` plus `definition/perspectives/`, both covered in `rls-roles.md`.
+`Server` and `Database` here are shared M expressions declared in `definition/expressions.tmdl`, not values. Read that file before concluding a partition does not name its source.
+
+**Some models have no source table at all.** `expressions.tmdl` can hold entire M functions that build a REST call, so the "table" is the parsed result of an API response. One real Microsoft-published model sources every table from a Log Analytics query assembled in M, with no `Sql.Database` anywhere. There is nothing for a Malloy source to point at, and the migration question becomes where that pipeline is going to live rather than which table to read. Establish this in discovery, not after modeling. Two other root files are worth knowing: `definition/cultures/` (locale, which affects date and decimal parsing on anything lifted out) and `definition/roles/` plus `definition/perspectives/`, both covered in `rls-roles.md`.
 
 **Do not translate the M transformation steps.** On an import model the stored data is Power Query's *output*, so a snapshot runs no M at all. M matters only when the user needs the refresh reproduced, which is a separate decision. Flag any partition whose M does substantial reshaping (merges, appends, unpivots, custom columns) as work that has to land somewhere, and say where you think it belongs: upstream in the warehouse, or in the Malloy source.
 

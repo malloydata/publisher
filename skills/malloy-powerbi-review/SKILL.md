@@ -91,6 +91,7 @@ Each reference file is loaded by the workflow phase that needs it. You do not ne
 
 - **Auto date/time tables.** Power BI generates a hidden `LocalDateTable_<guid>` per date column plus a `DateTableTemplate_<guid>`. These are an artifact of a setting, not a modeling decision. Skip all of them and propose one real date dimension.
 - **Report layout** (`report.json`, `*.Report/`): visuals, pages, bookmarks, themes. Analysis is a separate workflow.
+- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors. They return strings and belong to the canvas, not the model, and they can be a third of the measures in a real file. `reference/translate-measures.md` has the tells; skip them rather than classifying them.
 - **Implicit measures.** A numeric column aggregated in a visual with no defined measure. Note which columns are used this way, do not manufacture a measure per column.
 - **`summarizeBy` defaults**, except as a hint about which columns are facts and which are keys.
 - **Display folders**, `lineageTag`, `ordinal`, and other authoring metadata.

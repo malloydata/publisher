@@ -43,9 +43,30 @@ Neither errors. Both look like a correct transcription. One of them is on a slid
 
 **`KEEPFILTERS` is the tell.** A DAX author who wrote `CALCULATE([Total], KEEPFILTERS(Orders[Status] = "Shipped"))` asked for intersection, which is what Malloy does natively. That measure is safe. A measure without `KEEPFILTERS` is only safe if nothing ever filters the same column, and you cannot know that from the model file alone.
 
+**Expect the tell to be absent.** `KEEPFILTERS` is rare in practice: one real Microsoft-published model used it in **0 of its 96 `CALCULATE` calls**. So divergence is the default case, not the exception. Do not approach this as hunting for a few bad measures among many safe ones; approach it as establishing which handful are safe.
+
+## Class 0: Report-Layer Measures, Which Are Not Business Logic
+
+**Sort these out before you classify anything, or you will migrate a third of the model for nothing.**
+
+A large share of the measures in a real Power BI model exist only to drive the report canvas: button captions, tooltip text, dynamic titles, selected-page names, navigation paths, conditional formatting colors. They return strings, not numbers, and no one wants them in a semantic model.
+
+The tells are a string literal in the body plus one of `ISFILTERED`, `HASONEVALUE`, `SELECTEDVALUE`, `CONCATENATE`, `FORMAT`, `UNICHAR`, `SELECTEDMEASURE`:
+
+```dax
+Drill through button text =
+VAR Selection = [Selected page]
+VAR Filtered = ISFILTERED ( Operation[ReportId] )
+RETURN IF ( Filtered = TRUE(), "Drillthrough to " & Selection, "Make a filter selection" )
+```
+
+Skip them the way you skip `report.json`. They are not Class 3: "untranslatable" says the business wanted something Malloy cannot express, and nobody wanted this. Filing them as Class 3 inflates the migration estimate with work no one would accept.
+
+**For calibration**, one real Microsoft-published model of 126 measures broke down as **40 report-layer (32%)**, 43 plain Class 1, 31 Class 2, 12 Class 3. Report the report-layer count separately so the user sees the true size of the job.
+
 ## The Three Classes
 
-Every measure lands in exactly one. Classify first, translate second.
+Every remaining measure lands in exactly one. Classify first, translate second.
 
 ### Class 1: Translatable
 
@@ -87,7 +108,7 @@ No Malloy equivalent. Do not fake one. Each needs a rewrite of the intent or an 
 - **Context transition inside an iterator**: `SUMX(T, [Some Measure])`, where a measure reference or `CALCULATE` inside the iterator transitions row context into filter context. Note the narrowness: an iterator over a plain row-level expression is Class 1 (above), and `SUMX(FILTER(T, cond), <row expr>)` is usually just `sum(expr) { where: cond }`. Only the nested-measure form belongs here. Often the intent is a simple filtered aggregate and the DAX is more complicated than the question; ask what the number means before translating the code.
 - **`EARLIER` / `EARLIEST`**: row-context constructs with no equivalent.
 - **`RANKX`, `TOPN`**: ranking is a query in Malloy, not a measure.
-- **`ALLSELECTED`**: depends on the visual's own filter scope, a concept that exists only inside a report.
+- **`ALLSELECTED`**: depends on the visual's own filter scope, a concept that exists only inside a report. **Expect a lot of it** - it was the third most common function in the real model sampled above, ahead of `SELECTEDVALUE` and every time-intelligence function - so budget for it rather than treating it as an edge case.
 - **`USERELATIONSHIP`**: switches to an inactive relationship for one measure. In Malloy this is a second join path or a second source.
 - **Calculation groups**: a Power BI object that rewrites measures at query time. There is no equivalent; each generated combination has to be considered on its own.
 - **Field parameters**: a report-layer construct that swaps which measure or column a visual shows.
