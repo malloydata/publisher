@@ -25,8 +25,10 @@ sales/
 
 `orders_staging` is now a building block: it still compiles, and other models can import, join and
 extend it by importing `orders.malloy`, but it is not listed and a direct query against it is
-refused. A source reached through a join is read as normal — hiding a source does not hide the
-fields a published source joins in. A package with no
+refused. A source reached through an author join is read as normal — hiding a source does not hide
+the fields a published source joins in. A join the caller writes into a hidden source is refused
+like a direct query (404), whether it names the source, an alias or extension of it declared in the
+request, or a query over it. A package with no
 `index.malloy` and no `explores` publishes everything, which is the behavior every package had
 before this convention existed.
 

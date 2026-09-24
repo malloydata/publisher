@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import {
    buildDerivationBaseMap,
+   buildIsEdgeMap,
+   buildJoinBaseMap,
    buildSourceAliasMap,
    extractRunTargetSourceName,
    stripMalloyCommentsAndLiterals,
@@ -351,6 +353,135 @@ describe("service/query_text", () => {
                "mine",
             ),
          ).toEqual(new Set(["hidden"]));
+      });
+   });
+
+   describe("buildJoinBaseMap", () => {
+      const bases = (text: string, alias: string) =>
+         buildJoinBaseMap(text).get(alias);
+
+      it("reads an aliased join and a shorthand join", () => {
+         const map = buildJoinBaseMap(
+            "run: s extend { join_one: g is gated on id = g.id; join_many: helper on id = helper.id } -> { group_by: g.x }",
+         );
+         expect(map.get("g")).toEqual(new Set(["gated"]));
+         expect(map.get("helper")).toEqual(new Set(["helper"]));
+      });
+
+      it("reads JOIN_ONE: and Join_Cross: in any case", () => {
+         expect(
+            bases("RUN: s EXTEND { JOIN_ONE: g IS gated ON id = g.id }", "g"),
+         ).toEqual(new Set(["gated"]));
+         expect(bases("run: s extend { Join_Cross: c is gated }", "c")).toEqual(
+            new Set(["gated"]),
+         );
+      });
+
+      it("reads the base of an inline extend, and not the fields inside it", () => {
+         const map = buildJoinBaseMap(
+            "run: s extend { join_one: e is gated extend { dimension: z is name } on id = e.id }",
+         );
+         expect(map.get("e")).toEqual(new Set(["gated"]));
+         expect(map.has("z")).toBe(false);
+      });
+
+      it("never maps an aliased item to itself as if it were shorthand", () => {
+         expect(
+            bases(
+               "run: s extend { join_one: e is gated extend {} on id = e.id }",
+               "e",
+            ),
+         ).toEqual(new Set(["gated"]));
+         // A base the scan cannot read yields no edge rather than `e -> e`.
+         expect(
+            buildJoinBaseMap("run: s extend { join_one: e is 'x' }").has("e"),
+         ).toBe(false);
+      });
+
+      it("reads a parenthesized base and a backtick-quoted alias", () => {
+         expect(
+            bases(
+               "run: s extend { join_one: `my-e` is ((gated extend {})) on id = `my-e`.id }",
+               "my-e",
+            ),
+         ).toEqual(new Set(["gated"]));
+      });
+
+      it("reads later items separated by a comma or by nothing", () => {
+         const map = buildJoinBaseMap(
+            "run: s extend { join_one: a is x with k, b is y on id = b.id c is z extend {} on id = c.id }",
+         );
+         expect(map.get("a")).toEqual(new Set(["x"]));
+         expect(map.get("b")).toEqual(new Set(["y"]));
+         expect(map.get("c")).toEqual(new Set(["z"]));
+      });
+
+      it("reads annotations before an item and on either side of is", () => {
+         expect(
+            bases(
+               "run: s extend { join_one:\n # tag\n e # x\n is # y\n gated extend {} on id = e.id }",
+               "e",
+            ),
+         ).toEqual(new Set(["gated"]));
+      });
+
+      it("ignores comments and literals, and reads through a comment before the base", () => {
+         const map = buildJoinBaseMap(
+            "-- join_one: fake is forged\nrun: s -> { where: n = 'join_one: lit is forged'; join_one: g is -- c\n gated on id = g.id }",
+         );
+         expect(map.has("fake")).toBe(false);
+         expect(map.has("lit")).toBe(false);
+         expect(map.get("g")).toEqual(new Set(["gated"]));
+      });
+
+      it("keeps every base of a repeated alias", () => {
+         expect(
+            bases(
+               "source: a is s extend { join_one: e is x on id = e.id }\nrun: s extend { join_one: e is y on id = e.id }",
+               "e",
+            ),
+         ).toEqual(new Set(["x", "y"]));
+      });
+
+      it("stops a statement at the next keyword", () => {
+         const map = buildJoinBaseMap(
+            "run: s extend { join_one: g is gated on id = g.id\n dimension: d is name }",
+         );
+         expect(map.has("d")).toBe(false);
+      });
+   });
+
+   describe("buildIsEdgeMap", () => {
+      it("reads every NAME is BASE edge, including a join item no statement scan reads", () => {
+         const map = buildIsEdgeMap(
+            "run: s extend { join_one: a is x on f(a.id, 1) = 1 e is gated extend {} on id = e.id }",
+         );
+         expect(map.get("e")).toEqual(new Set(["gated"]));
+         expect(map.get("a")).toEqual(new Set(["x"]));
+      });
+
+      it("is not blanked by a phantom literal an annotation opens", () => {
+         const map = buildIsEdgeMap(
+            "run: s extend {\n # don't\n join_one: e is rowgated extend {} on id = e.id\n dimension: q is 'x' }",
+         );
+         expect(map.get("e")).toEqual(new Set(["rowgated"]));
+      });
+
+      it("reads through comments and annotations around is", () => {
+         expect(
+            buildIsEdgeMap(
+               "join_one: e -- a\n # b\n is /* c */ (gated extend {})",
+            ).get("e"),
+         ).toEqual(new Set(["gated"]));
+      });
+
+      it("does not backtrack exponentially on crafted trivia", () => {
+         const text =
+            "join_one: e " + "# a -- b // c -- d\n".repeat(64) + "isnt";
+         const start = performance.now();
+         buildIsEdgeMap(text);
+         buildJoinBaseMap(text);
+         expect(performance.now() - start).toBeLessThan(1000);
       });
    });
 });

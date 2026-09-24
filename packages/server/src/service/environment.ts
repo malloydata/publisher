@@ -36,6 +36,7 @@ import {
    WriteRolledBackError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import type { CallerRegion } from "./caller_joins";
 import { assertNoRestrictedConstructs } from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
@@ -662,6 +663,10 @@ export class Environment {
          const virtualUri = virtualUrl.toString();
 
          let fullSource = source ?? "";
+         // Where the caller's own text starts in the compiled file, so its joins
+         // are gated as the query path gates them. "file" and "package" have
+         // none: the whole text is the author's file.
+         let callerRegion: CallerRegion | undefined;
          if (scope === "append") {
             // Read the full model file so the submitted source inherits the
             // model's complete namespace — imports, source definitions,
@@ -680,6 +685,13 @@ export class Environment {
             fullSource = modelContent
                ? `${modelContent}\n${source}`
                : (source ?? "");
+            callerRegion = {
+               kind: "span",
+               url: virtualUri,
+               // 0-based: the appended text starts on the line after the model's.
+               fromLine: modelContent ? modelContent.split("\n").length : 0,
+               text: source ?? "",
+            };
          }
 
          // Create a URL Reader that serves the source string for the virtual
@@ -1153,8 +1165,11 @@ export class Environment {
                         ? gateModel.assertAuthorizedForRunnable(
                              materializer,
                              givens ?? {},
+                             callerRegion,
                           )
-                        : gateModel.assertAuthorizedFromCompiledRunnable(
+                        : // No region: this gate model is another file's
+                          // namespace, so its source names cannot place a join.
+                          gateModel.assertAuthorizedFromCompiledRunnable(
                              materializer,
                              givens ?? {},
                           ),

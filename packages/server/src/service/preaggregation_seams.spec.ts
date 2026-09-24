@@ -862,3 +862,75 @@ source: ungated is duckdb.sql("""
       { timeout: 60000 },
    );
 });
+
+// A caller-written join is an entry into the joined source, so a row gate on
+// it blocks routing exactly like one on the run target.
+describe("pre-aggregation and a caller join to a row-gated source", () => {
+   const CALLER_JOIN_MODEL = `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: orgs is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'one'), (2, 'two')) AS t(org_id, org_name)
+""")
+
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+   let harness: MetricsHarness;
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      resetMaterializationTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   it(
+      "blocks routing and filters the joined rows",
+      async () => {
+         const pkg = await loadPackage(CALLER_JOIN_MODEL);
+         await runGatedQuery(
+            pkg,
+            "run: orders -> { group_by: category; aggregate: total }",
+            { GROUPS: [1] },
+         );
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(0);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders extend { join_one: o is orgs on org_id = o.org_id } -> { group_by: o.org_name; aggregate: total; order_by: org_name }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([
+            { org_name: "one", total: 40 },
+            { org_name: null, total: 20 },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(1);
+      },
+      { timeout: 60000 },
+   );
+});

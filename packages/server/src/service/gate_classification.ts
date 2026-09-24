@@ -69,6 +69,7 @@ import {
    AUTHORIZE_ROUTE,
    CANONICAL_AUTHORIZE_ROUTES,
 } from "./authorize_routes";
+import type { CallerJoinPath } from "./caller_joins";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
@@ -324,12 +325,13 @@ function gateExprsForOwnAnnotations(
  * Derivation recurses through this same function, so a chained derivation is
  * covered at any depth.
  *
- * What this deliberately does NOT collect (Q16 — joins are not traced):
- * joined sources (`struct.fields`), members of a joined composite,
- * query-local joins inside a `-> { join_one: ... }` refinement, and a
- * derivation's own inner-pipeline joins. A gate is a statement about who may
- * query the source it is declared on, not about everything reachable beneath
- * it.
+ * What this deliberately does NOT collect: joined sources (`struct.fields`),
+ * members of a joined composite, query-local joins inside a `-> { join_one:
+ * ... }` refinement, and a derivation's own inner-pipeline joins. For a join
+ * the model AUTHOR wrote that is the rule — a gate is a statement about who
+ * may query the source it is declared on, not about everything the author
+ * joined beneath it. A join the CALLER wrote is gated too, but by a separate
+ * pass (`./caller_joins`, `Model.probeCallerJoinGates`), not by this walk.
  *
  * `seen` (struct-identity keyed) guards cycles and repeat structs.
  *
@@ -449,9 +451,9 @@ function collectEntryPointGatesForRoute(
       });
    }
 
-   // Joined sources are deliberately NOT walked — see this function's doc. A
-   // gate is evaluated on the ENTRY POINT only; reaching a gated source
-   // through `join_*` does not bring its gate along.
+   // Joined sources are deliberately NOT walked — see this function's doc: an
+   // author join does not bring its source's gate along, and a caller join is
+   // gated by its own pass.
 
    const duck = struct as unknown as {
       type: string;
@@ -526,7 +528,7 @@ function collectEntryPointGatesForRoute(
          );
       }
       // The derivation's own inner-pipeline `join_one`s are NOT walked — same
-      // rule as every other join.
+      // rule as every other join here.
    }
 
    return results;
@@ -881,17 +883,22 @@ export async function resolveGateShape(
  * The `modelDef.contents` KEY to graft a gate entry's condition onto, or
  * `undefined` if none resolves (⇒ the caller denies).
  *
- * `struct` here is always the RUN TARGET's own entry-point struct (see
- * {@link collectEntryPointGates}'s `entryPointStruct`) — never the struct a
- * chained gate's OWN annotations happened to be read off. That is what makes
- * this call site P0-safe BY CONSTRUCTION, not just by scoping which gates get
- * collected: the run target is the entry point by definition and is never a
- * source reached through a join, so grafting it can never make a joined
- * source's gate fire. Do not widen this to graft anything other than the run
- * target (or its resolved composite branch) — that reintroduces the exact
- * join-propagation leak this scoping closes: grafting a condition onto a
- * SourceDef propagates it into every joined copy of that source, firing a
- * gate P0 says must not fire.
+ * `struct` here is the entry-point struct of a gate that applies to THIS
+ * request: the run target (or its resolved composite branch — see
+ * {@link collectEntryPointGates}'s `entryPointStruct`, never the struct a
+ * chained gate's own annotations were read off), or a model source a
+ * CALLER-written join reaches (`Model.probeCallerJoinGates`). Grafting a
+ * condition onto a source propagates it into every copy compiled from the
+ * grafted model afterward, and that is why this is P0-safe: the grafted
+ * materializer is built per request gate set and only this request's text is
+ * recompiled against it, while an author join embedded in another model
+ * source kept its own copy from model load (spread-assign in
+ * `Model.buildGraftedMaterializer`). Do not widen it to a source that no gate
+ * of this request reaches — grafting every gated source up front would fire
+ * gates on author joins that must not fire. An author join through a named
+ * query over the grafted source stays unfiltered too (measured): it holds its
+ * own load-time copy of the query, not the snapshot
+ * `Model.graftIntoNamedQuerySnapshots` appends to.
  *
  * If `struct` IS itself a `contents` entry, the entry point is graftED
  * DIRECTLY — this covers `Y is X extend {}` inheriting `X`'s gate (`Y` is the
@@ -1147,6 +1154,8 @@ export type RowLevelGraftEntry = {
    filterText: string;
    condition: FilterCondition;
    givenNames: readonly string[];
+   /** Set for a caller join's gate: where the graft must be proven to land. */
+   callerJoinPath?: CallerJoinPath;
 };
 
 /**

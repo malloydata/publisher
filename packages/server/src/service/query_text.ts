@@ -34,6 +34,24 @@ function keywordPattern(pattern: string, flags = ""): RegExp {
 }
 
 /**
+ * What Malloy's lexer reads around between two tokens: whitespace, comments,
+ * and `#` annotations, which the join grammar allows before an item and on
+ * either side of its `is`. Each alternative matches exactly one way (a line
+ * form runs to the newline, a block form stops at its first close), so a
+ * caller cannot make the scan backtrack exponentially.
+ */
+const TRIVIA = String.raw`(?:\s|(?:#|--|\/\/)[^\n]*(?=\n|$)|\/\*(?:[^*]|\*(?!\/))*\*\/)*`;
+
+/** A word ends here: without it `eis x` reads as `e is x` by backtracking. */
+const WORD_END = String.raw`(?![\p{L}\p{N}_])`;
+
+/** A word does not start mid-identifier, mid-path, or inside a backtick. */
+const WORD_START = String.raw`(?<![\p{L}\p{N}_.\x60])`;
+
+/** `ALIAS is BASE`, where BASE may sit behind any number of `(`. */
+const IS_EDGE = String.raw`${IDENT}${WORD_END}${TRIVIA}is${WORD_END}${TRIVIA}(?:\(${TRIVIA})*${IDENT}`;
+
+/**
  * The top-level source a `run:` / `->` query targets, or undefined when the
  * text has no recognizable run target.
  */
@@ -249,4 +267,116 @@ export function buildDerivationBaseMap(
       basesOf.set(name, bases);
    }
    return basesOf;
+}
+
+function addEdge(
+   map: Map<string, Set<string>>,
+   name: string,
+   base: string,
+): void {
+   const bases = map.get(name) ?? new Set<string>();
+   bases.add(base);
+   map.set(name, bases);
+}
+
+/**
+ * Every base each `join_one:` / `join_many:` / `join_cross:` alias in `query`
+ * is declared over, as ALIAS → set of BASEs; a shorthand item (`join_one:
+ * gated on …`) maps the name to itself.
+ *
+ * Kept apart from {@link buildDerivationBaseMap}: a join alias is field-scoped,
+ * not a model-namespace name, so merged it would add edges to any caller
+ * source that happens to share the alias and over-deny a query that never
+ * reads through them.
+ *
+ * Reads each join statement's items at bracket depth 0 until the statement
+ * ends (`;`, a closing bracket, or the next `keyword:`), so a comma-separated
+ * or whitespace-separated later item is read too, and an `extend { … }` or
+ * argument list inside one is not. A shorthand item is recognized only first
+ * or after a comma, where it cannot be an `on` expression's identifier. Best
+ * effort, and unanchored to what runs: a join in a declaration the query never
+ * uses, or text in a `#` annotation, is read too, which over-denies in the
+ * pre-compile pass it feeds and admits nothing. Strips its own input, for the
+ * reason {@link buildSourceAliasMap} gives.
+ */
+export function buildJoinBaseMap(query: string): Map<string, Set<string>> {
+   const out = new Map<string, Set<string>>();
+   const text = stripMalloyCommentsAndLiterals(query);
+   const statementRe = keywordPattern(
+      String.raw`${WORD_START}join_(?:one|many|cross)\s*:`,
+      "g",
+   );
+   const firstItemRe = keywordPattern(
+      // Shorthand only where no `is` follows: otherwise an item whose base
+      // this cannot read would map the alias to itself.
+      String.raw`${TRIVIA}${IDENT}${WORD_END}(?:${TRIVIA}is${WORD_END}${TRIVIA}(?:\(${TRIVIA})*${IDENT}|(?!${TRIVIA}is${WORD_END}))`,
+      "y",
+   );
+   const laterItemRe = keywordPattern(String.raw`${WORD_START}${IS_EDGE}`, "y");
+   const keywordRe = keywordPattern(
+      String.raw`${WORD_START}[\p{L}_][\p{L}\p{N}_]*\s*:(?!:)`,
+      "y",
+   );
+   while (statementRe.exec(text) !== null) {
+      let pos = statementRe.lastIndex;
+      let atItemStart = true;
+      let depth = 0;
+      while (pos < text.length) {
+         if (depth === 0) {
+            const itemRe = atItemStart ? firstItemRe : laterItemRe;
+            itemRe.lastIndex = pos;
+            const item = itemRe.exec(text);
+            if (item) {
+               const alias = item[1] ?? item[2];
+               addEdge(out, alias, item[3] ?? item[4] ?? alias);
+               pos = itemRe.lastIndex;
+               atItemStart = false;
+               continue;
+            }
+            atItemStart = false;
+            keywordRe.lastIndex = pos;
+            if (keywordRe.test(text)) break;
+         }
+         const ch = text[pos];
+         if (ch === "`") {
+            const close = text.indexOf("`", pos + 1);
+            pos = close === -1 ? text.length : close + 1;
+            continue;
+         }
+         if (ch === "(" || ch === "[" || ch === "{") depth++;
+         else if (ch === ")" || ch === "]" || ch === "}") {
+            if (--depth < 0) break;
+         } else if (depth === 0 && ch === ";") break;
+         else if (depth === 0 && ch === ",") atItemStart = true;
+         pos++;
+      }
+   }
+   return out;
+}
+
+/**
+ * Every `NAME is BASE` edge anywhere in `query`, whatever statement it sits in,
+ * read from the raw text AND the stripped text, as NAME → set of BASEs.
+ *
+ * For the one decision that has only text to go on: the base of a caller join
+ * the compiler left no `sourceID` on (an inline `x extend { … }`). A join alias
+ * may be declared again in another scope, so a scan that missed the real
+ * declaration would let a decoy's base stand in for it; this one has no
+ * statement structure to misread, and the raw pass cannot be blanked by a
+ * phantom literal the strip opens (a `'` in an annotation). Over-collects on
+ * purpose: its reader requires EVERY base to prove out, so an extra edge adds
+ * an obligation and never discharges one.
+ */
+export function buildIsEdgeMap(query: string): Map<string, Set<string>> {
+   const out = new Map<string, Set<string>>();
+   for (const text of [query, stripMalloyCommentsAndLiterals(query)]) {
+      const edgeRe = keywordPattern(String.raw`${WORD_START}${IS_EDGE}`, "g");
+      let match: RegExpExecArray | null;
+      while ((match = edgeRe.exec(text)) !== null) {
+         addEdge(out, match[1] ?? match[2], match[3] ?? match[4]);
+         // Resume just past the name, so a base can also be the next edge's name.
+         edgeRe.lastIndex = match.index + 1;
+      }
+   }
+   return out;
 }

@@ -1327,8 +1327,8 @@ source: top_join is duckdb.table('customers') extend {
 
    // Q16: authorization is evaluated at the ENTRY POINT only. A gate is a
    // statement about who may query the source it is declared on, not about
-   // everything reachable beneath that source, so joining a locked base into an
-   // ungated source does NOT carry the base's gate along. These are the shapes
+   // everything reachable beneath that source, so an AUTHOR joining a locked
+   // base into an ungated model source does NOT carry the base's gate along. These are the shapes
    // that used to deny and now do not — asserted positively, because the whole
    // point is that this is the intended contract and not an oversight. The
    // author-facing rule: joining sensitive data into an ungated source publishes
@@ -1345,6 +1345,11 @@ source: top_join is duckdb.table('customers') extend {
             "run: mixed_joiner -> { aggregate: c }",
          ],
          ["a transitive A→B→C join", "run: top_join -> { aggregate: c }"],
+      ];
+
+      // The same joins written in REQUEST text are the caller's own entry into
+      // the locked base, so its lock is decided for them.
+      const callerJoinShapes: [string, string][] = [
          [
             "an annotated join_one of the locked base",
             `source: j is plain extend {
@@ -1384,6 +1389,24 @@ source: top_join is duckdb.table('customers') extend {
             // unaffected by a join to the locked `base_locked` (Q16), so a
             // wrongly-fired join gate (which would zero this out) is
             // distinguishable from a genuine allow — unlike `.toBeDefined()`.
+            const rows = compactResult as unknown as { c: number }[];
+            expect(rows[0].c).toBe(2);
+         });
+      }
+
+      for (const [label, query] of callerJoinShapes) {
+         it(`denies a caller-written ${label} unless its lock admits`, async () => {
+            await writeModel("rt_locked.malloy", LOCKED_BASE);
+            await expect(
+               runGated("rt_locked.malloy", query, { DENY: ["y"] }),
+            ).rejects.toThrow(
+               new AccessDeniedError('Access denied for source "base_locked".'),
+            );
+            const { compactResult } = await runGated(
+               "rt_locked.malloy",
+               query,
+               { DENY: ["x"] },
+            );
             const rows = compactResult as unknown as { c: number }[];
             expect(rows[0].c).toBe(2);
          });
@@ -2023,39 +2046,69 @@ source: qs is combo -> { group_by: org_id }
    });
 });
 
-// The sharpest consequence of entry-point-only evaluation, pinned deliberately
-// because it is the one a reviewer will want to see stated: a caller may join a
-// locked source inside its OWN query refinement and project that source's
-// columns. The entry point is `open_src`, which is ungated, so nothing denies.
-// This is the shape that makes "the gate belongs on the source callers enter
-// through" a real obligation on authors rather than advice.
-describe("a query-local join to a locked source is not gated (Q16)", () => {
-   it("allows projecting a locked source's column through a query-local join", async () => {
-      await writeModel(
-         "c_query_local_join.malloy",
-         `source: open_src is duckdb.table('customers') extend { measure: c is count() }
+// A join the CALLER writes is not an author join: the entry point being ungated
+// does not publish what the caller's own text reaches through a join, so the
+// joined source's gate applies to the caller join as if it were a run target.
+describe("a query-local join to a gated source is gated", () => {
+   const QUERY_LOCAL = `source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
 ##! experimental.givens
 
 given:
   DENY :: number[]
+  ROLE :: string
 
 #(access_filter) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
 }
-`,
-      );
-      const { result } = await runGated(
+
+#(authorize) 'analyst' = $ROLE
+source: role_locked is duckdb.table('customers') extend {
+  dimension: secret is name
+}
+`;
+
+   it("filters a row-gated source's column projected through a query-local join", async () => {
+      await writeModel("c_query_local_join.malloy", QUERY_LOCAL);
+      const { compactResult } = await runGated(
          "c_query_local_join.malloy",
          `run: open_src -> {
   join_one: locked_src on id = locked_src.id
-  group_by: locked_src.secret
+  group_by: id, locked_src.secret
 }`,
-         {},
+         { DENY: [2] },
       );
-      expect(result.data).toBeDefined();
+      expect(compactResult).toEqual([
+         { id: 1, secret: null },
+         { id: 2, secret: "b" },
+      ]);
+   });
+
+   it("denies a locked source's column projected through a query-local join", async () => {
+      await writeModel("c_query_local_join.malloy", QUERY_LOCAL);
+      await expect(
+         runGated(
+            "c_query_local_join.malloy",
+            `run: open_src -> {
+  join_one: role_locked on id = role_locked.id
+  group_by: role_locked.secret
+}`,
+            { ROLE: "intern", DENY: [] },
+         ),
+      ).rejects.toThrow(
+         new AccessDeniedError(`Access denied for source "role_locked".`),
+      );
+      const { compactResult } = await runGated(
+         "c_query_local_join.malloy",
+         `run: open_src -> {
+  join_one: role_locked on id = role_locked.id
+  group_by: role_locked.secret
+}`,
+         { ROLE: "analyst", DENY: [] },
+      );
+      expect(compactResult).toEqual([{ secret: "a" }, { secret: "b" }]);
    });
 });
 
@@ -2620,20 +2673,24 @@ source: open_laundered is open_src -> { group_by: id }
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("allows a run target's own query-local join to a query-source derived from a locked base", async () => {
-      // Derivation carries the gate, but only to the derived source's OWN entry
-      // point. Reached via a query-local join it is not gated — the join rule
-      // wins over the derivation rule when the two meet.
+   it("gates a caller's query-local join to a query-source derived from a locked base", async () => {
+      // A caller-written join is the caller's own entry into `laundered`, so
+      // the gate its derivation carries applies to it.
       await writeModel("c_unified.malloy", UNIFIED_MODEL);
-      const { result } = await runGated(
-         "c_unified.malloy",
-         `run: open_src -> {
+      const query = `run: open_src -> {
   extend: { join_one: laundered on id = laundered.id }
-  group_by: leak is laundered.locked_region
-}`,
-         {},
-      );
-      expect(result.data).toBeDefined();
+  group_by: id, leak is laundered.locked_region
+}`;
+      await expect(
+         runGated("c_unified.malloy", query, {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      const { compactResult } = await runGated("c_unified.malloy", query, {
+         DENY: [1],
+      });
+      const rows = (
+         compactResult as unknown as { id: number; leak: string | null }[]
+      ).filter((row) => row.leak !== null);
+      expect(rows.map((row) => row.id)).toEqual([1]);
    });
 
    it("allows a composite query resolving to the ungated open branch", async () => {

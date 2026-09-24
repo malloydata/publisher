@@ -151,10 +151,23 @@ import {
 import { bigIntReplacer } from "../json_utils";
 import {
    buildDerivationBaseMap,
+   buildJoinBaseMap,
    buildSourceAliasMap,
    extractRunTargetSourceName,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
+import {
+   CallerJoinWalkError,
+   collectCallerJoins,
+   derivationTerminals,
+   locateCallerJoin,
+   resolveCallerJoin,
+   type CallerJoin,
+   type CallerJoinPath,
+   type CallerJoinResolution,
+   type CallerRegion,
+   type PreparedQueryIr,
+} from "./caller_joins";
 import {
    mergeQueryMetadata,
    type QueryClass,
@@ -199,6 +212,7 @@ import {
    recordRowLevelGateDecision,
    recordRowLevelGateRejected,
    type AuthorizeBypassEntryPoint,
+   type AuthorizeGateSite,
    type AuthorizeGuardField,
 } from "../authorize_metrics";
 import { decideLock } from "./authorize_lock";
@@ -225,6 +239,7 @@ function denyUnlessAdmitted(
       | { shape: "rejected"; cause?: RowLevelGateRejectionCause },
    givens: Record<string, GivenValue>,
    label: string,
+   site: AuthorizeGateSite = "entry_point",
 ): void {
    if (resolution.shape === "lock") {
       const outcome = decideLock(
@@ -233,7 +248,7 @@ function denyUnlessAdmitted(
          givens,
       );
       if (outcome === "admit") {
-         recordLockDecision("admitted");
+         recordLockDecision("admitted", site);
          return;
       }
       // Both refusals are the same 403 to the caller; only the label differs,
@@ -241,16 +256,17 @@ function denyUnlessAdmitted(
       // firing on one that is working.
       recordLockDecision(
          outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
+         site,
       );
       throw new AccessDeniedError(`Access denied for source "${label}".`);
    }
-   recordLockDecision("denied_unresolvable");
+   recordLockDecision("denied_unresolvable", site);
    // Also booked on the row-level counter: a gate refused at SHAPE resolution
    // is a fail-closed rejection wherever it was resolved, and an operator
    // reading `publisher_authorize_row_level_total{decision="denied_by_gate"}`
    // must not have a whole class of them silently missing. `cause` is the
    // separate, finer rejection label, not a substitute for it.
-   recordRowLevelGateDecision("denied_by_gate");
+   recordRowLevelGateDecision("denied_by_gate", site);
    if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
    throw new AccessDeniedError(`Access denied for source "${label}".`);
 }
@@ -1393,14 +1409,13 @@ export class Model {
     * derivation, see `./gate_registry_walk`'s `ancestorGateExprs`), and, when
     * the run target is a composite, the one member branch Malloy resolved.
     *
-    * Joined sources are NOT gated. Reaching a gated source through `join_*` —
-    * at any depth, aliased, cross-file, query-local, or as a composite member —
-    * does not bring its gate along. This is deliberate (Q16): authorization is
-    * evaluated once, at the entry point, so a gate means "who may query THIS
-    * source", not "who may read every byte transitively beneath it". The
-    * consequence is that an author who joins sensitive data into an ungated
-    * source has published it — the gate belongs on the source callers enter
-    * through.
+    * A join the model AUTHOR wrote is NOT gated. Reaching a gated source
+    * through an author's `join_*` — at any depth, aliased, cross-file, or as a
+    * composite member — does not bring its gate along (Q16): a gate means "who
+    * may query THIS source", so an author who joins sensitive data into an
+    * ungated source has published it. A join the CALLER wrote is gated like an
+    * extra run target when `options.callerRegion` says where caller text sits
+    * (see `./caller_joins`).
     *
     * Where several gates are collected (a derivation chain, a resolved
     * composite branch), semantics are AND across them: any one failing denies
@@ -1418,7 +1433,7 @@ export class Model {
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
       bypassAuthorize = false,
-      options?: { checkOnly?: boolean },
+      options?: { checkOnly?: boolean; callerRegion?: CallerRegion },
    ): Promise<void> {
       // No `recompile`: this method has no runnable to swap in, so it is the
       // right shape only for a caller that wants a check, not a rewritten
@@ -1432,6 +1447,12 @@ export class Model {
          {
             bypassAuthorize,
             checkOnly: options?.checkOnly,
+            callerJoins: options?.callerRegion
+               ? {
+                    runnable: runnable as QueryMaterializer,
+                    region: options.callerRegion,
+                 }
+               : undefined,
          },
       );
    }
@@ -1453,14 +1474,9 @@ export class Model {
     * derivation, see `./gate_registry_walk`'s `ancestorGateExprs`), and, when
     * the run target is a composite, the one member branch Malloy resolved.
     *
-    * Joined sources are NOT gated. Reaching a gated source through `join_*` —
-    * at any depth, aliased, cross-file, query-local, or as a composite member —
-    * does not bring its gate along. This is deliberate (Q16): authorization is
-    * evaluated once, at the entry point, so a gate means "who may query THIS
-    * source", not "who may read every byte transitively beneath it". The
-    * consequence is that an author who joins sensitive data into an ungated
-    * source has published it — the gate belongs on the source callers enter
-    * through.
+    * Joined sources are NOT collected here. An author join does not bring its
+    * source's gate along (Q16); a caller join is gated by
+    * {@link probeCallerJoinGates}, not by this walk.
     *
     * Where several gates are collected (a derivation chain, a resolved
     * composite branch), semantics are AND across them: any one failing denies
@@ -1517,8 +1533,8 @@ export class Model {
          seen,
          true,
       );
-      // Sources joined LOCALLY inside the query's own `-> { join_one: ... }`
-      // refinement are NOT gated, for the same reason no other join is.
+      // A query-local `-> { join_one: ... }` is a caller join, gated by
+      // `probeCallerJoinGates` rather than collected here.
       if (compositeResolvedSourceDef && modelDef) {
          // The run target itself may be a composite source (`compose(a, b)`).
          // Malloy resolves it to exactly one concrete member branch per query
@@ -1543,7 +1559,7 @@ export class Model {
          // outright (no member satisfies the query). The `undefined` case
          // here is only ever "the run target genuinely isn't a composite" —
          // not "a composite run target resolved to nothing". (A composite
-         // reached via a JOIN is not gated at all — joins are not traced.)
+         // reached via a JOIN is not collected here; see the note above.)
          entryPointGates.push(
             ...this.collectEntryPointGates(
                compositeResolvedSourceDef,
@@ -1768,9 +1784,13 @@ export class Model {
     * exception during the walk fails closed (see the `catch` below): "cannot
     * tell" must block routing, not admit it.
     */
-   private async queryEntryPointHasRowLevelGate(runnable: {
-      getPreparedQuery(): Promise<unknown>;
-   }): Promise<boolean> {
+   private async queryEntryPointHasRowLevelGate(
+      runnable: {
+         getPreparedQuery(): Promise<unknown>;
+      },
+      /** Where caller text sits, so a caller join into a gated source counts. */
+      callerRegion?: CallerRegion,
+   ): Promise<boolean> {
       try {
          const { struct, modelDef, compositeResolvedSourceDef } =
             await this.resolveRunTargetStruct(runnable);
@@ -1807,7 +1827,23 @@ export class Model {
                ),
             );
          }
-         return gates.length > 0;
+         if (gates.length > 0) return true;
+         if (!callerRegion) return false;
+         // The serve shape carries no annotation for a caller join's gate
+         // either, so the same route-blind question is asked of each one.
+         const callerJoins = await this.resolvedCallerJoins(
+            runnable,
+            callerRegion,
+         );
+         if (!callerJoins) return true;
+         return callerJoins.some(
+            ({ resolution }) =>
+               resolution.kind === "unproven" ||
+               Array.from(resolution.names).some(
+                  (name) =>
+                     (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0,
+               ),
+         );
       } catch {
          // Cannot tell whether the entry point carries a row-level gate — and,
          // once this returns false, nothing downstream can catch a wrong
@@ -2119,38 +2155,257 @@ export class Model {
            at: string;
            gatedBases?: undefined;
         } {
-      const seen = new Set<string>();
-      const gatedBases: string[] = [];
-      const worklist = [entryPoint];
-      for (let i = 0; i < worklist.length; i++) {
-         const name = worklist[i];
-         if (seen.has(name)) continue;
-         seen.add(name);
-         // A chain this long is not a real derivation; stop rather than walk a
-         // caller-sized graph, and stop on the deny side.
-         if (seen.size > REQUEST_CHAIN_MAX_NAMES) {
-            return { proven: false, reason: "chain_not_established", at: name };
+      // A chain past the name budget is not a real derivation, and stops on
+      // the deny side; a model-declared source ends its branch without
+      // following the AUTHOR's own derivations, which keeps the documented
+      // model-authored fail-open intact.
+      const chain = derivationTerminals(
+         entryPoint,
+         basesOf,
+         (name) => this.entryPointGatesBySource.has(name),
+         REQUEST_CHAIN_MAX_NAMES,
+      );
+      if (!chain.proven) {
+         return {
+            proven: false,
+            reason: "chain_not_established",
+            at: chain.at,
+         };
+      }
+      // A gated base does not disprove the chain on its own: a LOCK that admits
+      // this caller leaves nothing to graft, so aliasing the source launders
+      // nothing. Collected for the caller to decide; anything that is not an
+      // admitting lock still denies there.
+      return {
+         proven: true,
+         gatedBases: chain.terminals.filter(
+            (name) => (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0,
+         ),
+      };
+   }
+
+   /**
+    * Every caller-written join the compiled `runnable` reaches, each resolved
+    * to the model-declared sources it reads (see `./caller_joins`).
+    * `undefined` when the query does not compile: its own execution fails on
+    * that same compile, and {@link assertCallerJoinBasesEarly} is what keeps
+    * the compiler's diagnostics from answering first for a gated source.
+    * Throws {@link CallerJoinWalkError} for a walk it cannot complete.
+    */
+   private async resolvedCallerJoins(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      region: CallerRegion,
+   ): Promise<
+      { callerJoin: CallerJoin; resolution: CallerJoinResolution }[] | undefined
+   > {
+      let prepared: PreparedQueryIr;
+      try {
+         prepared = (await runnable.getPreparedQuery()) as PreparedQueryIr;
+      } catch {
+         return undefined;
+      }
+      const compiledModelDef = prepared._modelDef;
+      if (!compiledModelDef) {
+         throw new CallerJoinWalkError("the compiled query carries no model");
+      }
+      const queryUrl = prepared._query?.location?.url;
+      const context = {
+         isModelSource: (name: string) =>
+            this.entryPointGatesBySource.has(name),
+         isModelQuery: (name: string) =>
+            (this.modelDef?.contents[name] as { type?: string } | undefined)
+               ?.type === "query",
+      };
+      return collectCallerJoins(prepared, region).map((callerJoin) => ({
+         callerJoin,
+         resolution: resolveCallerJoin(
+            callerJoin,
+            compiledModelDef,
+            region,
+            queryUrl,
+            context,
+         ),
+      }));
+   }
+
+   /**
+    * Decide every gate a caller-written join reaches, as if the joined source
+    * were an extra run target: a lock is decided here and refuses with a 403
+    * naming the caller's own alias; a row filter comes back as a graft for
+    * that join, attached and proven alongside the run target's. A composite
+    * join's row filter is refused, since which member reaches SQL is not known
+    * here. A join whose chain cannot be proven, and a walk that cannot be
+    * completed, deny. A no-op in a model that declares no gate.
+    */
+   private async probeCallerJoinGates(
+      runnable: QueryMaterializer,
+      region: CallerRegion,
+      givens: Record<string, GivenValue>,
+      graftScope: GraftScope | undefined,
+   ): Promise<RowLevelGraftEntry[]> {
+      if (!this.declaresAnyGate()) return [];
+      let resolved:
+         | Awaited<ReturnType<Model["resolvedCallerJoins"]>>
+         | undefined;
+      try {
+         resolved = await this.resolvedCallerJoins(runnable, region);
+      } catch (err) {
+         this.denyCallerJoin(
+            (await this.resolveAuthorizeSourceFromRunnable(runnable)) ??
+               "query",
+            "walk_incomplete",
+            err instanceof Error ? err.message : String(err),
+         );
+      }
+      if (!resolved) return [];
+      const grafts: RowLevelGraftEntry[] = [];
+      for (const { callerJoin, resolution } of resolved) {
+         const alias = callerJoin.alias;
+         if (resolution.kind === "unproven") {
+            this.denyCallerJoin(alias, "chain_not_established", resolution.at);
          }
-         const modelGates = this.entryPointGatesBySource.get(name);
-         if (modelGates !== undefined) {
-            // A gated base does not disprove the chain on its own: a LOCK that
-            // admits this caller leaves nothing to graft, so aliasing the
-            // source launders nothing. Collected for the caller to decide;
-            // anything that is not an admitting lock still denies there.
-            if (modelGates.length > 0) gatedBases.push(name);
-            // A model-declared source: this branch is resolved, and the walk
-            // stops here rather than following the AUTHOR's own derivations,
-            // which is what keeps the documented model-authored fail-open
-            // intact.
+         for (const name of resolution.names) {
+            for (const entry of this.entryPointGatesBySource.get(name) ?? []) {
+               const shape = this.modelDef
+                  ? await this.resolveGateShape(
+                       entry,
+                       this.modelDef,
+                       graftScope,
+                    )
+                  : ({ shape: "rejected", cause: undefined } as const);
+               if (shape.shape === "row_level") {
+                  if (resolution.composite) {
+                     this.denyCallerJoin(
+                        alias,
+                        "row_filter_not_graftable",
+                        name,
+                     );
+                  }
+                  grafts.push({
+                     label: alias,
+                     graftTarget: shape.graftTarget,
+                     filterText: shape.filterText,
+                     condition: shape.condition,
+                     givenNames: shape.givenNames,
+                     callerJoinPath: callerJoin.path,
+                  });
+                  continue;
+               }
+               denyUnlessAdmitted(shape, givens, alias, "caller_join");
+            }
+         }
+      }
+      return grafts;
+   }
+
+   /** The one refusal for a caller join, naming only the caller's own alias. */
+   private denyCallerJoin(alias: string, reason: string, at: string): never {
+      recordRowLevelGateDecision("denied_by_gate", "caller_join");
+      logger.debug("Caller join is not provably allowed; denying", {
+         modelPath: this.modelPath,
+         alias,
+         reason,
+         at,
+      });
+      throw new AccessDeniedError(`Access denied for source "${alias}".`);
+   }
+
+   /**
+    * The query boundary (the *what* axis, 404) for caller-written joins: a
+    * join may reach only what `run:` could. A join to an exported author query
+    * passes on that query's name; any other passes only when every source it
+    * reaches is curated (a composite on its own name, as a composite run
+    * target is), and one whose chain cannot be proven, or that the walk cannot
+    * complete, is refused. Runs before any authorize gate and under
+    * `bypassAuthorize`, like the run target's own backstop. A no-op when the
+    * boundary is inert.
+    */
+   private async assertCallerJoinsQueryable(
+      runnable: QueryMaterializer,
+      region: CallerRegion,
+   ): Promise<void> {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      const refusal = () =>
+         this.notQueryable("Query target is not queryable.", true, "source");
+      let resolved: Awaited<ReturnType<Model["resolvedCallerJoins"]>>;
+      try {
+         resolved = await this.resolvedCallerJoins(runnable, region);
+      } catch {
+         throw refusal();
+      }
+      if (!resolved) throw refusal();
+      for (const { resolution } of resolved) {
+         if (resolution.kind === "unproven") throw refusal();
+         if (
+            resolution.curatedQuery &&
+            this.isCuratedQuery(resolution.curatedQuery)
+         ) {
             continue;
          }
-         const bases = basesOf.get(name);
-         if (!bases || bases.size === 0) {
-            return { proven: false, reason: "chain_not_established", at: name };
+         for (const name of resolution.boundaryNames) {
+            if (!this.isCuratedSource(name)) throw refusal();
          }
-         for (const base of bases) worklist.push(base);
       }
-      return { proven: true, gatedBases };
+   }
+
+   /**
+    * Decide, before compiling, what a caller-written join's TEXT reaches: the
+    * boundary (`phase: "boundary"`) or every lock (`phase: "locks"`), so a
+    * refused caller hears 404 or 403 rather than the compiler's opinion of a
+    * column on that source. Never the authority: the compiled checks decide,
+    * a chain this cannot follow just stops, and a join in a declaration the
+    * query never runs is read too — an over-denial, never an admission.
+    */
+   private async assertCallerJoinBasesEarly(
+      query: string,
+      givens: Record<string, GivenValue>,
+      phase: "boundary" | "locks",
+   ): Promise<void> {
+      const joins = buildJoinBaseMap(query);
+      if (joins.size === 0) return;
+      if (phase === "boundary") {
+         const { mode, exploresDeclared } = this.queryBoundary;
+         if (mode === "all" || !exploresDeclared) return;
+      } else if (!this.declaresAnyGate() || !this.modelDef) {
+         return;
+      }
+      const derivations = buildDerivationBaseMap(query);
+      for (const [alias, bases] of joins) {
+         const seen = new Set<string>();
+         const worklist = [...bases];
+         for (let i = 0; i < worklist.length; i++) {
+            const name = worklist[i];
+            if (seen.has(name)) continue;
+            seen.add(name);
+            if (seen.size > REQUEST_CHAIN_MAX_NAMES) break;
+            if (!this.entryPointGatesBySource.has(name)) {
+               for (const base of derivations.get(name) ?? []) {
+                  worklist.push(base);
+               }
+               continue;
+            }
+            if (phase === "boundary") {
+               if (!this.isCuratedSource(name)) {
+                  throw this.notQueryable(
+                     "Query target is not queryable.",
+                     true,
+                     "source",
+                  );
+               }
+               continue;
+            }
+            for (const entry of this.entryPointGatesBySource.get(name) ?? []) {
+               const resolution = await this.resolveGateShape(
+                  entry,
+                  this.modelDef!,
+                  this.defaultGraftScope(),
+               );
+               if (resolution.shape === "row_level") continue;
+               denyUnlessAdmitted(resolution, givens, alias, "caller_join");
+            }
+         }
+      }
    }
 
    /**
@@ -2244,6 +2499,14 @@ export class Model {
           * `recompile` branch below.
           */
          checkOnly?: boolean;
+         /**
+          * Where caller-written text sits, and the LIVE compiled query to find
+          * its joins in — never a storage serve shape or pre-aggregation
+          * runnable, which re-emit author joins with no annotations. Absent
+          * for text the author wrote (a notebook cell, a named query, a
+          * whole-file `/compile`). See {@link probeCallerJoinGates}.
+          */
+         callerJoins?: { runnable: QueryMaterializer; region: CallerRegion };
       },
    ): Promise<QueryMaterializer> {
       // Returns BEFORE the entry-point walk below, so this books at most one
@@ -2262,14 +2525,17 @@ export class Model {
       }
 
       const graftScope = options?.graftScope ?? this.defaultGraftScope();
-      const rowLevel = await this.probeEntryPointGates(
+      const entryPointRowLevel = await this.probeEntryPointGates(
          runnable,
          givens,
          graftScope,
          options?.skipOwnSourceGate ?? false,
       );
 
-      if (rowLevel.length === 0) {
+      // Keyed on the RUN TARGET's own gates, never on the caller-join grafts
+      // added below: a harmless caller join into any row-gated source must not
+      // skip this check for a laundered run target.
+      if (entryPointRowLevel.length === 0) {
          // No gate was collected for the entry point actually being run. When
          // the request declared that entry point itself, that is not the same
          // as "the run target is ungated" — see
@@ -2287,8 +2553,32 @@ export class Model {
                graftScope,
             );
          }
-         return runnable;
       }
+
+      const callerJoinRowLevel = options?.callerJoins
+         ? await this.probeCallerJoinGates(
+              options.callerJoins.runnable,
+              options.callerJoins.region,
+              givens,
+              graftScope,
+           )
+         : [];
+      // A graft can only be proven on the runnable the walk read; a routed
+      // serve shape is a different compile.
+      if (
+         callerJoinRowLevel.length > 0 &&
+         options?.callerJoins?.runnable !== runnable
+      ) {
+         this.denyCallerJoin(
+            callerJoinRowLevel[0].label,
+            "routed_past_caller_join_gate",
+            callerJoinRowLevel[0].graftTarget,
+         );
+      }
+      const rowLevel = [...entryPointRowLevel, ...callerJoinRowLevel];
+      if (rowLevel.length === 0) return runnable;
+      const siteOf = (graft: RowLevelGraftEntry): AuthorizeGateSite =>
+         graft.callerJoinPath ? "caller_join" : "entry_point";
 
       if (!options?.recompile) {
          // No `recompile` means no way to attach the filter, so returning
@@ -2313,7 +2603,7 @@ export class Model {
             g.givenNames.length === 0 ||
             g.givenNames.every((name) => Object.hasOwn(givens, name));
          if (!options?.checkOnly || !rowLevel.every(decidable)) {
-            recordRowLevelGateDecision("denied_by_gate");
+            recordRowLevelGateDecision("denied_by_gate", siteOf(rowLevel[0]));
             throw new AccessDeniedError(
                `Access denied for source "${rowLevel[0].label}".`,
             );
@@ -2326,12 +2616,26 @@ export class Model {
          // gate as `row_level`, which requires a defined `graftScope` (see
          // its own `if (!graftScope) return { shape: "rejected" }`) — so
          // `graftScope` is never actually undefined here.
+         // Deduped for the graft only: a source reached twice carries its
+         // condition once, and every site is still proven below.
+         const grafts = Array.from(
+            new Map(
+               rowLevel.map((g) => [
+                  `${g.graftTarget}\u0000${g.filterText}`,
+                  g,
+               ]),
+            ).values(),
+         );
          const graftedMaterializer = this.getOrBuildGraftedMaterializer(
-            rowLevel,
+            grafts,
             graftScope!,
          );
-         const recompiled = options.recompile(graftedMaterializer, rowLevel);
+         const recompiled = options.recompile(graftedMaterializer, grafts);
          if (options.proveGraft) {
+            // The own-scope binder proves the run target only.
+            if (callerJoinRowLevel.length > 0) {
+               throw new Error("a caller-join graft has no prover here");
+            }
             await options.proveGraft(recompiled);
          } else {
             await this.assertGateLanded(recompiled, rowLevel);
@@ -2339,7 +2643,7 @@ export class Model {
          this.rowLevelFilteredRunnables.add(recompiled);
          return recompiled;
       } catch (err) {
-         recordRowLevelGateDecision("denied_by_gate");
+         recordRowLevelGateDecision("denied_by_gate", siteOf(rowLevel[0]));
          logger.debug("Row-level authorize attach failed; denying", {
             modelPath: this.modelPath,
             error: err instanceof Error ? err.message : String(err),
@@ -2570,16 +2874,18 @@ export class Model {
     * whose gate set differs — or one with no row-level gate at all — keeps
     * compiling against the original, untouched model.
     *
-    * P0 — this graft is safe ONLY because it is scoped to the gates
-    * {@link collectAuthorizeEntryPointGates} collected for THIS run target.
-    * Appending to a source's `filterList` propagates into every join copy
-    * compiled from it afterward — grafting a source that is not on the run
-    * target's own entry-point ancestry would leak the filter into (or out of)
-    * an unrelated query through that propagation. An ungated parent joining a
-    * gated child collects no gate for the child, so nothing is grafted here
-    * and the child's gate correctly does not fire through the join. Do not
-    * "simplify" this by grafting every gated source in the model up front —
-    * that reintroduces exactly the leak this scoping exists to prevent.
+    * P0 — this graft is safe ONLY because it is scoped to the gates THIS
+    * request reaches: the run target's entry-point gates
+    * ({@link collectAuthorizeEntryPointGates}) and the gates of sources its
+    * caller-written joins reach ({@link probeCallerJoinGates}). Appending to a
+    * source's `filterList` propagates into every copy compiled from the grafted
+    * model afterward, which is exactly what the caller's recompiled text needs;
+    * an AUTHOR join inside another model source kept its own `filterList`
+    * array from model load, so the spread-assign below leaves it unfiltered,
+    * including one reached through a named query. Do not "simplify" this by
+    * grafting every gated
+    * source in the model up front — that fires gates on author joins that must
+    * not fire.
     */
    private buildGraftedMaterializer(
       grafts: ReadonlyArray<{
@@ -2683,8 +2989,9 @@ export class Model {
 
    /**
     * Prove every grafted condition actually landed on the recompiled query's
-    * run target — the backstop that turns a graft which silently failed to
-    * attach into a REFUSAL instead of a leak.
+    * run target, or on the caller join it was grafted for — the backstop that
+    * turns a graft which silently failed to attach into a REFUSAL instead of a
+    * leak.
     *
     * Read what this does and does not cover. It inspects the recompiled
     * query's IR, NOT the SQL that executes. So it catches the graft failing
@@ -2715,7 +3022,10 @@ export class Model {
     */
    private async assertGateLanded(
       recompiled: QueryMaterializer,
-      grafts: ReadonlyArray<{ condition: FilterCondition }>,
+      grafts: ReadonlyArray<{
+         condition: FilterCondition;
+         callerJoinPath?: CallerJoinPath;
+      }>,
    ): Promise<void> {
       const prepared = (await recompiled.getPreparedQuery()) as {
          _query?: {
@@ -2747,10 +3057,17 @@ export class Model {
          resolvedRef && typeof resolvedRef === "object"
             ? (resolvedRef as SourceDef)
             : undefined;
-      for (const { condition } of grafts) {
+      for (const { condition, callerJoinPath } of grafts) {
+         // A caller join's graft is proven on that join, found again by the
+         // path the walk recorded; the run target's on the run target.
+         const site = callerJoinPath
+            ? (locateCallerJoin(prepared as PreparedQueryIr, callerJoinPath) as
+                 | SourceDef
+                 | undefined)
+            : struct;
          if (
             !condition.code ||
-            !this.filterListContainsCode(struct, modelDef, condition.code, 0)
+            !this.filterListContainsCode(site, modelDef, condition.code, 0)
          ) {
             throw new Error(
                "a row-level gate condition did not land on the recompiled query",
@@ -2957,6 +3274,8 @@ export class Model {
             text,
             givens,
          );
+         // Locks only: `/compile` is exempt from the query boundary.
+         await this.assertCallerJoinBasesEarly(text, givens, "locks");
       }
    }
 
@@ -2967,17 +3286,20 @@ export class Model {
     * `run:` statement isn't the first one), PLUS the gate that run target
     * carries from what it derives from (see assertAuthorizedForAllSources).
     * Used as the `/compile` backstop once a runnable exists, so `/compile`
-    * applies the same entry-point rule as the query path — including its
-    * "joins are not gated" consequence.
+    * applies the same entry-point rule as the query path: author joins are
+    * not gated, and with `callerRegion` the caller's own joins are.
     *
     * No bypass argument, for the same reason as {@link assertAuthorizedForText}.
     */
    public async assertAuthorizedForRunnable(
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
+      /** Where the caller's appended text sits, at `/compile` append scope. */
+      callerRegion?: CallerRegion,
    ): Promise<void> {
       await this.assertAuthorizedForAllSources(runnable, givens, false, {
          checkOnly: true,
+         callerRegion,
       });
    }
 
@@ -5342,6 +5664,22 @@ export class Model {
          queryName,
          query,
       );
+      // The caller's own text, when it wrote any; its joins are checked as if
+      // each were an extra run target. Text carrying an annotation is left to
+      // the forgery rejecter below, whose refusal is the specific one.
+      const callerRegion: CallerRegion | undefined =
+         !sourceName && !queryName && query
+            ? { kind: "query", text: query }
+            : undefined;
+      const readCallerJoinText =
+         !!callerRegion && !hasCallerAuthorizeAnnotation(callerRegion.text);
+      if (readCallerJoinText) {
+         await this.assertCallerJoinBasesEarly(
+            callerRegion.text,
+            givens ?? {},
+            "boundary",
+         );
+      }
 
       // Early fast-path authorize gate (before loadQuery). Resolve the source
       // from surface syntax; gate if it names one. This runs BEFORE compilation
@@ -5398,6 +5736,14 @@ export class Model {
                bypassAuthorize,
             );
          }
+      }
+      // Not under `earlySource`: a join needs no readable run target.
+      if (readCallerJoinText && !bypassAuthorize) {
+         await this.assertCallerJoinBasesEarly(
+            callerRegion.text,
+            givens ?? {},
+            "locks",
+         );
       }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
@@ -5566,7 +5912,7 @@ export class Model {
             // further down — see `hasAnyAuthorizeNote`'s doc for why the two
             // predicates differ and why only this one is safe to skip on.
             this.hasAnyAuthorizeNote() &&
-            (await this.queryEntryPointHasRowLevelGate(runnable));
+            (await this.queryEntryPointHasRowLevelGate(runnable, callerRegion));
          // Recorded HERE, once, rather than in each tier's block below: the
          // pre-aggregation guard runs no compile attempt of its own and calls
          // no routing metric today, so an emit inside each tier would leave
@@ -5811,6 +6157,11 @@ export class Model {
       // (the author's deliberate exposure), and must not be re-denied here.
       if (boundary === "deferred") {
          this.assertQueryBoundaryCompiled(compiledSource, query);
+         // Read off the LIVE compile, which is the one that kept the caller's
+         // joins; a routed runnable is a different compile.
+         if (callerRegion && liveRunnable) {
+            await this.assertCallerJoinsQueryable(liveRunnable, callerRegion);
+         }
       }
 
       // Gate the compiled run target's own source PLUS the gate it carries from
@@ -5849,6 +6200,10 @@ export class Model {
          // `queryName` forms have been synthesized into a `run:`. Only text the
          // caller actually wrote can declare the derivation this reads.
          callerQueryText: query,
+         callerJoins:
+            callerRegion && liveRunnable
+               ? { runnable: liveRunnable, region: callerRegion }
+               : undefined,
       });
       // No post-hoc check of `queryHadRowLevelFilterAttached(runnable)` here:
       // when `routingBlockedByRowLevelGate` was false and routing succeeded

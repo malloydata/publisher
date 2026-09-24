@@ -132,19 +132,26 @@ export function recordAuthorizeBypass(
 export type RowLevelGateDecision = "denied_by_gate" | "empty_after_filter";
 
 /**
+ * Where a gate was reached: the query's own run target (`entry_point`), or a
+ * join the caller's text wrote into a gated source (`caller_join`).
+ */
+export type AuthorizeGateSite = "entry_point" | "caller_join";
+
+/**
  * Record how one row-level `#(access_filter)` gate resolved a request.
  */
 export function recordRowLevelGateDecision(
    decision: RowLevelGateDecision,
+   site: AuthorizeGateSite = "entry_point",
 ): void {
    rowLevelDecisionCounter ??= publisherMeter().createCounter(
       "publisher_authorize_row_level_total",
       {
          description:
-            "How a row-level `#(access_filter)` gate resolved a request. Label: decision ('denied_by_gate'|'empty_after_filter'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error.",
+            "How a row-level `#(access_filter)` gate resolved a request. Labels: decision ('denied_by_gate'|'empty_after_filter'), site ('entry_point'|'caller_join'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error. site says whether the gate was the query's own run target or a source the caller's text joined.",
       },
    );
-   rowLevelDecisionCounter.add(1, { decision });
+   rowLevelDecisionCounter.add(1, { decision, site });
 }
 
 /**
@@ -282,15 +289,18 @@ export type LockDecision =
    | "denied_unresolvable";
 
 /** Record how one `#(authorize)` lock resolved a request. */
-export function recordLockDecision(decision: LockDecision): void {
+export function recordLockDecision(
+   decision: LockDecision,
+   site: AuthorizeGateSite = "entry_point",
+): void {
    lockDecisionCounter ??= publisherMeter().createCounter(
       "publisher_authorize_lock_total",
       {
          description:
-            "How a `#(authorize)` lock resolved a request. Label: decision ('admitted'|'denied_by_lock'|'denied_unresolvable'). Both denials are a 403; 'denied_by_lock' is the gate refusing a caller it does not admit (routine), 'denied_unresolvable' is the fail-closed refusal when the gate could not be decided at all.",
+            "How a `#(authorize)` lock resolved a request. Labels: decision ('admitted'|'denied_by_lock'|'denied_unresolvable'), site ('entry_point'|'caller_join'). Both denials are a 403; 'denied_by_lock' is the gate refusing a caller it does not admit (routine), 'denied_unresolvable' is the fail-closed refusal when the gate could not be decided at all. site says whether the lock was on the query's own run target or on a source the caller's text joined.",
       },
    );
-   lockDecisionCounter.add(1, { decision });
+   lockDecisionCounter.add(1, { decision, site });
 }
 
 /**

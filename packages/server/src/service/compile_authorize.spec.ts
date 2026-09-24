@@ -155,6 +155,50 @@ describe("compile-path authorize gate (compileSource)", () => {
       expect(problems).toEqual([]);
    });
 
+   it("decides a caller join's lock at APPEND scope, with includeSql", async () => {
+      const query =
+         "run: open_src extend { join_cross: g is gated } -> { aggregate: g.c }";
+      await expect(
+         env.compileSource("pkg", "model.malloy", query, true, {
+            ROLE: "nobody",
+         }),
+      ).rejects.toThrow(new AccessDeniedError('Access denied for source "g".'));
+      const { problems, sql } = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         query,
+         true,
+         { ROLE: "analyst" },
+      );
+      expect(problems).toEqual([]);
+      expect(sql).toBeDefined();
+   });
+
+   it("holds a caller join to a row-field #(access_filter) to its givens at APPEND scope", async () => {
+      const query =
+         "run: open_src extend { join_cross: r is row_gated } -> { aggregate: r.c }";
+      await expect(compile(query)).rejects.toBeInstanceOf(AccessDeniedError);
+      const { problems } = await compile(query, { GROUPS: [-1] });
+      expect(problems).toEqual([]);
+   });
+
+   for (const scope of ["file", "package"] as const) {
+      it(`decides a caller join's lock at ${scope.toUpperCase()} scope with the gate stripped`, async () => {
+         const edit = (role: string) =>
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               `${withoutGates(MODEL)}\nrun: open_src extend { join_cross: g is gated } -> { aggregate: g.c }`,
+               scope === "file",
+               { ROLE: role },
+               scope,
+            );
+         await expect(edit("nobody")).rejects.toBeInstanceOf(AccessDeniedError);
+         const { problems } = await edit("analyst");
+         expect(problems).toEqual([]);
+      });
+   }
+
    it("rejects an authorize annotation in the submitted source", async () => {
       // /compile appends the text to the model, so a caller-declared gate would
       // land alongside the author's — and includeSql makes this the door worth

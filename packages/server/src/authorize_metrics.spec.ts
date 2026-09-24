@@ -124,6 +124,39 @@ describe("authorize_metrics", () => {
       ).toBe(0);
    });
 
+   it("row-level and lock decisions carry a site label, entry_point by default", async () => {
+      recordRowLevelGateDecision("denied_by_gate");
+      recordRowLevelGateDecision("denied_by_gate", "caller_join");
+      recordLockDecision("admitted", "caller_join");
+      recordLockDecision("admitted");
+      recordLockDecision("admitted");
+
+      expect(
+         await harness.collectCounter("publisher_authorize_row_level_total", {
+            decision: "denied_by_gate",
+            site: "entry_point",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_authorize_row_level_total", {
+            decision: "denied_by_gate",
+            site: "caller_join",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "admitted",
+            site: "caller_join",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_authorize_lock_total", {
+            decision: "admitted",
+            site: "entry_point",
+         }),
+      ).toBe(2);
+   });
+
    it("publisher_authorize_row_level_rejected_total ticks per call, labeled by cause", async () => {
       recordRowLevelGateRejected("unreachable_given");
       recordRowLevelGateRejected("unreachable_given");
