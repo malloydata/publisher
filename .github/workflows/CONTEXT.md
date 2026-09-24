@@ -528,8 +528,9 @@ One thing the derived `SERVER_VERSION` changed about that hand dispatch: it is n
 used to be loud. Dispatching `create-malloy-package-npm.yml` resolves the pin from whatever the server's
 `latest` is at that moment, so a dispatch fired before `publish-npm` has landed the new server
 publishes a scaffolder pinned a release behind, and passes. The old hand-maintained pin failed the run
-instead. So order still matters even though nothing enforces it: confirm the server version is on npm
-(`npm view @malloy-publisher/server dist-tags.latest`) before dispatching the scaffolder by hand.
+instead. A release waits for this itself (see below), but a hand dispatch does not: confirm the server
+version is on npm (`npm view @malloy-publisher/server dist-tags.latest`) before dispatching the
+scaffolder by hand.
 
 It fires only when `main` moved **under the paths that package's published content is built from**, not
 on any movement at all: the second package is checked after the first has finished a full
@@ -603,6 +604,26 @@ up. 0.0.250 is the worked example — the guard ran at 15:07:55 against a `lates
 0.0.250 until 15:09:13. **Narrowing that `needs:` back to `prepare` alone now breaks the derivation
 silently** rather than loudly: the substituted value would simply be a release behind, and every
 generated workspace would pin the previous server.
+
+That `needs:` is not enough on its own, because npm can take minutes to show a version after
+`npm publish` returns. In 0.7.0, `publish-npm` finished at 19:09 and `latest` read 0.7.0 only at
+19:16, so the scaffolder read 0.6.0. So `publish-packages.sh` also waits, up to 15 minutes, for the
+server's `latest` to read the version the release shipped before it dispatches the scaffolder
+(`wait_for_server_latest`). If `latest` never gets there, the scaffolder is not dispatched, `set -e`
+ends the job so python-client is not reached either, and the job says to re-run it once `latest` reads
+the new version.
+
+That wait proves only the release runner's view of npm. The registry is cached per CDN edge
+(`cache-control: public, max-age=300`), so the scaffolder's runners can read the previous `latest` for
+a few more minutes. So the release also dispatches the scaffolder with `server_version` set to the
+version it shipped. Both scaffolder jobs wait for their own `latest` to read it, and the pin step
+refuses anything else. A hand dispatch leaves the input empty and pins `latest` as before.
+
+The `--host` check runs `npx @malloy-publisher/server@<pin>` from an empty temporary directory, not
+the checkout. In the checkout, npx uses the workspace's own unbuilt `packages/server` whenever the pin
+equals the version that file declares, and fails with `malloy-publisher: not found`. That failed the
+0.5.1 and 0.7.0 scaffolder publishes. In 0.7.0 it was also the only thing that stopped a scaffolder
+pinned to the previous server from shipping.
 
 sdk/app/server are not re-runnable at the same version today. `prepare` walks the version forward
 whenever a release branch or tag exists, so a release that fails after `npm-sdk.yml` has published

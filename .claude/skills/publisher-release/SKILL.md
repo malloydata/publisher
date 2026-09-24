@@ -289,6 +289,17 @@ publish, so the substituted value would be a release behind and every generated
 workspace would pin the previous server. **If that `needs:` is ever narrowed back
 to `prepare` alone, this breaks silently rather than loudly.**
 
+The `needs:` is not enough on its own, because npm can take minutes to show a
+version after it publishes. In 0.7.0 `latest` read 0.7.0 seven minutes after
+`publish-npm` finished. So `publish-packages.sh` also waits, up to 15 minutes, for
+the server's `latest` to read the new version before dispatching the scaffolder.
+It then passes that version to the scaffolder as its `server_version` input,
+because another runner can still read the old `latest` for a few minutes; the
+scaffolder waits until its own `latest` matches and refuses to pin anything else.
+If the wait gives up, neither the scaffolder nor python-client was dispatched.
+Once `latest` reads the new version, re-run the `publish-packages` job (Re-run
+failed jobs), not the whole release.
+
 ### 3. Sanity-check the notes
 
 `gh-release` reads `RELEASE_NOTES.md` itself: it appends every `## [Unreleased]`
