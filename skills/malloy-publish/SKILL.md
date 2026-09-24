@@ -67,7 +67,7 @@ import "staging.malloy"
 export { orders, customers }
 ```
 
-What it exports is what agents discover **and** what may be queried. Everything else still compiles, and other models can import, join and extend it, but a direct query against it is refused with a 404 - indistinguishable from a source that does not exist. Reach for this when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on, or querying, them directly.
+What it exports is what agents discover **and** what may be queried. Everything else still compiles, and other models can import, join and extend it, but a direct query against it is refused with a 404. Where nothing in the model is gated, the 404 says the source is off the surface and how to publish it; where a gate is in play, it reads exactly like a source that does not exist. Reach for this when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on, or querying, them directly.
 
 **Address queries to the surface.** Once a package has an `index.malloy`, `.../models/staging.malloy/query` is no longer a query entry point, *even for a source that file declares itself*. Use `.../models/index.malloy/query`. If you are debugging a refusal rather than authoring, `skill:malloy-source-unreachable` covers the three ways a source can be out of reach and how to tell them apart.
 

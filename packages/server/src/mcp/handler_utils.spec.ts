@@ -9,6 +9,7 @@ import {
    BadRequestError,
    InvalidArgumentError,
    ModelCompilationError,
+   PackageManifestError,
    PackageNotFoundError,
    PayloadTooLargeError,
    ResponseUnserializableError,
@@ -166,6 +167,25 @@ describe("classifyToolError", () => {
             ),
          ),
       ).toContain("raise the configured cap");
+   });
+
+   it("homes an unusable publisher.json as the author's to fix, not as internal", () => {
+      // What reload_package throws for a bad manifest. The internal branch said
+      // "unexpected internal error" and "try again later", which tells an agent
+      // to retry a typo.
+      const message =
+         'Invalid "explores" in publisher.json: expected an array of model paths, got "index.malloy".';
+      const details = classifyToolError(
+         "reloadPackage",
+         "env/pkg",
+         new PackageManifestError(message),
+      );
+      expect(details.message).toBe(message);
+      const suggestions = JSON.stringify(details.suggestions);
+      expect(suggestions).toContain("publisher.json");
+      expect(suggestions).toContain("not transient");
+      expect(suggestions).not.toContain("Malloy file");
+      expect(suggestions).not.toContain("again later");
    });
 
    it("reports anything else as internal rather than blaming the Malloy", () => {

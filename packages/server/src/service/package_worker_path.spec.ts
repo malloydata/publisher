@@ -691,6 +691,74 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       }
    });
 
+   // An unusable publisher.json is read inside the worker, and crosses the pool
+   // boundary. Anything the pool does not recognize is rewrapped as a 503
+   // "worker pool unavailable", which a caller logs as a server outage. A bad
+   // manifest is the author's mistake, so it must arrive as a 424 carrying the
+   // manifest's own message.
+   it.each([
+      [
+         "a malformed explores",
+         JSON.stringify({ name: "pkg", explores: "index.malloy" }),
+         /Invalid "explores"/,
+      ],
+      [
+         "an unknown scope",
+         JSON.stringify({ name: "pkg", scope: "shared" }),
+         /Invalid "scope"/,
+      ],
+      [
+         "two scope homes that disagree",
+         JSON.stringify({
+            name: "pkg",
+            scope: "version",
+            materialization: { scope: "package" },
+         }),
+         /Conflicting "scope"/,
+      ],
+      [
+         "a JSON syntax error",
+         `{ "name": "pkg", }`,
+         /Invalid publisher\.json: it is not valid JSON/,
+      ],
+      [
+         "JSON that is not an object",
+         `["pkg"]`,
+         /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
+      ],
+   ])(
+      "answers %s in publisher.json with a 424, not a 503",
+      async (_label, manifest, message) => {
+         fs.writeFileSync(path.join(tempDir, "publisher.json"), manifest);
+         fs.writeFileSync(
+            path.join(tempDir, "trivial.malloy"),
+            `source: nums is duckdb.sql("select 1 as a")`,
+         );
+
+         const { PackageManifestError, internalErrorToHttpError } =
+            await import("../errors");
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const error = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            ).then(
+               () => undefined,
+               (e: Error) => e,
+            );
+            expect(error).toBeInstanceOf(PackageManifestError);
+            const http = internalErrorToHttpError(error!);
+            expect(http.status).toBe(424);
+            expect(http.json.message).toMatch(message);
+            expect(http.json.message).not.toMatch(/worker pool/);
+         } finally {
+            await duckdb.close();
+         }
+      },
+   );
+
    // NB: kept last in this describe — swapping the singleton for a
    // pre-shutdown pool also tears down the shared `pool` (the swap
    // implementation shuts down the outgoing singleton). Subsequent
