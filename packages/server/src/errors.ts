@@ -17,16 +17,9 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // missing feature, a cap that was reached, a timeout), which is true of most of
 // them but not all: the worker-pool and compile-worker throws behind 503
 // interpolate the underlying failure, so a crash message reaches the caller
-// there. Generalizing that one at the mapper would also blank a message the
-// caller needs to fix their own config, because the two are indistinguishable
-// by the time they arrive -- and the reason for that is worth stating exactly,
-// since it is fixable and this comment would otherwise outlive it. The pool's
-// wire shape DOES carry `name` and deserializeError restores it; what collapses
-// the two is that `BadRequestError` never sets `this.name`, where
-// AccessDeniedError, NotQueryableError, PayloadTooLargeError and
-// MaterializationEligibilityError all do. Give it a name and the mapper could
-// tell an unusable manifest from a worker crash. Until then the distinction
-// only exists at those throw sites, so the fix belongs there.
+// there. An unusable publisher.json does not land in that branch: it throws
+// PackageManifestError, which the pool's wire shape carries by class, so it
+// maps to 424 below instead of reading as a worker outage.
 //
 // So a NEW 5xx branch is a decision rather than a default: generalize it here
 // if its message comes from a driver, a worker, or the filesystem.
@@ -165,6 +158,8 @@ export function internalErrorToHttpError(error: Error) {
    } else if (error instanceof MaterializationEligibilityError) {
       return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
+      return httpError(424, error.message);
+   } else if (error instanceof PackageManifestError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
       // 502. A server-authored message (see ConnectionError.callerSafe) is
@@ -396,6 +391,24 @@ export class ModelCompilationError extends Error {
 }
 
 /**
+ * The package's publisher.json cannot be used as written: it is not a JSON
+ * object, it has a malformed `explores` or an unknown `scope`, or its two
+ * `scope` homes disagree. The
+ * package is not served until the author fixes the file.
+ *
+ * 424, like a model that does not compile: the request was fine, the package it
+ * depends on is not. The manifest is read inside the package-load worker, so
+ * the worker flags it `isManifestError` and deserializeError restores the
+ * class; without that the pool reports the author's typo as a 503 outage.
+ */
+export class PackageManifestError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "PackageManifestError";
+   }
+}
+
+/**
  * A persist source was asked to materialize into a `storage=` destination (the
  * DuckDB/DuckLake tier) but is ineligible: it has an unbound free parameter, it
  * references a given (an RLAC/tenant-isolation refusal), or its served shape
@@ -468,15 +481,38 @@ export class AccessDeniedError extends Error {
  * A query targeted a source/model that is not part of the package's queryable
  * surface under `queryableSources: "declared"` (a non-`explores` model file, or
  * a source not in a model's `export {}` closure). Mapped to HTTP **404**, not
- * 403, and with a deliberately generic message: unlike `#(authorize)` (which is
- * identity-scoped and answers "who"), the explore boundary is identity-free and
- * answers "what is queryable" — so a hidden target should be indistinguishable
- * from a non-existent one (no enumeration / existence oracle).
+ * 403: unlike `#(authorize)` (which is identity-scoped and answers "who"), the
+ * explore boundary is identity-free and answers "what is queryable". This
+ * class carries the generic message, which reads the same for a hidden target
+ * as for a missing one, so a gated model offers no enumeration or existence
+ * oracle. Where nothing is gated, the refusal is the {@link OffSurfaceError}
+ * subclass instead, which says why.
  */
 export class NotQueryableError extends Error {
    constructor(message: string) {
       super(message);
       this.name = "NotQueryableError";
+   }
+}
+
+/**
+ * A query-boundary refusal that says why: the target is real, it is off the
+ * package's published surface, and the message names that surface and the fix.
+ *
+ * Only thrown when the model that refused carries no gate, `#(authorize)` or
+ * `#(access_filter)`, anywhere. The generic NotQueryableError exists so a hidden GATED source is
+ * indistinguishable from a missing one. An ungated hidden source has nothing to
+ * protect that way: curation is not access control, and `/compile` (exempt from
+ * the boundary) already answers a hidden file differently from a missing one.
+ * Without the reason, a modeler who saves a new file and queries it reads the
+ * 404 as a typo.
+ *
+ * Still a NotQueryableError, so it still maps to 404.
+ */
+export class OffSurfaceError extends NotQueryableError {
+   constructor(message: string) {
+      super(message);
+      this.name = "OffSurfaceError";
    }
 }
 

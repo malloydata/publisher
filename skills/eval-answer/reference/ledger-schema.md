@@ -321,7 +321,7 @@ Run-level metrics fall out by counting:
 |---|---|---|
 | `issue_id` | string | Stable across status events. |
 | `qids` | list | Affected cases. |
-| `primary_code` / `contributing_codes` | string / list | From `skill:eval-diagnose`, verbatim. |
+| `primary_code` / `contributing_codes` | string / list | From `skill:eval-diagnose`, verbatim. An event written before the codes were renamed may carry a retired one: `COVERAGE` is now `MISSING`, `NO-DISAMBIG` is `AMBIGUOUS`, and `CONVENTION` is `RULE_UNWRITTEN`. Read those as the new name; nothing rewrites old events. |
 | `component` | string | `dataset` / `agent-call` / `get_context/model` / `get_context/retrieval` / `construction` / `model-definition`. |
 | `owner` | string | `model` / `retrieval` / `agent-skill` / `dataset`. Environment failures stop the run; they are never diagnosed, so there is no environment owner. |
 | `severity` / `confidence` | string | |

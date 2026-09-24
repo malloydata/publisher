@@ -87,7 +87,9 @@ READ_ONLY = (*NO_EDITS, *NO_SHELL)
 # the first column. Parsed, never copied: a hardcoded list silently stops
 # matching the day someone edits the skill, and then the checker passes
 # vocabulary the skill no longer defines.
-CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z-]+)`\s*\|", re.M)
+# `A-Z_-`: RULE_UNWRITTEN carries an underscore, and a class of code the
+# regex cannot see is a code the validator silently rejects.
+CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z_-]+)`\s*\|", re.M)
 COMPONENTS = ("dataset", "agent-call", "get_context/model",
               "get_context/retrieval", "construction", "model-definition")
 OWNERS = ("model", "retrieval", "agent-skill", "dataset")

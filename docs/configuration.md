@@ -94,7 +94,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown_graceful_close_timeout_seconds <s>` | `0` | Time to wait for in-flight requests to drain before forcing close. |
 | `NODE_ENV` | — | _unset_ | Set to `development` to proxy non-API traffic to the Vite dev server on `:5173`. |
 | `PUBLISHER_WATCH` | `--watch-env <name>` | _unset_ | Dev only. Mount the named environment's local-dir packages in place (a symlink, not a copy) and watch them, so edits to your source recompile that package and live-reload any open pages. Repeat the flag or use a comma-separated list to mount several in place; only the first one auto-reloads. Leave unset in production, where packages are copied and stay decoupled from their source. |
-| `PUBLISHER_FRAME_ANCESTORS` | — | `*` | `Content-Security-Policy: frame-ancestors` value sent on served HTML pages, controlling which origins may embed a page in an iframe. Defaults to any origin. |
+| `PUBLISHER_FRAME_ANCESTORS` | — | `'self'` | `Content-Security-Policy: frame-ancestors` value sent on **every** document this server returns -- the Console and in-package `public/` files alike -- controlling which origins may embed a page in an iframe. Defaults to same-origin only; set it to the origins that embed you (`https://app.example.com`), or to `*` to restore the previous any-origin behaviour. |
 | `LOG_LEVEL` | — | `debug` | One of `error`, `warn`, `info`, `verbose`, `debug`, `silly`. |
 | `DISABLE_RESPONSE_LOGGING` | — | _unset_ | Set to `true` or `1` to suppress response-body logging. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | _unset_ | OpenTelemetry collector endpoint. |

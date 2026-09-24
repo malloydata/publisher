@@ -31,6 +31,7 @@ import {
    BadRequestError,
    ModelCompilationError,
    NotQueryableError,
+   PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
@@ -111,7 +112,7 @@ import {
 } from "./dashboard";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
-import { Model } from "./model";
+import { Model, type OffSurfaceContext } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -152,15 +153,19 @@ function toTableNameManifest(
  * Classify a failed package load into the `status` label shared by the
  * `malloy_package_load_duration` histogram and the per-phase load metrics, so
  * both slice failures identically. A real Malloy/model compile error is a 4xx
- * `compilation_error`; a gate refusing what the package declares is a 4xx
- * `policy_rejected`; a rewrapped pool-infrastructure failure is a transient
+ * `compilation_error`; a gate refusing what the package declares, or a
+ * publisher.json that cannot be used, is a 4xx `policy_rejected`; a rewrapped
+ * pool-infrastructure failure is a transient
  * `pool_unavailable`; anything else is a generic `error`.
  */
 function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    if (error instanceof ModelCompilationError || error instanceof MalloyError) {
       return "compilation_error";
    }
-   if (error instanceof BadRequestError) {
+   if (
+      error instanceof BadRequestError ||
+      error instanceof PackageManifestError
+   ) {
       return "policy_rejected";
    }
    if (error instanceof ServiceUnavailableError) {
@@ -526,6 +531,13 @@ export class Package {
          packageCuratedSources = sources;
          packageCuratedQueries = queries;
       }
+      const offSurface: OffSurfaceContext | undefined =
+         mode === "declared" && exploresDeclared && exploreSet
+            ? {
+                 indexModel: this.surfaceIsIndexModel(),
+                 files: [...exploreSet].sort(),
+              }
+            : undefined;
       for (const [modelPath, model] of this.models) {
          model.setQueryBoundary({
             mode,
@@ -533,6 +545,7 @@ export class Package {
             isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
             packageCuratedSources,
             packageCuratedQueries,
+            offSurface,
          });
       }
    }
@@ -673,7 +686,8 @@ export class Package {
             // (shutting down, worker spawn failed, worker crashed,
             // RPC timeout) and the client should retry. Real Malloy
             // compile errors deserialised by the pool still carry
-            // their MalloyError / ModelCompilationError identity —
+            // their MalloyError / ModelCompilationError identity, and an
+            // unusable publisher.json its PackageManifestError identity —
             // let those bubble untouched so they keep their 4xx
             // mapping in `errors.ts`.
             const realError =
@@ -684,7 +698,8 @@ export class Package {
                     );
             if (
                realError instanceof MalloyError ||
-               realError instanceof ModelCompilationError
+               realError instanceof ModelCompilationError ||
+               realError instanceof PackageManifestError
             ) {
                throw realError;
             }
@@ -2209,7 +2224,9 @@ export class Package {
     * The curated surface is the union of what the listed models export, so a
     * surface that does not compile exports nothing, and the boundary then
     * refuses every model in the package -- including the ones that compiled
-    * perfectly well -- with the same 404 a model that does not exist gets.
+    * perfectly well. Each gets the 404 a hidden model gets: the same words a
+    * missing model gets where the model is gated, and an off-surface
+    * explanation where it is not.
     *
     * NARROW ON PURPOSE, because the edit paths an author uses already report
     * this better than a warning could:
@@ -2465,7 +2482,8 @@ export class Package {
                : new Error(`Package-load worker pool failure: ${String(err)}`);
          if (
             realError instanceof MalloyError ||
-            realError instanceof ModelCompilationError
+            realError instanceof ModelCompilationError ||
+            realError instanceof PackageManifestError
          ) {
             throw realError;
          }
