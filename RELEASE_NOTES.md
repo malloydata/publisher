@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
+## [0.8.0] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 
 Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because
 either one alone is misleading.
@@ -66,7 +66,7 @@ log line to watch for.
 
 ---
 
-## [Unreleased] — compiling at the default scope no longer accepts text that declares its own data roots (ACTION REQUIRED)
+## [0.8.0] — compiling at the default scope no longer accepts text that declares its own data roots (ACTION REQUIRED)
 
 `POST /…/compile` and the `compile_model` MCP tool default to `scope: "append"`,
 where the submitted text is a fragment checked against a model that is already
@@ -115,7 +115,7 @@ caller-chosen request field with no authorization difference between its values,
 so this keeps fragment authoring on the model's published surface rather than
 containing a caller who can simply ask for another scope.
 
-## [Unreleased] — per-user visibility through a materialized grant table, and a public wrapper served from its fact
+## [0.8.0] — per-user visibility through a materialized grant table, and a public wrapper served from its fact
 
 **A storage-materialized source may join a grant table that is itself scoped by givens.** The
 visibility idiom — an org-scoped source joining an org-and-user-scoped grant table, with a dimension
@@ -145,7 +145,7 @@ declares such a join, so no existing plan changes shape. A consumer generating a
 `api-doc.yaml` rejects the field until it regenerates.
 
 
-## [Unreleased] — a refused persist source is skipped, and no longer fails the whole run
+## [0.8.0] — a refused persist source is skipped, and no longer fails the whole run
 
 **Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
 
