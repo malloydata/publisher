@@ -396,11 +396,14 @@ the manifest field reference is [packages.md](packages.md).
   traversal (`..`) and names that resolve outside the package are rejected, and a
   symlink under `public/` that points outside it returns 403. Models, data, and
   `publisher.json` are never reachable over the web.
-- Served HTML carries `Content-Security-Policy: frame-ancestors *` so pages are
-  framable by default, which means any site can frame them (a clickjacking
-  vector). Set `PUBLISHER_FRAME_ANCESTORS` to restrict which origins may embed
-  your pages (for example to your own app's origin), and do so for any page that
-  shows sensitive data. All responses carry `X-Content-Type-Options: nosniff`.
+- Every document carries `Content-Security-Policy: frame-ancestors 'self'` by
+  default, so a page is framable only from its own origin. To embed one
+  elsewhere, set `PUBLISHER_FRAME_ANCESTORS` to the embedding origins (for
+  example `https://app.example.com`, space-separated for several). The value is
+  a CSP source list, and `*` restores framing from anywhere. The policy covers
+  the Console as well as `public/` files, so setting the variable is the whole
+  configuration rather than part of it. All responses carry
+  `X-Content-Type-Options: nosniff`.
 - The query API applies the model's governance (filters, access modifiers,
   authorize annotations). The static, data-apps, and events routes do not add
   their own auth, so do not place anything sensitive under `public/`.

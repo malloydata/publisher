@@ -31,6 +31,41 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
+
+Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because
+either one alone is misleading.
+
+**The policy now covers every document.** It used to be set inside the route that
+serves a package's `public/` files, so that was the only place it applied. The
+Console catch-all sent no framing header at all, which meant notebooks, dashboards,
+models and the Explorer stayed framable from anywhere — including on a deployment
+that had set `PUBLISHER_FRAME_ANCESTORS` and reasonably believed it had configured
+this. One middleware now sets the header ahead of every route.
+
+**The default is now `'self'`, not `*`.** A page is framable only from its own
+origin unless a deployment says otherwise.
+
+**Migration.** If nothing embeds Publisher in an iframe from another origin, there
+is nothing to do. If something does, set `PUBLISHER_FRAME_ANCESTORS` to the
+embedding origins:
+
+```
+PUBLISHER_FRAME_ANCESTORS="https://app.example.com"
+PUBLISHER_FRAME_ANCESTORS="https://app.example.com https://admin.example.com"
+PUBLISHER_FRAME_ANCESTORS="*"          # the previous behaviour, chosen deliberately
+```
+
+The value is a CSP source list and is passed through as written. A deployment that
+already set this variable keeps working and now gets the coverage it expected; the
+break is for one that relied on the `*` default without setting anything.
+
+The symptom if you miss it: the embedded page renders blank or is blocked, and the
+browser console names `frame-ancestors`. Nothing fails server-side, so there is no
+log line to watch for.
+
+---
+
 ## [Unreleased] — compiling at the default scope no longer accepts text that declares its own data roots (ACTION REQUIRED)
 
 `POST /…/compile` and the `compile_model` MCP tool default to `scope: "append"`,

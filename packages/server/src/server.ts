@@ -99,6 +99,10 @@ import {
    parseRateLimit,
    rateLimitMiddleware,
 } from "./rate_limit";
+import {
+   FRAME_ANCESTORS_ENV,
+   frameAncestorsMiddleware,
+} from "./frame_ancestors";
 
 // The first statement this module runs. On an unsupported Node this exits
 // non-zero here, before any argument parsing, any storage init, and any
@@ -281,6 +285,7 @@ app.use(httpMetricsMiddleware);
 // route so the static-file, query, and SPA-fallback handlers are all behind
 // it; probes and /metrics are exempt inside the middleware.
 app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
+app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
 // bound per-request memory; this is a "your --max-old-space-size
@@ -608,19 +613,10 @@ async function serveFromPackage(
          return;
       }
 
-      // Framing policy only applies to HTML documents — setting it on CSS/JS/
-      // image assets is meaningless and needlessly strips their default
-      // SAMEORIGIN protection. Embeddability defaults to "*" so same-tenant
-      // embeds work out of the box, and is overridable via PUBLISHER_FRAME_ANCESTORS.
-      const ext = path.extname(realFullPath).toLowerCase();
-      if (ext === ".html" || ext === ".htm") {
-         const frameAncestors = process.env.PUBLISHER_FRAME_ANCESTORS || "*";
-         res.setHeader(
-            "Content-Security-Policy",
-            `frame-ancestors ${frameAncestors}`,
-         );
-         res.removeHeader("X-Frame-Options");
-      }
+      // The framing policy is set once for every document by
+      // `frameAncestorsMiddleware`, mounted ahead of all routes. It used to be
+      // set here, on this route alone, which is what left the Console catch-all
+      // with no framing header at all -- see the note in `frame_ancestors.ts`.
       // Never let a served asset be MIME-sniffed into a different content type.
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.sendFile(realFullPath, (err) => {
