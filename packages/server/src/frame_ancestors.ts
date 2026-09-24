@@ -37,7 +37,9 @@ export const FRAME_ANCESTORS_ENV = "PUBLISHER_FRAME_ANCESTORS";
  * policies that must agree, and a deployment that widens one and forgets the
  * other gets the narrower answer with no obvious cause.
  */
-export function frameAncestorsMiddleware(raw: string | undefined): RequestHandler {
+export function frameAncestorsMiddleware(
+   raw: string | undefined,
+): RequestHandler {
    const frameAncestors = parseFrameAncestors(raw);
    return (_req: Request, res: Response, next: NextFunction) => {
       res.setHeader(

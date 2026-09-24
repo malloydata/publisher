@@ -224,9 +224,9 @@ describe("frame-ancestors over a real request", () => {
    });
 
    it("carries a configured origin end to end", async () => {
-      const res = await request(
-         appServing("https://app.example.com"),
-      ).get("/html");
+      const res = await request(appServing("https://app.example.com")).get(
+         "/html",
+      );
       expect(res.headers["content-security-policy"]).toBe(
          "frame-ancestors https://app.example.com",
       );
