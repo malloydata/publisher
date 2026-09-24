@@ -31,6 +31,90 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
+
+Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because
+either one alone is misleading.
+
+**The policy now covers every document.** It used to be set inside the route that
+serves a package's `public/` files, so that was the only place it applied. The
+Console catch-all sent no framing header at all, which meant notebooks, dashboards,
+models and the Explorer stayed framable from anywhere — including on a deployment
+that had set `PUBLISHER_FRAME_ANCESTORS` and reasonably believed it had configured
+this. One middleware now sets the header ahead of every route.
+
+**The default is now `'self'`, not `*`.** A page is framable only from its own
+origin unless a deployment says otherwise.
+
+**Migration.** If nothing embeds Publisher in an iframe from another origin, there
+is nothing to do. If something does, set `PUBLISHER_FRAME_ANCESTORS` to the
+embedding origins:
+
+```
+PUBLISHER_FRAME_ANCESTORS="https://app.example.com"
+PUBLISHER_FRAME_ANCESTORS="https://app.example.com https://admin.example.com"
+PUBLISHER_FRAME_ANCESTORS="*"          # the previous behaviour, chosen deliberately
+```
+
+The value is a CSP source list and is passed through as written. A deployment that
+already set this variable keeps working and now gets the coverage it expected; the
+break is for one that relied on the `*` default without setting anything.
+
+The symptom if you miss it: the embedded page renders blank or is blocked, and the
+browser console names `frame-ancestors`. Nothing fails server-side, so there is no
+log line to watch for.
+
+---
+
+## [Unreleased] — compiling at the default scope no longer accepts text that declares its own data roots (ACTION REQUIRED)
+
+`POST /…/compile` and the `compile_model` MCP tool default to `scope: "append"`,
+where the submitted text is a fragment checked against a model that is already
+published. Malloy resolves a source's schema at COMPILE time -- `duckdb.sql(…)`
+sends a `DESCRIBE` before any query runs, and `connection.table(…)` fetches the
+table's schema the same way -- so a compile-only endpoint still reached the
+database, the filesystem and the network on the caller's behalf. Against DuckDB's
+external access that made unrestricted compile an oracle rather than a check:
+`read_csv('/etc/…')` distinguished an existing file from a missing one by its
+error and named the columns of whatever it read, and `read_csv('https://…')`
+issued the request. No rows were returned, so the exposure was disclosure and
+SSRF rather than extraction.
+
+Append text is now compiled under the same restricted mode `/…/query` already
+applies. These are refused with a 400:
+
+- `import`
+- `connection.table(…)` and `connection.sql(…)`
+- `given:` declarations
+- `##!` compiler flags
+- the raw-SQL function forms: `name!type(…)`, `sql_number`, `sql_string` and the
+  rest of that family
+
+**Migration.** Those constructs belong in a model file, so send text declaring
+them at `scope: "file"` (validating an edit to one file) or `scope: "package"`
+(checking every file as saved). Neither is restricted. Two workflows this
+changes in practice: validating a not-yet-saved dashboard, which opens with an
+`import`, and validating a new source rooted in a table -- including the
+`source:` line `search_database_schema` hands back. Both want `"file"`.
+
+Compiling at `append` also now requires the model named in the URL to load,
+because the fragment is judged against that model's published surface and there
+is nothing to judge it against otherwise. A model that **does not compile**
+answers 400 carrying the model's own problems, which describe a file the caller
+can already read. A model that **does not exist** answers 400 too, but
+deliberately says only that it could not be loaded: naming what was wrong with a
+path the caller supplied would answer "does this file exist" for any path.
+
+Append text must also stand alone as top-level Malloy. A fragment that only
+parses as a continuation of the model's last statement -- opening with
+`extend {`, for instance -- is refused rather than compiled, because text that
+does not parse on its own cannot be checked on its own.
+
+`file` and `package` are unchanged and still unrestricted. `scope` is a
+caller-chosen request field with no authorization difference between its values,
+so this keeps fragment authoring on the model's published surface rather than
+containing a caller who can simply ask for another scope.
+
 ## [Unreleased] — per-user visibility through a materialized grant table, and a public wrapper served from its fact
 
 **A storage-materialized source may join a grant table that is itself scoped by givens.** The
@@ -60,7 +144,6 @@ and the terms its binding re-applies. It is optional and additive: the key is ab
 declares such a join, so no existing plan changes shape. A consumer generating a strict client from
 `api-doc.yaml` rejects the field until it regenerates.
 
----
 
 ## [Unreleased] — a refused persist source is skipped, and no longer fails the whole run
 
@@ -221,6 +304,7 @@ now carries a package warning with severity `error`, on every load and reload, i
 A tile whose source cannot be read from its text is not reported rather than guessed at.
 
 ## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
+
 
 **Two annotations, one question each, and two different answers when they say no.**
 
