@@ -166,8 +166,8 @@ not a precaution.
 | Packages | Version | Bumped by | Missing bump caught by |
 | --- | --- | --- | --- |
 | `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/sdk-<v>` branch | n/a — the release sets it |
-| `skills` | its own line | you, by hand, on `main` | `skills-npm.yml` PR check |
-| `create-malloy-package` | its own line | you, by hand, on `main` | `create-malloy-package-npm.yml` PR check |
+| `skills` | its own line | each stamp PR, one patch ahead; you, for a minor | `skills-npm.yml` PR check |
+| `create-malloy-package` | its own line | each stamp PR, one patch ahead; you, for a minor | `create-malloy-package-npm.yml` PR check |
 | `malloy-publisher-sdk` (Python) | its own line | you, by hand, on `main` | `python-sdk.yml` PR check — but see below |
 
 **A forgotten bump is now a red PR check**, not a silent skip at release time.
@@ -175,6 +175,14 @@ Each check asks the same thing — *is the declared version ahead of the registr
 scoped to the paths that package's published content is built from, and skips
 when this PR touched none of them. So the pre-release hand-audit that used to
 live in step 2 below is mostly gone.
+
+**And the stamp PR keeps `main` ahead, so that check rarely fires.** A release
+spends whatever version `main` declares for skills and the scaffolder, which
+would leave `main` level with npm and turn the next PR touching either package
+red. So the stamp branch (step 6) moves both one patch ahead, and once it merges
+nobody bumps them by hand for an ordinary change. Bump by hand only for a
+breaking change, to the next minor, which no check enforces. The two move
+together because the scaffolder's check watches `packages/skills/package.json`.
 
 Two caveats on that:
 
@@ -198,7 +206,9 @@ Two caveats on that:
 - `bun.lock` and the root `package.json` change what `skills` publishes (its
   `dist/` is emitted by `tsc`, whose version bun resolves from the lockfile) but
   are **not** in `skills-npm.yml`'s trigger, so a lockfile-only PR never reaches
-  the check. That one case still needs the manual look in step 2.
+  the check. With the last stamp PR merged, `main` is already ahead and the
+  change ships anyway; if it was not merged, that case still needs the manual
+  look in step 2.
 
 `main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
 should: the post-release stamp PR resets those three files to the version that
@@ -246,17 +256,19 @@ printf 'python-client: PyPI %s, main %s\n' \
   "$(python3 -c 'import tomllib; print(tomllib.load(open("packages/python-client/pyproject.toml","rb"))["project"]["version"])')"
 ```
 
-`main` ahead of npm is the normal, healthy state between a release-prep merge and
-the dispatch: the bump is merged and pending. Equal is fine too — it means
-nothing that ships in those packages changed. Either way, the bump must be
+`main` one patch ahead of npm is the normal state: the last stamp PR moved it
+there. **Equal means that stamp PR has not merged** — look for it with step 3's
+`git ls-remote` and merge it before dispatching, or the release skips both
+packages and leaves `main` level with npm. Either way, the bump must be
 **merged to `main` before the dispatch**, because the release reads `main`, not
 the release branch.
 
 The one gap the checks do not cover: `bun.lock` and the root `package.json`
 change what `skills` publishes — its `dist/` is emitted by `tsc`, whose version
 bun resolves from the lockfile — but neither is in `skills-npm.yml`'s trigger, so
-a lockfile-only PR never reaches the check. If this release contains a dependency
-bump and `skills` is at npm's version, look:
+a lockfile-only PR never reaches the check. It only matters when `skills` is at
+npm's version, which now means the last stamp PR did not merge. If so, and this
+release contains a dependency bump, look:
 
 ```bash
 vb=$(git log --format=%h -S"\"version\": \"$(npm view @malloy-publisher/skills version)\"" \
@@ -433,12 +445,14 @@ Two things `gh-release` did, both visible without leaving the run:
 - A `release-notes-stamp-<version>` branch is pushed, and the job summary's
   *Release notes and version* section carries a compare link to open it as a PR.
 
-**That branch now carries two things**, despite its name: the stamped
-`RELEASE_NOTES.md` headings *and* `main`'s three `packages/{sdk,app,server}/
-package.json` files reset to the version that shipped. The summary line names
-both counts, and either can legitimately be zero — nothing to stamp, or `main`
-already declaring that version. When both are zero no branch is pushed at all,
-and the summary says so.
+**That branch carries three things**, despite its name: the stamped
+`RELEASE_NOTES.md` headings, `main`'s three `packages/{sdk,app,server}/
+package.json` files reset to the version that shipped, and `skills` and
+`create-malloy-package` moved one patch past what this release published for
+them. The summary line names all three. The first two can legitimately be zero —
+nothing to stamp, or `main` already declaring that version — so the bump is what
+normally guarantees a branch; when all three are zero no branch is pushed, and
+the summary says so.
 
 The name is unchanged on purpose: it is the identifier this skill and
 `CONTEXT.md` both tell you to look for, and renaming it would break the recovery
@@ -464,13 +478,15 @@ git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
 git fetch origin main && git show origin/main:packages/sdk/package.json | grep '"version"'
 ```
 
-**Wait for `publish-packages` to finish before you merge it.** Merging moves
-`main`, and while that job is still polling npm any movement pushes it off its
-fast path onto the compare API — which aborts the dispatch outright if the API
-does not answer or the diff hits its 300-file cap. `RELEASE_NOTES.md` being
-outside the paths it watches saves the *verdict*, not the request. You are
-already past step 5, so waiting for that job to go green costs nothing and
-closes the window instead of documenting it.
+**Wait for `publish-packages` to finish before you merge it.** This is not
+optional. The branch changes `packages/skills/package.json` and
+`packages/create-malloy-package/package.json`, which are exactly the paths that
+job's "main moved" guard watches, so merging early aborts the dispatch of
+whichever of the two has not gone yet. Re-running the job recovers, but it checks
+out the new `main` and publishes the moved-ahead version, leaving `main` level
+with npm and the next PR red again. Wait for the job to *finish*, not to go green:
+while the PyPI upload is still failing it ends red after both npm packages have
+published, and its summary says so.
 
 The stamp step is `continue-on-error`, deliberately: the release is already
 public and correct by then, and reddening a finished release over a docs commit
