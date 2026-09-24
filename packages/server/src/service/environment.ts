@@ -750,13 +750,7 @@ export class Environment {
             // sources whose confidentiality matters are gated by
             // `#(authorize)`, which still applies here in full.
             await denyHiddenAsNotQueryable(
-               () => {
-                  gateModel.assertQueryBoundaryEarly(
-                     undefined,
-                     undefined,
-                     source,
-                  );
-               },
+               () => gateModel.assertTextRunTargetsQueryable(source),
                () => gateModel.assertAuthorizedForText(source, givens ?? {}),
             );
          }

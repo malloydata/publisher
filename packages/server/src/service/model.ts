@@ -2988,12 +2988,15 @@ export class Model {
    }
 
    /**
-    * Gate ad-hoc compile/query text by the named source it targets. Resolves the
-    * source from surface syntax (`extractRunTargetSourceName`) and applies the
-    * gate. An unnamed/inline source resolves to `undefined`, so nothing gates
-    * it — the same top-level-only boundary as the query path's early gate.
-    * Used by the `/compile` path, which has no runnable to resolve before it
-    * decides whether to compile at all.
+    * Gate ad-hoc compile/query text by the named sources it targets: EVERY
+    * `run:` statement's, since Malloy runs the last and the compiled backstop
+    * needs a compile that `/compile` would answer with diagnostics. A target
+    * naming a declared query is gated as the source that query reads. When the
+    * targets cannot all be read, the first is gated as before; an
+    * unnamed/inline source resolves to `undefined`, so nothing gates it — the
+    * same top-level-only boundary as the query path's early gate. Used by the
+    * `/compile` path, which has no runnable to resolve before it decides
+    * whether to compile at all.
     *
     * Takes no bypass argument, deliberately. `/compile` returns schema and, with
     * `includeSql`, SQL; no caller needs to compile through a gate, so the
@@ -3004,19 +3007,59 @@ export class Model {
       text: string,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      const target = extractRunTargetSourceName(text);
-      await this.assertAuthorized(target, givens);
-      // The same caller-declared-alias gap the query path closes, and it bites
-      // harder here: `/compile` answers WITH the compiler's diagnostics, so a
-      // lock that is not decided first makes them readable for a source the
-      // caller is refused. Text with no `run:` resolves no target and is walked
-      // anyway — a bare `source: s is locked extend { … }` is exactly the shape
-      // that reaches the compiler with nothing gated.
-      if (!hasCallerAuthorizeAnnotation(text)) {
-         await this.assertLocksOnRequestDeclaredBases(
-            target ?? "",
-            text,
+      const all = extractRunTargetSourceNames(text);
+      const first = extractRunTargetSourceName(text);
+      const targets: (string | undefined)[] =
+         all && all.length > 0 ? all : [first];
+      for (const target of targets) {
+         await this.assertAuthorized(
+            target === undefined ? undefined : this.textRunTargetSource(target),
             givens,
+         );
+         // The same caller-declared-alias gap the query path closes, and it
+         // bites harder here: `/compile` answers WITH the compiler's
+         // diagnostics, so a lock that is not decided first makes them readable
+         // for a source the caller is refused. Text with no `run:` resolves no
+         // target and is walked anyway — a bare `source: s is locked extend
+         // { … }` is exactly the shape that reaches the compiler with nothing
+         // gated.
+         if (!hasCallerAuthorizeAnnotation(text)) {
+            await this.assertLocksOnRequestDeclaredBases(
+               target ?? "",
+               text,
+               givens,
+            );
+         }
+      }
+   }
+
+   /**
+    * Boundary re-check for `/compile`'s PRE-compile authorize-denial conversion
+    * (see `denyHiddenAsNotQueryable` in service/environment.ts). The pre-compile
+    * gate decides every run target's lock ({@link assertAuthorizedForText}), so
+    * a denial can come from any statement, and converting on the first alone
+    * would let a later hidden, gated target keep a 403 that names it. So the
+    * denial is masked when ANY run target falls outside what the query surface
+    * admits (curated, or derived from curated through the text's own
+    * declarations). When the targets cannot all be read, only the
+    * first-statement check applies, as the gate itself then gated only the
+    * first. No-ops past the file-level check when the boundary is inert.
+    */
+   public assertTextRunTargetsQueryable(text: string): void {
+      this.assertQueryBoundaryEarly(undefined, undefined, text);
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      for (const target of extractRunTargetSourceNames(text) ?? []) {
+         const source = this.textRunTargetSource(target);
+         if (
+            this.isCuratedSource(source) ||
+            this.derivesFromCurated(source, text)
+         )
+            continue;
+         throw this.notQueryable(
+            "Query target is not queryable.",
+            false,
+            "source",
          );
       }
    }

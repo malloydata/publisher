@@ -103,6 +103,25 @@ describe("compile-path authorize gate (compileSource)", () => {
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
+   it("decides a later statement's lock BEFORE compiling, so a decoy first statement is not a schema oracle", async () => {
+      // The compiled backstop above catches a gated last statement only when
+      // the text compiles. When it does not, /compile answers with the
+      // diagnostics, so a refused caller naming a column that does not exist
+      // must hear the denial, never which names resolve on the gated source.
+      const source =
+         "run: open_src -> { aggregate: c }\nrun: gated -> { group_by: no_such_field }";
+      const err = await compile(source).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
+
+      // A caller the gate admits still gets their own diagnostics.
+      const { problems } = await compile(source, { ROLE: "analyst" });
+      expect(problems.some((p) => p.severity === "error")).toBe(true);
+   });
+
    it("ADMITS the gated source at APPEND scope when every given the gate reads is supplied — the authoring loop", async () => {
       // Scope "append" compiles the caller's text against a VIRTUAL model, so
       // the run target's `SourceDef` belongs to a different `ModelDef` than
@@ -471,6 +490,27 @@ export { customers, visible_gated }`,
             false,
          ),
       ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("a later hidden, gated statement is masked before compiling too", async () => {
+      // The pre-compile gate decides every statement's lock, so its denial can
+      // name a hidden source in any statement. Converting it on the first
+      // statement alone (the curated decoy) would keep the 403 naming
+      // hidden_gated, and the text does not compile, so no compiled-target
+      // conversion follows to catch it.
+      const err = await env
+         .compileSource(
+            "pkg",
+            "index.malloy",
+            "run: customers -> { aggregate: c }\nrun: hidden_gated -> { group_by: no_such_field }",
+            false,
+         )
+         .then(
+            () => undefined,
+            (e: Error) => e,
+         );
+      expect(err).toBeInstanceOf(NotQueryableError);
+      expect(String(err!.message)).not.toContain("hidden_gated");
    });
 
    it("a derivation alias over the hidden source is masked too", async () => {
