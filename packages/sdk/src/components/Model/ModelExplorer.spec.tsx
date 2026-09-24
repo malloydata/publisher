@@ -97,8 +97,21 @@ beforeEach(() => {
    executeQueryModel.mockImplementation(() => pending());
 });
 
+const reject = (status: number, message: string) =>
+   executeQueryModel.mockImplementation(() =>
+      Promise.reject(
+         Object.assign(new Error("fallback"), {
+            status,
+            data: { code: status, message },
+         }),
+      ),
+   );
+
 describe("a given with no value and no default", () => {
-   it("blocks Run instead of calling the server", async () => {
+   // Givens are model-wide but read per source, so a blank one may be fine for
+   // the source being explored: the server decides, not the client.
+   it("still sends Run, and names the given when the server refuses", async () => {
+      reject(403, 'Access denied for source "regions".');
       render(
          <ModelExplorer
             data={modelWith([{ name: "TENANT", type: "string" }])}
@@ -112,11 +125,34 @@ describe("a given with no value and no default", () => {
       run();
 
       expect(
-         await screen.findByText(
-            "This needs a value for the given TENANT. Set it in the parameters above.",
+         await screen.findByText('Access denied for source "regions".'),
+      ).toBeTruthy();
+      expect(
+         screen.getByText(
+            "This source may need a value for the given TENANT. Set it in the parameters above.",
          ),
       ).toBeTruthy();
-      expect(executeQueryModel).not.toHaveBeenCalled();
+      expect(executeQueryModel).toHaveBeenCalledTimes(1);
+   });
+
+   it("adds no hint to an error that is not a refusal", async () => {
+      reject(400, "syntax error near 'aggregat'");
+      render(
+         <ModelExplorer
+            data={modelWith([{ name: "TENANT", type: "string" }])}
+            existingQuery={EXISTING_QUERY}
+            resourceUri={URI}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      await screen.findByLabelText("TENANT");
+      run();
+
+      expect(
+         await screen.findByText("syntax error near 'aggregat'"),
+      ).toBeTruthy();
+      expect(screen.queryByText(/may need a value/)).toBeNull();
    });
 });
 

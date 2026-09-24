@@ -4,46 +4,41 @@
 import { describe, expect, it } from "bun:test";
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
-import { runGate } from "./runGate";
+import { missingGivensHint, runGate } from "./runGate";
 
 const values = (entries: Record<string, GivenValue>) =>
    new Map<string, GivenValue>(Object.entries(entries));
 
 describe("runGate", () => {
-   it("is ok with no declared givens", () => {
-      expect(runGate([], values({}))).toEqual({ kind: "ok" });
+   it("reports nothing with no declared givens", () => {
+      expect(runGate([], values({}))).toEqual({ missing: [] });
    });
 
-   it("is ok when every given is set", () => {
+   it("reports nothing when every given is set", () => {
       const givens: Given[] = [{ name: "TENANT" }, { name: "REGION" }];
       expect(runGate(givens, values({ TENANT: "acme", REGION: "us" }))).toEqual(
-         { kind: "ok" },
+         { missing: [] },
       );
    });
 
-   it("blocks with the exact singular wording for one missing given", () => {
-      const givens: Given[] = [{ name: "TENANT" }];
-      expect(runGate(givens, values({}))).toEqual({
-         kind: "blocked",
-         reason:
-            "This needs a value for the given TENANT. Set it in the parameters above.",
-      });
-   });
-
-   it("blocks with the exact plural wording for two missing givens", () => {
+   it("lists unset givens that have no default", () => {
       const givens: Given[] = [{ name: "TENANT" }, { name: "REGION" }];
-      expect(runGate(givens, values({}))).toEqual({
-         kind: "blocked",
-         reason:
-            "This needs a value for the givens TENANT, REGION. Set them in the parameters above.",
-      });
+      expect(runGate(givens, values({})).missing).toEqual(["TENANT", "REGION"]);
    });
 
-   it("runs with a note when an unset given has a default", () => {
+   it("treats a null default as no default", () => {
+      // The API sends `default: null` for some types rather than omitting it.
+      const givens = [
+         { name: "TENANTS", type: "string[]", default: null },
+      ] as unknown as Given[];
+      expect(runGate(givens, values({}))).toEqual({ missing: ["TENANTS"] });
+   });
+
+   it("notes a default that an unset given fell back to", () => {
       const givens: Given[] = [{ name: "X", default: "5" }];
       expect(runGate(givens, values({}))).toEqual({
-         kind: "defaults",
-         note: "Ran with the default X = 5",
+         missing: [],
+         defaultsNote: "Ran with the default X = 5",
       });
    });
 
@@ -54,8 +49,8 @@ describe("runGate", () => {
          { name: "Z" },
       ];
       expect(runGate(givens, values({ Z: "set" }))).toEqual({
-         kind: "defaults",
-         note: "Ran with defaults X = 5, Y = a",
+         missing: [],
+         defaultsNote: "Ran with defaults X = 5, Y = a",
       });
    });
 
@@ -64,41 +59,41 @@ describe("runGate", () => {
          { name: "CATEGORY", type: "filter<string>", default: "f''" },
          { name: "SINCE", type: "date", default: "@2023-01-01" },
       ];
-      expect(runGate(givens, values({}))).toEqual({
-         kind: "defaults",
-         note: "Ran with the default SINCE = 2023-01-01",
-      });
+      expect(runGate(givens, values({})).defaultsNote).toBe(
+         "Ran with the default SINCE = 2023-01-01",
+      );
    });
 
-   it("is ok when every unset default is an empty filter", () => {
+   it("adds no note when every unset default is an empty filter", () => {
       const givens: Given[] = [
          { name: "CATEGORY", type: "filter<string>", default: "f''" },
       ];
-      expect(runGate(givens, values({}))).toEqual({ kind: "ok" });
+      expect(runGate(givens, values({}))).toEqual({ missing: [] });
    });
 
    it("treats a whitespace string as unset", () => {
       const givens: Given[] = [{ name: "TENANT" }];
-      expect(runGate(givens, values({ TENANT: "   " }))).toEqual({
-         kind: "blocked",
-         reason:
-            "This needs a value for the given TENANT. Set it in the parameters above.",
-      });
-   });
-
-   it("blocks rather than defaults when both are present", () => {
-      const givens: Given[] = [{ name: "X", default: "5" }, { name: "TENANT" }];
-      expect(runGate(givens, values({}))).toEqual({
-         kind: "blocked",
-         reason:
-            "This needs a value for the given TENANT. Set it in the parameters above.",
-      });
+      expect(runGate(givens, values({ TENANT: "   " })).missing).toEqual([
+         "TENANT",
+      ]);
    });
 
    it("skips a spec with no name", () => {
-      const givens: Given[] = [{ type: "string" }, { name: "TENANT" }];
-      expect(runGate(givens, values({ TENANT: "acme" }))).toEqual({
-         kind: "ok",
-      });
+      const givens: Given[] = [{ type: "string" }];
+      expect(runGate(givens, values({}))).toEqual({ missing: [] });
+   });
+});
+
+describe("missingGivensHint", () => {
+   it("uses the singular wording for one given", () => {
+      expect(missingGivensHint(["TENANT"])).toBe(
+         "This source may need a value for the given TENANT. Set it in the parameters above.",
+      );
+   });
+
+   it("uses the plural wording for several", () => {
+      expect(missingGivensHint(["TENANT", "REGION"])).toBe(
+         "This source may need values for the givens TENANT, REGION. Set them in the parameters above.",
+      );
    });
 });

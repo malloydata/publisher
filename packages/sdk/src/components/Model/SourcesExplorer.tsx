@@ -15,7 +15,7 @@ import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 // import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";
-import type { RunGate } from "./runGate";
+import { missingGivensHint, type RunGate } from "./runGate";
 
 type ExplorerComponents = typeof import("@malloydata/malloy-explorer");
 type QueryBuilder = typeof import("@malloydata/malloy-query-builder");
@@ -34,7 +34,7 @@ export interface SourceExplorerProps {
    resourceUri: string;
    /** The control row's current values, sent with every Run. */
    givens?: Record<string, unknown>;
-   /** Whether Run can proceed given what the control row currently holds. */
+   /** What the control row leaves unset, for the words around a result or a refusal. */
    gate?: RunGate;
 }
 
@@ -227,10 +227,13 @@ function SourceExplorerComponentInner({
                        executionState: "finished",
                        response: {
                           result: parsedResult as Malloy.Result,
-                          ...(ranGate?.kind === "defaults"
+                          ...(ranGate?.defaultsNote
                              ? {
                                   messages: [
-                                     { severity: "INFO", title: ranGate.note },
+                                     {
+                                        severity: "INFO",
+                                        title: ranGate.defaultsNote,
+                                     },
                                   ],
                                }
                              : {}),
@@ -247,6 +250,18 @@ function SourceExplorerComponentInner({
                ?.message ??
             (error as Error | undefined)?.message ??
             "The query could not be run.";
+         const messages: Message[] = [{ severity: "ERROR", title: message }];
+         // A gate's 403 names only the source, so say which blank givens it may want.
+         const missing = gateAtRunRef.current?.missing ?? [];
+         const refused =
+            (error as { status?: number } | undefined)?.status === 403 ||
+            /Access denied for source/i.test(message);
+         if (refused && missing.length > 0) {
+            messages.push({
+               severity: "WARN",
+               title: missingGivensHint(missing),
+            });
+         }
          // Shown in the results pane rather than cleared, so the server's reason is visible.
          setSubmittedQuery((prev) => ({
             executionState: "finished",
@@ -259,7 +274,7 @@ function SourceExplorerComponentInner({
                   mutation.reset();
                   setSubmittedQuery(undefined);
                }),
-            response: { messages: [{ severity: "ERROR", title: message }] },
+            response: { messages },
          }));
       },
    });
@@ -336,21 +351,6 @@ function SourceExplorerComponentInner({
                         console.log(
                            `running query with:  ${query?.malloyQuery}`,
                         );
-                        if (gate?.kind === "blocked") {
-                           // Say which given is missing instead of sending a request that can only fail.
-                           setSubmittedQuery({
-                              executionState: "finished",
-                              query: query?.malloyQuery,
-                              queryResolutionStartMillis: Date.now(),
-                              onCancel: () => setSubmittedQuery(undefined),
-                              response: {
-                                 messages: [
-                                    { severity: "WARN", title: gate.reason },
-                                 ],
-                              },
-                           });
-                           return;
-                        }
                         try {
                            mutation.mutate();
                         } catch (error) {

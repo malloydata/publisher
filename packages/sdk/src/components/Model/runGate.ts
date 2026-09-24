@@ -6,22 +6,19 @@ import type { GivenValue } from "../../hooks/givenValue";
 import { renderGivenDefault } from "../given/utils";
 
 /**
- * Whether a Run should proceed, given the model's declared `given:`s and what
- * the control row currently holds.
+ * What a Run is about to send, measured against the model's declared givens.
  *
- * - `ok`: every given is either set or has a default; run as normal.
- * - `defaults`: nothing is missing, but one or more unset givens will fall
- *   back to their model default, which is worth saying since the reader chose
- *   nothing for them.
- * - `blocked`: an unset given has no default, so the server would 403 (or
- *   reject outright) rather than run. Refused here instead, with a message
- *   that names what to fill in, rather than round-tripping to the server for
- *   the same answer.
+ * Nothing here refuses a Run. Givens are declared model-wide but read per
+ * source, and nothing on the client says which source reads which, so a blank
+ * given with no default may be exactly right for the source being explored.
+ * The server decides; this only supplies the words around its answer.
  */
-export type RunGate =
-   | { kind: "ok" }
-   | { kind: "defaults"; note: string }
-   | { kind: "blocked"; reason: string };
+export interface RunGate {
+   /** Unset givens with no default: named in a hint when the server refuses. */
+   missing: string[];
+   /** Set when an unset given fell back to a non-empty default. */
+   defaultsNote?: string;
+}
 
 /** Set means a real value, not merely present: a blank string is not a choice. */
 function isSet(value: GivenValue | undefined): boolean {
@@ -34,46 +31,35 @@ export function runGate(
    givens: readonly Given[],
    values: ReadonlyMap<string, GivenValue>,
 ): RunGate {
-   const missing: Given[] = [];
-   const defaulted: Given[] = [];
+   const missing: string[] = [];
+   const defaults: string[] = [];
    for (const given of givens) {
-      // A spec with no name cannot be bound to a value at all, so it is
-      // neither missing nor defaulted; it is simply not this gate's business.
       if (given.name === undefined) continue;
       if (isSet(values.get(given.name))) continue;
-      if (given.default === undefined) missing.push(given);
-      else defaulted.push(given);
-   }
-
-   if (missing.length > 0) {
-      const names = missing.map((given) => given.name).join(", ");
-      return missing.length === 1
-         ? {
-              kind: "blocked",
-              reason: `This needs a value for the given ${names}. Set it in the parameters above.`,
-           }
-         : {
-              kind: "blocked",
-              reason: `This needs a value for the givens ${names}. Set them in the parameters above.`,
-           };
-   }
-
-   // Spelled as the panel's "Default:" caption; an empty default (an unset
-   // filter, say) changes nothing, so the note leaves it out.
-   const shown = defaulted.flatMap((given) => {
+      // `==`, not `===`: the API sends a missing default as null for some types.
+      if (given.default == null) {
+         missing.push(given.name);
+         continue;
+      }
+      // Spelled as the panel's "Default:" caption; an empty default (an unset
+      // filter, say) changes nothing, so the note leaves it out.
       const display = renderGivenDefault(given.type ?? "string", given.default);
-      return display ? [`${given.name} = ${display}`] : [];
-   });
-   if (shown.length > 0) {
-      const pairs = shown.join(", ");
-      return {
-         kind: "defaults",
-         note:
-            shown.length === 1
-               ? `Ran with the default ${pairs}`
-               : `Ran with defaults ${pairs}`,
-      };
+      if (display) defaults.push(`${given.name} = ${display}`);
    }
 
-   return { kind: "ok" };
+   const gate: RunGate = { missing };
+   if (defaults.length > 0) {
+      gate.defaultsNote =
+         defaults.length === 1
+            ? `Ran with the default ${defaults[0]}`
+            : `Ran with defaults ${defaults.join(", ")}`;
+   }
+   return gate;
+}
+
+/** The hint shown under a refusal when the reader left no-default givens blank. */
+export function missingGivensHint(missing: readonly string[]): string {
+   return missing.length === 1
+      ? `This source may need a value for the given ${missing[0]}. Set it in the parameters above.`
+      : `This source may need values for the givens ${missing.join(", ")}. Set them in the parameters above.`;
 }

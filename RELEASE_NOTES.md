@@ -40,8 +40,8 @@ answered 403, and the Explorer showed nothing.
 
 - The values live in the page URL, so a parameterized exploration is a shareable link (the page's
   copy-link button now carries them too).
-- A blank given with no default is not sent; the results pane names the given that needs a value.
-  A blank given with a default runs, and the result says which default it used.
+- A blank given with a default runs, and the result says which default it used. When a query is
+  refused and a given with no default was left blank, the results pane names it.
 - Query errors, including a 403 from a gate, now show in the results pane instead of vanishing.
 - **Explore from here** on a dashboard and a notebook cell's **Data sources** dialog open the
   Explorer with the document's current values rather than none.
