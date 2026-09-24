@@ -232,6 +232,21 @@ describe("frame-ancestors over a real request", () => {
       );
    });
 
+   it("is on a response an earlier middleware answers, not only on routed ones", async () => {
+      // The framing middleware is mounted ahead of the rate limiter so a 429
+      // carries the policy. A middleware that answers early never reaches the
+      // routes, so mounting order is the whole of what makes "every document"
+      // true -- and order is invisible in any per-request assertion.
+      const app = express();
+      app.use(frameAncestorsMiddleware(undefined));
+      app.use((_req, res) => res.status(429).json({ error: "slow down" }));
+      const res = await request(app).get("/anything");
+      expect(res.status).toBe(429);
+      expect(res.headers["content-security-policy"]).toBe(
+         "frame-ancestors 'self'",
+      );
+   });
+
    it("sends no X-Frame-Options alongside it", async () => {
       // Two framing policies that can disagree is the failure this avoids; the
       // wire is where it would actually show up.

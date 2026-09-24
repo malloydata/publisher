@@ -284,8 +284,13 @@ app.use(httpMetricsMiddleware);
 // Opt-in per-client rate limiting (PUBLISHER_RATE_LIMIT). Mounted before any
 // route so the static-file, query, and SPA-fallback handlers are all behind
 // it; probes and /metrics are exempt inside the middleware.
-app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
+// Ahead of the rate limiter, so a 429 carries the policy too. That response is
+// JSON and nobody is tricked into clicking one, so this is not a live
+// clickjacking path -- but "every document" should be literally true rather than
+// true of everything except the responses one middleware happens to answer
+// early, and the next early-answering middleware may not be JSON.
 app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
+app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
 // bound per-request memory; this is a "your --max-old-space-size

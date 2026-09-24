@@ -307,6 +307,14 @@ different domain), mint a short-lived signed token on your server and pass it as
 embedded page reads `embed_token` and calls `Publisher.setToken(...)`. Mint the token server-side with
 the same signing key the server verifies; never put a long-lived or admin token in client HTML.
 
+**A cross-origin embed also needs the server to permit the framing itself**, which
+is separate from authenticating it. Publisher sends `frame-ancestors 'self'` by
+default, so the browser refuses a frame from another origin before any token is
+read: the iframe renders blank, and nothing is logged server-side, which makes it
+look like a broken page rather than a policy. Set `PUBLISHER_FRAME_ANCESTORS` to
+the host page's origin on the deployment being embedded. If an embed is blank,
+check the browser console first -- it names `frame-ancestors`.
+
 ## Live reload
 
 When the server runs with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`),
