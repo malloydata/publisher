@@ -155,7 +155,7 @@ def compiled_surface(base: str, environment: str, package: str) -> str:
     A Malloy source picks up every column of its table without declaring one of
     them, so `products.retail_price` and `customers.signup_date` appear nowhere
     in the `.malloy` and are fully queryable. A judge shown only source text
-    reads those as absent and returns COVERAGE on a question the model answers
+    reads those as absent and returns MISSING on a question the model answers
     -- measured, two of this skill's three false gaps on one set.
 
     Empty string when the compiled model cannot be read, which is honest: the
@@ -171,6 +171,30 @@ def compiled_surface(base: str, environment: str, package: str) -> str:
         if fields:
             lines.append(f"{src}: " + ", ".join(fields))
     return "\n".join(lines)
+
+
+def set_conventions(set_dir: pathlib.Path) -> list[str]:
+    """`set.json`'s `conventions`: what the questions' words mean to the business.
+
+    A list of strings. A bare string is taken as a list of one, and anything
+    else, or an unreadable file, is no conventions rather than a crash.
+    """
+    f = set_dir / "set.json"
+    try:
+        conv = (json.loads(f.read_text()) or {}).get("conventions")
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return []
+    if isinstance(conv, str):
+        conv = [conv]
+    return [c for c in conv if isinstance(c, str) and c.strip()] \
+        if isinstance(conv, list) else []
+
+
+# A convention is a definition of one TERM, scoped to the questions that use
+# it. Unscoped, the judge applied every definition to every question: nine of
+# twelve cases came back as gaps. The sentence is prose, so the check is only
+# that one exists.
+CONVENTION_SCOPE = re.compile(r"(?i)\bapplies to\b")
 
 
 # --- the judgement -----------------------------------------------------------
@@ -408,7 +432,7 @@ def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
         # The way out depends on the mode. `--model-path` narrows a
         # `--publisher` read to one model. A local `--model` read has no such
         # move: `model_text()` does not resolve `import`, so pointing it at one
-        # file drops every imported source and the judge answers COVERAGE for
+        # file drops every imported source and the judge answers MISSING for
         # concepts the model does represent. That is a false gap that lands in
         # a published trend (reference/coverage-limits.md), and this message
         # used to recommend exactly that. The honest outcome is a failed
@@ -416,7 +440,7 @@ def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
         narrow = ("pass --model-path to measure one model file" if a.publisher
                   else "this is a failed measurement, not a number to rescue: "
                        "do NOT narrow --model to one file, that drops imported "
-                       "sources and manufactures COVERAGE verdicts "
+                       "sources and manufactures MISSING verdicts "
                        "(reference/coverage-limits.md). Record coverage as "
                        "not measured for this package version")
         return {"qid": case["qid"], "verdict": None,
@@ -627,7 +651,7 @@ FIXTURE_CASE = {
 FIXTURE_EXPECTED = ("RULE_UNWRITTEN", "AMBIGUOUS")
 # Measured against THIS fixture on 2026-09-08, agent model sonnet, --repeat 3:
 #   fixture_first_contact_resolution_rate: RULE_UNWRITTEN
-#     (samples: CONVENTION, CONVENTION, CONVENTION)
+#     (samples: CONVENTION, CONVENTION, CONVENTION -- the retired name)
 # Re-measure when the fixture, the prompt or the verdict vocabulary changes.
 # The tests below pin the fixture's SHAPE and cannot pin its verdict: the judge
 # needs a live `claude -p`, so `--self-check` is the only thing that measures
@@ -746,31 +770,36 @@ def main(argv: list[str] | None = None) -> int:
     # them. Only REST can supply it; a --model run reads text off disk and has
     # no compiled model to ask, and the prompt is told so rather than being let
     # to assume the text is everything.
+    #
+    # Whether it was read goes into the report, not only onto stderr. A
+    # --publisher run whose REST read failed is measuring with less than the
+    # judge is told it has, and without the record it reads as a normal run.
     a.surface = ""
+    surface_status = "not read: --model has no compiled model to ask"
     if a.publisher and a.package:
         try:
             a.surface = compiled_surface(a.publisher, a.environment, a.package)
-        except (urllib.error.URLError, OSError, json.JSONDecodeError):
-            a.surface = ""
+            surface_status = ("read" if a.surface else
+                              "empty: the server returned no compiled fields")
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            surface_status = f"failed: {exc}"[:200]
     if not a.surface:
-        print("! no compiled field list (needs --publisher): a column a source "
-              "exposes implicitly will read as absent", file=sys.stderr)
+        print(f"! no compiled field list ({surface_status}): a column a source "
+              f"exposes implicitly will read as absent", file=sys.stderr)
 
     # What the question's words MEAN, from the set. A convention the model does
     # not encode is the thing this check exists to find, and a judge that does
     # not know the business defines "summer" as a date window will substitute
     # its own reading and pass the question.
-    a.conventions = ""
-    set_json = a.set_dir / "set.json"
-    if set_json.exists():
-        try:
-            conv = (json.loads(set_json.read_text()) or {}).get("conventions")
-        except (json.JSONDecodeError, OSError):
-            conv = None
-        if isinstance(conv, list):
-            a.conventions = "\n".join(f"- {c}" for c in conv if c)
-        elif isinstance(conv, str):
-            a.conventions = conv
+    conventions = set_conventions(a.set_dir)
+    a.conventions = "\n".join(f"- {c}" for c in conventions)
+    for i, c in enumerate(conventions, 1):
+        if not CONVENTION_SCOPE.search(c):
+            print(f"! set.json conventions[{i - 1}] states no scope. Without "
+                  f"an \"Applies to questions that ...\" sentence the judge "
+                  f"reads it as a rule for every question. Fix: end it with "
+                  f"\"Applies to questions that ask about <term>.\"",
+                  file=sys.stderr)
 
     # What was measured, pinned by content. Coverage is sold as a per-version
     # trend, and a trend needs each point tied to the bytes behind it: a
@@ -809,7 +838,8 @@ def main(argv: list[str] | None = None) -> int:
         a.out.write_text(json.dumps(
             {"version": a.version, "set": str(a.set_dir),
              "modelSource": model_source, "modelSha256": model_sha,
-             "agentModel": a.agent_model, **s, "cases_detail": rows,
+             "agentModel": a.agent_model, "compiledSurface": surface_status,
+             "conventions": conventions, **s, "cases_detail": rows,
              **({"labelComparison": serialisable(cmp)} if cmp else {})},
             indent=2))
         print(f"\n{a.out}")

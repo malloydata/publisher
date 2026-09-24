@@ -427,18 +427,16 @@ class ModelIdentity(unittest.TestCase):
         self.assertIn('f"{a.publisher} {a.environment}/{a.package}"', self.SRC)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CompiledSurface(unittest.TestCase):
-    """The judge is shown the fields a source exposes without declaring them.
+    """`compiled_surface()` lists the fields a source exposes without declaring
+    them. That the judge is SHOWN the list is pinned by `MainWiring`.
 
     A Malloy source picks up every column of its table, so retail_price and
     signup_date appear nowhere in the .malloy and are fully queryable. Shown
-    only source text, the judge called both absent and returned COVERAGE on two
-    questions the model answers correctly -- two of three false gaps on one
-    measured set.
+    only source text, the judge called both absent and returned MISSING (then
+    named COVERAGE) on two questions the model answers correctly -- two of
+    three false gaps on one measured set.
     """
 
     def test_it_lists_fields_per_source(self):
@@ -469,20 +467,156 @@ class ConventionsInThePrompt(unittest.TestCase):
         self.assertIn("not a reading you may substitute", cc.PROMPT)
         self.assertIn("RULE_UNWRITTEN", cc.PROMPT)
 
-    def test_conventions_are_scoped_to_the_questions_that_use_them(self):
+    def test_the_prompt_tells_the_judge_conventions_are_scoped(self):
         """Applied to everything, they turn every question into a gap.
 
         Measured: conventions stated as bare rules were read as defaults, and a
         question about the peak revenue MONTH came back RULE_UNWRITTEN because
         the set defines "net" somewhere. Nine of twelve cases became gaps and
-        the measurement stopped discriminating."""
+        the measurement stopped discriminating. Whether a judge obeys this
+        is a property of the judge, which no test here can reach."""
         self.assertIn("definitions of TERMS, not defaults", cc.PROMPT)
         self.assertIn("ignore the ones it", cc.PROMPT)
 
     def test_the_prompt_carries_no_retired_code(self):
         """A prompt naming both vocabularies teaches the judge neither."""
-        for retired in ("`ok`", "COVERAGE", "NO-DISAMBIG"):
+        for retired in ("`ok`", "COVERAGE", "NO-DISAMBIG", "CONVENTION"):
             self.assertNotIn(retired, cc.PROMPT, f"{retired} is retired")
+
+    def test_no_skill_teaches_a_retired_code(self):
+        """The same, for every SKILL.md served to an agent.
+
+        The rename once stopped at the prompt, and four skill files went on
+        defining `COVERAGE`, `NO-DISAMBIG` and `CONVENTION` as the codes to
+        use. The mapping from old to new lives in eval-answer's
+        reference/ledger-schema.md, which is not a SKILL.md.
+        """
+        found = []
+        for f in sorted(cc.SKILLS_ROOT.glob("*/SKILL.md")):
+            for n, line in enumerate(f.read_text().splitlines(), 1):
+                for retired in ("`COVERAGE`", "`NO-DISAMBIG`", "`CONVENTION`"):
+                    if retired in line:
+                        found.append(f"{f.parent.name}/SKILL.md:{n} {retired}")
+        self.assertEqual(found, [])
 
     def test_the_prompt_says_undocumented_is_not_absent(self):
         self.assertIn("undocumented, not absent", cc.PROMPT)
+
+
+class MainWiring(unittest.TestCase):
+    """`main()` end to end, with the REST reads and the judge stubbed.
+
+    The pure functions are guarded above. These are what fail if `main()` stops
+    fetching the compiled surface, stops reading the set's conventions, or
+    `judge_case` stops putting either in the prompt -- each of which once
+    passed the whole suite.
+    """
+
+    SURFACE = {"products": {"source:products", "dimension:retail_price"}}
+    CONVENTION = ('"Summer" means 25 May to 15 September. Applies to '
+                  'questions that ask about summer.')
+
+    def run_main(self, replies, *, conventions=None, surface=SURFACE,
+                 surface_raises=None, extra=()):
+        """Run `main()` over a two-case set. `replies` maps qid -> the judge's
+        JSON. Returns (the prompts sent, the --out report, stderr)."""
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        meta = {"name": "t"}
+        if conventions is not None:
+            meta["conventions"] = conventions
+        (d / "set.json").write_text(json.dumps(meta))
+        (d / "cases.jsonl").write_text("".join(
+            json.dumps({"qid": q, "question": f"question {q}?"}) + "\n"
+            for q in replies))
+        prompts = {}
+
+        def fake_cli(cmd, **kw):
+            prompt = cmd[2]
+            qid = next(q for q in replies if f"question {q}?" in prompt)
+            prompts[qid] = prompt
+            return [{"type": "assistant"}], json.dumps(replies[qid]), "", 1, 0.1
+
+        entities = mock.Mock(side_effect=surface_raises, return_value=surface)
+        err = []
+        with mock.patch.object(cc, "rest_model_text",
+                               return_value="source: products is t"), \
+             mock.patch.object(cc, "compiled_entities", entities), \
+             mock.patch.object(cc, "run_cli", side_effect=fake_cli), \
+             mock.patch("builtins.print",
+                        lambda *a, **k: err.append(" ".join(map(str, a)))
+                        if k.get("file") is sys.stderr else None):
+            cc.main(["--set", str(d), "--publisher", "http://p",
+                     "--package", "pkg", "--parallel", "1",
+                     "--out", str(d / "out.json"), *extra])
+        return prompts, json.loads((d / "out.json").read_text()), "\n".join(err)
+
+    OK_REPLY = {"verdict": "MODELLED", "why": "w",
+                "entities": ["products.retail_price"]}
+
+    def test_the_judge_is_shown_the_compiled_surface(self):
+        prompts, out, _ = self.run_main({"a": self.OK_REPLY})
+        self.assertIn("products: dimension:retail_price", prompts["a"])
+        self.assertEqual(out["compiledSurface"], "read")
+
+    def test_the_judge_is_shown_the_sets_conventions(self):
+        prompts, out, _ = self.run_main({"a": self.OK_REPLY},
+                                        conventions=[self.CONVENTION])
+        self.assertIn(f"- {self.CONVENTION}", prompts["a"])
+        self.assertEqual(out["conventions"], [self.CONVENTION])
+
+    def test_a_failed_surface_read_is_recorded_in_the_report(self):
+        """In --publisher mode a REST failure used to read as a normal run."""
+        prompts, out, err = self.run_main(
+            {"a": self.OK_REPLY}, surface_raises=OSError("connection refused"))
+        self.assertEqual(out["compiledSurface"], "failed: connection refused")
+        self.assertIn("(unavailable)", prompts["a"])
+        self.assertIn("no compiled field list", err)
+
+    def test_an_unscoped_convention_is_warned_about(self):
+        _, _, err = self.run_main({"a": self.OK_REPLY},
+                                  conventions=['"Net" excludes returns.'])
+        self.assertIn("conventions[0] states no scope", err)
+        _, _, err = self.run_main({"a": self.OK_REPLY},
+                                  conventions=[self.CONVENTION])
+        self.assertNotIn("states no scope", err)
+
+    def test_underspecified_is_a_decided_gap_not_an_undecided_case(self):
+        """Out of FAIL_VERDICTS it would parse as undecided and silently leave
+        the denominator."""
+        _, out, _ = self.run_main({
+            "a": self.OK_REPLY,
+            "b": {"verdict": "UNDERSPECIFIED", "why": "which adjustment?",
+                  "entities": []}})
+        self.assertEqual((out["decided"], out["ok"]), (2, 1))
+        self.assertEqual(out["by_verdict"], {"MODELLED": 1, "UNDERSPECIFIED": 1})
+
+    def test_rule_kind_is_recorded_and_an_unqualified_one_is_unstated(self):
+        _, out, _ = self.run_main({
+            "a": {"verdict": "RULE_UNWRITTEN", "why": "w", "entities": [],
+                  "rule_kind": "arbitrary"},
+            "b": {"verdict": "RULE_UNWRITTEN", "why": "w", "entities": []}})
+        kinds = {r["qid"]: r["rule_kind"] for r in out["cases_detail"]}
+        self.assertEqual(kinds, {"a": "arbitrary", "b": "unstated"})
+
+
+class SetConventions(unittest.TestCase):
+    def conv(self, meta):
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        if meta is not None:
+            (d / "set.json").write_text(meta if isinstance(meta, str)
+                                        else json.dumps(meta))
+        return cc.set_conventions(d)
+
+    def test_shapes(self):
+        self.assertEqual(self.conv({"conventions": ["a", "", 3, "b"]}), ["a", "b"])
+        self.assertEqual(self.conv({"conventions": "one"}), ["one"])
+        self.assertEqual(self.conv({"conventions": {"not": "a list"}}), [])
+        self.assertEqual(self.conv({}), [])
+        self.assertEqual(self.conv("not json"), [])
+        self.assertEqual(self.conv(None), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -96,8 +96,8 @@ from typing import Any
 # Delivered everything and still wrong. eval-diagnose attributes construction
 # "only after sufficiency": first establish that the docs said enough to use the
 # entity correctly. WRONG-PICK is the model's if the docs did not distinguish the
-# candidates, SCOPE is the model's if the rule was undocumented, CONVENTION is
-# the model's ("expose a named measure"). So this row names no owner. An earlier
+# candidates, SCOPE is the model's if the rule was undocumented, RULE_UNWRITTEN
+# is the model's ("write the rule down"). So this row names no owner. An earlier
 # version charged every such case to the agent, which is how a documentation gap
 # gets filed as a skills bug and never fixed.
 DELIVERED = ("construction", "undecided", "delivered, wrong")

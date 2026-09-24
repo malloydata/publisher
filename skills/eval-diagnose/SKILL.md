@@ -348,7 +348,7 @@ the case, and one issue event covers all of its cases rather than one per case.
 **Group on shared cause, not shared symptom.** Two cases that both returned a
 wrong revenue number belong together only if the same entity, doc gap, or
 convention explains both. Same `owner` and same `component` is a hint, never a
-criterion: two `COVERAGE` issues about different missing entities are two
+criterion: two `MISSING` issues about different missing entities are two
 clusters, and merging them produces an edit that fixes neither cleanly.
 
 Order clusters by how many cases they would fix. Cluster the non-model owners

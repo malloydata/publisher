@@ -59,12 +59,15 @@ class SalvageClusterShape(unittest.TestCase):
     def test_a_salvaged_object_still_fails_validation_on_probes(self):
         # Salvage must not launder a diagnosis into looking probed. The
         # vocabulary checks pass; "no probes recorded" must still fire.
+        #
+        # The codes come from the skill's own table rather than being typed
+        # here. A typed code made a rename fail this test for the wrong reason,
+        # and its message told the renamer to edit the test.
         codes = diagnose.skill_codes()
-        self.assertIn("RULE_UNWRITTEN", codes,
-                      "the skill's own code table should define "
-                      "RULE_UNWRITTEN; if it was renamed this test needs the "
-                      "new name")
-        out = diagnose.salvage_cluster_shape(CLUSTER_REPLY)
+        primary, contributing = sorted(codes)[:2]
+        reply = {**CLUSTER_REPLY, "clusters": [
+            {**CLUSTER_REPLY["clusters"][0], "codes": [primary, contributing]}]}
+        out = diagnose.salvage_cluster_shape(reply)
         bad = diagnose.validate(out, codes)
         self.assertEqual(bad, ["no probes recorded"],
                          "the vocabulary fields should all pass after salvage, "
