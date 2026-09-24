@@ -487,17 +487,6 @@ export class AccessDeniedError extends Error {
 }
 
 /**
- * A query targeted a source/model that is not part of the package's queryable
- * surface under `queryableSources: "declared"` (a non-`explores` model file, or
- * a source not in a model's `export {}` closure). Mapped to HTTP **404**, not
- * 403: unlike `#(authorize)` (which is identity-scoped and answers "who"), the
- * explore boundary is identity-free and answers "what is queryable". This
- * class carries the generic message, which reads the same for a hidden target
- * as for a missing one, so a gated model offers no enumeration or existence
- * oracle. Where nothing is gated, the refusal is the {@link OffSurfaceError}
- * subclass instead, which says why.
- */
-/**
  * Caller-submitted query text that did not compile. Each problem's range is
  * expressed in the text exactly as the caller sent it, not the text the server
  * compiled, so a client can point at the failing span of its own payload.
@@ -527,6 +516,17 @@ function toQueryTextProblem(problem: LogMessage) {
    };
 }
 
+/**
+ * A query targeted a source/model that is not part of the package's queryable
+ * surface under `queryableSources: "declared"` (a non-`explores` model file, or
+ * a source not in a model's `export {}` closure). Mapped to HTTP **404**, not
+ * 403: unlike `#(authorize)` (which is identity-scoped and answers "who"), the
+ * explore boundary is identity-free and answers "what is queryable". This
+ * class carries the generic message, which reads the same for a hidden target
+ * as for a missing one, so a gated model offers no enumeration or existence
+ * oracle. Where nothing is gated, the refusal is the {@link OffSurfaceError}
+ * subclass instead, which says why.
+ */
 export class NotQueryableError extends Error {
    constructor(message: string) {
       super(message);

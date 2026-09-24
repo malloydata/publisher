@@ -1325,13 +1325,16 @@ source: locked is duckdb.sql("select 1 as id") extend {
       }
    });
 
-   it("declared: a gated curated source refuses a caller its gate denies before any compile error", async () => {
+   it("a gated source refuses a caller its gate denies before any compile error, in whichever statement it sits", async () => {
       // The compile problems are the caller's only on the far side of the
       // authorize gate: a caller the gate denies gets its 403, typo or not.
-      writeManifest({ explores: ["index.malloy"] });
-      fs.writeFileSync(
-         path.join(tempDir, "index.malloy"),
-         `##! experimental.givens
+      // The early gate reads only the FIRST run target and the compiled gate
+      // needs a compile, so a locked source in a LATER statement is the case
+      // that needs every target's lock decided before problems are returned.
+      // Without that, a missing field answered 400 and an existing one 403,
+      // which tells a denied caller the locked source's column names. Checked
+      // with a surface and without one, since both reach the same answer.
+      const MODEL = `##! experimental.givens
 
 given:
   ROLE :: string
@@ -1340,27 +1343,86 @@ given:
 source: gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }
-export { gated }`,
+source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+export { gated, open_src }`;
+      const queries = [
+         "source: a is gated extend { where: x = 1 }\nrun: a -> { group_by: nope }",
+         "run: open_src -> { aggregate: c }\nrun: gated -> { group_by: nope }",
+      ];
+      for (const [file, manifest] of [
+         ["index.malloy", { explores: ["index.malloy"] }],
+         ["surface.malloy", {}],
+      ] as const) {
+         fs.rmSync(tempDir, { recursive: true, force: true });
+         fs.mkdirSync(tempDir);
+         writeManifest(manifest);
+         fs.writeFileSync(path.join(tempDir, file), MODEL);
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const model = pkg.getModel(file)!;
+            for (const query of queries) {
+               await expect(
+                  model.getQueryResults(undefined, undefined, query),
+               ).rejects.toBeInstanceOf(AccessDeniedError);
+               await expect(
+                  model.getQueryResults(
+                     undefined,
+                     undefined,
+                     query,
+                     undefined,
+                     undefined,
+                     { ROLE: "analyst" },
+                  ),
+               ).rejects.toBeInstanceOf(QueryCompileError);
+            }
+         } finally {
+            await duckdb.close();
+         }
+      }
+   });
+
+   it("a problem in an injected source filter is not located in the caller's text, trailing newline or not", async () => {
+      // The filter is appended to the caller's text after trimming it, so a
+      // caller's trailing newline must not leave a blank line of theirs for
+      // the filter's own problem to land on. `x` keeps only `status`, so the
+      // injected `where: region …` is what fails to compile.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "surface.malloy"),
+         `#(filter) dimension=region type=in
+source: orders is duckdb.sql("select 1 as id, 'US' as region, 'open' as status") extend {
+  measure: c is count()
+}`,
       );
-      const query =
-         "source: a is gated extend { where: x = 1 }\nrun: a -> { group_by: nope }";
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("index.malloy")!;
-         await expect(
-            model.getQueryResults(undefined, undefined, query),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
-         await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               query,
-               undefined,
-               undefined,
-               { ROLE: "analyst" },
-            ),
-         ).rejects.toBeInstanceOf(QueryCompileError);
+         const model = pkg.getModel("surface.malloy")!;
+         const base =
+            "source: x is orders -> { group_by: status }\nrun: x -> { group_by: status }";
+         for (const query of [base, base + "\n", base + "\n\n"]) {
+            let error: unknown;
+            try {
+               await model.getQueryResults(undefined, undefined, query, {
+                  region: ["US"],
+               });
+            } catch (e) {
+               error = e;
+            }
+            expect(error).toBeInstanceOf(QueryCompileError);
+            const problems = (error as QueryCompileError).problems;
+            expect(problems.length).toBeGreaterThan(0);
+            expect(problems.map((p) => p.at)).toEqual(
+               problems.map(() => undefined),
+            );
+            expect((error as Error).message).not.toMatch(/^line \d/);
+         }
       } finally {
          await duckdb.close();
       }

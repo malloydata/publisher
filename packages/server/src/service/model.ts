@@ -472,7 +472,8 @@ function describeProblems(problems: LogMessage[], error: MalloyError): string {
  * The compile failure of a runnable, or undefined when it compiles or fails for
  * a reason that is not a compile error (a connection failure while fetching a
  * schema, say, which keeps surfacing wherever it did before). Malloy memoizes
- * the compile, so this costs nothing when the query compiles later anyway.
+ * the compile per runnable, so this costs nothing when the same runnable is
+ * compiled again later.
  */
 async function compileErrorOf(runnable: {
    getPreparedQuery(): Promise<unknown>;
@@ -4089,6 +4090,55 @@ export class Model {
    }
 
    /**
+    * The pre-compile lock check for one run target: the target's own gate, and
+    * for a name the model never declared, the locks the request's own
+    * derivations reach.
+    *
+    * A caller-declared alias (`source: s is gated extend {}`) names an entry
+    * point this model never declared, so the target's own gate matches nothing
+    * and the caller's compile errors would answer before any lock did — the
+    * schema oracle the early gate exists to close. So the locks its derivation
+    * chain reaches are decided from the text, before compiling. A chain this
+    * cannot read is left to the post-compile check ({@link
+    * assertRequestDeclaredEntryPointIsNotLaundered}), which is the fail-closed
+    * one; this is only ever an earlier, opaquer refusal. Text carrying an
+    * annotation at all is left to the forgery rejecter, whose refusal is the
+    * specific one ("not permitted in caller-submitted text") and whose counter
+    * is the one operators read. Skipping opens nothing: the post-compile check
+    * still decides.
+    */
+   private async assertLocksBeforeCompile(
+      target: string,
+      query: string | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      bypassAuthorize: boolean | undefined,
+   ): Promise<void> {
+      await this.assertAuthorized(target, givens ?? {}, bypassAuthorize);
+      if (
+         query &&
+         !hasCallerAuthorizeAnnotation(query) &&
+         !this.entryPointGatesBySource.has(target)
+      ) {
+         await this.assertLocksOnRequestDeclaredBases(
+            target,
+            query,
+            givens ?? {},
+            bypassAuthorize,
+         );
+      }
+   }
+
+   /**
+    * The source a run target named in ad-hoc text reads: the name itself, or,
+    * for a declared QUERY (`run: q + { … }`), the source that query runs
+    * against.
+    */
+   private textRunTargetSource(name: string): string {
+      if (this.sources?.some((s) => s.name === name)) return name;
+      return this.queries?.find((q) => q.name === name)?.sourceName ?? name;
+   }
+
+   /**
     * Whether every statement in ad-hoc text that could be the one Malloy runs
     * passes {@link assertQueryBoundaryCompiled}'s own admission test: curated,
     * or derived from curated sources through the text's own declarations.
@@ -5373,6 +5423,7 @@ export class Model {
       // row-level authorize recompile, which runs after that try/catch, can
       // still hand this SAME caller text back to `loadRestrictedQuery`.
       let queryString: string;
+      let filterRefinementInjected = false;
       // Set when this query is routed through the `storage=` serve-shape
       // transform; threaded into prepare + run so the virtual sources resolve to
       // their physical tables. Undefined ⇒ served live (the default path).
@@ -5453,36 +5504,12 @@ export class Model {
             : undefined) ||
          surfaceName;
       if (earlySource) {
-         await this.assertAuthorized(
+         await this.assertLocksBeforeCompile(
             earlySource,
-            givens ?? {},
+            query,
+            givens,
             bypassAuthorize,
          );
-         // A caller-declared alias (`source: s is gated extend {}`) names an
-         // entry point this model never declared, so the gate above matches
-         // nothing and the caller's own compile errors would answer before any
-         // lock did — the schema oracle this whole early gate exists to close.
-         // Decide the locks the request's OWN derivations reach, from its text,
-         // before compiling. A chain this cannot read is left to the
-         // post-compile check ({@link
-         // assertRequestDeclaredEntryPointIsNotLaundered}), which is the
-         // fail-closed one; this is only ever an earlier, opaquer refusal.
-         // Text carrying an annotation at all is left to the forgery rejecter
-         // below, whose refusal is the specific one ("not permitted in
-         // caller-submitted text") and whose counter is the one operators read.
-         // Skipping opens nothing: the post-compile check still decides.
-         if (
-            query &&
-            !hasCallerAuthorizeAnnotation(query) &&
-            !this.entryPointGatesBySource.has(earlySource)
-         ) {
-            await this.assertLocksOnRequestDeclaredBases(
-               earlySource,
-               query,
-               givens ?? {},
-               bypassAuthorize,
-            );
-         }
       }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
@@ -5575,6 +5602,9 @@ export class Model {
                      queryString,
                      filterClause,
                   );
+                  // injectFilterRefinement trims the text it appends to, so
+                  // the caller's lines, as compiled, are the trimmed ones.
+                  filterRefinementInjected = true;
                }
             }
          }
@@ -5886,9 +5916,35 @@ export class Model {
       // corrected (see queryTextRunTargetsQueryable); anywhere else the answer
       // is the backstop's 404. A failure to bind a given is left to the run
       // path, which answers it opaquely when a gate reads that given.
-      if (!sourceName && !queryName && query && liveRunnable) {
+      //
+      // The early authorize gate above reads only the FIRST run target, and
+      // the compiled gate needs a compile, so before any problem is returned
+      // every run target's locks are decided here: a caller a lock refuses
+      // gets its 403 whichever statement the locked source sits in. Text whose
+      // targets cannot all be read is answered here only where no lock could
+      // apply (no surface, no gate anywhere in the model); otherwise it keeps
+      // the path it had, since there is no target list to decide locks for.
+      //
+      // Skipped when the query routed: the routed runnable compiled the same
+      // text, so it has no compile error to report, and checking the live one
+      // would cost a second compile.
+      if (
+         !sourceName &&
+         !queryName &&
+         query &&
+         liveRunnable &&
+         runnable === liveRunnable
+      ) {
          const compileError = await compileErrorOf(liveRunnable);
-         if (compileError && !isGivenBindingFailure(compileError)) {
+         const targets = compileError
+            ? (extractRunTargetSourceNames(query) ?? [])
+            : [];
+         if (
+            compileError &&
+            !isGivenBindingFailure(compileError) &&
+            (targets.length > 0 ||
+               (boundary !== "deferred" && !this.hasAnyAuthorizeNote()))
+         ) {
             if (
                boundary === "deferred" &&
                !this.queryTextRunTargetsQueryable(query)
@@ -5897,6 +5953,14 @@ export class Model {
                   "Query target is not queryable.",
                   false,
                   "source",
+               );
+            }
+            for (const target of targets) {
+               await this.assertLocksBeforeCompile(
+                  this.textRunTargetSource(target),
+                  query,
+                  givens,
+                  bypassAuthorize,
                );
             }
             this.queryExecutionHistogram.record(
@@ -5909,7 +5973,10 @@ export class Model {
                   servedFrom,
                }),
             );
-            throw queryCompileError(compileError, query);
+            throw queryCompileError(
+               compileError,
+               filterRefinementInjected ? query.trimEnd() : query,
+            );
          }
       }
 
