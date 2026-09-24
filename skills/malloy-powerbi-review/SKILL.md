@@ -91,8 +91,11 @@ recipe - do not hand the user a classification and call it a migration.
 
 `scripts/classify_measures.py` runs the routing at scale: dependency graph, return-type
 inference from the model's own column types, and the relationship flags that never
-appear in a measure's DAX. It needs `definition/relationships.tmdl` as well as
-`definition/tables/`, and has a `--json` mode for the `.pbix` path, which has no TMDL.
+appear in a measure's DAX. It reads four things under `definition/`: `tables/`,
+`relationships.tmdl`, the `calculationGroup` blocks inside a table file, and
+`functions.tmdl`. The last two are easy to miss and change the answer - a model whose
+time intelligence lives in calculation groups reports **none** if you only match
+`measure`. It also has a `--json` mode for the `.pbix` path, which has no TMDL.
 It runs where you have a shell (Claude Code, Cursor); the Credible app's agent has no
 shell tool and the MCP skills bundle ships markdown only, so the prose stands alone.
 

@@ -201,6 +201,13 @@ model. Flag it rather than faking it with one tile per measure.
 
 ## S5 - Calculation groups (STOPGAP)
 
+> **Read the calculation-group tables, not just the measures.** A calculation group
+> is a table holding `calculationItem` entries, not `measure` entries, so a model
+> with seven of them looks measure-light until you open them. In the 14-model corpus
+> this is the only stopgap that fires at all - 41 items, every one in a single model.
+> Like bidirectional cross-filtering, it is concentrated: a model either builds on
+> calculation groups or has none.
+
 **The Power BI** A calculation group rewrites measures at query time: define
 `Time Calc` with items `Current`, `YTD`, `PY`, and every measure in the model gains
 three variants without being rewritten. It is the highest-leverage object in DAX and

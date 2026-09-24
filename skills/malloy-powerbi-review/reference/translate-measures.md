@@ -183,6 +183,37 @@ enough to budget for, and it needs no budget, because it maps exactly.
 `FabricASEngineAnalytics` (117 measures), whose profile is completely different: 7
 report-layer, 2 direct, 108 gated on bidirectional cross-filtering.
 
+**Across a wider corpus the untranslatable count stays at zero.** Fourteen public
+TMDL models - Microsoft, Databricks, community template authors, and an independent
+SQL-monitoring tool of 747 measures:
+
+| | measures |
+|---|---:|
+| models routed | 14 |
+| measures | 1,622 |
+| report-layer (return a label) | 489 |
+| translate directly | 397 |
+| need a recipe | 736 |
+| of those, can return a different number silently | 700 |
+| of those, land on a stopgap recipe | 41 |
+| **untranslatable** | **0** |
+
+Recipe demand is the useful part, because it says which recipes to reach for first:
+`FC1` 465, `S3` 248, `FC5` 204, `FC3` 120, `T3` 78, `FC2` 61, `S5` 41, `T1` 38,
+`S1` 11, `FC6` 7, `FC4` 6, `T2` 5, `FC7` 1.
+
+Three things only a wider corpus shows:
+
+- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is third at 204**, though it
+  appears 5 times in `PBIASEngine`. A single-model sample under-ranks it badly.
+- **`T4`, `T5` and `S6` fire zero times in all 1,622 measures.** No
+  `CLOSINGBALANCEMONTH`, no `PATH`, no date spine anywhere. Those three stopgaps
+  cover shapes that are real but rare - do not lead a customer conversation with
+  them, and weigh that before citing them as upstream evidence.
+- **`S5` (calculation groups) fires 41 times, all in one model.** Like
+  bidirectional cross-filtering, it is concentrated rather than spread: a model
+  either builds on calculation groups or has none.
+
 **Two ways earlier revisions of this skill got its own numbers wrong**, both worth
 avoiding in yours:
 

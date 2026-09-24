@@ -208,6 +208,10 @@ def _unquote(name: str) -> str:
 
 
 _MEASURE_RE = re.compile(r"^\s*measure\s+('(?:[^']|'')*'|[^=]+?)\s*=\s*(.*)$")
+# A calculation item and a user-defined function carry DAX in the same shape as a
+# measure. Matching only `measure` read a 7-calculation-group model as having none.
+_CALC_ITEM_RE = re.compile(r"^\s*calculationItem\s+('(?:[^']|'')*'|[^=]+?)\s*=\s*(.*)$")
+_FUNCTION_RE = re.compile(r"^\s*function\s+('(?:[^']|'')*'|[^=]+?)\s*=\s*(.*)$")
 _COLUMN_RE = re.compile(r"^\s*column\s+('(?:[^']|'')*'|\S+)\s*$")
 _TABLE_RE = re.compile(r"^\s*table\s+('(?:[^']|'')*'|\S+)\s*$")
 
@@ -228,8 +232,9 @@ def parse_table_file(path: str):
             i += 1
             continue
 
-        m = _MEASURE_RE.match(line)
+        m = _MEASURE_RE.match(line) or _CALC_ITEM_RE.match(line)
         if m:
+            kind = "measure" if _MEASURE_RE.match(line) else "calculation_item"
             name = _unquote(m.group(1))
             rest = m.group(2).strip()
             base = _indent(line)
@@ -277,6 +282,7 @@ def parse_table_file(path: str):
             measures.append({
                 "table": table,
                 "name": name,
+                "kind": kind,
                 "dax": "\n".join(body_lines).strip(),
                 "hidden": "isHidden" in props,
                 "displayFolder": props.get("displayFolder", ""),
@@ -302,6 +308,40 @@ def parse_table_file(path: str):
         i += 1
 
     return table, measures, columns
+
+
+def parse_functions_file(path: str):
+    """User-defined DAX functions (`definition/functions.tmdl`). They are real DAX
+    that a measure can call, so leaving the file unread routes the caller on a body
+    whose helper is invisible."""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8-sig") as fh:
+        lines = fh.read().splitlines()
+
+    out, i = [], 0
+    while i < len(lines):
+        m = _FUNCTION_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        name = _unquote(m.group(1))
+        rest, base = m.group(2).strip(), _indent(lines[i])
+        body = [rest] if rest and not rest.startswith("```") else []
+        i += 1
+        if rest.startswith("```"):
+            while i < len(lines) and "```" not in lines[i]:
+                body.append(lines[i])
+                i += 1
+            i += 1
+        else:
+            while i < len(lines) and (not lines[i].strip() or _indent(lines[i]) > base):
+                body.append(lines[i])
+                i += 1
+        out.append({"table": "(functions)", "name": name, "kind": "function",
+                    "dax": "\n".join(body).strip(), "hidden": False,
+                    "displayFolder": ""})
+    return out
 
 
 def parse_relationships(path: str):
@@ -362,6 +402,8 @@ def load_tmdl(model_dir: str):
         for c, t in cols.items():
             coltypes[(table, c)] = t
 
+    measures.extend(parse_functions_file(os.path.join(defn, "functions.tmdl")))
+
     flags, note = parse_relationships(os.path.join(defn, "relationships.tmdl"))
     return measures, coltypes, flags, note
 
@@ -415,6 +457,21 @@ def load_json(path: str):
 # Classification
 # --------------------------------------------------------------------------
 
+_ARITH_RE = re.compile(r"[-+*/]")
+
+
+def _blank_identifiers(dax: str) -> str:
+    """Comments, string literals, `[...]` and `'...'` blanked, offsets preserved."""
+    body = strip_noise(dax)
+    body = _BRACKET_RE.sub(lambda m: " " * len(m.group(0)), body)
+    return _QUOTED_TABLE_RE.sub(lambda m: " " * len(m.group(0)), body)
+
+
+def _has_arithmetic(dax: str) -> bool:
+    """An arithmetic operator in the live body, with identifiers blanked first."""
+    return bool(_ARITH_RE.search(_blank_identifiers(dax)))
+
+
 def returns_string(m, coltypes, by_name, seen=None) -> bool:
     """Type the return value rather than looking for a quote character."""
     seen = seen or set()
@@ -439,9 +496,15 @@ def returns_string(m, coltypes, by_name, seen=None) -> bool:
         if before.endswith(("=", "<>", ">", "<", "{", "IN", "in")):
             continue
         return True
-    # `&` concatenation. `&&` is DAX logical AND, not concatenation.
-    if "&" in body.replace("&&", "  "):
+    # `&` concatenation. `&&` is DAX logical AND, and a `&` inside `[...]` or
+    # `'...'` is part of an identifier, not an operator.
+    if "&" in _blank_identifiers(dax).replace("&&", "  "):
         return True
+    # Arithmetic coerces: `[A] - [B]` is a number whatever [A] and [B] are, and
+    # `SELECTEDVALUE(T[c]) + 0` is the DAX idiom for forcing one. Scanned after
+    # blanking `[...]` and `'...'`, because measure names contain `-`.
+    if _has_arithmetic(dax):
+        return False
     # SELECTEDVALUE / VALUES / MIN / MAX over a text column - but only over the
     # column they are actually called on. A body can name a text column for an
     # unrelated reason, which is how `MAX('Top N Selector'[Value])` read as text.
@@ -482,11 +545,13 @@ def local_routes(m, coltypes, flags):
         add("S2", "reaches a many-to-many relationship")
 
     # Step 2: needs a concept outside the model. Before the widen test.
+    # Only USERELATIONSHIP routes here. An inactive relationship is inert in DAX
+    # until a measure activates it, so merely touching that table is a model-level
+    # note - routing on it put 97 of one model's 298 recipe measures on S1 wrongly.
     if "USERELATIONSHIP" in fns:
         add("S1", "USERELATIONSHIP")
-    elif tables & flags["inactive"]:
-        add("S1", "reaches a table with an inactive relationship")
-    if "SELECTEDMEASURE" in fns or "SELECTEDMEASURENAME" in fns:
+    if (m.get("kind") == "calculation_item"
+            or "SELECTEDMEASURE" in fns or "SELECTEDMEASURENAME" in fns):
         add("S5", "calculation group")
     for fn, route in TIME_INTELLIGENCE.items():
         if fn in fns:
@@ -609,7 +674,7 @@ def classify(measures, coltypes, flags):
 # Report
 # --------------------------------------------------------------------------
 
-def report_text(results, note, model_name):
+def report_text(results, note, model_name, flags=None):
     rows = sorted(results.values(), key=lambda r: (r["m"]["table"], r["m"]["name"]))
     total = len(rows)
     skipped = [r for r in rows if r["routes"] == ["SKIP"]]
@@ -626,6 +691,15 @@ def report_text(results, note, model_name):
     out.append(f"- {len(direct)} translate directly")
     out.append(f"- {len(routed)} need a recipe")
     out.append("")
+    inactive = sorted((flags or {}).get("inactive", ()))
+    if inactive:
+        out.append(f"**Model-level:** {len(inactive)} table(s) carry an inactive "
+                   f"relationship ({', '.join(inactive[:6])}"
+                   f"{', ...' if len(inactive) > 6 else ''}). Each becomes a second "
+                   "named join path in Malloy (`cookbook-structure.md#s1`). Only the "
+                   "measures that call `USERELATIONSHIP` are routed there - an "
+                   "inactive relationship is inert until one activates it.")
+        out.append("")
 
     counts = Counter()
     for r in routed:
@@ -720,7 +794,7 @@ def main(argv=None):
         return 0
 
     print(report_json(results, note, name) if args.format == "json"
-          else report_text(results, note, name))
+          else report_text(results, note, name, flags))
     return 0
 
 

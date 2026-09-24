@@ -111,6 +111,26 @@ class LabelTyping(unittest.TestCase):
         m = measure("Title", "MIN ( T[a] ) & MIN ( T[b] )")
         self.assertTrue(cm.returns_string(m, {}, {}))
 
+    def test_arithmetic_on_two_label_measures_is_still_a_number(self):
+        # `[A] - [B]` is numeric whatever A and B are. Propagating label-ness
+        # through the subtraction filed three real measures as report-layer.
+        label = measure("Status", 'SELECTEDVALUE ( T[Status] )')
+        diff = measure("Delta", "[Status] - [Status]")
+        by_name = {m["name"]: m for m in (label, diff)}
+        coltypes = {("T", "Status"): "string"}
+        self.assertTrue(cm.returns_string(label, coltypes, by_name))
+        self.assertFalse(cm.returns_string(diff, coltypes, by_name))
+
+    def test_plus_zero_is_the_coerce_to_number_idiom(self):
+        m = measure("Flag", "SELECTEDVALUE ( T[IsOn] ) + 0")
+        self.assertFalse(cm.returns_string(m, {("T", "IsOn"): "string"}, {}))
+
+    def test_an_ampersand_inside_a_column_name_is_not_concatenation(self):
+        # `'Invoices'[Taxes & Commercial Fees]` read as string concatenation and
+        # skipped a plain SUMX revenue measure.
+        m = measure("Net", "SUMX ( 'Invoices', 'Invoices'[Taxes & Commercial Fees] )")
+        self.assertFalse(cm.returns_string(m, {}, {}))
+
     def test_a_label_propagates_to_its_callers(self):
         page = measure("Selected page", "SELECTEDVALUE('P'[Page])", table="P")
         button = measure("Button", "[Selected page]", table="P")
@@ -152,6 +172,22 @@ class Routing(unittest.TestCase):
         flags = dict(NO_FLAGS, bidirectional={"ExecutionMetrics"})
         routes, _ = cm.local_routes(m, {}, flags)
         self.assertIn("S3", routes)
+
+    def test_an_inactive_relationship_alone_does_not_route_a_measure(self):
+        # It is inert until USERELATIONSHIP activates it. Routing on proximity put
+        # 97 of one real model's 298 recipe measures on S1 that did not belong.
+        flags = dict(NO_FLAGS, inactive={"Sales"})
+        m = measure("Total", "SUM ( Sales[Amount] )", table="Sales")
+        results, _ = cm.classify([m], {}, flags)
+        self.assertEqual(results[("Sales", "Total")]["routes"], ["DIRECT"])
+
+    def test_userelationship_on_the_same_model_still_routes(self):
+        flags = dict(NO_FLAGS, inactive={"Sales"})
+        m = measure("By due date",
+                    "CALCULATE ( SUM ( Sales[Amount] ), USERELATIONSHIP ( Sales[DueKey], "
+                    "'Date'[Key] ) )", table="Sales")
+        results, _ = cm.classify([m], {}, flags)
+        self.assertIn("S1", results[("Sales", "By due date")]["routes"])
 
     def test_a_plain_aggregate_falls_through_to_direct(self):
         m = measure("Total", "SUM ( T[amount] )")
@@ -253,6 +289,35 @@ class TmdlParsing(unittest.TestCase):
         )
         self.assertEqual(columns, {"Order Status": "string", "Amount": "double"})
 
+    def test_a_calculation_item_is_parsed_like_a_measure(self):
+        # A calculation group lives in tables/*.tmdl but declares `calculationItem`,
+        # not `measure`. Matching only `measure` read a 7-group model as having none.
+        table, measures, _ = self.parse(
+            "table 'Z04CG1 - Time Intelligence'\n"
+            "\tisHidden\n"
+            "\n"
+            "\tcalculationGroup\n"
+            "\t\tprecedence: 4\n"
+            "\n"
+            "\t\tcalculationItem Daily =\n"
+            "\t\t\t\tSELECTEDMEASURE()\n"
+            "\n"
+            "\t\tcalculationItem MTD = ```\n"
+            "\t\t\t\tCALCULATE ( SELECTEDMEASURE (), DATESMTD ('Date'[Date]) )\n"
+            "\t\t\t\t```\n",
+            filename="Z04CG1 - Time Intelligence.tmdl",
+        )
+        self.assertEqual(table, "Z04CG1 - Time Intelligence")
+        self.assertEqual([m["name"] for m in measures], ["Daily", "MTD"])
+        self.assertTrue(all(m["kind"] == "calculation_item" for m in measures))
+
+    def test_a_calculation_item_routes_to_the_stopgap(self):
+        item = {"table": "CG", "name": "Constant", "kind": "calculation_item",
+                "dax": "1", "hidden": False, "displayFolder": ""}
+        results, _ = cm.classify([item], {}, NO_FLAGS)
+        # No SELECTEDMEASURE in the body, but it is still a calculation group.
+        self.assertIn("S5", results[("CG", "Constant")]["routes"])
+
     def test_the_declared_table_name_beats_the_filename(self):
         table, measures, _ = self.parse(
             "table 'Top N Selector'\n\tmeasure X = 1\n",
@@ -260,6 +325,43 @@ class TmdlParsing(unittest.TestCase):
         )
         self.assertEqual(table, "Top N Selector")
         self.assertEqual(measures[0]["table"], "Top N Selector")
+
+
+class FunctionsFile(unittest.TestCase):
+    """`definition/functions.tmdl` holds user-defined DAX. The loader never opened
+    it, so a measure calling a helper was routed on a body it could not see."""
+
+    def parse(self, body):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "functions.tmdl")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            return cm.parse_functions_file(path)
+
+    def test_a_fenced_function_body_is_read(self):
+        fns = self.parse(
+            "/// A doc comment\n"
+            "function 'DaxLib.Format.Percent' = ```\n"
+            "\t\t(value: DOUBLE) =>\n"
+            "\t\tCALCULATE ( SUM ( Sales[Amount] ), ALLSELECTED () )\n"
+            "\t\t```\n"
+        )
+        self.assertEqual([f["name"] for f in fns], ["DaxLib.Format.Percent"])
+        self.assertEqual(fns[0]["kind"], "function")
+        self.assertIn("ALLSELECTED", cm.function_names(fns[0]["dax"]))
+
+    def test_an_unfenced_function_body_is_read(self):
+        fns = self.parse(
+            "function Helper =\n"
+            "\t\t(x: INT64) =>\n"
+            "\t\tLASTNONBLANK ( 'Date'[Date], 1 )\n"
+        )
+        self.assertEqual(len(fns), 1)
+        self.assertIn("LASTNONBLANK", cm.function_names(fns[0]["dax"]))
+
+    def test_a_missing_functions_file_is_not_an_error(self):
+        self.assertEqual(cm.parse_functions_file("/nonexistent/functions.tmdl"), [])
 
 
 class Relationships(unittest.TestCase):
