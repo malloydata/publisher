@@ -3,7 +3,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Coverage Review (Step 7)
+# Power BI Coverage Review (Step 7)
 
 > Compare the Malloy model against the Power BI model it came from. Report what was modeled, renamed, deferred, and skipped, each with a reason. Coverage without parity numbers is not a review.
 
@@ -54,6 +54,12 @@ A mismatch is a finding, not a failure to hide. Report it with both numbers and 
 ## 5. Security Coverage
 
 From `rls-roles.md`: every role, whether it translated, and which sources ended up gated. Any role that did not translate is listed explicitly.
+
+Three things this section must state rather than imply, because each is a protection that can go missing while the report still reads "translated":
+
+- **Whether the enforcement posture changed.** Power BI RLS is enforced by the service against an authenticated principal; givens are caller-asserted. If the gates are not behind a trusted tier that sets givens from verified context, say so per role.
+- **Every source a query can enter through**, not just the one the DAX named. A gate on a source reached only through a join never fires.
+- **Object-level security** (`metadataPermission` / `columnPermission`), separately from row filters. It is the one real object permission in the source model and it is easy to read past.
 
 ## 6. Known Gaps
 

@@ -39,7 +39,7 @@ Three shapes arrive, and they are not equally trustworthy. Establish which one y
 | **PBIP project** (`*.SemanticModel/definition/`) | A `.pbip` save format that contains the TMDL folder above | Read the TMDL directly, same as above. |
 | **`.pbix`** | A zip whose model is a compressed binary part | Requires third-party extraction. **See the parity section below before you trust a number out of it.** |
 
-**Always ask for TMDL or PBIP before accepting a `.pbix`.** Power BI Desktop can save to PBIP directly, and the "Save as" that produces it costs the user one dialog. It removes the entire extraction risk class from the migration. A `.pbix` is what you fall back to when the user cannot re-save.
+**Always ask for TMDL or PBIP before accepting a `.pbix`.** It removes the entire extraction risk class from the migration. Power BI Desktop saves to PBIP directly, but it is still a **preview** feature that has to be enabled under `Options > Preview features` first, and it is unavailable in Desktop for Report Server, so ask with those instructions rather than just naming the format (`reference/discover.md` has the wording). A `.pbix` is what you fall back to when the user cannot re-save.
 
 The `.pbix` also carries the **data**, where TMDL carries only the **model**. If the goal is a working model over a warehouse the user still has, TMDL is sufficient. If the goal includes lifting the imported data out, see `reference/discover.md`.
 

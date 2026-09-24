@@ -24,9 +24,13 @@ Confirm with the user: "I found a Power BI model. Use it as prior art?"
 
 A `.pbix` stores the model as a compressed binary part. Reading it means a reverse-engineered third-party library, and those libraries have open issues where a column decodes to **plausible but wrong values** instead of failing.
 
-Ask first: "Can you open this in Power BI Desktop and use `File > Save as` to save a `.pbip` project? It writes the model as text, which I can read exactly, with no extraction step that can corrupt a value."
+Ask first, and include the preview step, because `.pbip` does not appear in Save-as until it is enabled:
 
-That request costs the user one dialog and removes an entire class of silent error. Only fall back to extracting the `.pbix` when they cannot, and when you do, say plainly in your notes that every number from it is unverified until checked against Power BI itself.
+> "Can you re-save this as a Power BI project (`.pbip`)? It writes the model as text, which I can read exactly, with no extraction step that can corrupt a value. If you don't see the option in `File > Save as`, turn it on first: `File > Options and settings > Options > Preview features > Power BI Project (.pbip) save option`, then restart Desktop."
+
+Power BI Desktop projects are still a **preview** feature, and they are not supported in Desktop for Report Server. If the user is on Report Server, or their tenant has preview features locked down, the `.pbix` path is the only one and there is no point pressing.
+
+Only fall back to extracting the `.pbix` when they cannot re-save, and when you do, say plainly in your notes that every number from it is unverified until checked against Power BI itself.
 
 ## 2. Read the Model Root
 
@@ -34,9 +38,24 @@ From `definition/model.tmdl` (or the BIM equivalent):
 
 - **Culture / locale**: affects date and decimal parsing on anything lifted out
 - **`defaultPowerBIDataSourceVersion`**, compatibility level: note it, it bounds which features can appear
-- Whether a table is marked as the **date table**: time intelligence measures depend on it
+
+The **marked date table** is a table property rather than a model one: look for `dataCategory: Time` under `tables/`. Time intelligence measures depend on it existing.
+
+**Inventory calculation groups here, under `tables/` with a `calculationGroup` block.** One of them rewrites every measure it applies to at query time, so a model that has them is a different scoping conversation than one that does not. They are untranslatable (see `translate-measures.md`), and finding that out after translating measures individually wastes the effort.
 
 From `definition/relationships.tmdl`, capture every relationship. This is the whole join graph in one file and it is the highest-value thing in the export. For each: from column, to column, cardinality both sides, `crossFilteringBehavior`, and `isActive`.
+
+**Absent properties are defaults, not missing data.** TMDL writes only non-defaults, so a typical relationship is three lines and nothing more:
+
+```
+relationship 7f3a1c2e-9b44-4e18-a6d2-51c0f8e3b7a9
+    fromColumn: FactSales.CustomerKey
+    toColumn: DimCustomer.CustomerKey
+```
+
+Read that as **many-to-one, single-direction, active**. Only the interesting ones carry `crossFilteringBehavior`, `isActive: false`, or explicit cardinality, which makes them easy to spot. The relationship *name* is a GUID and means nothing.
+
+The same shorthand applies to booleans across TMDL: `isHidden` on its own line implies `true`. A search for `isHidden: true` silently misses every object written that way.
 
 ## 3. Classify Storage Mode Before Promising Anything
 
@@ -46,7 +65,7 @@ Read the `partition` block of each table. The `mode:` decides what you actually 
 |------|--------------------------|----------------------|
 | `import` | Yes, a compressed copy | Everything, if you extract it |
 | `directQuery` | No | Nothing locally; you need the warehouse |
-| `dual` | Sometimes | Treat as DirectQuery for planning |
+| `dual` | Yes, cached | Data is present, but treat as DirectQuery for planning |
 | Live connection to a remote model | No | Nothing; the model lives in the service |
 
 **Say this out loud to the user early.** A DirectQuery or live-connection model translates fine, but there is no data in the file, so no number can be checked until a connection to the same warehouse exists. Discovering that after translating forty measures is a bad afternoon.
@@ -69,6 +88,19 @@ partition Sales = m
 ```
 
 That is `conn.table('dbo.FactSales')`.
+
+**Real models parameterize the server and database, so expect the literals to be somewhere else:**
+
+```
+partition Sales = m
+    mode: import
+    source =
+            let
+                Source = Sql.Database(Server, Database),
+                ...
+```
+
+`Server` and `Database` here are shared M expressions declared in `definition/expressions.tmdl`, not values. Read that file before concluding a partition does not name its source. Two other root files are worth knowing: `definition/cultures/` (locale, which affects date and decimal parsing on anything lifted out) and `definition/roles/` plus `definition/perspectives/`, both covered in `rls-roles.md`.
 
 **Do not translate the M transformation steps.** On an import model the stored data is Power Query's *output*, so a snapshot runs no M at all. M matters only when the user needs the refresh reproduced, which is a separate decision. Flag any partition whose M does substantial reshaping (merges, appends, unpivots, custom columns) as work that has to land somewhere, and say where you think it belongs: upstream in the warehouse, or in the Malloy source.
 

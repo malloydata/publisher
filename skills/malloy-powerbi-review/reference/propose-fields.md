@@ -59,7 +59,7 @@ Three cases need a decision rather than a translation:
 Power BI does not require a declared primary key. The one side of a relationship implies a key column, which is usually the real one. Propose `primary_key:` from the relationship graph, and verify against the data where a connection exists:
 
 ```
-run: source -> { aggregate: rows is count(), keys is count(distinct key_col) }
+run: source -> { aggregate: rows is count(), keys is count(key_col) }
 ```
 
 If those differ, the relationship was working on a non-unique column, which in Power BI silently fans out. Flag it: the Power BI numbers may already be wrong, which is a finding worth delivering carefully.
