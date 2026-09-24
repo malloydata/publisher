@@ -487,7 +487,11 @@ def parse_functions_file(path: str):
                 i += 1
             i += 1
         else:
-            while i < len(lines) and (not lines[i].strip() or _indent(lines[i]) > base):
+            # `> base + 1`, as every other body reader uses: at `> base` the
+            # function's own `lineageTag` and `annotation` lines are swallowed
+            # into the DAX, which happened to 58 of the corpus's 86 UDFs.
+            while i < len(lines) and (not lines[i].strip()
+                                      or _indent(lines[i]) > base + 1):
                 body.append(lines[i])
                 i += 1
         out.append({"table": "(functions)", "name": name, "kind": "function",
@@ -712,6 +716,12 @@ def _top_level(body: str, pattern):
     return out
 
 
+# A user-defined function is written `(params) => body`. The `=>` leaves a
+# depth-0 `=` in the body, which reads as a comparison and so made every
+# arrow-form UDF numeric - `SKIP` was unreachable for all 30 of them.
+_ARROW_HEADER_RE = re.compile(r"^\s*\((?:[^()]|\([^()]*\))*\)\s*=>\s*")
+
+
 def return_expr(dax: str) -> str:
     """The expression a `VAR … RETURN …` body actually returns, with every VAR it
     reaches substituted in.
@@ -721,7 +731,7 @@ def return_expr(dax: str) -> str:
     mistake produced three classes of false report-layer finding at once. A VAR
     the RETURN never reaches has no bearing on the type and is dropped here.
     """
-    body = strip_comments(dax)
+    body = _ARROW_HEADER_RE.sub("", strip_comments(dax), count=1)
     keywords = _top_level(body, _KEYWORD_RE)
     returns = [k for k in keywords if k.group(1).upper() == "RETURN"]
     if not returns:
@@ -771,6 +781,16 @@ def return_expr(dax: str) -> str:
 # name as a value filed ordinary numeric measures as report-layer.
 # Sorted, because this runs on the path that produces a published number and a
 # set's iteration order is not stable across runs.
+# Functions whose result is a table. Nothing inside one types the return.
+TABLE_FUNCS = {
+    "FILTER", "VALUES", "DISTINCT", "ALL", "ALLEXCEPT", "ALLNOBLANKROW",
+    "ALLSELECTED", "CALCULATETABLE", "SUMMARIZE", "SUMMARIZECOLUMNS",
+    "ADDCOLUMNS", "SELECTCOLUMNS", "GENERATE", "GENERATEALL", "GENERATESERIES",
+    "ROW", "DATATABLE", "TOPN", "UNION", "INTERSECT", "EXCEPT", "CROSSJOIN",
+    "NATURALINNERJOIN", "NATURALLEFTOUTERJOIN", "GROUPBY", "TREATAS",
+    "CALENDAR", "CALENDARAUTO", "TABLEOF",
+}
+
 NAME_ARG_FUNCS = sorted({
     "ADDCOLUMNS", "SELECTCOLUMNS", "SUMMARIZE", "SUMMARIZECOLUMNS", "ROW",
     "GROUPBY", "DATATABLE", "NATURALINNERJOIN", "NATURALLEFTOUTERJOIN",
@@ -992,6 +1012,11 @@ def returns_string(m, coltypes, by_name, seen=None, resolve=None) -> bool:
     seen.add(key)
 
     dax = return_expr(m["dax"])
+    # A table is not a label whatever is written inside it. Five of the corpus's
+    # user-defined functions build sample data and were filed as report-layer
+    # off a `FORMAT` in a row constructor - a column expression, not the return.
+    if _outermost_call(dax) in TABLE_FUNCS:
+        return False
     values = _value_exprs(dax)
     # Every position the value can come out of is a number, so nothing further
     # down can make this a label. This ends the question before the heuristics
@@ -1000,8 +1025,25 @@ def returns_string(m, coltypes, by_name, seen=None, resolve=None) -> bool:
     if values and all(_is_numeric(v) for v in values):
         return False
     fns = set(function_names(dax))
-    if fns & STRING_FUNCS:
+    # At the value position, not anywhere in the body: a `FORMAT` inside a row
+    # constructor or a condition types the column it builds, not the return.
+    # Five table-valued functions were filed as labels off exactly that.
+    if any(_outermost_call(v) in STRING_FUNCS for v in values):
         return True
+    if not values and fns & STRING_FUNCS:
+        return True
+
+    # A user-defined function in a value position is a label reference like any
+    # other: `__Fn_PnL_Variance_Highlights([F vs PY])` returns that function's
+    # hex color. Step 1's "a reference to a measure that is itself a label"
+    # covers `[Name]` only, so 11 conditional-format measures in one model read
+    # as numeric over a function whose every branch is `"#D2222D"`.
+    udfs = {d["name"].upper(): d for d in by_name.values()
+            if d.get("kind") == "function"}
+    for v in values:
+        d = udfs.get(_outermost_call(v))
+        if d and returns_string(d, coltypes, by_name, seen, resolve):
+            return True
 
     # `IN ({"a", "b"})` is a comparison against a literal set, so blank the whole
     # set: only its first member is preceded by a `{`. `"Name", <expr>` pairs go
@@ -1094,8 +1136,14 @@ def local_routes(m, coltypes, flags, resolve=None):
     # relationship's filter direction cannot reach it unless the body performs a
     # context transition. Applying these flags blind put S3 on 20 calculated
     # columns that never enter filter context, and inflated the demand.
+    # A bare `[Col]` is TMDL's normal spelling for a column of the definition's
+    # own table, and reading one as a measure reference defeated the guard above
+    # on 10 definitions - `YEAR([Data])` in a date table cannot see a filter
+    # direction whatever the relationship says.
+    refs = measure_refs(dax, resolve) - {c for (t, c) in coltypes
+                                         if t == m["table"]}
     in_filter_context = (kind not in ("calculated_column", "calculated_table")
-                         or "CALCULATE" in fns or measure_refs(dax, resolve))
+                         or "CALCULATE" in fns or refs)
     if "CROSSFILTER" in fns:
         add("S3", "CROSSFILTER sets filter direction inside the measure")
     if in_filter_context and tables & flags["bidirectional"]:
@@ -1154,8 +1202,15 @@ def local_routes(m, coltypes, flags, resolve=None):
 
     body = strip_noise(dax)
     body_nb = _BRACKET_RE.sub(lambda mm: " " * len(mm.group(0)), body)
-    all_table = re.search(r"\bALL\s*\(\s*'?[A-Za-z_]", body_nb) is not None
-    all_column = re.search(r"\bALL\s*\(\s*[^)]*\[", body) is not None
+    # `FILTER(ALL(T[c]), pred)` re-filters the column rather than removing it
+    # from the grouping, so it is FC1's expanded spelling and not FC5's
+    # `exclude()`. Matching the inner ALL pointed 125 measures at a recipe whose
+    # Malloy is the wrong shape and still compiles.
+    outer = re.sub(r"\bFILTER\s*\(\s*ALL", lambda mm: " " * len(mm.group(0)),
+                   body, flags=re.I)
+    outer_nb = _BRACKET_RE.sub(lambda mm: " " * len(mm.group(0)), outer)
+    all_table = re.search(r"\bALL\s*\(\s*'?[A-Za-z_]", outer_nb) is not None
+    all_column = re.search(r"\bALL\s*\(\s*[^)]*\[", outer) is not None
     if "REMOVEFILTERS" in fns or all_column:
         add("FC5", "ALL/REMOVEFILTERS on a column")
     elif all_table:
@@ -1177,7 +1232,7 @@ def local_routes(m, coltypes, flags, resolve=None):
     # RANKX works, and step 2 says ranking is not a filter-context problem.
     iterators = fns & ITERATOR_FUNCS
     if iterators and not (iterators == {"RANKX"} and set(routes) & {"FC6", "FC7"}):
-        if measure_refs(dax, resolve):
+        if refs:
             add("FC1", "measure reference inside an iterator")
 
     return routes, reasons
@@ -1207,7 +1262,12 @@ def classify(measures, coltypes, flags):
     def resolve(table, name):
         return (table, name) in homes and (table, name) not in coltypes
 
-    # Step 0: dependency graph.
+    # Step 0: dependency graph. A user-defined function is called as `Name(args)`
+    # and so matches none of the `[Name]` reference syntax - 26 measures read
+    # DIRECT over a UDF whose body is `REMOVEFILTERS(...)` or `ALL(TABLEOF(...))`
+    # until its call is an edge too.
+    udfs = {d["name"].upper(): (d["table"], d["name"])
+            for d in measures if d.get("kind") == "function"}
     deps = {}
     for m in measures:
         key = (m["table"], m["name"])
@@ -1216,11 +1276,16 @@ def classify(measures, coltypes, flags):
             for r in measure_refs(m["dax"], resolve)
             if r in by_name and (by_name[r]["table"], by_name[r]["name"]) != key
         }
+        if m.get("kind") != "function":
+            deps[key] |= {udfs[fn] for fn in function_names(m["dax"])
+                          if fn in udfs and udfs[fn] != key}
 
     results = {}
     for m in measures:
         key = (m["table"], m["name"])
         # Step 1: returns a string -> skip. Only that, and only for a measure.
+        # A string-typed what-if selector loses its S4 here; that is deliberate
+        # and `reference/limitations.md` says why the DAX cannot decide it.
         if (m.get("kind", "measure") in LABEL_TESTED_KINDS
                 and returns_string(m, coltypes, by_name, resolve=resolve)):
             results[key] = {

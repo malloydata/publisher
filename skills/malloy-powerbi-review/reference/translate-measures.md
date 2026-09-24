@@ -77,7 +77,7 @@ is not theoretical:
 | model | measures | bidirectional relationships | measures affected |
 |---|---:|---:|---:|
 | `PBIASEngine` | 126 | 0 | 0 |
-| `FabricASEngineAnalytics` | 117 | 2, both onto the fact table | **108** |
+| `FabricASEngineAnalytics` | 117 | 2, both onto the fact table | **111** |
 
 Same publisher, same domain. TMDL writes only non-default properties, so an absent
 `crossFilteringBehavior` means single-direction - read absent as the default, not as
@@ -200,10 +200,10 @@ TMDL models, every one under a permissive license, listed with its commit in
 |---|---:|
 | models routed | 50 |
 | measures | 1,881 |
-| report-layer (return a label) | 196 |
-| translate directly | 651 |
-| need a recipe | 1,034 |
-| of those, can return a different number silently | 905 |
+| report-layer (return a label) | 217 |
+| translate directly | 606 |
+| need a recipe | 1,058 |
+| of those, can return a different number silently | 937 |
 | of those, land on a stopgap recipe | 0 |
 | **untranslatable** | **0** |
 
@@ -213,24 +213,28 @@ functions, 17 calculation items, 16 RLS role predicates - plus 126 auto date
 tables, which are skipped (`S7`).
 
 Recipe demand across the measures, which is what says where to reach first:
-`FC1` 761, `S3` 251, `FC5` 216, `S4` 162, `T2` 73, `T3` 64, `FC2` 55, `FC7` 27,
-`FC3` 26, `T1` 23, `S1` 12, `FC4` 5, `FC6` 4.
+`FC1` 791, `S3` 251, `S4` 155, `FC5` 147, `T2` 73, `T3` 64, `FC2` 44, `FC7` 28,
+`FC3` 26, `T1` 23, `S1` 12, `FC6` 5, `FC4` 5.
 
 Five things only a wider corpus shows:
 
-- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is third at 216**, though it
-  appears 5 times in `PBIASEngine`. A single-model sample under-ranks it badly.
+- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is fourth at 147**, though it
+  appears 5 times in `PBIASEngine`. A single-model sample under-ranks it badly. It
+  was briefly published as third at 216, because `FILTER(ALL(T[c]), pred)` matched
+  the same `ALL(` - and that shape *re-filters* the column rather than removing it
+  from the grouping, so it is `FC1`'s expanded spelling. The Malloy `FC5` points at
+  compiles and answers a different question.
 - **Three recipes fire zero times in any measure and are not rare at all** - they
   live somewhere else in the file. `T6` fires 11 times across 9 models, every one
   a **calculated-table partition**, which is where `CALENDAR()` actually is. `S5`
   fires 17 times, all **calculation items**; `RLS` 16 times, all
   **`roles/*.tmdl`**, and not one `USERPRINCIPALNAME` in the corpus is in a table
   file. A pass that reads only `measure` declarations reports all three as absent.
-- **`S4` is fourth at 162, and it was nearly missed the same way.** Detecting a
+- **`S4` is third at 155, and it was nearly missed the same way.** Detecting a
   what-if parameter by `GENERATESERIES()` finds only the tables that are
-  *generated*, which are 11 calculated tables and 5 user-defined functions and no
+  *generated*, which are 10 calculated tables and 12 user-defined functions and no
   measure at all. What a measure actually does is read an **unjoined** table with
-  `SELECTEDVALUE`/`MIN`/`MAX`, and that is the test: 162 measures across 14
+  `SELECTEDVALUE`/`MIN`/`MAX`, and that is the test: 155 measures across 14
   models, in one of which it drives 81 of 108.
 - **`S2`, `S6` and `T5` fire zero times, and that one is measured.** Not one
   many-to-many relationship in 50 `relationships.tmdl` files, and no `PATH` or

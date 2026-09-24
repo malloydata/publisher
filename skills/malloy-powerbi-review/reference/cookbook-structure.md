@@ -140,10 +140,10 @@ table. Of the two Microsoft-published models sampled:
 | model | measures | bidirectional relationships | measures affected |
 |---|---:|---:|---:|
 | `PBIASEngine` | 126 | 0 | 0 |
-| `FabricASEngineAnalytics` | 117 | 2, both onto `ExecutionMetrics` | **108** |
+| `FabricASEngineAnalytics` | 117 | 2, both onto `ExecutionMetrics` | **111** |
 
-Same publisher, same domain, and one of them has 92% of its measures reached by a
-model-level switch that no measure's DAX mentions. Most of those 108 land on the
+Same publisher, same domain, and one of them has 95% of its measures reached by a
+model-level switch that no measure's DAX mentions. Most of those 111 land on the
 benign side above - a query rooted on the fact source already behaves like the
 bidirectional reading. The ones to check are the queries rooted on the *dimension*,
 which have no fact join to carry the filter. Either way, reading

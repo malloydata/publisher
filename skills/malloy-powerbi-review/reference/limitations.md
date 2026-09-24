@@ -66,6 +66,17 @@ Microsoft's own TMDL writer, which is why they are accepted rather than fixed:
 
 ## What it does not route
 
+**A string-typed what-if selector.** `SELECTEDVALUE('Aircraft Type Parameter'[Aircraft Type],
+"A330")` reads a table with no relationships, which is `S4`'s test exactly - and it returns a
+string, which is step 1's test exactly. Step 1 runs first, so it routes `SKIP`. That looks
+like a bug until you try to fix it: `Selected page = SELECTEDVALUE('Current page'[Current page])`
+is the same shape to the character, and it is the canonical report-layer measure. So is
+`"Top " & SELECTEDVALUE('Top N Selector'[SelectorSort]) & " reports"`. **Whether a disconnected
+string table is a given or a page-title selector is decided in `report.json`**, which this script
+does not read, and a rule that routed the first correctly moved ten of `PBIASEngine`'s captions
+out of the report layer. 35 measures in the 50-model corpus are in this bucket; most are genuinely
+titles. Check a `SKIP` that reads a disconnected table by hand before trusting it.
+
 **A count on the *one* side of a relationship.** `DISTINCTCOUNT(dim_customer[customer_id])`
 routes `DIRECT`, and `DIRECT` means only that no Power BI-specific recipe applies -
 never that the translation is guaranteed equivalent. In a single-direction model the

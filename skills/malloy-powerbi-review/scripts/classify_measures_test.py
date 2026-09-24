@@ -982,6 +982,161 @@ class SwitchMatchLiterals(unittest.TestCase):
         self.assertTrue(cm.returns_string(m, {}, {}))
 
 
+class UserDefinedFunctionEdges(unittest.TestCase):
+    """A UDF is called as `Name(args)` and so matches none of the `[Name]`
+    reference syntax. Until the call is an edge, 26 measures read DIRECT over a
+    function whose body is `REMOVEFILTERS(...)` or `ALL(TABLEOF(...))`."""
+
+    def model(self, *defs):
+        results, _ = cm.classify(list(defs), {}, NO_FLAGS)
+        return results
+
+    def test_a_udf_call_carries_the_functions_recipes_to_its_caller(self):
+        udf = measure("ShareOfTotal", "(g: ANYREF) => DIVIDE ( [Sales], "
+                                      "CALCULATE ( [Sales], ALL ( Product ) ) )",
+                      table="(functions)", kind="function")
+        caller = measure("Sales Share %", "ShareOfTotal ( Product[Category] )")
+        res = self.model(udf, caller)
+        self.assertIn("FC2", res[("T", "Sales Share %")]["routes"])
+
+    def test_a_udf_that_returns_a_label_makes_its_caller_a_label(self):
+        udf = measure("PerformanceBand",
+                      'VAR hi = "High"\nVAR lo = "Low"\n'
+                      "RETURN IF ( [Sales] > 100, hi, lo )",
+                      table="(functions)", kind="function")
+        caller = measure("Profit Band", "PerformanceBand ( [Sales] )")
+        res = self.model(udf, caller)
+        self.assertEqual(res[("T", "Profit Band")]["routes"], ["SKIP"])
+
+    def test_a_udf_used_in_a_comparison_does_not_make_its_caller_a_label(self):
+        udf = measure("Band", 'IF ( [Sales] > 100, "High", "Low" )',
+                      table="(functions)", kind="function")
+        caller = measure("Is High", 'IF ( Band ( [Sales] ) = "High", 1, 0 )')
+        res = self.model(udf, caller)
+        self.assertNotEqual(res[("T", "Is High")]["routes"], ["SKIP"])
+
+    def test_a_function_does_not_depend_on_itself(self):
+        udf = measure("Recurse", "Recurse ( 1 )", table="(functions)", kind="function")
+        self.assertEqual(self.model(udf)[("(functions)", "Recurse")]["routes"],
+                         ["DIRECT"])
+
+
+class ValuePositionStringFuncs(unittest.TestCase):
+    """`FORMAT` inside a row constructor types the column it builds, not the
+    return. Testing the whole body filed five table-valued functions as labels."""
+
+    def test_a_format_inside_a_row_constructor_is_not_the_return_type(self):
+        m = measure("Stores",
+                    'SELECTCOLUMNS ( T, "Code", "ST" & FORMAT ( T[k], "000" ) )')
+        self.assertFalse(cm.returns_string(m, {}, {}))
+
+    def test_a_format_that_is_the_return_still_types_it(self):
+        m = measure("Caption", 'FORMAT ( [Sales], "0.0%" )')
+        self.assertTrue(cm.returns_string(m, {}, {}))
+
+
+class OwnColumnReferences(unittest.TestCase):
+    """A bare `[Col]` is TMDL's normal spelling for a column of the definition's
+    own table. Reading one as a measure reference defeated the refresh-time guard
+    on 10 definitions - `YEAR([Data])` cannot see a relationship's direction."""
+
+    def flags(self):
+        return dict(NO_FLAGS, bidirectional={"dcalendario"}, tables={"dcalendario"})
+
+    def test_a_bare_reference_to_an_own_column_is_not_a_measure_reference(self):
+        col = measure("Ano", "YEAR ( [Data] )", table="dcalendario",
+                      kind="calculated_column")
+        routes = cm.local_routes(col, {("dcalendario", "Data"): "dateTime"},
+                                 self.flags())[0]
+        self.assertNotIn("S3", routes)
+
+    def test_a_bare_reference_to_something_else_still_counts(self):
+        col = measure("Ano", "YEAR ( [Data] )", table="dcalendario",
+                      kind="calculated_column")
+        self.assertIn("S3", cm.local_routes(col, {}, self.flags())[0])
+
+
+class FilterAllIsNotExclude(unittest.TestCase):
+    """`FILTER(ALL(T[c]), pred)` re-filters the column rather than removing it
+    from the grouping, so it is FC1's expanded spelling and not FC5's
+    `exclude()`. Matching the inner ALL pointed 125 measures at a recipe whose
+    Malloy is the wrong shape and still compiles."""
+
+    def routes(self, dax):
+        return cm.local_routes(measure("M", dax), {}, NO_FLAGS)[0]
+
+    def test_filter_all_on_a_column_is_fc1_and_not_fc5(self):
+        routes = self.routes(
+            "CALCULATE ( [Sales], FILTER ( ALL ( T[Region] ), T[Region] <> \"X\" ) )")
+        self.assertIn("FC1", routes)
+        self.assertNotIn("FC5", routes)
+
+    def test_a_bare_all_on_a_column_is_still_fc5(self):
+        self.assertIn("FC5", self.routes("CALCULATE ( [Sales], ALL ( T[Region] ) )"))
+
+    def test_removefilters_is_still_fc5(self):
+        self.assertIn("FC5", self.routes(
+            "CALCULATE ( [Sales], REMOVEFILTERS ( T[Region] ) )"))
+
+    def test_filter_all_on_a_whole_table_is_not_fc2_either(self):
+        routes = self.routes("CALCULATE ( [Sales], FILTER ( ALL ( T ), T[a] > 1 ) )")
+        self.assertIn("FC1", routes)
+        self.assertNotIn("FC2", routes)
+
+
+class FunctionBodies(unittest.TestCase):
+    """`parse_functions_file` read bodies at `> base` where every other reader
+    uses `> base + 1`, so 58 of the corpus's 86 UDFs swallowed their own
+    `lineageTag` and `annotation` lines into the DAX."""
+
+    def parse(self, body):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "functions.tmdl")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            return cm.parse_functions_file(path)
+
+    def test_the_property_lines_after_a_body_are_not_part_of_it(self):
+        defs = self.parse(
+            "function ShareOfTotal =\n"
+            "\t\t(g: ANYREF) => DIVIDE ( [Sales], CALCULATE ( [Sales], ALL ( g ) ) )\n"
+            "\tlineageTag: abc-123\n"
+            "\tannotation PBI_Id = 9\n"
+        )
+        self.assertEqual(len(defs), 1)
+        self.assertNotIn("lineageTag", defs[0]["dax"])
+        self.assertNotIn("annotation", defs[0]["dax"])
+        self.assertIn("ALL", defs[0]["dax"])
+
+    def test_an_arrow_form_body_is_typed_on_what_follows_the_arrow(self):
+        # The `=>` leaves a depth-0 `=`, which reads as a comparison and made
+        # every arrow-form UDF numeric - SKIP was unreachable for all 30.
+        m = measure("SVG", '(w: STRING) => "<svg width=" & w & " />"',
+                    table="(functions)", kind="function")
+        self.assertTrue(cm.returns_string(m, {}, {}))
+
+    def test_an_arrow_form_numeric_body_is_still_numeric(self):
+        m = measure("Half", "(x: INT64) => DIVIDE ( x, 2 )",
+                    table="(functions)", kind="function")
+        self.assertFalse(cm.returns_string(m, {}, {}))
+
+
+class DisconnectedStringSelectorStaysSkip(unittest.TestCase):
+    """`SELECTEDVALUE('Param'[Choice])` over an unjoined table is S4's test and
+    step 1's test at once, and step 1 wins. That is deliberate: the identical
+    shape is the canonical report-layer measure, and routing it to S4 moved ten
+    of PBIASEngine's captions out of the report layer. `limitations.md` §"What it
+    does not route" is the record; this test is the guard on it."""
+
+    def test_the_canonical_report_layer_measure_stays_report_layer(self):
+        flags = dict(NO_FLAGS, related={"Sales"}, disconnected={"Current page"},
+                     tables={"Sales", "Current page"})
+        m = measure("Selected page", "SELECTEDVALUE ( 'Current page'[Current page] )")
+        results, _ = cm.classify([m], {("Current page", "Current page"): "string"},
+                                 flags)
+        self.assertEqual(results[("T", "Selected page")]["routes"], ["SKIP"])
+
+
 class NoVacuousZeros(unittest.TestCase):
     """`T4` was declared, counted as a stopgap, and reported as firing zero times
     across 1,622 measures - a zero guaranteed by construction, because no code
