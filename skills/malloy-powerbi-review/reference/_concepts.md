@@ -114,7 +114,7 @@ In a report grouped by category with a filter `Year = 2023`:
 | Year filter | **also removed** | **still applied** |
 | Result | total across all years | total for 2023 |
 
-They agree when the grouping is the only filter in play, which is exactly the unfiltered grand total people check first. Treat every `ALL`/`REMOVEFILTERS` translation as Class 2 and validate it with a filter active on a column other than the grouping.
+They agree when the grouping is the only filter in play, which is exactly the unfiltered grand total people check first. Treat every `ALL`/`REMOVEFILTERS` translation as divergent and validate it with a filter active on a column other than the grouping.
 
 **Second constraint:** a dimension named in `all()` or `exclude()` must be an output field of the query, so `exclude(expr, c)` written as a source-level `measure:` only works in queries that `group_by: c`.
 

@@ -57,8 +57,18 @@ RECIPES = {
     "S5": "cookbook-structure.md#s5 - calculation groups (STOPGAP)",
     "S6": "cookbook-structure.md#s6 - parent-child PATH hierarchy (STOPGAP)",
     "S7": "cookbook-structure.md#s7 - auto date tables",
+    "RLS": "rls-roles.md - row-level security predicate",
     "DIRECT": "translate directly - no recipe needed",
     "SKIP": "report-layer: returns a label, not a number",
+}
+
+# Recipes no code path can emit. Their zero is guaranteed by construction, so
+# reporting it as a measured result is vacuous - `T4` was published that way.
+# Every other key in RECIPES must be reachable, which the test suite asserts
+# against this module's own source.
+TEACHING_ONLY = {
+    "T4",  # densification is a report behavior; no DAX function requests it
+    "FC8",  # "there is no escape" - a teaching point, not a measure property
 }
 
 # Functions whose result is text regardless of their arguments.
@@ -87,13 +97,31 @@ TIME_INTELLIGENCE = {
     "CALENDAR": "T6", "CALENDARAUTO": "T6",
 }
 
+# Functions whose result is a number whatever their arguments are. Used to type
+# the RETURN expression: they end the question, so a VAR holding a string for a
+# comparison upstream of them cannot make the measure a label.
+NUMERIC_FUNCS = {
+    "DIVIDE", "SUM", "SUMX", "AVERAGE", "AVERAGEX", "AVERAGEA", "COUNT",
+    "COUNTA", "COUNTX", "COUNTAX", "COUNTROWS", "COUNTBLANK", "DISTINCTCOUNT",
+    "DISTINCTCOUNTNOBLANK", "MEDIAN", "MEDIANX", "PERCENTILE.INC",
+    "PERCENTILE.EXC", "PERCENTILEX.INC", "PERCENTILEX.EXC", "PRODUCT",
+    "PRODUCTX", "RANKX", "INT", "ROUND", "ROUNDUP", "ROUNDDOWN", "CEILING",
+    "FLOOR", "MROUND", "TRUNC", "ABS", "SIGN", "SQRT", "POWER", "EXP", "LN",
+    "LOG", "LOG10", "QUOTIENT", "MOD", "DATEDIFF", "YEAR", "MONTH", "DAY",
+    "HOUR", "MINUTE", "SECOND", "WEEKNUM", "WEEKDAY", "QUARTER", "YEARFRAC",
+}
+
+# DAX's caller-identity functions. Their presence is dynamic row-level security
+# wherever it appears - in a role predicate, or in a measure that reads it.
+IDENTITY_FUNCS = {"USERPRINCIPALNAME", "USERNAME", "USEROBJECTID", "CUSTOMDATA"}
+
 # A route is "divergent" when the measure can return a different number in
 # Malloy than in Power BI without erroring. These propagate up the graph.
-DIVERGENT_ROUTES = {"FC1", "FC2", "FC4", "FC5", "FC8", "S3"}
+DIVERGENT_ROUTES = {"FC1", "FC2", "FC4", "FC5", "S3"}
 
 # A route is "stopgap" when the cookbook recipe is a workaround rather than an
 # equivalent. These propagate too: a wrapper around a stopgap is a stopgap.
-STOPGAP_ROUTES = {"T4", "T5", "S5", "S6"}
+STOPGAP_ROUTES = {"T5", "S5", "S6"}
 
 
 # --------------------------------------------------------------------------
@@ -103,11 +131,7 @@ STOPGAP_ROUTES = {"T4", "T5", "S5", "S6"}
 # --------------------------------------------------------------------------
 
 _STRING_RE = re.compile(r'"(?:[^"]|"")*"')
-# DAX has two line-comment forms. Missing `--` reads a commented-out sentence
-# as live code, which is how a plain numeric measure read as a label.
-_LINE_COMMENT_RE = re.compile(r"(?://|--)[^\n]*")
 _BRACE_SET_RE = re.compile(r"\{[^{}]*\}")
-_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 # `]]` is DAX's escape for a literal `]`; stopping at the first one truncates
 # the identifier and the measure silently drops out of the dependency graph.
 _BRACKET_RE = re.compile(r"\[(?:[^\]]|\]\])*\]")
@@ -117,9 +141,42 @@ _QUOTED_TABLE_RE = re.compile(r"'(?:[^']|'')*'")
 def strip_comments(dax: str) -> str:
     """Blank out comments only, preserving offsets. Real models carry whole
     superseded measures commented out, so anything read from the raw text
-    rather than from here is reading code that does not run."""
-    out = _BLOCK_COMMENT_RE.sub(lambda m: " " * len(m.group(0)), dax)
-    return _LINE_COMMENT_RE.sub(lambda m: " " * len(m.group(0)), out)
+    rather than from here is reading code that does not run.
+
+    Scanned rather than matched, because a comment marker inside a string
+    literal is not a comment: the `//` in an SVG measure's
+    `"<svg xmlns='http://www.w3.org/2000/svg'>"` blanked the rest of the line and
+    left the literal unterminated, which desynchronised every `"` after it and
+    typed five sparklines as numbers.
+    """
+    out = list(dax)
+    i, n = 0, len(dax)
+    while i < n:
+        if dax[i] == '"':
+            j = i + 1
+            while j < n:
+                if dax[j] == '"':
+                    if dax[j + 1: j + 2] == '"':  # `""` is an escaped quote
+                        j += 2
+                        continue
+                    break
+                j += 1
+            i = j + 1
+            continue
+        if dax.startswith("/*", i):
+            end = dax.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+        elif dax.startswith("//", i) or dax.startswith("--", i):
+            end = dax.find("\n", i)
+            end = n if end < 0 else end
+        else:
+            i += 1
+            continue
+        for k in range(i, end):
+            if out[k] != "\n":
+                out[k] = " "
+        i = end
+    return "".join(out)
 
 
 def strip_noise(dax: str) -> str:
@@ -160,13 +217,20 @@ def function_names(dax: str) -> Counter:
 
 
 def measure_refs(dax: str) -> set:
-    """`[Name]` NOT qualified by a table, i.e. a measure and not a column."""
+    """`[Name]` NOT qualified by a table, i.e. a measure and not a column.
+
+    A table qualifier is *adjacent* - DAX writes `Table[Col]` with no space. So
+    whitespace before the `[` means a measure reference, and skipping to the last
+    non-space character instead read `AND [Gross]` as a column of a table named
+    `AND` and dropped the edge from the dependency graph, which is where
+    divergence propagates. The cost of the rule is the reverse shape, `T [Col]`,
+    which no TMDL writer produces (`reference/limitations.md`).
+    """
     body = strip_noise(dax)
     refs = set()
     for m in re.finditer(r"\[((?:[^\]]|\]\])+)\]", body):
-        before = body[: m.start()].rstrip()
-        # `Table[Col]` / `'Table'[Col]` are columns; a bare `[Name]` is a measure.
-        if before and (before[-1].isalnum() or before[-1] in "_'"):
+        prev = body[m.start() - 1] if m.start() else ""
+        if prev and (prev.isalnum() or prev in "_'"):
             continue
         refs.add(m.group(1).replace("]]", "]").strip())
     return refs
@@ -213,16 +277,105 @@ _MEASURE_RE = re.compile(r"^\s*measure\s+('(?:[^']|'')*'|[^=]+?)\s*=\s*(.*)$")
 _CALC_ITEM_RE = re.compile(r"^\s*calculationItem\s+('(?:[^']|'')*'|[^=]+?)\s*=\s*(.*)$")
 _FUNCTION_RE = re.compile(r"^\s*function\s+('(?:[^']|'')*'|[^=]+?)\s*=\s*(.*)$")
 _COLUMN_RE = re.compile(r"^\s*column\s+('(?:[^']|'')*'|\S+)\s*$")
+# `column X = <DAX>` is a calculated column. The `\s*$` anchor above matches none
+# of them, which lost the DAX *and* the block's `dataType`, so every calculated
+# column typed as the empty string and label detection under-fired on exactly the
+# columns it exists to catch.
+_CALC_COLUMN_RE = re.compile(r"^\s*column\s+('(?:[^']|'')*'|[^=]+?)\s*=\s*(.*)$")
 _TABLE_RE = re.compile(r"^\s*table\s+('(?:[^']|'')*'|\S+)\s*$")
+# `partition T = calculated` carries DAX in its `source`; `= m` carries Power
+# Query, and `= entity` a Direct Lake binding. Only the first is ours.
+_PARTITION_RE = re.compile(r"^\s*partition\s+(.+?)\s*=\s*(\S+)\s*$")
+_SOURCE_RE = re.compile(r"^\s*source\s*=\s*(.*)$")
+# A dynamic format string is DAX attached to a measure, at the same indent as its
+# properties. Left to the property loop it became a property *key*, and its body
+# lines became more keys.
+_FORMAT_STRING_RE = re.compile(r"^\s*formatStringDefinition\s*=\s*(.*)$")
+
+
+def _read_body(lines, i, base, rest):
+    """Consume one `<decl> = <DAX>` block. Returns (body_lines, next_i).
+
+    Two spellings: fenced in ``` ```, or unfenced, in which case the body is
+    every line indented deeper than the declaration's own properties, which sit
+    at base + 1. Blank lines stay in the body - real exports put one
+    mid-expression, and ending there drops the rest of the measure silently.
+    """
+    body = []
+    if rest.startswith("```"):
+        i += 1
+        while i < len(lines) and "```" not in lines[i]:
+            body.append(lines[i])
+            i += 1
+        return body, i + 1
+    if rest:
+        body.append(rest)
+    i += 1
+    while i < len(lines):
+        nxt = lines[i]
+        if not nxt.strip():
+            body.append(nxt)
+            i += 1
+            continue
+        if _indent(nxt) > base + 1:
+            body.append(nxt)
+            i += 1
+            continue
+        break
+    return body, i
+
+
+def _read_props(lines, i, base):
+    """Consume a declaration's property lines. Returns (props, extra, next_i),
+    where `extra` holds any nested `key = <DAX>` block found among them."""
+    props, extra = {}, {}
+    while i < len(lines):
+        nxt = lines[i]
+        if not nxt.strip():
+            i += 1
+            continue
+        if _indent(nxt) <= base:
+            break
+        m = _FORMAT_STRING_RE.match(nxt)
+        if m:
+            body, i = _read_body(lines, i, _indent(nxt), m.group(1).strip())
+            extra["formatStringDefinition"] = "\n".join(body).strip()
+            continue
+        stripped = nxt.strip()
+        if ":" in stripped:
+            k, _, v = stripped.partition(":")
+            props[k.strip()] = v.strip()
+        else:
+            props[stripped] = "true"
+        i += 1
+    return props, extra, i
+
+
+def _record(table, name, kind, body_lines, props, extra=None):
+    rec = {
+        "table": table,
+        "name": name,
+        "kind": kind,
+        "dax": "\n".join(body_lines).strip(),
+        "hidden": "isHidden" in props,
+        "displayFolder": props.get("displayFolder", ""),
+    }
+    if extra:
+        rec.update(extra)
+    return rec
 
 
 def parse_table_file(path: str):
-    """Return (table_name, [measure dicts], {column: dataType})."""
+    """Return (table_name, [definition dicts], {column: dataType}).
+
+    The definitions are measures, calculation items, calculated columns and
+    calculated-table partitions - every shape in a table file that carries DAX.
+    """
     with open(path, encoding="utf-8-sig") as fh:
         lines = fh.read().splitlines()
 
     table = os.path.splitext(os.path.basename(path))[0]
-    measures, columns = [], {}
+    defs, columns = [], {}
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -235,58 +388,44 @@ def parse_table_file(path: str):
         m = _MEASURE_RE.match(line) or _CALC_ITEM_RE.match(line)
         if m:
             kind = "measure" if _MEASURE_RE.match(line) else "calculation_item"
-            name = _unquote(m.group(1))
-            rest = m.group(2).strip()
             base = _indent(line)
-            body_lines = []
-            if rest.startswith("```"):
-                # fenced: body runs to the closing fence
-                i += 1
-                while i < len(lines) and "```" not in lines[i]:
-                    body_lines.append(lines[i])
-                    i += 1
-                i += 1
-            else:
-                if rest:
-                    body_lines.append(rest)
-                i += 1
-                # unfenced: body is every line indented deeper than the
-                # measure's own properties, which sit at base + 1
-                while i < len(lines):
-                    nxt = lines[i]
-                    if not nxt.strip():
-                        body_lines.append(nxt)
-                        i += 1
-                        continue
-                    if _indent(nxt) > base + 1:
-                        body_lines.append(nxt)
-                        i += 1
-                        continue
-                    break
-            # properties
-            props = {}
+            body, i = _read_body(lines, i, base, m.group(2).strip())
+            props, extra, i = _read_props(lines, i, base)
+            defs.append(_record(table, _unquote(m.group(1)), kind, body, props, extra))
+            continue
+
+        m = _CALC_COLUMN_RE.match(line)
+        if m:
+            cname = _unquote(m.group(1))
+            base = _indent(line)
+            body, i = _read_body(lines, i, base, m.group(2).strip())
+            props, extra, i = _read_props(lines, i, base)
+            columns[cname] = props.get("dataType", "")
+            defs.append(_record(table, cname, "calculated_column", body, props, extra))
+            continue
+
+        m = _PARTITION_RE.match(line)
+        if m:
+            base = _indent(line)
+            pname, ptype = _unquote(m.group(1)), m.group(2)
+            i += 1
+            body = []
             while i < len(lines):
                 nxt = lines[i]
-                if not nxt.strip():
-                    i += 1
-                    continue
-                if _indent(nxt) <= base:
+                if nxt.strip() and _indent(nxt) <= base:
                     break
-                stripped = nxt.strip()
-                if ":" in stripped:
-                    k, _, v = stripped.partition(":")
-                    props[k.strip()] = v.strip()
-                else:
-                    props[stripped] = "true"
+                s = _SOURCE_RE.match(nxt)
+                if s:
+                    # Consume every partition's source, not just a calculated
+                    # one: an M body left unread is scanned line by line below,
+                    # where a line can look like a declaration it is not.
+                    src, i = _read_body(lines, i, _indent(nxt), s.group(1).strip())
+                    if ptype == "calculated":
+                        body = src
+                    continue
                 i += 1
-            measures.append({
-                "table": table,
-                "name": name,
-                "kind": kind,
-                "dax": "\n".join(body_lines).strip(),
-                "hidden": "isHidden" in props,
-                "displayFolder": props.get("displayFolder", ""),
-            })
+            if ptype == "calculated":
+                defs.append(_record(table, pname, "calculated_table", body, {}))
             continue
 
         m = _COLUMN_RE.match(line)
@@ -307,7 +446,7 @@ def parse_table_file(path: str):
 
         i += 1
 
-    return table, measures, columns
+    return table, defs, columns
 
 
 def parse_functions_file(path: str):
@@ -341,6 +480,50 @@ def parse_functions_file(path: str):
         out.append({"table": "(functions)", "name": name, "kind": "function",
                     "dax": "\n".join(body).strip(), "hidden": False,
                     "displayFolder": ""})
+    return out
+
+
+_ROLE_RE = re.compile(r"^\s*role\s+('(?:[^']|'')*'|\S+)\s*$")
+# Only `tablePermission` carries a DAX row filter. `columnPermission` and
+# `metadataPermission` are object-level security, which is a different control
+# with a different answer (reference/rls-roles.md).
+_TABLE_PERMISSION_RE = re.compile(r"^\s*tablePermission\s+(.+?)\s*=\s*(.*)$")
+
+
+def parse_roles_dir(defn: str):
+    """Row-level security predicates from `definition/roles/*.tmdl`.
+
+    These are the highest-stakes DAX in the model and the loader never opened the
+    directory, so a model whose only `USERPRINCIPALNAME` lives in a role reported
+    no RLS at all. See reference/rls-roles.md for what a translated role costs.
+    """
+    roles_dir = os.path.join(defn, "roles")
+    if not os.path.isdir(roles_dir):
+        return []
+
+    out = []
+    for fn in sorted(os.listdir(roles_dir)):
+        if not fn.endswith(".tmdl"):
+            continue
+        with open(os.path.join(roles_dir, fn), encoding="utf-8-sig") as fh:
+            lines = fh.read().splitlines()
+        role = os.path.splitext(fn)[0]
+        i = 0
+        while i < len(lines):
+            m = _ROLE_RE.match(lines[i])
+            if m and _indent(lines[i]) == 0:
+                role = _unquote(m.group(1))
+                i += 1
+                continue
+            m = _TABLE_PERMISSION_RE.match(lines[i])
+            if m:
+                base = _indent(lines[i])
+                body, i = _read_body(lines, i, base, m.group(2).strip())
+                props, _extra, i = _read_props(lines, i, base)
+                out.append(_record(f"(role) {role}", _unquote(m.group(1)),
+                                   "role_permission", body, props))
+                continue
+            i += 1
     return out
 
 
@@ -385,6 +568,12 @@ def parse_relationships(path: str):
     return flags, ""
 
 
+# Power BI generates one hidden `LocalDateTable_<guid>` per date column plus a
+# `DateTableTemplate_<guid>`. They are an artifact of a setting, not a modeling
+# decision, and they dominate a file listing: 760 of one corpus's table files.
+_AUTO_DATE_RE = re.compile(r"^(LocalDateTable|DateTableTemplate)_", re.I)
+
+
 def load_tmdl(model_dir: str):
     defn = model_dir
     if os.path.isdir(os.path.join(model_dir, "definition")):
@@ -393,18 +582,23 @@ def load_tmdl(model_dir: str):
     if not os.path.isdir(tables_dir):
         sys.exit(f"no definition/tables/ under {model_dir}")
 
-    measures, coltypes = [], {}
+    measures, coltypes, auto_date = [], {}, []
     for fn in sorted(os.listdir(tables_dir)):
         if not fn.endswith(".tmdl"):
             continue
         table, ms, cols = parse_table_file(os.path.join(tables_dir, fn))
+        if _AUTO_DATE_RE.match(os.path.splitext(fn)[0]) or _AUTO_DATE_RE.match(table):
+            auto_date.append(table)
+            continue
         measures.extend(ms)
         for c, t in cols.items():
             coltypes[(table, c)] = t
 
     measures.extend(parse_functions_file(os.path.join(defn, "functions.tmdl")))
+    measures.extend(parse_roles_dir(defn))
 
     flags, note = parse_relationships(os.path.join(defn, "relationships.tmdl"))
+    flags["auto_date"] = auto_date
     return measures, coltypes, flags, note
 
 
@@ -427,6 +621,7 @@ def load_json(path: str):
         norm.append({
             "table": m.get("table", ""),
             "name": m.get("name") or m.get("measure") or "",
+            "kind": m.get("kind", "measure"),
             "dax": m.get("dax") or m.get("expression") or "",
             "hidden": bool(m.get("hidden") or m.get("isHidden")),
             "displayFolder": m.get("displayFolder", ""),
@@ -472,6 +667,237 @@ def _has_arithmetic(dax: str) -> bool:
     return bool(_ARITH_RE.search(_blank_identifiers(dax)))
 
 
+_VAR_DECL_RE = re.compile(r"\bVAR\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", re.I)
+_KEYWORD_RE = re.compile(r"\b(VAR|RETURN)\b", re.I)
+
+
+def _top_level(body: str, pattern):
+    """Matches of `pattern` at paren depth zero, which is where DAX's `VAR` and
+    `RETURN` keywords live. A `RETURN` nested inside a function argument belongs
+    to an inner `VAR` block, not to the measure.
+
+    Matched against the identifier-blanked text: a measure named
+    `[Var EBITDA vs Budget %]` otherwise reads as a `VAR` declaration and
+    truncates the binding before it. Offsets are preserved, so the spans still
+    index the live text.
+    """
+    blanked = _blank_identifiers(body)
+    depth, out, pos = 0, [], 0
+    for m in pattern.finditer(blanked):
+        depth += blanked.count("(", pos, m.start()) - blanked.count(")", pos, m.start())
+        pos = m.start()
+        if depth == 0:
+            out.append(m)
+    return out
+
+
+def return_expr(dax: str) -> str:
+    """The expression a `VAR … RETURN …` body actually returns, with every VAR it
+    reaches substituted in.
+
+    DAX types on the RETURN. Typing the whole body instead meant a `VAR` holding
+    `"IsFiltered"` for a *comparison* marked the measure a label, and that one
+    mistake produced three classes of false report-layer finding at once. A VAR
+    the RETURN never reaches has no bearing on the type and is dropped here.
+    """
+    body = strip_comments(dax)
+    keywords = _top_level(body, _KEYWORD_RE)
+    returns = [k for k in keywords if k.group(1).upper() == "RETURN"]
+    if not returns:
+        return body
+
+    # Each VAR's expression runs to the next top-level VAR or RETURN.
+    bounds = [k.start() for k in keywords] + [len(body)]
+    bindings = {}
+    for idx, k in enumerate(keywords):
+        if k.group(1).upper() != "VAR":
+            continue
+        d = _VAR_DECL_RE.match(body, k.start())
+        if d:
+            bindings[d.group(1)] = body[d.end(): bounds[idx + 1]].strip()
+
+    expr = body[returns[-1].end():].strip()
+    # Substitute to a fixed point, so a VAR the RETURN *does* reach still counts.
+    # Each name is consumed once: that, plus the depth cap, is what stops a
+    # self-referencing pair - illegal DAX, but a parse of a partial file makes one.
+    for _ in range(8):
+        if not bindings or len(expr) > 200_000:
+            break
+        # Match against the blanked text so a VAR name that also spells a column
+        # or occurs inside a string literal is not substituted; offsets are
+        # preserved, so the spans apply to the live text unchanged.
+        blanked = _blank_identifiers(expr)
+        spans = [(mm.start(), mm.end(), mm.group(1))
+                 for mm in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", blanked)
+                 if mm.group(1) in bindings]
+        if not spans:
+            break
+        out, last = [], 0
+        for start, end, name in spans:
+            out.append(expr[last:start])
+            out.append(f"({bindings[name]})")
+            last = end
+        out.append(expr[last:])
+        expr = "".join(out)
+        bindings = {k: v for k, v in bindings.items()
+                    if k not in {name for _, _, name in spans}}
+    return expr
+
+
+# DAX table functions whose arguments include `"Name", <expr>` pairs. A bare
+# string literal argument to one of these declares a column name; none of them
+# takes a literal string as a *value*. Reading `ADDCOLUMNS(t, "@Rank", …)`'s
+# name as a value filed ordinary numeric measures as report-layer.
+# Sorted, because this runs on the path that produces a published number and a
+# set's iteration order is not stable across runs.
+NAME_ARG_FUNCS = sorted({
+    "ADDCOLUMNS", "SELECTCOLUMNS", "SUMMARIZE", "SUMMARIZECOLUMNS", "ROW",
+    "GROUPBY", "DATATABLE", "NATURALINNERJOIN", "NATURALLEFTOUTERJOIN",
+})
+
+# Iterators: the first argument is the table to walk, the second the expression
+# whose value comes out. Only the second is a value position.
+ITERATOR_FUNCS = {
+    "SUMX", "AVERAGEX", "MINX", "MAXX", "COUNTX", "COUNTAX", "PRODUCTX",
+    "MEDIANX", "RANKX", "CONCATENATEX", "GENERATEALL", "STDEVX.P", "STDEVX.S",
+}
+
+_NUMERIC_LITERAL_RE = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)$")
+
+
+def _unwrap_parens(expr: str) -> str:
+    """Strip redundant outer parentheses. `return_expr` wraps every substituted
+    VAR in a pair, and an expression read as `(IF(...))` rather than `IF(...)`
+    types as its own condition."""
+    expr = expr.strip()
+    while expr.startswith("(") and expr.endswith(")"):
+        inner = expr[1:-1]
+        blanked = _blank_identifiers(inner)
+        if blanked.count("(") != blanked.count(")"):
+            break
+        depth = 0
+        for ch in blanked:
+            depth += (ch == "(") - (ch == ")")
+            if depth < 0:
+                break
+        if depth != 0:
+            break
+        expr = inner.strip()
+    return expr
+
+
+def _split_args(arg_text: str):
+    """Split a call's argument text at depth-zero commas, with offsets."""
+    blanked = _blank_identifiers(arg_text)
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(blanked):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append((start, i))
+            start = i + 1
+    out.append((start, len(arg_text)))
+    return out
+
+
+def _blank_name_args(dax: str) -> str:
+    """Blank the `"Name"` half of every `"Name", <expr>` argument pair."""
+    out = dax
+    for fname in NAME_ARG_FUNCS:
+        for m in re.finditer(rf"\b{fname}\s*\(", _blank_identifiers(out), re.I):
+            depth, i = 1, m.end()
+            while i < len(out) and depth:
+                depth += (out[i] == "(") - (out[i] == ")")
+                i += 1
+            inner = out[m.end(): i - 1]
+            pieces = list(inner)
+            for s, e in _split_args(inner):
+                arg = inner[s:e].strip()
+                if _STRING_RE.fullmatch(arg):
+                    at = inner.index(arg, s)
+                    pieces[at: at + len(arg)] = " " * len(arg)
+            out = out[: m.end()] + "".join(pieces) + out[i - 1:]
+    return out
+
+
+def _value_exprs(expr: str, depth=0):
+    """Every sub-expression whose value can come out of `expr`.
+
+    A passthrough over a text column is a label only where its value is what the
+    measure returns. `AVERAGEX(VALUES(T[GradeCode]), DIVIDE(…))` names a text
+    column to supply the *table* it walks, and reading that as the return type
+    filed a participation rate as a button caption.
+    """
+    expr = _unwrap_parens(expr)
+    if depth > 6 or not expr:
+        return [expr]
+    name = ""
+    m = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(", expr)
+    if m:
+        name = m.group(1).upper()
+    args = call_args(expr, name) if name else []
+    if not args:
+        return [expr]
+    parts = [args[0][s:e].strip() for s, e in _split_args(args[0])]
+
+    def down(sub):
+        return [x for p in sub for x in _value_exprs(p, depth + 1)]
+
+    if name == "IF" and len(parts) >= 2:
+        return down(parts[1:3])
+    if name == "IFERROR" and len(parts) >= 1:
+        return down(parts[:2])
+    if name == "SWITCH" and len(parts) >= 3:
+        # value, match1, result1, …, [else]
+        results = parts[2::2] + ([parts[-1]] if len(parts) % 2 == 0 else [])
+        return down(results)
+    if name == "CALCULATE":
+        return down(parts[:1])
+    if name in ITERATOR_FUNCS and len(parts) >= 2:
+        return down(parts[1:2])
+    return [expr]
+
+
+def _is_numeric(expr: str) -> bool:
+    """Is this expression a number whatever its inputs are?"""
+    expr = _unwrap_parens(expr)
+    if _NUMERIC_LITERAL_RE.match(expr) or expr.upper().replace(" ", "") == "BLANK()":
+        return True
+    if _outermost_call(expr) in NUMERIC_FUNCS:
+        return True
+    # A comparison returns a boolean, which is a number - but only one at the top
+    # level. A comparison buried in an argument says nothing about the result:
+    # reading one made every SVG sparkline in a Microsoft model numeric.
+    blanked, depth = _blank_identifiers(expr), 0
+    for ch in blanked:
+        depth += (ch == "(") - (ch == ")")
+        if depth == 0 and ch in "<>=":
+            return True
+    return False
+
+
+def _outermost_call(expr: str) -> str:
+    """The function name the expression's value comes out of, unwrapping the
+    wrappers that pass their argument's type through."""
+    for _ in range(8):
+        expr = _unwrap_parens(expr)
+        m = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(", expr)
+        if not m:
+            return ""
+        name = m.group(1).upper()
+        # CALCULATE returns its first argument's type, so it answers nothing here.
+        if name != "CALCULATE":
+            return name
+        args = call_args(expr, "CALCULATE")
+        if not args:
+            return name
+        start, end = _split_args(args[0])[0]
+        expr = args[0][start:end]
+    return ""
+
+
 def returns_string(m, coltypes, by_name, seen=None) -> bool:
     """Type the return value rather than looking for a quote character."""
     seen = seen or set()
@@ -480,15 +906,23 @@ def returns_string(m, coltypes, by_name, seen=None) -> bool:
         return False
     seen.add(key)
 
-    dax = m["dax"]
+    dax = return_expr(m["dax"])
+    values = _value_exprs(dax)
+    # Every position the value can come out of is a number, so nothing further
+    # down can make this a label. This ends the question before the heuristics
+    # get to guess from a VAR the RETURN merely compared against, or from a text
+    # column an iterator named only to say which table to walk.
+    if values and all(_is_numeric(v) for v in values):
+        return False
     fns = set(function_names(dax))
     if fns & STRING_FUNCS:
         return True
 
     # `IN ({"a", "b"})` is a comparison against a literal set, so blank the whole
-    # set: only its first member is preceded by a `{`.
-    live = _BRACE_SET_RE.sub(lambda mm: " " * len(mm.group(0)), strip_comments(dax))
-    body = strip_noise(dax)
+    # set: only its first member is preceded by a `{`. `"Name", <expr>` pairs go
+    # too - they declare a column, they are not values.
+    live = _BRACE_SET_RE.sub(lambda mm: " " * len(mm.group(0)),
+                             _blank_name_args(strip_comments(dax)))
     # A string literal in a value position. `= "x"` / `<> "x"` / `IN {"x"}` are
     # comparisons and do not make the measure a label; anything else does.
     for lit in _STRING_RE.finditer(live):
@@ -506,10 +940,15 @@ def returns_string(m, coltypes, by_name, seen=None) -> bool:
     if _has_arithmetic(dax):
         return False
     # SELECTEDVALUE / VALUES / MIN / MAX over a text column - but only over the
-    # column they are actually called on. A body can name a text column for an
-    # unrelated reason, which is how `MAX('Top N Selector'[Value])` read as text.
-    for fn in fns & PASSTHROUGH_FUNCS:
-        for arg in call_args(dax, fn):
+    # column they are actually called on, and only where the call sits in a value
+    # position. A body can name a text column for an unrelated reason, which is
+    # how `MAX('Top N Selector'[Value])` read as text and how a `VALUES(...)`
+    # supplying an iterator's table did.
+    for value in values:
+        fn = _outermost_call(value)
+        if fn not in PASSTHROUGH_FUNCS:
+            continue
+        for arg in call_args(value, fn):
             for tbl, col in column_refs(arg):
                 if coltypes.get((tbl, col), "").lower() == "string":
                     return True
@@ -553,6 +992,10 @@ def local_routes(m, coltypes, flags):
     if (m.get("kind") == "calculation_item"
             or "SELECTEDMEASURE" in fns or "SELECTEDMEASURENAME" in fns):
         add("S5", "calculation group")
+    if m.get("kind") == "role_permission":
+        add("RLS", "row-level security predicate")
+    if fns & IDENTITY_FUNCS:
+        add("RLS", "reads the caller's identity")
     for fn, route in TIME_INTELLIGENCE.items():
         if fn in fns:
             add(route, fn)
@@ -605,8 +1048,18 @@ def local_routes(m, coltypes, flags):
     return routes, reasons
 
 
+# The report-layer test asks whether a *measure* returns a label. The other DAX
+# shapes are not scalar measures and answering it for them is a category error: a
+# role predicate returns a boolean, a calculated table returns a table, and a
+# string calculated column is an ordinary dimension rather than canvas furniture.
+LABEL_TESTED_KINDS = {"measure", "calculation_item", "function"}
+
+
 def classify(measures, coltypes, flags):
     by_name = {}
+    for m in measures:
+        if m.get("kind", "measure") == "measure":
+            by_name.setdefault(m["name"], m)
     for m in measures:
         by_name.setdefault(m["name"], m)
 
@@ -623,8 +1076,9 @@ def classify(measures, coltypes, flags):
     results = {}
     for m in measures:
         key = (m["table"], m["name"])
-        # Step 1: returns a string -> skip. Only that.
-        if returns_string(m, coltypes, by_name):
+        # Step 1: returns a string -> skip. Only that, and only for a measure.
+        if (m.get("kind", "measure") in LABEL_TESTED_KINDS
+                and returns_string(m, coltypes, by_name)):
             results[key] = {
                 "m": m, "routes": ["SKIP"], "reasons": ["returns a label"],
                 "inherited": [],
@@ -674,23 +1128,59 @@ def classify(measures, coltypes, flags):
 # Report
 # --------------------------------------------------------------------------
 
+# What to call each `kind` in the report. Summing them under one "measures"
+# heading published 1,622 measures for a corpus that held 1,406 - a number a
+# reader has no way to take apart again.
+KIND_LABELS = [
+    ("measure", "measures"),
+    ("calculation_item", "calculation items"),
+    ("function", "user-defined functions"),
+    ("calculated_column", "calculated columns"),
+    ("calculated_table", "calculated tables"),
+    ("role_permission", "RLS role predicates"),
+]
+
+
 def report_text(results, note, model_name, flags=None):
     rows = sorted(results.values(), key=lambda r: (r["m"]["table"], r["m"]["name"]))
     total = len(rows)
     skipped = [r for r in rows if r["routes"] == ["SKIP"]]
     direct = [r for r in rows if r["routes"] == ["DIRECT"]]
     routed = [r for r in rows if r not in skipped and r not in direct]
+    kinds = Counter(r["m"].get("kind", "measure") for r in rows)
 
     out = []
-    out.append(f"# {model_name}: {total} measures")
+    out.append(f"# {model_name}: {kinds['measure']} measures")
     out.append("")
     if note:
         out.append(f"> Coverage caveat: {note}")
         out.append("")
-    out.append(f"- {len(skipped)} report-layer (return a label, not a number)")
-    out.append(f"- {len(direct)} translate directly")
-    out.append(f"- {len(routed)} need a recipe")
+    other = [f"{kinds[k]} {label}" for k, label in KIND_LABELS[1:] if kinds[k]]
+    if other:
+        out.append(f"Plus {', '.join(other)} - also DAX, and also routed, but not "
+                   f"measures. {total} definitions in all.")
+        out.append("")
+    out.append("| Kind | Total | Report-layer | Direct | Needs a recipe |")
+    out.append("|------|------:|-------------:|-------:|---------------:|")
+    for kind, label in KIND_LABELS:
+        if not kinds[kind]:
+            continue
+        sel = [r for r in rows if r["m"].get("kind", "measure") == kind]
+        out.append(f"| {label} | {len(sel)} "
+                   f"| {sum(1 for r in sel if r in skipped)} "
+                   f"| {sum(1 for r in sel if r in direct)} "
+                   f"| {sum(1 for r in sel if r in routed)} |")
     out.append("")
+    auto_date = sorted((flags or {}).get("auto_date", ()))
+    if auto_date:
+        route = "S7"
+        out.append(f"**Model-level: {route}.** {len(auto_date)} auto date table(s) "
+                   "(`LocalDateTable_*` / `DateTableTemplate_*`), generated by a "
+                   "setting rather than modeled. Skipped here and replaced by one "
+                   f"real date dimension ({RECIPES[route]}). It is a model-level "
+                   "route by nature: no measure carries it, so it never appears in "
+                   "the recipe counts below.")
+        out.append("")
     inactive = sorted((flags or {}).get("inactive", ()))
     if inactive:
         out.append(f"**Model-level:** {len(inactive)} table(s) carry an inactive "
@@ -710,20 +1200,21 @@ def report_text(results, note, model_name, flags=None):
     out.append(f"Of the {len(routed)}: {div} can return a different number silently, "
                f"{stop} land on a stopgap recipe.")
     out.append("")
-    out.append("## By recipe (a measure can need more than one)")
+    out.append("## By recipe (a definition can need more than one)")
     out.append("")
-    out.append("| Recipe | Measures | What it is |")
-    out.append("|--------|---------:|------------|")
+    out.append("| Recipe | Definitions | What it is |")
+    out.append("|--------|------------:|------------|")
     for route, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
         out.append(f"| {route} | {n} | {RECIPES.get(route, '?')} |")
     out.append("")
     out.append("## Routing")
     out.append("")
-    out.append("| Table | Measure | Recipe | Why |")
-    out.append("|-------|---------|--------|-----|")
+    out.append("| Table | Name | Kind | Recipe | Why |")
+    out.append("|-------|------|------|--------|-----|")
     for r in rows:
         why = "; ".join(r["reasons"])
         out.append(f"| {r['m']['table']} | {r['m']['name']} | "
+                   f"{r['m'].get('kind', 'measure')} | "
                    f"{' '.join(r['routes'])} | {why} |")
     out.append("")
     out.append("**This is a priority order, not a verdict.** The routing cannot prove a "
@@ -741,6 +1232,7 @@ def report_json(results, note, model_name):
             {
                 "table": r["m"]["table"],
                 "name": r["m"]["name"],
+                "kind": r["m"].get("kind", "measure"),
                 "routes": r["routes"],
                 "reasons": r["reasons"],
                 "inherited": r["inherited"],

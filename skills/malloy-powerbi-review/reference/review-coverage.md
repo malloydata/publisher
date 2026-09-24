@@ -18,15 +18,17 @@ Every auto date table is **skipped**, and one line stating how many is enough. E
 
 ## 2. Measure Coverage
 
-Group by the three classes from `translate-measures.md` and report counts first, then detail.
+Group by what the router in `translate-measures.md` emits and report counts first, then detail.
 
-| Class | Count | Modeled | Deferred | Dropped |
+| Routed | Count | Modeled | Deferred | Dropped |
 |---|---|---|---|---|
-| 1: Translatable | | | | |
-| 2: Silently divergent | | | | |
-| 3: Untranslatable | | | | |
+| SKIP (report-layer) | | | | |
+| DIRECT (translates directly) | | | | |
+| Recipe - divergent | | | | |
+| Recipe - stopgap | | | | |
+| Did not translate | | | | |
 
-Then a row per measure that is not a clean Class 1 translation. A Class 1 measure that matched on validation needs no individual line; the count carries it.
+Then a row per measure that is not a clean DIRECT translation. A DIRECT measure that matched on validation needs no individual line; the count carries it.
 
 ## 3. Relationship Coverage
 
@@ -44,8 +46,8 @@ Every inactive, bidirectional, and many-to-many relationship needs a line saying
 
 Requirements:
 
-- Cover **every Class 2 measure**, each at a filter context that exercises its divergence. A Class 2 measure validated only at the grand total is not validated.
-- Cover a **sample of Class 1 measures**, including at least one that sums other measures (the `BLANK()` path).
+- Cover **every divergent measure**, each at a filter context that exercises its divergence. A divergent measure validated only at the grand total is not validated.
+- Cover a **sample of DIRECT measures**, including at least one that sums other measures (the `BLANK()` path).
 - Include the measures the user named as the ones the business actually watches.
 - Where data was lifted from a `.pbix`, include row count and one column sum per table.
 

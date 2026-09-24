@@ -1,0 +1,22 @@
+malloy-powerbi-review
+
+Copyright (c) Credible Data Inc.
+Licensed under the MIT License.
+
+Third-party content
+--------------------
+
+`reference/cookbook-filter-context.md`, section "FC6 - Dynamic top-N driven by a
+slicer", quotes an abridged DAX excerpt of the `Rank_By_Duration` measure from the
+`Top N Selector` table, taken from `Top N Selector.tmdl` in Microsoft's published
+`PBIASEngine` sample model (repository `microsoft/Analysis-Services`).
+
+  File:        Top N Selector.tmdl
+  License:     MIT
+  Copyright:   Microsoft Corporation
+  Appears in:  reference/cookbook-filter-context.md, FC6
+
+This skill's coverage and routing counts (in `reference/translate-measures.md`) are
+also measured against a wider corpus of public third-party Power BI models, listed
+in `reference/corpus.md`. That is a measurement use, not a redistribution: none of
+those models' content is reproduced anywhere in this skill.

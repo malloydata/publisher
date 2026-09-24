@@ -162,16 +162,25 @@ reads "direct" as "checked".
 
 ## Counts, and what they cost to get wrong
 
+**Count measures as measures.** A model file also carries calculation items,
+user-defined functions, calculated columns, calculated tables and RLS role
+predicates. All of them are DAX and all of them route, but none of them is a
+measure, and summing them under one heading once published 1,622 measures for a
+corpus that held 1,406. Every table below is measures only unless it says
+otherwise.
+
 For calibration, `PBIASEngine` (126 measures), routed by
 `scripts/classify_measures.py`:
 
 | | measures |
 |---|---:|
-| report-layer (return a label) | 43 |
+| report-layer (return a label) | 42 |
 | translate directly | 32 |
-| need a recipe | 51 |
+| need a recipe | 52 |
 | of those, can return a different number silently | 47 |
 | of those, land on a stopgap recipe | 0 |
+
+It carries 15 calculated columns and 6 calculated tables besides.
 
 Function frequency in the same model, as occurrences / measures containing:
 `CALCULATE` 79/50, `ALLSELECTED` 33/25, `RANKX` 8/8, `ALLEXCEPT` 7/4,
@@ -180,41 +189,60 @@ function by measures containing it, behind `CALCULATE`, `IF` and `MAX` - common
 enough to budget for, and it needs no budget, because it maps exactly.
 
 **Name the model when you quote a number.** The same repository holds
-`FabricASEngineAnalytics` (117 measures), whose profile is completely different: 7
-report-layer, 2 direct, 108 gated on bidirectional cross-filtering.
+`FabricASEngineAnalytics` (117 measures), whose profile is completely different: 4
+report-layer, 2 direct, 111 gated on bidirectional cross-filtering.
 
-**Across a wider corpus the untranslatable count stays at zero.** Fourteen public
-TMDL models - Microsoft, Databricks, community template authors, and an independent
-SQL-monitoring tool of 747 measures:
+**Across a wider corpus the untranslatable count stays at zero.** Fifty public
+TMDL models, every one under a permissive license, listed with its commit in
+`corpus.md` so the number can be re-run:
 
 | | measures |
 |---|---:|
-| models routed | 14 |
-| measures | 1,622 |
-| report-layer (return a label) | 489 |
-| translate directly | 397 |
-| need a recipe | 736 |
-| of those, can return a different number silently | 700 |
-| of those, land on a stopgap recipe | 41 |
+| models routed | 50 |
+| measures | 1,881 |
+| report-layer (return a label) | 199 |
+| translate directly | 697 |
+| need a recipe | 985 |
+| of those, can return a different number silently | 975 |
+| of those, land on a stopgap recipe | 0 |
 | **untranslatable** | **0** |
 
-Recipe demand is the useful part, because it says which recipes to reach for first:
-`FC1` 465, `S3` 248, `FC5` 204, `FC3` 120, `T3` 78, `FC2` 61, `S5` 41, `T1` 38,
-`S1` 11, `FC6` 7, `FC4` 6, `T2` 5, `FC7` 1.
+Those 50 models carry a further **363 definitions that are DAX and are not
+measures** - 129 calculated columns, 115 calculated tables, 86 user-defined
+functions, 17 calculation items, 16 RLS role predicates - plus 126 auto date
+tables, which are skipped (`S7`).
 
-Three things only a wider corpus shows:
+Recipe demand across the measures, which is what says where to reach first:
+`FC1` 733, `S3` 224, `FC5` 212, `T2` 67, `T3` 64, `FC2` 52, `FC7` 27, `FC3` 26,
+`T1` 22, `S1` 12, `FC4` 5, `FC6` 4.
 
-- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is third at 204**, though it
+Four things only a wider corpus shows:
+
+- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is third at 212**, though it
   appears 5 times in `PBIASEngine`. A single-model sample under-ranks it badly.
-- **`T4`, `T5` and `S6` fire zero times in all 1,622 measures.** No
-  `CLOSINGBALANCEMONTH`, no `PATH`, no date spine anywhere. Those three stopgaps
-  cover shapes that are real but rare - do not lead a customer conversation with
-  them, and weigh that before citing them as upstream evidence.
-- **`S5` (calculation groups) fires 41 times, all in one model.** Like
-  bidirectional cross-filtering, it is concentrated rather than spread: a model
-  either builds on calculation groups or has none.
+- **Four recipes fire zero times in any measure and are not rare at all** - they
+  live somewhere else in the file. `T6` fires 11 times across 9 models, every one
+  a **calculated-table partition**, which is where `CALENDAR()` actually is. `S4`
+  fires 15 times, 10 in calculated tables and 5 in **user-defined functions** -
+  no measure in the corpus calls `GENERATESERIES()` directly. `S5` fires 17 times,
+  all **calculation items**; `RLS` 16 times, all **`roles/*.tmdl`**, and not one
+  `USERPRINCIPALNAME` in the corpus is in a table file. A pass that reads only
+  `measure` declarations reports all four as absent.
+- **`S2`, `S6` and `T5` fire zero times, and that one is measured.** Not one
+  many-to-many relationship in 50 `relationships.tmdl` files, and no `PATH` or
+  `CLOSINGBALANCE*` anywhere in 2.5M characters of live DAX. Those shapes are real
+  but rare - do not lead a customer conversation with them, and weigh it before
+  citing them as upstream evidence.
+- **`S5` is concentrated rather than spread.** Like bidirectional
+  cross-filtering, a model either builds on calculation groups or has none.
 
-**Two ways earlier revisions of this skill got its own numbers wrong**, both worth
+`T4` and `FC8` are **teaching recipes with no trigger**: no DAX function requests
+either, so the router cannot emit them and their zero says nothing. Do not report
+them among measured results - a previous revision of this file did, inside a
+"fires zero times" claim that was vacuous for exactly that one route.
+`reference/limitations.md` has the full inventory.
+
+**Three ways earlier revisions of this skill got its own numbers wrong**, all worth
 avoiding in yours:
 
 - A substring match on `CALCULATE` also matched the column name
@@ -223,6 +251,13 @@ avoiding in yours:
   correctly does *not* match `CALCULATETABLE(`.
 - A report-layer test that required a `"` in the body filed `Selected page` as
   translatable, though this file uses it as *the* report-layer example. See step 1.
+- A report-layer test that read a string anywhere in the body, rather than the
+  value the measure returns, filed numbers as labels. The tells are a column
+  *name* argument to `ADDCOLUMNS`/`SUMMARIZE`/`SELECTCOLUMNS`/`ROW`; a text column
+  named only to tell an iterator which table to walk; a `VAR` the `RETURN` never
+  reaches; and a `//` inside a string literal, which is not a comment - the one in
+  an SVG measure's `http://www.w3.org/2000/svg` left the literal unterminated and
+  typed five sparklines as numbers. **DAX types on the `RETURN`.**
 
 **The untranslatable count for `PBIASEngine` is approximately zero.** Twelve measures
 were once reported untranslatable; all twelve were `ALLSELECTED`-triggered, eight of

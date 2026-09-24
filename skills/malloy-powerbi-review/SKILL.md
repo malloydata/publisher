@@ -77,6 +77,8 @@ Each reference file is loaded by the workflow phase that needs it. You do not ne
 | `reference/rls-roles.md` | Step 8 (CURATE) | Map RLS roles and hidden objects to access modifiers and gate annotations |
 | `reference/review-coverage.md` | Step 7 (REVIEW) | Compare the Malloy model against the Power BI model: table, measure, and relationship coverage |
 | `reference/document.md` | Step 9 (DOCUMENT) | Extract TMDL descriptions as `#(doc)` tag seeds |
+| `reference/limitations.md` | any | What the script reads and what it does not, and which recipes have no trigger |
+| `reference/corpus.md` | any | The 50 public models the coverage numbers are measured against, with commits |
 
 **The three cookbook files are the deliverable of Step 5.** Each recipe carries the
 real DAX, the Malloy, whether the Malloy was **executed** or only `semantics-cited`,
@@ -91,13 +93,20 @@ recipe - do not hand the user a classification and call it a migration.
 
 `scripts/classify_measures.py` runs the routing at scale: dependency graph, return-type
 inference from the model's own column types, and the relationship flags that never
-appear in a measure's DAX. It reads four things under `definition/`: `tables/`,
-`relationships.tmdl`, the `calculationGroup` blocks inside a table file, and
-`functions.tmdl`. The last two are easy to miss and change the answer - a model whose
-time intelligence lives in calculation groups reports **none** if you only match
-`measure`. It also has a `--json` mode for the `.pbix` path, which has no TMDL.
-It runs where you have a shell (Claude Code, Cursor); the Credible app's agent has no
-shell tool and the MCP skills bundle ships markdown only, so the prose stands alone.
+appear in a measure's DAX. It also has a `--json` mode for the `.pbix` path, which has
+no TMDL. It runs where you have a shell (Claude Code, Cursor); the Credible app's agent
+has no shell tool and the MCP skills bundle ships markdown only, so the prose stands alone.
+
+**DAX is not only in `measure` declarations, and the rest is not a rounding error.**
+The script also reads calculation groups, `functions.tmdl`, calculated columns,
+calculated-table partitions and `roles/*.tmdl`. Across 50 public models, four recipes
+fire **zero** times in any measure body and are not rare at all: `CALENDAR()` is only
+ever in a calculated-table partition, `GENERATESERIES()` only in a calculated table or
+a user-defined function, the calculation items carry a model's time intelligence, and
+not one `USERPRINCIPALNAME` in the corpus is in a table file. Match only `measure` and
+the model reports no calculation groups, no date spine and no row-level security.
+`reference/limitations.md` is the full inventory of what is read and what is not, and
+it counts each kind separately - a user-defined function is DAX and is not a measure.
 
 ## What Power BI Provides
 
@@ -112,7 +121,7 @@ shell tool and the MCP skills bundle ships markdown only, so the prose stands al
 
 - **Auto date/time tables.** Power BI generates a hidden `LocalDateTable_<guid>` per date column plus a `DateTableTemplate_<guid>`. These are an artifact of a setting, not a modeling decision. Skip all of them and propose one real date dimension (`reference/cookbook-structure.md#s7`).
 - **Report layout** (`report.json`, `*.Report/`): visuals, pages, bookmarks, themes. Analysis is a separate workflow.
-- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors, SVG sparklines. They return text and belong to the canvas, not the model, and they are a third of the measures in a real file (43 of 126 in `PBIASEngine`). **Type the return value rather than looking for a quote character** - the canonical example, `Selected page = SELECTEDVALUE('Current page'[Current page])`, has no string literal at all. `reference/translate-measures.md` step 1 has the tells.
+- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors, SVG sparklines. They return text and belong to the canvas, not the model. How many there are varies more than any other figure here - a third of `PBIASEngine` (42 of 126), a tenth across 50 public models (199 of 1,881) - so count them for the model in front of you rather than assuming a share. **Type the return value rather than looking for a quote character** - the canonical example, `Selected page = SELECTEDVALUE('Current page'[Current page])`, has no string literal at all. `reference/translate-measures.md` step 1 has the tells.
 - **Implicit measures.** A numeric column aggregated in a visual with no defined measure. Note which columns are used this way, do not manufacture a measure per column.
 - **`summarizeBy` defaults**, except as a hint about which columns are facts and which are keys.
 - **Display folders**, `lineageTag`, `ordinal`, and other authoring metadata.
@@ -123,10 +132,12 @@ shell tool and the MCP skills bundle ships markdown only, so the prose stands al
 
 - **Any measure routed to a divergent recipe.** This is the flag that matters most and it must reach the user, never be resolved quietly. Say which filter context makes it diverge.
 - **Storage mode.** DirectQuery and live-connection models contain no data; the model still translates but nothing can be validated locally.
-- **Bidirectional cross-filtering** (`crossFilteringBehavior: bothDirections`, or `CROSSFILTER(..., BOTH)` inside a measure). It is a model-level switch with a model-wide blast radius - 108 of 117 measures in one of the two sampled models - and it is invisible in every measure's DAX. Ask what it was for; `reference/cookbook-structure.md#s3` has the divergence worked out.
+- **Bidirectional cross-filtering** (`crossFilteringBehavior: bothDirections`, or `CROSSFILTER(..., BOTH)` inside a measure). It is a model-level switch with a model-wide blast radius - 111 of 117 measures in `FabricASEngineAnalytics`, and the second most demanded recipe across 50 public models - and it is invisible in every measure's DAX. Ask what it was for; `reference/cookbook-structure.md#s3` has the divergence worked out.
 - **Many-to-many relationships**: model the bridge the grain actually has, and name the fan-out out loud (`#s2`).
 - **Inactive relationships** (`isActive: false`): they exist to be switched on by `USERELATIONSHIP` inside a measure. In Malloy they become named join paths (`#s1`), which changes every call site - the measure disappears rather than translating.
 - **Calculated columns and calculated tables**: DAX evaluated at refresh. Decide per object whether it becomes a Malloy dimension, a computed source, or work pushed upstream.
 - **RLS roles that do not fit the gate grammar**: most will not, and a translated role is usually *weaker* than the original unless it sits behind a trusted tier. See `reference/rls-roles.md`.
-- **The four stopgaps**: date spines (`cookbook-time.md#t4`), semi-additive measures (`#t5`), calculation groups (`cookbook-structure.md#s5`) and parent-child hierarchies (`#s6`). All four ship working Malloy at a cost worth stating before the customer discovers it.
+- **The four stopgaps**: date spines (`cookbook-time.md#t4`), semi-additive measures (`#t5`), calculation groups (`cookbook-structure.md#s5`) and parent-child hierarchies (`#s6`). All four ship working Malloy at a cost worth stating before the customer discovers it. The router flags the last three; **no DAX function asks for a date spine**, so `#t4` is one you have to recognize yourself, from a report that shows periods with no rows.
 - **Where next month's data comes from**, if the user is lifting data out of a `.pbix`. A snapshot answers today's question and goes stale.
+
+> Power BI, Microsoft and Fabric are trademarks of Microsoft Corporation. This skill is not affiliated with or endorsed by Microsoft.

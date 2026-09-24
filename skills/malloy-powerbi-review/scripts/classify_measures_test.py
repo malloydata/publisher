@@ -6,17 +6,20 @@ the router matched raw text where it needed to parse, so a measure was filed
 under a heading that changed the size of a migration estimate. None of them
 errored - a wrong number that looks like a number survives every check except
 this one."""
+import ast
+import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import classify_measures as cm  # noqa: E402
 
 
-def measure(name, dax, table="T", hidden=False):
+def measure(name, dax, table="T", hidden=False, kind="measure"):
     return {"table": table, "name": name, "dax": dax, "hidden": hidden,
-            "displayFolder": ""}
+            "kind": kind, "displayFolder": ""}
 
 
 NO_FLAGS = {"bidirectional": set(), "many_to_many": set(), "inactive": set()}
@@ -390,6 +393,414 @@ class Relationships(unittest.TestCase):
         flags, note = cm.parse_relationships("/nonexistent/relationships.tmdl")
         self.assertTrue(note)
         self.assertEqual(flags["bidirectional"], set())
+
+
+class ReturnTyping(unittest.TestCase):
+    """DAX types on the RETURN. Typing the whole body instead let a VAR that the
+    RETURN only *compared against* decide the measure's type, which produced
+    three classes of false report-layer finding at once."""
+
+    def test_a_var_holding_a_label_for_a_comparison_is_not_the_return_type(self):
+        m = measure("Filtered rows",
+                    'VAR _state = "IsFiltered"\n'
+                    'VAR _flag = SELECTEDVALUE ( T[Mode] )\n'
+                    'RETURN COUNTROWS ( FILTER ( T, _flag = _state ) )')
+        self.assertFalse(cm.returns_string(m, {("T", "Mode"): "string"}, {}))
+
+    def test_a_numeric_outermost_call_ends_the_question(self):
+        # `SUMX(VALUES(T[TextCol]), …)` typed as a label off the iterated table,
+        # not off its value: three of one Microsoft model's seven report-layer
+        # measures were this shape, each carrying `formatString: #,0`.
+        m = measure("Column Count",
+                    'SUMX ( VALUES ( P[TableName] ), CALCULATE ( MAX ( P[ObjectCount] ) ) )')
+        self.assertFalse(cm.returns_string(
+            m, {("P", "TableName"): "string", ("P", "ObjectCount"): "int64"}, {}))
+
+    def test_a_var_the_return_does_reach_still_counts(self):
+        m = measure("Caption",
+                    'VAR _t = FORMAT ( [X], "0.0%" )\n'
+                    'RETURN IF ( ISFILTERED ( T[a] ), _t, BLANK () )')
+        self.assertTrue(cm.returns_string(m, {}, {}))
+
+    def test_a_var_the_return_never_reaches_is_dropped(self):
+        m = measure("Ratio",
+                    'VAR _unused = FORMAT ( [X], "0.0%" )\n'
+                    'VAR _n = COUNTROWS ( T )\n'
+                    'RETURN DIVIDE ( _n, 100 )')
+        self.assertFalse(cm.returns_string(m, {}, {}))
+
+    def test_a_var_name_that_also_spells_a_column_is_not_substituted(self):
+        # Substituting on the raw text rewrote `T[Total]` into `T[(…)]`.
+        expr = cm.return_expr('VAR Total = 1\nRETURN SUM ( T[Total] )')
+        self.assertIn("T[Total]", expr)
+
+    def test_a_body_with_no_return_is_typed_whole(self):
+        m = measure("Title", 'SELECTEDVALUE ( T[Page] )')
+        self.assertTrue(cm.returns_string(m, {("T", "Page"): "string"}, {}))
+
+    def test_calculate_is_unwrapped_rather_than_read_as_numeric(self):
+        # CALCULATE returns its first argument's type, so treating it as numeric
+        # would skip every label measure wrapped in one.
+        m = measure("Mode", 'CALCULATE ( SELECTEDVALUE ( T[Mode] ) )')
+        self.assertTrue(cm.returns_string(m, {("T", "Mode"): "string"}, {}))
+
+    def test_a_self_referencing_var_does_not_hang(self):
+        # Illegal DAX, but a parse of a truncated file produces it.
+        cm.return_expr("VAR a = b\nVAR b = a\nRETURN a")
+
+
+class ValuePositionTyping(unittest.TestCase):
+    """Four defects a 50-model corpus run turned up, all the same shape: a
+    string that is not a value, or a value position the typing never found."""
+
+    def test_a_column_name_argument_is_not_a_value(self):
+        # `ADDCOLUMNS(t, "InTop10", …)` names a column. Reading it as a value
+        # filed 15 ordinary numeric measures across the corpus as labels -
+        # streak counters, monthly revenue averages, a sales rank. The outer
+        # call here is MINX, which is not numeric by itself, so nothing earlier
+        # in the typing rescues it.
+        m = measure("Streak start",
+                    'MINX ( FILTER ( ADDCOLUMNS ( ALL ( D[Year] ), "InTop10", '
+                    'IF ( [Rank] <= 10, 1, 0 ) ), [InTop10] = 1 ), [Year] )')
+        self.assertFalse(cm.returns_string(m, {}, {}))
+
+    def test_an_iterator_table_argument_is_not_the_return_type(self):
+        # `AVERAGEX(KEEPFILTERS(VALUES(T[GradeCode])), DIVIDE(…))` names a text
+        # column to say which table to walk, not what comes out.
+        m = measure("Participation rate",
+                    'IF ( [Total] = 0, 0, AVERAGEX ( KEEPFILTERS ( VALUES ( '
+                    'G[GradeCode] ) ), DIVIDE ( [Part], [Total] ) ) )')
+        self.assertFalse(cm.returns_string(m, {("G", "GradeCode"): "string"}, {}))
+
+    def test_a_filter_argument_is_not_the_return_type_either(self):
+        m = measure("Longest gap",
+                    "CALCULATE ( MAX ( C[Work Days] ), "
+                    "TREATAS ( VALUES ( L[List ID] ), C[List ID] ) )")
+        self.assertFalse(cm.returns_string(
+            m, {("L", "List ID"): "string", ("C", "Work Days"): "int64"}, {}))
+
+    def test_both_branches_numeric_makes_the_measure_numeric(self):
+        # The condition can be full of string work; only the branches type it.
+        m = measure("In range",
+                    'IF ( FORMAT ( MIN ( O[Start] ), "hh:mm:ss" ) >= [From], 1, 2 )')
+        self.assertFalse(cm.returns_string(m, {}, {}))
+
+    def test_a_comparison_inside_an_argument_does_not_make_it_a_number(self):
+        # Scanning the whole expression for an operator, rather than its top
+        # level, made every SVG sparkline in a Microsoft model numeric.
+        m = measure("Sparkline",
+                    '"<svg>" & IF ( [Max] > 0, "#649398", "#D9655D" ) & "</svg>"')
+        self.assertTrue(cm.returns_string(m, {}, {}))
+
+    def test_a_comment_marker_inside_a_string_literal_is_not_a_comment(self):
+        # The `//` in an SVG's namespace URL blanked the rest of the line and
+        # left the literal unterminated, desynchronising every `"` after it.
+        live = cm.strip_comments("\"<svg xmlns='http://www.w3.org/2000/svg'>\" & X")
+        self.assertIn("2000/svg", live)
+        self.assertTrue(live.rstrip().endswith("& X"))
+
+    def test_a_real_comment_outside_a_literal_is_still_stripped(self):
+        live = cm.strip_comments('SUM ( T[a] ) // was "QueryEnd"\n-- and this')
+        self.assertNotIn("QueryEnd", live)
+        self.assertNotIn("and this", live)
+        self.assertIn("SUM ( T[a] )", live)
+
+    def test_an_escaped_quote_does_not_end_the_literal_early(self):
+        live = cm.strip_comments('"say ""hi"" // not a comment" & X')
+        self.assertIn("not a comment", live)
+
+    def test_a_measure_named_var_does_not_truncate_the_binding(self):
+        # `[Var EBITDA vs Budget %]` read as a VAR declaration and cut the
+        # binding before it in half.
+        expr = cm.return_expr('VAR Pct = [Var EBITDA vs Budget %]\n'
+                              'RETURN IF ( ISBLANK ( Pct ), 0, Pct )')
+        self.assertIn("Var EBITDA vs Budget %", expr)
+
+
+class KeywordPrecededRefs(unittest.TestCase):
+    def test_a_measure_ref_after_a_dax_keyword_stays_in_the_graph(self):
+        # `AND [Gross]` read as a column of a table named `AND`, so the edge
+        # vanished and divergence stopped propagating across it.
+        self.assertEqual(cm.measure_refs("IF ( [Net] > 0 AND [Gross] > 0, 1, 0 )"),
+                         {"Net", "Gross"})
+
+    def test_else_or_and_then_are_all_the_same_shape(self):
+        self.assertEqual(cm.measure_refs("SWITCH ( TRUE (), x, [A], [B] )"), {"A", "B"})
+        self.assertIn("C", cm.measure_refs("IF ( p, 1 ) ELSE [C]"))
+
+    def test_an_adjacent_table_qualifier_is_still_a_column(self):
+        self.assertEqual(cm.measure_refs("SUM ( Sales[Amount] )"), set())
+        self.assertEqual(cm.measure_refs("SUM ( 'My Sales'[Amount] )"), set())
+
+    def test_divergence_propagates_across_a_keyword_preceded_ref(self):
+        leaf = measure("Shipped", 'CALCULATE ( [Total], T[Status] = "Shipped" )')
+        caller = measure("Both", "IF ( [Total] > 0 AND [Shipped] > 0, [Shipped], 0 )")
+        results, _ = cm.classify([leaf, caller], {}, NO_FLAGS)
+        self.assertIn("FC1", results[("T", "Both")]["routes"])
+
+
+class CalculatedColumns(unittest.TestCase):
+    """`column X = <DAX>` matched nothing, so the DAX was never routed and the
+    block's dataType never reached the column types the label test reads."""
+
+    def parse(self, body, filename="Sales.tmdl"):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, filename)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            return cm.parse_table_file(path)
+
+    def test_a_calculated_column_is_read_as_a_definition(self):
+        _, defs, _ = self.parse(
+            "table Sales\n"
+            "\tcolumn 'Year Month' = FORMAT ( Sales[Date], \"YYYY-MM\" )\n"
+            "\t\tdataType: string\n"
+            "\t\tlineageTag: abc\n"
+        )
+        self.assertEqual([(d["kind"], d["name"]) for d in defs],
+                         [("calculated_column", "Year Month")])
+        self.assertIn("FORMAT", cm.function_names(defs[0]["dax"]))
+
+    def test_its_datatype_reaches_the_column_types(self):
+        _, _, cols = self.parse(
+            "table Sales\n"
+            "\tcolumn Bucket = IF ( Sales[Amt] > 100, \"Big\", \"Small\" )\n"
+            "\t\tdataType: string\n"
+            "\n"
+            "\tcolumn Amt\n"
+            "\t\tdataType: double\n"
+        )
+        self.assertEqual(cols, {"Bucket": "string", "Amt": "double"})
+
+    def test_a_multi_line_calculated_column_body_is_not_cut_short(self):
+        _, defs, _ = self.parse(
+            "table 'Calendar'\n"
+            "\tcolumn 'Week of' =\n"
+            "\t\t\tVAR _w = 'Calendar'[Week]\n"
+            "\t\t\tRETURN CALCULATE ( MIN ( 'Calendar'[Date] ), ALL ( 'Calendar' ) )\n"
+            "\t\tsummarizeBy: none\n"
+        )
+        self.assertIn("CALCULATE", cm.function_names(defs[0]["dax"]))
+        self.assertNotIn("summarizeBy", defs[0]["dax"])
+
+    def test_a_string_calculated_column_is_a_dimension_not_report_layer(self):
+        # The label test asks whether a *measure* is canvas furniture. A text
+        # calculated column is an ordinary dimension.
+        col = measure("Bucket", 'IF ( T[Amt] > 100, "Big", "Small" )', kind="calculated_column")
+        results, _ = cm.classify([col], {}, NO_FLAGS)
+        self.assertNotEqual(results[("T", "Bucket")]["routes"], ["SKIP"])
+
+
+class CalculatedTablePartitions(unittest.TestCase):
+    """`CALENDAR()` and `GENERATESERIES()` live in a calculated table's
+    partition, not in any measure body. With no partition branch, T6 and S4 were
+    reachable in code and unreachable in practice."""
+
+    def parse(self, body, filename="Calendar.tmdl"):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, filename)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            return cm.parse_table_file(path)
+
+    def test_an_inline_calculated_source_routes_to_the_date_spine_recipe(self):
+        _, defs, _ = self.parse(
+            "table Calendar\n"
+            "\tpartition Calendar = calculated\n"
+            "\t\tmode: import\n"
+            "\t\tsource = CALENDAR ( MIN ( Cards[Start] ), MAX ( Cards[Due] ) )\n"
+        )
+        self.assertEqual([d["kind"] for d in defs], ["calculated_table"])
+        self.assertIn("T6", cm.local_routes(defs[0], {}, NO_FLAGS)[0])
+
+    def test_an_indented_calculated_source_is_read(self):
+        _, defs, _ = self.parse(
+            "table TopN\n"
+            "\tpartition TopN = calculated\n"
+            "\t\tmode: import\n"
+            "\t\tsource =\n"
+            "\t\t\t\tGENERATESERIES ( 1, 20, 1 )\n"
+            "\n"
+            "\tannotation PBI_Id = abc\n",
+            filename="TopN.tmdl",
+        )
+        self.assertIn("S4", cm.local_routes(defs[0], {}, NO_FLAGS)[0])
+
+    def test_a_power_query_partition_is_not_read_as_dax(self):
+        # `= m` is Power Query, `= entity` a Direct Lake binding. Routing either
+        # as DAX reports recipes for a language the recipes do not cover.
+        _, defs, _ = self.parse(
+            "table Brand\n"
+            "\tpartition Brand = m\n"
+            "\t\tmode: import\n"
+            "\t\tsource =\n"
+            "\t\t\t\tlet\n"
+            "\t\t\t\t    Source = Csv.Document ( File.Contents ( \"b.csv\" ) ),\n"
+            "\t\t\t\t    column Year = 1\n"
+            "\t\t\t\tin\n"
+            "\t\t\t\t    Source\n",
+            filename="Brand.tmdl",
+        )
+        self.assertEqual(defs, [])
+
+
+class Roles(unittest.TestCase):
+    """`definition/roles/*.tmdl` was never opened, so a model whose only
+    USERPRINCIPALNAME lives in a role reported no row-level security at all."""
+
+    def write(self, name, body):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "roles"))
+        with open(os.path.join(d, "roles", name), "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return d
+
+    ROLE = (
+        "role 'Account Managers'\n"
+        "\tmodelPermission: read\n"
+        "\n"
+        "\ttablePermission Customers =\n"
+        "\t\t\tVAR _me =\n"
+        "\t\t\t    SELECTCOLUMNS (\n"
+        "\t\t\t        FILTER ( 'Employees', 'Employees'[Email] = USERPRINCIPALNAME () ),\n"
+        "\t\t\t        \"@Name\", 'Employees'[Name]\n"
+        "\t\t\t    )\n"
+        "\t\t\tRETURN\n"
+        "\t\t\t    'Customers'[Account Manager] IN _me\n"
+        "\n"
+        "\tannotation PBI_Id = abc\n"
+    )
+
+    def test_a_role_predicate_is_read_and_routed(self):
+        defn = self.write("Account Managers.tmdl", self.ROLE)
+        roles = cm.parse_roles_dir(defn)
+        self.assertEqual(len(roles), 1)
+        self.assertEqual(roles[0]["kind"], "role_permission")
+        self.assertEqual(roles[0]["name"], "Customers")
+        self.assertIn("(role) Account Managers", roles[0]["table"])
+        self.assertIn("USERPRINCIPALNAME", cm.function_names(roles[0]["dax"]))
+        self.assertIn("RLS", cm.local_routes(roles[0], {}, NO_FLAGS)[0])
+
+    def test_the_annotation_after_it_is_not_swallowed_into_the_predicate(self):
+        defn = self.write("Account Managers.tmdl", self.ROLE)
+        self.assertNotIn("PBI_Id", cm.parse_roles_dir(defn)[0]["dax"])
+
+    def test_a_role_predicate_is_never_filed_as_report_layer(self):
+        # It returns a boolean. Running the label test on it filed the model's
+        # security posture under "returns a label, not a number".
+        defn = self.write("Account Managers.tmdl", self.ROLE)
+        roles = cm.parse_roles_dir(defn)
+        results, _ = cm.classify(roles, {}, NO_FLAGS)
+        routes = results[(roles[0]["table"], "Customers")]["routes"]
+        self.assertNotIn("SKIP", routes)
+        self.assertIn("RLS", routes)
+
+    def test_a_measure_reading_the_caller_identity_also_routes_to_rls(self):
+        m = measure("Mine", "CALCULATE ( [Total], T[Owner] = USERPRINCIPALNAME () )")
+        self.assertIn("RLS", cm.local_routes(m, {}, NO_FLAGS)[0])
+
+    def test_a_model_with_no_roles_directory_is_not_an_error(self):
+        self.assertEqual(cm.parse_roles_dir(tempfile.mkdtemp()), [])
+
+
+class FormatStringDefinition(unittest.TestCase):
+    def test_a_dynamic_format_string_does_not_become_property_keys(self):
+        # It sits at base + 1 with the properties, but is a DAX block. The
+        # property loop turned it, and every line of its body, into a key.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "Shipments.tmdl")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "table Shipments\n"
+                    "\tmeasure 'Gross Profit' = SUMX ( Shipments, Shipments[Net] )\n"
+                    "\t\tlineageTag: abc\n"
+                    "\n"
+                    "\t\tformatStringDefinition =\n"
+                    "\t\t\t\tVAR _v = SELECTEDMEASURE ()\n"
+                    "\t\t\t\tRETURN IF ( _v > 1000, \"#,0,\\\"k\\\"\", \"#,0\" )\n"
+                    "\n"
+                    "\t\tdisplayFolder: KPIs\n"
+                )
+            _, defs, _ = cm.parse_table_file(path)
+        self.assertEqual(len(defs), 1)
+        self.assertEqual(defs[0]["dax"], "SUMX ( Shipments, Shipments[Net] )")
+        self.assertIn("SELECTEDMEASURE", defs[0].get("formatStringDefinition", ""))
+        # The property after the block is still reached.
+        self.assertEqual(defs[0]["displayFolder"], "KPIs")
+
+
+class AutoDateTables(unittest.TestCase):
+    def test_auto_date_tables_are_skipped_and_counted_at_the_model_level(self):
+        with tempfile.TemporaryDirectory() as d:
+            tables = os.path.join(d, "tables")
+            os.makedirs(tables)
+            with open(os.path.join(tables, "Sales.tmdl"), "w", encoding="utf-8") as fh:
+                fh.write("table Sales\n\tmeasure Total = SUM ( Sales[Amt] )\n")
+            for guid in ("abc", "def"):
+                fn = f"LocalDateTable_{guid}.tmdl"
+                with open(os.path.join(tables, fn), "w", encoding="utf-8") as fh:
+                    fh.write(f"table LocalDateTable_{guid}\n"
+                             f"\tcolumn Year = YEAR ( [Date] )\n\t\tdataType: int64\n")
+            measures, _coltypes, flags, _note = cm.load_tmdl(d)
+        self.assertEqual([m["name"] for m in measures], ["Total"])
+        self.assertEqual(len(flags["auto_date"]), 2)
+
+    def test_the_report_names_s7_as_a_model_level_route(self):
+        m = measure("Total", "SUM ( T[a] )")
+        results, _ = cm.classify([m], {}, NO_FLAGS)
+        text = cm.report_text(results, "", "demo",
+                              dict(NO_FLAGS, auto_date=["LocalDateTable_abc"]))
+        self.assertIn("S7", text)
+        self.assertIn("1 auto date table", text)
+
+
+class KindsAreReportedSeparately(unittest.TestCase):
+    def test_the_headline_counts_measures_and_nothing_else(self):
+        # Appending user-defined functions to the measure list and printing the
+        # sum published 1,622 measures for a corpus that held 1,406.
+        defs = [
+            measure("Total", "SUM ( T[a] )"),
+            measure("Helper", "(x: INT64) => x + 1", table="(functions)", kind="function"),
+            measure("MTD", "SELECTEDMEASURE ()", table="CG", kind="calculation_item"),
+            measure("Bucket", "1", kind="calculated_column"),
+        ]
+        results, _ = cm.classify(defs, {}, NO_FLAGS)
+        text = cm.report_text(results, "", "demo", NO_FLAGS)
+        self.assertIn("# demo: 1 measures", text)
+        self.assertIn("| measures | 1 |", text)
+        self.assertIn("| user-defined functions | 1 |", text)
+        self.assertIn("| calculation items | 1 |", text)
+        self.assertIn("| calculated columns | 1 |", text)
+        self.assertIn("4 definitions in all", text)
+
+
+class NoVacuousZeros(unittest.TestCase):
+    """`T4` was declared, counted as a stopgap, and reported as firing zero times
+    across 1,622 measures - a zero guaranteed by construction, because no code
+    path emitted it. A route with no emitter has to be declared teaching-only."""
+
+    def emitted_routes(self):
+        src = pathlib.Path(cm.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        # The route tables name every key; only other positions are emitters.
+        declarations = {"RECIPES", "TEACHING_ONLY", "DIVERGENT_ROUTES",
+                        "STOPGAP_ROUTES", "KIND_LABELS"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id in declarations for t in node.targets):
+                node.value = ast.Constant(value=None)
+        return {n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and n.value in cm.RECIPES}
+
+    def test_every_recipe_is_emitted_or_declared_teaching_only(self):
+        unreachable = set(cm.RECIPES) - self.emitted_routes() - cm.TEACHING_ONLY
+        self.assertEqual(unreachable, set(),
+                         f"declared but never emitted: {sorted(unreachable)}")
+
+    def test_a_teaching_only_route_is_not_counted_as_divergent_or_stopgap(self):
+        # Counting one guarantees a zero in a published total.
+        self.assertEqual(cm.TEACHING_ONLY & (cm.DIVERGENT_ROUTES | cm.STOPGAP_ROUTES),
+                         set())
 
 
 if __name__ == "__main__":

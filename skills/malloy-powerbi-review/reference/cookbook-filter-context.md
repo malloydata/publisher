@@ -272,6 +272,8 @@ IF (
 )
 ```
 
+Abridged from Microsoft Corporation's `PBIASEngine` sample model (`Top N Selector.tmdl`, `microsoft/Analysis-Services`), MIT licensed.
+
 **What it means** Rank the visible groups by a measure, and return 1 for the top N,
 where N comes from a disconnected slicer table the user drives. It is used as a
 visual-level filter, not displayed.

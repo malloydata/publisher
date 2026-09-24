@@ -43,7 +43,7 @@ Do not silently carry across a description you have reason to doubt. Flag it.
 
 ## 4. Descriptions on Untranslated Objects
 
-A Class 3 measure that did not translate still has a description explaining what the business wanted. That text is the specification for whatever replaces it. Keep it with the intent list from `translate-measures.md` rather than dropping it with the measure.
+A measure that did not translate - rare; `EARLIER`/`EARLIEST` is the one shape with no recipe - still has a description explaining what the business wanted. That text is the specification for whatever replaces it. Keep it with the intent list from `translate-measures.md` rather than dropping it with the measure.
 
 ## 5. Output
 
