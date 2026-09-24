@@ -6,6 +6,8 @@ import {
    buildDerivationBaseMap,
    buildSourceAliasMap,
    extractRunTargetSourceName,
+   extractRunTargetSourceNames,
+   locateProblemsInCallerText,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
 
@@ -309,6 +311,121 @@ describe("service/query_text", () => {
                "mine",
             ),
          ).toEqual(new Set(["hidden"]));
+      });
+   });
+
+   describe("extractRunTargetSourceNames", () => {
+      it("reads EVERY `run:` target in order, not just the first", () => {
+         // Malloy runs the last statement; a check over the first alone would
+         // let a leading decoy stand in for the statement that executes.
+         expect(
+            extractRunTargetSourceNames(
+               "run: customers -> { aggregate: total }\nrun: helper -> { group_by: id }",
+            ),
+         ).toEqual(["customers", "helper"]);
+      });
+
+      it("reads a run target that is an expression over the name", () => {
+         expect(
+            extractRunTargetSourceNames(
+               "run: customers extend { join_one: h is helper on id = h.id } -> { group_by: h.id }",
+            ),
+         ).toEqual(["customers"]);
+      });
+
+      it("reads backtick-quoted targets and the bare leading-arrow form", () => {
+         expect(
+            extractRunTargetSourceNames(
+               "run: `customer-orders` -> { group_by: id }\nflights -> by_carrier",
+            ),
+         ).toEqual(["customer-orders", "flights"]);
+      });
+
+      it("ignores a `run:` inside a comment or a string literal", () => {
+         expect(
+            extractRunTargetSourceNames(
+               "// run: helper -> { group_by: id }\n" +
+                  "source: mine is customers extend { dimension: s is 'run: helper' }\n" +
+                  "run: mine -> { group_by: s }",
+            ),
+         ).toEqual(["mine"]);
+      });
+
+      it("is undefined when a `run:` has a target it cannot read as a name", () => {
+         // Refusing is the safe answer: a caller that needs every target must
+         // not check a subset because one was unreadable.
+         expect(
+            extractRunTargetSourceNames(
+               "run: customers -> { aggregate: total }\nrun: (helper) -> { group_by: id }",
+            ),
+         ).toBeUndefined();
+      });
+
+      it("returns no targets for text with no statement to run", () => {
+         expect(
+            extractRunTargetSourceNames("source: mine is customers extend {}"),
+         ).toEqual([]);
+      });
+   });
+
+   describe("locateProblemsInCallerText", () => {
+      const at = (url: string, startLine: number, endLine = startLine) => ({
+         url,
+         range: {
+            start: { line: startLine, character: 4 },
+            end: { line: endLine, character: 8 },
+         },
+      });
+      const problem = (location?: ReturnType<typeof at>) => ({
+         message: "'nope' is not defined",
+         severity: "error" as const,
+         code: "field-not-found",
+         ...(location ? { at: location } : {}),
+      });
+
+      it("moves a problem in the compiled document back by the prefix's lines", () => {
+         const [located] = locateProblemsInCallerText(
+            [problem(at("internal://query/0f1e", 2))],
+            "source: x is customers extend {}\nrun: x -> { group_by: nope }",
+            1,
+         );
+         expect(located.at?.range).toEqual({
+            start: { line: 1, character: 4 },
+            end: { line: 1, character: 8 },
+         });
+      });
+
+      it("drops the location of a problem outside the caller's lines", () => {
+         // Line 0 is the prefix; line 2 is a refinement the server appended
+         // after the caller's one-line text (an injected source filter).
+         const located = locateProblemsInCallerText(
+            [
+               problem(at("internal://query/0f1e", 0)),
+               problem(at("internal://query/0f1e", 2)),
+            ],
+            "run: customers -> { group_by: id }",
+            1,
+         );
+         expect(located.map((p) => p.at)).toEqual([undefined, undefined]);
+         expect(located.map((p) => p.message)).toEqual([
+            "'nope' is not defined",
+            "'nope' is not defined",
+         ]);
+      });
+
+      it("drops the location of a problem in another document", () => {
+         const [located] = locateProblemsInCallerText(
+            [problem(at("file:///pkg/index.malloy", 1))],
+            "run: customers -> { group_by: id }\n",
+            1,
+         );
+         expect(located.at).toBeUndefined();
+      });
+
+      it("keeps a problem that never had a location", () => {
+         expect(
+            locateProblemsInCallerText([problem()], "run: customers -> {}", 1),
+         ).toEqual([problem()]);
       });
    });
 });

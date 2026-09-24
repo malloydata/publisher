@@ -1774,6 +1774,11 @@ paths:
         as a raw Malloy query string or by referencing a named query within the model. This endpoint
         supports both ad-hoc queries and predefined model queries, making it flexible for various
         use cases including data exploration, reporting, and application integration.
+
+        Ad-hoc query text that does not compile is a 400 whose `problems` locate each error in the
+        submitted text. On a package with a discovery surface this holds when every `run:` in the
+        text targets a source on the surface, or one the text derives only from such sources; text
+        reaching any other source is answered with the 404 a hidden or missing source gets.
       parameters:
         - name: environmentName
           in: path
@@ -5623,6 +5628,18 @@ components:
             grow. Callers must treat an unrecognized value as absent.
 
             Known values: TABLE_NOT_FOUND.
+        problems:
+          type: array
+          description: |
+            Present on the 400 answering ad-hoc query text that does not
+            compile: the compiler's problems, in the shape `/compile` returns.
+            Each `at.range` is located in the submitted `query` text, with
+            0-based lines and characters; `at.url` is omitted, since the text
+            has no document of its own. A problem produced by something the
+            server added to the text (an injected source filter) carries no
+            location.
+          items:
+            $ref: "#/components/schemas/CompileProblem"
       required:
         - message
 

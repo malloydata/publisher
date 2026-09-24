@@ -19,6 +19,7 @@ import {
    QueryMaterializer,
    Runtime,
    type FilterCondition,
+   type LogMessage,
    type SourceDef,
    type VirtualMap,
 } from "@malloydata/malloy";
@@ -59,6 +60,7 @@ import {
    NotQueryableError,
    OffSurfaceError,
    PayloadTooLargeError,
+   QueryCompileError,
 } from "../errors";
 import { getPersistStorageMode } from "../config";
 import {
@@ -153,6 +155,8 @@ import {
    buildDerivationBaseMap,
    buildSourceAliasMap,
    extractRunTargetSourceName,
+   extractRunTargetSourceNames,
+   locateProblemsInCallerText,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
 import {
@@ -424,6 +428,62 @@ function isGivenBindingFailure(err: unknown): boolean {
  * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
+
+/**
+ * What ad-hoc query text is compiled behind. Compile problems are located in
+ * the compiled document, so their line numbers are shifted back by this
+ * prefix's line count before a caller sees them.
+ */
+const AD_HOC_QUERY_PREFIX = "\n";
+
+/** A compile failure of ad-hoc text, as the caller's own text locates it. */
+function queryCompileError(
+   error: MalloyError,
+   callerText: string,
+): QueryCompileError {
+   const problems = locateProblemsInCallerText(
+      error.problems,
+      callerText,
+      AD_HOC_QUERY_PREFIX.split("\n").length - 1,
+   );
+   return new QueryCompileError(describeProblems(problems, error), problems);
+}
+
+/**
+ * The error problems as one message, each led by its 1-based `line:column` in
+ * the caller's text when it has one, so a client that reads only `message`
+ * still learns where. Falls back to the compiler's own message when no problem
+ * is an error.
+ */
+function describeProblems(problems: LogMessage[], error: MalloyError): string {
+   const errors = problems.filter((p) => p.severity === "error");
+   if (errors.length === 0) return error.message;
+   return errors
+      .map((p) => {
+         const start = p.at?.range.start;
+         return start
+            ? `line ${start.line + 1}:${start.character + 1} ${p.message}`
+            : p.message;
+      })
+      .join("; ");
+}
+
+/**
+ * The compile failure of a runnable, or undefined when it compiles or fails for
+ * a reason that is not a compile error (a connection failure while fetching a
+ * schema, say, which keeps surfacing wherever it did before). Malloy memoizes
+ * the compile, so this costs nothing when the query compiles later anyway.
+ */
+async function compileErrorOf(runnable: {
+   getPreparedQuery(): Promise<unknown>;
+}): Promise<MalloyError | undefined> {
+   try {
+      await runnable.getPreparedQuery();
+      return undefined;
+   } catch (error) {
+      return error instanceof MalloyError ? error : undefined;
+   }
+}
 
 /**
  * Whether a run-time store failure may be retried against the live warehouse,
@@ -4029,6 +4089,31 @@ export class Model {
    }
 
    /**
+    * Whether every statement in ad-hoc text that could be the one Malloy runs
+    * passes {@link assertQueryBoundaryCompiled}'s own admission test: curated,
+    * or derived from curated sources through the text's own declarations.
+    *
+    * Decides whether text that failed to compile may see its compile problems.
+    * The backstop settles the LAST `run:`, which only compiling can identify, so
+    * this requires all of them; a target the text reader cannot name fails it.
+    * What it admits is text over the queryable surface. Its problems can still
+    * name a hidden source's fields (text may declare or join one without
+    * running it), which is safe only because a query over the surface can
+    * already read those fields through a join: joins are not gated by this
+    * boundary or by `#(authorize)`. A change that gates joins must narrow this
+    * test to match.
+    */
+   private queryTextRunTargetsQueryable(query: string): boolean {
+      const targets = extractRunTargetSourceNames(query);
+      if (!targets || targets.length === 0) return false;
+      return targets.every(
+         (target) =>
+            this.isCuratedSource(target) ||
+            this.derivesFromCurated(target, query),
+      );
+   }
+
+   /**
     * Boundary re-check for /compile's authorize-denial conversion (see
     * `denyHiddenAsNotQueryable` in service/environment.ts). /compile itself is
     * exempt from the boundary; this runs only AFTER an authorize denial, to
@@ -5432,7 +5517,7 @@ export class Model {
             }
          }
          if (!sourceName && !queryName && query) {
-            queryString = "\n" + query;
+            queryString = AD_HOC_QUERY_PREFIX + query;
          } else if (queryName && !query) {
             // These fields are NAMES, not Malloy text. Quote both as
             // identifiers so a caller-supplied name can only ever lex as one
@@ -5789,6 +5874,43 @@ export class Model {
             sourceName,
          });
          throw new BadRequestError(`Invalid query: ${errorMessage}`);
+      }
+
+      // Caller-written text that does not compile is settled before the gates
+      // below. The boundary backstop reads the run target off the compiled
+      // query, a failed compile leaves it none (resolveAuthorizeSourceFromRunnable
+      // reports undefined), and it refuses an undefined target as not
+      // queryable: right for a hidden target, wrong for a typo in text over a
+      // queryable source, whose caller could not learn what was wrong. The
+      // problems are returned only where the backstop would admit the text once
+      // corrected (see queryTextRunTargetsQueryable); anywhere else the answer
+      // is the backstop's 404. A failure to bind a given is left to the run
+      // path, which answers it opaquely when a gate reads that given.
+      if (!sourceName && !queryName && query && liveRunnable) {
+         const compileError = await compileErrorOf(liveRunnable);
+         if (compileError && !isGivenBindingFailure(compileError)) {
+            if (
+               boundary === "deferred" &&
+               !this.queryTextRunTargetsQueryable(query)
+            ) {
+               throw this.notQueryable(
+                  "Query target is not queryable.",
+                  false,
+                  "source",
+               );
+            }
+            this.queryExecutionHistogram.record(
+               performance.now() - startTime,
+               this.queryMetricAttributes({
+                  environment: queryMetadataInput?.environment,
+                  queryName,
+                  sourceName,
+                  status: "error",
+                  servedFrom,
+               }),
+            );
+            throw queryCompileError(compileError, query);
+         }
       }
 
       // Authoritative authorize gate: resolve the gated source from the

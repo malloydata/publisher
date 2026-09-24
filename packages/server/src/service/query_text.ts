@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { LogMessage } from "@malloydata/malloy";
+
 /**
  * Pure parsing of caller-authored Malloy query text.
  *
@@ -37,6 +39,86 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
    // keyword as the run target.
    const arrowMatch = query.match(/^\s*(?:`([^`]+)`|(\w+))\s*->/m);
    return runMatch?.[1] ?? runMatch?.[2] ?? arrowMatch?.[1] ?? arrowMatch?.[2];
+}
+
+/**
+ * The top-level source of EVERY `run:` / leading-`->` statement in the text, in
+ * order. Undefined when any `run:` is followed by something this cannot read as
+ * a name, so a caller that needs every target can refuse rather than check a
+ * subset.
+ *
+ * {@link extractRunTargetSourceName} reads only the first statement, and Malloy
+ * executes the last, so a check that must hold for whichever statement actually
+ * runs has to hold for all of them. Reads stripped text: a `run:` inside a
+ * comment or string literal is not a statement. One inside a backtick-quoted
+ * name is still read, which can only add a target to satisfy, never remove one.
+ */
+export function extractRunTargetSourceNames(
+   query: string,
+): string[] | undefined {
+   const text = stripMalloyCommentsAndLiterals(query);
+   const ident = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
+   const targets: string[] = [];
+   const runRe = /(?<![\p{L}\p{N}_])run\s*:/gu;
+   while (runRe.exec(text) !== null) {
+      const target = new RegExp(String.raw`\s*${ident}`, "uy");
+      target.lastIndex = runRe.lastIndex;
+      const match = target.exec(text);
+      if (!match) return undefined;
+      targets.push(match[1] ?? match[2]);
+   }
+   const arrowRe = new RegExp(String.raw`^\s*${ident}\s*->`, "gmu");
+   let arrow: RegExpExecArray | null;
+   while ((arrow = arrowRe.exec(text)) !== null) {
+      targets.push(arrow[1] ?? arrow[2]);
+   }
+   return targets;
+}
+
+/**
+ * Re-express compile problems for query text in the coordinates of the text the
+ * caller sent.
+ *
+ * The server compiles `prefix + callerText (+ appended refinement)`, so the
+ * compiler's line numbers are shifted by the prefix's line count. A problem in
+ * the compiled document is moved back by that many lines; one that falls
+ * outside the caller's own lines (in the prefix, or in a refinement the server
+ * appended, such as an injected source filter) keeps its message and loses its
+ * location, since no span of the caller's payload produced it. A problem in any
+ * other document keeps no location either.
+ *
+ * The compiled document is recognized by the `internal://` URL the compiler
+ * gives text that has none of its own; restricted mode forbids `import`, so no
+ * other document can contribute a problem located in caller-written text.
+ */
+export function locateProblemsInCallerText(
+   problems: readonly LogMessage[],
+   callerText: string,
+   prefixLines: number,
+): LogMessage[] {
+   const callerLines = callerText.split("\n").length;
+   return problems.map((problem) => {
+      const at = problem.at;
+      if (!at) return problem;
+      const start = at.range.start.line - prefixLines;
+      const end = at.range.end.line - prefixLines;
+      const inCallerText =
+         at.url.startsWith("internal://") && start >= 0 && end < callerLines;
+      if (!inCallerText) {
+         const { at: _dropped, ...unlocated } = problem;
+         return unlocated;
+      }
+      return {
+         ...problem,
+         at: {
+            ...at,
+            range: {
+               start: { ...at.range.start, line: start },
+               end: { ...at.range.end, line: end },
+            },
+         },
+      };
+   });
 }
 
 /**

@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { MalloyError } from "@malloydata/malloy";
+import { MalloyError, type LogMessage } from "@malloydata/malloy";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
 import { logger } from "./logger";
 import type { EligibilityRefusalReason } from "./materialization_metrics";
@@ -143,6 +143,15 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(404, error.message);
    } else if (error instanceof NotQueryableError) {
       return httpError(404, error.message);
+   } else if (error instanceof QueryCompileError) {
+      return {
+         status: 400,
+         json: {
+            code: 400,
+            message: error.message,
+            problems: error.problems.map(toQueryTextProblem),
+         },
+      };
    } else if (error instanceof MalloyError) {
       return httpError(400, error.message);
    } else if (error instanceof TableNotFoundError) {
@@ -488,6 +497,36 @@ export class AccessDeniedError extends Error {
  * oracle. Where nothing is gated, the refusal is the {@link OffSurfaceError}
  * subclass instead, which says why.
  */
+/**
+ * Caller-submitted query text that did not compile. Each problem's range is
+ * expressed in the text exactly as the caller sent it, not the text the server
+ * compiled, so a client can point at the failing span of its own payload.
+ *
+ * Extends MalloyError so every consumer that classifies a compile failure by
+ * class (the MCP error advice, restricted-mode detection by problem code) keeps
+ * treating this as one.
+ */
+export class QueryCompileError extends MalloyError {
+   constructor(message: string, problems: LogMessage[]) {
+      super(message, problems);
+      this.name = "QueryCompileError";
+   }
+}
+
+/**
+ * A problem as the query surface returns it: the shape `/compile` uses, minus
+ * the document URL. The query text has no URL of its own; the one the compiler
+ * assigns it is a per-request identifier that names nothing a caller can open.
+ */
+function toQueryTextProblem(problem: LogMessage) {
+   return {
+      message: problem.message,
+      severity: problem.severity,
+      code: problem.code,
+      ...(problem.at ? { at: { range: problem.at.range } } : {}),
+   };
+}
+
 export class NotQueryableError extends Error {
    constructor(message: string) {
       super(message);

@@ -81,6 +81,14 @@ one. When the model carries a gate, every refusal is the plain `No queryable mod
 does not exist, so a hidden gated name cannot be told from a missing one. A name that does not exist
 always gets the plain form.
 
+Ad-hoc query text that does not compile follows the same boundary. When every `run:` statement in
+the text targets a source on the surface, or one the text derives only from such sources
+(`source: mine is sales extend { … }`), the compile error is the caller's to fix: it comes back as
+a **400** whose `problems` locate each error in the submitted text, the same answer a package with
+no surface gives. When any statement targets a source off the surface, or a name the boundary cannot
+read, the answer is a 404 in the plain form, since text that does not compile names no target the
+boundary could explain.
+
 ## Curating, and what curation is not
 
 `export { … }` is a discovery filter and a query boundary over _what exists_; `#(authorize)` is the
