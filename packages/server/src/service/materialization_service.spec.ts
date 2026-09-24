@@ -1294,12 +1294,8 @@ describe("autoLoadManifest", () => {
       ctx = createMocks();
    });
 
-   it("binds every entry it is given, since a failed source is not one", () => {
-      // This is the path that rewrites a query's FROM. It binds what `entries`
-      // holds without asking whether each one built, which is only safe because
-      // a failed source is reported in `failures` and never reaches here -- so
-      // the coverage that matters is the producer's split (below), not a filter
-      // on this side.
+   it("binds an entry that built", () => {
+      // This is the path that rewrites a query's FROM.
       const reload = sinon.stub().resolves();
       const environment = {
          reloadAllModelsForPackage: reload,
@@ -1324,6 +1320,44 @@ describe("autoLoadManifest", () => {
 
       const bound = reload.firstCall?.args[1] ?? {};
       expect(Object.keys(bound)).toContain("ok");
+   });
+
+   it("does not bind a failed source mirrored into entries", async () => {
+      // During the `ManifestEntry.error` deprecation window a failed source is
+      // also written into `entries`, under the physical name it was headed for.
+      // Auto-run names are stable, so that name is the previous generation's
+      // table: binding it would serve stale rows as though this run built them.
+      const reload = sinon.stub().resolves();
+      const bindStorage = sinon.stub().resolves();
+      const environment = {
+         reloadAllModelsForPackage: reload,
+         bindPackageStorageServeBindings: bindStorage,
+      };
+
+      await (
+         ctx.service as unknown as {
+            autoLoadManifest: (
+               env: unknown,
+               pkg: string,
+               entries: Record<string, unknown>,
+            ) => Promise<void>;
+         }
+      ).autoLoadManifest(environment, "pkg", {
+         ok: {
+            sourceEntityId: "ok",
+            sourceName: "healthy",
+            physicalTableName: "ok_v1",
+         },
+         bad: {
+            sourceEntityId: "bad",
+            sourceName: "broken",
+            physicalTableName: "bad",
+            error: "Permission denied while writing to dataset analytics",
+         },
+      });
+
+      expect(Object.keys(reload.firstCall.args[1])).toEqual(["ok"]);
+      expect(Object.keys(bindStorage.firstCall.args[1])).toEqual(["ok"]);
    });
 });
 
@@ -1773,6 +1807,159 @@ describe("deriveSelfInstructions", () => {
       });
    });
 
+   describe("a refused source beside admitted ones", () => {
+      type Derived = {
+         instructions: BuildInstruction[];
+         carried: Record<string, unknown>;
+         refused: Record<
+            string,
+            { name: string; tier: string; reason: string; message: string }
+         >;
+      };
+      function deriveWith(
+         compiled: unknown,
+         sourceNames?: string[],
+         priorEntries: Record<string, unknown> = {},
+      ): Derived {
+         return (
+            ctx.service as unknown as {
+               deriveSelfInstructions: (
+                  c: unknown,
+                  n: string[] | undefined,
+                  p: unknown,
+               ) => Derived;
+            }
+         ).deriveSelfInstructions(compiled, sourceNames, priorEntries);
+      }
+      const ok = fakeSource({ name: "ok", sourceEntityId: "a0a0a0a0a0a0a0a0" });
+      const gated = (name: string) =>
+         fakeSource({
+            name,
+            sourceEntityId: `${name}-c1c1c1c1c1c1`,
+            sourceDef: { blockNotes: ["#(authorize) true"] },
+         });
+
+      it("instructs the admitted source and records the refused one instead of throwing", () => {
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         const { instructions, refused } = deriveWith(compiled);
+
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "a0a0a0a0a0a0a0a0",
+         ]);
+         expect(Object.keys(refused)).toEqual(["refused"]);
+         expect(refused.refused).toMatchObject({
+            name: "refused",
+            tier: "colocated",
+         });
+         expect(refused.refused.message).toMatch(/authorize/i);
+      });
+
+      it("records a refused storage= source under the storage tier", () => {
+         process.env.PERSIST_STORAGE_MODE = "on";
+         try {
+            const compiled = compiledWith(
+               {
+                  ok,
+                  lake: fakeSource({
+                     name: "lake",
+                     sourceEntityId: "f1f1f1f1f1f1f1f1",
+                     annotationFields: { storage: "lake" },
+                     sourceDef: { blockNotes: ["#(authorize) true"] },
+                  }),
+               },
+               [["lake", "ok"]],
+            );
+
+            const { instructions, refused } = deriveWith(compiled);
+
+            expect(instructions).toHaveLength(1);
+            expect(refused.lake.tier).toBe("storage");
+            expect(refused.lake.message).toMatch(
+               /cannot be materialized into a storage destination/,
+            );
+         } finally {
+            delete process.env.PERSIST_STORAGE_MODE;
+         }
+      });
+
+      it("does not throw when every admitted source is reused rather than rebuilt", () => {
+         // Nothing is instructed, but the run still has a table to serve for
+         // `ok`, so the refusal must not turn an all-reused run into a failure.
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         const { instructions, carried, refused } = deriveWith(
+            compiled,
+            undefined,
+            {
+               a0a0a0a0a0a0a0a0: {
+                  sourceEntityId: "a0a0a0a0a0a0a0a0",
+                  physicalTableName: "ok",
+                  connectionName: "duckdb",
+               },
+            },
+         );
+
+         expect(instructions).toHaveLength(0);
+         expect(Object.keys(carried)).toEqual(["a0a0a0a0a0a0a0a0"]);
+         expect(Object.keys(refused)).toEqual(["refused"]);
+      });
+
+      it("records a refused rollup without failing a run that has nothing else to build", () => {
+         // A rollup asked for nothing an author can see: a package whose only
+         // refused work is one must not fail every run over it.
+         const rollup = gated("rollup");
+         const compiled = compiledWith({ rollup }, [["rollup"]]);
+         (
+            compiled as unknown as {
+               preaggregatePlans: Record<string, unknown>;
+            }
+         ).preaggregatePlans = {
+            rollup: {
+               baseSourceName: "orders",
+               grainDimensions: ["category"],
+               measures: [],
+            },
+         };
+
+         const { instructions, refused } = deriveWith(compiled);
+
+         expect(instructions).toHaveLength(0);
+         expect(refused.rollup.tier).toBe("preaggregate");
+      });
+
+      it("still throws when sourceNames names the refused source", () => {
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         expect(() => deriveWith(compiled, ["refused", "ok"])).toThrow(
+            MaterializationEligibilityError,
+         );
+      });
+
+      it("throws naming every refused source when all of them are refused", () => {
+         const compiled = compiledWith(
+            { first: gated("first"), second: gated("second") },
+            [["first", "second"]],
+         );
+
+         let thrown: unknown;
+         try {
+            deriveWith(compiled);
+         } catch (err) {
+            thrown = err;
+         }
+         expect(thrown).toBeInstanceOf(MaterializationEligibilityError);
+         expect(String((thrown as Error).message)).toContain("'first'");
+         expect(String((thrown as Error).message)).toContain("'second'");
+      });
+   });
+
    // An incremental source is the one case where an unchanged content address
    // does NOT mean there is nothing to do: its data moves while its SQL stays
    // put. Carrying it forward here would strand the delta path behind a check it
@@ -2034,6 +2221,7 @@ describe("executeInstructedBuild", () => {
          string,
          { reason?: string; physicalTableName?: string; sourceName?: string }
       >;
+      sourcesRefused: number;
    };
 
    function callExecute(
@@ -2349,6 +2537,8 @@ describe("executeInstructedBuild", () => {
          failures["cbadbbbbbbbbbbb"]?.reason,
          "and it must still say what went wrong",
       ).toContain("auth failed");
+      // A warehouse failure may clear on its own, so it is not marked permanent.
+      expect(failures["cbadbbbbbbbbbbb"]).not.toHaveProperty("refused");
    });
 
    it("still redacts a failed source's reason when the config is unavailable", async () => {
@@ -3254,7 +3444,7 @@ describe("executeInstructedBuild", () => {
          expect(failures["bref1bref1bref1b"]).toBeUndefined();
       });
 
-      it("still 422s when the caller DOES instruct the refused source", async () => {
+      it("fails only itself, reported in failures, and its siblings still build, when the caller DOES instruct it", async () => {
          const runSQL = sinon.stub().resolves();
          const connection = { runSQL } as unknown as MalloyConnection;
          const ok = fakeSource({
@@ -3264,7 +3454,61 @@ describe("executeInstructedBuild", () => {
          const refused = refusedColocated("bref1bref1bref1b");
          const compiled = compiledWith(
             { ok, refused },
-            [["ok"], ["refused"]],
+            [["refused"], ["ok"]],
+            new Map([["duckdb", connection]]),
+         );
+
+         const result = await callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bref1bref1bref1b",
+                  materializedTableId: "mt-ref",
+                  physicalTableName: "refused_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+         );
+
+         expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
+            "ok_v1",
+         );
+         // Reported where the caller resolves failures, under the address it
+         // dispatched and with the gate's own message: an absent entry would
+         // read as "built" to a caller that asked for this table.
+         expect(result.failures["bref1bref1bref1b"]).toMatchObject({
+            sourceName: "refused",
+            physicalTableName: "refused_v1",
+            materializedTableId: "mt-ref",
+            // Permanent until the model changes, so a caller need not retry it.
+            refused: true,
+         });
+         expect(result.failures["bref1bref1bref1b"].reason).toMatch(
+            /authorize/i,
+         );
+         expect(result.sourcesRefused).toBe(1);
+         expect(
+            runSQL
+               .getCalls()
+               .some((c) => String(c.args[0]).includes("refused_v1")),
+            "a refused source must not be written",
+         ).toBe(false);
+      });
+
+      it("still 422s when every instructed source is refused", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const refused = refusedColocated("bref1bref1bref1b");
+         const compiled = compiledWith(
+            { refused },
+            [["refused"]],
             new Map([["duckdb", connection]]),
          );
 
@@ -3272,12 +3516,6 @@ describe("executeInstructedBuild", () => {
             callExecute(
                compiled,
                [
-                  {
-                     sourceEntityId: "b0k0k0k0k0k0k0k0",
-                     materializedTableId: "mt-ok",
-                     physicalTableName: "ok_v1",
-                     realization: "COPY",
-                  },
                   {
                      sourceEntityId: "bref1bref1bref1b",
                      materializedTableId: "mt-ref",
@@ -3288,6 +3526,7 @@ describe("executeInstructedBuild", () => {
                {},
             ),
          ).rejects.toThrow(MaterializationEligibilityError);
+         expect(runSQL.called).toBe(false);
       });
    });
 });
@@ -3939,7 +4178,7 @@ describe("runBuild (branch behavior)", () => {
       const svc = ctx.service as unknown as RunBuildInternals;
       svc.executeInstructedBuild = sinon
          .stub()
-         .resolves({ entries, failures: {} });
+         .resolves({ entries, failures: {}, sourcesRefused: 0 });
       svc.commitManifest = sinon.stub().resolves();
       svc.autoLoadManifest = sinon.stub().resolves();
       return svc;
@@ -3978,6 +4217,9 @@ describe("runBuild (branch behavior)", () => {
          sourcesBuilt: 1,
          sourcesReused: 0,
       });
+      expect(svc.commitManifest.firstCall.args[3]).not.toHaveProperty(
+         "sourcesRefused",
+      );
       // Orchestrated leaves distribution to the caller.
       expect(svc.autoLoadManifest.called).toBe(false);
    });
@@ -4048,6 +4290,91 @@ describe("runBuild (branch behavior)", () => {
       });
       // Auto-run owns distribution: it loads the fresh manifest into the models.
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
+   });
+
+   it("records auto-run's refused sources in the run metadata, not on the manifest", async () => {
+      // A refused source binds no table, and the manifest is what a
+      // strict-schema caller parses, so the list rides the free-form metadata.
+      const svc = stubEngine();
+      const refused = {
+         gated: {
+            name: "gated",
+            sourceID: "gated",
+            tier: "storage",
+            reason: "given",
+            message: "Source 'gated' cannot be materialized",
+         },
+      };
+      (
+         svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
+      ).deriveSelfInstructions = sinon.stub().returns({
+         instructions: [makeInstruction()],
+         carried: {},
+         refused,
+      });
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+         },
+         new AbortController().signal,
+      );
+
+      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+         sourcesBuilt: 1,
+         sourcesRefused: 1,
+         refusedSources: refused,
+      });
+      // Named in the error of a run whose every instructed source failed.
+      expect(svc.executeInstructedBuild.firstCall.args[9]).toEqual([
+         refused.gated,
+      ]);
+   });
+
+   it("counts an orchestrated refusal in the metadata, and lists it only in failures", async () => {
+      const svc = stubEngine();
+      svc.executeInstructedBuild.resolves({
+         entries: {
+            "build-orders": {
+               sourceEntityId: "build-orders",
+               physicalTableName: '"orders_v1"',
+               connectionName: "duckdb",
+            },
+         },
+         failures: {
+            gated: {
+               sourceEntityId: "gated",
+               sourceName: "gated",
+               reason: "Source 'gated' cannot be materialized",
+            },
+         },
+         sourcesRefused: 1,
+      });
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: [makeInstruction()],
+         },
+         new AbortController().signal,
+      );
+
+      expect(svc.commitManifest.firstCall.args[2]).toHaveProperty("gated");
+      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+         sourcesRefused: 1,
+      });
+      expect(svc.commitManifest.firstCall.args[3]).not.toHaveProperty(
+         "refusedSources",
+      );
    });
 
    // What the incremental context is told to do comes from `reseed` ALONE.

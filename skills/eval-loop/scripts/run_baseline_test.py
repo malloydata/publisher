@@ -77,6 +77,23 @@ class FinalQuery(unittest.TestCase):
             rb.pick_final_query(["run: a -> answer"] * 2, calls, text)[2],
             "answer.malloy")
 
+    def test_a_declared_query_matches_however_it_was_laid_out(self):
+        # The executed query is one line with semicolons; the answer prints the
+        # same query on several lines. Before, they never compared equal and
+        # the harness graded the probe that ran last.
+        ran = "run: a -> { where: x = 1; aggregate: n is count() }"
+        calls = [
+            {"tool": "execute_query", "query": ran,
+             "modelPath": "m.malloy", "error": None},
+            {"tool": "execute_query", "query": "run: a -> probe",
+             "modelPath": "p.malloy", "error": None},
+        ]
+        text = ("The filtered total.\n\n```malloy\nrun: a -> {\n  where: x = 1\n"
+                "  aggregate: n is count()\n}\n```")
+        self.assertEqual(
+            rb.pick_final_query([ran, "run: a -> probe"], calls, text),
+            (ran, "declared", "m.malloy"))
+
     def test_a_call_that_named_no_file_reports_none(self):
         # The server resolved the file from its own default, so the run's
         # default is the closer guess than a file another call named.
@@ -1503,6 +1520,16 @@ class GitSha(unittest.TestCase):
             rb.git_sha(pathlib.Path("sub"), scope=pathlib.Path("sub"))
             .endswith("-dirty"))
 
+    def test_dirt_outside_the_scope_is_not_the_models(self):
+        # A scratch file at the repo root: the tree is dirty, the model is not.
+        # Scoped to the package directory the marker says so; unscoped it
+        # stamps a clean model -dirty, which is what every run pin used to read.
+        (self.repo / "scratch.txt").write_text("notes\n")
+        self.assertFalse(
+            rb.git_sha(pathlib.Path("."), scope=pathlib.Path("sub"))
+            .endswith("-dirty"))
+        self.assertTrue(rb.git_sha(pathlib.Path(".")).endswith("-dirty"))
+
     def test_a_relative_path_still_marks_dirt(self):
         self.dirty()
         self.assertTrue(
@@ -1644,3 +1671,68 @@ class OffloadedToolResult(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
+    """`--rebuild --only <qid>` re-derives one case. It used to write the whole
+    ledger from that one case, and a 29-case arm read as a 1-case arm."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.path = self.tmp / "events.jsonl"
+        self.old = [{"kind": "attempt", "qid": "a", "sample": 1},
+                    {"kind": "score", "qid": "a", "verdict": "match"},
+                    {"kind": "attempt", "qid": "b", "sample": 1},
+                    {"kind": "score", "qid": "b", "verdict": "no_match"}]
+        self.path.write_text("".join(json.dumps(e) + "\n" for e in self.old))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_only_the_named_cases_lines_are_replaced(self):
+        new = [{"kind": "attempt", "qid": "b", "sample": 1},
+               {"kind": "score", "qid": "b", "verdict": "match"}]
+        rb.store_events(self.path, new, replaced_qids={"b"})
+        got = [json.loads(l) for l in self.path.read_text().splitlines()]
+        self.assertEqual(got, self.old[:2] + new)
+
+    def test_a_full_write_still_replaces_everything(self):
+        new = [{"kind": "attempt", "qid": "c", "sample": 1}]
+        rb.store_events(self.path, new, None)
+        got = [json.loads(l) for l in self.path.read_text().splitlines()]
+        self.assertEqual(got, new)
+
+
+class PersistedStubIsTheResult(unittest.TestCase):
+    """Above a size the CLI decides, a tool result reaches the answerer as a
+    stub naming a file. Reading the stub as the payload scored 14 of 74
+    get_context calls on one arm as zero entities delivered."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def block(self, text):
+        return {"content": [{"type": "text", "text": text}]}
+
+    def test_the_persisted_output_stub_resolves_to_the_saved_blocks(self):
+        saved = self.tmp / "r.json"
+        saved.write_text(json.dumps([{"type": "text", "text": "ranked: a, b, c"}]))
+        stub = (f"<persisted-output>\nFull output saved to: {saved}\n\n"
+                f"Preview (first 2KB):\nranked: a")
+        self.assertEqual(rb.result_text(self.block(stub)), "ranked: a, b, c")
+
+    def test_the_token_cap_spelling_resolves_to_the_saved_text(self):
+        saved = self.tmp / "r.txt"
+        saved.write_text("ranked: a, b, c")
+        stub = ("Error: result (68,820 characters across 1 line) exceeds maximum "
+                f"allowed tokens. Output has been saved to {saved}.")
+        self.assertEqual(rb.result_text(self.block(stub)), "ranked: a, b, c")
+
+    def test_a_stub_whose_file_is_gone_is_left_as_it_was(self):
+        stub = f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n"
+        self.assertEqual(rb.result_text(self.block(stub)), stub)
+
+    def test_an_ordinary_result_is_unchanged(self):
+        self.assertEqual(rb.result_text(self.block("{\"sources\": []}")), "{\"sources\": []}")
