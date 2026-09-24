@@ -56,7 +56,9 @@ served live. The wrapper is now carried onto the shape verbatim when everything 
 shape; one that reaches a warehouse table or an unmaterialized source still serves live.
 
 **New plan field:** `PersistSourcePlan.joinedTerms` names each caller-scoped join, the joined source,
-and the terms its binding re-applies. A consumer with a strict client of the build plan must add it.
+and the terms its binding re-applies. It is optional and additive: the key is absent unless a source
+declares such a join, so no existing plan changes shape. A consumer generating a strict client from
+`api-doc.yaml` rejects the field until it regenerates.
 
 ---
 

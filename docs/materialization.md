@@ -220,9 +220,10 @@ compile would cost every sibling source in the model its joins, dimensions and m
 access decision, so the grant table's freshness is the revocation latency — and the
 [gated-source staleness rules](#the-freshness-contract-for-a-gated-colocated-persist-source) apply to it in full:
 
-- **Give the grant table a freshness window with `fallback="live"`.** That is the only control that
-  bounds revocation: once the table ages past the window, the sources joining it are withheld and
-  answered live, whether or not a rebuild ever lands. A grant table with no window is never stale,
+- **Give the grant table a freshness window with `fallback="live"`.** A window is the only control
+  that bounds revocation: once the table ages past it, the sources joining it are withheld and
+  answered live, whether or not a rebuild ever lands. (`fallback="fail"` drops to live the same way
+  today; `stale_ok` keeps serving the stale grants, so it bounds nothing.) A grant table with no window is never stale,
   and serves a revoked grant for as long as its table exists.
 - **Do not refresh a grant table incrementally.** A revocation is usually a deleted row, and a
   [delta](#incremental-refresh) reads only rows its watermark admits — a deleted row is never

@@ -4619,7 +4619,6 @@ export class Model {
          };
          const withAll = await probe(lifts);
          if (!(withAll instanceof Error)) return withAll;
-         recordServeShapeTierDrop("lifts");
          const withNone = await probe([]);
          const kept: DerivedSourceLift[] = [];
          let best: ModelMaterializer | undefined;
@@ -4632,6 +4631,7 @@ export class Model {
                best = attempt;
             }
          }
+         if (kept.length < lifts.length) recordServeShapeTierDrop("lifts");
          logger.warn(
             "Storage serve shape failed to compile with its lifted entry points; the ones that do not compile serve live",
             {
@@ -4986,8 +4986,39 @@ export class Model {
       bindings: ServeBinding[],
    ): ServeBinding[] {
       const { contents, sourceNameById, liftText } = this.authorModelLift();
+      // Narrow the declared ::Shape to the source's PUBLIC columns: the build
+      // materializes every projected column (incl. `except:`-ed /
+      // access-restricted ones), so the captured schema can be wider than the
+      // source's public surface. Declaring a hidden column would expose it over
+      // storage when live hides it — always applied (even with no refinements),
+      // so the serve surface never widens the source's.
+      //
+      // Then drop any binding whose public schema is empty. Bindings are pushed
+      // to EVERY model in the package, so a model receives bindings for sources
+      // it doesn't define (defined in a sibling model) — those have no field list
+      // here, hence an empty narrowed schema. An empty `type: X__shape is {}` is
+      // a Malloy parse error that would fail the ENTIRE serve-shape model
+      // (breaking the base-only-always-compiles fallback invariant) and silently
+      // drop storage serving for this model's own sources too. Omitting them
+      // sends queries on an undefined source to live (where this model refuses
+      // them anyway) and keeps a source from being served through a model that
+      // doesn't declare it.
+      //
+      // Done FIRST, because everything below decides against the set of sources
+      // that will actually be on the shape: a join is re-emitted only when its
+      // target is in it, and a caller-scoped joiner is withheld when its target
+      // is not.
+      const onShape = bindings
+         .map((b) => ({
+            ...b,
+            schema: narrowSchemaToPublic(
+               b.schema,
+               contents?.[b.sourceName]?.fields,
+            ),
+         }))
+         .filter((b) => b.schema.length > 0);
       const { kept, withheld } = withholdUnreproducibleCallerScopedJoins(
-         bindings,
+         onShape,
          contents,
          sourceNameById,
       );
@@ -4998,48 +5029,23 @@ export class Model {
          );
       }
       const materializedSourceNames = new Set(kept.map((b) => b.sourceName));
-      return (
-         bindings
-            .filter((b) => materializedSourceNames.has(b.sourceName))
-            .map((b) => {
-               const fields = contents?.[b.sourceName]?.fields;
-               // Narrow the declared ::Shape to the source's PUBLIC columns: the
-               // build materializes every projected column (incl. `except:`-ed /
-               // access-restricted ones), so the captured schema can be wider
-               // than the source's public surface. Declaring a hidden column
-               // would expose it over storage when live hides it — always applied
-               // (even with no refinements), so the serve surface never widens
-               // the source's.
-               const schema = narrowSchemaToPublic(b.schema, fields);
-               const refinements = [
-                  ...extractJoins(fields, {
-                     sourceNameById,
-                     materializedSourceNames,
-                     liftText,
-                  }),
-                  ...extractRefinements(fields),
-                  // The source's own `where:` clauses. Not part of the
-                  // materialized relation (the build SQL is the persisted
-                  // relation alone), so without these the shape serves rows the
-                  // source excludes.
-                  ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
-                  ...extractViews(fields, liftText),
-               ];
-               return { ...b, schema, refinements };
-            })
-            // Drop any binding whose public schema is empty. Bindings are pushed
-            // to EVERY model in the package, so a model receives bindings for
-            // sources it doesn't define (defined in a sibling model) — those have
-            // no field list here, hence an empty narrowed schema. An empty
-            // `type: X__shape is {}` is a Malloy parse error that would fail the
-            // ENTIRE serve-shape model (breaking the base-only-always-compiles
-            // fallback invariant) and silently drop storage serving for this
-            // model's own sources too. Omitting them sends queries on an
-            // undefined source to live (where this model refuses them anyway) and
-            // keeps a source from being served through a model that doesn't
-            // declare it.
-            .filter((b) => b.schema.length > 0)
-      );
+      return kept.map((b) => {
+         const fields = contents?.[b.sourceName]?.fields;
+         const refinements = [
+            ...extractJoins(fields, {
+               sourceNameById,
+               materializedSourceNames,
+               liftText,
+            }),
+            ...extractRefinements(fields),
+            // The source's own `where:` clauses. Not part of the materialized
+            // relation (the build SQL is the persisted relation alone), so
+            // without these the shape serves rows the source excludes.
+            ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
+            ...extractViews(fields, liftText),
+         ];
+         return { ...b, refinements };
+      });
    }
 
    public async getQueryResults(

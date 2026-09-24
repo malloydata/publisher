@@ -869,8 +869,16 @@ function liftQueryDerivedSource(
  */
 function referencedSourceIds(pipeline: unknown): string[] {
    const out: string[] = [];
+   // Too deep to read is a reference that cannot be vouched for, so it refuses
+   // this lift — never an exception, which would escape lift selection and cost
+   // every other lift in the model with it.
+   let tooDeep = false;
    const walk = (node: unknown, depth: number): void => {
-      if (depth > 200) throw new Error("pipeline walk exceeded max depth");
+      if (tooDeep) return;
+      if (depth > 200) {
+         tooDeep = true;
+         return;
+      }
       if (node === null || typeof node !== "object") return;
       if (Array.isArray(node)) {
          for (const item of node) walk(item, depth + 1);
@@ -890,7 +898,7 @@ function referencedSourceIds(pipeline: unknown): string[] {
       }
    };
    walk(pipeline, 0);
-   return out;
+   return tooDeep ? [""] : out;
 }
 
 function liftOneDerivedSource(

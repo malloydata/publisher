@@ -262,8 +262,9 @@ const eligibilityRefusedCounter = lazyCounter(
 const serveShapeTierDropCounter = lazyCounter(
    "publisher_storage_serve_shape_tier_drop_total",
    "storage serve-shape compile escalations: a refinement tier failed to " +
-      "compile and the riskiest category was dropped. Label: tier (the failed " +
-      "tier index, 0=full).",
+      "compile and the riskiest category was dropped, or one or more lifted " +
+      "entry points failed to compile and were dropped alone. Label: tier (the " +
+      "failed tier index, 0=full; 'lifts' for dropped lifts).",
 );
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
@@ -499,6 +500,11 @@ export function recordEligibilityRefused(
  * did not compile, so the riskiest category was dropped and the shape retried.
  * A systematically-dropping source tells authors which refinements aren't
  * servable from storage.
+ *
+ * `"lifts"` records that one or more lifted entry points (derived sources
+ * carried onto the richest rung) did not compile and were dropped alone; it is
+ * recorded only when a lift was actually dropped, not when the probe with every
+ * lift failed and each was then kept.
  */
 export function recordServeShapeTierDrop(failedTier: number | "lifts"): void {
    serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
