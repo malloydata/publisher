@@ -35,6 +35,10 @@ WHAT IT PRODUCES
                      ... }` -- joined from an `extend` in the canonical query.
                      A raw aggregate by key is not semantics, and the
                      Publisher refuses a join declared inline in a query.
+  data/ (a link)     a relative file ref resolves against the SERVED copy of
+                     this package, so the model's data directory is linked in
+                     and the ref keeps its relative form. A ref outside the
+                     package becomes an absolute path.
   publisher.json     the truth package, named, with the standard description.
   publisher.config.json  (--publisher-config) a Publisher server config
                      serving ONLY the truth package, for the second server the
@@ -63,16 +67,44 @@ import config  # noqa: E402
 TABLE_REF = re.compile(r"""(?P<conn>[A-Za-z_][\w]*)\.table\(\s*['"](?P<ref>[^'"]+)['"]\s*\)""")
 
 
-def table_refs(package: pathlib.Path) -> list[tuple[str, str]]:
-    """(connection, table ref) for every distinct table the package reads."""
-    seen: dict[tuple[str, str], None] = {}
+def table_refs(package: pathlib.Path) -> list[tuple[str, str, pathlib.Path]]:
+    """(connection, table ref, the file it is in) for every distinct table read."""
+    seen: dict[tuple[str, str], pathlib.Path] = {}
     for f in sorted(package.rglob("*.malloy")):
         text = f.read_text()
         # Strip comments so a commented-out table does not become a source.
         text = re.sub(r"//[^\n]*", "", text)
         for m in TABLE_REF.finditer(text):
-            seen.setdefault((m.group("conn"), m.group("ref")), None)
-    return list(seen)
+            seen.setdefault((m.group("conn"), m.group("ref")), f)
+    return [(conn, ref, f) for (conn, ref), f in seen.items()]
+
+
+def place_ref(package: pathlib.Path, src: pathlib.Path,
+              ref: str) -> tuple[str, str | None]:
+    """The ref the truth package should use, and the directory to link for it.
+
+    A relative file ref resolves against the SERVED copy of the truth package
+    (Publisher serves a copy under publisher_data/), not against where the
+    model's file sits, so copied verbatim it finds nothing, and `../` out of
+    the package finds nothing either. A ref under a data directory of the
+    model package keeps its relative form and that directory is linked in; a
+    symlink with an absolute target survives the copy. Anything else becomes
+    an absolute path. A directory holding .malloy files is never linked: the
+    truth server would load those models too.
+    """
+    if "://" in ref or pathlib.Path(ref).is_absolute():
+        return ref, None
+    if "/" not in ref and not DATA_EXT.search(ref):
+        return ref, None  # a warehouse table name, not a file
+    target = (src.parent / ref).resolve()
+    try:
+        rel = target.relative_to(package.resolve())
+    except ValueError:
+        return str(target), None
+    top = package.resolve() / rel.parts[0]
+    if len(rel.parts) == 1 or not top.is_dir() or next(top.rglob("*.malloy"), None):
+        return str(target), None
+    return rel.as_posix(), rel.parts[0]
 
 
 # Data-file extensions a table ref may carry. Stripped before anything else
@@ -137,7 +169,15 @@ def main(argv: list[str] | None = None) -> int:
                          f"are the valuable part; delete it yourself if you mean to "
                          f"start over")
 
-    refs = table_refs(a.package)
+    found = table_refs(a.package)
+    links: set[str] = set()
+    refs: list[tuple[str, str]] = []
+    for conn, ref, src in found:
+        served, link = place_ref(a.package, src, ref)
+        if link:
+            links.add(link)
+        if (conn, served) not in refs:
+            refs.append((conn, served))
     if not refs:
         raise SystemExit(f"no <connection>.table('...') references found under {a.package}")
     names: dict[str, int] = {}
@@ -172,6 +212,10 @@ def main(argv: list[str] | None = None) -> int:
         lines.append(f"source: {n} is {conn}.table('{ref}')")
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "truth.malloy").write_text("\n".join(lines) + "\n")
+    for name in sorted(links):
+        link = a.out / name
+        if not link.exists():
+            link.symlink_to(a.package.resolve() / name, target_is_directory=True)
 
     # No "explores" and no index.malloy: the package has one model file, so
     # there is nothing to curate, and goldens address truth.malloy directly
@@ -230,13 +274,14 @@ re-derives them before each run.
     if a.publisher_config:
         print(f"{a.publisher_config}  (serve with: eval-loop/scripts/serve.py "
               f"--server-root <root> --port 4881 --mcp-port 4882 --allow-proxy)")
-    rel = [r for _, r in refs if "/" in r and not r.startswith("/") and "://" not in r]
-    if rel:
-        print(f"\n  ! {len(rel)} table reference(s) are relative paths (e.g. {rel[0]!r}). "
-              f"They resolve against the TRUTH package directory, so point them at "
-              f"the model's data (../{a.package.name}/data/...) or symlink data/ here.")
-    print("\nNext: add scope filters and raw dimensions by hand (see the header), then "
-          "set `truthPackage` in set.json.")
+    for name in sorted(links):
+        print(f"  {a.out / name} -> {(a.package / name).resolve()}  (linked: a "
+              f"relative ref resolves against the served copy, so the data "
+              f"has to be inside the package. The link is this machine's "
+              f"path; to commit the package, copy the data in instead)")
+    print(f"\nNext: add scope filters and raw dimensions by hand (see the header), "
+          f"then set `\"truthPackage\": \"{a.name}\"` in set.json and "
+          f"`[truth] package_dir = \"{a.out.resolve()}\"` in the set's eval.toml.")
     return 0
 
 

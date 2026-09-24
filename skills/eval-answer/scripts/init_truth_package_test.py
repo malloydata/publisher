@@ -46,6 +46,49 @@ class StemTests(unittest.TestCase):
 
 
 
+class RefsWorkOnceServed(unittest.TestCase):
+    """Publisher serves a COPY of the truth package, so refs must survive it."""
+
+    def setUp(self):
+        import tempfile
+        self.root = pathlib.Path(tempfile.mkdtemp()).resolve()
+        self.pkg = self.root / "model"
+        (self.pkg / "data").mkdir(parents=True)
+        (self.pkg / "publisher.json").write_text("{}")
+        (self.root / "shared").mkdir()
+
+    def test_a_data_dir_ref_keeps_its_form_and_the_dir_is_linked(self):
+        src = self.pkg / "m.malloy"
+        self.assertEqual(itp.place_ref(self.pkg, src, "data/u.parquet"),
+                         ("data/u.parquet", "data"))
+
+    def test_a_ref_out_of_the_package_becomes_absolute(self):
+        src = self.pkg / "m.malloy"
+        self.assertEqual(itp.place_ref(self.pkg, src, "../shared/u.parquet"),
+                         (str(self.root / "shared" / "u.parquet"), None))
+
+    def test_a_dir_holding_models_is_not_linked(self):
+        (self.pkg / "models").mkdir()
+        (self.pkg / "models" / "x.malloy").write_text("")
+        src = self.pkg / "models" / "x.malloy"
+        self.assertEqual(itp.place_ref(self.pkg, src, "u.parquet"),
+                         (str(self.pkg / "models" / "u.parquet"), None))
+
+    def test_a_warehouse_table_is_left_alone(self):
+        self.assertEqual(itp.place_ref(self.pkg, self.pkg / "m.malloy",
+                                       "analytics.public.orders"),
+                         ("analytics.public.orders", None))
+
+    def test_main_links_the_data_dir(self):
+        (self.pkg / "m.malloy").write_text(
+            "source: u is duckdb.table('data/u.parquet')\n")
+        out = self.root / "truth"
+        itp.main(["--package", str(self.pkg), "--out", str(out), "--name", "t"])
+        self.assertTrue((out / "data").is_symlink())
+        self.assertEqual((out / "data").resolve(), self.pkg / "data")
+        self.assertIn("duckdb.table('data/u.parquet')", (out / "truth.malloy").read_text())
+
+
 class OutMustBeOutsideThePackage(unittest.TestCase):
     """A truth package inside the model package is served by the model server."""
 
