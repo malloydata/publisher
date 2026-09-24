@@ -55,17 +55,20 @@ condition the customer question is measuring, and correcting the sentence here
 would hide it. A run should surface it; `skill:eval-improve` is where it gets
 fixed, if you decide to fix it.
 
-### Two warnings that are expected
+### What is expected, and not a defect
 
-Every run reports both, and neither is a defect:
-
-- `verify_goldens.py` warns that `signup_date` and `retail_price` "appear
-  nowhere in the served model". They are columns the sources expose implicitly
-  from the parquet, invisible to a grep of the `.malloy`.
+- `verify` prints `ok=11  skipped=1`, then 17 "rubric figures to review" and
+  2 "other review items" on `best-customers`. Both lists are prompts to read a
+  rubric against its rows, not failures; the figures are the tolerance band
+  each rubric accepts and the wrong answers it names.
+- With `--model examples/storefront`, `verify` also audits every entity id
+  against the model text, and reports that `signup_date` and `retail_price`
+  appear nowhere in it. They are columns the sources expose implicitly from the
+  parquet, invisible to a grep of the `.malloy`, and both cases pass.
 - `check_coverage.py` marks `signup-cohort-2025` and `avg-discount` as not
-  answerable, for the same reason — it judges from the model text. Both cases
-  pass. This drags reported coverage down by two and is a limitation of the
-  coverage check, not of the model.
+  answerable, for the same reason: it judges from the model text. This drags
+  reported coverage down by two and is a limitation of the coverage check, not
+  of the model.
 
 Do not declare those fields to silence either warning: the cases pass, and
 declaring a field to quiet a checker changes the thing being measured.
@@ -74,11 +77,18 @@ declaring a field to quiet a checker changes the thing being measured.
 
 From a clone, with Node 20+, Bun, Python 3.11+ and a Java runtime (the SDK
 build runs openapi-generator). Every command reads `eval.toml`, so none of
-them takes a server flag. Build once:
+them takes a server flag. Build once, then check the set:
 
 ```bash
 bun install && bun run build
+bun run eval -- check --set examples/storefront/evals/storefront-tour
 ```
+
+`check` names every gap before anything starts, including a port another
+process already holds. The servers use 4000/4040 and 4881/4882; if any is
+taken, change the port in `eval.toml`, which every later step reads. A
+`--port` flag on `serve` would not reach them, so `serve` refuses one that
+disagrees with the file.
 
 **1. Serve the model the answerer will query, and the truth package.** Two
 servers: the truth package holds the answer key's derivations, so it must
@@ -116,7 +126,9 @@ The run goes to `~/.malloy-eval/storefront-tour/runs/baseline-01`, outside
 this repository. It holds the transcripts, the verdicts and the pins, and the
 path is printed at the start.
 
-**4. Diagnose what failed.**
+**4. Diagnose what failed.** About $0.60 and three minutes per failed case: an
+agent reads each failure's transcript, then one more clusters them. A run where
+everything passed records an empty diagnosis, so step 5 still builds.
 
 ```bash
 bun run eval -- diagnose --set examples/storefront/evals/storefront-tour \
@@ -137,11 +149,10 @@ it does not belong in this directory.
 
 ## Running it on your own questions
 
-Replace `as-received/questions.md` and `cases.jsonl`, point `eval.toml` at
-your package and truth package, and drop the goldens. A set of bare questions runs: the answers it
-produces are what keys get derived from, and
-`verify_goldens.py --promote` fixes them afterwards. `skill:eval-import` is
-that job in full.
+[`skills/eval-loop/reference/setting-up-a-set.md`](../../../../skills/eval-loop/reference/setting-up-a-set.md)
+is that path in order: the files a set needs, the truth package, `eval.toml`,
+and when to run `check`. `skill:eval-import` turns questions in any shape into
+cases.
 
 The truth package is the part worth copying rather than reinventing: one
 source per raw table your model reads, no measures, no joins, nothing else. A

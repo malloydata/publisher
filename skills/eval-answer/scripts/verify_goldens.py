@@ -1484,7 +1484,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="case file to verify, relative to the set dir")
     ap.add_argument("--model", type=pathlib.Path, default=None,
                     help="the model under test (file or package dir), for the "
-                         "stale-rubric audit")
+                         "stale-rubric and entity-id audits. Not defaulted: the "
+                         "entity audit greps the model text, and a column a "
+                         "source exposes implicitly reads as missing")
     ap.add_argument("--refresh", action="store_true",
                     help="rewrite each drifted golden's value from the fresh rows "
                          "and bump its goldenRevision. For drift, not for a wrong "
@@ -1516,7 +1518,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="print every rubric-figure review item, not the first five")
     ap.add_argument("--target-package",
                     help="the package under test, for the isolation guard. "
-                         "Falls back to set.json's `targetPackage`")
+                         "Default: [model] package in eval.toml, then set.json's "
+                         "`targetPackage`")
     ap.add_argument("--definitions", type=pathlib.Path, default=None,
                     help="a definition ledger (verify_definitions.py). With no "
                          "truth server, a set whose every value-bearing case "
@@ -1528,6 +1531,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = config.load(args.set_dir)
         args.publisher = args.publisher or cfg.truth_publisher()
+        args.target_package = args.target_package or cfg.get("model", "package")
         if args.publisher:
             args.environment = cfg.need(args.environment, "truth",
                                         "environment", "--environment")

@@ -10,7 +10,8 @@ check, a judge, and a conformant `events.jsonl`.
 
 Every step reads the set's `eval.toml`: the model server's environment,
 package, repo and ports, and the truth server's. Write it once per set, beside
-`set.json`. Relative paths resolve against the file.
+`set.json`. Relative paths resolve against the file. A set that does not exist
+yet starts at `setting-up-a-set.md`, beside this file.
 
 ```toml
 [model]                  # the Publisher the answerer queries
@@ -36,6 +37,12 @@ package into `loadErrors`. Each command below is `skills/eval-loop/scripts/eval.
 script takes passes through.
 
 ```bash
+# 0. every gap in the set at once, before anything starts: missing files, a
+#    case the importer refuses, a truth package the model server would serve,
+#    a table path that resolves to nothing once served, a port already held.
+#    Free, and it starts nothing. Exits 1 until nothing blocks a run.
+eval.py check --set <set>
+
 # 1. serve the model under test, and the TRUTH package on a second server the
 #    answerer has no route to. Each runs in its own session, so the shell's
 #    exit cannot take it down, and returns only once it answers a query. The
@@ -64,8 +71,9 @@ eval.py serve truth --set <set> [--allow-proxy]
 #     --definitions <ledger> (verify_definitions.py), a set whose every
 #     value-bearing case rests on validated definitions exits 0 instead:
 #     the composition rule, values not re-derived but their definitions
-#     checked.
-eval.py verify --set <set> --model <package> --target-package <pkg>
+#     checked. --model adds the entity-id audit; it greps the model text, so a
+#     column a source exposes implicitly reads as missing.
+eval.py verify --set <set> [--model <package>]
 
 # 2b. ONLY on a set whose keys are still provisional -- an imported one is,
 #     throughout, by design. Nothing else in this toolchain writes
@@ -74,7 +82,7 @@ eval.py verify --set <set> --model <package> --target-package <pkg>
 #     AND carries a second derivation, and prints the reason for every golden
 #     it left alone. `--refresh` is NOT this: it rewrites a drifted value and
 #     never touches a status.
-eval.py verify --set <set> --target-package <pkg> --promote
+eval.py verify --set <set> --promote
 
 # 2. smoke one case first ($0.13), then the arm. Goldens are re-derived from
 #    the truth server before either starts; a drifted set refuses to run.
@@ -115,7 +123,8 @@ eval.py diagnose --set <set> --label <label>
 #     diagnosis)
 
 # 5. build the browsable package. Refused until every run has a diagnosis
-#    (--without-diagnosis overrides); pass --run twice for an A/B.
+#    (--without-diagnosis overrides); a run where everything passed records an
+#    empty one. Pass --run twice for an A/B.
 eval.py package --set <set> --label <label>
 ```
 

@@ -30,12 +30,13 @@ undone.
 
 ## Where the rest of this lives
 
-This file is the procedure. Five things it used to carry inline are files beside
+This file is the procedure. The things it used to carry inline are files beside
 it now, because each is needed at one moment rather than every run, and loading
 all of them for every run is how a skill stops being read.
 
 | When | Read |
 |---|---|
+| the set does not exist yet, or has never run | `reference/setting-up-a-set.md` |
 | about to run one | `reference/running-a-run.md` |
 | a golden is wrong, doubted, or out of step with the model | `reference/golden-side-door.md` |
 | auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
