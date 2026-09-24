@@ -2992,11 +2992,12 @@ export class Model {
     * `run:` statement's, since Malloy runs the last and the compiled backstop
     * needs a compile that `/compile` would answer with diagnostics. A target
     * naming a declared query is gated as the source that query reads. When the
-    * targets cannot all be read, the first is gated as before; an
-    * unnamed/inline source resolves to `undefined`, so nothing gates it — the
-    * same top-level-only boundary as the query path's early gate. Used by the
-    * `/compile` path, which has no runnable to resolve before it decides
-    * whether to compile at all.
+    * targets cannot all be read, the text is refused before compiling when the
+    * model gates anything (an unreadable target could be the gated one), and
+    * compiled as-is otherwise; an unnamed/inline source resolves to `undefined`,
+    * so nothing gates it — the same top-level-only boundary as the query path's
+    * early gate. Used by the `/compile` path, which has no runnable to resolve
+    * before it decides whether to compile at all.
     *
     * Takes no bypass argument, deliberately. `/compile` returns schema and, with
     * `includeSql`, SQL; no caller needs to compile through a gate, so the
@@ -3007,29 +3008,27 @@ export class Model {
       text: string,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      const all = extractRunTargetSourceNames(text);
-      const first = extractRunTargetSourceName(text);
-      const targets: (string | undefined)[] =
-         all && all.length > 0 ? all : [first];
-      for (const target of targets) {
-         await this.assertAuthorized(
-            target === undefined ? undefined : this.textRunTargetSource(target),
-            givens,
-         );
-         // The same caller-declared-alias gap the query path closes, and it
-         // bites harder here: `/compile` answers WITH the compiler's
-         // diagnostics, so a lock that is not decided first makes them readable
-         // for a source the caller is refused. Text with no `run:` resolves no
-         // target and is walked anyway — a bare `source: s is locked extend
-         // { … }` is exactly the shape that reaches the compiler with nothing
-         // gated.
-         if (!hasCallerAuthorizeAnnotation(text)) {
-            await this.assertLocksOnRequestDeclaredBases(
-               target ?? "",
-               text,
-               givens,
-            );
+      const sources = this.textRunTargetSources(text);
+      if (sources === undefined) {
+         // A run target the reader cannot name. /compile answers WITH the
+         // compiler's diagnostics, so a target that might reach a gate must be
+         // refused before compiling, not handed those diagnostics. When the
+         // model gates anything, deny opaquely — naming no source, since we
+         // cannot tell which statement the unreadable target is. An ungated
+         // model has nothing to protect this way, so it compiles as before.
+         if (this.hasAnyAuthorizeNote()) {
+            throw new AccessDeniedError("Access denied.");
          }
+         return;
+      }
+      // A caller-declared-alias gap the query path closes, and it bites harder
+      // here: a lock not decided first makes the diagnostics readable for a
+      // source the caller is refused. Text with no `run:` resolves no target
+      // (`[undefined]`) and its declared bases are walked anyway — a bare
+      // `source: s is locked extend { … }` reaches the compiler with nothing
+      // gated. `/compile` plumbs no bypass, deliberately (see the doc above).
+      for (const target of sources.length > 0 ? sources : [undefined]) {
+         await this.assertLocksBeforeCompile(target, text, givens, undefined);
       }
    }
 
@@ -3041,15 +3040,28 @@ export class Model {
     * would let a later hidden, gated target keep a 403 that names it. So the
     * denial is masked when ANY run target falls outside what the query surface
     * admits (curated, or derived from curated through the text's own
-    * declarations). When the targets cannot all be read, only the
-    * first-statement check applies, as the gate itself then gated only the
-    * first. No-ops past the file-level check when the boundary is inert.
+    * declarations). When the targets cannot all be read, the denial is masked
+    * to the generic 404 outright, since none of them can be proven curated.
+    * No-ops past the file-level check when the boundary is inert.
     */
    public assertTextRunTargetsQueryable(text: string): void {
       this.assertQueryBoundaryEarly(undefined, undefined, text);
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
-      for (const target of extractRunTargetSourceNames(text) ?? []) {
+      const targets = extractRunTargetSourceNames(text);
+      if (targets === undefined) {
+         // A run target the reader cannot name, under a surface: mask to the
+         // generic 404, the same answer a hidden target gets. We cannot prove
+         // every target is curated, so the denial must not pass through as a
+         // 403 — a 403-vs-404 split is itself the enumeration signal the mask
+         // exists to close.
+         throw this.notQueryable(
+            "Query target is not queryable.",
+            false,
+            "source",
+         );
+      }
+      for (const target of targets) {
          const source = this.textRunTargetSource(target);
          if (
             this.isCuratedSource(source) ||
@@ -4151,7 +4163,7 @@ export class Model {
     * still decides.
     */
    private async assertLocksBeforeCompile(
-      target: string,
+      target: string | undefined,
       query: string | undefined,
       givens: Record<string, GivenValue> | undefined,
       bypassAuthorize: boolean | undefined,
@@ -4160,10 +4172,10 @@ export class Model {
       if (
          query &&
          !hasCallerAuthorizeAnnotation(query) &&
-         !this.entryPointGatesBySource.has(target)
+         !this.entryPointGatesBySource.has(target ?? "")
       ) {
          await this.assertLocksOnRequestDeclaredBases(
-            target,
+            target ?? "",
             query,
             givens ?? {},
             bypassAuthorize,
@@ -4179,6 +4191,24 @@ export class Model {
    private textRunTargetSource(name: string): string {
       if (this.sources?.some((s) => s.name === name)) return name;
       return this.queries?.find((q) => q.name === name)?.sourceName ?? name;
+   }
+
+   /**
+    * Every `run:` target in ad-hoc text, each resolved to the source whose gate
+    * applies ({@link textRunTargetSource}); `undefined` when any run target is
+    * in a form the reader cannot name (a parenthesised target, a `compose(…)`,
+    * an arrow the regex misses). An empty array means the text runs nothing.
+    *
+    * The one reader every lock/disclosure decision on caller text shares, so
+    * they cannot disagree about which statements exist. `undefined` means "some
+    * target could not be read": a caller must refuse, never fall back to the
+    * subset it could read — that subset is exactly what let a gated later
+    * statement escape when each site handled the gap its own way.
+    */
+   private textRunTargetSources(text: string): string[] | undefined {
+      const names = extractRunTargetSourceNames(text);
+      if (names === undefined) return undefined;
+      return names.map((n) => this.textRunTargetSource(n));
    }
 
    /**
@@ -5522,6 +5552,27 @@ export class Model {
          query,
       );
 
+      // A run target the reader cannot name (a parenthesised target, a
+      // `compose(…)`), in a model that gates something, with no discovery
+      // surface: refuse before compiling. We cannot prove the unreadable target
+      // does not reach a gate, and with no surface nothing else refuses it — the
+      // run path would hand back either the compiler's field error or the
+      // compiled 403, and the split between those is a column oracle. Denying
+      // here, before compiling, makes the two indistinguishable. With a surface
+      // the compiled boundary answers 404 for both, so this is scoped to
+      // `cleared` (no surface); an ungated model has nothing to protect and
+      // keeps its diagnostic.
+      if (
+         !sourceName &&
+         !queryName &&
+         query &&
+         boundary === "cleared" &&
+         this.hasAnyAuthorizeNote() &&
+         this.textRunTargetSources(query) === undefined
+      ) {
+         throw new AccessDeniedError("Access denied.");
+      }
+
       // Early fast-path authorize gate (before loadQuery). Resolve the source
       // from surface syntax; gate if it names one. This runs BEFORE compilation
       // so the gate can't be used as a schema oracle — without it, a denied
@@ -5962,11 +6013,8 @@ export class Model {
       //
       // The early authorize gate above reads only the FIRST run target, and
       // the compiled gate needs a compile, so before any problem is returned
-      // every run target's locks are decided here: a caller a lock refuses
-      // gets its 403 whichever statement the locked source sits in. Text whose
-      // targets cannot all be read is answered here only where no lock could
-      // apply (no surface, no gate anywhere in the model); otherwise it keeps
-      // the path it had, since there is no target list to decide locks for.
+      // every run target's lock is decided here: a caller a lock refuses gets
+      // its 403 whichever statement the locked source sits in.
       //
       // Skipped when the query routed: the routed runnable compiled the same
       // text, so it has no compile error to report, and checking the live one
@@ -5979,15 +6027,15 @@ export class Model {
          runnable === liveRunnable
       ) {
          const compileError = await compileErrorOf(liveRunnable);
-         const targets = compileError
-            ? (extractRunTargetSourceNames(query) ?? [])
-            : [];
-         if (
-            compileError &&
-            !isGivenBindingFailure(compileError) &&
-            (targets.length > 0 ||
-               (boundary !== "deferred" && !this.hasAnyAuthorizeNote()))
-         ) {
+         // An unreadable run target is settled pre-compile above (no surface),
+         // or by the compiled 404 backstop below (surface), so `sources` is a
+         // read list here; `undefined` only reaches this in an ungated
+         // no-surface model, where the diagnostic is the caller's to see.
+         const sources =
+            compileError && !isGivenBindingFailure(compileError)
+               ? this.textRunTargetSources(query)
+               : undefined;
+         if (compileError && sources !== undefined) {
             if (
                boundary === "deferred" &&
                !this.queryTextRunTargetsQueryable(query)
@@ -5998,9 +6046,9 @@ export class Model {
                   "source",
                );
             }
-            for (const target of targets) {
+            for (const target of sources) {
                await this.assertLocksBeforeCompile(
-                  this.textRunTargetSource(target),
+                  target,
                   query,
                   givens,
                   bypassAuthorize,

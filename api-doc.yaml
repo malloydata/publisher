@@ -1842,6 +1842,13 @@ paths:
         access to all sources, imports, and queries defined in the model.
         Relative imports resolve correctly against sibling model files.
         Returns compilation status and any problems (errors or warnings) found.
+
+        An `#(authorize)` lock is evaluated before compiling: every `run:`
+        statement's target is decided, and a caller a lock refuses gets a 403
+        rather than the compiler's diagnostics for a source it may not read. A
+        run target the reader cannot name (a parenthesised target, a
+        `compose(…)`) is refused before compiling when the model declares any
+        gate.
       parameters:
         - name: environmentName
           in: path

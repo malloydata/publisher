@@ -1106,15 +1106,18 @@ export class Environment {
             }
 
             // Compiled-source backstops — run REGARDLESS of includeSql. They
-            // gate the source the COMPILED final query actually reads, closing
-            // named-query / multi-statement indirection the early surface-syntax
-            // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
-            // matches the FIRST `run:`, but the LAST statement is what executes).
-            // Compiling a gated source even without SQL is a schema oracle
-            // (field-not-found errors leak its columns), so this must not be
-            // conditional on SQL extraction. (A `source: x is gated` alias
-            // carries the gate: only a declaration of its OWN `#(authorize)`
-            // replaces it, and caller text may not declare one.)
+            // gate the source the COMPILED final query actually reads. The early
+            // text gate decides every readable run target's lock, so this is no
+            // longer where a later `run:` is first caught; it settles the
+            // COMPILED run target and so still catches a gate reached through
+            // derivation the text walk cannot resolve, and a target the text
+            // reader could not name at all (which the early gate refused before
+            // compiling only when the model declared a gate). Compiling a gated
+            // source even without SQL is a schema oracle (field-not-found errors
+            // leak its columns), so this must not be conditional on SQL
+            // extraction. (A `source: x is gated` alias carries the gate: only a
+            // declaration of its OWN `#(authorize)` replaces it, and caller text
+            // may not declare one.)
 
             // No boundary backstop here: /compile is exempt from the query
             // boundary by design (see the gate comment above). Only the

@@ -1325,6 +1325,55 @@ source: locked is duckdb.sql("select 1 as id") extend {
       }
    });
 
+   it("an unreadable run target in a gated model with no surface is refused before compiling, opaquely", async () => {
+      // A parenthesised run target the reader cannot name. With no surface,
+      // nothing else refuses it before the run path, so a gated model would
+      // otherwise leak: a missing field returns the compile error and a real
+      // one the compiled 403 — a column oracle. All three answer identically.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "surface.malloy"),
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: gated is duckdb.sql("SELECT 1 as x, 42 as secret") extend {
+  measure: c is count()
+}
+source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("surface.malloy")!;
+         const answers = await Promise.all(
+            [
+               // missing field: text does not compile
+               "run: open_src -> { aggregate: c }\nrun: (gated) -> { group_by: nope }",
+               // real field: text compiles, gate would name the source
+               "run: open_src -> { aggregate: c }\nrun: (gated) -> { group_by: secret }",
+               // an open source in the same unreadable form is refused too —
+               // the conservative cost of not reading the target
+               "run: (open_src) -> { aggregate: c }",
+            ].map((q) =>
+               model.getQueryResults(undefined, undefined, q).then(
+                  () => "COMPILED",
+                  (e: Error) => `${e.constructor.name}:${e.message}`,
+               ),
+            ),
+         );
+         expect(answers[0]).toContain("AccessDeniedError");
+         expect(answers[0]).not.toContain("nope");
+         expect(answers[0]).not.toContain("gated");
+         // Missing field, real field and an open target are indistinguishable.
+         expect(new Set(answers).size).toBe(1);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("a gated source refuses a caller its gate denies before any compile error, in whichever statement it sits", async () => {
       // The compile problems are the caller's only on the far side of the
       // authorize gate: a caller the gate denies gets its 403, typo or not.

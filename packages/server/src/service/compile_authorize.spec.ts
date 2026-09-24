@@ -91,16 +91,60 @@ describe("compile-path authorize gate (compileSource)", () => {
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("denies a gated source reached via the LAST run: statement (backstop, includeSql=false)", async () => {
-      // Regression guard: the early gate only matches the first `run:` (ungated
-      // open_src here), so the gated source in the executed final statement is
-      // caught only by the compiled-source backstop — which must run even when
-      // no SQL is requested.
+   it("denies a gated source reached via a LATER run: statement, before compiling", async () => {
+      // The pre-compile text gate reads EVERY run target, so the gated source
+      // in a later statement is denied before compiling, whether or not SQL is
+      // requested. (The compiled-source backstop below is the second layer for
+      // a gate the text walk cannot resolve; with the walk widened it no longer
+      // has an input that reaches it first — see the schema-oracle test.)
       await expect(
          compile(
             "run: open_src -> { aggregate: c }\nrun: gated -> { aggregate: c }",
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("denies a later gated statement in text that does not compile, before returning its diagnostics", async () => {
+      // The compiled backstop needs a compile; when the text does not compile,
+      // only the pre-compile text gate stands between a refused caller and the
+      // diagnostics. A missing field must not answer differently from a real
+      // one — that difference is the column oracle.
+      const missing = await compile(
+         "run: open_src -> { aggregate: c }\nrun: gated -> { group_by: no_such_field }",
+      ).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(missing).toBeInstanceOf(AccessDeniedError);
+      expect(String(missing!.message)).not.toContain("no_such_field");
+      // A caller the gate admits still gets its own diagnostics.
+      const { problems } = await compile(
+         "run: open_src -> { aggregate: c }\nrun: gated -> { group_by: no_such_field }",
+         { ROLE: "analyst" },
+      );
+      expect(problems.some((p) => p.severity === "error")).toBe(true);
+   });
+
+   it("refuses an unreadable run target in a gated model before compiling, opaquely", async () => {
+      // A parenthesised run target the text reader cannot name. In a gated
+      // model it could be the gated one, and /compile answers WITH diagnostics,
+      // so it is refused before compiling. The refusal names no source, and a
+      // missing field and a real one answer identically — no column oracle.
+      const denials = await Promise.all(
+         [
+            "run: open_src -> { aggregate: c }\nrun: (gated) -> { group_by: no_such_field }",
+            "run: open_src -> { aggregate: c }\nrun: (gated) -> { aggregate: c }",
+         ].map((src) =>
+            compile(src).then(
+               () => "COMPILED",
+               (e: Error) => `${e.constructor.name}:${e.message}`,
+            ),
+         ),
+      );
+      expect(denials[0]).toBe(denials[1]);
+      expect(denials[0]).toContain("AccessDeniedError");
+      expect(denials[0]).not.toContain("gated");
+      expect(denials[0]).not.toContain("no_such_field");
    });
 
    it("decides a later statement's lock BEFORE compiling, so a decoy first statement is not a schema oracle", async () => {
@@ -425,6 +469,10 @@ source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
             `##! experimental.givens
 import "secret.malloy"
 
+// A hidden (non-exported) top-level query over the hidden gated source. Its
+// run target resolves to hidden_gated, which the caller may not name.
+query: hidden_q is hidden_gated -> { aggregate: c }
+
 #(authorize) 'analyst' = $ROLE
 source: visible_gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
@@ -477,11 +525,12 @@ export { customers, visible_gated }`,
    });
 
    it("a multi-statement decoy cannot keep the 403 that names the hidden source", async () => {
-      // The early text gate resolves only the FIRST run: statement (the
-      // curated decoy), so converting the denial on surface syntax alone let
-      // this probe through with `Access denied for source "hidden_gated"` —
-      // the verbatim existence proof the mask exists to withhold. The
-      // conversion settles the COMPILED run target instead.
+      // The pre-compile gate reads every run target, so it denies the hidden
+      // gated last statement, and the conversion masks that denial to the
+      // generic 404 — where an unmasked 403 would name hidden_gated, the
+      // verbatim existence proof the mask exists to withhold. (Before every
+      // target was read, this rode the compiled-target conversion; either way
+      // the answer is the mask.)
       await expect(
          env.compileSource(
             "pkg",
@@ -528,6 +577,26 @@ export { customers, visible_gated }`,
             false,
          ),
       ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("a hidden named query plus an unreadable statement stays a 404, not a 403 that names the hidden source", async () => {
+      // The pre-compile gate resolves `hidden_q` to hidden_gated and denies.
+      // The second statement's target is unreadable, so the conversion cannot
+      // read every target — it must mask the denial to the generic 404 outright
+      // rather than let a 403 naming hidden_gated through.
+      const err = await env
+         .compileSource(
+            "pkg",
+            "index.malloy",
+            "run: hidden_q + { limit: 1 }\nrun: (x) -> { aggregate: c }",
+            false,
+         )
+         .then(
+            () => undefined,
+            (e: Error) => e,
+         );
+      expect(err).toBeInstanceOf(NotQueryableError);
+      expect(String(err!.message)).not.toContain("hidden_gated");
    });
 
    it("a derivation alias over the VISIBLE gated source keeps its 403", async () => {
