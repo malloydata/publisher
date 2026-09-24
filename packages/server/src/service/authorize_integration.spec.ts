@@ -3657,6 +3657,56 @@ source: laundered is locked_src -> { group_by: region }
    // not a silently dropped guarantee.
 });
 
+describe("the pre-compile lock reads keywords in any case", () => {
+   const MODEL = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: kc_gated is duckdb.table('customers') extend { measure: c is count() }
+
+source: kc_open is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   for (const query of [
+      "RUN: kc_gated -> { group_by: no_such_field }",
+      "Run: kc_gated -> { group_by: no_such_field }",
+      "SOURCE: mine IS kc_gated EXTEND {}\nRUN: mine -> { group_by: no_such_field }",
+   ]) {
+      it(`denies before compiling: ${JSON.stringify(query)}`, async () => {
+         await writeModel("keyword_case.malloy", MODEL);
+         const err = await runGated("keyword_case.malloy", query, {}).then(
+            () => undefined,
+            (e: Error) => e,
+         );
+         expect(err).toBeInstanceOf(AccessDeniedError);
+         expect(String(err!.message)).not.toContain("no_such_field");
+      });
+   }
+
+   it("still admits the permitted caller through `RUN:`", async () => {
+      await writeModel("keyword_case.malloy", MODEL);
+      const { result } = await runGated(
+         "keyword_case.malloy",
+         "RUN: kc_gated -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("still reports compile errors for an ungated `RUN:` target", async () => {
+      await writeModel("keyword_case.malloy", MODEL);
+      await expect(
+         runGated(
+            "keyword_case.malloy",
+            "RUN: kc_open -> { group_by: no_such_field }",
+            {},
+         ),
+      ).rejects.not.toBeInstanceOf(AccessDeniedError);
+   });
+});
+
 // Two more oracle/consistency holes, found by an independent review pass. Both
 // concern a source the PACKAGE declares — no caller-declared alias involved — so
 // neither is covered by the known limitation about caller-declared sources.

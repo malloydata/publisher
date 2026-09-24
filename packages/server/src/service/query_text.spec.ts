@@ -43,6 +43,24 @@ describe("service/query_text", () => {
          ).toBe("flights");
       });
 
+      it("reads `run:` in any keyword case, keeping the name's own case", () => {
+         // Malloy keywords are case-insensitive; a lowercase-only reader let
+         // `RUN:` skip every pre-compile check keyed on the run target.
+         expect(extractRunTargetSourceName("RUN: Flights -> { x }")).toBe(
+            "Flights",
+         );
+         expect(extractRunTargetSourceName("Run: flights -> { x }")).toBe(
+            "flights",
+         );
+         expect(extractRunTargetSourceName("rUn :`my-src` -> { x }")).toBe(
+            "my-src",
+         );
+      });
+
+      it("reads a non-ASCII run target", () => {
+         expect(extractRunTargetSourceName("run: café -> { x }")).toBe("café");
+      });
+
       it("returns undefined when there is no run target", () => {
          expect(
             extractRunTargetSourceName("source: x is y + { dimension: a }"),
@@ -138,6 +156,17 @@ describe("service/query_text", () => {
          expect(
             buildSourceAliasMap("source: café is protected").get("café"),
          ).toBe("protected");
+      });
+   });
+
+   describe("buildSourceAliasMap keyword case", () => {
+      it("reads `SOURCE:` / `IS` in any case", () => {
+         expect(buildSourceAliasMap("SOURCE: a IS b")).toEqual(
+            new Map([["a", "b"]]),
+         );
+         expect(buildSourceAliasMap("Source: A Is B extend {}")).toEqual(
+            new Map([["A", "B"]]),
+         );
       });
    });
 
@@ -284,6 +313,19 @@ describe("service/query_text", () => {
          expect(
             buildDerivationBaseMap("source: mine(p::string) is Open"),
          ).toEqual(new Map([["mine", new Set(["Open"])]]));
+      });
+
+      it("reads `SOURCE:` / `QUERY:` / `IS` in any case", () => {
+         expect(
+            buildDerivationBaseMap(
+               "SOURCE: a IS b EXTEND {}\nQuery: q iS a -> { x }",
+            ),
+         ).toEqual(
+            new Map([
+               ["a", new Set(["b"])],
+               ["q", new Set(["a"])],
+            ]),
+         );
       });
 
       it("does not read a forged declaration out of a string literal", () => {

@@ -18,6 +18,22 @@
  */
 
 /**
+ * A bare or backtick-quoted Malloy identifier, capturing the bare form and the
+ * quoted form's inner name in two consecutive groups. `\w` is ASCII-only, so
+ * the bare form uses Unicode property classes (`café` is a legal name).
+ */
+const IDENT = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
+
+/**
+ * A regex over caller text whose keywords match in any case, as Malloy's lexer
+ * reads them: `RUN:` compiles, and a lowercase-only reader let it skip every
+ * pre-compile check keyed on the run target. Identifiers are captured verbatim.
+ */
+function keywordPattern(pattern: string, flags = ""): RegExp {
+   return new RegExp(pattern, `iu${flags}`);
+}
+
+/**
  * The top-level source a `run:` / `->` query targets, or undefined when the
  * text has no recognizable run target.
  */
@@ -31,11 +47,13 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
    // column-type oracle on a source the caller is denied on) while the compiled
    // backstop denied them a moment later. Anchoring on `run:` is what keeps this
    // safe to widen: the identifier after it is the run target or nothing.
-   const runMatch = query.match(/run\s*:\s*(?:`([^`]+)`|(\w+))/);
+   const runMatch = query.match(keywordPattern(String.raw`run\s*:\s*${IDENT}`));
    // The bare leading-`->` form still requires the arrow. Without it this would
    // match the first word of any statement (`source`, `query`, …) and resolve a
    // keyword as the run target.
-   const arrowMatch = query.match(/^\s*(?:`([^`]+)`|(\w+))\s*->/m);
+   const arrowMatch = query.match(
+      keywordPattern(String.raw`^\s*${IDENT}\s*->`, "m"),
+   );
    return runMatch?.[1] ?? runMatch?.[2] ?? arrowMatch?.[1] ?? arrowMatch?.[2];
 }
 
@@ -77,10 +95,9 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
    // so the pattern matching the compiler's reading is what the guarantee rests
    // on. Deliberately still `source:`-only and single-valued: this feeds
    // `resolveFilterSource`, which needs exactly one base to inject from.
-   const ident = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
-   const declRe = new RegExp(
-      String.raw`source\s*:\s*${ident}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${ident}`,
-      "gu",
+   const declRe = keywordPattern(
+      String.raw`source\s*:\s*${IDENT}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${IDENT}`,
+      "g",
    );
    let match: RegExpExecArray | null;
    while ((match = declRe.exec(text)) !== null) {
@@ -215,15 +232,13 @@ export function buildDerivationBaseMap(
 ): Map<string, Set<string>> {
    const basesOf = new Map<string, Set<string>>();
    const text = stripMalloyCommentsAndLiterals(query);
-   // `\w` is ASCII-only, so `café` matched nothing; identifiers use the
-   // Unicode property classes instead. An optional parameter list after the
-   // name (`mine(p::string) is …`) and an optional `(` before the base
-   // (`is (X extend { … })`) are both read, because both are legal grammar a
-   // narrower pattern silently declined to link.
-   const ident = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
-   const declRe = new RegExp(
-      String.raw`(?:source|query)\s*:\s*${ident}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${ident}`,
-      "gu",
+   // An optional parameter list after the name (`mine(p::string) is …`) and an
+   // optional `(` before the base (`is (X extend { … })`) are both read,
+   // because both are legal grammar a narrower pattern silently declined to
+   // link.
+   const declRe = keywordPattern(
+      String.raw`(?:source|query)\s*:\s*${IDENT}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${IDENT}`,
+      "g",
    );
    let match: RegExpExecArray | null;
    while ((match = declRe.exec(text)) !== null) {
