@@ -5,9 +5,24 @@ SPDX-License-Identifier: MIT
 
 # DAX Measure Translation (Step 5)
 
-> Classify every DAX measure before translating it. Emitting Malloy is the easy part; knowing which measures change meaning on the way across is the work.
+> Route every DAX measure to a recipe before translating it. Emitting Malloy is the
+> easy part; knowing which measures change meaning on the way across is the work.
 
-Read `_concepts.md` for the syntax mapping tables. This file is about the semantic traps that the mapping tables cannot express.
+Read `_concepts.md` for the syntax mapping tables. This file is about the semantic
+traps the mapping tables cannot express, and about **where to send each measure**.
+
+The recipes are in three companion files, and they are the deliverable:
+
+| File | Covers |
+|---|---|
+| `cookbook-filter-context.md` | `CALCULATE`, `ALL`, `ALLSELECTED`, `ALLEXCEPT`, `REMOVEFILTERS`, `RANKX`, top-N |
+| `cookbook-time.md` | YTD, prior period, growth, date spines, semi-additive, `CALENDAR()` |
+| `cookbook-structure.md` | `USERELATIONSHIP`, many-to-many, bidirectional, what-if parameters, calculation groups, `PATH` |
+
+**"Untranslatable" does nothing for the customer.** "Here is the Malloy, and here is
+what you lose" has done the migration. Route to a recipe; only the four constructs
+marked STOPGAP in the cookbook are genuinely short of a first-class answer, and even
+those ship working Malloy.
 
 ## The Rule That Makes Migrations Wrong
 
@@ -39,96 +54,200 @@ Now put a report filter on `Status = "Cancelled"` and ask for both:
 | Measure's own filter | overwrites it: `Status = "Shipped"` | intersects: `Cancelled AND Shipped` |
 | Result | **shipped revenue** | **zero** |
 
-Neither errors. Both look like a correct transcription. One of them is on a slide in front of a customer.
+Neither errors. Both look like a correct transcription. One of them is on a slide in front of a customer. `cookbook-filter-context.md#fc1` works this against real data, with the numbers.
 
 **`KEEPFILTERS` is the tell.** A DAX author who wrote `CALCULATE([Total], KEEPFILTERS(Orders[Status] = "Shipped"))` asked for intersection, which is what Malloy does natively. That measure is safe. A measure without `KEEPFILTERS` is only safe if nothing ever filters the same column, and you cannot know that from the model file alone.
 
-**Expect the tell to be absent.** `KEEPFILTERS` is rare in practice: one real Microsoft-published model used it in **0 of its 96 `CALCULATE` calls**. So divergence is the default case, not the exception. Do not approach this as hunting for a few bad measures among many safe ones; approach it as establishing which handful are safe.
+**Expect the tell to be absent.** `KEEPFILTERS` is rare in practice: Microsoft's published `PBIASEngine` model uses it in **0 of its 79 `CALCULATE` calls**. So divergence is the default case, not the exception. Do not approach this as hunting for a few bad measures among many safe ones; approach it as establishing which handful are safe.
 
-## Class 0: Report-Layer Measures, Which Are Not Business Logic
+## Routing Procedure
 
-**Sort these out before you classify anything, or you will migrate a third of the model for nothing.**
+Run the steps in order. Step 0 is not optional and is not in the DAX.
 
-A large share of the measures in a real Power BI model exist only to drive the report canvas: button captions, tooltip text, dynamic titles, selected-page names, navigation paths, conditional formatting colors. They return strings, not numbers, and no one wants them in a semantic model.
+### 0. Build the dependency graph, and read `relationships.tmdl`
 
-The tells are a string literal in the body plus one of `ISFILTERED`, `HASONEVALUE`, `SELECTEDVALUE`, `CONCATENATE`, `FORMAT`, `UNICHAR`, `SELECTEDMEASURE`:
+**A measure is no better than its worst dependency.** Measures reference measures;
+route the leaves and walk up. A direct-looking wrapper around a divergent leaf is
+divergent.
+
+**Bidirectional, many-to-many and inactive flags live outside every measure's DAX**,
+so a text-only pass cannot see them. Read the relationships first. The blast radius
+is not theoretical:
+
+| model | measures | bidirectional relationships | measures affected |
+|---|---:|---:|---:|
+| `PBIASEngine` | 126 | 0 | 0 |
+| `FabricASEngineAnalytics` | 117 | 2, both onto the fact table | **108** |
+
+Same publisher, same domain. TMDL writes only non-default properties, so an absent
+`crossFilteringBehavior` means single-direction - read absent as the default, not as
+missing data. `CROSSFILTER(..., BOTH)` sets the same thing inside one measure and
+leaves no trace in `relationships.tmdl` at all, so scan the measures for it too.
+
+### 1. Does it return a string? Route to **skip**.
+
+Only that. Not "references the viewer's selection" - that test swallows legitimate
+denominators, and `ALLSELECTED` is never a reason to skip anything.
+
+A large share of the measures in a real model exist only to drive the report canvas:
+button captions, tooltips, dynamic titles, navigation paths, conditional-format
+colors, SVG sparklines. They return text, not numbers, and no one wants them in a
+semantic model. Skip them the way you skip `report.json`.
+
+**Type the return value; do not look for a quote character.** The canonical example
+in `PBIASEngine` has no string literal at all:
 
 ```dax
-Drill through button text =
-VAR Selection = [Selected page]
-VAR Filtered = ISFILTERED ( Operation[ReportId] )
-RETURN IF ( Filtered = TRUE(), "Drillthrough to " & Selection, "Make a filter selection" )
+Selected page = SELECTEDVALUE('Current page'[Current page])
 ```
 
-Skip them the way you skip `report.json`. They are not Class 3: "untranslatable" says the business wanted something Malloy cannot express, and nobody wanted this. Filing them as Class 3 inflates the migration estimate with work no one would accept.
+It is a label because `'Current page'[Current page]` is `dataType: string`. A test
+that keys on a `"` in the body files this as a translatable measure. The tells that
+do work: a string-returning function (`FORMAT`, `CONCATENATE`, `UNICHAR`, `LEFT`,
+`PATH`, …), `&` concatenation, a string literal in a *value* position rather than a
+comparison, `SELECTEDVALUE`/`VALUES`/`MIN`/`MAX` **over a text column**, or a
+reference to a measure that is itself a label.
 
-**For calibration**, one real Microsoft-published model of 126 measures broke down as **40 report-layer (32%)**, 43 plain Class 1, 31 Class 2, 12 Class 3. Report the report-layer count separately so the user sees the true size of the job.
+Three DAX lexing traps that produce wrong answers here: `&&` is logical AND, not
+concatenation; `IN ({"a","b"})` is a comparison against a literal set, not a value
+position; and DAX has **two** line-comment forms, `//` and `--`. Real models carry
+whole superseded measures commented out, so a scan that misses `--` reads dead code
+as live.
 
-## The Three Classes
+Report the skipped count separately so the user sees the true size of the job.
 
-Every remaining measure lands in exactly one. Classify first, translate second.
+### 2. Does it need a concept outside the model? **Name the recipe.**
 
-### Class 1: Translatable
+Before the widen test, because these are not filter-context problems and treating
+them as such is what stalls the routing.
 
-Translate directly. Validate anyway, but expect a match.
+| Concept | Recipe |
+|---|---|
+| inactive relationship / `USERELATIONSHIP` | `cookbook-structure.md#s1` |
+| many-to-many | `cookbook-structure.md#s2` |
+| bidirectional / `CROSSFILTER` | `cookbook-structure.md#s3` |
+| disconnected parameter table, `GENERATESERIES` + `SELECTEDVALUE` | `cookbook-structure.md#s4` |
+| calculation item / `SELECTEDMEASURE` | `cookbook-structure.md#s5` **(stopgap)** |
+| `PATH` family | `cookbook-structure.md#s6` **(stopgap)** |
+| marked date table / time intelligence | `cookbook-time.md#t1` to `#t6` |
+| ranking, top-N | `cookbook-filter-context.md#fc6`, `#fc7` |
 
-- Plain aggregates: `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNTROWS`, `DISTINCTCOUNT`
-- **Iterators over a row-level expression**: `SUMX(Sales, Sales[Qty] * Sales[Price])` is `sum(qty * price)`. Same for `AVERAGEX`, `MINX`, `MAXX`, `COUNTX`. There is no context transition unless a measure reference or `CALCULATE` appears *inside* the iterator, so most `SUMX` is Class 1 and this is one of the commonest measures in any real model.
-- Arithmetic over other translatable measures, with the `BLANK()` caveat below
-- `DIVIDE(a, b)` to `a / nullif(b, 0)`
-- `CALCULATE` with `KEEPFILTERS` on every Boolean filter argument
-- `RELATED(Other[c])` to a join path `other.c`
-- `IF` / `SWITCH` over row-level conditions, to `pick ... when ... else`
+### 3. Does it touch filter context?
 
-**Watch the counts.** `DISTINCTCOUNT(T[c])` is `count(c)`, because `count(field)` is already distinct in Malloy and `count(distinct c)` is a parse error. DAX `COUNT(T[c])` is **not** `count(c)`; it is `count() { where: c is not null }`. Getting these backwards compiles and returns a different number.
+Including **a measure reference inside an iterator** - `SUMX(T, [Some Measure])` is
+context transition and belongs here, not in step 4. (An iterator over a plain
+row-level expression is not: `SUMX(Sales, Sales[Qty] * Sales[Price])` is
+`sum(qty * price)`, and it is one of the commonest measures in any model.)
 
-**The `BLANK()` caveat.** DAX treats blank as zero in addition: `BLANK() + 1` is `1`. Malloy and SQL propagate null: `null + 1` is `null`. Any measure that sums or subtracts other measures can diverge wherever one side is empty. Wrap with `??` where the DAX relied on it, and validate a filter context where one term has no rows.
+- **Widens** - `CALCULATE` with a Boolean filter and no `KEEPFILTERS`;
+  `FILTER(ALL(T), …)`; `ALL`; `REMOVEFILTERS`; `ALLEXCEPT` - route to the divergent
+  recipe: `#fc1`, `#fc2`, `#fc4`, `#fc5`.
+- **Narrows** - `KEEPFILTERS`, or plain `FILTER(T, …)` over the table, which is
+  evaluated in the current filter context and therefore preserves existing filters -
+  translate directly.
+- **Neither** - `ALLSELECTED` (an exact match, `#fc3`), `USERELATIONSHIP` (a join
+  path). **Fall through to step 4. Do not stall.**
 
-### Class 2: Silently Divergent
+### 4. Otherwise, translate directly.
 
-**These are the ones that cost the migration.** They translate to valid Malloy that returns a different number under some filter contexts and the same number under others. They cannot be caught by reading the output.
+Then **parity-test anyway**.
 
-Flag every one. Never resolve it quietly.
+### Then: say what the routing is, and is not
 
-- **`CALCULATE` with a Boolean filter and no `KEEPFILTERS`**, where the filtered column is one a report or a user can also filter. This is the common case and there will be many.
-- **`CALCULATE(expr, FILTER(ALL(T), cond))` or `FILTER(ALL(T[c]), cond)`**: this is the explicit spelling of the sugar above, and it is the overwriting form. Search for `FILTER(ALL(` specifically; it is the shape that does the damage. (Plain `CALCULATE(expr, FILTER(T, cond))` over the table is evaluated in the current filter context and therefore *preserves* existing filters, which is the safe, intersecting shape.)
-- **Every `ALL` / `REMOVEFILTERS` translation.** DAX `ALL` removes *filters*; Malloy `all()` removes *grouping* and still obeys the query's `where:`. They agree when the grouping is the only filter, which is the unfiltered grand total, and diverge as soon as anything else is filtered. See the worked table in `_concepts.md`. Percent-of-total built on `ALL` inherits this.
-- **`ALLEXCEPT`**: keeps filters on the listed columns and removes the rest, so it is `all(expr, kept...)`, **not** `exclude(expr, kept...)`. `exclude()` is the `ALL(T[c])` analog. The two read alike and fail silently.
-- **Measures referencing measures that are themselves Class 2.** Divergence propagates. Classify the leaves first and walk up; a Class 1 wrapper around a Class 2 measure is Class 2.
-- **Any measure over a table reachable by a bidirectional relationship.** The filter propagation differs before the measure is even evaluated.
-- **`BLANK()`-dependent arithmetic**, as above, when the author clearly relied on it.
+**Step 3 can rarely prove a measure safe.** Whether anything ever filters the
+overwritten column lives in `report.json`, which this skill deliberately does not
+read. So the output is a **priority order, not a verdict** - which measures to
+parity-test first, and at which filter context. Present it that way, or the user
+reads "direct" as "checked".
 
-For each, record: the measure, the column whose filter is overwritten, the filter context in which it diverges, and the number from both sides at that context. That table is what you hand the user.
+## Counts, and what they cost to get wrong
 
-### Class 3: Untranslatable
+For calibration, `PBIASEngine` (126 measures), routed by
+`scripts/classify_measures.py`:
 
-No Malloy equivalent. Do not fake one. Each needs a rewrite of the intent or an explicit decision to drop it.
+| | measures |
+|---|---:|
+| report-layer (return a label) | 43 |
+| translate directly | 32 |
+| need a recipe | 51 |
+| of those, can return a different number silently | 47 |
+| of those, land on a stopgap recipe | 0 |
 
-- **Time intelligence**: `TOTALYTD`, `SAMEPERIODLASTYEAR`, `DATEADD`, `DATESYTD`, `PARALLELPERIOD`, `PREVIOUSMONTH`. These depend on a marked date table with a contiguous date column. The intent translates; the function does not.
-- **Context transition inside an iterator**: `SUMX(T, [Some Measure])`, where a measure reference or `CALCULATE` inside the iterator transitions row context into filter context. Note the narrowness: an iterator over a plain row-level expression is Class 1 (above), and `SUMX(FILTER(T, cond), <row expr>)` is usually just `sum(expr) { where: cond }`. Only the nested-measure form belongs here. Often the intent is a simple filtered aggregate and the DAX is more complicated than the question; ask what the number means before translating the code.
-- **`EARLIER` / `EARLIEST`**: row-context constructs with no equivalent.
-- **`RANKX`, `TOPN`**: ranking is a query in Malloy, not a measure.
-- **`ALLSELECTED`**: depends on the visual's own filter scope, a concept that exists only inside a report. **Expect a lot of it** - it was the third most common function in the real model sampled above, ahead of `SELECTEDVALUE` and every time-intelligence function - so budget for it rather than treating it as an edge case.
-- **`USERELATIONSHIP`**: switches to an inactive relationship for one measure. In Malloy this is a second join path or a second source.
-- **Calculation groups**: a Power BI object that rewrites measures at query time. There is no equivalent; each generated combination has to be considered on its own.
-- **Field parameters**: a report-layer construct that swaps which measure or column a visual shows.
-- **Parent-child hierarchy functions**: `PATH`, `PATHCONTAINS`, `PATHITEM`. Usually a recursive org structure, which wants flattening upstream.
+Function frequency in the same model, as occurrences / measures containing:
+`CALCULATE` 79/50, `ALLSELECTED` 33/25, `RANKX` 8/8, `ALLEXCEPT` 7/4,
+`REMOVEFILTERS` 5/5, `KEEPFILTERS` **0/0**. `ALLSELECTED` is the fourth most common
+function by measures containing it, behind `CALCULATE`, `IF` and `MAX` - common
+enough to budget for, and it needs no budget, because it maps exactly.
 
-## Working Order
+**Name the model when you quote a number.** The same repository holds
+`FabricASEngineAnalytics` (117 measures), whose profile is completely different: 7
+report-layer, 2 direct, 108 gated on bidirectional cross-filtering.
 
-1. **Build the dependency graph first.** Measures reference measures. Classify leaves, then walk up. A wrapper is no better than its worst dependency.
-2. **Classify every measure before translating any.** The counts change the conversation: "310 of 340 are Class 1" and "180 are Class 2" are different projects.
-3. **Translate Class 1 in bulk.** They are mechanical.
-4. **Translate Class 2 one at a time, each with a parity check at a filter context that exercises the divergence.** Unfiltered totals will match and prove nothing.
-5. **Take Class 3 to the user as a list of intents**, not a list of failures. "Here are 48 time-intelligence measures; they express year-to-date, prior-year, and rolling-window comparisons. Here is how Malloy expresses each of those three shapes."
+**Two ways earlier revisions of this skill got its own numbers wrong**, both worth
+avoiding in yours:
+
+- A substring match on `CALCULATE` also matched the column name
+  `CPUTime (calculated)`, inflating the count. Match `\bCALCULATE\s*\(` against a
+  body with bracketed column references blanked out - and note the same pattern
+  correctly does *not* match `CALCULATETABLE(`.
+- A report-layer test that required a `"` in the body filed `Selected page` as
+  translatable, though this file uses it as *the* report-layer example. See step 1.
+
+**The untranslatable count for `PBIASEngine` is approximately zero.** Twelve measures
+were once reported untranslatable; all twelve were `ALLSELECTED`-triggered, eight of
+them rankings, and not one exercises a real gap. `ALLSELECTED` maps exactly, and
+`RANKX` maps to `calculate: rank()`, which orders by any expression independently of
+the query's own ordering. If your run produces a large untranslatable bucket, check
+those two mappings before reporting it.
+
+## Translation Notes That Still Bite
+
+**Watch the counts.** `DISTINCTCOUNT(T[c])` is `count(c)`, because `count(field)` is already distinct in Malloy and `count(distinct c)` is a parse error. DAX `COUNT(T[c])` is **not** `count(c)`; it is `count() { where: c is not null }`. Getting these backwards compiles and returns a different number. `COUNTA` behaves like `COUNT` here.
+
+**The `BLANK()` caveat.** DAX treats blank as zero in addition: `BLANK() + 1` is `1`. Malloy and SQL propagate null: `null + 1` is `null`. Any measure that sums or subtracts other measures can diverge wherever one side is empty. Wrap with `??` where the DAX relied on it, and validate a filter context where one term has no rows. The idiom `[Some Measure] + 0`, common in real models, is exactly this reliance written out.
+
+**`EARLIER` / `EARLIEST`** are row-context constructs with no equivalent. These are
+the one shape with no recipe: ask what the number means and rewrite the intent.
 
 ## Reporting
 
 Produce a table with a row per measure:
 
-| Measure | Class | Malloy | Diverges when | Power BI value | Malloy value | Match |
-|---------|-------|--------|---------------|----------------|--------------|-------|
+| Measure | Recipe | Malloy | Diverges when | Power BI value | Malloy value | Match |
+|---------|--------|--------|---------------|----------------|--------------|-------|
 
-For Class 1, "Diverges when" is empty and the values should match. For Class 2, "Diverges when" is mandatory and both values are measured at that context, not at the grand total. For Class 3, only the intent is recorded.
+For a direct translation, "Diverges when" is empty and the values should match. For
+a divergent recipe, "Diverges when" is mandatory and both values are measured at
+that context, **not at the grand total** - the overwrite-versus-intersect divergence
+is invisible at the grand total by construction. For a stopgap, record what the
+workaround costs as well as what it returns.
 
-**A migration report with no Class 2 rows is a red flag, not a clean bill of health.** Any Power BI model with real `CALCULATE` usage has them. If you found none, you did not look at `KEEPFILTERS`.
+**A migration report with no divergent rows is a red flag, not a clean bill of
+health.** Any Power BI model with real `CALCULATE` usage has them. If you found
+none, you did not look at `KEEPFILTERS`.
+
+## Running the classifier
+
+```
+python3 scripts/classify_measures.py <model>/definition
+python3 scripts/classify_measures.py <model>/definition --format json
+python3 scripts/classify_measures.py <model>/definition --functions
+python3 scripts/classify_measures.py --json measures.json      # the .pbix path
+```
+
+The script needs `definition/tables/*.tmdl` **and** `definition/relationships.tmdl`.
+On the `.pbix` path there is no TMDL at all, so `--json` takes extracted records;
+supply `columns[]` with their `dataType` or step 1 under-detects labels, and
+`relationships[]` or step 0 is skipped entirely. The script reports which of those
+it did not have rather than passing quietly.
+
+It is a scale tool, not a substitute for this file - it handles the dependency
+graph, the return-type inference and the relationship flags, none of which survive
+reading measures one at a time at 5,000 of them. Read the routing it produces and
+hand-check a sample: on `PBIASEngine`, a 25-measure hand-check agreed with the
+script on all 25.
+
+**It will not run on every surface.** Skills ship their scripts to npm and into
+Claude Code and Cursor, but the Credible app's agent has no shell tool, and the MCP
+skills bundle carries markdown only. The prose above has to stand on its own, and
+does.

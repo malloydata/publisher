@@ -89,17 +89,19 @@ A Power BI relationship is declared once at model level, not on either table. `f
 |--------|--------|-------|
 | `CALCULATE(expr, T[c] = "x")` | `measure { where: c = 'x' }` **only when safe** | DAX **overwrites** the filter on `T[c]`; Malloy **intersects**. Different answers. |
 | `CALCULATE(expr, KEEPFILTERS(T[c] = "x"))` | `measure { where: c = 'x' }` | `KEEPFILTERS` makes DAX intersect, which is what Malloy already does. Safe. |
-| `CALCULATE(expr, ALL(T))` | `all(expr)` **only when grouping is the sole filter** | **Not equivalent in general.** DAX `ALL` removes *filters*; Malloy `all()` removes *grouping* and still obeys the query's `where:`. See below. |
-| `CALCULATE(expr, ALL(T[c]))` | `exclude(expr, c)` **with the same caveat** | Same divergence, one dimension |
+| `CALCULATE(expr, ALLSELECTED(...))` | `all(expr)` | **Exact match.** `all()` removes *grouping* and keeps the query's `where:` - which is `ALLSELECTED` semantics. `cookbook-filter-context.md#fc3` |
+| `CALCULATE(expr, ALL(T))` | `all(expr)` **only when grouping is the sole filter** | **Not equivalent in general** - and `ALL`, not `ALLSELECTED`, is the divergent one. DAX `ALL` removes the *filters* too. `cookbook-filter-context.md#fc2` |
+| `CALCULATE(expr, ALL(T[c]))` | `exclude(expr, c)` **with the same caveat** | Same divergence, one dimension. `cookbook-filter-context.md#fc5` |
 | `CALCULATE(expr, REMOVEFILTERS(T[c]))` | `exclude(expr, c)` **with the same caveat** | `REMOVEFILTERS` is the clearer spelling of `ALL` as a modifier |
-| `CALCULATE(expr, ALLEXCEPT(T, T[keep]))` | `all(expr, keep)` | **Keeps** the listed columns and removes the rest, so it is `all(..., keep)`, not `exclude(..., keep)` |
-| `CALCULATE(expr, ALLSELECTED(...))` | **flag** | Depends on the visual's own filter scope; no equivalent |
-| `expr / CALCULATE(expr, ALL(T))` | percent-of-total with `all()` | Matches only under the caveat below; search the Malloy docs for the pattern |
-| `USERELATIONSHIP(...)` | **flag** | Switches to an inactive relationship for one measure |
+| `CALCULATE(expr, ALLEXCEPT(T, T[keep]))` | `all(expr, keep)` | **Keeps** the listed columns and removes the rest, so it is `all(..., keep)`, not `exclude(..., keep)`. `cookbook-filter-context.md#fc4` |
+| `expr / CALCULATE(expr, ALL(T))` | percent-of-total with `all()` | Matches only under the caveat below. `cookbook-filter-context.md#fc2` |
+| `USERELATIONSHIP(...)` | a second join path | Not a gap: name every role instead of switching between them. `cookbook-structure.md#s1` |
+| `CROSSFILTER(..., BOTH)` | **flag** | Sets filter direction inside one measure, so it leaves no trace in `relationships.tmdl`. `cookbook-structure.md#s3` |
 | `FILTER(T, cond)` as a `CALCULATE` argument | depends | A table filter, not a column filter; see `translate-measures.md` |
 | `EARLIER` / `EARLIEST` | **flag** | Row-context construct with no equivalent |
-| `RANKX`, `TOPN` | window functions, or a query | Not a measure in Malloy |
+| `RANKX`, `TOPN` | `calculate: rank()` in a query | Not a measure, but not a gap either. `rank()` orders by any expression, independently of the query's own ordering. `cookbook-filter-context.md#fc6` |
 | `SUMX(FILTER(T, cond), expr)` | `sum(expr) { where: cond }`, with the `FILTER` caveat | Only a context transition if a measure reference appears inside; see `translate-measures.md` |
+| `GENERATESERIES` parameter table + `SELECTEDVALUE` | `given:` | A disconnected what-if slicer is a runtime value. `cookbook-structure.md#s4` |
 
 **`ALL` removes filters; `all()` removes grouping.** This is the same overwrite-versus-intersect divergence as the `CALCULATE` row above, wearing different clothes, and it is on the *safe*-looking side of the table.
 
@@ -117,15 +119,41 @@ They agree when the grouping is the only filter in play, which is exactly the un
 
 ## Time Intelligence
 
-Every one of these is a **rewrite, not a transcription**. They depend on a table marked as the model's date table with a contiguous date column, a concept Malloy does not have. Translate the intent.
+Every one of these is a **rewrite, not a transcription**. They depend on a table marked as the model's date table with a contiguous date column, a concept Malloy does not have. Translate the intent - the intent translates, and mostly without a stopgap.
 
-| DAX | Malloy intent | Notes |
+| DAX | Malloy | Notes |
 |--------|--------|-------|
-| `TOTALYTD(expr, Date[Date])` | Aggregate filtered to the year to date | Express the date range explicitly |
-| `SAMEPERIODLASTYEAR(Date[Date])` | Compare against the prior year's range | Usually a join or a second query |
-| `DATEADD(Date[Date], -1, YEAR)` | Shift the date range | Same |
-| `DATESYTD`, `DATESMTD`, `DATESQTD` | Range on the date dimension | Same |
-| `PREVIOUSMONTH`, `PARALLELPERIOD` | Shifted range | Same |
+| `TOTALYTD(expr, Date[Date])`, `DATESYTD` | `calculate: sum_cumulative(expr) { partition_by: year, order_by: period }` | A correct YTD, and right on sparse data. `cookbook-time.md#t1` |
+| `TOTALMTD`, `DATESMTD`, `DATESQTD` | the same, partitioned one level finer | `cookbook-time.md#t1` |
+| `SAMEPERIODLASTYEAR(Date[Date])` | a filtered aggregate per side, over named ranges | `cookbook-time.md#t2` |
+| `DATEADD(Date[Date], -1, MONTH)`, `PREVIOUSMONTH`, `PARALLELPERIOD` | `lag()` **where every period is present**; named ranges where not | `lag()` is positional, so it silently compares across a gap. `cookbook-time.md#t3` |
+| `CALENDAR()`, `CALENDARAUTO()` | a generated date source | `cookbook-time.md#t6` |
+| `CLOSINGBALANCEMONTH` and the semi-additive family | **STOPGAP** - a multi-stage pipeline | `last_value` cannot be a measure. `cookbook-time.md#t5` |
+| densifying a sparse period series | **STOPGAP** - a generated spine plus a join | Nothing in Malloy densifies. `cookbook-time.md#t4` |
+
+## Functions With No Mapping Yet
+
+Found in real Microsoft-published TMDL and not covered by any table above. Counts are measures containing the function in `PBIASEngine` (126 measures). Most are report-layer once you look at them, which is the point: route them through `translate-measures.md` step 1 rather than treating each as a translation problem.
+
+| DAX | Measures | What to do |
+|--------|---:|-------|
+| `FIRSTNONBLANK` / `LASTNONBLANK` | 16 | The semi-additive shape. `cookbook-time.md#t5` |
+| `INT` | 15 | `floor()`, or drop it where it only exists to coerce a Boolean to 1/0 |
+| `DATEDIFF` | 11 | Date arithmetic: `(a - b)` with a granularity, or `date_diff` |
+| `ISFILTERED` | 11 | Report-layer. The query knows what it grouped by; the measure does not need to |
+| `COUNTA` | 9 | `count() { where: c is not null }` - the same trap as DAX `COUNT` |
+| `ALLNOBLANKROW` | 9 | `all()`, plus a null check if the blank row was load-bearing |
+| `HASONEFILTER` / `HASONEVALUE` | 9 / 2 | Report-layer, almost always guarding a label |
+| `ISBLANK` | 8 | `is null`, but check the `BLANK()`-as-zero caveat below |
+| `ISINSCOPE` | 7 | Report-layer. Drop it - see `cookbook-filter-context.md#fc6` |
+| `CALCULATETABLE` | 7 | A filtered table expression; usually collapses into the surrounding query's `where:` |
+| `GROUPBY` | 7 | A `group_by:` stage |
+| `VALUES` | 5 | The distinct values of a column; `group_by:` or `count(c)` depending on use |
+| `PERCENTILE.INC` | 5 | No direct equivalent; use the dialect's percentile via `fn!()` |
+| `ADDCOLUMNS` / `SUMMARIZE` | 5 / 5 | A query stage, not a measure |
+| `CONCATENATEX` | 5 | `string_agg` via `fn!()`; usually report-layer |
+| `STDEV.P` | 2 | `stddev()` where the dialect has it |
+| `CROSSFILTER` | 1 | `cookbook-structure.md#s3` |
 
 ## Formatting
 

@@ -69,14 +69,31 @@ Each reference file is loaded by the workflow phase that needs it. You do not ne
 |------------|-------|-------------|
 | `reference/discover.md` | Step 1 (DISCOVER) | Inventory the model, classify storage mode, extract source candidates, capture prior-art notes |
 | `reference/propose-fields.md` | Step 4 (DEFINE) | Extract field proposals from tables, columns, and relationships |
-| `reference/translate-measures.md` | Step 5 (BUILD) | Classify every DAX measure as translatable, silently divergent, or untranslatable |
+| `reference/translate-measures.md` | Step 5 (BUILD) | Route every DAX measure to a recipe, and say what the routing does not prove |
+| `reference/cookbook-filter-context.md` | Step 5 (BUILD) | Worked transpiles: `CALCULATE`, `ALL` / `ALLSELECTED` / `ALLEXCEPT`, ranking, top-N |
+| `reference/cookbook-time.md` | Step 5 (BUILD) | Worked transpiles: YTD, prior period, growth, date spines, semi-additive |
+| `reference/cookbook-structure.md` | Step 5 (BUILD) | Worked transpiles: role-playing dimensions, M:M, bidirectional, what-if parameters, hierarchies |
 | `reference/rls-roles.md` | Step 8 (CURATE) | Map RLS roles and hidden objects to access modifiers and gate annotations |
 | `reference/review-coverage.md` | Step 7 (REVIEW) | Compare the Malloy model against the Power BI model: table, measure, and relationship coverage |
 | `reference/document.md` | Step 9 (DOCUMENT) | Extract TMDL descriptions as `#(doc)` tag seeds |
 
+**The three cookbook files are the deliverable of Step 5.** Each recipe carries the
+real DAX, the Malloy, whether the Malloy was **executed** or only `semantics-cited`,
+and what the port costs. Route with `translate-measures.md`, then transpile from the
+recipe - do not hand the user a classification and call it a migration.
+
 ### Shared Reference
 
 `reference/_concepts.md` is the Power BI to Malloy concept mapping table. Referenced by `propose-fields.md`, `translate-measures.md`, and `rls-roles.md` for type mapping and syntax translation.
+
+### Script
+
+`scripts/classify_measures.py` runs the routing at scale: dependency graph, return-type
+inference from the model's own column types, and the relationship flags that never
+appear in a measure's DAX. It needs `definition/relationships.tmdl` as well as
+`definition/tables/`, and has a `--json` mode for the `.pbix` path, which has no TMDL.
+It runs where you have a shell (Claude Code, Cursor); the Credible app's agent has no
+shell tool and the MCP skills bundle ships markdown only, so the prose stands alone.
 
 ## What Power BI Provides
 
@@ -89,9 +106,9 @@ Each reference file is loaded by the workflow phase that needs it. You do not ne
 
 ## What to Skip
 
-- **Auto date/time tables.** Power BI generates a hidden `LocalDateTable_<guid>` per date column plus a `DateTableTemplate_<guid>`. These are an artifact of a setting, not a modeling decision. Skip all of them and propose one real date dimension.
+- **Auto date/time tables.** Power BI generates a hidden `LocalDateTable_<guid>` per date column plus a `DateTableTemplate_<guid>`. These are an artifact of a setting, not a modeling decision. Skip all of them and propose one real date dimension (`reference/cookbook-structure.md#s7`).
 - **Report layout** (`report.json`, `*.Report/`): visuals, pages, bookmarks, themes. Analysis is a separate workflow.
-- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors. They return strings and belong to the canvas, not the model, and they can be a third of the measures in a real file. `reference/translate-measures.md` has the tells; skip them rather than classifying them.
+- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors, SVG sparklines. They return text and belong to the canvas, not the model, and they are a third of the measures in a real file (43 of 126 in `PBIASEngine`). **Type the return value rather than looking for a quote character** - the canonical example, `Selected page = SELECTEDVALUE('Current page'[Current page])`, has no string literal at all. `reference/translate-measures.md` step 1 has the tells.
 - **Implicit measures.** A numeric column aggregated in a visual with no defined measure. Note which columns are used this way, do not manufacture a measure per column.
 - **`summarizeBy` defaults**, except as a hint about which columns are facts and which are keys.
 - **Display folders**, `lineageTag`, `ordinal`, and other authoring metadata.
@@ -100,11 +117,12 @@ Each reference file is loaded by the workflow phase that needs it. You do not ne
 
 ## What to Flag for User Decision
 
-- **Any measure in the silently-divergent class.** This is the flag that matters most and it must reach the user, never be resolved quietly.
+- **Any measure routed to a divergent recipe.** This is the flag that matters most and it must reach the user, never be resolved quietly. Say which filter context makes it diverge.
 - **Storage mode.** DirectQuery and live-connection models contain no data; the model still translates but nothing can be validated locally.
-- **Inactive relationships** (`isActive: false`): they exist to be switched on by `USERELATIONSHIP` inside a measure. Both the relationship and every measure using it need a decision.
-- **Bidirectional cross-filtering** (`crossFilteringBehavior: bothDirections`) and many-to-many relationships: no Malloy equivalent, and they change measure results.
+- **Bidirectional cross-filtering** (`crossFilteringBehavior: bothDirections`, or `CROSSFILTER(..., BOTH)` inside a measure). It is a model-level switch with a model-wide blast radius - 108 of 117 measures in one of the two sampled models - and it is invisible in every measure's DAX. Ask what it was for; `reference/cookbook-structure.md#s3` has the divergence worked out.
+- **Many-to-many relationships**: model the bridge the grain actually has, and name the fan-out out loud (`#s2`).
+- **Inactive relationships** (`isActive: false`): they exist to be switched on by `USERELATIONSHIP` inside a measure. In Malloy they become named join paths (`#s1`), which changes every call site - the measure disappears rather than translating.
 - **Calculated columns and calculated tables**: DAX evaluated at refresh. Decide per object whether it becomes a Malloy dimension, a computed source, or work pushed upstream.
-- **RLS roles that do not fit the gate grammar**: most will not. See `reference/rls-roles.md`.
-- **Time intelligence measures**: they depend on a marked date table and a contiguous date column. Malloy expresses the same intent differently; every one is a rewrite, not a transcription.
+- **RLS roles that do not fit the gate grammar**: most will not, and a translated role is usually *weaker* than the original unless it sits behind a trusted tier. See `reference/rls-roles.md`.
+- **The two stopgaps**: semi-additive measures (`cookbook-time.md#t5`) and calculation groups (`cookbook-structure.md#s5`). Both ship working Malloy at a cost worth stating before the customer discovers it.
 - **Where next month's data comes from**, if the user is lifting data out of a `.pbix`. A snapshot answers today's question and goes stale.

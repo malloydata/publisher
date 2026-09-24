@@ -49,7 +49,7 @@ Classify each role's filter:
 | `[Region] <> "East"` | **No** | `!=` is refused. Same. |
 | `UPPER([Region]) = USERNAME()` | **No** | No function calls. Normalize the column upstream. |
 | `LOOKUPVALUE(...)` over a security table | **No** | Dynamic RLS via a bridge; see section 5. |
-| `PATHCONTAINS(Users[Path], USERNAME())` | **No** | Parent-child hierarchy; flatten upstream. |
+| `PATHCONTAINS(Users[Path], USERNAME())` | **No** | Parent-child hierarchy; flatten upstream (`cookbook-structure.md#s6`). |
 
 ## 3. Filter Propagation Does Not Carry Across
 
@@ -59,7 +59,7 @@ A Malloy gate applies to **the source a query enters through**. A gate on a sour
 
 So a role whose DAX filters one small dimension table may be protecting a dozen fact tables. Translating it as one annotation on that dimension leaves every fact source open to anyone who queries the fact directly. For each role, enumerate **every table the filter reaches through the relationship graph**, and gate each source that a query can enter through.
 
-**The field-path remedy has a hard limit.** Reaching the filtering column from the fact source through the join works **only across `join_one` hops**. A path crossing `join_many` or `join_cross` is refused with a fanout error, and a segment that cannot be resolved fails closed. Power BI's bidirectional and many-to-many RLS shapes land exactly there, so for those the answer is a restructure, not a longer field path.
+**The field-path remedy has a hard limit.** Reaching the filtering column from the fact source through the join works **only across `join_one` hops**. A path crossing `join_many` or `join_cross` is refused with a fanout error, and a segment that cannot be resolved fails closed. Power BI's bidirectional and many-to-many RLS shapes land exactly there, so for those the answer is a restructure, not a longer field path - `cookbook-structure.md#s2` and `#s3` are the restructures, and `#s3`'s numbers show how wide the bidirectional case can reach.
 
 Get this wrong and the result is not an error. It is data served to someone who should not see it.
 
