@@ -200,10 +200,10 @@ TMDL models, every one under a permissive license, listed with its commit in
 |---|---:|
 | models routed | 50 |
 | measures | 1,881 |
-| report-layer (return a label) | 199 |
-| translate directly | 697 |
-| need a recipe | 985 |
-| of those, can return a different number silently | 975 |
+| report-layer (return a label) | 196 |
+| translate directly | 651 |
+| need a recipe | 1,034 |
+| of those, can return a different number silently | 905 |
 | of those, land on a stopgap recipe | 0 |
 | **untranslatable** | **0** |
 
@@ -213,21 +213,25 @@ functions, 17 calculation items, 16 RLS role predicates - plus 126 auto date
 tables, which are skipped (`S7`).
 
 Recipe demand across the measures, which is what says where to reach first:
-`FC1` 733, `S3` 224, `FC5` 212, `T2` 67, `T3` 64, `FC2` 52, `FC7` 27, `FC3` 26,
-`T1` 22, `S1` 12, `FC4` 5, `FC6` 4.
+`FC1` 761, `S3` 251, `FC5` 216, `S4` 162, `T2` 73, `T3` 64, `FC2` 55, `FC7` 27,
+`FC3` 26, `T1` 23, `S1` 12, `FC4` 5, `FC6` 4.
 
-Four things only a wider corpus shows:
+Five things only a wider corpus shows:
 
-- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is third at 212**, though it
+- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is third at 216**, though it
   appears 5 times in `PBIASEngine`. A single-model sample under-ranks it badly.
-- **Four recipes fire zero times in any measure and are not rare at all** - they
+- **Three recipes fire zero times in any measure and are not rare at all** - they
   live somewhere else in the file. `T6` fires 11 times across 9 models, every one
-  a **calculated-table partition**, which is where `CALENDAR()` actually is. `S4`
-  fires 15 times, 10 in calculated tables and 5 in **user-defined functions** -
-  no measure in the corpus calls `GENERATESERIES()` directly. `S5` fires 17 times,
-  all **calculation items**; `RLS` 16 times, all **`roles/*.tmdl`**, and not one
-  `USERPRINCIPALNAME` in the corpus is in a table file. A pass that reads only
-  `measure` declarations reports all four as absent.
+  a **calculated-table partition**, which is where `CALENDAR()` actually is. `S5`
+  fires 17 times, all **calculation items**; `RLS` 16 times, all
+  **`roles/*.tmdl`**, and not one `USERPRINCIPALNAME` in the corpus is in a table
+  file. A pass that reads only `measure` declarations reports all three as absent.
+- **`S4` is fourth at 162, and it was nearly missed the same way.** Detecting a
+  what-if parameter by `GENERATESERIES()` finds only the tables that are
+  *generated*, which are 11 calculated tables and 5 user-defined functions and no
+  measure at all. What a measure actually does is read an **unjoined** table with
+  `SELECTEDVALUE`/`MIN`/`MAX`, and that is the test: 162 measures across 14
+  models, in one of which it drives 81 of 108.
 - **`S2`, `S6` and `T5` fire zero times, and that one is measured.** Not one
   many-to-many relationship in 50 `relationships.tmdl` files, and no `PATH` or
   `CLOSINGBALANCE*` anywhere in 2.5M characters of live DAX. Those shapes are real

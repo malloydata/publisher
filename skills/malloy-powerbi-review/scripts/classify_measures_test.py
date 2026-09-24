@@ -753,6 +753,18 @@ class AutoDateTables(unittest.TestCase):
         self.assertIn("S7", text)
         self.assertIn("1 auto date table", text)
 
+    def test_a_model_with_no_auto_date_table_says_nothing_about_s7(self):
+        m = measure("Total", "SUM ( T[a] )")
+        results, _ = cm.classify([m], {}, NO_FLAGS)
+        self.assertNotIn("S7", cm.report_text(results, "", "demo", NO_FLAGS))
+
+    def test_the_flags_are_required_rather_than_defaulted_away(self):
+        # S7 is the one route carried on the flags rather than on a definition,
+        # so a caller that omitted them lost it silently.
+        results, _ = cm.classify([measure("Total", "SUM ( T[a] )")], {}, NO_FLAGS)
+        with self.assertRaises(TypeError):
+            cm.report_text(results, "", "demo")
+
 
 class KindsAreReportedSeparately(unittest.TestCase):
     def test_the_headline_counts_measures_and_nothing_else(self):
@@ -772,6 +784,202 @@ class KindsAreReportedSeparately(unittest.TestCase):
         self.assertIn("| calculation items | 1 |", text)
         self.assertIn("| calculated columns | 1 |", text)
         self.assertIn("4 definitions in all", text)
+
+
+class OverwritingFilterArgs(unittest.TestCase):
+    """A Boolean `CALCULATE` filter argument is shorthand for `FILTER(ALL(col), …)`
+    and replaces what the report put on that column. Deciding that by looking for
+    a comparison operator read `NOT ISBLANK ( T[c] )` and `TREATAS ( … )` as
+    harmless, and under-reporting divergence is the costliest error here."""
+
+    def routes(self, dax, flags=None):
+        return cm.local_routes(measure("M", dax), {}, flags or NO_FLAGS)[0]
+
+    def test_a_boolean_filter_with_no_comparison_operator_still_overwrites(self):
+        dax = "CALCULATE ( DISTINCTCOUNT ( P[id] ), NOT ISBLANK ( P[country] ) )"
+        self.assertTrue(cm.overwriting_filter_args(dax))
+        self.assertIn("FC1", self.routes(dax))
+
+    def test_treatas_replaces_the_filter_on_its_target_column(self):
+        dax = "CALCULATE ( [Sales], TREATAS ( VALUES ( A[k] ), B[k] ) )"
+        self.assertIn("FC1", self.routes(dax))
+
+    def test_a_filter_over_a_plain_table_intersects(self):
+        dax = 'CALCULATE ( [Units], FILTER ( Product, Product[isOwn] = "No" ) )'
+        self.assertEqual(cm.overwriting_filter_args(dax), [])
+        self.assertNotIn("FC1", self.routes(dax))
+
+    def test_a_bare_calculate_carries_no_filter_argument_at_all(self):
+        # A context transition on its own overwrites nothing.
+        self.assertEqual(cm.overwriting_filter_args("CALCULATE ( [Units] )"), [])
+        self.assertNotIn("FC1", self.routes("CALCULATE ( [Units] )"))
+
+    def test_a_time_intelligence_filter_routes_to_its_own_recipe(self):
+        dax = "CALCULATE ( [Sales], SAMEPERIODLASTYEAR ( D[Date] ) )"
+        routes = self.routes(dax)
+        self.assertIn("T2", routes)
+        self.assertNotIn("FC1", routes)
+
+    def test_keepfilters_is_the_authors_own_intersect(self):
+        self.assertEqual(
+            cm.overwriting_filter_args('CALCULATE ( [S], KEEPFILTERS ( T[c] = "v" ) )'), [])
+
+    def test_keepfilters_on_one_argument_does_not_excuse_its_neighbour(self):
+        args = cm.overwriting_filter_args(
+            "CALCULATE ( [S], KEEPFILTERS ( T[a] = 1 ), T[b] = 2 )")
+        self.assertEqual([a.strip() for a in args], ["T[b] = 2"])
+
+    def test_ranking_is_not_also_reported_as_a_filter_context_problem(self):
+        # `RANKX(VALUES(T[c]), [M])` passes a measure as its expression, which is
+        # how RANKX works; counting that as iterator divergence double-reported
+        # every ranking measure in the corpus.
+        routes = self.routes("RANKX ( VALUES ( P[Brand] ), [Total Sales] )")
+        self.assertIn("FC7", routes)
+        self.assertNotIn("FC1", routes)
+
+    def test_an_iterator_that_is_not_rankx_still_reports_the_measure_argument(self):
+        self.assertIn("FC1", self.routes("SUMX ( VALUES ( P[Brand] ), [Total Sales] )"))
+
+
+class QualifiedMeasureRefs(unittest.TestCase):
+    """A model that homes its measures on one table writes every reference as
+    `_Measures[Umsatz]`, which is `Table[Col]` by shape. Dropping those edges
+    left wrapper measures reading DIRECT over divergent leaves."""
+
+    def test_a_qualified_reference_to_a_known_measure_is_an_edge(self):
+        known = {"Umsatz Vorjahr"}
+        self.assertEqual(
+            cm.measure_refs("[Umsatz] - _Measures[Umsatz Vorjahr]",
+                            lambda t, n: n in known),
+            {"Umsatz", "Umsatz Vorjahr"})
+
+    def test_an_ordinary_column_reference_is_not_rescued(self):
+        self.assertEqual(cm.measure_refs("SUM ( Sales[Amount] )", lambda t, n: False),
+                         set())
+
+    def test_without_a_resolver_the_adjacency_rule_still_holds(self):
+        self.assertEqual(cm.measure_refs("SUM ( Sales[Amount] ) + [Other]"), {"Other"})
+
+    def test_divergence_propagates_through_the_rescued_edge(self):
+        leaf = measure("Umsatz Vorjahr",
+                       "CALCULATE ( [Umsatz], SAMEPERIODLASTYEAR ( D[Date] ) )",
+                       table="_Measures")
+        wrapper = measure("Tacho_Min", "_Measures[Umsatz Vorjahr] * 0.9", table="_Measures")
+        results, _ = cm.classify([leaf, wrapper], {}, NO_FLAGS)
+        self.assertIn("T2", results[("_Measures", "Tacho_Min")]["routes"])
+
+
+class BareTableArguments(unittest.TestCase):
+    """`COUNTROWS(fato_exame)` names a table with no column, so the step-0 flags
+    - which are keyed by table - could not see it. The same model routed
+    `AVERAGE(fato_exame[…])` to S3 and `COUNTROWS(fato_exame)` to DIRECT."""
+
+    def test_a_bare_table_argument_reaches_the_step_zero_flags(self):
+        self.assertEqual(
+            cm.tables_touched("COUNTROWS ( fato_exame )", "Medidas", {"fato_exame"}),
+            {"Medidas", "fato_exame"})
+
+    def test_a_quoted_bare_table_argument_too(self):
+        self.assertEqual(
+            cm.tables_touched("COUNTROWS ( 'fato exame' )", "M", {"fato exame"}),
+            {"M", "fato exame"})
+
+    def test_a_function_name_is_not_mistaken_for_a_table(self):
+        # Without the `(?!\s*\()` guard a table named like a function, or any
+        # call at all, would be added as a table the measure touches.
+        self.assertEqual(cm.tables_touched("COUNTROWS ( T )", "M", {"T", "COUNTROWS"}),
+                         {"M", "T"})
+
+    def test_a_bare_table_on_a_bidirectional_relationship_routes_to_s3(self):
+        flags = dict(NO_FLAGS, bidirectional={"fato_exame"}, tables={"fato_exame", "M"})
+        routes = cm.local_routes(measure("Exame", "COUNTROWS ( fato_exame )", table="M"),
+                                 {}, flags)[0]
+        self.assertIn("S3", routes)
+
+
+class RefreshTimeDefinitions(unittest.TestCase):
+    """A calculated column or table is evaluated at refresh in row context, so a
+    relationship's filter direction cannot reach it. Applying the step-0 flags
+    blind put S3 on 28 calculated columns doing `FORMAT()` and `RELATED()`."""
+
+    def flags(self):
+        return dict(NO_FLAGS, bidirectional={"Sales"}, tables={"Sales"})
+
+    def test_a_calculated_column_does_not_inherit_the_filter_direction(self):
+        col = measure("Bucket", 'FORMAT ( Sales[Amt], "0" )', table="Sales",
+                      kind="calculated_column")
+        self.assertNotIn("S3", cm.local_routes(col, {}, self.flags())[0])
+
+    def test_a_context_transition_inside_it_does(self):
+        col = measure("Share", "DIVIDE ( Sales[Amt], CALCULATE ( SUM ( Sales[Amt] ) ) )",
+                      table="Sales", kind="calculated_column")
+        self.assertIn("S3", cm.local_routes(col, {}, self.flags())[0])
+
+    def test_a_measure_on_the_same_table_still_inherits_it(self):
+        m = measure("Total", "SUM ( Sales[Amt] )", table="Sales")
+        self.assertIn("S3", cm.local_routes(m, {}, self.flags())[0])
+
+
+class DisconnectedParameterTables(unittest.TestCase):
+    """A table in no relationship at all, read with SELECTEDVALUE/MIN/MAX, is a
+    what-if parameter or a disconnected slicer: the selection reaches the measure
+    without a join. Only `GENERATESERIES` was detected, and that lives in a
+    calculated table's partition rather than in any measure body."""
+
+    def flags(self):
+        return dict(NO_FLAGS, related={"Sales", "Date"},
+                    disconnected={"Period"}, tables={"Sales", "Date", "Period"})
+
+    def test_a_selectedvalue_over_an_unjoined_table_is_a_what_if(self):
+        m = measure("Chosen", "SELECTEDVALUE ( Period[Months] )")
+        self.assertIn("S4", cm.local_routes(m, {}, self.flags())[0])
+
+    def test_a_joined_table_read_the_same_way_is_not(self):
+        m = measure("Latest", "MAX ( Date[Day] )")
+        self.assertNotIn("S4", cm.local_routes(m, {}, self.flags())[0])
+
+    def model(self, relationships):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "tables"))
+        for t in ("Sales", "Date", "Period"):
+            with open(os.path.join(d, "tables", f"{t}.tmdl"), "w", encoding="utf-8") as fh:
+                fh.write(f"table {t}\n\tcolumn k\n\t\tdataType: int64\n")
+        if relationships is not None:
+            with open(os.path.join(d, "relationships.tmdl"), "w", encoding="utf-8") as fh:
+                fh.write(relationships)
+        return cm.load_tmdl(d)[2]
+
+    def test_a_model_whose_relationships_file_is_missing_claims_nothing(self):
+        # With no relationships read, every table looks disconnected. Reporting
+        # S4 on all of them would be a parse failure dressed as a finding.
+        self.assertEqual(self.model(None)["disconnected"], set())
+
+    def test_a_table_left_out_of_a_readable_relationships_file_is_disconnected(self):
+        flags = self.model("relationship r1\n"
+                           "\tfromColumn: Sales.k\n"
+                           "\ttoColumn: Date.k\n")
+        self.assertEqual(flags["disconnected"], {"Period"})
+
+
+class SwitchMatchLiterals(unittest.TestCase):
+    """A `SWITCH` match is compared against, not returned. Reading one as a value
+    filed a measure returning a date as a label, and the two numeric measures
+    that referenced it cascaded with it."""
+
+    def test_a_match_literal_is_not_the_measures_return_type(self):
+        m = measure("Cutoff",
+                    'SWITCH ( SELECTEDVALUE ( P[Mode] ), "MTD", [Start], "YTD", [Year] )')
+        self.assertFalse(cm.returns_string(m, {("P", "Mode"): "string"}, {}))
+
+    def test_a_result_literal_still_is(self):
+        m = measure("Colour",
+                    'SWITCH ( SELECTEDVALUE ( P[Verdict] ), "up", "#2E7D5B", "#B33A3A" )')
+        self.assertTrue(cm.returns_string(m, {("P", "Verdict"): "string"}, {}))
+
+    def test_the_switch_true_idiom_has_no_match_literals_to_blank(self):
+        m = measure("Band",
+                    'SWITCH ( TRUE (), [Score] > 90, "A", [Score] > 80, "B", "C" )')
+        self.assertTrue(cm.returns_string(m, {}, {}))
 
 
 class NoVacuousZeros(unittest.TestCase):

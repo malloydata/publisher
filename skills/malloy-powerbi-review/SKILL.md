@@ -99,12 +99,12 @@ has no shell tool and the MCP skills bundle ships markdown only, so the prose st
 
 **DAX is not only in `measure` declarations, and the rest is not a rounding error.**
 The script also reads calculation groups, `functions.tmdl`, calculated columns,
-calculated-table partitions and `roles/*.tmdl`. Across 50 public models, four recipes
+calculated-table partitions and `roles/*.tmdl`. Across 50 public models, three recipes
 fire **zero** times in any measure body and are not rare at all: `CALENDAR()` is only
-ever in a calculated-table partition, `GENERATESERIES()` only in a calculated table or
-a user-defined function, the calculation items carry a model's time intelligence, and
-not one `USERPRINCIPALNAME` in the corpus is in a table file. Match only `measure` and
-the model reports no calculation groups, no date spine and no row-level security.
+ever in a calculated-table partition, the calculation items carry a model's time
+intelligence, and not one `USERPRINCIPALNAME` in the corpus is in a table file. Match
+only `measure` and the model reports no calculation groups, no date spine and no
+row-level security.
 `reference/limitations.md` is the full inventory of what is read and what is not, and
 it counts each kind separately - a user-defined function is DAX and is not a measure.
 
@@ -121,7 +121,7 @@ it counts each kind separately - a user-defined function is DAX and is not a mea
 
 - **Auto date/time tables.** Power BI generates a hidden `LocalDateTable_<guid>` per date column plus a `DateTableTemplate_<guid>`. These are an artifact of a setting, not a modeling decision. Skip all of them and propose one real date dimension (`reference/cookbook-structure.md#s7`).
 - **Report layout** (`report.json`, `*.Report/`): visuals, pages, bookmarks, themes. Analysis is a separate workflow.
-- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors, SVG sparklines. They return text and belong to the canvas, not the model. How many there are varies more than any other figure here - a third of `PBIASEngine` (42 of 126), a tenth across 50 public models (199 of 1,881) - so count them for the model in front of you rather than assuming a share. **Type the return value rather than looking for a quote character** - the canonical example, `Selected page = SELECTEDVALUE('Current page'[Current page])`, has no string literal at all. `reference/translate-measures.md` step 1 has the tells.
+- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors, SVG sparklines. They return text and belong to the canvas, not the model. How many there are varies more than any other figure here - a third of `PBIASEngine` (42 of 126), a tenth across 50 public models (196 of 1,881) - so count them for the model in front of you rather than assuming a share. **Type the return value rather than looking for a quote character** - the canonical example, `Selected page = SELECTEDVALUE('Current page'[Current page])`, has no string literal at all. `reference/translate-measures.md` step 1 has the tells.
 - **Implicit measures.** A numeric column aggregated in a visual with no defined measure. Note which columns are used this way, do not manufacture a measure per column.
 - **`summarizeBy` defaults**, except as a hint about which columns are facts and which are keys.
 - **Display folders**, `lineageTag`, `ordinal`, and other authoring metadata.

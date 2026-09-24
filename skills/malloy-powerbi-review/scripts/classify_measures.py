@@ -216,7 +216,7 @@ def function_names(dax: str) -> Counter:
     )
 
 
-def measure_refs(dax: str) -> set:
+def measure_refs(dax: str, resolve=None) -> set:
     """`[Name]` NOT qualified by a table, i.e. a measure and not a column.
 
     A table qualifier is *adjacent* - DAX writes `Table[Col]` with no space. So
@@ -225,14 +225,27 @@ def measure_refs(dax: str) -> set:
     `AND` and dropped the edge from the dependency graph, which is where
     divergence propagates. The cost of the rule is the reverse shape, `T [Col]`,
     which no TMDL writer produces (`reference/limitations.md`).
+
+    `resolve(table, name) -> bool` optionally rescues the other legal spelling.
+    `_Measures[Umsatz]` is a *measure* qualified by the table it is homed on,
+    which is how a "measure table" model writes every reference; read as a column
+    it dropped 119 edges across the corpus and left 27 definitions reading
+    DIRECT over divergent leaves.
     """
     body = strip_noise(dax)
     refs = set()
     for m in re.finditer(r"\[((?:[^\]]|\]\])+)\]", body):
+        name = m.group(1).replace("]]", "]").strip()
         prev = body[m.start() - 1] if m.start() else ""
         if prev and (prev.isalnum() or prev in "_'"):
-            continue
-        refs.add(m.group(1).replace("]]", "]").strip())
+            if resolve is None:
+                continue
+            q = re.search(r"(?:'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_]*))$",
+                          body[: m.start()])
+            table = ((q.group(1) or q.group(2)) if q else "").replace("''", "'").strip()
+            if not table or not resolve(table, name):
+                continue
+        refs.add(name)
     return refs
 
 
@@ -530,7 +543,8 @@ def parse_roles_dir(defn: str):
 def parse_relationships(path: str):
     """Return (flags, notes). TMDL writes only non-default properties, so an
     absent property means many-to-one, single-direction, active."""
-    flags = {"bidirectional": set(), "many_to_many": set(), "inactive": set()}
+    flags = {"bidirectional": set(), "many_to_many": set(), "inactive": set(),
+             "related": set()}
     if not os.path.exists(path):
         return flags, "relationships.tmdl not found - relationship flags unchecked"
 
@@ -549,6 +563,7 @@ def parse_relationships(path: str):
             m = re.match(r"\s*('(?:[^']|'')*'|[^.]+)\.", v)
             if m:
                 tables.add(_unquote(m.group(1)))
+        flags["related"] |= tables
         if props.get("crossFilteringBehavior") == "bothDirections":
             flags["bidirectional"] |= tables
         if props.get("fromCardinality") == "many" and props.get("toCardinality") == "many":
@@ -582,7 +597,7 @@ def load_tmdl(model_dir: str):
     if not os.path.isdir(tables_dir):
         sys.exit(f"no definition/tables/ under {model_dir}")
 
-    measures, coltypes, auto_date = [], {}, []
+    measures, coltypes, auto_date, all_tables = [], {}, [], set()
     for fn in sorted(os.listdir(tables_dir)):
         if not fn.endswith(".tmdl"):
             continue
@@ -590,6 +605,7 @@ def load_tmdl(model_dir: str):
         if _AUTO_DATE_RE.match(os.path.splitext(fn)[0]) or _AUTO_DATE_RE.match(table):
             auto_date.append(table)
             continue
+        all_tables.add(table)
         measures.extend(ms)
         for c, t in cols.items():
             coltypes[(table, c)] = t
@@ -599,6 +615,11 @@ def load_tmdl(model_dir: str):
 
     flags, note = parse_relationships(os.path.join(defn, "relationships.tmdl"))
     flags["auto_date"] = auto_date
+    flags["tables"] = all_tables
+    # A table in no relationship at all is a disconnected slicer or what-if
+    # parameter. Only meaningful once we know the model *has* relationships -
+    # otherwise an unreadable relationships.tmdl would make every table one.
+    flags["disconnected"] = (all_tables - flags["related"]) if flags["related"] else set()
     return measures, coltypes, flags, note
 
 
@@ -822,6 +843,41 @@ def _blank_name_args(dax: str) -> str:
     return out
 
 
+# `CALCULATE` filter arguments that leave the report's filters standing, or that
+# already route somewhere of their own. Everything else replaces what the report
+# put on the columns it names, which is the FC1 divergence.
+PRESERVING_FILTER_FUNCS = {
+    "KEEPFILTERS",
+    "USERELATIONSHIP", "CROSSFILTER",           # modifiers, not filters
+    "FILTER", "VALUES", "DISTINCT",             # evaluated in the current context
+    "SUMMARIZE", "ADDCOLUMNS", "SELECTCOLUMNS",
+    "ALL", "ALLEXCEPT", "ALLNOBLANKROW", "ALLSELECTED", "REMOVEFILTERS",
+} | set(TIME_INTELLIGENCE)
+
+_LEADING_CALL_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+
+
+def overwriting_filter_args(dax: str) -> list:
+    """Every `CALCULATE` filter argument that overwrites rather than intersects.
+
+    A Boolean filter argument is shorthand for `FILTER(ALL(col), …)`, so it
+    replaces whatever filter the report had on that column. Decided by what the
+    argument is *not*: an earlier version looked for a comparison operator, and
+    so read `NOT ISBLANK(T[c])` and `TREATAS(…)` as harmless.
+    """
+    out = []
+    for argtext in call_args(dax, "CALCULATE"):
+        for start, end in _split_args(argtext)[1:]:
+            arg = _unwrap_parens(argtext[start:end])
+            if not arg:
+                continue
+            lead = _LEADING_CALL_RE.match(arg)
+            if lead and lead.group(1).upper() in PRESERVING_FILTER_FUNCS:
+                continue
+            out.append(arg)
+    return out
+
+
 def _value_exprs(expr: str, depth=0):
     """Every sub-expression whose value can come out of `expr`.
 
@@ -898,7 +954,36 @@ def _outermost_call(expr: str) -> str:
     return ""
 
 
-def returns_string(m, coltypes, by_name, seen=None) -> bool:
+def _blank_switch_cases(dax: str) -> str:
+    """Blank the `match` half of every `SWITCH(expr, match, result, …)` pair.
+
+    A match is compared against, not returned. Read as a value it filed a
+    measure returning a *date* as a label, and two numeric measures that
+    referenced it cascaded with it. `SWITCH(TRUE(), cond, result, …)` is the
+    other idiom, where the odd arguments are conditions rather than literals and
+    there is nothing to blank.
+    """
+    out = dax
+    for m in re.finditer(r"\bSWITCH\s*\(", _blank_identifiers(out), re.I):
+        depth, i = 1, m.end()
+        while i < len(out) and depth:
+            depth += (out[i] == "(") - (out[i] == ")")
+            i += 1
+        inner = out[m.end(): i - 1]
+        spans = _split_args(inner)
+        if not spans or re.match(r"TRUE\s*\(", inner[spans[0][0]:spans[0][1]].strip(), re.I):
+            continue
+        pieces = list(inner)
+        for start, end in spans[1::2]:
+            arg = inner[start:end].strip()
+            if _STRING_RE.fullmatch(arg):
+                at = inner.index(arg, start)
+                pieces[at: at + len(arg)] = " " * len(arg)
+        out = out[: m.end()] + "".join(pieces) + out[i - 1:]
+    return out
+
+
+def returns_string(m, coltypes, by_name, seen=None, resolve=None) -> bool:
     """Type the return value rather than looking for a quote character."""
     seen = seen or set()
     key = (m["table"], m["name"])
@@ -922,7 +1007,7 @@ def returns_string(m, coltypes, by_name, seen=None) -> bool:
     # set: only its first member is preceded by a `{`. `"Name", <expr>` pairs go
     # too - they declare a column, they are not values.
     live = _BRACE_SET_RE.sub(lambda mm: " " * len(mm.group(0)),
-                             _blank_name_args(strip_comments(dax)))
+                             _blank_switch_cases(_blank_name_args(strip_comments(dax))))
     # A string literal in a value position. `= "x"` / `<> "x"` / `IN {"x"}` are
     # comparisons and do not make the measure a label; anything else does.
     for lit in _STRING_RE.finditer(live):
@@ -952,18 +1037,46 @@ def returns_string(m, coltypes, by_name, seen=None) -> bool:
             for tbl, col in column_refs(arg):
                 if coltypes.get((tbl, col), "").lower() == "string":
                     return True
-    # Resolves through to a label measure.
-    for ref in measure_refs(dax):
-        dep = by_name.get(ref)
-        if dep and returns_string(dep, coltypes, by_name, seen):
-            return True
+    # Resolves through to a label measure - but only where the reference is in a
+    # value position. A label measure named in a *condition* says nothing about
+    # what the caller returns.
+    for value in values:
+        for ref in measure_refs(value, resolve):
+            dep = by_name.get(ref)
+            if dep and returns_string(dep, coltypes, by_name, seen, resolve):
+                return True
     return False
 
 
-def local_routes(m, coltypes, flags):
+def tables_touched(dax: str, own_table: str, known_tables=()) -> set:
+    """Every table this expression reaches, by either spelling.
+
+    `Table[Col]` is the obvious one. A **bare** table argument - `COUNTROWS(T)`,
+    `VALUES(T)`, `FILTER(T, …)`, `ALL('T')` - names the table with no column and
+    was invisible here, which left `COUNTROWS(fato_exame)` routed DIRECT beside
+    an `AVERAGE(fato_exame[…])` routed S3 on the same bidirectional fact.
+    """
+    out = {t for t, _ in column_refs(dax)} | {own_table}
+    if not known_tables:
+        return out
+    body = strip_noise(dax)
+    for m in _QUOTED_TABLE_RE.finditer(body):
+        name = m.group(0)[1:-1].replace("''", "'")
+        if name in known_tables:
+            out.add(name)
+    bare = _QUOTED_TABLE_RE.sub(lambda mm: " " * len(mm.group(0)),
+                               _BRACKET_RE.sub(lambda mm: " " * len(mm.group(0)), body))
+    for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()", bare):
+        if m.group(1) in known_tables:
+            out.add(m.group(1))
+    return out
+
+
+def local_routes(m, coltypes, flags, resolve=None):
     """Routes implied by this measure's own body and the tables it touches."""
     dax = m["dax"]
     fns = set(function_names(dax))
+    kind = m.get("kind", "measure")
     routes, reasons = [], []
 
     def add(route, why):
@@ -971,16 +1084,23 @@ def local_routes(m, coltypes, flags):
             routes.append(route)
             reasons.append(why)
 
-    tables = {t for t, _ in column_refs(dax)} | {m["table"]}
+    tables = tables_touched(dax, m["table"], flags.get("tables", ()))
 
     # Step 0 signals: these live outside the DAX text entirely - except
     # CROSSFILTER, which turns a relationship bidirectional for one measure and
     # so leaves no trace in relationships.tmdl at all.
+    #
+    # A calculated column or table is evaluated at refresh in row context, so a
+    # relationship's filter direction cannot reach it unless the body performs a
+    # context transition. Applying these flags blind put S3 on 20 calculated
+    # columns that never enter filter context, and inflated the demand.
+    in_filter_context = (kind not in ("calculated_column", "calculated_table")
+                         or "CALCULATE" in fns or measure_refs(dax, resolve))
     if "CROSSFILTER" in fns:
         add("S3", "CROSSFILTER sets filter direction inside the measure")
-    if tables & flags["bidirectional"]:
+    if in_filter_context and tables & flags["bidirectional"]:
         add("S3", "reaches a bidirectionally cross-filtered table")
-    if tables & flags["many_to_many"]:
+    if in_filter_context and tables & flags["many_to_many"]:
         add("S2", "reaches a many-to-many relationship")
 
     # Step 2: needs a concept outside the model. Before the widen test.
@@ -1003,9 +1123,18 @@ def local_routes(m, coltypes, flags):
         add("S6", "parent-child hierarchy")
 
     # A disconnected parameter table read with MAX/MIN/SELECTEDVALUE is a
-    # what-if slicer: a `given:`, not a filter-context problem.
+    # what-if slicer: a `given:`, not a filter-context problem. The code used to
+    # check only `GENERATESERIES`, which is how the table is *built* - so a
+    # model whose parameter tables are imported rather than generated reported
+    # no what-if parameters at all, though they drove half its measures.
     if "GENERATESERIES" in fns:
         add("S4", "what-if parameter table")
+    elif flags.get("disconnected"):
+        for fn in fns & {"SELECTEDVALUE", "MIN", "MAX"}:
+            for arg in call_args(dax, fn):
+                if {t for t, _ in column_refs(arg)} & flags["disconnected"]:
+                    add("S4", f"{fn} over a table with no relationships")
+                    break
 
     # Ranking. RANKX over an ALLSELECTED scope with a slicer-driven cutoff is
     # the top-N shape; RANKX alone is the plain one.
@@ -1032,17 +1161,23 @@ def local_routes(m, coltypes, flags):
     elif all_table:
         add("FC2", "ALL on a table")
 
-    if "CALCULATE" in fns:
-        keepfilters = "KEEPFILTERS" in fns
-        # FILTER(ALL(...), ...) is the explicit spelling of the overwriting form.
-        explicit_overwrite = re.search(r"\bFILTER\s*\(\s*ALL", body_nb) is not None
-        if explicit_overwrite or not keepfilters:
-            if not (set(routes) & {"FC2", "FC3", "FC4", "FC5", "FC6", "FC7"}):
-                add("FC1", "CALCULATE with no KEEPFILTERS")
+    # FILTER(ALL(...), ...) is the explicit spelling of the overwriting form.
+    if re.search(r"\bFILTER\s*\(\s*ALL", body_nb):
+        add("FC1", "FILTER(ALL(...)) overwrites the filter on that column")
+    elif overwriting_filter_args(dax):
+        # Decided per argument, not per measure. Suppressing this whenever any
+        # other FC route had fired hid the divergence on 93 measures whose
+        # CALCULATE carried an `ALL` *and* independent Boolean predicates - the
+        # `ALL` produced FC5 and the predicates, which overwrite a slicer on
+        # their own columns, went unreported.
+        add("FC1", "CALCULATE with a Boolean filter and no KEEPFILTERS")
 
-    # A measure reference inside an iterator is context transition.
-    if fns & {"SUMX", "AVERAGEX", "MINX", "MAXX", "COUNTX", "RANKX", "CONCATENATEX"}:
-        if measure_refs(dax):
+    # A measure reference inside an iterator is context transition. Not for
+    # RANKX once ranking has already been named: its measure argument is how
+    # RANKX works, and step 2 says ranking is not a filter-context problem.
+    iterators = fns & ITERATOR_FUNCS
+    if iterators and not (iterators == {"RANKX"} and set(routes) & {"FC6", "FC7"}):
+        if measure_refs(dax, resolve):
             add("FC1", "measure reference inside an iterator")
 
     return routes, reasons
@@ -1063,13 +1198,22 @@ def classify(measures, coltypes, flags):
     for m in measures:
         by_name.setdefault(m["name"], m)
 
+    # `Table[X]` is a measure when X is one and the table has no such column.
+    # A model that homes its measures on a `_Measures` table writes every
+    # reference this way.
+    homes = {(m["table"], m["name"]) for m in measures
+             if m.get("kind", "measure") == "measure"}
+
+    def resolve(table, name):
+        return (table, name) in homes and (table, name) not in coltypes
+
     # Step 0: dependency graph.
     deps = {}
     for m in measures:
         key = (m["table"], m["name"])
         deps[key] = {
             (by_name[r]["table"], by_name[r]["name"])
-            for r in measure_refs(m["dax"])
+            for r in measure_refs(m["dax"], resolve)
             if r in by_name and (by_name[r]["table"], by_name[r]["name"]) != key
         }
 
@@ -1078,13 +1222,13 @@ def classify(measures, coltypes, flags):
         key = (m["table"], m["name"])
         # Step 1: returns a string -> skip. Only that, and only for a measure.
         if (m.get("kind", "measure") in LABEL_TESTED_KINDS
-                and returns_string(m, coltypes, by_name)):
+                and returns_string(m, coltypes, by_name, resolve=resolve)):
             results[key] = {
                 "m": m, "routes": ["SKIP"], "reasons": ["returns a label"],
                 "inherited": [],
             }
             continue
-        routes, reasons = local_routes(m, coltypes, flags)
+        routes, reasons = local_routes(m, coltypes, flags, resolve)
         if not routes:
             # Step 4: fall through, do not stall.
             routes, reasons = ["DIRECT"], ["no filter-context or out-of-model concept"]
@@ -1141,7 +1285,7 @@ KIND_LABELS = [
 ]
 
 
-def report_text(results, note, model_name, flags=None):
+def report_text(results, note, model_name, flags):
     rows = sorted(results.values(), key=lambda r: (r["m"]["table"], r["m"]["name"]))
     total = len(rows)
     skipped = [r for r in rows if r["routes"] == ["SKIP"]]
@@ -1171,7 +1315,7 @@ def report_text(results, note, model_name, flags=None):
                    f"| {sum(1 for r in sel if r in direct)} "
                    f"| {sum(1 for r in sel if r in routed)} |")
     out.append("")
-    auto_date = sorted((flags or {}).get("auto_date", ()))
+    auto_date = sorted(flags.get("auto_date", ()))
     if auto_date:
         route = "S7"
         out.append(f"**Model-level: {route}.** {len(auto_date)} auto date table(s) "

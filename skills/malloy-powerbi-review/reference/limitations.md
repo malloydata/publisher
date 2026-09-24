@@ -64,6 +64,19 @@ Microsoft's own TMDL writer, which is why they are accepted rather than fixed:
   table named `AND` and dropping the edge from the dependency graph - which is
   the edge divergence propagates along. The spaced-column shape is the price.
 
+## What it does not route
+
+**A count on the *one* side of a relationship.** `DISTINCTCOUNT(dim_customer[customer_id])`
+routes `DIRECT`, and `DIRECT` means only that no Power BI-specific recipe applies -
+never that the translation is guaranteed equivalent. In a single-direction model the
+fact table's filters do not reach the dimension, so the measure answers "how many
+customers exist" whatever the report filtered on the fact; write it in Malloy as a
+`count(distinct …)` over a joined source and it answers "how many customers in the
+filtered rows", which is a different number. The script has no recipe for this because
+deciding it needs the join direction *and* which side the aggregate sits on, and the
+routing is per measure rather than per query. **38 measures across 12 of the 50 corpus
+models are this shape**, so check it by hand wherever a count names a dimension table.
+
 ## Routes with no trigger
 
 `T4` (date spine) and `FC8` (escaping a query-level filter) are **teaching
