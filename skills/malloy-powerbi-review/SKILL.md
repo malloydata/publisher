@@ -1,6 +1,6 @@
 ---
 name: malloy-powerbi-review
-description: Analyze a Power BI semantic model (TMDL, PBIP, or .pbix) as prior art for Malloy modeling. Used during Step 1 (DISCOVER) when Power BI artifacts are present. Coordinates reference files that translate tables, relationships, DAX measures, and row-level security roles. Works with or without a database connection.
+description: Analyze a Power BI semantic model (TMDL, PBIP, or .pbix) as prior art for Malloy modeling, and transpile its DAX. Use when Power BI artifacts are present during Step 1 (DISCOVER), and whenever a specific DAX measure has to become Malloy - CALCULATE, ALL/ALLSELECTED/ALLEXCEPT, RANKX and top-N, time intelligence, USERELATIONSHIP, calculation groups, what-if parameters, or an RLS role. Carries a worked, executed transpile per construct and states what each port costs. Works with or without a database connection.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -13,12 +13,13 @@ SPDX-License-Identifier: MIT
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
-> **This is NOT a blind conversion.** DAX and Malloy disagree about what a filter means. A measure that translates cleanly on sight can still return a different number, with no error raised. Classifying each measure is the work; emitting Malloy is the easy part.
+> **This is NOT a blind conversion.** DAX and Malloy disagree about what a filter means. A measure that translates cleanly on sight can still return a different number, with no error raised. Knowing which measures change meaning on the way across is the work - and then saying what the port costs, because "untranslatable" has done nothing for the customer.
 
 ## When to Use
 
 - **Auto-detected:** The agent finds a `.pbix`, a `.pbip` project, or a `definition/` folder of `.tmdl` files during Step 1 (DISCOVER) and the user confirms they should be used as prior art.
 - **Explicitly requested:** The user says "model from Power BI", "convert this PBIX", "migrate off Power BI", or provides a path to Power BI artifacts.
+- **One measure at a time:** The user pastes a DAX expression and asks what it becomes in Malloy. Go straight to the recipe in `reference/cookbook-*.md`; the routing procedure is for a whole model.
 
 ## Two Modes
 
