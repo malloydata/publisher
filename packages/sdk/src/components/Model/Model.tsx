@@ -16,11 +16,22 @@ import { ModelExplorerDialog } from "./ModelExplorerDialog";
 import { QueryExplorerResult } from "./SourcesExplorer";
 import { useModelData } from "./useModelData";
 
-interface ModelProps {
+export interface ModelProps {
    onChange?: (query: QueryExplorerResult) => void;
    resourceUri: string;
    runOnDemand?: boolean;
    maxResultSize?: number;
+   /**
+    * Control values from the host, typically its URL query parameters. When
+    * omitted, `Model` holds them itself, so the embedded explorer and the
+    * maximized dialog still agree with each other.
+    */
+   givens?: Record<string, string>;
+   /** Applied control values, for a host that wants them in its URL. */
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
 }
 
 // Note: For this to properly render outside of publisher,
@@ -32,6 +43,8 @@ export default function Model({
    resourceUri,
    runOnDemand = false,
    maxResultSize = 0,
+   givens,
+   onGivensChange,
 }: ModelProps) {
    const { modelPath } = parseResourceUri(resourceUri);
    const { data, isError, isLoading, error } = useModelData(resourceUri);
@@ -41,6 +54,14 @@ export default function Model({
    >();
    const [sharedSourceIndex, setSharedSourceIndex] = React.useState(0);
    const [copyMessage, setCopyMessage] = useState("");
+   // Held here only when the host passes neither prop, so the embedded
+   // explorer and the maximized dialog still agree on one set of values
+   // rather than each defaulting independently.
+   const [localGivens, setLocalGivens] = React.useState<Record<string, string>>(
+      {},
+   );
+   const effectiveGivens = givens ?? localGivens;
+   const effectiveOnGivensChange = onGivensChange ?? setLocalGivens;
 
    // Whether the model imports other files — drives the empty-state hint for
    // import-only models, whose discovery surface is legitimately empty (no
@@ -142,6 +163,8 @@ export default function Model({
                         existingQuery={sharedQuery}
                         initialSelectedSourceIndex={sharedSourceIndex}
                         resourceUri={resourceUri}
+                        givens={effectiveGivens}
+                        onGivensChange={effectiveOnGivensChange}
                      />
 
                      {/* Magnifying glass icon */}
@@ -232,6 +255,8 @@ export default function Model({
                initialSelectedSourceIndex={sharedSourceIndex}
                onChange={handleQueryChange}
                onSourceChange={handleSourceChange}
+               givens={effectiveGivens}
+               onGivensChange={effectiveOnGivensChange}
             />
          </Box>
          <Snackbar

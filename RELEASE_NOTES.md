@@ -31,6 +31,24 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — the model Explorer takes givens
+
+The Console's model Explorer now shows a **Parameters** row when the model declares givens, and
+sends the values with every Run. Before this, a source gated with `#(authorize)` on a given could
+not be explored from the Console at all: the Explorer had no way to supply the value, the server
+answered 403, and the Explorer showed nothing.
+
+- The values live in the page URL, so a parameterized exploration is a shareable link (the page's
+  copy-link button now carries them too).
+- A blank given with no default is not sent; the results pane names the given that needs a value.
+  A blank given with a default runs, and the result says which default it used.
+- Query errors, including a 403 from a gate, now show in the results pane instead of vanishing.
+- **Explore from here** on a dashboard and a notebook cell's **Data sources** dialog open the
+  Explorer with the document's current values rather than none.
+
+No server or API change: the Explorer sends givens through the same `POST …/query` field notebooks
+and dashboards use. See [docs/explorer.md](docs/explorer.md#parameters).
+
 ## [Unreleased] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 
 Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because

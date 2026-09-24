@@ -35,6 +35,24 @@ Malloy Explorer is organized into three main panels:
 
 <img src="explorer-screenshots/explorer-full-UI.png" alt="Explorer Full UI" width="900" style="max-width: 100%; height: auto;">
 
+### Parameters
+
+When the model declares [givens](givens.md), a **Parameters** row appears above the Explorer, one
+control per given, the same controls a notebook shows. Every Run sends the current values, so a
+source gated with [`#(authorize)`](authorize.md) or scoped by [row-level access](row-level-access.md)
+can be explored from the Console instead of refusing with a 403.
+
+- A given left blank falls back to its declared default, and the result says which defaults it ran
+  with. A blank given with no default isn't sent: the Results Panel says which given needs a value.
+- The values live in the page URL (`?TENANT=acme`), so a parameterized exploration is a shareable
+  link, and the maximized view shows the same values.
+- **Explore from here** on a dashboard tile, and a notebook cell's **Data sources** dialog, open the
+  Explorer with that document's current values. Reset there returns to those values.
+- A refused query, such as an `#(authorize)` expression that evaluates false, shows the server's
+  message in the Results Panel.
+
+A model with no givens shows no row and behaves as before.
+
 ---
 
 ## 2. Source Panel

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import * as Malloy from "@malloydata/malloy-interfaces";
+import type { Message } from "@malloydata/malloy-explorer";
 import { Box, Stack } from "@mui/system";
 import {
    StyledCardMedia,
@@ -14,6 +15,7 @@ import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 // import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";
+import type { RunGate } from "./runGate";
 
 type ExplorerComponents = typeof import("@malloydata/malloy-explorer");
 type QueryBuilder = typeof import("@malloydata/malloy-query-builder");
@@ -30,6 +32,10 @@ export interface SourceExplorerProps {
    onQueryChange?: (query: QueryExplorerResult) => void;
    onSourceChange?: (index: number) => void;
    resourceUri: string;
+   /** The control row's current values, sent with every Run. */
+   givens?: Record<string, unknown>;
+   /** Whether Run can proceed given what the control row currently holds. */
+   gate?: RunGate;
 }
 
 /**
@@ -46,6 +52,8 @@ export function SourcesExplorer({
    onQueryChange,
    onSourceChange,
    resourceUri,
+   givens,
+   gate,
 }: SourceExplorerProps) {
    // Notify parent component when selected source changes
    React.useEffect(() => {
@@ -66,6 +74,8 @@ export function SourcesExplorer({
                   }
                }}
                resourceUri={resourceUri}
+               givens={givens}
+               gate={gate}
             />
             <Box height="5px" />
          </Stack>
@@ -78,6 +88,8 @@ interface SourceExplorerComponentProps {
    existingQuery?: QueryExplorerResult;
    onChange?: (query: QueryExplorerResult) => void;
    resourceUri: string;
+   givens?: Record<string, unknown>;
+   gate?: RunGate;
 }
 
 export interface QueryExplorerResult {
@@ -100,6 +112,8 @@ function SourceExplorerComponentInner({
    explorerComponents,
    QueryBuilder,
    resourceUri,
+   givens,
+   gate,
 }: SourceExplorerComponentProps & {
    explorerComponents: ExplorerComponents;
    QueryBuilder: QueryBuilder;
@@ -112,7 +126,8 @@ function SourceExplorerComponentInner({
       | {
            executionState: "running" | "finished";
            response: {
-              result: Malloy.Result;
+              result?: Malloy.Result;
+              messages?: Message[];
            };
            query: Malloy.Query | string;
            queryResolutionStartMillis: number;
@@ -151,8 +166,12 @@ function SourceExplorerComponentInner({
    } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
+   // Captured at Run, so the defaults note describes the run that produced the result.
+   const gateAtRunRef = React.useRef<RunGate | undefined>(undefined);
+
    const mutation = useMutationWithApiError({
       mutationFn: () => {
+         gateAtRunRef.current = gate;
          // If malloyQuery is a string, we can use it directly, otherwise convert to Malloy
          const malloy =
             typeof query?.malloyQuery === "string"
@@ -171,9 +190,7 @@ function SourceExplorerComponentInner({
                mutation.reset();
                setSubmittedQuery(undefined);
             },
-            response: {
-               result: {} as Malloy.Result, // placeholder
-            },
+            response: {},
          });
 
          setQuery({
@@ -189,6 +206,8 @@ function SourceExplorerComponentInner({
                sourceName: undefined,
                queryName: undefined,
                versionId: versionId,
+               // Omitted when empty, so a model with no givens sends the same body as before.
+               ...(givens && Object.keys(givens).length > 0 ? { givens } : {}),
             },
          );
       },
@@ -199,6 +218,7 @@ function SourceExplorerComponentInner({
                ...query,
                malloyResult: parsedResult as Malloy.Result,
             });
+            const ranGate = gateAtRunRef.current;
             // Update submitted query with results
             setSubmittedQuery((prev) =>
                prev
@@ -207,6 +227,13 @@ function SourceExplorerComponentInner({
                        executionState: "finished",
                        response: {
                           result: parsedResult as Malloy.Result,
+                          ...(ranGate?.kind === "defaults"
+                             ? {
+                                  messages: [
+                                     { severity: "INFO", title: ranGate.note },
+                                  ],
+                               }
+                             : {}),
                        },
                     }
                   : undefined,
@@ -214,8 +241,26 @@ function SourceExplorerComponentInner({
          }
       },
       onError: (error) => {
-         setSubmittedQuery(undefined);
          console.error("Query execution error:", error);
+         const message =
+            (error as { data?: { message?: string } } | undefined)?.data
+               ?.message ??
+            (error as Error | undefined)?.message ??
+            "The query could not be run.";
+         // Shown in the results pane rather than cleared, so the server's reason is visible.
+         setSubmittedQuery((prev) => ({
+            executionState: "finished",
+            query: prev?.query ?? query?.malloyQuery,
+            queryResolutionStartMillis:
+               prev?.queryResolutionStartMillis ?? Date.now(),
+            onCancel:
+               prev?.onCancel ??
+               (() => {
+                  mutation.reset();
+                  setSubmittedQuery(undefined);
+               }),
+            response: { messages: [{ severity: "ERROR", title: message }] },
+         }));
       },
    });
 
@@ -291,6 +336,21 @@ function SourceExplorerComponentInner({
                         console.log(
                            `running query with:  ${query?.malloyQuery}`,
                         );
+                        if (gate?.kind === "blocked") {
+                           // Say which given is missing instead of sending a request that can only fail.
+                           setSubmittedQuery({
+                              executionState: "finished",
+                              query: query?.malloyQuery,
+                              queryResolutionStartMillis: Date.now(),
+                              onCancel: () => setSubmittedQuery(undefined),
+                              response: {
+                                 messages: [
+                                    { severity: "WARN", title: gate.reason },
+                                 ],
+                              },
+                           });
+                           return;
+                        }
                         try {
                            mutation.mutate();
                         } catch (error) {

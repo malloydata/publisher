@@ -7,6 +7,7 @@ import {
    encodeResourceUri,
    Model,
    packageFileUrl,
+   useGivenUrlParams,
    useRouterClickHandler,
    useServer,
 } from "@malloy-publisher/sdk";
@@ -26,6 +27,9 @@ function ModelPage() {
    // Every branch below has the same parent, the package, so the way up is
    // built once here.
    const navigate = useRouterClickHandler();
+   // Parameter values ride in the query string, so a Model's Run is a
+   // shareable link, the same as a dashboard's or a notebook's.
+   const { params: givens, onGivensChange } = useGivenUrlParams();
    if (!params.environmentName) {
       return (
          <div>
@@ -145,6 +149,8 @@ function ModelPage() {
                resourceUri={resourceUri}
                runOnDemand={true}
                maxResultSize={512 * 1024}
+               givens={givens}
+               onGivensChange={onGivensChange}
             />
          </Box>
       );
