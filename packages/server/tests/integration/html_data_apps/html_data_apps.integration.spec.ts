@@ -239,6 +239,25 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(res.headers.get("x-content-type-options")).toBe("nosniff");
    });
 
+   it("sets the framing CSP outside the package routes too", async () => {
+      // The package routes above carried a policy before the middleware existed,
+      // so they cannot tell whether it is mounted ahead of EVERY route. These two
+      // are the surfaces that had none: the REST API and the Console's catch-all,
+      // which serves the SPA that owns the clickjacking exposure this closes.
+      const api = await fetch(`${baseUrl}/api/v0/status`);
+      expect(api.status).toBe(200);
+      expect(api.headers.get("content-security-policy")).toBe(
+         "frame-ancestors 'self'",
+      );
+      expect(api.headers.get("x-frame-options")).toBeNull();
+
+      const console = await fetch(`${baseUrl}/`);
+      expect(console.headers.get("content-security-policy")).toBe(
+         "frame-ancestors 'self'",
+      );
+      expect(console.headers.get("x-frame-options")).toBeNull();
+   });
+
    it("404s a missing file", async () => {
       const res = await fetch(pkgUrl("/does-not-exist.html"));
       expect(res.status).toBe(404);
