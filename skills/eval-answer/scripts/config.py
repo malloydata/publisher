@@ -30,9 +30,11 @@ environment or package is now an error that names the key to set.
 
 Built-ins exist only for what has one right answer on a laptop: ports, the
 clone this file lives in, and a work directory outside the repository. The truth
-server's built-ins apply only when the set HAS a config file, because only then
-did `serve.py --role truth` write that server's config from the same values;
-without one, the scripts keep the truth fallbacks they had.
+server's built-ins apply only when the file HAS a [truth] section (an empty one
+will do), because only then does `serve.py --role truth` start that server from
+the same values. Without one the set has no truth server, and no script guesses
+a port for it: a guessed address that answers nothing reads as a drifted
+golden, not as a check that could not run.
 
 Guard bypasses (`--skip-golden-check`, `--no-retrieval-gate`, ...) are never read
 from here. A bypass written into a file is on for every run that follows.
@@ -70,6 +72,12 @@ BUILTIN: dict[tuple[str, str], Any] = {
 }
 
 
+def within(path: pathlib.Path, directory: pathlib.Path) -> bool:
+    """`path` is `directory` itself or anywhere under it, both resolved first."""
+    path, directory = pathlib.Path(path).resolve(), pathlib.Path(directory).resolve()
+    return path == directory or directory in path.parents
+
+
 class ConfigError(SystemExit):
     """A config that cannot be used. A SystemExit so a CLI prints just the text."""
 
@@ -87,6 +95,11 @@ class Config:
         return self.set_meta.get("name") or self.set_dir.name
 
     @property
+    def has_truth(self) -> bool:
+        """The file declares a truth server, with a [truth] section."""
+        return "truth" in self.data
+
+    @property
     def file_hint(self) -> str:
         return str(self.path or self.set_dir / "eval.toml")
 
@@ -98,7 +111,7 @@ class Config:
             return self.data[section][key]
         if (section, key) == ("model", "package") and self.set_meta.get("targetPackage"):
             return self.set_meta["targetPackage"]
-        if section == "truth" and self.path is None:
+        if section == "truth" and not self.has_truth:
             return None
         return BUILTIN.get((section, key))
 
@@ -136,7 +149,7 @@ class Config:
                 or f"http://localhost:{self.get('model', 'mcp_port')}/mcp")
 
     def truth_publisher(self) -> str | None:
-        if self.path is None:
+        if not self.has_truth:
             return None
         return (self.get("truth", "publisher")
                 or f"http://localhost:{self.get('truth', 'port')}")

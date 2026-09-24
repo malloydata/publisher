@@ -57,6 +57,9 @@ import pathlib
 import re
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import config  # noqa: E402
+
 TABLE_REF = re.compile(r"""(?P<conn>[A-Za-z_][\w]*)\.table\(\s*['"](?P<ref>[^'"]+)['"]\s*\)""")
 
 
@@ -103,11 +106,6 @@ def stem(ref: str) -> str:
     return "t_" + re.sub(r"\W+", "_", last).strip("_").lower()
 
 
-def nested_in(out: pathlib.Path, package: pathlib.Path) -> bool:
-    out, package = out.resolve(), package.resolve()
-    return out == package or package in out.parents
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -127,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     if not (a.package / "publisher.json").exists():
         raise SystemExit(f"{a.package} has no publisher.json; point --package at the "
                          f"model package root")
-    if nested_in(a.out, a.package):
+    if config.within(a.out, a.package):
         raise SystemExit(
             f"--out {a.out} is inside the model package {a.package}. Publisher "
             f"serves every .malloy under a package directory, so the model "

@@ -260,13 +260,19 @@ def truth_inside_model(cfg: config.Config) -> str | None:
     """Why the set's truth package leaks through the model server, or None.
 
     Publisher serves every .malloy under a package directory. A truth package
-    inside the model package is served by the MODEL server, as one of the
-    model's own files, so both roles refuse to start over that layout.
+    inside the model package, or AT it, is served by the MODEL server as one of
+    the model's own files, so both roles refuse to start over that layout. A
+    set with a truth package but no [model] repo is refused too: the check
+    cannot run, and passing it unchecked would let the leak through.
     """
-    repo, truth = cfg.get("model", "repo"), cfg.truth_package_dir()
-    if not (repo and cfg.set_meta.get("truthPackage")):
+    if not cfg.set_meta.get("truthPackage"):
         return None
-    if repo in truth.resolve().parents:
+    repo, truth = cfg.get("model", "repo"), cfg.truth_package_dir()
+    if not repo:
+        return (f"cannot tell whether the model server would serve the truth "
+                f"package: {cfg.file_hint} names no model package directory. "
+                f"Fix: add `repo = \"<model package dir>\"` under [model]")
+    if config.within(truth, repo):
         return (f"the truth package {truth} is inside the model package {repo}, "
                 f"so the model server serves it to the answerer as one of the "
                 f"model's own files. Fix: move it outside {repo} and set "
@@ -372,6 +378,11 @@ def main(argv: list[str] | None = None) -> int:
         if not a.set_dir:
             ap.error("--role needs --set")
         cfg = config.load(a.set_dir)
+        if a.role == "truth" and not cfg.has_truth and not a.stop:
+            raise SystemExit(
+                f"{cfg.file_hint} has no [truth] section, so no later step would "
+                f"find a truth server started here. Fix: add `[truth]` to it "
+                f"(an empty section takes ports 4881/4882).")
         a.server_root = a.server_root or cfg.server_root(a.role)
         a.publisher_dir = a.publisher_dir or cfg.publisher_dir()
         a.port = a.port or cfg.get(a.role, "port")
@@ -381,8 +392,8 @@ def main(argv: list[str] | None = None) -> int:
             a.package = a.package or cfg.get("model", "package")
     elif not a.server_root:
         ap.error("--server-root is required without --role")
-    a.port = a.port or 4811
-    a.mcp_port = a.mcp_port or 4040
+    a.port = a.port or config.BUILTIN[("model", "port")]
+    a.mcp_port = a.mcp_port or config.BUILTIN[("model", "mcp_port")]
 
     root = a.server_root.resolve()
     pidfile = root / "publisher.pid"

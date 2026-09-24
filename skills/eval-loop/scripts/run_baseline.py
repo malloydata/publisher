@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run an eval arm headlessly and write a conformant ledger. Stdlib only.
 
-  python run_baseline.py --set evals/ecommerce --out results/2026-08-30-sonnet \
-      --model sonnet --label sonnet-baseline \
-      --environment samples --package ecommerce
+  python run_baseline.py --set <set-dir> --model sonnet --label sonnet-baseline
+  # servers, names and the run directory come from the set's eval.toml;
+  # eval.py run takes the same flags
 
 Each case gets one fresh `claude -p` answerer holding the Publisher MCP tools and
 nothing else, then one fresh judge that sees the golden and the answer but never
@@ -2919,12 +2919,14 @@ def main(argv: list[str] | None = None) -> int:
                          "differs from --environment. A truth package is "
                          "usually served on its own server, which the answerer "
                          "has no route to, and that server names its "
-                         "environments independently")
+                         "environments independently. Default: [truth] "
+                         "environment in the set's eval.toml")
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the set's truthPackage, for the "
-                         "pre-run golden check. Defaults to --publisher on a "
-                         "local target; on a platform target the check is "
-                         "skipped unless this is given")
+                         "pre-run golden check. Default: the [truth] server in "
+                         "the set's eval.toml; with no [truth] section, "
+                         "--publisher on a local target, and on a platform "
+                         "target the check is skipped unless this is given")
     ap.add_argument("--skip-golden-check", action="store_true",
                     help="start even if goldens do not re-derive. The run is "
                          "then measuring against numbers nobody can reproduce, "

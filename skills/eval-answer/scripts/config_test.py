@@ -41,7 +41,11 @@ class Precedence(unittest.TestCase):
         cfg = config.load(make_set({"eval.toml": "[model]\nport = 4000\n"}))
         self.assertEqual(cfg.model_publisher(), "http://localhost:4000")
         self.assertEqual(cfg.model_mcp_url(), "http://localhost:4040/mcp")
+
+    def test_an_empty_truth_section_takes_the_truth_built_ins(self):
+        cfg = config.load(make_set({"eval.toml": "[model]\nport = 4000\n[truth]\n"}))
         self.assertEqual(cfg.truth_publisher(), "http://localhost:4881")
+        self.assertEqual(cfg.get("truth", "environment"), "truth")
 
 
 class NoExampleDefault(unittest.TestCase):
@@ -61,12 +65,15 @@ class NoExampleDefault(unittest.TestCase):
             cfg.need("", "model", "environment", "--environment")
         self.assertIn("Invalid --environment", str(e.exception))
 
-    def test_no_file_means_no_truth_server(self):
-        # Without a file nothing wrote a truth server's config, so there is no
-        # truth server to assume; callers keep their own fallbacks.
-        cfg = config.load(make_set({}))
-        self.assertIsNone(cfg.truth_publisher())
-        self.assertIsNone(cfg.get("truth", "environment"))
+    def test_no_truth_section_means_no_truth_server(self):
+        # Nothing started a truth server from these values, so no port is
+        # assumed: a guessed address that answers nothing would score every
+        # golden as drifted instead of saying the check could not run.
+        for files in ({}, {"eval.toml": '[model]\nenvironment = "e"\n'}):
+            cfg = config.load(make_set(files))
+            self.assertIsNone(cfg.truth_publisher())
+            self.assertIsNone(cfg.get("truth", "environment"))
+            self.assertIsNone(cfg.get("truth", "port"))
 
 
 class Paths(unittest.TestCase):

@@ -1100,7 +1100,7 @@ class ResolveConfig(unittest.TestCase):
 
     def test_a_local_run_takes_its_servers_and_run_dir_from_the_file(self):
         d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n'
-                         'port = 4000\n[paths]\nworkdir = "w"\n')
+                         'port = 4000\n[truth]\n[paths]\nworkdir = "w"\n')
         a = self.ns(d)
         with mock.patch("builtins.print"):
             rb.resolve_config(a)
@@ -1109,6 +1109,15 @@ class ResolveConfig(unittest.TestCase):
                           "http://localhost:4040/mcp"))
         self.assertEqual(a.truth_publisher, "http://localhost:4881")
         self.assertEqual(a.out, (d / "w" / "runs" / "s-baseline-01").resolve())
+
+    def test_no_truth_section_leaves_the_truth_server_unset(self):
+        # Not a guessed 4881: nothing there would score every golden drifted.
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        a = self.ns(d)
+        with mock.patch("builtins.print"):
+            rb.resolve_config(a)
+        self.assertIsNone(a.truth_publisher)
+        self.assertIsNone(a.truth_environment)
 
     def test_a_platform_run_never_takes_its_organization_from_the_file(self):
         d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')

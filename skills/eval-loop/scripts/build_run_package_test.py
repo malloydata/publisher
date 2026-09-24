@@ -216,6 +216,17 @@ class RefusalsAndServing(unittest.TestCase):
             self.assertIn(line, p.stdout)
             self.assertIn(line, (out / "README.md").read_text())
 
+    def test_with_no_truth_section_it_warns_it_is_the_model_server(self):
+        # Not a guessed truth port: the model server, said out loud, because
+        # the package holds the answer key.
+        (self.run / "clusters.jsonl").write_text("")
+        (self.sset / "eval.toml").write_text("[model]\nport = 4000\n")
+        p = self.build("--out", str(self.tmp / "pkg"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("# this is the MODEL server: the package holds the answer key",
+                      p.stdout)
+        self.assertNotIn("4881", p.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

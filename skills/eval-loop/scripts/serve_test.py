@@ -273,6 +273,24 @@ class Roles(unittest.TestCase):
                 self.assertIn("the model server serves it to the answerer",
                               str(e.exception))
 
+    def test_a_truth_package_at_the_model_package_is_refused(self):
+        d = a_set(TOML + 'package_dir = "pkg"\n')
+        with self.assertRaises(SystemExit) as e:
+            serve.role_config(serve.config.load(d), "truth")
+        self.assertIn("the model server serves it to the answerer", str(e.exception))
+
+    def test_a_truth_package_with_no_model_repo_is_refused_not_passed(self):
+        d = a_set("[truth]\n")
+        with self.assertRaises(SystemExit) as e:
+            serve.role_config(serve.config.load(d), "truth")
+        self.assertIn("names no model package directory", str(e.exception))
+
+    def test_the_truth_role_needs_a_truth_section(self):
+        d = a_set("[model]\nrepo = \"pkg\"\n")
+        with self.assertRaises(SystemExit) as e:
+            serve.main(["--role", "truth", "--set", str(d)])
+        self.assertIn("has no [truth] section", str(e.exception))
+
     def test_a_keyless_server_says_it_ranks_lexically(self):
         self.assertIn("ranks get_context lexically", serve.retrieval_note({}))
         self.assertIn("lexically",

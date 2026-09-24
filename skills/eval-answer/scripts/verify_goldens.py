@@ -1464,13 +1464,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    # No default, and not required. It WAS http://localhost:4811, which the
-    # ecommerce set's own README assigns to the ANSWERER's server, so the
-    # default and the documented ports named different servers and the wrong
-    # one self-certifies goldens. Omitting it now skips the value check the
-    # same way a set with no truthPackage does -- exit 3, "did not happen" --
-    # rather than quietly querying a port nobody chose. Both in-tree callers
-    # pass it explicitly.
+    # No built-in port. A fixed default once named the ANSWERER's server, so
+    # the wrong one self-certified goldens. The only fallback is a [truth]
+    # section in the set's eval.toml, which is the server `serve.py --role
+    # truth` started. With neither, the value check is skipped the same way a
+    # set with no truthPackage is -- exit 3, "did not happen" -- rather than
+    # querying a port nobody chose.
     ap.add_argument("--publisher", default=None,
                     help="the Publisher serving the TRUTH package, and ONLY "
                          "that package. Default: the [truth] server in the "

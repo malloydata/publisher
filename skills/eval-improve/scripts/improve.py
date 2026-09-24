@@ -323,8 +323,9 @@ def main(argv: list[str] | None = None) -> int:
                          "eval.toml")
     ap.add_argument("--server-root", type=pathlib.Path, default=None,
                     help="Publisher SERVER_ROOT; only needed without watch "
-                         "mode. Default: the one `serve.py --role model` "
-                         "uses, when it exists")
+                         "mode. Each accepted edit is rsynced onto the copy "
+                         "this root serves and reloaded. Default: the one "
+                         "`serve.py --role model` uses, when it exists")
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "
                          "live and the helper only reloads")
@@ -332,28 +333,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
     ap.add_argument("--mcp-url", default=None)
-    # No built-in. It WAS http://localhost:4811 -- which `run_baseline.py` uses
-    # as the default `--publisher`, the server holding the model under test --
-    # so the help text below stated the invariant and the default beside it
-    # broke it. `verify_goldens.py` removed the same default from its own
-    # `--publisher` for the same reason and both callers kept it. Unset now
-    # means the value check does not happen, the verifier exits 3, and the
-    # acceptance gate blocks with "did not run" rather than passing an audit
-    # that re-derived goldens from the model they are meant to check.
+    # No built-in port: a fixed default once named the server holding the
+    # model under test, which cannot verify its own goldens. The fallback is
+    # the [truth] section of the set's eval.toml. With neither, the value
+    # check does not happen, the verifier exits 3, and the acceptance gate
+    # blocks with "did not run".
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the TRUTH package, for the "
                          "golden re-derivation after an edit. The model under "
                          "test cannot verify its own goldens, which is the "
-                         "whole point of the second server. Without it the "
-                         "value check does not run and the acceptance check "
-                         "blocks")
+                         "whole point of the second server. Default: the "
+                         "[truth] server in the set's eval.toml. With neither, "
+                         "the value check does not run and the acceptance "
+                         "check blocks")
     ap.add_argument("--truth-environment", default=None,
                     help="the environment name on the TRUTH server, when it "
                          "differs from --environment. That server is separate "
-                         "and names its environments independently; without "
-                         "this the audit 404s on every case and the "
-                         "acceptance check blocks every cluster. Same flag, "
-                         "same reason, as run_baseline.py")
+                         "and names its environments independently; the wrong "
+                         "name 404s every case and the acceptance check blocks "
+                         "every cluster. Default: [truth] environment in the "
+                         "set's eval.toml. Same flag as run_baseline.py")
     ap.add_argument("--definitions", type=pathlib.Path, default=None,
                     help="a definition ledger (verify_definitions.py). Passed to "
                          "the golden audit so a set with no truth package can "
