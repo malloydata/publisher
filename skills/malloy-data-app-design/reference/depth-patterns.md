@@ -144,6 +144,8 @@ Three requirements, in order of how badly they bite:
 Collect entities into a tray, then compare them side by side. Back it with a source parameterised on the **pair**, returning one row per entity, so both sides use identical definitions rather than two separately-written queries that might not agree.
 
 ```malloy
+##! experimental.parameters
+
 source: head_to_head(a::number is 0, b::number is 0) is products extend {
   where: product_id = a or product_id = b
   view: scorecard is { group_by: product_id, ... }
