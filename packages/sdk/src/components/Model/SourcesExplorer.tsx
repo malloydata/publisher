@@ -172,16 +172,8 @@ function SourceExplorerComponentInner({
    const mutation = useMutationWithApiError({
       mutationFn: () => {
          gateAtRunRef.current = gate;
-         // If malloyQuery is a string, we can use it directly, otherwise convert to Malloy
-         const malloy =
-            typeof query?.malloyQuery === "string"
-               ? query.malloyQuery
-               : new QueryBuilder.ASTQuery({
-                    source: sourceAndPath.sourceInfo,
-                    query: query?.malloyQuery,
-                 }).toMalloy();
-
-         // Set submitted query when execution starts
+         // Before building the Malloy, so a build that throws still has a run
+         // for `onError` to report into.
          setSubmittedQuery({
             executionState: "running",
             query: query?.malloyQuery,
@@ -192,6 +184,15 @@ function SourceExplorerComponentInner({
             },
             response: {},
          });
+
+         // If malloyQuery is a string, we can use it directly, otherwise convert to Malloy
+         const malloy =
+            typeof query?.malloyQuery === "string"
+               ? query.malloyQuery
+               : new QueryBuilder.ASTQuery({
+                    source: sourceAndPath.sourceInfo,
+                    query: query?.malloyQuery,
+                 }).toMalloy();
 
          setQuery({
             ...query,
@@ -262,20 +263,14 @@ function SourceExplorerComponentInner({
                title: missingGivensHint(missing),
             });
          }
-         // Shown in the results pane rather than cleared, so the server's reason is visible.
-         setSubmittedQuery((prev) => ({
-            executionState: "finished",
-            query: prev?.query ?? query?.malloyQuery,
-            queryResolutionStartMillis:
-               prev?.queryResolutionStartMillis ?? Date.now(),
-            onCancel:
-               prev?.onCancel ??
-               (() => {
-                  mutation.reset();
-                  setSubmittedQuery(undefined);
-               }),
-            response: { messages },
-         }));
+         // Shown in the results pane rather than cleared, so the server's
+         // reason is visible. No run means Cancel cleared it: a late failure
+         // from that request must not bring the pane back.
+         setSubmittedQuery((prev) =>
+            prev
+               ? { ...prev, executionState: "finished", response: { messages } }
+               : undefined,
+         );
       },
    });
 

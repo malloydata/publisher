@@ -20,11 +20,13 @@ export interface RunGate {
    defaultsNote?: string;
 }
 
-/** Set means a real value, not merely present: a blank string is not a choice. */
+/**
+ * Unset means exactly what `givensToRequest` leaves out of the request. An
+ * empty string is not unset: for a string or filter given it is a value the
+ * reader typed, and it is sent, so the default does not apply.
+ */
 function isSet(value: GivenValue | undefined): boolean {
-   if (value === null || value === undefined) return false;
-   if (typeof value === "string" && value.trim() === "") return false;
-   return true;
+   return value !== null && value !== undefined;
 }
 
 export function runGate(

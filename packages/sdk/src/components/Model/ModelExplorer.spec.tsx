@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The Explorer sends the control row's values with every Run, refuses to run
- * one that a `given:` with no default would 403 on, and surfaces both a
- * default note and a server error as a banner rather than swallowing it.
+ * The Explorer sends the control row's values with every Run, and surfaces a
+ * default note, a server error and a missing-given hint as banners rather than
+ * swallowing them.
  *
  * `@malloydata/malloy-explorer` is stubbed because it is lazy-loaded (a
  * dynamic `import()` inside `SourceExplorerComponent`) and pulls in a real
@@ -40,9 +40,13 @@ mock.module("@malloydata/malloy-explorer", () => ({
    }: {
       submittedQuery?: {
          response?: { messages?: { title: string }[] };
+         onCancel: () => void;
       };
    }) => (
       <div data-testid="result-panel">
+         {submittedQuery && (
+            <button onClick={submittedQuery.onCancel}>Cancel</button>
+         )}
          {submittedQuery?.response?.messages?.map((message) => (
             <div key={message.title}>{message.title}</div>
          ))}
@@ -256,6 +260,41 @@ describe("a rejected run", () => {
       expect(
          await screen.findByText("Not authorized: missing TENANT"),
       ).toBeTruthy();
+   });
+});
+
+describe("a cancelled run", () => {
+   it("stays cleared when its request fails afterwards", async () => {
+      let fail: (reason: unknown) => void = () => {};
+      executeQueryModel.mockImplementation(
+         () =>
+            new Promise((_resolve, reject) => {
+               fail = reject;
+            }),
+      );
+      render(
+         <ModelExplorer
+            data={modelWith()}
+            existingQuery={EXISTING_QUERY}
+            resourceUri={URI}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      await screen.findByRole("button", { name: "Run" });
+      run();
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+      fail(
+         Object.assign(new Error("fallback"), {
+            status: 500,
+            data: { code: 500, message: "late failure" },
+         }),
+      );
+
+      // Give the rejection a chance to land before asserting it changed nothing.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.queryByText("late failure")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
    });
 });
 

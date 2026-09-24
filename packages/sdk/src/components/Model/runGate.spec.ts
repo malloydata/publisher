@@ -71,11 +71,14 @@ describe("runGate", () => {
       expect(runGate(givens, values({}))).toEqual({ missing: [] });
    });
 
-   it("treats a whitespace string as unset", () => {
-      const givens: Given[] = [{ name: "TENANT" }];
-      expect(runGate(givens, values({ TENANT: "   " })).missing).toEqual([
-         "TENANT",
-      ]);
+   it("counts an empty string as set, since it is sent rather than defaulted", () => {
+      const givens: Given[] = [
+         { name: "TENANT" },
+         { name: "REGION", type: "filter<string>", default: "f'West'" },
+      ];
+      expect(runGate(givens, values({ TENANT: "", REGION: "" }))).toEqual({
+         missing: [],
+      });
    });
 
    it("skips a spec with no name", () => {
