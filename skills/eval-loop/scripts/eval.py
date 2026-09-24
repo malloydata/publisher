@@ -43,13 +43,23 @@ def flag_value(args: list[str], flag: str) -> str | None:
 
 
 def run_dir_from_label(args: list[str]) -> list[str]:
-    """`--label L` becomes `--run <workdir>/runs/L` for a verb that reads a run."""
+    """`--label L` becomes `--run <workdir>/runs/L` for a verb that reads a run.
+
+    The label is always taken out: `diagnose` and `package` have no `--label`,
+    so one left in is an argparse error. With `--run` also given, `--run` wins.
+    """
     label = flag_value(args, "--label")
-    if label is None or flag_value(args, "--run") is not None:
+    if label is None:
+        if "--label" in args:
+            raise SystemExit("Invalid --label: expected a run name, got none. "
+                             "Fix: --label baseline-01")
         return args
-    cfg = config.load(pathlib.Path(flag_value(args, "--set")))
+    if not label:
+        # An empty name would point at the runs/ directory itself.
+        raise SystemExit("Invalid --label: expected a run name, got an empty "
+                         "value. Fix: --label baseline-01")
     out, skip = [], False
-    for i, x in enumerate(args):
+    for x in args:
         if skip:
             skip = False
             continue
@@ -59,6 +69,9 @@ def run_dir_from_label(args: list[str]) -> list[str]:
         if x.startswith("--label="):
             continue
         out.append(x)
+    if flag_value(out, "--run") is not None:
+        return out
+    cfg = config.load(pathlib.Path(flag_value(out, "--set")))
     return [*out, "--run", str(cfg.workdir() / "runs" / label)]
 
 
