@@ -31,6 +31,47 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — per-user visibility through a materialized grant table, and a public wrapper served from its fact
+
+**A storage-materialized source may join a grant table that is itself scoped by givens.** The
+visibility idiom — an org-scoped source joining an org-and-user-scoped grant table, with a dimension
+that null-checks the join — was refused as `dynamic_joined_where`. It is now admitted when the joined
+source is itself persisted with `storage=`, joined by name, and admissible on its own. Both artifacts
+hold every caller's rows; the serve shape re-applies the grant table's terms per caller and re-emits
+the join against that binding, so two users of one org get different answers from the same two
+tables. If the grant table's binding is withheld (stale past its window, unbuilt, refused), the
+sources joining it serve live and their siblings keep the tier. A revoked grant stays visible until
+the grant table rebuilds: give the grant table a freshness window with `fallback="live"`, and do not
+refresh it incrementally, since a deleted grant is never re-read by a delta — see
+[materialization](docs/materialization.md#per-user-visibility-through-a-joined-grant-table).
+
+The same rule lets a plain extension of a materialized source (`source: v is opps extend { join_one: …;
+where: g.user_id = $USER_ID }`) be served from its parent's table, which previously required
+`#@ -persist` and so served live.
+
+**A public wrapper over a materialized private fact is served from the fact's table.** A source whose
+query reads a persisted source (`orders is _orders_fact -> { select: * }`) has no binding of its own,
+so on a storage destination it was an undefined name on the serve shape and every query naming it
+served live. The wrapper is now carried onto the shape verbatim when everything it reads is on the
+shape; one that reaches a warehouse table or an unmaterialized source still serves live.
+
+**New plan field:** `PersistSourcePlan.joinedTerms` names each caller-scoped join, the joined source,
+and the terms its binding re-applies. It is optional and additive: the key is absent unless a source
+declares such a join, so no existing plan changes shape. A consumer generating a strict client from
+`api-doc.yaml` rejects the field until it regenerates.
+
+---
+
+## [Unreleased] — a refused persist source is skipped, and no longer fails the whole run
+
+**Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
+
+**Now:** a run skips a refused source and builds everything else. The run completes (`MANIFEST_FILE_READY`) and serves the refused source live, as before. Auto-run records each refused source in `metadata.refusedSources`, keyed by sourceID in the same shape as the build plan's `refusedSources`, and counts it in `metadata.sourcesRefused`. A build with caller-supplied `buildInstructions` reports an instructed source the gate refuses in the manifest's existing `failures`, under the instruction's `sourceEntityId`, with the gate's message as its `reason` and the new `SourceFailure.refused: true`, since that caller asked for the table; its siblings still build. `refused` tells a caller that retries failures this one will not clear until the model changes. It is the only schema addition, and it is optional.
+
+A run still fails on a refusal when there is nothing else to build, because every source it targeted was refused, or when `sourceNames` names a refused source, because that caller asked for exactly the table that cannot be built. When several sources are refused, the error names all of them, not only the first in plan order. A refused `#@ preaggregate` rollup is recorded but never fails a run, as before.
+
+**What to check.** Anything that read a `FAILED` run as the signal that a package holds an ineligible source should read `metadata.refusedSources` instead; the build plan's `refusedSources` reports the same refusals before any run. An auto-run whose only shortfall is refusals is metered `success`, since a refusal is a property of the model rather than of the run. An orchestrated run with an instructed refusal is metered `partial`, because that refusal is one of its `failures`: the caller asked for the table and did not get it. `publisher_materialization_sources_total` gains `outcome="refused"` and a `mode` label (`auto` | `orchestrated`) on every outcome. With `mode="orchestrated"` the refused count should stay at zero: a caller that builds from the build plan never instructs a source the plan refused, so a nonzero count means the plan and the build disagreed about a source.
+
 ## [0.7.0] — a package's `index.malloy` is its published surface
 
 Put an `index.malloy` at a package root, `import` your models, and `export { … }` the sources you

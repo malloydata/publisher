@@ -15,6 +15,10 @@ check, a judge, and a conformant `events.jsonl`.
 #    if it does not reach `ready`: the sync is lazy, so without it the first
 #    cases are answered LEXICALLY and the run reports that as the model's
 #    number.
+#    Semantic retrieval needs EMBEDDING_API_KEY in the server's environment
+#    (the Publisher does not read OPENAI_API_KEY); without it every ranking is
+#    lexical, the warm-up reports `cooldown`, and the provider's own error is
+#    only in publisher.log (grep Embedding).
 python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/server \
   --server-root <root> --port 4811 --mcp-port 4040 --trace-retrieval \
   --warm-retrieval --environment <env> --package <pkg> \

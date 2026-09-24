@@ -13,7 +13,7 @@ On the case:
 | field | from the source | when it is missing |
 |---|---|---|
 | `qid` | their id, if they gave one, prefixed with the set name | derive from the question: a slug of its first words plus a counter. Stable, because scores are keyed on it |
-| `question` | the question text, byte for byte | it is not a case. Do not reconstruct a question from a criterion |
+| `question` | the question text, byte for byte. One exception: a source hard-wrapped at a column width cannot be one line byte for byte, so a line break inside a question becomes one space, the seal is on the unwrapped text, and `sourceNote` says so | it is not a case. Do not reconstruct a question from a criterion |
 | `questionSha` | never from the source | stamped at conversion by `import_cases.py --stamp` |
 | `split` | rarely present | you choose, and freeze it at import |
 | `source` | how it arrived: the filename, or the log query | say `unknown` rather than guessing a provenance |

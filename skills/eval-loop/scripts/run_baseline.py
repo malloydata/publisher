@@ -594,7 +594,43 @@ def path_breaches(events: list[dict[str, Any]],
     return list(r["reasons"])
 
 
+# Two spellings, from two CLI paths: the persisted-output stub, and the MCP
+# token-cap error ("result ... exceeds maximum allowed tokens. Output has been
+# saved to <path>"). Both leave the whole payload on disk.
+PERSISTED_STUB = re.compile(
+    r"(?:<persisted-output>.*?Full output saved to|Output has been saved to):? "
+    r"(/\S+?\.(?:json|txt))\.?(?=\s|$)", re.S)
+
+
 def result_text(block: dict[str, Any]) -> str:
+    """The text of one tool_result block, with a persisted stub resolved.
+
+    Above a size the CLI decides, a tool result reaches the answerer as a
+    `<persisted-output>` stub: a file path and a 2 KB preview. Measured on the
+    first arm against a real model, 14 of 74 get_context results (53 to 70 KB each) arrived that
+    way, and the answerer followed the path with Read every time. Reading the
+    stub as the payload scored those calls as zero entities delivered, which
+    is the opposite of what happened: the whole ranking was on disk. So when
+    the stub names a file that still exists, its content is the result.
+    """
+    text = _raw_result_text(block)
+    m = PERSISTED_STUB.search(text)
+    if m:
+        path = pathlib.Path(m.group(1))
+        if path.exists():
+            try:
+                blocks = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                return path.read_text()
+            if isinstance(blocks, list):
+                return "\n".join(b.get("text", "") for b in blocks
+                                 if isinstance(b, dict) and b.get("type") == "text")
+            if isinstance(blocks, dict) and blocks.get("type") == "text":
+                return blocks.get("text", "")
+    return text
+
+
+def _raw_result_text(block: dict[str, Any]) -> str:
     c = block.get("content")
     if isinstance(c, str):
         return c
@@ -1183,7 +1219,14 @@ _FENCE = re.compile(r"```(?:malloy)?\s*\n(.*?)```", re.S | re.I)
 
 
 def _norm(q: str) -> str:
-    return " ".join((q or "").split())
+    """One spelling for one query. Malloy takes a newline OR a semicolon
+    between clauses; the executed query (one line in the tool call) carries
+    semicolons and the block the answer prints carries newlines, so the two
+    never compared equal and `declared` never fired -- the harness fell through
+    to `last_ok` and re-executed a probe. On one acceptance arm that read a
+    model edit as a regression: the answer led with the filtered figure and
+    the harness graded the unfiltered probe it ran afterwards."""
+    return " ".join((q or "").replace(";", " ").split())
 
 
 def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
@@ -1240,6 +1283,26 @@ def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
         if not c.get("error"):
             return c["query"], "last_ok", c.get("modelPath")
     return queries[-1], "last", _model_path_of(queries[-1], runs)
+
+
+def store_events(path: pathlib.Path, events: list[dict[str, Any]],
+                 replaced_qids: set[str] | None = None) -> None:
+    """Write the arm's ledger, or splice a narrowed rebuild into it.
+
+    `--rebuild --only <qid>` re-derives the named cases and nothing else, and
+    it used to write `events.jsonl` from scratch: a 29-case arm became a
+    one-case arm after re-judging one case, its other 28 attempts and scores
+    gone (the artifacts stayed, which is how it was recovered). Downstream
+    nothing said so -- `flip_table --calibration` printed "0 flips over 1
+    cases" and `diagnose.py` found "no diagnosable failures". A narrowed
+    rebuild now replaces the named cases' lines and keeps the rest; a full
+    write (`replaced_qids` None) is unchanged.
+    """
+    if replaced_qids is None:
+        ledger.write_events(path, events)
+        return
+    ledger.replace_events(path, keep=lambda e: e.get("qid") not in replaced_qids,
+                          new=events)
 
 
 def retrieval_summary(attempts: Iterable[dict[str, Any]]
@@ -2686,6 +2749,13 @@ def main(argv: list[str] | None = None) -> int:
                          "Publisher serves a copy under publisher_data/, so "
                          "there is no way to infer it; without this the run "
                          "carries modelSha, the content pin, and no git pin")
+    ap.add_argument("--model-dir", default=None, type=pathlib.Path,
+                    help="the package directory inside --model-repo the answerer "
+                         "was served from. The -dirty marker on modelGitSha is "
+                         "decided over this path, so an unrelated untracked file "
+                         "elsewhere in the repo (a scratch notebook, a run "
+                         "directory) does not stamp a clean model dirty. "
+                         "Recorded as modelDir; defaults to the whole repo")
     ap.add_argument("--skills-root", default=None,
                     help="a checkout holding skills/ and manifests/ to load the "
                          "answerer's and judge's doctrine from -- a Publisher "
@@ -3198,7 +3268,8 @@ def main(argv: list[str] | None = None) -> int:
         # those bytes are versioned, and it is absent rather than wrong when
         # nobody said where that is.
         modelRepo=str(a.model_repo) if a.model_repo else None,
-        modelGitSha=(git_sha(a.model_repo, scope=a.model_repo)
+        modelDir=str(a.model_dir) if a.model_dir else None,
+        modelGitSha=(git_sha(a.model_repo, scope=a.model_dir or a.model_repo)
                      if a.model_repo else None),
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),
@@ -3389,7 +3460,8 @@ def main(argv: list[str] | None = None) -> int:
                           must_not_use_hits=mnu["hits"] or None,
                           artifactPath=f"artifacts/{qid}/judge.md"))
 
-    ledger.write_events(a.out / "events.jsonl", events)
+    store_events(a.out / "events.jsonl", events,
+                 {c["qid"] for c in cases} if (a.rebuild and a.only) else None)
 
     # near_match is neither a pass nor a fail: see flip_table.py. Reported on
     # its own line, because a set whose near_match count is climbing has rubrics
