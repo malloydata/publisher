@@ -8,8 +8,8 @@
 // just a listing filter. A source named here is discoverable AND queryable.
 // A source left out still compiles, and other models can import, join and
 // extend it, but a direct query against it is refused with a 404 that says
-// it is not on this surface. (Once a model carries an #(authorize) or
-// #(access_filter) gate, that 404 reads the same as for a source that does not
+// it is not on this surface. (Once a model carries an authorize or
+// access_filter gate, that 404 reads the same as for a source that does not
 // exist, so it cannot be used to find hidden names.) Add a name here to
 // publish it; leave one out to keep it as an internal building block.
 //
