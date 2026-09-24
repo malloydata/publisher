@@ -112,7 +112,7 @@ import {
 } from "./dashboard";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
-import { Model } from "./model";
+import { Model, type OffSurfaceContext } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -153,15 +153,19 @@ function toTableNameManifest(
  * Classify a failed package load into the `status` label shared by the
  * `malloy_package_load_duration` histogram and the per-phase load metrics, so
  * both slice failures identically. A real Malloy/model compile error is a 4xx
- * `compilation_error`; a gate refusing what the package declares is a 4xx
- * `policy_rejected`; a rewrapped pool-infrastructure failure is a transient
+ * `compilation_error`; a gate refusing what the package declares, or a
+ * publisher.json that cannot be used, is a 4xx `policy_rejected`; a rewrapped
+ * pool-infrastructure failure is a transient
  * `pool_unavailable`; anything else is a generic `error`.
  */
 function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    if (error instanceof ModelCompilationError || error instanceof MalloyError) {
       return "compilation_error";
    }
-   if (error instanceof BadRequestError) {
+   if (
+      error instanceof BadRequestError ||
+      error instanceof PackageManifestError
+   ) {
       return "policy_rejected";
    }
    if (error instanceof ServiceUnavailableError) {
@@ -527,9 +531,12 @@ export class Package {
          packageCuratedSources = sources;
          packageCuratedQueries = queries;
       }
-      const offSurfaceHint =
+      const offSurface: OffSurfaceContext | undefined =
          mode === "declared" && exploresDeclared && exploreSet
-            ? this.offSurfaceHint([...exploreSet])
+            ? {
+                 indexModel: this.surfaceIsIndexModel(),
+                 files: [...exploreSet].sort(),
+              }
             : undefined;
       for (const [modelPath, model] of this.models) {
          model.setQueryBoundary({
@@ -538,33 +545,9 @@ export class Package {
             isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
             packageCuratedSources,
             packageCuratedQueries,
-            offSurfaceHint,
+            offSurface,
          });
       }
-   }
-
-   /**
-    * What an explainable query-boundary refusal appends (see Model.notQueryable):
-    * which files are the surface and how to publish something on it. Worded per
-    * shape because a package curated by its index.malloy has no "explores" to
-    * add anything to.
-    */
-   private offSurfaceHint(surface: string[]): string {
-      if (this.surfaceIsIndexModel()) {
-         return (
-            `It is not on this package's published surface, ` +
-            `"${INDEX_MODEL_NAME}": only what that file exports is queryable, ` +
-            `and only through it. Fix: import it in "${INDEX_MODEL_NAME}", add ` +
-            `it to that file's export { ... }, and address the query to ` +
-            `"${INDEX_MODEL_NAME}".`
-         );
-      }
-      return (
-         `It is not on this package's published surface, the models ` +
-         `publisher.json "explores" lists (${JSON.stringify(surface.sort())}): ` +
-         `only what those files export is queryable, and only through them. ` +
-         `Fix: export it from a listed model and address the query to that model.`
-      );
    }
 
    static async create(
@@ -2241,7 +2224,9 @@ export class Package {
     * The curated surface is the union of what the listed models export, so a
     * surface that does not compile exports nothing, and the boundary then
     * refuses every model in the package -- including the ones that compiled
-    * perfectly well -- with the same 404 a model that does not exist gets.
+    * perfectly well. Each gets the 404 a hidden model gets: the same words a
+    * missing model gets where the model is gated, and an off-surface
+    * explanation where it is not.
     *
     * NARROW ON PURPOSE, because the edit paths an author uses already report
     * this better than a warning could:

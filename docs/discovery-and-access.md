@@ -39,7 +39,7 @@ before this convention existed.
   Listed is not a way around the surface. A notebook's own cells run as the author wrote them, so
   a cell can read a source the notebook imports from a hidden file. A query a caller sends to the
   notebook's path is held to the surface like one sent to any other file: `run: hidden_source`
-  addressed to `report.malloynb` answers 404 exactly as it does addressed to `index.malloy`.
+  addressed to `report.malloynb` is refused with a 404, as it is addressed to `index.malloy`.
 
 - **Within a file — `export { … }`.** The discovery accessors list only the model's re-export
   closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` expose. A model
@@ -73,7 +73,7 @@ package becomes an enumeration oracle. Because curation is not an identity gate,
 tool for protecting contents — see the caveats below.
 
 What the 404 says depends on whether a gate is in play. When the model that refused the query
-carries no `#(authorize)` anywhere, the 404 says the target is off the surface, names the surface
+carries no `#(authorize)` and no `#(access_filter)` anywhere, the 404 says the target is off the surface, names the surface
 file, and gives the fix. A modeler who saves a new file and queries it would otherwise read a typo,
 and there is nothing to hide: `/compile` already answers a hidden file differently from a missing
 one. When the model carries a gate, every refusal is the plain `No queryable model "…"`,
@@ -177,8 +177,8 @@ the package answering differently than its author expects:
   `scope`. Ignoring it would resolve to no surface and publish every source the key was meant to
   withhold, and keeping the entries that parse would serve a surface the author did not write.
 - **The whole surface failed to compile.** A surface that does not compile exports nothing, so the
-  boundary refuses every model in the package — including the ones that compiled — with the same
-  404 a missing model gets. The warning names the broken files and how many working models they
+  boundary refuses every model in the package — including the ones that compiled — with the 404 a
+  hidden model gets (plain where the model is gated, explained where it is not). The warning names the broken files and how many working models they
   took down. Narrow by design: a compile error at first load fails the package (it appears in
   `loadErrors`), and a failed reload keeps the last good model serving and is reported with
   `stale: true`, so the surface empties only on the materialization and manifest rebind paths. It

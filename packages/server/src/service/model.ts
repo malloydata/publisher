@@ -45,7 +45,11 @@ import {
    getMaxResponseBytes,
    getQueryMetadataMode,
 } from "../config";
-import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
+import {
+   INDEX_MODEL_NAME,
+   MODEL_FILE_SUFFIX,
+   NOTEBOOK_FILE_SUFFIX,
+} from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import {
    AccessDeniedError,
@@ -303,6 +307,14 @@ const MALLOY_VERSION = (
 ).version;
 
 export type ModelType = "model" | "notebook";
+
+/** The package's published surface, as an explained refusal describes it:
+ *  `indexModel` when the package is curated by its root index.malloy rather
+ *  than an explicit "explores" list, and the surface files either way. */
+export interface OffSurfaceContext {
+   indexModel: boolean;
+   files: readonly string[];
+}
 
 /**
  * How a query's answer was ultimately produced, once it reached the storage
@@ -588,10 +600,10 @@ export class Model {
        *  Package.applyQueryBoundaryToModels. */
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
-      /** The sentence an explainable refusal appends: which files are the
-       *  surface and how to put something on it. Worded by the Package, which
-       *  knows whether the surface is an index.malloy or an explores list. */
-      offSurfaceHint?: string;
+      /** What an explainable refusal needs to say which files are the
+       *  surface. Set by the Package, which knows whether the surface is an
+       *  index.malloy or an explores list. See {@link notQueryable}. */
+      offSurface?: OffSurfaceContext;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    /** Per-query freshness resolver, pushed down by the owning Package (see
     *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
@@ -3713,27 +3725,73 @@ export class Model {
       isQueryEntryPoint: boolean;
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
-      offSurfaceHint?: string;
+      offSurface?: OffSurfaceContext;
    }): void {
       this.queryBoundary = policy;
    }
 
    /**
     * A boundary refusal. Explains itself ({@link OffSurfaceError}) only when
-    * `explainable` (the target is real) AND no `#(authorize)` gate is findable
-    * anywhere in this model; otherwise it is the generic 404 that cannot be told
-    * apart from a missing name. {@link hasAnyAuthorizeNote} answers true for
-    * unreadable IR, so every doubt lands on the generic side.
+    * `explainable` (the target is real) AND no gate, `#(authorize)` or
+    * `#(access_filter)`, is findable anywhere in this model; otherwise it is
+    * the generic 404 that cannot be told apart from a missing name.
+    * {@link hasAnyAuthorizeNote} answers true for unreadable IR, so every doubt
+    * lands on the generic side.
+    *
+    * `refused` says what the fix has to move: this whole file, or one source or
+    * query this file can already see.
     */
    private notQueryable(
       refusal: string,
       explainable: boolean,
+      refused: "model" | "source" | "query",
    ): NotQueryableError {
-      const hint = this.queryBoundary.offSurfaceHint;
-      if (explainable && hint && !this.hasAnyAuthorizeNote()) {
-         return new OffSurfaceError(`${refusal} ${hint}`);
+      const surface = this.queryBoundary.offSurface;
+      if (explainable && surface && !this.hasAnyAuthorizeNote()) {
+         return new OffSurfaceError(
+            `${refusal} ${this.offSurfaceReason(surface, refused)}`,
+         );
       }
       return new NotQueryableError(refusal);
+   }
+
+   /** The sentence an explained refusal appends: which files are the surface,
+    *  and the edit that puts the refused thing on it. */
+   private offSurfaceReason(
+      surface: OffSurfaceContext,
+      refused: "model" | "source" | "query",
+   ): string {
+      const where = surface.indexModel
+         ? `It is not on this package's published surface, "${INDEX_MODEL_NAME}": ` +
+           `only what that file exports is queryable, and only through it.`
+         : `It is not on this package's published surface, the models ` +
+           `publisher.json "explores" lists (${JSON.stringify(surface.files)}): ` +
+           `only what those files export is queryable, and only through them.`;
+      let fix: string;
+      if (refused === "model") {
+         fix = surface.indexModel
+            ? `import "${this.modelPath}" in "${INDEX_MODEL_NAME}", name the ` +
+              `sources you want in that file's export { ... }, and address ` +
+              `the query to "${INDEX_MODEL_NAME}".`
+            : `add "${this.modelPath}" to "explores" in publisher.json, or ` +
+              `import it in a listed model and name the sources you want in ` +
+              `that model's export { ... }.`;
+      } else if (!this.isNotebook()) {
+         // This file is on the surface and already sees the name, so the only
+         // edit is to export it here.
+         fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
+      } else {
+         // A notebook exports nothing: the name has to be exported by a
+         // surface file, which may first need to import where it is declared.
+         fix = surface.indexModel
+            ? `name the ${refused} in the export { ... } of ` +
+              `"${INDEX_MODEL_NAME}", importing the file that declares it if ` +
+              `needed, and address the query to "${INDEX_MODEL_NAME}".`
+            : `name the ${refused} in the export { ... } of a listed model, ` +
+              `importing the file that declares it if needed, and address the ` +
+              `query to that model.`;
+      }
+      return `${where} Fix: ${fix}`;
    }
 
    private declaresSource(name: string): boolean {
@@ -3821,8 +3879,9 @@ export class Model {
     * only if it is in the package's discovery surface (`explores` files +
     * their `export {}` closure). This is the *what* axis (identity-free);
     * `#(authorize)` is the orthogonal *who* axis, and both must pass. Denials
-    * are a generic 404 ({@link NotQueryableError}) so a hidden target is
-    * indistinguishable from a non-existent one. Inert unless `explores` is
+    * are a 404 ({@link NotQueryableError}). In a gated model its message reads
+    * the same for a hidden target as for a non-existent one; in an ungated
+    * model it says why (see {@link notQueryable}). Inert unless `explores` is
     * declared AND mode is "declared" (the default). A notebook path is always
     * an entry point, but only the package surface is curated there: the
     * notebook's own view, which includes what it imports, admits nothing.
@@ -3858,6 +3917,7 @@ export class Model {
          throw this.notQueryable(
             `No queryable model "${this.modelPath}".`,
             true,
+            "model",
          );
       }
 
@@ -3880,11 +3940,13 @@ export class Model {
             throw this.notQueryable(
                `No queryable source "${sourceName}".`,
                this.declaresSource(sourceName),
+               "source",
             );
          }
          throw this.notQueryable(
             `No queryable query "${queryName}".`,
             (this.queries ?? []).some((q) => q.name === queryName),
+            "query",
          );
       }
 
@@ -3894,6 +3956,7 @@ export class Model {
          throw this.notQueryable(
             `No queryable source "${sourceName}".`,
             this.declaresSource(sourceName),
+            "source",
          );
       }
 
@@ -3913,7 +3976,11 @@ export class Model {
             // The same words the compiled backstop uses, and not the name: in a
             // gated model this branch must not tell a caller which hidden names
             // are real. notQueryable adds the reason only where nothing is gated.
-            throw this.notQueryable("Query target is not queryable.", true);
+            throw this.notQueryable(
+               "Query target is not queryable.",
+               true,
+               "source",
+            );
          }
       }
       return "deferred";
@@ -3946,6 +4013,7 @@ export class Model {
          throw this.notQueryable(
             `No queryable model "${this.modelPath}".`,
             true,
+            "model",
          );
       }
       if (compiledSource) {
@@ -3955,6 +4023,7 @@ export class Model {
       throw this.notQueryable(
          "Query target is not queryable.",
          compiledSource !== undefined,
+         "source",
       );
    }
 
@@ -5195,9 +5264,10 @@ export class Model {
       const querySurfaceGivens = this.filterGivensToModelSurface(givens);
 
       // Query boundary FIRST (the *what* axis): reject a target that isn't in
-      // the package's queryable surface with a generic 404, before authorize
-      // (the *who* axis) and before compilation — so a non-queryable source is
-      // indistinguishable from a non-existent one and can't be probed.
+      // the package's queryable surface with a 404, before authorize (the *who*
+      // axis) and before compilation, so a non-queryable source's schema can't
+      // be probed. In a gated model the 404 also reads the same as for a
+      // non-existent source (see notQueryable).
       // "deferred" means the early gate couldn't pin the target; the compiled
       // backstop below settles it against the source the query actually runs.
       const boundary = this.assertQueryBoundaryEarly(

@@ -24,6 +24,7 @@ import {
    DestinationNotFoundError,
    EnvironmentNotFoundError,
    NotQueryableError,
+   PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
    WriteRolledBackError,
@@ -837,6 +838,9 @@ export class Environment {
                         : { modelPath: modelName, source },
                });
             } catch (error) {
+               // An unusable publisher.json is the author's to fix, as on
+               // reload: it answers 424, not a worker outage.
+               if (error instanceof PackageManifestError) throw error;
                throw new ServiceUnavailableError(
                   `Package compile worker unavailable: ${
                      error instanceof Error ? error.message : String(error)

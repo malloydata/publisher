@@ -143,9 +143,10 @@ describe("a package whose published surface disappears", () => {
          message:
             'No queryable model "internal.malloy". It is not on this ' +
             'package\'s published surface, "index.malloy": only what that ' +
-            "file exports is queryable, and only through it. Fix: import it " +
-            'in "index.malloy", add it to that file\'s export { ... }, and ' +
-            'address the query to "index.malloy".',
+            "file exports is queryable, and only through it. Fix: import " +
+            '"internal.malloy" in "index.malloy", name the sources you want ' +
+            "in that file's export { ... }, and address the query to " +
+            '"index.malloy".',
       });
       expect(missing).toEqual({
          status: 404,

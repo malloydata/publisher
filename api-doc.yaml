@@ -1386,6 +1386,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
@@ -1448,6 +1450,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
@@ -1873,6 +1877,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -2706,6 +2712,17 @@ components:
             $ref: "#/components/schemas/Error"
     ModelCompilationError:
       description: Model compilation failed due to syntax or semantic errors
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PackageManifestError:
+      description: |
+        The package's publisher.json cannot be used as written: it is not
+        valid JSON or not a JSON object, it has a malformed "explores" or an
+        unknown "scope", or its two "scope" settings disagree. The message
+        names the problem and the fix. The package is not served until the
+        file is corrected.
       content:
         application/json:
           schema:

@@ -14,8 +14,8 @@ Most packages publish a curated surface, so a source being absent or refused is 
 
 | what you got | what it means | what to do |
 | --- | --- | --- |
-| **404** that says "not on this package's published surface" | the name is real and the package does not publish it. It is curation, not a typo | follow the fix the message names (usually: export it from `index.malloy` and address the query there), or query what IS published |
-| **404**, plain "No queryable source", "No queryable model" or "Query target is not queryable" | the name does not exist, or it is hidden in a model that carries an `#(authorize)` gate. In a gated model the two are deliberately indistinguishable, so a refusal cannot be used to probe for hidden names | check the name against `get_context`, then query something on the surface or ask the package's author to publish it |
+| **404** that says "not on this package's published surface" | the name is real and the package does not publish it. It is curation, not a typo | follow the fix the message names (usually: name it in the `export { ... }` of `index.malloy` and address the query there), or query what IS published |
+| **404**, plain "No queryable source", "No queryable model" or "Query target is not queryable" | the name does not exist, or it is hidden in a model that carries an `#(authorize)` or `#(access_filter)` gate. In a gated model the two are deliberately indistinguishable, so a refusal cannot be used to probe for hidden names | check the name against `get_context`, then query something on the surface or ask the package's author to publish it |
 | **403**, "Access denied" | the source exists and is on the surface, but an `#(authorize)` gate did not admit you | supply the givens the gate reads, or accept that this caller may not read it |
 | **200** with zero rows | you were admitted, and an `#(access_filter)` narrowed the rows to none of them | this is a real answer. Report it as "no matching rows", never as an error |
 

@@ -691,34 +691,45 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       }
    });
 
-   // NB: kept last in this describe — swapping the singleton for a
-   // pre-shutdown pool also tears down the shared `pool` (the swap
-   // implementation shuts down the outgoing singleton). Subsequent
-   // tests in this describe would see a dead pool. afterAll only
-   // resets the singleton to null, so this is safe at the tail.
-   // An unusable publisher.json is read inside the worker. It used to cross the
-   // pool boundary as a plain Error and be rewrapped as a 503 "worker pool
-   // unavailable", which a caller logs as a server outage. It is the author's
-   // mistake, so it must arrive as a 424 carrying the manifest's own message.
+   // An unusable publisher.json is read inside the worker, and crosses the pool
+   // boundary. Anything the pool does not recognize is rewrapped as a 503
+   // "worker pool unavailable", which a caller logs as a server outage. A bad
+   // manifest is the author's mistake, so it must arrive as a 424 carrying the
+   // manifest's own message.
    it.each([
       [
          "a malformed explores",
-         { explores: "index.malloy" },
+         JSON.stringify({ name: "pkg", explores: "index.malloy" }),
          /Invalid "explores"/,
       ],
-      ["an unknown scope", { scope: "shared" }, /Invalid "scope"/],
+      [
+         "an unknown scope",
+         JSON.stringify({ name: "pkg", scope: "shared" }),
+         /Invalid "scope"/,
+      ],
       [
          "two scope homes that disagree",
-         { scope: "version", materialization: { scope: "package" } },
+         JSON.stringify({
+            name: "pkg",
+            scope: "version",
+            materialization: { scope: "package" },
+         }),
          /Conflicting "scope"/,
+      ],
+      [
+         "a JSON syntax error",
+         `{ "name": "pkg", }`,
+         /Invalid publisher\.json: it is not valid JSON/,
+      ],
+      [
+         "JSON that is not an object",
+         `["pkg"]`,
+         /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
       ],
    ])(
       "answers %s in publisher.json with a 424, not a 503",
       async (_label, manifest, message) => {
-         fs.writeFileSync(
-            path.join(tempDir, "publisher.json"),
-            JSON.stringify({ name: "pkg", ...manifest }),
-         );
+         fs.writeFileSync(path.join(tempDir, "publisher.json"), manifest);
          fs.writeFileSync(
             path.join(tempDir, "trivial.malloy"),
             `source: nums is duckdb.sql("select 1 as a")`,
@@ -748,6 +759,11 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       },
    );
 
+   // NB: kept last in this describe — swapping the singleton for a
+   // pre-shutdown pool also tears down the shared `pool` (the swap
+   // implementation shuts down the outgoing singleton). Subsequent
+   // tests in this describe would see a dead pool. afterAll only
+   // resets the singleton to null, so this is safe at the tail.
    it("rewraps pool-infrastructure failures as ServiceUnavailableError (HTTP 503)", async () => {
       writeManifest();
       fs.writeFileSync(

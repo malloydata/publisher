@@ -901,7 +901,7 @@ export function deserializeError(serialized: SerializedError): Error {
       if (serialized.stack) wrapped.stack = serialized.stack;
       return wrapped;
    }
-   if (serialized.name === "PackageManifestError") {
+   if (serialized.isManifestError) {
       const manifestError = new PackageManifestError(serialized.message);
       if (serialized.stack) manifestError.stack = serialized.stack;
       return manifestError;

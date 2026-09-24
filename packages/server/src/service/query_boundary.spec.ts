@@ -1026,8 +1026,31 @@ export { \`customer-orders\` }`,
       ["index.malloy", "helper"],
       ["report.malloynb", "base_source"],
    ] as const;
+   const INDEX_SURFACE =
+      `It is not on this package's published surface, "index.malloy": only ` +
+      `what that file exports is queryable, and only through it.`;
+   // What the fix says depends on where the refused name is: a surface file
+   // that already sees it only has to export it; a notebook exports nothing,
+   // so the name has to be exported from index.malloy.
+   const adHocFix: Record<(typeof adHocPaths)[number][0], string> = {
+      "index.malloy": `Fix: name the source in the export { ... } of "index.malloy".`,
+      "report.malloynb":
+         `Fix: name the source in the export { ... } of "index.malloy", ` +
+         `importing the file that declares it if needed, and address the ` +
+         `query to "index.malloy".`,
+   };
+   const refusedBy = (run: Promise<unknown>) =>
+      run.then(
+         () => {
+            throw new Error("the request was admitted");
+         },
+         (e: Error) => {
+            expect(e).toBeInstanceOf(NotQueryableError);
+            return e;
+         },
+      );
 
-   it("declared: in a model with a gate, an ad-hoc refusal does not tell a hidden name from a missing one", async () => {
+   it("declared: in a model with a gate, no refusal tells a hidden name from a missing one", async () => {
       writeManifest({ explores: ["index.malloy"] });
       writeLayeredModels();
       // Any #(authorize) in the model keeps every refusal generic, including
@@ -1059,12 +1082,26 @@ source: locked is duckdb.sql("select 1 as id") extend {
                (await refusal(model, "run: no_such_source -> hv")).message,
             );
          }
+
+         // Every other refusal path keeps the generic words too: a named
+         // source, and an ad-hoc alias of a hidden source, which only the
+         // compiled backstop can refuse.
+         const model = pkg.getModel("index.malloy")!;
+         const named = await refusedBy(model.getQueryResults("helper", "hv"));
+         expect(named).not.toBeInstanceOf(OffSurfaceError);
+         expect(named.message).toBe('No queryable source "helper".');
+         const aliased = await refusal(
+            model,
+            "source: x is helper extend {}\nrun: x -> hv",
+         );
+         expect(aliased).not.toBeInstanceOf(OffSurfaceError);
+         expect(aliased.message).toBe("Query target is not queryable.");
       } finally {
          await duckdb.close();
       }
    });
 
-   it("declared: in a model with no gate, an ad-hoc refusal of a hidden name says it is off the surface", async () => {
+   it("declared: in a model with no gate, a refusal of a hidden name says it is off the surface and how to publish it", async () => {
       // Nothing is gated, so there is nothing for the generic 404 to protect:
       // /compile already answers a hidden name differently from a missing one.
       // A modeler querying a source they just wrote needs the reason, not a
@@ -1083,11 +1120,7 @@ source: locked is duckdb.sql("select 1 as id") extend {
             const hiddenRefusal = await refusal(model, `run: ${hidden} -> hv`);
             expect(hiddenRefusal).toBeInstanceOf(OffSurfaceError);
             expect(hiddenRefusal.message).toBe(
-               `Query target is not queryable. It is not on this package's ` +
-                  `published surface, "index.malloy": only what that file ` +
-                  `exports is queryable, and only through it. Fix: import it ` +
-                  `in "index.malloy", add it to that file's export { ... }, ` +
-                  `and address the query to "index.malloy".`,
+               `Query target is not queryable. ${INDEX_SURFACE} ${adHocFix[modelPath]}`,
             );
             // A name that does not exist is still just refused: there is no
             // surface to point it at, and the advice would send a typo hunting.
@@ -1096,28 +1129,69 @@ source: locked is duckdb.sql("select 1 as id") extend {
             expect(missing.message).toBe("Query target is not queryable.");
          }
 
-         // A named source and a hidden file explain themselves the same way;
-         // a named source that does not exist does not.
+         // helper is declared in index.malloy itself, so there is nothing to
+         // import: the fix is only to export it.
          const index = pkg.getModel("index.malloy")!;
-         const named = await index
-            .getQueryResults("helper", "hv", undefined)
-            .catch((e: Error) => e);
+         const named = await refusedBy(index.getQueryResults("helper", "hv"));
          expect(named).toBeInstanceOf(OffSurfaceError);
-         expect((named as Error).message).toStartWith(
-            'No queryable source "helper". It is not on this package\'s published surface',
+         expect(named.message).toBe(
+            `No queryable source "helper". ${INDEX_SURFACE} ` +
+               `Fix: name the source in the export { ... } of "index.malloy".`,
          );
-         const unknown = await index
-            .getQueryResults("nope", "hv", undefined)
-            .catch((e: Error) => e);
+         const aliased = await refusal(
+            index,
+            "source: x is helper extend {}\nrun: x -> hv",
+         );
+         expect(aliased).toBeInstanceOf(OffSurfaceError);
+         const unknown = await refusedBy(index.getQueryResults("nope", "hv"));
          expect(unknown).not.toBeInstanceOf(OffSurfaceError);
-         expect((unknown as Error).message).toBe('No queryable source "nope".');
-         const hiddenFile = await pkg
-            .getModel("base.malloy")!
-            .getQueryResults(undefined, undefined, "run: base_source -> v")
-            .catch((e: Error) => e);
+         expect(unknown.message).toBe('No queryable source "nope".');
+
+         // A whole hidden file names the file, then the sources in it.
+         const hiddenFile = await refusal(
+            pkg.getModel("base.malloy")!,
+            "run: base_source -> v",
+         );
          expect(hiddenFile).toBeInstanceOf(OffSurfaceError);
-         expect((hiddenFile as Error).message).toStartWith(
-            'No queryable model "base.malloy". It is not on this package\'s published surface',
+         expect(hiddenFile.message).toBe(
+            `No queryable model "base.malloy". ${INDEX_SURFACE} Fix: import ` +
+               `"base.malloy" in "index.malloy", name the sources you want in ` +
+               `that file's export { ... }, and address the query to ` +
+               `"index.malloy".`,
+         );
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: under an explores list, a hidden file's refusal says to list it", async () => {
+      // Curated by "explores" rather than index.malloy, so there is a list to
+      // add the file to.
+      writeLayeredModels("surface.malloy");
+      writeManifest({ explores: ["surface.malloy"] });
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const surface =
+            `It is not on this package's published surface, the models ` +
+            `publisher.json "explores" lists (["surface.malloy"]): only what ` +
+            `those files export is queryable, and only through them.`;
+         const hiddenFile = await refusal(
+            pkg.getModel("base.malloy")!,
+            "run: base_source -> v",
+         );
+         expect(hiddenFile.message).toBe(
+            `No queryable model "base.malloy". ${surface} Fix: add ` +
+               `"base.malloy" to "explores" in publisher.json, or import it in ` +
+               `a listed model and name the sources you want in that model's ` +
+               `export { ... }.`,
+         );
+         const named = await refusedBy(
+            pkg.getModel("surface.malloy")!.getQueryResults("helper", "hv"),
+         );
+         expect(named.message).toBe(
+            `No queryable source "helper". ${surface} ` +
+               `Fix: name the source in the export { ... } of "surface.malloy".`,
          );
       } finally {
          await duckdb.close();

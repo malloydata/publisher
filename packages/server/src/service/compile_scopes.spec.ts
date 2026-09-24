@@ -135,6 +135,26 @@ source: tracks is base_source extend {
       expect(errors.some((p) => p.model === "tracks.malloy")).toBe(true);
    });
 
+   it("package: a publisher.json the dry-run cannot use answers 424, not a worker outage", async () => {
+      // The dry-run re-reads the manifest from disk, so an edit made since the
+      // package loaded reaches it. That is the author's mistake to fix.
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "publisher.json"),
+         '{"name":"pkg","scope":"shared"}',
+      );
+      const { PackageManifestError, internalErrorToHttpError } = await import(
+         "../errors"
+      );
+      const error = await compile("base.malloy", undefined, "package").then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(error).toBeInstanceOf(PackageManifestError);
+      const http = internalErrorToHttpError(error!);
+      expect(http.status).toBe(424);
+      expect(http.json.message).toMatch(/Invalid "scope"/);
+   });
+
    it("package: uses reload file selection for notebooks and dotfiles", async () => {
       await fs.mkdir(path.join(rootDir, "env", "pkg", ".git"), {
          recursive: true,
