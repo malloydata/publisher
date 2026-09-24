@@ -194,4 +194,80 @@ source: leaf is mid extend { where: amount < 100 }
          ),
       ).toEqual(["entry"]);
    });
+
+   describe("a query-derived source over a materialized one", () => {
+      // The private-fact / public-wrapper idiom: `#@ persist` on the fact, and
+      // queries name a wrapper whose query reads it. Malloy gives the wrapper no
+      // `extends` and no `persistent`, so it has no binding of its own.
+      const WRAPPERS = `##! experimental.persistence
+source: raw is duckdb.sql('SELECT 1 as id, 2 as amount')
+source: other is duckdb.sql('SELECT 1 as id')
+
+source: _fact is raw -> { select: * } extend { measure: total is amount.sum() }
+
+source: wrapper is _fact -> { select: * } extend { dimension: d is id + 1 }
+source: by_id is _fact -> { group_by: id; aggregate: total }
+source: wrapper_of_wrapper is wrapper -> { select: * }
+source: reaches_other is _fact -> {
+  extend: { join_one: o is other on o.id = id }
+  group_by: o.id
+}
+source: joins_other is _fact -> { select: * } extend {
+  join_one: o is other on o.id = id
+}
+
+#@ -persist
+source: opted_out is _fact -> { select: * }
+`;
+
+      it("carries each wrapper whose every reference is on the shape, verbatim", async () => {
+         const lifts = await liftsFor(WRAPPERS, ["_fact"]);
+         expect(lifts.map((l) => l.sourceName)).toEqual([
+            "wrapper",
+            "by_id",
+            "wrapper_of_wrapper",
+         ]);
+         for (const lift of lifts) {
+            // The declaration itself, not refinements over the base: a query's
+            // output inherits nothing to subtract.
+            expect(lift.refinements).toEqual([]);
+            expect(lift.text).toBeDefined();
+         }
+         expect(
+            lifts.find((l) => l.sourceName === "wrapper_of_wrapper")?.base,
+         ).toBe("wrapper");
+      });
+
+      it("leaves off a wrapper that reaches a source not on the shape", async () => {
+         // `other` is not materialized: a stage join or a declared join to it could
+         // not compile against the shape, so neither wrapper is carried.
+         const names = (await liftsFor(WRAPPERS, ["_fact"])).map(
+            (l) => l.sourceName,
+         );
+         expect(names).not.toContain("reaches_other");
+         expect(names).not.toContain("joins_other");
+
+         const withOther = (await liftsFor(WRAPPERS, ["_fact", "other"])).map(
+            (l) => l.sourceName,
+         );
+         expect(withOther).toContain("reaches_other");
+         expect(withOther).toContain("joins_other");
+      });
+
+      it("carries nothing over a base that is not on the shape", async () => {
+         expect(await liftsFor(WRAPPERS, [])).toEqual([]);
+         // Bound but withheld (stale past its window): still not on the shape.
+         expect(await liftsFor(WRAPPERS, [], ["_fact"])).toEqual([]);
+      });
+
+      it("never carries a wrapper that has a binding of its own, or opts out", async () => {
+         const names = (
+            await liftsFor(WRAPPERS, ["_fact"], ["_fact", "wrapper"])
+         ).map((l) => l.sourceName);
+         expect(names).not.toContain("wrapper");
+         // Its dependant cannot be carried either: `wrapper` is not on the shape.
+         expect(names).not.toContain("wrapper_of_wrapper");
+         expect(names).not.toContain("opted_out");
+      });
+   });
 });
