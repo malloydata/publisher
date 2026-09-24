@@ -1,24 +1,34 @@
 ---
 name: malloy-powerbi-review
-description: Analyze a Power BI semantic model (TMDL, PBIP, or .pbix) as prior art for Malloy modeling, and transpile its DAX. Use when Power BI artifacts are present during Step 1 (DISCOVER), and whenever a specific DAX measure has to become Malloy - CALCULATE, ALL/ALLSELECTED/ALLEXCEPT, RANKX and top-N, time intelligence, USERELATIONSHIP, calculation groups, what-if parameters, or an RLS role. Carries a worked, executed transpile per construct and states what each port costs. Works with or without a database connection.
+description: Move a Power BI semantic model (TMDL, PBIP, or .pbix) onto Malloy - read their model, transpile its DAX, and prove the numbers match. Use when Power BI artifacts are present, when a user wants to migrate or switch off Power BI, and whenever a specific DAX measure has to become Malloy - CALCULATE, ALL/ALLSELECTED/ALLEXCEPT, RANKX and top-N, time intelligence, USERELATIONSHIP, calculation groups, what-if parameters, or an RLS role. Carries a worked, executed transpile per construct and states what each port costs. Works with or without a database connection.
 ---
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Power BI Review
+# Power BI to Malloy
 
-> **Purpose:** Evaluate a Power BI semantic model as prior art for building a Malloy semantic model. This skill coordinates the Power BI adapter. The implementation lives in reference files under `reference/`.
+> **Purpose:** Move a working Power BI semantic model onto Malloy, fast, and prove the numbers match. The user already has a model that their business agreed on; the job is to carry it across without silently changing what it means.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 > **This is NOT a blind conversion.** DAX and Malloy disagree about what a filter means. A measure that translates cleanly on sight can still return a different number, with no error raised. Knowing which measures change meaning on the way across is the work - and then saying what the port costs, because "untranslatable" has done nothing for the customer.
 
+## The migration, end to end
+
+1. **Get the model in text.** Ask for TMDL or PBIP before accepting a `.pbix` (see below). `reference/discover.md` inventories it.
+2. **Carry across what the business already agreed on** - tables, relationships, names, descriptions, visibility. `reference/propose-fields.md`.
+3. **Route every measure, then transpile it from a recipe.** `reference/translate-measures.md` decides where each one goes; the three `cookbook-*.md` files have the worked Malloy. A routing table is not a migration - the recipe is the deliverable.
+4. **Prove the numbers.** Parity at more than one filter context, below. This is what makes the switch safe to recommend rather than merely done.
+5. **Say what changed.** Every divergent measure, every stopgap and its cost, every RLS role that came across weaker. `reference/review-coverage.md` checks nothing was dropped.
+
+The user's question is "can I move off Power BI and still trust my numbers?" Steps 3 and 4 are the answer; the rest is bookkeeping.
+
 ## When to Use
 
-- **Auto-detected:** The agent finds a `.pbix`, a `.pbip` project, or a `definition/` folder of `.tmdl` files during Step 1 (DISCOVER) and the user confirms they should be used as prior art.
-- **Explicitly requested:** The user says "model from Power BI", "convert this PBIX", "migrate off Power BI", or provides a path to Power BI artifacts.
+- **Auto-detected:** The agent finds a `.pbix`, a `.pbip` project, or a `definition/` folder of `.tmdl` files and the user confirms they want it carried across.
+- **Explicitly requested:** The user says "migrate off Power BI", "switch from Power BI", "model from Power BI", "convert this PBIX", or provides a path to Power BI artifacts.
 - **One measure at a time:** The user pastes a DAX expression and asks what it becomes in Malloy. Go straight to the recipe in `reference/cookbook-*.md`; the routing procedure is for a whole model.
 
 ## Two Modes
@@ -77,8 +87,11 @@ Each reference file is loaded by the workflow phase that needs it. You do not ne
 | `reference/rls-roles.md` | Step 8 (CURATE) | Map RLS roles and hidden objects to access modifiers and gate annotations |
 | `reference/review-coverage.md` | Step 7 (REVIEW) | Compare the Malloy model against the Power BI model: table, measure, and relationship coverage |
 | `reference/document.md` | Step 9 (DOCUMENT) | Extract TMDL descriptions as `#(doc)` tag seeds |
-| `reference/limitations.md` | any | What the script reads and what it does not, and which recipes have no trigger |
-| `reference/corpus.md` | any | The 50 public models the coverage numbers are measured against, with commits |
+| `reference/limitations.md` | any | What the script reads and what it does not, and the calls it cannot make from the model file |
+
+`reference/corpus.md` is not part of the workflow: it is the provenance of the public
+models this skill was developed and regression-tested against. Read it only if you need
+to reproduce a figure quoted here.
 
 **The three cookbook files are the deliverable of Step 5.** Each recipe carries the
 real DAX, the Malloy, whether the Malloy was **executed** or only `semantics-cited`,
@@ -91,37 +104,40 @@ recipe - do not hand the user a classification and call it a migration.
 
 ### Script
 
-`scripts/classify_measures.py` runs the routing at scale: dependency graph, return-type
-inference from the model's own column types, and the relationship flags that never
-appear in a measure's DAX. It also has a `--json` mode for the `.pbix` path, which has
+`scripts/classify_measures.py` routes a whole model in one pass, so a migration starts
+from an inventory rather than from measure one. It does the three things that do not
+survive reading measures one at a time at a few thousand of them: the dependency graph,
+return-type inference from the model's own column types, and the relationship flags that
+never appear in a measure's DAX. It has a `--json` mode for the `.pbix` path, which has
 no TMDL. It runs where you have a shell (Claude Code, Cursor); the Credible app's agent
 has no shell tool and the MCP skills bundle ships markdown only, so the prose stands alone.
 
 **DAX is not only in `measure` declarations, and the rest is not a rounding error.**
 The script also reads calculation groups, `functions.tmdl`, calculated columns,
-calculated-table partitions and `roles/*.tmdl`. Across 50 public models, three recipes
-fire **zero** times in any measure body and are not rare at all: `CALENDAR()` is only
-ever in a calculated-table partition, the calculation items carry a model's time
-intelligence, and not one `USERPRINCIPALNAME` in the corpus is in a table file. Match
-only `measure` and the model reports no calculation groups, no date spine and no
-row-level security.
-`reference/limitations.md` is the full inventory of what is read and what is not, and
-it counts each kind separately - a user-defined function is DAX and is not a measure.
+calculated-table partitions and `roles/*.tmdl`, because three recipes fire **zero**
+times in any measure body and are not rare at all: `CALENDAR()` is only ever in a
+calculated-table partition, calculation items carry a model's time intelligence, and RLS
+predicates live in `roles/*.tmdl`. Match only `measure` and you will tell a customer
+their model has no calculation groups, no date spine and no row-level security.
+`reference/limitations.md` is the inventory of what it reads, what it does not, and the
+calls it cannot make from the model file at all.
 
-## What Power BI Provides
+## What comes across for free
 
-- Table, column, and measure names the business already agreed on (accelerates Step 4)
-- Relationships with explicit cardinality and filter direction (accelerates Step 3)
-- Measure definitions carrying real business logic, often years of it (accelerates Step 5)
-- Visibility decisions via `isHidden` and perspectives (accelerates Step 8)
-- Descriptions in `///` comments, which are usually better than what anyone will write fresh (accelerates Step 9)
-- Format strings that map to render tags
+This is why a migration is fast: the customer is not re-deciding any of it.
+
+- Table, column, and measure **names the business already agreed on**
+- **Relationships** with explicit cardinality and filter direction
+- **Measure definitions** carrying real business logic, often years of it
+- **Visibility** decisions via `isHidden` and perspectives
+- **Descriptions** in `///` comments, usually better than what anyone will write fresh
+- **Format strings** that map to render tags
 
 ## What to Skip
 
 - **Auto date/time tables.** Power BI generates a hidden `LocalDateTable_<guid>` per date column plus a `DateTableTemplate_<guid>`. These are an artifact of a setting, not a modeling decision. Skip all of them and propose one real date dimension (`reference/cookbook-structure.md#s7`).
 - **Report layout** (`report.json`, `*.Report/`): visuals, pages, bookmarks, themes. Analysis is a separate workflow.
-- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors, SVG sparklines. They return text and belong to the canvas, not the model. How many there are varies more than any other figure here - a third of `PBIASEngine` (42 of 126), an eighth across 50 public models (217 of 1,881) - so count them for the model in front of you rather than assuming a share. **Type the return value rather than looking for a quote character** - the canonical example, `Selected page = SELECTEDVALUE('Current page'[Current page])`, has no string literal at all. `reference/translate-measures.md` step 1 has the tells.
+- **Report-layer measures.** Button captions, tooltips, dynamic titles, selected-page names, conditional-format colors, SVG sparklines. They return text and belong to the canvas, not the model. Their share varies more than any other figure here - a third of the measures in one Microsoft model, a tenth in the average of a fifty-model sample - so **count them for the model in front of you** rather than assuming a share, and tell the user how many you skipped. **Type the return value rather than looking for a quote character** - the canonical example, `Selected page = SELECTEDVALUE('Current page'[Current page])`, has no string literal at all. `reference/translate-measures.md` step 1 has the tells.
 - **Implicit measures.** A numeric column aggregated in a visual with no defined measure. Note which columns are used this way, do not manufacture a measure per column.
 - **`summarizeBy` defaults**, except as a hint about which columns are facts and which are keys.
 - **Display folders**, `lineageTag`, `ordinal`, and other authoring metadata.
@@ -132,7 +148,7 @@ it counts each kind separately - a user-defined function is DAX and is not a mea
 
 - **Any measure routed to a divergent recipe.** This is the flag that matters most and it must reach the user, never be resolved quietly. Say which filter context makes it diverge.
 - **Storage mode.** DirectQuery and live-connection models contain no data; the model still translates but nothing can be validated locally.
-- **Bidirectional cross-filtering** (`crossFilteringBehavior: bothDirections`, or `CROSSFILTER(..., BOTH)` inside a measure). It is a model-level switch with a model-wide blast radius - 111 of 117 measures in `FabricASEngineAnalytics`, and the second most demanded recipe across 50 public models - and it is invisible in every measure's DAX. Ask what it was for; `reference/cookbook-structure.md#s3` has the divergence worked out.
+- **Bidirectional cross-filtering** (`crossFilteringBehavior: bothDirections`, or `CROSSFILTER(..., BOTH)` inside a measure). It is a model-level switch with a model-wide blast radius - it reaches 111 of the 117 measures in Microsoft's `FabricASEngineAnalytics`, and it is the construct most likely to change a number in a migration - and it is invisible in every measure's DAX. Ask what it was for; `reference/cookbook-structure.md#s3` has the divergence worked out.
 - **Many-to-many relationships**: model the bridge the grain actually has, and name the fan-out out loud (`#s2`).
 - **Inactive relationships** (`isActive: false`): they exist to be switched on by `USERELATIONSHIP` inside a measure. In Malloy they become named join paths (`#s1`), which changes every call site - the measure disappears rather than translating.
 - **Calculated columns and calculated tables**: DAX evaluated at refresh. Decide per object whether it becomes a Malloy dimension, a computed source, or work pushed upstream.

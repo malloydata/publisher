@@ -3,9 +3,9 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# The evidence corpus
+# Development corpus
 
-> The 50 public Power BI models the coverage numbers in `translate-measures.md` are measured against. This file exists so the number is reproducible and auditable without redistributing anyone's model: nothing from these repositories is committed here.
+> The 50 public Power BI models this skill was developed and regression-tested against. They are test material rather than a survey: the point of collecting them was to find routing bugs a two-model sample could not, and every widening found some. Listed so any figure quoted in `translate-measures.md` can be re-derived without redistributing anyone's model - nothing from these repositories is committed here.
 
 ## How the corpus was selected
 

@@ -160,95 +160,61 @@ read. So the output is a **priority order, not a verdict** - which measures to
 parity-test first, and at which filter context. Present it that way, or the user
 reads "direct" as "checked".
 
-## Counts, and what they cost to get wrong
+## Sizing the job, and what it costs to get wrong
+
+The user wants to know how big this is before they commit. Two numbers make that
+estimate honest, and both are easy to get wrong.
 
 **Count measures as measures.** A model file also carries calculation items,
 user-defined functions, calculated columns, calculated tables and RLS role
 predicates. All of them are DAX and all of them route, but none of them is a
-measure, and summing them under one heading once published 1,622 measures for a
-corpus that held 1,406. Every table below is measures only unless it says
-otherwise.
+measure. Summing them under one heading overstates the job and then understates
+your own progress against it.
 
-For calibration, `PBIASEngine` (126 measures), routed by
-`scripts/classify_measures.py`:
+**Count the report layer separately, for *this* model.** Its share swings more
+than anything else here - a third of the measures in Microsoft's `PBIASEngine`,
+a tenth across a fifty-model sample - so it is not a ratio you can assume. These
+measures are captions and colors; they belong to the canvas and do not need to
+become Malloy at all, so they are the fastest part of the estimate to retire.
+
+`PBIASEngine` (126 measures) is the worked calibration:
 
 | | measures |
 |---|---:|
 | report-layer (return a label) | 42 |
 | translate directly | 32 |
 | need a recipe | 52 |
-| of those, can return a different number silently | 47 |
+| of those, can return a different number silently | 43 |
 | of those, land on a stopgap recipe | 0 |
 
-It carries 15 calculated columns and 6 calculated tables besides.
+**Name the model when you quote a number**, because the profile is not portable.
+The same repository holds `FabricASEngineAnalytics` (117 measures): 4
+report-layer, 2 direct, and 111 gated on bidirectional cross-filtering. Same
+publisher, same domain, opposite shape. Across fifty public models the
+untranslatable count stays at zero and the stopgap count stays at zero; that is
+the claim worth making to a customer, not any particular ratio.
 
-Function frequency in the same model, as occurrences / measures containing:
-`CALCULATE` 79/50, `ALLSELECTED` 33/25, `RANKX` 8/8, `ALLEXCEPT` 7/4,
-`REMOVEFILTERS` 5/5, `KEEPFILTERS` **0/0**. `ALLSELECTED` is the fourth most common
-function by measures containing it, behind `CALCULATE`, `IF` and `MAX` - common
-enough to budget for, and it needs no budget, because it maps exactly.
+Four things worth knowing before you quote an estimate:
 
-**Name the model when you quote a number.** The same repository holds
-`FabricASEngineAnalytics` (117 measures), whose profile is completely different: 4
-report-layer, 2 direct, 111 gated on bidirectional cross-filtering.
-
-**Across a wider corpus the untranslatable count stays at zero.** Fifty public
-TMDL models, every one under a permissive license, listed with its commit in
-`corpus.md` so the number can be re-run:
-
-| | measures |
-|---|---:|
-| models routed | 50 |
-| measures | 1,881 |
-| report-layer (return a label) | 217 |
-| translate directly | 606 |
-| need a recipe | 1,058 |
-| of those, can return a different number silently | 937 |
-| of those, land on a stopgap recipe | 0 |
-| **untranslatable** | **0** |
-
-Those 50 models carry a further **363 definitions that are DAX and are not
-measures** - 129 calculated columns, 115 calculated tables, 86 user-defined
-functions, 17 calculation items, 16 RLS role predicates - plus 126 auto date
-tables, which are skipped (`S7`).
-
-Recipe demand across the measures, which is what says where to reach first:
-`FC1` 791, `S3` 251, `S4` 155, `FC5` 147, `T2` 73, `T3` 64, `FC2` 44, `FC7` 28,
-`FC3` 26, `T1` 23, `S1` 12, `FC6` 5, `FC4` 5.
-
-Five things only a wider corpus shows:
-
-- **`FC5` (`ALL(T[c])` / `REMOVEFILTERS` on one column) is fourth at 147**, though it
-  appears 5 times in `PBIASEngine`. A single-model sample under-ranks it badly. It
-  was briefly published as third at 216, because `FILTER(ALL(T[c]), pred)` matched
-  the same `ALL(` - and that shape *re-filters* the column rather than removing it
-  from the grouping, so it is `FC1`'s expanded spelling. The Malloy `FC5` points at
-  compiles and answers a different question.
+- **`KEEPFILTERS` is rare** - 0 of `PBIASEngine`'s 79 `CALCULATE` calls. So the
+  §"Rule That Makes Migrations Wrong" divergence is the default case, not an edge
+  one, and the work is establishing which measures are *safe* rather than hunting
+  a few bad ones.
 - **Three recipes fire zero times in any measure and are not rare at all** - they
-  live somewhere else in the file. `T6` fires 11 times across 9 models, every one
-  a **calculated-table partition**, which is where `CALENDAR()` actually is. `S5`
-  fires 17 times, all **calculation items**; `RLS` 16 times, all
-  **`roles/*.tmdl`**, and not one `USERPRINCIPALNAME` in the corpus is in a table
-  file. A pass that reads only `measure` declarations reports all three as absent.
-- **`S4` is third at 155, and it was nearly missed the same way.** Detecting a
-  what-if parameter by `GENERATESERIES()` finds only the tables that are
-  *generated*, which are 10 calculated tables and 12 user-defined functions and no
-  measure at all. What a measure actually does is read an **unjoined** table with
-  `SELECTEDVALUE`/`MIN`/`MAX`, and that is the test: 155 measures across 14
-  models, in one of which it drives 81 of 108.
-- **`S2`, `S6` and `T5` fire zero times, and that one is measured.** Not one
-  many-to-many relationship in 50 `relationships.tmdl` files, and no `PATH` or
-  `CLOSINGBALANCE*` anywhere in 2.5M characters of live DAX. Those shapes are real
-  but rare - do not lead a customer conversation with them, and weigh it before
-  citing them as upstream evidence.
-- **`S5` is concentrated rather than spread.** Like bidirectional
-  cross-filtering, a model either builds on calculation groups or has none.
+  live elsewhere in the file. `CALENDAR()` is only ever in a calculated-table
+  partition, calculation groups carry a model's time intelligence, and RLS
+  predicates live in `roles/*.tmdl`. Match only `measure` declarations and you
+  will report a model as having no calculation groups, no date spine and no RLS.
+- **`ALLSELECTED` is common and costs nothing.** It is among the most frequent
+  functions by measures containing it, and it maps exactly. Do not budget for it.
+- **Many-to-many, parent-child hierarchies and semi-additive measures are real
+  but rare** - zero occurrences across the fifty-model sample. Do not lead a
+  customer conversation with them.
 
 `T4` and `FC8` are **teaching recipes with no trigger**: no DAX function requests
-either, so the router cannot emit them and their zero says nothing. Do not report
-them among measured results - a previous revision of this file did, inside a
-"fires zero times" claim that was vacuous for exactly that one route.
-`reference/limitations.md` has the full inventory.
+either, so the router cannot emit them. Their zero says nothing, and it should
+never be reported among measured results. `reference/limitations.md` is the full
+inventory of what the router can and cannot decide.
 
 **Three ways earlier revisions of this skill got its own numbers wrong**, all worth
 avoiding in yours:
@@ -267,12 +233,11 @@ avoiding in yours:
   an SVG measure's `http://www.w3.org/2000/svg` left the literal unterminated and
   typed five sparklines as numbers. **DAX types on the `RETURN`.**
 
-**The untranslatable count for `PBIASEngine` is approximately zero.** Twelve measures
-were once reported untranslatable; all twelve were `ALLSELECTED`-triggered, eight of
-them rankings, and not one exercises a real gap. `ALLSELECTED` maps exactly, and
-`RANKX` maps to `calculate: rank()`, which orders by any expression independently of
-the query's own ordering. If your run produces a large untranslatable bucket, check
-those two mappings before reporting it.
+**If your run produces a large untranslatable bucket, suspect your run.** Twelve
+`PBIASEngine` measures were once reported untranslatable; all twelve were
+`ALLSELECTED`-triggered, eight of them rankings, and not one exercised a real gap.
+`ALLSELECTED` maps exactly and `RANKX` maps to `calculate: rank()`. Check those two
+mappings before reporting a gap to a customer.
 
 ## Translation Notes That Still Bite
 
