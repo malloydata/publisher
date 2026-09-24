@@ -303,9 +303,9 @@ Two things stop it:
 
 **Label a rung for what it measures, not for what a reader will assume.**
 "Can the model express an answer?" is wrong for most of what lands on the `no`
-side of the first rung. `CONVENTION` means the data is present and no named
-measure encodes the statistical or business convention; `NO-DISAMBIG` means two
-plausible candidates and no doc saying which the question means. The model can
+side of the first rung. `RULE_UNWRITTEN` means the data is present and the
+model does not encode the rule for combining or filtering it; `AMBIGUOUS` means
+several candidates and no doc saying which the question means. The model can
 express an answer in both -- it does not say WHICH answer is meant. So the rung
 asks whether the model NAMES what the question needs.
 

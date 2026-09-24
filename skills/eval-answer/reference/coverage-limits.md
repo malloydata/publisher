@@ -15,6 +15,10 @@ was. Separately, the whole model goes into one prompt per case, which caps the
 package size it can run on at all and destabilises the verdict well before that
 cap.
 
+The measurements below predate the renamed verdicts, and their tables keep the
+names they were taken under: `ok` is now `MODELLED`, `COVERAGE` is `MISSING`,
+`NO-DISAMBIG` is merged into `AMBIGUOUS`, and `CONVENTION` is `RULE_UNWRITTEN`.
+
 ## Measured against a labelled set: the label drifts too
 
 The `evals/ecommerce` set in `credibledata/malloy-samples` labels every case
@@ -158,7 +162,7 @@ concatenates every `*.malloy` under the tree and does **not** resolve `import`;
 real packages split across files exactly that way (in
 `credibledata/malloy-samples`, `ecommerce/brand_synergy.malloy` opens with
 `import "ecommerce.malloy"`). Narrowing to one file drops every imported source,
-so the judge correctly answers `COVERAGE`, no entity represents the concept
+so the judge correctly answers `MISSING`, no entity represents the concept
 anywhere, for cases the model answers perfectly well. That is a false gap
 indistinguishable from a real one, and it lands in the numerator of a published
 trend.
@@ -206,10 +210,9 @@ format address the cost, the ceiling and `json_objects()` together. Stdlib
 `urllib` keeps the stdlib-only promise; the real cost is auth, since `claude -p`
 rides the CLI's credentials.
 
-**And for a large package, stop sending the whole model.** Rule out `COVERAGE`
+**And for a large package, stop sending the whole model.** Rule out `MISSING`
 against a complete inventory of names and one-line docs, a small fraction of the
 bytes, which keeps "no candidate anywhere" decidable; then send full text for
-the candidate sources only, to settle `AMBIGUOUS`, `NO-DISAMBIG` and
-`CONVENTION`. Deliberately NOT retrieval ranking: folding retrieval into this
+the candidate sources only, to settle `AMBIGUOUS` and `RULE_UNWRITTEN`. Deliberately NOT retrieval ranking: folding retrieval into this
 number would collapse the distinction from recall that the metric exists to
 draw.

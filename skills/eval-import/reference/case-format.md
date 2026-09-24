@@ -32,6 +32,24 @@ usually absent at import, and until it exists no golden can reach `verified`;
 `verify_goldens.py --promote` is what takes it there afterwards. `init_truth_package.py` in
 `skill:eval-answer` scaffolds one.
 
+`conventions` is optional: a list of strings, each defining one term the way
+the business uses it, for a term the question does not define itself. The
+coverage check (`check_coverage.py` in `skill:eval-answer`) shows them to its
+judge as definitions it may not replace with its own reading. End each one with
+the questions it governs, as an "Applies to questions that ..." sentence:
+
+```json
+"conventions": [
+  "\"Summer\" means 25 May to 15 September inclusive. Applies to questions that ask about summer."
+]
+```
+
+The scope sentence is what stops the judge applying a definition to every
+question. Without it, one set came back with nine of twelve cases as gaps, and
+the check warns about any convention that has none. Record only a definition
+someone gave you. A convention you invent turns your guess into the business's
+rule, and scores the model against it.
+
 ## Their field names will not be your field names
 
 An arriving JSONL is somebody else's schema. Map it explicitly rather than
