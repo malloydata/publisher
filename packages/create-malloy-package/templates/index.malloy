@@ -7,8 +7,10 @@
 // `export { ... }` is the curation, and it is a real boundary rather than
 // just a listing filter. A source named here is discoverable AND queryable.
 // A source left out still compiles, and other models can import, join and
-// extend it, but a direct query against it is refused with a 404 --
-// indistinguishable from a source that does not exist. Add a name here to
+// extend it, but a direct query against it is refused with a 404 that says
+// it is not on this surface. (Once a model carries an authorize or
+// access_filter gate, that 404 reads the same as for a source that does not
+// exist, so it cannot be used to find hidden names.) Add a name here to
 // publish it; leave one out to keep it as an internal building block.
 //
 // To curate listings WITHOUT refusing queries, keep an explicit "explores" in

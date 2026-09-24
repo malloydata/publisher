@@ -565,14 +565,16 @@ jobs:
       # dispatch when main moves under a watched path.
       #
       # The step below cannot trip it: it pushes a branch, and main does not
-      # move. But do NOT conclude the path list stopped mattering, because the
-      # release does not end here — the operator is then told to open and merge
-      # the stamp PR, and `publish-packages` can still be inside its npm poll
-      # budget when they do. That merge moves main mid-release, and it is
-      # harmless for one reason only: RELEASE_NOTES.md is in none of the paths
-      # that guard watches. Adding a watched path that RELEASE_NOTES.md matches,
-      # without re-reading this comment, would turn every narrative release into
-      # an aborted package dispatch.
+      # move. But the release does not end here — the operator is then told to
+      # open and merge the stamp PR, and `publish-packages` can still be inside
+      # its npm poll budget when they do. That merge moves main mid-release,
+      # and it is NOT harmless: the stamp branch moves skills and
+      # create-malloy-package one patch ahead, and both package.json files are
+      # paths that guard watches. Merged early, it aborts the dispatch of
+      # whichever of the two has not gone yet (fail-closed and retryable, but
+      # the retry publishes the moved-ahead version). So the summary tells the
+      # operator to wait for `publish-packages` to finish before merging, and
+      # the publisher-release skill says the same.
       # `+` as well as `-`, because the two guards otherwise disagree about what
       # counts as a prerelease. `scripts/set-version.mjs` accepts a `+build`
       # suffix (it is valid semver and nothing is computed from it), so
