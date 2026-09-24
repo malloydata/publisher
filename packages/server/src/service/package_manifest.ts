@@ -13,6 +13,7 @@ import {
    MODEL_FILE_SUFFIX,
    normalizeModelPath,
 } from "../constants";
+import { PackageManifestError } from "../errors";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -40,7 +41,7 @@ export function parsePackageScope(raw: unknown): PackageScope {
    if ((PACKAGE_SCOPES as readonly unknown[]).includes(raw)) {
       return raw as PackageScope;
    }
-   throw new Error(
+   throw new PackageManifestError(
       `Invalid "scope" in the package manifest: ${JSON.stringify(raw)}. ` +
          `Expected "version" or "package" (default "package").`,
    );
@@ -86,7 +87,7 @@ export function resolvePackageScope(
          // message is the whole diagnosis. Guessing instead would be worse —
          // picking the wrong one reuses a table across versions that was never
          // meant to be shared, silently.
-         throw new Error(
+         throw new PackageManifestError(
             `Conflicting "scope" in publisher.json: root "${rootScope}" vs ` +
                `"materialization.scope" "${envelopeScope}". The package cannot ` +
                `load until they agree. Edit "materialization": { "scope": ... } ` +
@@ -462,7 +463,7 @@ export function resolveExplores(input: {
          declaredExplores.every((entry) => typeof entry === "string")
       )
    ) {
-      throw new Error(
+      throw new PackageManifestError(
          `Invalid "explores" in publisher.json: expected an array of model ` +
             `paths, got ${JSON.stringify(declaredExplores)}. The package is ` +
             `not served, because ignoring the key would publish every source ` +

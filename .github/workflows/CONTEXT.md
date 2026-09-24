@@ -56,8 +56,8 @@ There are three npm trains and one PyPI train, and they do not share a version.
 | Packages | Registry | Version | Published by | Missing bump caught by |
 |---|---|---|---|---|
 | `@malloy-publisher/sdk`, `app`, `server` | npm | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
-| `@malloy-publisher/skills` | npm | Its own line | `skills-npm.yml` | a `pull_request` check in `skills-npm.yml` |
-| `@malloy-publisher/create-malloy-package` | npm | Its own line | `create-malloy-package-npm.yml` | a `pull_request` check in the same file |
+| `@malloy-publisher/skills` | npm | Its own line, moved one patch ahead by each stamp PR | `skills-npm.yml` | a `pull_request` check in `skills-npm.yml` |
+| `@malloy-publisher/create-malloy-package` | npm | Its own line, moved one patch ahead by each stamp PR | `create-malloy-package-npm.yml` | a `pull_request` check in the same file |
 | `malloy-publisher-sdk` | PyPI | Its own line | `python-sdk.yml` | a `pull_request` check in the same file |
 
 ### The versioning policy
@@ -166,6 +166,19 @@ check would redden every PR opened in that window. Two registry questions per
 check, because a version can be free and still *below* `latest`, and publishing
 that moves the dist-tag backwards.
 
+**The stamp PR keeps `main` ahead, so the check is mostly a fallback.** Every release spends the
+version `main` declares for skills and the scaffolder, which on its own would leave `main` level with
+npm and turn the first PR after each release that touches either package red, for something the
+release did. So the stamp branch (below) also moves both one patch ahead. Once it merges, a PR changing
+either package's content passes without a hand bump; the check still catches a stamp PR that was never
+merged, and a version below `latest`. A breaking change still wants a hand bump to the next minor,
+which the check does not enforce. The cost is a content-free publish of both on a release where
+neither changed — and both have published on every release since 0.3.0 anyway, the scaffolder because
+its check watches `packages/skills/package.json` and so follows every skills bump. That coupling is also
+why they move together: bumping skills alone reddens the scaffolder's check on the stamp PR itself.
+The Python client is left out until its first publish lands, since its check has nothing to be
+behind.
+
 Each check is scoped to the paths that package's published content is built from,
 and **that list is deliberately narrower than both the workflow's own `paths:`
 trigger and `publish_pkg`'s "main moved" guard.** Both of those watch the publish
@@ -222,8 +235,15 @@ skipped — 0.0.243 through 0.0.247 shipped with none of their narrative.
 
 **That branch carries the version reset too, despite its name**: `scripts/set-version.mjs` over the
 three `packages/{sdk,app,server}/package.json` files, so `main` ends the release declaring what
-shipped. Either half can legitimately be zero — nothing to stamp, or `main` already at that version —
-and when both are, no branch is pushed and the summary says so. The name is unchanged because it is
+shipped. It then moves `packages/skills/package.json` and `packages/create-malloy-package/package.json`
+one patch past what `main` declares (see *A forgotten bump is a red PR check* for why). That bump is
+unconditional rather than decided by asking npm: `publish-packages` is not in `gh-release`'s `needs`,
+so at stamp time it is usually still publishing, npm's `latest` still reads the previous version, and
+an "only if `main` equals npm" test would skip exactly the release that needs it. Whatever `main`
+declares at that point is what `publish-packages` publishes, or was already on npm; either way it is
+spent. The notes and the sdk/app/server reset can each legitimately be zero, so in practice the bump
+is what guarantees a branch; only when all three are zero is no branch pushed, and the summary says
+so. The name is unchanged because it is
 the identifier the `publisher-release` skill and this file both tell a releaser to look for.
 
 **The version reset cannot move into `prepare`,** which is the obvious place for it. `prepare` stages
@@ -322,13 +342,16 @@ out of band instead: each `run:` body extracted from the YAML and executed again
 repo — it is worth rebuilding rather than trusting, because a later edit to any of those bodies has
 nothing automated behind it.
 
-The stamp step itself can no longer collide with `publish-packages`: it pushes a branch, so `main`
-does not move while that job polls npm. But the path list still matters, because the release does not
-end when the run does — the operator is told to open and merge the stamp PR next, and
-`publish-packages` can still be inside its poll budget when they do. That merge does move `main`
-mid-release, and it is harmless for one reason only: `RELEASE_NOTES.md` is in none of the paths that
-guard watches. Adding a watched path that `RELEASE_NOTES.md` matches would turn every narrative
-release into an aborted package dispatch.
+The stamp step itself cannot collide with `publish-packages`: it pushes a branch, so `main` does not
+move while that job polls npm. **Merging the stamp PR can**, because the release does not end when the
+run does — the operator is told to open and merge it next, and `publish-packages` can still be inside
+its poll budget when they do. The stamp branch moves `packages/skills/package.json` and
+`packages/create-malloy-package/package.json`, which are both paths that guard watches, so an early
+merge aborts the dispatch of whichever of the two has not gone yet. That is fail-closed and retryable,
+but the retry checks out the new `main` and publishes the moved-ahead version, which leaves `main`
+level with npm again and brings back the red check this bump exists to prevent. So **wait for
+`publish-packages` to finish before merging the stamp PR**; the job summary and the `publisher-release`
+skill both say so.
 
 npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token. There is no
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets
@@ -383,7 +406,8 @@ everything in this file that follows from them changes with it.
   when adding a new package.
 - **`main` carries the released sdk/app/server version only if the last stamp PR merged.** Release
   branches are still never merged back; instead `gh-release`'s stamp branch resets those three
-  `package.json` files to the shipped version, and a human merges it. Before that mechanism `main` sat
+  `package.json` files to the shipped version (and moves skills and the scaffolder one patch ahead),
+  and a human merges it. Before that mechanism `main` sat
   41 patches behind npm. So the file is now *usually* truthful and never *reliably* so, which is why
   `prepare`'s floor is `max(npm latest, main declared)` and fails closed when the registry will not
   answer. **Do not "simplify" that to reading the file** — an unmerged stamp PR is exactly the thing
@@ -547,7 +571,8 @@ Read that summary rather than the run's green tick if you expected a publish.
 1. **The version was not bumped.** `publish-packages` decides purely on the version in `main`'s
    `package.json`, so if a change lands in `skills/` or `packages/create-malloy-package/` without a
    version bump, the release skips that package and stays green. This is now much harder to reach: each
-   package carries a `pull_request` bump check (see *A forgotten bump is a red PR check*). It is not
+   package carries a `pull_request` bump check, and each stamp PR moves both packages ahead (see
+   *A forgotten bump is a red PR check*). It is not
    impossible — a lockfile-only change to `skills` is outside that check's trigger — so the skip and
    its summary line stay.
 2. **The release was a prerelease.** Any hyphen in the release version skips both packages, because

@@ -80,9 +80,11 @@ export class QueryController {
       const model = p.getModel(modelPath);
 
       if (!model) {
-         // Worded exactly as the refusal for a model that exists but is off the
-         // package's surface (Model.assertQueryBoundaryEarly), so a 404 cannot
-         // be used to tell a hidden file from a missing one.
+         // Worded exactly as the generic refusal for a model that exists but is
+         // off the package's surface (Model.assertQueryBoundaryEarly). Where
+         // the hidden model is gated that refusal is generic, so a 404 cannot
+         // tell a hidden file from a missing one; where it is not, the hidden
+         // file's 404 says why and this one stays plain.
          throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
       } else {
          const {

@@ -28,7 +28,9 @@ import {
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
+   ModelCompilationError,
    NotQueryableError,
+   PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
    WriteRolledBackError,
@@ -869,6 +871,16 @@ export class Environment {
                         : { modelPath: modelName, source },
                });
             } catch (error) {
+               // Same split as Package.loadViaWorker: compile errors and an
+               // unusable publisher.json keep their 4xx mapping, and only an
+               // infrastructure failure reads as a worker outage.
+               if (
+                  error instanceof MalloyError ||
+                  error instanceof ModelCompilationError ||
+                  error instanceof PackageManifestError
+               ) {
+                  throw error;
+               }
                throw new ServiceUnavailableError(
                   `Package compile worker unavailable: ${
                      error instanceof Error ? error.message : String(error)

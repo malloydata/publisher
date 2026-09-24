@@ -8,6 +8,7 @@ import type { EnvironmentStore } from "../../service/environment_store";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
    NotQueryableError,
+   OffSurfaceError,
    QueryTimeoutError,
    ServiceUnavailableError,
 } from "../../errors";
@@ -245,6 +246,23 @@ describe("execute_query error classification", () => {
       // The class exists so a hidden target is indistinguishable from a missing
       // one; echoing the name back would undo that.
       expect(parsed.error).not.toContain("salaries");
+   });
+
+   it("passes an off-surface refusal through with its reason, not as a typo", async () => {
+      // OffSurfaceError is only built where nothing is gated, and its message
+      // is the fix. Collapsing it to "Resource not found ... check the
+      // spelling" sends an agent hunting a typo for a name that is real.
+      const message =
+         'No queryable model "users.malloy". It is not on this package\'s published surface, "index.malloy".';
+      const handler = captureHandler(
+         storeWhoseQueryThrows(new OffSurfaceError(message)),
+      );
+      const parsed = parse(await handler(args));
+      expect(parsed.error).toBe(message);
+      expect(JSON.stringify(parsed.suggestions)).toContain("not a typo");
+      expect(JSON.stringify(parsed.suggestions)).not.toContain(
+         "spelled correctly",
+      );
    });
 
    it("also states the error in a text block", async () => {

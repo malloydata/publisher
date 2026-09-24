@@ -87,7 +87,7 @@ import {
    recordRowLevelGateRejected,
 } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
-import { ModelCompilationError } from "../errors";
+import { ModelCompilationError, PackageManifestError } from "../errors";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -466,7 +466,7 @@ async function readPackageMetadata(
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
-   const parsed = JSON.parse(contents) as {
+   let parsed: {
       name?: string;
       description?: string;
       explores?: string[];
@@ -476,6 +476,25 @@ async function readPackageMetadata(
       scope?: unknown;
       queryMetadata?: unknown;
    };
+   try {
+      parsed = JSON.parse(contents);
+   } catch (error) {
+      // A syntax error is the author's to fix like any other bad manifest, so
+      // it is a PackageManifestError (424), not a bare SyntaxError the pool
+      // would report as a worker outage.
+      throw new PackageManifestError(
+         `Invalid ${PACKAGE_MANIFEST_NAME}: it is not valid JSON ` +
+            `(${error instanceof Error ? error.message : String(error)}). ` +
+            `The package is not served until the file parses. Fix: make it ` +
+            `valid JSON; a trailing comma or an unquoted key is the usual cause.`,
+      );
+   }
+   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new PackageManifestError(
+         `Invalid ${PACKAGE_MANIFEST_NAME}: expected a JSON object, got ` +
+            `${JSON.stringify(parsed)}. Fix: { "name": "my-package" }.`,
+      );
+   }
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
@@ -1220,6 +1239,16 @@ function serializeError(error: unknown): SerializedError {
          message: error.message,
          stack: error.stack,
          isCompilationError: true,
+      };
+   }
+   // An unusable publisher.json keeps its class across the boundary the same
+   // way, so the main thread answers 424 rather than a worker outage.
+   if (error instanceof PackageManifestError) {
+      return {
+         name: error.name,
+         message: error.message,
+         stack: error.stack,
+         isManifestError: true,
       };
    }
    if (error instanceof Error) {
