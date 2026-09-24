@@ -91,7 +91,7 @@ do not:
 | category | total (FY2018) | Malloy `all()` (executed) | DAX `ALL(Sales)` (`semantics-cited`) |
 |---|---:|---:|---:|
 | Accessories | 36,814.85 | 0.001543 | 0.000335 |
-| Bikes | 22,590,983.47 | 0.946779 | 0.205730 |
+| Bikes | 22,590,983.47 | 0.946779 | 0.205729 |
 | Clothing | 66,327.53 | 0.002780 | 0.000604 |
 | Components | 1,166,765.32 | 0.048899 | 0.010625 |
 | **column sums to** | | **1.000000** | **0.217294** |
@@ -137,9 +137,13 @@ The practical consequence for sizing a migration: `ALLSELECTED` appears in **25 
 `PBIASEngine`'s 126 measures**, and none of them is untranslatable.
 
 **The one real difference** is what "visible" means. In Power BI the scope is the
-visual's, set by the report. In Malloy the scope is the query's `where:`. When the
-query is generated from a dashboard filter strip, those coincide - see Part C of
-the design doc for the binding mode this needs on our side.
+visual's, set by the report. In Malloy the scope is the query's `where:`. Those
+coincide when the query is generated from a dashboard's own filter controls - but
+only if the host binds a control by substituting a value **inside** the measure. A
+host that binds by appending `+ { where: ... }` to the tile puts the filter at query
+level, where `all()` cannot escape it, and this recipe silently stops matching. If
+you own the dashboard layer, check which of the two it does before promising
+`ALLSELECTED` parity.
 
 ---
 

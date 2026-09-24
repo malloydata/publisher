@@ -176,18 +176,19 @@ source: s is sales extend {
 | Clothing | 2,117,613.45 | 2,329,374.79 |
 | Components | 11,799,076.66 | 12,978,984.32 |
 
-**What it costs** Nothing in the model; the work moves to the host. The given's
-value has to come from somewhere, and in our stack that is the dashboard filter
-strip. See the design doc's Part C for the binding-mode gap this exposes on our
-side, and note the `SELECTEDVALUE(..., 0)` default maps to the given's `is 0`
-default.
+**What it costs** Nothing in the model; the work moves to the host, which has to
+supply the value per query. `SELECTEDVALUE(Param[Value], 0)`'s fallback maps to the
+given's own `is 0` default, so the shape survives intact. Where a dashboard binds
+the control, check that it substitutes the given rather than appending a query-level
+`where:` - see `cookbook-filter-context.md#fc3`.
 
 **Do not route these to "skip".** A disconnected parameter table reads like
 report-layer furniture and is not - it carries a real business input.
 
 **Field parameters are different.** A field parameter swaps *which measure or
 column* a visual shows. A given is a value, not a field reference, so this one has
-no mapping today. It is ours to solve, not Malloy's.
+no mapping today - it is a question for whatever renders the dashboard, not for the
+model. Flag it rather than faking it with one tile per measure.
 
 ---
 
