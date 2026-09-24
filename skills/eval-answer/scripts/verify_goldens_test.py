@@ -832,6 +832,15 @@ class RubricFigures(unittest.TestCase):
             "/ SCOPE.", total_sales=11865343.56))
         self.assertEqual(f, [])
 
+    def test_a_renamed_code_ends_the_accepting_clause_too(self):
+        # The regex listed only the retired names, so a rubric written with
+        # the new ones had its trap figure read as asserted-right.
+        for code in ("RULE_UNWRITTEN", "MISSING", "CONVENTION"):
+            f = verify_goldens.rubric_number_findings(self.case(
+                f"Right: net of returns, 11865343.56. Gross (12566292.88) is "
+                f"{code}.", total_sales=11865343.56))
+            self.assertEqual(f, [], code)
+
     def test_lower_case_prose_is_not_a_code(self):
         # "the scope of the question" rejects nothing; only the upper-case code does.
         f = verify_goldens.rubric_number_findings(self.case(
@@ -1039,6 +1048,12 @@ class VerifyQuotedFigures(unittest.TestCase):
             truth_package="t-truth", truth_model="truth.malloy",
             figure_model="sonnet")
 
+    @staticmethod
+    def cli(text, stderr=""):
+        """A stub with `run_cli`'s return shape, not a bare string. The bare
+        string is how the empty-reply bug on the real path went unseen."""
+        return lambda *a, **k: ([{"type": "assistant"}], text, stderr, 1, 0.1)
+
     def test_a_contradicted_figure_is_reported_with_its_query(self):
         reply = json.dumps({
             "query": "run: t_order_items -> { group_by: customer_id; "
@@ -1047,8 +1062,9 @@ class VerifyQuotedFigures(unittest.TestCase):
             "verdict": "contradicted",
             "why": "at customer_id grain the top is 43, not 80; 80 sums three "
                    "customers who share a name"})
-        out = verify_goldens.verify_figures(self.case("By order count it is Amelia Cohen (80 orders)."),
-                                self.args(), run=lambda *a, **k: reply)
+        out = verify_goldens.verify_figures(
+            self.case("By order count it is Amelia Cohen (80 orders)."),
+            self.args(), run=self.cli(reply))
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["verdict"], "contradicted")
         self.assertEqual(out[0]["figure"], "80")
@@ -1061,22 +1077,50 @@ class VerifyQuotedFigures(unittest.TestCase):
         seen = {}
         def run(cmd, **kw):
             seen["prompt"] = cmd[2]
-            return json.dumps({"verdict": "confirmed", "computed": "943"})
-        verify_goldens.verify_figures(self.case("A customer is one we delivered to: 943 of them."),
-                          self.args(), run=run)
+            return self.cli(json.dumps({"verdict": "confirmed", "query": "q",
+                                        "computed": "943"}))()
+        verify_goldens.verify_figures(
+            self.case("A customer is one we delivered to: 943 of them."),
+            self.args(), run=run)
         self.assertIn("943", seen["prompt"])
         self.assertIn("delivered to", seen["prompt"])
 
     def test_an_unreadable_reply_is_unverifiable_not_confirmed(self):
-        out = verify_goldens.verify_figures(self.case("The total was 8,817.56 last year."),
-                                self.args(), run=lambda *a, **k: "not json at all")
+        out = verify_goldens.verify_figures(
+            self.case("The total was 8,817.56 last year."),
+            self.args(), run=self.cli("not json at all"))
         self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertEqual(out[0]["why"], "the checker returned no readable JSON")
+
+    def test_stderr_is_the_error_never_the_reply(self):
+        """A timeout's stderr once went to the JSON scanner as the reply."""
+        out = verify_goldens.verify_figures(
+            self.case("We sold 12,345 units."), self.args(),
+            run=self.cli("", stderr='timeout after 300s {"verdict": "confirmed"}'))
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertIn("timeout after 300s", out[0]["error"])
+
+    def test_a_confirmation_without_its_query_is_not_a_receipt(self):
+        out = verify_goldens.verify_figures(
+            self.case("We sold 12,345 units."), self.args(),
+            run=self.cli(json.dumps({"verdict": "confirmed",
+                                     "computed": "12345"})))
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertEqual(out[0]["why"],
+                         "confirmed without the query that computed it")
+
+    def test_a_verdict_outside_the_vocabulary_is_unverifiable(self):
+        out = verify_goldens.verify_figures(
+            self.case("We sold 12,345 units."), self.args(),
+            run=self.cli(json.dumps({"verdict": "probably", "query": "q"})))
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertIn("'probably'", out[0]["why"])
 
     def test_a_crash_does_not_take_down_the_audit(self):
         def boom(*a, **k):
             raise RuntimeError("cli exploded")
         out = verify_goldens.verify_figures(self.case("We sold 12,345 units."),
-                                self.args(), run=boom)
+                                            self.args(), run=boom)
         self.assertEqual(out[0]["verdict"], "unverifiable")
         self.assertIn("cli exploded", out[0]["error"])
 
@@ -1085,8 +1129,67 @@ class VerifyQuotedFigures(unittest.TestCase):
         rows = verify_goldens.verify_figures(
             {"qid": "q2", "golden": {"kind": "scalar", "value": {"n": 943},
                                      "rubric": "about 943"}},
-            self.args(), run=lambda *a, **k: "{}")
+            self.args(), run=self.cli("{}"))
         self.assertEqual(rows, [])
+
+    def test_the_real_cli_path_returns_the_agents_verdict(self):
+        """Through the real `run_cli`, with a fake `claude` on PATH.
+
+        Every other test injects `run`. This one does not, so it is the one
+        that fails if the command stops asking for stream-json (the reply
+        then parses as empty and every figure reads `unverifiable`) or stops
+        granting the curl the prompt tells the agent to use.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            argv_log = pathlib.Path(d) / "argv.json"
+            reply = json.dumps({"query": "run: t -> { aggregate: n is count() }",
+                                "rows": "43", "computed": "43",
+                                "verdict": "contradicted", "why": "43, not 80"})
+            fake = pathlib.Path(d) / "claude"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                f"open({str(argv_log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+                "if 'stream-json' not in sys.argv:\n"
+                "    print('prose, as claude -p prints without the flag')\n"
+                "    sys.exit(0)\n"
+                "print(json.dumps({'type': 'assistant', 'message': {'content': "
+                f"[{{'type': 'text', 'text': {reply!r}}}]}}}}))\n")
+            fake.chmod(0o755)
+            with unittest.mock.patch.dict(
+                    "os.environ", {"PATH": f"{d}:/usr/bin:/bin"}):
+                out = verify_goldens.verify_figures(
+                    self.case("By order count it is Amelia Cohen (80 orders)."),
+                    self.args())
+            argv = json.loads(argv_log.read_text())
+        self.assertEqual(out[0]["verdict"], "contradicted")
+        self.assertEqual(out[0]["computed"], "43")
+        self.assertIn("Bash(curl:*)", argv)
+        self.assertIn("--strict-mcp-config", argv)
+
+    def test_the_flag_reaches_the_figure_check(self):
+        """`--verify-figures` was parsed and then dropped before `verify()`."""
+        with tempfile.TemporaryDirectory() as d:
+            sd = pathlib.Path(d)
+            (sd / "set.json").write_text(json.dumps({"truthPackage": "t-truth"}))
+            (sd / "cases.jsonl").write_text(json.dumps(
+                {**self.case("It was 80 orders."), "question": "q?"}) + "\n")
+            called = []
+            def fake(case, a, run=None):
+                called.append(a.figure_model)
+                return []
+            with unittest.mock.patch.object(verify_goldens, "verify_figures",
+                                            side_effect=fake), \
+                 unittest.mock.patch.object(sys, "argv", [
+                     "verify_goldens.py", "--set", str(sd),
+                     "--publisher", "http://127.0.0.1:9",
+                     "--verify-figures", "--figure-model", "opus"]), \
+                 unittest.mock.patch("builtins.print"):
+                try:
+                    verify_goldens.main()
+                except SystemExit:
+                    pass
+        self.assertEqual(called, ["opus"])
 
 
 if __name__ == "__main__":
