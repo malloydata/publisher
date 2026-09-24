@@ -125,5 +125,5 @@ shell tool and the MCP skills bundle ships markdown only, so the prose stands al
 - **Inactive relationships** (`isActive: false`): they exist to be switched on by `USERELATIONSHIP` inside a measure. In Malloy they become named join paths (`#s1`), which changes every call site - the measure disappears rather than translating.
 - **Calculated columns and calculated tables**: DAX evaluated at refresh. Decide per object whether it becomes a Malloy dimension, a computed source, or work pushed upstream.
 - **RLS roles that do not fit the gate grammar**: most will not, and a translated role is usually *weaker* than the original unless it sits behind a trusted tier. See `reference/rls-roles.md`.
-- **The two stopgaps**: semi-additive measures (`cookbook-time.md#t5`) and calculation groups (`cookbook-structure.md#s5`). Both ship working Malloy at a cost worth stating before the customer discovers it.
+- **The four stopgaps**: date spines (`cookbook-time.md#t4`), semi-additive measures (`#t5`), calculation groups (`cookbook-structure.md#s5`) and parent-child hierarchies (`#s6`). All four ship working Malloy at a cost worth stating before the customer discovers it.
 - **Where next month's data comes from**, if the user is lifting data out of a `.pbix`. A snapshot answers today's question and goes stale.

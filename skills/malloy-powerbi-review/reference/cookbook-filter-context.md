@@ -39,7 +39,10 @@ measure: bike_sales is sum(sales_amount) { where: products.category = 'Bikes' }
 ```
 
 Write it against the leaf aggregate, not against `total_sales`: a filter refining
-an already-derived measure is refused by preaggregation.
+an already-derived measure is refused by preaggregation. **Every snippet below is a fragment.** The `measure:` and
+`aggregate:` lines belong inside `sales extend { ... }`, and `run: sales -> ...`
+is shorthand for running against that extended source - pasted alone they do not
+compile, which is the convention and not a defect.
 
 **Verified:** `executed`
 
@@ -94,7 +97,7 @@ do not:
 | Bikes | 22,590,983.47 | 0.946779 | 0.205729 |
 | Clothing | 66,327.53 | 0.002780 | 0.000604 |
 | Components | 1,166,765.32 | 0.048899 | 0.010625 |
-| **column sums to** | | **1.000000** | **0.217294** |
+| **column sums to** | | **1** (before rounding) | **0.217294** |
 
 **What it costs** The denominator. `all()` removes *grouping* and keeps the query's
 `where:`, so the column sums to 1. DAX `ALL` removes *filters too*, so its
@@ -102,8 +105,20 @@ denominator is the all-years 109,809,274.20 and the column sums to the year's sh
 of all time. Both are defensible readings of "percent of total"; they are not the
 same number, and the divergence is invisible until something is filtered.
 
-If the DAX reading is the one the business wants, there is no `all()` spelling of
-it - compute the constant separately and divide by it.
+If the DAX reading is the one the business wants, it is spellable - but by the move
+in `cookbook-filter-context.md#fc8`, putting the year filter in the *numerator*
+instead of the query:
+
+```malloy
+run: sales -> {
+  group_by: category is products.category
+  aggregate: pct_of_all_time is
+    total_sales { where: order_date.fiscal_year = 'FY2018' } / all(total_sales)
+}
+```
+
+**Verified:** `executed` - 0.000335 / 0.205729 / 0.000604 / 0.010625, the DAX column
+above exactly. The query stays unfiltered, so `all()` spans all time.
 
 ---
 
@@ -135,6 +150,18 @@ was backwards, and it is why `ALLSELECTED` measures were being written off.
 
 The practical consequence for sizing a migration: `ALLSELECTED` appears in **25 of
 `PBIASEngine`'s 126 measures**, and none of them is untranslatable.
+
+**Read the argument before reaching for `all()`.** Bare `ALLSELECTED()` is the exact
+match above. `ALLSELECTED(Table[Column])` restores only *that* column's filter, so in
+a category > subcategory matrix `CALCULATE([X], ALLSELECTED(Product[Subcategory]))`
+is the **category** total, not the grand total - that is `exclude(x, subcategory)`,
+FC5's shape with FC3's filter semantics. Both spellings occur in `PBIASEngine`:
+
+| DAX argument | Malloy | Reading |
+|---|---|---|
+| `ALLSELECTED()` | `all(expr)` | everything the user can see |
+| `ALLSELECTED(Table)` | `all(expr)` | that table's grouping removed |
+| `ALLSELECTED(Table[Column])` | `exclude(expr, column)` | one level up, not the top |
 
 **The one real difference** is what "visible" means. In Power BI the scope is the
 visual's, set by the report. In Malloy the scope is the query's `where:`. Those
@@ -181,8 +208,15 @@ run: sales -> {
 
 237,096.16 / 1,272,057.89 = 0.186388. Correct.
 
-**What it costs** Only the chance of writing `exclude()` here by mistake.
-`ALLEXCEPT` **keeps** the columns it names and removes the rest, so it is
+**What it costs** The same divergence as FC2, plus the chance of writing
+`exclude()` here by mistake.
+
+`ALLEXCEPT(Product, Product[Category])` removes **every** other filter on Product,
+a slicer on `Product[Color]` included; `all(x, category)` keeps it. The two agree
+only while nothing else on that table is filtered - which is why this recipe is
+routed divergent, not direct.
+
+And `ALLEXCEPT` **keeps** the columns it names and removes the rest, so it is
 `all(x, keep)`. `exclude(x, c)` is the `ALL(T[c])` analog and does the opposite.
 The two read alike and both compile.
 

@@ -70,7 +70,7 @@ A Power BI relationship is declared once at model level, not on either table. `f
 | `SELECTEDVALUE(T[c])` | **flag** | Depends on the query's grouping; no measure-level equivalent |
 | `VAR x = ... RETURN ...` | inline, or a `dimension:` | A local binding; translate the body |
 | `COUNTROWS(T)` | `count()` | Direct mapping |
-| `DISTINCTCOUNT(T[c])` | `count(c)` | **`count(field)` is already the distinct count in Malloy.** `count(distinct c)` is a parse error, not a deprecation. |
+| `DISTINCTCOUNT(T[c])` | `count(c)` | **`count(field)` is already the distinct count in Malloy.** `count(distinct c)` is a hard error, despite a message that reads like a deprecation warning: ``count(distinct expression)` deprecated, use `count(expression)` instead.` |
 | `COUNT(T[c])` | `count() { where: c is not null }` | **Not `count(c)`.** DAX `COUNT` counts non-blank rows; Malloy's `count(c)` counts *distinct* values. They differ on any column with repeats, and the wrong one compiles. |
 | `DIVIDE(a, b)` | `a / nullif(b, 0)` | `DIVIDE` returns blank on divide-by-zero |
 | `DIVIDE(a, b, alt)` | `(a / nullif(b, 0)) ?? alt` | The third argument is the divide-by-zero result |
@@ -89,8 +89,9 @@ A Power BI relationship is declared once at model level, not on either table. `f
 |--------|--------|-------|
 | `CALCULATE(expr, T[c] = "x")` | `measure { where: c = 'x' }` **only when safe** | DAX **overwrites** the filter on `T[c]`; Malloy **intersects**. Different answers. |
 | `CALCULATE(expr, KEEPFILTERS(T[c] = "x"))` | `measure { where: c = 'x' }` | `KEEPFILTERS` makes DAX intersect, which is what Malloy already does. Safe. |
-| `CALCULATE(expr, ALLSELECTED(...))` | `all(expr)` | **Exact match.** `all()` removes *grouping* and keeps the query's `where:` - which is `ALLSELECTED` semantics. `cookbook-filter-context.md#fc3` |
-| `CALCULATE(expr, ALL(T))` | `all(expr)` **only when grouping is the sole filter** | **Not equivalent in general** - and `ALL`, not `ALLSELECTED`, is the divergent one. DAX `ALL` removes the *filters* too. `cookbook-filter-context.md#fc2` |
+| `CALCULATE(expr, ALLSELECTED())` | `all(expr)` | **Exact match for this top-level shape.** `all()` removes *grouping* and keeps the query's `where:` - which is `ALLSELECTED` semantics. Inside a nested iterator `ALLSELECTED` has shadow-filter-context behavior `all()` does not model. `cookbook-filter-context.md#fc3` |
+| `CALCULATE(expr, ALLSELECTED(T[c]))` | `exclude(expr, c)` | **Not `all()`.** A column argument restores only *that* column's visual filter, so in a category > subcategory matrix `ALLSELECTED(Product[Subcategory])` is the category total. |
+| `CALCULATE(expr, ALL(T))` | `all(expr)` **only when grouping is the sole filter** | **Not equivalent in general** - and `ALL`, not `ALLSELECTED`, is the divergent one. DAX `ALL` removes the *filters* too, but only on `T`'s expanded table: `ALL(FactTable)` clears everything reachable and diverges maximally, `ALL(SomeDimension)` leaves filters on other tables standing. `cookbook-filter-context.md#fc2` |
 | `CALCULATE(expr, ALL(T[c]))` | `exclude(expr, c)` **with the same caveat** | Same divergence, one dimension. `cookbook-filter-context.md#fc5` |
 | `CALCULATE(expr, REMOVEFILTERS(T[c]))` | `exclude(expr, c)` **with the same caveat** | `REMOVEFILTERS` is the clearer spelling of `ALL` as a modifier |
 | `CALCULATE(expr, ALLEXCEPT(T, T[keep]))` | `all(expr, keep)` | **Keeps** the listed columns and removes the rest, so it is `all(..., keep)`, not `exclude(..., keep)`. `cookbook-filter-context.md#fc4` |
@@ -123,7 +124,7 @@ Every one of these is a **rewrite, not a transcription**. They depend on a table
 
 | DAX | Malloy | Notes |
 |--------|--------|-------|
-| `TOTALYTD(expr, Date[Date])`, `DATESYTD` | `calculate: sum_cumulative(expr) { partition_by: year, order_by: period }` | A correct YTD, and right on sparse data. `cookbook-time.md#t1` |
+| `TOTALYTD(expr, Date[Date])`, `DATESYTD` | `calculate: sum_cumulative(expr) { partition_by: year, order_by: period }` | A correct YTD, and right on sparse data. **`year_end_date` picks the partition column** - it defaults to `"12/31"`, so the three-argument form is calendar-year, not fiscal. `cookbook-time.md#t1` |
 | `TOTALMTD`, `DATESMTD`, `DATESQTD` | the same, partitioned one level finer | `cookbook-time.md#t1` |
 | `SAMEPERIODLASTYEAR(Date[Date])` | a filtered aggregate per side, over named ranges | `cookbook-time.md#t2` |
 | `DATEADD(Date[Date], -1, MONTH)`, `PREVIOUSMONTH`, `PARALLELPERIOD` | `lag()` **where every period is present**; named ranges where not | `lag()` is positional, so it silently compares across a gap. `cookbook-time.md#t3` |
@@ -139,7 +140,7 @@ Found in real Microsoft-published TMDL and not covered by any table above. Count
 |--------|---:|-------|
 | `FIRSTNONBLANK` / `LASTNONBLANK` | 16 | The semi-additive shape. `cookbook-time.md#t5` |
 | `INT` | 15 | `floor()`, or drop it where it only exists to coerce a Boolean to 1/0 |
-| `DATEDIFF` | 11 | Date arithmetic: `(a - b)` with a granularity, or `date_diff` |
+| `DATEDIFF` | 11 | `days(a to b)`, `months(a to b)`, and so on. **Not `date_diff`** - that is not a Malloy function (`Unknown function 'date_diff'`), and `(a - b)` on timestamps is not the idiom either |
 | `ISFILTERED` | 11 | Report-layer. The query knows what it grouped by; the measure does not need to |
 | `COUNTA` | 9 | `count() { where: c is not null }` - the same trap as DAX `COUNT` |
 | `ALLNOBLANKROW` | 9 | `all()`, plus a null check if the blank row was load-bearing |
@@ -151,7 +152,7 @@ Found in real Microsoft-published TMDL and not covered by any table above. Count
 | `VALUES` | 5 | The distinct values of a column; `group_by:` or `count(c)` depending on use |
 | `PERCENTILE.INC` | 5 | No direct equivalent; use the dialect's percentile via `fn!()` |
 | `ADDCOLUMNS` / `SUMMARIZE` | 5 / 5 | A query stage, not a measure |
-| `CONCATENATEX` | 5 | `string_agg` via `fn!()`; usually report-layer |
+| `CONCATENATEX` | 5 | `string_agg(expr, sep)`, native - no `fn!()` needed; usually report-layer |
 | `STDEV.P` | 2 | `stddev()` where the dialect has it |
 | `CROSSFILTER` | 1 | `cookbook-structure.md#s3` |
 

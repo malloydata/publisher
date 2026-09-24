@@ -42,6 +42,9 @@ source: sales is duckdb.table('data/sales.parquet') extend {
 }
 ```
 
+This *replaces* the sample model's own `sales`; pasted beside an `import` of it you
+get a duplicate definition, so rename one or edit in place.
+
 **Verified:** `executed`
 
 | fiscal year | by `order_date` | by `due_date` |
@@ -139,8 +142,12 @@ table. Of the two Microsoft-published models sampled:
 | `PBIASEngine` | 126 | 0 | 0 |
 | `FabricASEngineAnalytics` | 117 | 2, both onto `ExecutionMetrics` | **108** |
 
-Same publisher, same domain, and one of them has 92% of its measures touching a
-concept Malloy does not have. Reading `relationships.tmdl` is not optional.
+Same publisher, same domain, and one of them has 92% of its measures reached by a
+model-level switch that no measure's DAX mentions. Most of those 108 land on the
+benign side above - a query rooted on the fact source already behaves like the
+bidirectional reading. The ones to check are the queries rooted on the *dimension*,
+which have no fact join to carry the filter. Either way, reading
+`relationships.tmdl` is not optional.
 
 ---
 
@@ -178,7 +185,7 @@ source: s is sales extend {
 
 **What it costs** Nothing in the model; the work moves to the host, which has to
 supply the value per query. `SELECTEDVALUE(Param[Value], 0)`'s fallback maps to the
-given's own `is 0` default, so the shape survives intact. Where a dashboard binds
+given's own default (`is 0.10` in the snippet above), so the shape survives intact. Where a dashboard binds
 the control, check that it substitutes the given rather than appending a query-level
 `where:` - see `cookbook-filter-context.md#fc3`.
 
@@ -250,13 +257,51 @@ the answer is "use a refinement".
 **The DAX** `PATH`, `PATHITEM`, `PATHCONTAINS`, `PATHLENGTH` over a
 self-referencing `manager_id` - an org chart, a chart of accounts, a BOM.
 
-**Malloy has no recursive CTE in any dialect**, so an unbounded hierarchy cannot be
-walked. Two options, both with a cost.
+**Malloy has no *native* recursion** - no `PATH`, no recursive view, no way to walk
+an unbounded hierarchy in the language. What it does have is a raw SQL source, and
+every dialect the product targets (DuckDB, Postgres, BigQuery, Snowflake) has
+`WITH RECURSIVE`. So the hierarchy is walkable; it just leaves the language to do it.
 
-**Preferred: flatten upstream.** Materialize the path in the warehouse, where a
-recursive CTE is available, and model the flat result.
+**The stopgap: walk it in a SQL source.**
 
-**The stopgap: a bounded self-join per level.**
+```malloy
+source: org_paths is duckdb.sql("""
+  WITH RECURSIVE emp AS (      -- stands in for the real employee table
+    SELECT 1 AS id, 'Ann' AS name, CAST(NULL AS INTEGER) AS manager_id UNION ALL
+    SELECT 2, 'Bob', 1 UNION ALL
+    SELECT 3, 'Cat', 2 UNION ALL
+    SELECT 4, 'Dan', 3
+  ),
+  walk AS (
+    SELECT id, name, manager_id, name AS path, 1 AS depth
+    FROM emp WHERE manager_id IS NULL
+    UNION ALL
+    SELECT e.id, e.name, e.manager_id, concat(w.path, '>', e.name), w.depth + 1
+    FROM emp e JOIN walk w ON e.manager_id = w.id
+  )
+  SELECT * FROM walk
+""")
+
+run: org_paths -> { select: id, name, path, depth; order_by: id }
+```
+
+**Verified:** `executed`
+
+| id | name | path | depth |
+|---:|---|---|---:|
+| 1 | Ann | Ann | 1 |
+| 2 | Bob | Ann>Bob | 2 |
+| 3 | Cat | Ann>Bob>Cat | 3 |
+| 4 | Dan | Ann>Bob>Cat>Dan | 4 |
+
+`path` then behaves like DAX's, so `PATHCONTAINS` becomes a `like` and `PATHLENGTH`
+is `depth`. T4 and T6 in `cookbook-time.md` use the same escape hatch.
+
+**Preferred where you can: flatten upstream.** The same CTE as a warehouse view or
+materialized table, modelled as an ordinary source - one place to maintain it, and
+no raw SQL in the semantic model.
+
+**The no-raw-SQL fallback: a bounded self-join per level.**
 
 ```malloy
 source: org is employee extend {
@@ -278,13 +323,15 @@ run: org -> {
 | Cat | Bob | Ann |
 | Dan | Cat | Bob |
 
-**What it costs** One join per level, written by hand, and a depth you have to
-guess. Depth 4 needs `l3`; a hierarchy that grows a level needs a model change and
-a redeploy. `PATHCONTAINS` ("is anyone in my management chain X?") has no bounded
-form at all beyond the depth you declared.
+**What it costs** The SQL source costs portability - it is written in one dialect
+and pins the model to it. The self-join costs one join per level, written by hand,
+and a depth you have to guess: depth 4 needs `l3`, and a hierarchy that grows a
+level needs a model change and a redeploy. `PATHCONTAINS` has no bounded form at all
+beyond the depth you declared.
 
-This is the third upstream ask, and it is the one with the clearest single answer:
-recursive CTE support.
+This is the third upstream ask, and the SQL escape hatch narrows it: not "add
+recursive CTEs", which the dialects already have, but a native traversal and
+path-predicate form that does not drop out of the language.
 
 ---
 

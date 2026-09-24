@@ -39,6 +39,16 @@ class FunctionLexing(unittest.TestCase):
         fns = cm.function_names("MAX ( 'Top N Selector'[Value] )")
         self.assertEqual(set(fns), {"MAX"})
 
+    def test_an_escaped_bracket_does_not_truncate_the_identifier(self):
+        # `]]` is a literal `]`. Stopping at the first one read the column as
+        # `Status`, so the measure typed as numeric and left the report layer.
+        self.assertEqual(cm.column_refs("SELECTEDVALUE ( T[Status]] Label] )"),
+                         {("T", "Status] Label")})
+
+    def test_an_escaped_bracket_still_hides_a_function_lookalike(self):
+        fns = cm.function_names('CALCULATE ( SUM ( T[Amt]] calculated] ), T[c] = "v" )')
+        self.assertEqual(sorted(fns), ["CALCULATE", "SUM"])
+
     def test_occurrences_are_counted_not_just_measures(self):
         fns = cm.function_names("CALCULATE ( CALCULATE ( SUM ( T[a] ) ) )")
         self.assertEqual(fns["CALCULATE"], 2)
@@ -166,7 +176,90 @@ class Propagation(unittest.TestCase):
         a = measure("A", "[B]")
         b = measure("B", "[A]")
         results, _ = cm.classify([a, b], {}, NO_FLAGS)
-        self.assertEqual(len(results), 2)
+        self.assertEqual(results[("T", "A")]["routes"], ["DIRECT"])
+        self.assertEqual(results[("T", "B")]["routes"], ["DIRECT"])
+
+
+class TmdlParsing(unittest.TestCase):
+    """The parser everything else is downstream of. A body it cuts short is a
+    measure routed on half its DAX, and it reports no error when it does."""
+
+    def parse(self, body, filename="Sales.tmdl"):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, filename)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            return cm.parse_table_file(path)
+
+    def test_a_fenced_body_runs_to_the_closing_fence(self):
+        table, measures, _ = self.parse(
+            "table Sales\n"
+            "\tmeasure 'Total Sales' = ```\n"
+            "\t\t\tCALCULATE (\n"
+            "\t\t\t    SUM ( Sales[Amount] )\n"
+            "\t\t\t)\n"
+            "\t\t\t```\n"
+            "\t\tformatString: 0.00\n"
+        )
+        self.assertEqual(table, "Sales")
+        self.assertEqual(len(measures), 1)
+        self.assertEqual(measures[0]["name"], "Total Sales")
+        self.assertIn("CALCULATE", cm.function_names(measures[0]["dax"]))
+        self.assertNotIn("```", measures[0]["dax"])
+        self.assertNotIn("formatString", measures[0]["dax"])
+
+    def test_an_unfenced_body_survives_a_blank_line_inside_it(self):
+        # Real exports put a blank line mid-expression. Ending the body there
+        # dropped the ALLSELECTED half of the measure and routed it direct.
+        _, measures, _ = self.parse(
+            "table Sales\n"
+            "\tmeasure 'Pct of visible' =\n"
+            "\t\t\tDIVIDE (\n"
+            "\n"
+            "\t\t\t    [Total Sales],\n"
+            "\t\t\t    CALCULATE ( [Total Sales], ALLSELECTED () )\n"
+            "\t\t\t)\n"
+            "\t\tlineageTag: abc\n"
+            "\t\tisHidden\n"
+        )
+        self.assertEqual(len(measures), 1)
+        self.assertIn("ALLSELECTED", cm.function_names(measures[0]["dax"]))
+        self.assertTrue(measures[0]["hidden"])
+
+    def test_an_inline_first_line_keeps_its_continuation(self):
+        _, measures, _ = self.parse(
+            "table Sales\n"
+            "\tmeasure Margin = DIVIDE (\n"
+            "\t\t\t    [Profit],\n"
+            "\t\t\t    [Total Sales]\n"
+            "\t\t\t)\n"
+            "\t\tdisplayFolder: KPIs\n"
+        )
+        self.assertEqual(len(measures), 1)
+        self.assertEqual(measures[0]["displayFolder"], "KPIs")
+        self.assertEqual(cm.measure_refs(measures[0]["dax"]),
+                         {"Profit", "Total Sales"})
+
+    def test_column_datatypes_are_read_for_the_label_test(self):
+        _, _, columns = self.parse(
+            "table Sales\n"
+            "\tcolumn 'Order Status'\n"
+            "\t\tdataType: string\n"
+            "\t\tsummarizeBy: none\n"
+            "\n"
+            "\tcolumn Amount\n"
+            "\t\tdataType: double\n"
+        )
+        self.assertEqual(columns, {"Order Status": "string", "Amount": "double"})
+
+    def test_the_declared_table_name_beats_the_filename(self):
+        table, measures, _ = self.parse(
+            "table 'Top N Selector'\n\tmeasure X = 1\n",
+            filename="Top N Selector.tmdl",
+        )
+        self.assertEqual(table, "Top N Selector")
+        self.assertEqual(measures[0]["table"], "Top N Selector")
 
 
 class Relationships(unittest.TestCase):

@@ -108,7 +108,9 @@ _STRING_RE = re.compile(r'"(?:[^"]|"")*"')
 _LINE_COMMENT_RE = re.compile(r"(?://|--)[^\n]*")
 _BRACE_SET_RE = re.compile(r"\{[^{}]*\}")
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
-_BRACKET_RE = re.compile(r"\[(?:[^\]]*)\]")
+# `]]` is DAX's escape for a literal `]`; stopping at the first one truncates
+# the identifier and the measure silently drops out of the dependency graph.
+_BRACKET_RE = re.compile(r"\[(?:[^\]]|\]\])*\]")
 _QUOTED_TABLE_RE = re.compile(r"'(?:[^']|'')*'")
 
 
@@ -161,12 +163,12 @@ def measure_refs(dax: str) -> set:
     """`[Name]` NOT qualified by a table, i.e. a measure and not a column."""
     body = strip_noise(dax)
     refs = set()
-    for m in re.finditer(r"\[([^\]]+)\]", body):
+    for m in re.finditer(r"\[((?:[^\]]|\]\])+)\]", body):
         before = body[: m.start()].rstrip()
         # `Table[Col]` / `'Table'[Col]` are columns; a bare `[Name]` is a measure.
         if before and (before[-1].isalnum() or before[-1] in "_'"):
             continue
-        refs.add(m.group(1).strip())
+        refs.add(m.group(1).replace("]]", "]").strip())
     return refs
 
 
@@ -174,9 +176,11 @@ def column_refs(dax: str) -> set:
     """`Table[Col]` / `'Table'[Col]` pairs, normalised to (table, column)."""
     body = strip_noise(dax)
     out = set()
-    for m in re.finditer(r"(?:'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_]*))\[([^\]]+)\]", body):
+    for m in re.finditer(
+        r"(?:'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_]*))\[((?:[^\]]|\]\])+)\]", body
+    ):
         table = (m.group(1) or m.group(2) or "").replace("''", "'").strip()
-        out.add((table, m.group(3).strip()))
+        out.add((table, m.group(3).replace("]]", "]").strip()))
     return out
 
 
@@ -209,7 +213,7 @@ _TABLE_RE = re.compile(r"^\s*table\s+('(?:[^']|'')*'|\S+)\s*$")
 
 
 def parse_table_file(path: str):
-    """Return (table_name, [measure dicts], {column: dataType}, is_calculated)."""
+    """Return (table_name, [measure dicts], {column: dataType})."""
     with open(path, encoding="utf-8-sig") as fh:
         lines = fh.read().splitlines()
 
