@@ -72,7 +72,7 @@ A run still fails on a refusal when there is nothing else to build, because ever
 
 **What to check.** Anything that read a `FAILED` run as the signal that a package holds an ineligible source should read `metadata.refusedSources` instead; the build plan's `refusedSources` reports the same refusals before any run. An auto-run whose only shortfall is refusals is metered `success`, since a refusal is a property of the model rather than of the run. An orchestrated run with an instructed refusal is metered `partial`, because that refusal is one of its `failures`: the caller asked for the table and did not get it. `publisher_materialization_sources_total` gains `outcome="refused"` and a `mode` label (`auto` | `orchestrated`) on every outcome. With `mode="orchestrated"` the refused count should stay at zero: a caller that builds from the build plan never instructs a source the plan refused, so a nonzero count means the plan and the build disagreed about a source.
 
-## [Unreleased] — a package's `index.malloy` is its published surface
+## [0.7.0] — a package's `index.malloy` is its published surface
 
 Put an `index.malloy` at a package root, `import` your models, and `export { … }` the sources you
 publish. What it exports is what Publisher lists **and** what callers may query. `publisher.json`
