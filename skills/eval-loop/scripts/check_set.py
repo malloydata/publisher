@@ -107,9 +107,10 @@ def check_truth(cfg: config.Config) -> tuple[list[str], list[str]]:
             continue
         if "/" not in ref and not init_truth_package.DATA_EXT.search(ref):
             continue
-        target = src.parent / ref
-        if (".." in pathlib.PurePath(ref).parts
-                or not config.within(target, where) or not target.exists()):
+        # By path, not by resolved target: init_truth_package links the model's
+        # data directory in, and a link whose target is outside the package is
+        # what makes the ref resolve once served.
+        if ".." in pathlib.PurePath(ref).parts or not (src.parent / ref).exists():
             problems.append(
                 f"{src.name}: {conn}.table('{ref}') resolves to nothing once "
                 f"served: Publisher serves a copy of the package, so a "

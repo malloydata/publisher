@@ -71,6 +71,20 @@ class Report(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("resolves to nothing once served", problems[0])
 
+    def test_what_init_truth_package_writes_passes(self):
+        # The scaffolder links the model's data in; check once refused that
+        # link, so the two tools disagreed on the package one of them wrote.
+        d = a_set(MODEL + '[truth]\npackage_dir = "../truth"\n', [CASE], truth="t")
+        pkg = d.parent / "pkg"
+        (pkg / "data").mkdir()
+        (pkg / "data" / "u.parquet").write_text("")
+        (pkg / "m.malloy").write_text("source: u is duckdb.table('data/u.parquet')\n")
+        with mock.patch("builtins.print"):
+            check_set.init_truth_package.main(
+                ["--package", str(pkg), "--out", str(d.parent / "truth"), "--name", "t"])
+        problems, _ = self.report(d)
+        self.assertEqual(problems, [])
+
     def test_a_case_the_importer_refuses_is_a_problem(self):
         bad = {**CASE, "golden": {**CASE["golden"], "value": 1}}
         problems, _ = self.report(a_set(MODEL, [bad]))

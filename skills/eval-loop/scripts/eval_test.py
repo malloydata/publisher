@@ -45,5 +45,19 @@ class Label(unittest.TestCase):
                          ["--set", "s", "--run", "/r"])
 
 
+class Help(unittest.TestCase):
+    def test_a_verb_s_help_is_the_script_s_own(self):
+        # It once needed --set first, so no script's flags were reachable.
+        import contextlib
+        import io
+        for verb in (["run"], ["serve"], ["serve", "truth"], ["check"]):
+            with self.subTest(verb=verb):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+                    entry.main([*verb, "--help"])
+                self.assertEqual(e.exception.code, 0)
+                self.assertIn("--set", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

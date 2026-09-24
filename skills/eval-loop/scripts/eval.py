@@ -82,12 +82,16 @@ def main(argv: list[str] | None = None) -> int:
         print(__doc__)
         return 0 if argv and argv[0] in ("-h", "--help") else 2
     verb, rest = argv[0], argv[1:]
+    # `<verb> --help` is the script's own help, which holds every flag.
+    asks_help = any(x in ("-h", "--help") for x in rest)
+    if verb == "serve" and asks_help and (not rest or rest[0] not in ("model", "truth")):
+        rest = ["model", *rest]
     if verb == "serve":
         if not rest or rest[0] not in ("model", "truth"):
             print("usage: eval.py serve model|truth --set <set-dir> [serve.py flags]")
             return 2
         rest = ["--role", rest[0], *rest[1:]]
-    if flag_value(rest, "--set") is None:
+    if flag_value(rest, "--set") is None and not asks_help:
         print(f"eval.py {verb}: --set <set-dir> is required")
         return 2
 

@@ -45,7 +45,9 @@ has every field):
 ## 2. Import the questions
 
 `skill:eval-import` turns questions in any shape into `cases.jsonl` and says what
-each one is worth. Then stamp and validate:
+each one is worth. A set with no questions yet has nothing to import: write the
+questions a person would actually ask into `as-received/` first, then import
+them, rather than writing cases by hand. Then stamp and validate:
 
 ```bash
 python3 skills/eval-import/scripts/import_cases.py --set <set> --stamp
@@ -126,11 +128,14 @@ eval.py verify --set <set> --promote
 ```
 
 It prints why it left each golden alone. `check` shows the scorable count.
+Where a person has checked a value by hand instead of deriving it a second way,
+`--promote --attest "<who checked, when, how>"` promotes it and writes that text
+on the golden, so a reader sees a person stood behind it rather than a query.
 
 ## 7. The first run
 
 ```bash
-eval.py run --set <set> --label smoke --only <qid> --max-turns 40   # one case first
+eval.py run --set <set> --label smoke --only <qid>[,<qid>...] --max-turns 40   # a case or two first
 eval.py run --set <set> --label baseline-01 --max-turns 40
 eval.py diagnose --set <set> --label baseline-01
 eval.py package --set <set> --label baseline-01
