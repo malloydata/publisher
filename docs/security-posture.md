@@ -133,20 +133,19 @@ declarative artifact still carries author-controlled HTML.
 
 ## Known gaps
 
-These are open, ordered by how much they would matter on a deployment that has put a gateway in
-front of Publisher. None are fixed as of this writing.
+Ordered by how much they would matter on a deployment that has put a gateway in front of
+Publisher. Gap 1 is now fixed and is kept here, struck through, because the reasoning about
+ordering is what the rest of the list is measured against; the others remain open.
 
-**1. Everything Publisher serves is framable by any origin, and the knob that looks like it fixes
-that only covers part of it.** In-package HTML gets `Content-Security-Policy: frame-ancestors *`
-by default, a standing clickjacking vector for any page with a control worth clicking.
-`PUBLISHER_FRAME_ANCESTORS` narrows that — but only for files under a package's `public/`. The
-Console catch-all sets no framing header at all and there is no global `X-Frame-Options`, so
-notebooks, dashboards, models, and the Explorer stay framable from anywhere on a deployment that
-has set the variable. That is worse than a permissive default, because setting the variable
-implies a coverage it does not have. Two fixes, in order: apply one policy to every document
-([#930](https://github.com/malloydata/publisher/issues/930)), then reconsider the default —
-`'self'`, with embedding opt-in per deployment, costs embedders one env var and closes this for
-everyone else.
+**1. ~~Everything Publisher serves is framable by any origin, and the knob that looks like it
+fixes that only covers part of it.~~ Fixed.** Both halves landed together, in the order this
+section prescribed. One middleware now sets `Content-Security-Policy: frame-ancestors` ahead of
+every route, so the Console catch-all, notebooks, dashboards, models and the Explorer carry the
+same policy as in-package `public/` files — `PUBLISHER_FRAME_ANCESTORS` finally means what it
+says ([#930](https://github.com/malloydata/publisher/issues/930)). The default is now `'self'`
+rather than `*`, so a deployment is closed to cross-origin framing unless it opts in. A
+deployment that embeds Publisher elsewhere sets that variable to its origins, or to `*` to
+restore the previous behaviour deliberately.
 
 **2. There is a token-shaped thing that authenticates nothing.** `Publisher.embed` appends an
 `embed_token` query parameter, and `Publisher.setToken` attaches an `Authorization: Bearer`

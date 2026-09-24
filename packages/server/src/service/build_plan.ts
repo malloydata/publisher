@@ -42,7 +42,10 @@ import {
 import { Model } from "./model";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
-import { classifyDynamicTerms } from "./persist_dynamic_terms";
+import {
+   classifyDynamicTerms,
+   type DynamicTerm,
+} from "./persist_dynamic_terms";
 import { resolvePartitionColumns } from "./persist_partition";
 import { quoteIdentifier } from "./quoting";
 
@@ -51,6 +54,7 @@ type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireColumn = components["schemas"]["Column"];
 type WireStrippedTerm = components["schemas"]["StrippedTerm"];
+type WireJoinedTerms = components["schemas"]["JoinedTerms"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
 export type WirePackageMaterialization =
@@ -188,8 +192,12 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
    }
 }
 
+function wireTerm(term: DynamicTerm): WireStrippedTerm {
+   return { code: term.code, givens: term.givens };
+}
+
 /**
- * The plan's `partition` and `strippedTerms` for one source.
+ * The plan's `partition`, `strippedTerms` and `joinedTerms` for one source.
  *
  * Degrades to omitting a field rather than reporting a wrong one: a refusal here
  * cannot occur for a source that reached this projection (the gate refuses it
@@ -201,17 +209,29 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
 function planDynamicFields(
    source: PersistSource,
    annotationFields: Record<string, string>,
-): { partition?: string[]; strippedTerms?: WireStrippedTerm[] } {
-   const out: { partition?: string[]; strippedTerms?: WireStrippedTerm[] } = {};
+): {
+   partition?: string[];
+   strippedTerms?: WireStrippedTerm[];
+   joinedTerms?: WireJoinedTerms[];
+} {
+   const out: {
+      partition?: string[];
+      strippedTerms?: WireStrippedTerm[];
+      joinedTerms?: WireJoinedTerms[];
+   } = {};
    const partition = resolvePartitionColumns(source, annotationFields);
    if (partition.ok && partition.columns.length > 0) {
       out.partition = partition.columns;
    }
    const classified = classifyDynamicTerms(source);
    if (classified.ok && classified.terms.length > 0) {
-      out.strippedTerms = classified.terms.map((term) => ({
-         code: term.code,
-         givens: term.givens,
+      out.strippedTerms = classified.terms.map(wireTerm);
+   }
+   if (classified.ok && classified.joinedTerms?.length) {
+      out.joinedTerms = classified.joinedTerms.map((joined) => ({
+         alias: joined.alias,
+         source: joined.source,
+         terms: joined.terms.map(wireTerm),
       }));
    }
    return out;

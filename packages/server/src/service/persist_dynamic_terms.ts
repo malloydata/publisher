@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PersistSource } from "@malloydata/malloy";
+import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { collectGivenRefs } from "./given";
 
 /**
@@ -29,12 +29,13 @@ import { collectGivenRefs } from "./given";
  * and it is a hard refusal on both tiers.
  *
  * Between those two lies the reason this module classifies by POSITION rather
- * than answering yes/no: of the read-time positions, only an extend-block
- * `where:` is admitted in v1. The others are not refused because they are
- * unsafe — they are not in the build either — but because admitting them is a
- * separate decision with its own serve-shape questions, and this pass refuses
- * what it has not proven. Each gets its own reason so the refusal names the
- * position rather than the mechanism.
+ * than answering yes/no: of the read-time positions, two are admitted — an
+ * extend-block `where:`, and a join to a given-scoped source that is itself
+ * materialized into storage (see {@link JoinedDynamicTerms}). The others are not
+ * refused because they are unsafe — they are not in the build either — but
+ * because the serve shape has nothing that re-binds the given per caller in that
+ * position. Each gets its own reason so the refusal names the position rather
+ * than the mechanism.
  */
 export type DynamicTermRefusal =
    | "given_in_persisted_query"
@@ -63,9 +64,32 @@ export interface DynamicTerm {
    columns: string[];
 }
 
+/**
+ * A join, declared on the persisted source, to a source that is itself scoped by
+ * a given — admitted because the per-caller filtering rides the JOINED source's
+ * own artifact rather than this one.
+ *
+ * The build never reads it (a persist source's `fields` are not in its build
+ * SQL), so this artifact is unaffected. At read, the serve shape re-emits the
+ * join only when `source` is itself bound, and that binding re-applies `terms`
+ * with the caller's values — so a field reading through `alias` answers per
+ * caller. When `source` is not bound the join cannot be re-emitted, so the
+ * joining source is withheld from the shape with it and serves live.
+ *
+ * `alias` is dotted for a join reached through another admitted join
+ * (`grant.team`), since the same rule holds one level further down.
+ */
+export interface JoinedDynamicTerms {
+   alias: string;
+   source: string;
+   terms: DynamicTerm[];
+}
+
 export type DynamicTermClassification =
-   | { ok: true; terms: DynamicTerm[] }
+   | { ok: true; terms: DynamicTerm[]; joinedTerms?: JoinedDynamicTerms[] }
    | { ok: false; reason: DynamicTermRefusal; detail: string };
+
+type FieldRefusal = { ok: false; reason: DynamicTermRefusal; detail: string };
 
 /** Max IR depth to walk; deep enough for real sources, a hang backstop. */
 const MAX_WALK_DEPTH = 200;
@@ -129,8 +153,18 @@ function readsAGiven(node: unknown, seen: WeakSet<object>, depth = 0): boolean {
  * lies, on storage it cannot be re-applied at read at all.
  */
 export function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
+   let def: unknown;
    try {
-      const def = persistSource._sourceDef as unknown;
+      def = persistSource._sourceDef as unknown;
+   } catch {
+      return true;
+   }
+   return defSubstitutesAGiven(def);
+}
+
+/** {@link buildSubstitutesAGiven} over a compiled source definition. */
+function defSubstitutesAGiven(def: unknown): boolean {
+   try {
       if (def === null || typeof def !== "object") {
          throw new Error("compiled source definition is not readable");
       }
@@ -225,7 +259,22 @@ function argumentBindsAGiven(node: unknown, depth = 0): boolean {
 export function classifyDynamicTerms(
    persistSource: PersistSource,
 ): DynamicTermClassification {
-   if (buildSubstitutesAGiven(persistSource)) {
+   let def: unknown;
+   try {
+      def = persistSource._sourceDef as unknown;
+   } catch (err) {
+      return unreadable(err, "which givens the build would bake in");
+   }
+   return classifyDef(def, 0);
+}
+
+/**
+ * {@link classifyDynamicTerms} over a compiled source definition. Separate so a
+ * joined source can be held to the same rule as the source joining it: `depth`
+ * counts the admitted joins between here and the persisted source.
+ */
+function classifyDef(def: unknown, depth: number): DynamicTermClassification {
+   if (defSubstitutesAGiven(def)) {
       return {
          ok: false,
          reason: "given_in_persisted_query",
@@ -239,29 +288,20 @@ export function classifyDynamicTerms(
             `is read`,
       };
    }
-
-   let def: Record<string, unknown>;
-   try {
-      def = persistSource._sourceDef as unknown as Record<string, unknown>;
-      if (def === null || typeof def !== "object") {
-         throw new Error("compiled source definition is not readable");
-      }
-   } catch (err) {
-      return {
-         ok: false,
-         reason: "given_in_persisted_query",
-         detail:
-            `its given usage could not be determined ` +
-            `(${err instanceof Error ? err.message : String(err)}), so the ` +
-            `publisher cannot prove which givens the build would bake in`,
-      };
+   if (def === null || typeof def !== "object") {
+      return unreadable(
+         new Error("compiled source definition is not readable"),
+         "which givens the build would bake in",
+      );
    }
+   const record = def as Record<string, unknown>;
 
    try {
-      const fieldRefusal = classifyFields(def.fields);
+      const joinedTerms: JoinedDynamicTerms[] = [];
+      const fieldRefusal = classifyFields(record.fields, joinedTerms, depth);
       if (fieldRefusal) return fieldRefusal;
 
-      const terms = collectDynamicTerms(def.filterList);
+      const terms = collectDynamicTerms(record.filterList);
 
       // Fail-closed sweep. `filterList` and `fields` were just accounted for
       // above, one position at a time; `query` was cleared by the baked check.
@@ -272,7 +312,7 @@ export function classifyDynamicTerms(
          fields: _alsoAccounted,
          query: _cleared,
          ...rest
-      } = def;
+      } = record;
       if (readsAGiven(rest, new WeakSet())) {
          return {
             ok: false,
@@ -284,34 +324,57 @@ export function classifyDynamicTerms(
                `build leaves it out`,
          };
       }
-      return { ok: true, terms };
+      return joinedTerms.length > 0
+         ? { ok: true, terms, joinedTerms }
+         : { ok: true, terms };
    } catch (err) {
-      return {
-         ok: false,
-         reason: "given_in_persisted_query",
-         detail:
-            `its given usage could not be determined ` +
-            `(${err instanceof Error ? err.message : String(err)}), so the ` +
-            `publisher cannot prove the build leaves every given out`,
-      };
+      return unreadable(err, "the build leaves every given out");
    }
 }
 
+function unreadable(err: unknown, cannotProve: string): FieldRefusal {
+   return {
+      ok: false,
+      reason: "given_in_persisted_query",
+      detail:
+         `its given usage could not be determined ` +
+         `(${err instanceof Error ? err.message : String(err)}), so the ` +
+         `publisher cannot prove ${cannotProve}`,
+   };
+}
+
 /**
- * The first field position carrying a given that v1 does not admit, or
- * undefined when the source's fields read none.
+ * The first field position carrying a given that is not admitted, or undefined
+ * when every given the source's fields read sits somewhere the serve shape
+ * reproduces per caller. Admitted given-scoped joins are appended to
+ * `joinedTerms`.
  *
- * None of these is baked into the artifact — the probe table in this module's
- * header shows all three absent from the build SQL — so none is a leak today.
- * They are refused because admitting them is a decision about the SERVE shape
- * (a re-emitted dimension, join or joined filter binds the given per caller
- * only if the shape reproduces it, and the shape-compile ladder may drop a
- * category), and that decision has not been taken. A refusal here costs
- * coverage; admitting one wrongly costs isolation.
+ * None of these positions is baked into the artifact — a persist source's
+ * `fields` are absent from its build SQL — so none is a leak at build time. What
+ * decides admission is the SERVE shape: a re-emitted field binds the given per
+ * caller only if the shape reproduces everything it reads.
+ *
+ * A join to a given-scoped source is the one field position that does. The
+ * shape re-emits a join only when its target is itself bound
+ * (`extractJoins`), and the target's binding re-emits the target's own
+ * `where:` — so the join reaches a per-caller-filtered table, which is what the
+ * live query joins. When the target is not bound the join is not re-emitted,
+ * and anything reading through it fails the shape compile and serves live. Both
+ * halves need the target to be a source this gate would itself admit to a
+ * storage destination, JOINED BY NAME; see {@link joinedSourceRefusal}.
+ *
+ * Still refused: a given in a join's `on:` (`dynamic_join`), which decides per
+ * caller which rows join and is re-emitted by nothing that binds it; and a
+ * dimension or measure that reads a given itself (`dynamic_projection`). A field
+ * that reads a given only THROUGH an admitted join carries no given of its own
+ * — Malloy's summaries do not propagate one across a join path — and is
+ * re-emitted like any other field.
  */
 function classifyFields(
    fields: unknown,
-): { ok: false; reason: DynamicTermRefusal; detail: string } | undefined {
+   joinedTerms: JoinedDynamicTerms[],
+   depth: number,
+): FieldRefusal | undefined {
    if (!Array.isArray(fields)) return undefined;
    for (const field of fields) {
       if (field === null || typeof field !== "object") continue;
@@ -336,19 +399,11 @@ function classifyFields(
             };
          }
          // Everything else under the join: its target's own `where:`, and its
-         // target's fields. One reason covers them, because the remedy is the
-         // same — the given-scoped source is joined IN rather than entered
-         // through, so it cannot be a term this source strips.
+         // target's fields.
          if (readsAGiven(f, new WeakSet())) {
-            return {
-               ok: false,
-               reason: "dynamic_joined_where",
-               detail:
-                  `the source joined as '${label}' is itself scoped by a ` +
-                  `given. Enter through a non-persisted extension that ` +
-                  `declares the join instead, so the given term is part of ` +
-                  `the query rather than of the artifact`,
-            };
+            const joined = joinedSourceRefusal(f, label, depth);
+            if (!joined.ok) return joined;
+            joinedTerms.push(...joined.joinedTerms);
          }
          continue;
       }
@@ -364,6 +419,146 @@ function classifyFields(
       }
    }
    return undefined;
+}
+
+/**
+ * The compiled keys a join field carries beyond the joined source's own
+ * definition. Stripped before the target is classified, so what is classified is
+ * the target as it would be persisted: the `on:` was checked separately, and the
+ * join's `refSummary` summarises that condition and the target together.
+ */
+const JOIN_ONLY_KEYS = [
+   "join",
+   "onExpression",
+   "matrixOperation",
+   "refSummary",
+   "referenceID",
+] as const;
+
+/**
+ * Whether a join to a given-scoped source can be admitted, and the terms its
+ * target re-applies when it can.
+ *
+ * Three conditions, each closing a way the serve shape would otherwise fail to
+ * reproduce the join. All three failing modes are fail-closed at serve time —
+ * the join is not re-emitted and queries through it serve live — so they are
+ * refused here to name the reason, not to prevent a leak:
+ *
+ * 1. Joined BY NAME. A join target with any refinement of its own
+ *    (`g extend { … }`) is compiled as an anonymous source with no `sourceID`,
+ *    so nothing maps it to a binding and it can never be re-emitted.
+ * 2. Declared `#@ persist … storage=`. Only a storage binding is on the serve
+ *    shape, so a join to a source that is not materialized there is dropped.
+ * 3. Admissible itself, by this same classification. That is what makes the
+ *    rule transitive: a target that joins a further given-scoped source is held
+ *    to the rule this source is, one level down.
+ */
+function joinedSourceRefusal(
+   f: Record<string, unknown>,
+   label: string,
+   depth: number,
+): FieldRefusal | { ok: true; joinedTerms: JoinedDynamicTerms[] } {
+   const refuse = (why: string): FieldRefusal => ({
+      ok: false,
+      reason: "dynamic_joined_where",
+      detail: `the source joined as '${label}' is itself scoped by a given, ${why}`,
+   });
+
+   if (depth >= MAX_JOIN_DEPTH) {
+      return refuse(`and is joined more than ${MAX_JOIN_DEPTH} levels deep`);
+   }
+   const sourceID = f.sourceID;
+   if (typeof sourceID !== "string" || sourceID.length === 0) {
+      return refuse(
+         `and is joined through a refinement (\`… extend { … }\`) rather than ` +
+            `by name, so the serve shape cannot bind the join to that source's ` +
+            `stored table. Declare the refinement on a named source and join ` +
+            `that`,
+      );
+   }
+   const source = sourceID.split("@")[0] || sourceID;
+   if (!declaresStorage(f.annotations)) {
+      return refuse(
+         `and '${source}' is not materialized into a storage destination, so ` +
+            `the join has no stored table to read per caller. Give '${source}' ` +
+            `\`#@ persist … storage=\`, or drop \`storage=\` from this source`,
+      );
+   }
+
+   const target: Record<string, unknown> = { ...f };
+   for (const key of JOIN_ONLY_KEYS) delete target[key];
+   const inner = classifyDef(target, depth + 1);
+   if (!inner.ok) {
+      return refuse(
+         `and '${source}' could not itself be materialized per caller: ` +
+            inner.detail,
+      );
+   }
+   return {
+      ok: true,
+      joinedTerms: [
+         { alias: label, source, terms: inner.terms },
+         ...(inner.joinedTerms ?? []).map((nested) => ({
+            ...nested,
+            alias: `${label}.${nested.alias}`,
+         })),
+      ],
+   };
+}
+
+/**
+ * How many admitted given-scoped joins may nest. Real grant chains are one or
+ * two deep; the bound keeps a pathological model from recursing through every
+ * joined definition it embeds.
+ */
+const MAX_JOIN_DEPTH = 4;
+
+/**
+ * Whether compiled annotations declare `#@ persist … storage=<non-empty>`, read
+ * the way Malloy's own `checkPersistAnnotation` reads `#@ persist`. Fails closed:
+ * unreadable annotations do not declare storage.
+ */
+function declaresStorage(annotations: unknown): boolean {
+   if (annotations === undefined || annotations === null) return false;
+   try {
+      const tag = new Annotations(
+         annotations as ConstructorParameters<typeof Annotations>[0],
+      ).parseAsTag("@").tag;
+      if (!tag.has("persist")) return false;
+      const storage = tag.text("storage");
+      return typeof storage === "string" && storage.trim().length > 0;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * The `sourceID`s of the given-scoped sources a field list joins — the targets
+ * {@link joinedSourceRefusal} admits, and the ones whose absence from a serve
+ * shape leaves a join that cannot be reproduced. A join that could never be
+ * re-emitted is reported as `undefined`: one to an inline refinement, which has
+ * no `sourceID` and so nothing to bind, and one with a non-public access
+ * modifier, which the serve shape never re-emits (`extractJoins`) while a
+ * public field may still read through it.
+ */
+export function givenScopedJoinTargets(
+   fields: unknown,
+): (string | undefined)[] {
+   if (!Array.isArray(fields)) return [];
+   const out: (string | undefined)[] = [];
+   for (const field of fields) {
+      if (field === null || typeof field !== "object") continue;
+      const f = field as Record<string, unknown>;
+      if (f.join === undefined || !readsAGiven(f, new WeakSet())) continue;
+      const restricted =
+         f.accessModifier != null && f.accessModifier !== "public";
+      out.push(
+         !restricted && typeof f.sourceID === "string" && f.sourceID.length > 0
+            ? f.sourceID
+            : undefined,
+      );
+   }
+   return out;
 }
 
 /**

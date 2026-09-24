@@ -25,7 +25,7 @@ CLUSTER_REPLY = {
         "qids": ["q1", "q2"],
         "owner": "model",
         "component": "model-definition",
-        "codes": ["CONVENTION", "NO-DISAMBIG"],
+        "codes": ["RULE_UNWRITTEN", "AMBIGUOUS"],
         "rootCause": "the index measure returns long decimals",
         "evidence": "28 other places use render tags",
         "confidence": "high",
@@ -39,8 +39,8 @@ class SalvageClusterShape(unittest.TestCase):
         out = diagnose.salvage_cluster_shape(CLUSTER_REPLY)
         self.assertEqual(out["owner"], "model")
         self.assertEqual(out["component"], "model-definition")
-        self.assertEqual(out["primary_code"], "CONVENTION")
-        self.assertEqual(out["contributing_codes"], ["NO-DISAMBIG"])
+        self.assertEqual(out["primary_code"], "RULE_UNWRITTEN")
+        self.assertEqual(out["contributing_codes"], ["AMBIGUOUS"])
         self.assertEqual(out["diagnosis"], "the index measure returns long decimals")
 
     def test_never_synthesises_probes(self):
@@ -59,11 +59,15 @@ class SalvageClusterShape(unittest.TestCase):
     def test_a_salvaged_object_still_fails_validation_on_probes(self):
         # Salvage must not launder a diagnosis into looking probed. The
         # vocabulary checks pass; "no probes recorded" must still fire.
+        #
+        # The codes come from the skill's own table rather than being typed
+        # here. A typed code made a rename fail this test for the wrong reason,
+        # and its message told the renamer to edit the test.
         codes = diagnose.skill_codes()
-        self.assertIn("CONVENTION", codes,
-                      "the skill's own code table should define CONVENTION; "
-                      "if it was renamed this test needs the new name")
-        out = diagnose.salvage_cluster_shape(CLUSTER_REPLY)
+        primary, contributing = sorted(codes)[:2]
+        reply = {**CLUSTER_REPLY, "clusters": [
+            {**CLUSTER_REPLY["clusters"][0], "codes": [primary, contributing]}]}
+        out = diagnose.salvage_cluster_shape(reply)
         bad = diagnose.validate(out, codes)
         self.assertEqual(bad, ["no probes recorded"],
                          "the vocabulary fields should all pass after salvage, "
@@ -85,7 +89,7 @@ class SalvageClusterShape(unittest.TestCase):
     def test_a_per_case_reply_is_left_alone(self):
         self.assertIsNone(diagnose.salvage_cluster_shape(
             {"probes": [{"why": "w", "query": "q", "result": "r"}],
-             "primary_code": "CONVENTION", "owner": "model"}))
+             "primary_code": "RULE_UNWRITTEN", "owner": "model"}))
 
     def test_an_empty_or_unparseable_reply_is_not_invented_into_a_diagnosis(self):
         for empty in ({}, {"clusters": []}, {"clusters": "not a list"},

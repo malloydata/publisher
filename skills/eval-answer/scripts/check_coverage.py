@@ -28,13 +28,13 @@ The verdicts are `eval-diagnose`'s cause codes, verbatim and validated against
 its own table at startup, so a renamed code fails loudly here instead of
 quietly meaning nothing:
 
-  ok            a correct answer is expressible
-  COVERAGE      no representing entity anywhere
-  AMBIGUOUS     several near-identical candidates
-  NO-DISAMBIG   two plausible candidates, never resolved
-  CONVENTION    right data, wrong statistical or business convention: the
-                underlying numbers are present, no named measure expresses the
-                convention the question needs
+  MODELLED        one entity expresses the concept, unambiguously
+  MISSING         no query over this model could produce it
+  AMBIGUOUS       several candidates and no doc says which
+  RULE_UNWRITTEN  the data is there, the rule for combining it is not.
+                  (guessable) when the data forces the rule, (arbitrary) when
+                  it is a business decision nobody could derive
+  UNDERSPECIFIED  the QUESTION is unclear, not the model
 
 Exit 0 when the measurement ran, whatever it found. A low score is the result,
 not a failure. Exit 1 if it could not run.
@@ -59,6 +59,7 @@ sys.path.insert(0, str(HERE))
 
 from json_scan import json_objects  # noqa: E402
 from verify_goldens import model_text as local_model_text  # noqa: E402
+from check_findable import compiled_entities  # noqa: E402
 
 # The `claude -p` invocation lives once, in the harness, rather than being
 # rewritten here. It costs this script a reach into a sibling skill, which the
@@ -85,9 +86,9 @@ JUDGE_BLOCKED = BLOCKED_TOOLS + ("Read", "Glob", "Grep", "Skill")
 
 # Parsed from the table rather than typed here, the same way diagnose.py does
 # it, so this cannot drift from the vocabulary it claims to reuse.
-CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z-]+)`\s*\|", re.M)
-FAIL_VERDICTS = ("COVERAGE", "AMBIGUOUS", "NO-DISAMBIG", "CONVENTION")
-OK = "ok"
+CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z_-]+)`\s*\|", re.M)
+FAIL_VERDICTS = ("MISSING", "AMBIGUOUS", "RULE_UNWRITTEN", "UNDERSPECIFIED")
+OK = "MODELLED"
 
 # A prompt cap, not a limit anyone should hit. The model text goes in argv, and
 # an over-long argv fails as an opaque OSError from the exec rather than as
@@ -148,6 +149,54 @@ def rest_model_text(base: str, environment: str, package: str,
     return "\n\n".join(out)
 
 
+def compiled_surface(base: str, environment: str, package: str) -> str:
+    """The fields the COMPILED model exposes, which the source text does not name.
+
+    A Malloy source picks up every column of its table without declaring one of
+    them, so `products.retail_price` and `customers.signup_date` appear nowhere
+    in the `.malloy` and are fully queryable. A judge shown only source text
+    reads those as absent and returns MISSING on a question the model answers
+    -- measured, two of this skill's three false gaps on one set.
+
+    Empty string when the compiled model cannot be read, which is honest: the
+    prompt then says the list is unavailable rather than implying the text is
+    the whole surface.
+    """
+    declared = compiled_entities(base, environment, package)
+    if not declared:
+        return ""
+    lines = []
+    for src in sorted(declared):
+        fields = sorted(f for f in declared[src] if not f.startswith("source:"))
+        if fields:
+            lines.append(f"{src}: " + ", ".join(fields))
+    return "\n".join(lines)
+
+
+def set_conventions(set_dir: pathlib.Path) -> list[str]:
+    """`set.json`'s `conventions`: what the questions' words mean to the business.
+
+    A list of strings. A bare string is taken as a list of one, and anything
+    else, or an unreadable file, is no conventions rather than a crash.
+    """
+    f = set_dir / "set.json"
+    try:
+        conv = (json.loads(f.read_text()) or {}).get("conventions")
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return []
+    if isinstance(conv, str):
+        conv = [conv]
+    return [c for c in conv if isinstance(c, str) and c.strip()] \
+        if isinstance(conv, list) else []
+
+
+# A convention is a definition of one TERM, scoped to the questions that use
+# it. Unscoped, the judge applied every definition to every question: nine of
+# twelve cases came back as gaps. The sentence is prose, so the check is only
+# that one exists.
+CONVENTION_SCOPE = re.compile(r"(?i)\bapplies to\b")
+
+
 # --- the judgement -----------------------------------------------------------
 
 PROMPT = """You are measuring whether a semantic model can EXPRESS an answer to
@@ -157,21 +206,59 @@ there are no rows here and no way to run anything. Judge the model text only.
 THE MODEL (every source, dimension, measure and doc comment it defines):
 {model}
 
+FIELDS THE COMPILED MODEL EXPOSES: {surface}
+
+A Malloy source exposes every column of its table whether or not the text
+declares it, so this list is the authority on what EXISTS and the text above is
+the authority on what is DOCUMENTED. A field here but not in the text is real
+and queryable -- it is undocumented, not absent, and undocumented is not
+`MISSING`. When this list is unavailable, say so in your reasoning and do not
+treat the text as the whole surface.
+
 THE QUESTION: {question}
+
+WHAT THE BUSINESS MEANS BY IT: {conventions}
+
+These are definitions of TERMS, not defaults for every question. Apply one only
+when THIS question uses the term it defines, or asks for a quantity that cannot
+be computed without it. A definition of "net" governs a question that says net;
+it does not make every revenue question a net question. A definition of
+"customer" governs a question that counts customers; it does not govern a
+question about categories that happens to involve people. Check, for each
+convention, whether this question actually invokes it, and ignore the ones it
+does not -- applying them all to everything turns every question into a gap and
+the measurement stops discriminating.
+
+Where the question DOES invoke one, it is not a reading you may substitute a
+more reasonable one for. If the convention names a window, a basis or a filter
+that no entity in the model expresses, the model cannot answer the question
+however well its parts are documented: `RULE_UNWRITTEN` when the underlying data
+is present, `MISSING` when it is not. Judging by your own reading of a word the
+business has already defined is how this check passes a question the model
+demonstrably cannot answer.
 
 CONCEPTS THE QUESTION NEEDS: {concepts}
 
 Decide ONE verdict:
 
-- `ok` -- a correct answer is expressible. Name the entities that express it.
-- `COVERAGE` -- no entity represents a needed concept anywhere in the model.
-- `AMBIGUOUS` -- several near-identical candidates, so which one is meant is a
-  coin toss.
-- `NO-DISAMBIG` -- two plausible candidates and nothing in the docs resolves
-  which the question means. The docs should answer that, not the reader.
-- `CONVENTION` -- the underlying data is present, but no named measure
-  expresses the statistical or business convention the question needs, so
-  anyone answering has to pick one and the model does not say which.
+- `MODELLED` -- one entity expresses it, unambiguously. Name that entity.
+- `MISSING` -- no query over this model could produce the concept. Not merely
+  that no measure is named for it: if the parts are present and only the
+  formula is absent, that is `RULE_UNWRITTEN`.
+- `AMBIGUOUS` -- several candidates and nothing says which this question means.
+  Judge the entities AND their docs: a `#(doc)` that resolves the choice makes
+  it `MODELLED`.
+- `RULE_UNWRITTEN` -- the data is present and the model does not encode the
+  rule for combining or filtering it, so whoever answers invents one. Say which
+  kind in `rule_kind`: `guessable` when the data forces the rule (list price
+  minus sale price is a discount, and any careful reader gets it), `arbitrary`
+  when it is a business decision nobody could derive (a season window, whether
+  revenue is net of tax). If a stated convention above names the rule and the
+  model does not encode it, that is `arbitrary` -- you know the rule only
+  because you were told.
+- `UNDERSPECIFIED` -- the QUESTION does not say what it means, so no model
+  could answer it as written. "Adjusted sales" with no statement of the
+  adjustment. Do not score this against the model.
 
 Work in this order. The enumeration is the job; skipping it is how this
 judgement goes wrong.
@@ -197,16 +284,14 @@ obvious the answer feels.
 
 Then the verdict follows mechanically:
 
-- Every quantity has exactly one candidate, or the model states which: `ok`.
-- Some quantity has no candidate at all: `COVERAGE`.
-- A quantity has several near-identical candidates: `AMBIGUOUS`.
-- A quantity has two plausible candidates and nothing resolves which:
-  `NO-DISAMBIG`.
+- Every quantity has exactly one candidate, or the model states which: `MODELLED`.
+- Some quantity cannot be produced by any query over this model: `MISSING`.
+- A quantity has several candidates and nothing resolves which: `AMBIGUOUS`.
 - The parts exist but the model names no measure for the combination the
   question asks for, so whoever answers must assemble it and choose a
-  convention: `CONVENTION`.
+  convention: `RULE_UNWRITTEN`.
 
-Three rules about that, because each is a way to reach `ok` wrongly:
+Three rules about that, because each is a way to reach `MODELLED` wrongly:
 
 1. **A question's words resembling a field's label is not the model resolving
    anything.** A question saying "total universe" and a measure labelled
@@ -214,8 +299,8 @@ Three rules about that, because each is a way to reach `ok` wrongly:
    also defensible and would give a materially different number, the model has
    not resolved it and you must not resolve it yourself.
 2. **Finding the numerator is not coverage.** If the numerator is named and the
-   denominator must be assembled or chosen, that is `CONVENTION` or
-   `NO-DISAMBIG`, never `ok`. Matching field names against the question is the
+   denominator must be assembled or chosen, that is `RULE_UNWRITTEN` or
+   `AMBIGUOUS`, never `MODELLED`. Matching field names against the question is the
    failure mode this measurement exists to remove.
 3. **A caveat is not a resolution.** A doc warning that a measure is easy to
    misuse still leaves the question open unless it says which reading this
@@ -227,12 +312,13 @@ Return ONLY a JSON object, no prose around it, keys in this order:
   "ruled_out": {{"<quantity>": "<the doc sentence eliminating the others, or null>"}},
   "resolved_by": "what in the model says which candidate, or null",
   "why": "one or two sentences naming the specific entity or the specific gap",
-  "verdict": "ok|COVERAGE|AMBIGUOUS|NO-DISAMBIG|CONVENTION",
+  "verdict": "MODELLED|MISSING|AMBIGUOUS|RULE_UNWRITTEN|UNDERSPECIFIED",
+  "rule_kind": "guessable|arbitrary, only when verdict is RULE_UNWRITTEN, else null",
   "entities": ["entity names that express it, or [] when it is not expressible"]}}
 
 The enumeration comes first because the verdict follows from it. Before you emit
 `verdict`, re-read `quantities` and `ruled_out`: if any quantity holds more than
-one candidate and its `ruled_out` entry is null, the verdict is not `ok`.
+one candidate and its `ruled_out` entry is null, the verdict is not `MODELLED`.
 """
 
 
@@ -271,7 +357,7 @@ def parse_reply(text: str, allowed: tuple[str, ...]) -> dict[str, Any]:
         unresolved = [q for q, c in quantities.items()
                       if isinstance(c, list) and len(c) > 1]
         if unresolved:
-            return {"verdict": "NO-DISAMBIG",
+            return {"verdict": "AMBIGUOUS",
                     "why": f"[several candidates for {', '.join(unresolved)} "
                            f"and nothing in the model resolves them] {why}",
                     "entities": ents, "quantities": quantities,
@@ -280,10 +366,18 @@ def parse_reply(text: str, allowed: tuple[str, ...]) -> dict[str, Any]:
     # whole value of this metric is that a pass can be checked against the model.
     if got == OK and not ents:
         return {"verdict": None,
-                "why": "ok without naming an entity that expresses the answer",
+                "why": "MODELLED without naming an entity that expresses it",
                 "entities": [], "quantities": quantities,
                 "resolved_by": resolved_by}
-    return {"verdict": got, "why": why, "entities": ents,
+    # `arbitrary` is the consequential half and the one a judge under-reports,
+    # so an unqualified RULE_UNWRITTEN is recorded as unknown rather than
+    # silently counted as the harmless kind.
+    kind = v.get("rule_kind")
+    if got != "RULE_UNWRITTEN":
+        kind = None
+    elif kind not in ("guessable", "arbitrary"):
+        kind = "unstated"
+    return {"verdict": got, "why": why, "entities": ents, "rule_kind": kind,
             "quantities": quantities, "resolved_by": resolved_by}
 
 
@@ -294,9 +388,9 @@ def majority(rows: list[dict[str, Any]]) -> dict[str, Any]:
     is a property of the case rather than noise to average away. One sample
     cannot tell a stable judgement from a marginal one, so a repeated run
     records both the verdict and what the samples actually were. (The fixture
-    below is not such a case: measured 2026-09-08 it read CONVENTION three times
+    below is not such a case: measured 2026-09-08 it read RULE_UNWRITTEN three times
     out of three. An EARLIER fixture, replaced when a customer model excerpt was
-    scrubbed from this file, read CONVENTION twice and `ok` once, which is where
+    scrubbed from this file, read RULE_UNWRITTEN twice and `MODELLED` once, which is where
     the tie rule came from.)
     """
     counts: dict[str, int] = {}
@@ -329,13 +423,16 @@ def majority(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
                allowed: tuple[str, ...]) -> dict[str, Any]:
     concepts = case.get("requiresConcepts") or []
-    prompt = PROMPT.format(model=model, question=case.get("question", ""),
+    prompt = PROMPT.format(model=model,
+                           surface=getattr(a, "surface", "") or "(unavailable)",
+                           conventions=getattr(a, "conventions", "") or "(none stated)",
+                           question=case.get("question", ""),
                            concepts=", ".join(concepts) or "(none named)")
     if len(prompt) > MAX_PROMPT:
         # The way out depends on the mode. `--model-path` narrows a
         # `--publisher` read to one model. A local `--model` read has no such
         # move: `model_text()` does not resolve `import`, so pointing it at one
-        # file drops every imported source and the judge answers COVERAGE for
+        # file drops every imported source and the judge answers MISSING for
         # concepts the model does represent. That is a false gap that lands in
         # a published trend (reference/coverage-limits.md), and this message
         # used to recommend exactly that. The honest outcome is a failed
@@ -343,7 +440,7 @@ def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
         narrow = ("pass --model-path to measure one model file" if a.publisher
                   else "this is a failed measurement, not a number to rescue: "
                        "do NOT narrow --model to one file, that drops imported "
-                       "sources and manufactures COVERAGE verdicts "
+                       "sources and manufactures MISSING verdicts "
                        "(reference/coverage-limits.md). Record coverage as "
                        "not measured for this package version")
         return {"qid": case["qid"], "verdict": None,
@@ -551,10 +648,10 @@ FIXTURE_CASE = {
     "question": "What was our first contact resolution rate last quarter?",
     "requiresConcepts": ["first contact resolution", "ticket population"],
 }
-FIXTURE_EXPECTED = ("CONVENTION", "NO-DISAMBIG")
+FIXTURE_EXPECTED = ("RULE_UNWRITTEN", "AMBIGUOUS")
 # Measured against THIS fixture on 2026-09-08, agent model sonnet, --repeat 3:
-#   fixture_first_contact_resolution_rate: CONVENTION
-#     (samples: CONVENTION, CONVENTION, CONVENTION)
+#   fixture_first_contact_resolution_rate: RULE_UNWRITTEN
+#     (samples: CONVENTION, CONVENTION, CONVENTION -- the retired name)
 # Re-measure when the fixture, the prompt or the verdict vocabulary changes.
 # The tests below pin the fixture's SHAPE and cannot pin its verdict: the judge
 # needs a live `claude -p`, so `--self-check` is the only thing that measures
@@ -669,6 +766,41 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raise SystemExit("pass --model <path>, or --publisher with --package")
 
+    # The compiled surface names the columns a source exposes without declaring
+    # them. Only REST can supply it; a --model run reads text off disk and has
+    # no compiled model to ask, and the prompt is told so rather than being let
+    # to assume the text is everything.
+    #
+    # Whether it was read goes into the report, not only onto stderr. A
+    # --publisher run whose REST read failed is measuring with less than the
+    # judge is told it has, and without the record it reads as a normal run.
+    a.surface = ""
+    surface_status = "not read: --model has no compiled model to ask"
+    if a.publisher and a.package:
+        try:
+            a.surface = compiled_surface(a.publisher, a.environment, a.package)
+            surface_status = ("read" if a.surface else
+                              "empty: the server returned no compiled fields")
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            surface_status = f"failed: {exc}"[:200]
+    if not a.surface:
+        print(f"! no compiled field list ({surface_status}): a column a source "
+              f"exposes implicitly will read as absent", file=sys.stderr)
+
+    # What the question's words MEAN, from the set. A convention the model does
+    # not encode is the thing this check exists to find, and a judge that does
+    # not know the business defines "summer" as a date window will substitute
+    # its own reading and pass the question.
+    conventions = set_conventions(a.set_dir)
+    a.conventions = "\n".join(f"- {c}" for c in conventions)
+    for i, c in enumerate(conventions, 1):
+        if not CONVENTION_SCOPE.search(c):
+            print(f"! set.json conventions[{i - 1}] states no scope. Without "
+                  f"an \"Applies to questions that ...\" sentence the judge "
+                  f"reads it as a rule for every question. Fix: end it with "
+                  f"\"Applies to questions that ask about <term>.\"",
+                  file=sys.stderr)
+
     # What was measured, pinned by content. Coverage is sold as a per-version
     # trend, and a trend needs each point tied to the bytes behind it: a
     # `--model <dir>` run stamped `version: null` and named no path, so two
@@ -706,7 +838,8 @@ def main(argv: list[str] | None = None) -> int:
         a.out.write_text(json.dumps(
             {"version": a.version, "set": str(a.set_dir),
              "modelSource": model_source, "modelSha256": model_sha,
-             "agentModel": a.agent_model, **s, "cases_detail": rows,
+             "agentModel": a.agent_model, "compiledSurface": surface_status,
+             "conventions": conventions, **s, "cases_detail": rows,
              **({"labelComparison": serialisable(cmp)} if cmp else {})},
             indent=2))
         print(f"\n{a.out}")

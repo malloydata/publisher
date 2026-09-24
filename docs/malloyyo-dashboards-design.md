@@ -731,10 +731,11 @@ as a full snapshot rather than a patch, because the sandbox does not compile wit
   no change: it is a generic auto-resizing iframe helper that takes a `src`. What is missing is
   a chromeless render mode for the Console's dashboard and notebook routes, those routes posting
   `publisher:resize`, and a `publisher:givens` message so a host can follow control changes.
-  Server-side `embed_token` verification and the framing policy are the security half:
-  `PUBLISHER_FRAME_ANCESTORS` currently governs only `public/` files, leaving Console routes
-  framable by anyone ([#930](https://github.com/malloydata/publisher/issues/930)), which has to
-  land first. See [security-posture.md](security-posture.md). For React hosts the public SDK
+  Server-side `embed_token` verification and the framing policy are the security half. The
+  framing part has since landed: `PUBLISHER_FRAME_ANCESTORS` now governs every response, Console
+  routes included ([#930](https://github.com/malloydata/publisher/issues/930)), and defaults to
+  `'self'` -- so a host embedding these routes cross-origin sets that variable.
+  See [security-posture.md](security-posture.md). For React hosts the public SDK
   `<Dashboard>` and `<Notebook>` components are the richer path today; embed covers everything
   else.
 - **Per-document `to=self` validity.** The load-time lint reports a `to=self` whose given _no_

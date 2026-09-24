@@ -178,5 +178,6 @@ pages on its own. Nothing to wire in the page.
 
 Everything under `public/` is web-served as-is, so keep secrets out of it. Your
 protection lives in the model and the database, behind the query API. Served HTML
-is framable by any origin by default; set `PUBLISHER_FRAME_ANCESTORS` to restrict
-embedding origins for any page that shows sensitive data.
+is framable only from its own origin by default; set `PUBLISHER_FRAME_ANCESTORS`
+to the origins of any host page that embeds it from elsewhere, or that embed
+renders blank with nothing logged server-side.

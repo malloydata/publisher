@@ -327,18 +327,23 @@ jobs:
     # failed because npm was still a release behind; pin the previous one and it
     # failed once npm caught up. In 0.0.250 the guard ran at 15:07:55 against a
     # `latest` that did not become 0.0.250 until 15:09:13, so the scaffolder could
-    # never publish in a release that bumped the server. Waiting for npm costs
-    # this job the few minutes publish-npm takes, against its own 25m-per-package
-    # poll budget.
+    # never publish in a release that bumped the server.
+    #
+    # This `needs:` is necessary but NOT sufficient. npm can take minutes to
+    # show a version after `npm publish` returns: in 0.7.0, publish-npm finished
+    # at 19:09 and `latest` read 0.7.0 only at 19:16, so the scaffolder pinned
+    # 0.6.0. publish-packages.sh therefore also waits for `latest` to read this
+    # release's version before dispatching the scaffolder
+    # (wait_for_server_latest).
     needs: [ prepare, publish-npm ]
     runs-on: ubuntu-latest
-    # THREE full poll budgets (25m each, below) plus checkout and setup, with
-    # margin. Keep this above N x POLL_BUDGET_SECONDS for the N packages
-    # dispatched at the bottom of this job, or the LAST one timing out is killed
-    # by the job cap before it can print which package failed — which is the one
-    # diagnostic that says whether a publish happened. A fourth package means
-    # raising this too.
-    timeout-minutes: 90
+    # THREE full poll budgets (25m each, below), plus the scaffolder's wait for
+    # the server's `latest` (SERVER_LATEST_BUDGET_SECONDS, 15m), plus checkout
+    # and setup, with margin. Keep this above the sum of those budgets, or the
+    # LAST package timing out is killed by the job cap before it can print which
+    # package failed — which is the one diagnostic that says whether a publish
+    # happened. A fourth package means raising this too.
+    timeout-minutes: 105
     permissions:
       contents: read
       # For the workflow-dispatch API. Not id-token: this job never publishes,

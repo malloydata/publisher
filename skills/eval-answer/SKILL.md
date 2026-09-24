@@ -145,11 +145,16 @@ recall is scoring search against an expectation that was never satisfiable.
 Because it runs from the model text alone it is cheap enough to point at every
 published version and read as a trend, which is what it is for. Its verdicts are
 `eval-diagnose`'s codes verbatim, validated against that table at startup, so
-`COVERAGE`, `AMBIGUOUS`, `NO-DISAMBIG` and `CONVENTION` mean there exactly what
-they mean here. It writes nothing: not a golden, not the case-level `coverage`
+`MISSING`, `AMBIGUOUS`, `RULE_UNWRITTEN` and `UNDERSPECIFIED` mean there exactly
+what they mean here. A pass is `MODELLED`. It writes nothing: not a golden, not the case-level `coverage`
 field, not a run directory. Where its verdict and that field disagree is where a
 version regressed, and the field is the standing judgement about the question
 while this is a measurement against one build.
+
+Its `--out` report records `compiledSurface`: `read`, or why the compiled field
+list was not read. Without that list the judge calls a column a source exposes
+implicitly absent, so check the field before comparing two runs. A `--model`
+run never has it.
 
 How to invoke it. Either `--model <file-or-dir>` for a local package or
 `--publisher <url> --package <pkg>` for a served one, plus `--set <dir>`, and
@@ -198,7 +203,7 @@ purpose. Separately, the whole model goes into one prompt per case, so past a
 few thousand lines it stops running on Linux and above about 100 KB the verdict
 stops being stable. Do not take the over-size message's advice to narrow
 `--model` to one file, which drops every imported source and manufactures
-`COVERAGE` verdicts.
+`MISSING` verdicts.
 
 ## Validate the definitions, not every answer
 

@@ -5709,22 +5709,39 @@ components:
           type: string
           enum: ["append", "file", "package"]
           default: append
-          description:
+          description: >
             What the source means, and how far the check reaches. "append"
-            (default, the historical behavior) appends the source to the model
-            in the URL and compiles it in that namespace — right for NEW
-            definitions; an edit to an existing definition collides ("Cannot
-            redefine"), and diagnostic positions land in the concatenated
-            virtual file. "file" compiles the source AS that model, replacing
-            its on-disk content for the check — validates an edit before
-            saving, at true file coordinates. "package" runs the same worker
-            compiler and file selection as reload over every .malloy and
-            .malloynb file, without swapping the result into the served
-            package; with a source, importers compile against the replacement.
-            Package diagnostics can name files hidden from discovery. No rows
-            or SQL are returned, and caller-provided source remains subject to
-            authorize gates. includeSql is not available at "package". An
-            invalid value is rejected with a 400 naming the valid set.
+            (default) appends the source to the model in the URL and compiles
+            it in that namespace — right for NEW definitions; an edit to an
+            existing definition collides ("Cannot redefine"), and diagnostic
+            positions land in the concatenated virtual file. "file" compiles
+            the source AS that model, replacing its on-disk content for the
+            check — validates an edit before saving, at true file coordinates.
+            "package" runs the same worker compiler and file selection as
+            reload over every .malloy and .malloynb file, without swapping the
+            result into the served package; with a source, importers compile
+            against the replacement. Package diagnostics can name files hidden
+            from discovery. No rows or SQL are returned, and caller-provided
+            source remains subject to authorize gates. includeSql is not
+            available at "package".
+
+            "append" text is checked against the model's PUBLISHED surface, so
+            it may not declare its own data roots: import, connection.table(…),
+            connection.sql(…), given:, ##! compiler flags and the raw-SQL
+            function forms (name!type(…), sql_number, sql_string and the rest
+            of that family) are refused with a 400. Those belong in a model
+            file, so validate text declaring them at "file" or "package", which
+            are not restricted. "append" text must also stand alone as
+            top-level Malloy: a bare view:, dimension: or measure:, and anything
+            that only parses as a continuation of the model's last statement,
+            is refused with a 400, because the check reads the submitted text by
+            itself. Wrap a view body in a top-level query:, or a field in a
+            throwaway source: check is <source> extend { … }. Compiling at
+            "append" also requires the model named in the URL to load: a model
+            that does not compile is a 400 carrying that model's own problems,
+            and a model that does not exist is a 400 that deliberately says only
+            that it could not be loaded. An invalid scope value is rejected with
+            a 400 naming the valid set.
         includeSql:
           type: boolean
           default: false
@@ -6161,6 +6178,28 @@ components:
             The given names this term reads, in first-seen order. A reader must
             bind these for the term to apply; binding none applies each given's
             declared default, as a live query would.
+    JoinedTerms:
+      type: object
+      required: [alias, source, terms]
+      description: >-
+        A join to a given-scoped source, declared on a persisted source and read
+        per caller through the joined source's own artifact.
+      properties:
+        alias:
+          type: string
+          description: >-
+            The join's alias as the author wrote it. Dotted for a join reached
+            through another such join (`grant.team`).
+        source:
+          type: string
+          description: The joined source's name — itself a persisted source.
+        terms:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrippedTerm"
+          description: >-
+            The joined source's own stripped terms, which its binding re-applies
+            with the caller's values.
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
@@ -6265,6 +6304,25 @@ components:
             reader has to bind for it to be served correctly. The publisher's own
             serve path re-derives these from the compiled model rather than from
             here.
+        joinedTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/JoinedTerms"
+          description: >-
+            The joins declared on this source whose TARGET is scoped by a given —
+            one entry per such join, naming the joined source and the terms its
+            own artifact re-applies. Absent or empty means no field of this source
+            reads a caller-scoped join.
+
+
+            These terms are not stripped from THIS artifact: a join is not part of
+            a persist source's build, so this table holds the same rows with or
+            without it. They are what makes a field reading through the join
+            answer per caller (a visibility dimension that null-checks a grant
+            table, say), and they are applied only by the joined source's own
+            binding. So a reader serving this artifact must bind the joined source
+            too; without it, the join cannot be re-emitted and any query reading
+            through the alias must be served live.
         refresh:
           type: ["string", "null"]
           description: >-

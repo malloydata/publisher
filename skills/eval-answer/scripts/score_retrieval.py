@@ -96,8 +96,8 @@ from typing import Any
 # Delivered everything and still wrong. eval-diagnose attributes construction
 # "only after sufficiency": first establish that the docs said enough to use the
 # entity correctly. WRONG-PICK is the model's if the docs did not distinguish the
-# candidates, SCOPE is the model's if the rule was undocumented, CONVENTION is
-# the model's ("expose a named measure"). So this row names no owner. An earlier
+# candidates, SCOPE is the model's if the rule was undocumented, RULE_UNWRITTEN
+# is the model's ("write the rule down"). So this row names no owner. An earlier
 # version charged every such case to the agent, which is how a documentation gap
 # gets filed as a skills bug and never fixed.
 DELIVERED = ("construction", "undecided", "delivered, wrong")
@@ -130,9 +130,9 @@ UNATTRIBUTED = ("", "", "")
 # codes. The four must match `check_coverage.FAIL_VERDICTS`; the test pins that,
 # because this file stays stdlib-only and does not import it.
 MEASURED_GAPS = ("derivable", "absent",
-                 "COVERAGE", "AMBIGUOUS", "NO-DISAMBIG", "CONVENTION")
+                 "MISSING", "AMBIGUOUS", "RULE_UNWRITTEN", "UNDERSPECIFIED")
 # check_coverage.py's "a correct answer is expressible": the measured `covered`.
-MEASURED_OK = "ok"
+MEASURED_OK = "MODELLED"
 # A failure that is retrieval's or the model's, and nothing measured which. Its
 # own bucket, because the alternative was worse: with no authored `coverage`
 # label the case fell through to MODEL with the words "coverage is unknown, so
