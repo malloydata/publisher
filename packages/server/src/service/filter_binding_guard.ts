@@ -50,10 +50,12 @@ import {
 } from "@malloydata/malloy";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
+   resolveCompositeResolvedBase,
    resolveDeclaredSource,
    resolveQuerySourceBase,
 } from "./gate_registry_walk";
 import { findSourceByOwnAnnotationIdentity } from "./gate_classification";
+import { parseAuthorizeAnnotation } from "./authorize";
 
 /**
  * The next struct back in a derivation chain, trying the same three links
@@ -406,14 +408,21 @@ function ownLevelNotes(
  * can land on a sibling derivation instead — denying a perfectly ungated
  * query. Own-level notes only ({@link ownLevelNotes}), never `inherits`, for
  * the same reason.
+ *
+ * Resolves EACH note independently and returns on the first one that finds an
+ * owner, rather than accumulating one "best" candidate across every note in
+ * `notes`: two different notes can own-resolve in two different FILES, and
+ * comparing their candidates' raw line/char positions against each other is
+ * meaningless — it is only ever safe to compare positions among candidates
+ * for the SAME note, which (via the `url` check below) already share a file.
  */
 function findNoteOwner(
    notes: readonly NoteLike[],
    modelDef: ModelDef,
 ): SourceDef | undefined {
-   let best: SourceDef | undefined;
    for (const note of notes) {
       if (!note.at) continue;
+      let best: SourceDef | undefined;
       for (const value of Object.values(modelDef.contents)) {
          if (!isSourceDef(value) || !value.location) continue;
          if (!ownLevelNotes(value.annotations).includes(note)) continue;
@@ -428,25 +437,52 @@ function findNoteOwner(
             best = value;
          }
       }
+      if (best) return best;
    }
-   return best;
+   return undefined;
 }
 
 /**
- * {@link findNoteOwner} over EVERY note `struct` carries, own-level plus
- * `inherits` (see {@link allAnnotationNotes}). Falls back to the structural
- * walk {@link findFilterOrigin} uses ({@link nextDerivationLink}) when the
- * note search is empty — needed for a `query_source` (`Z is X -> {...}`),
- * which carries no `annotations` at all despite genuinely inheriting `X`'s
- * gate (see `gate_registry_walk.ts`'s module doc). `resolveSibling` is the
- * last resort after both fail — see {@link findSiblingDeclaringSource}.
+ * Whether `note` parses as an `#(access_filter)`/`#(authorize)` gate
+ * annotation — the only kind {@link findAnnotationDeclaringSource}'s owner
+ * search may ever consider. A struct commonly carries OTHER notes too (a
+ * render tag, `#(doc)`), and feeding those into {@link findNoteOwner}
+ * alongside the real gate note is exactly the bug this guards against: a
+ * derived source's own unrelated tag, sitting at a lower line number than the
+ * ancestor that actually wrote the gate, could otherwise resolve as its own
+ * "owner" and make a cross-file misbind look self-contained. A malformed
+ * annotation (an empty body) is treated as not-a-gate-note here rather than
+ * thrown — this is candidate FILTERING, not the gate's own load-time
+ * validation, which denies malformed gates elsewhere.
+ */
+function isGateNote(note: NoteLike): boolean {
+   try {
+      return parseAuthorizeAnnotation(note.text) !== null;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * {@link findNoteOwner} over the gate notes `struct` carries, own-level plus
+ * `inherits` (see {@link allAnnotationNotes}), NARROWED to
+ * {@link isGateNote} — a render tag or `#(doc)` note must never enter this
+ * search, since it carries no ownership information about the actual gate
+ * and would otherwise get compared against the real gate note's owner
+ * candidates as if it were an alternative resolution for the SAME thing.
+ * Falls back to the structural walk {@link findFilterOrigin} uses
+ * ({@link nextDerivationLink}) when the note search is empty — needed for a
+ * `query_source` (`Z is X -> {...}`), which carries no `annotations` at all
+ * despite genuinely inheriting `X`'s gate (see `gate_registry_walk.ts`'s
+ * module doc). `resolveSibling` is the last resort after both fail — see
+ * {@link findSiblingDeclaringSource}.
  */
 function findAnnotationDeclaringSource(
    struct: SourceDef,
    modelDef: ModelDef,
    resolveSibling?: SiblingModelDefResolver,
 ): SourceDef | undefined {
-   const notes = allAnnotationNotes(struct.annotations);
+   const notes = allAnnotationNotes(struct.annotations).filter(isGateNote);
    const viaNotes = findNoteOwner(notes, modelDef);
    if (viaNotes) return viaNotes;
    let current = struct;
@@ -454,7 +490,7 @@ function findAnnotationDeclaringSource(
    for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
       const next = nextDerivationLink(current, modelDef, seen);
       if (!next) break;
-      if (ownLevelNotes(next.annotations).length > 0) return next;
+      if (ownLevelNotes(next.annotations).some(isGateNote)) return next;
       seen.add(next);
       current = next;
    }
@@ -464,6 +500,47 @@ function findAnnotationDeclaringSource(
          resolveSibling,
       );
       if (sibling) return sibling;
+   }
+   // Last resort: a composite entry point (`comp is compose(a, b) -> {...}`)
+   // holds the gate note on neither `struct.annotations` nor anything
+   // `nextDerivationLink`'s three links (built for extend/rename, never
+   // composite-member resolution) can reach from `struct` — Malloy resolves
+   // the composite to exactly ONE concrete member for THIS derivation and
+   // reads THAT member's own annotations during entry-point-gate collection
+   // (`gate_classification.ts`), never copying the note onto `struct` itself.
+   // {@link findCompositeMemberDeclaringSource} is the one place that member
+   // is actually reachable from here.
+   return findCompositeMemberDeclaringSource(struct, modelDef);
+}
+
+/**
+ * The declaring struct for a gate note reachable ONLY through `struct`'s OWN
+ * composite-member resolution — see {@link findAnnotationDeclaringSource}'s
+ * last-resort call. `resolveCompositeResolvedBase` names the exact composite
+ * member Malloy resolved `struct`'s query against (`query.compositeResolvedSourceDef`,
+ * set only when `struct` is a `query_source` over a composite base); `undefined`
+ * for anything else, so this is a no-op for a non-composite entry point.
+ * Once that member is in hand, this is the EXACT SAME two-step search
+ * `findAnnotationDeclaringSource` itself runs — own gate notes, then the
+ * structural walk — seeded at the member instead of `struct`, since the
+ * member can itself be a further derivation (`member extend {...}`) rather
+ * than the note's direct owner.
+ */
+function findCompositeMemberDeclaringSource(
+   struct: SourceDef,
+   modelDef: ModelDef,
+): SourceDef | undefined {
+   const member = resolveCompositeResolvedBase(struct);
+   if (!member) return undefined;
+   if (ownLevelNotes(member.annotations).some(isGateNote)) return member;
+   let current = member;
+   const seen = new Set<SourceDef>([member]);
+   for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
+      const next = nextDerivationLink(current, modelDef, seen);
+      if (!next) break;
+      if (ownLevelNotes(next.annotations).some(isGateNote)) return next;
+      seen.add(next);
+      current = next;
    }
    return undefined;
 }
@@ -593,6 +670,21 @@ export interface DocumentLocationLike {
       start: { line: number; character: number };
       end: { line: number; character: number };
    };
+}
+
+/** Whether two ranges mark the exact same span — compared field by field,
+ *  never via `JSON.stringify` (key order on the two objects is not
+ *  guaranteed to match just because the values do). */
+function rangesEqual(
+   a: DocumentLocationLike["range"],
+   b: DocumentLocationLike["range"],
+): boolean {
+   return (
+      a.start.line === b.start.line &&
+      a.start.character === b.start.character &&
+      a.end.line === b.end.line &&
+      a.end.character === b.end.character
+   );
 }
 
 /** Whether `outer` fully contains `inner` — same file, `inner` starting no
@@ -731,7 +823,7 @@ function findSiblingAnnotationDeclaringSource(
          if (
             candidate.at &&
             candidate.at.url === note.at.url &&
-            JSON.stringify(candidate.at.range) === JSON.stringify(note.at.range)
+            rangesEqual(candidate.at.range, note.at.range)
          ) {
             return value;
          }
@@ -813,9 +905,44 @@ function findFilterOrigin(
          firstFieldUsageLocation(condition),
          resolveSibling,
       );
-      if (sibling) return sibling;
+      if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
+         return sibling;
+      }
    }
    return origin;
+}
+
+/**
+ * Whether `candidate` (found in a SIBLING compile, so never reference-equal
+ * to anything in `condition`'s own compile) actually WROTE `condition` — same
+ * `code` text and the same field-usage location — rather than merely
+ * CONTAINING the position `findSiblingDeclaringSource` matched on.
+ * Containment alone is not ownership: `findConditionOriginByLocation` picks
+ * the narrowest struct whose own SPAN wraps the condition's location, but an
+ * outer struct's span can wrap an inline join member's `extend { where: … }`
+ * without that filter being on the outer struct's own `filterList` at all
+ * (`child extend { join_one: j is … extend { where: … } on … }`: `child`'s
+ * span contains `j`'s `where:` text, but the condition belongs to `j`, not
+ * `child`). The served-model scan above already guards this with
+ * `next.filterList?.includes(condition)`; a sibling compile has its own,
+ * non-reference-equal `FilterCondition` objects, so this is that same check
+ * translated across compiles.
+ */
+function siblingCandidateOwnsCondition(
+   candidate: SourceDef,
+   condition: FilterCondition,
+): boolean {
+   const at = firstFieldUsageLocation(condition);
+   if (!at) return false;
+   return !!candidate.filterList?.some((c) => {
+      if (c.code !== condition.code) return false;
+      const candidateAt = firstFieldUsageLocation(c);
+      return (
+         !!candidateAt &&
+         candidateAt.url === at.url &&
+         rangesEqual(candidateAt.range, at.range)
+      );
+   });
 }
 
 /** Whether `condition` reads any field at all — a `where: true`/`where:
@@ -837,7 +964,10 @@ function conditionReadsNoField(condition: FilterCondition): boolean {
  * NAMED query's anonymous inline extend, which does not always get its own
  * `.location` (can carry its base's forward unchanged). `compiledUrl` is the
  * synthetic `internal://` URL a caller/cell compile gets; `undefined` for a
- * NAMED run, which compiles no such text of its own.
+ * NAMED run, which compiles no such text of its own. `queryLocation` itself
+ * is the plain MODEL FILE's span for a named run (`run: q1` / `queryName`),
+ * and an `internal://` span for everything else — the same URL distinction
+ * `compiledUrl` makes, just carried on the field that is never `undefined`.
  */
 export interface FreshnessContext {
    compiledUrl?: string;

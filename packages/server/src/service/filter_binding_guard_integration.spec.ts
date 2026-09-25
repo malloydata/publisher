@@ -101,7 +101,7 @@ async function createModel(
  * `Model.fromSerialized` — rather than the bare `Model.create`
  * `createModelWithFiles` uses. This is the ONLY path that pushes down
  * `Package.applySiblingModelResolverToModels`, so it is the one that can
- * actually prove the sibling-model lookup (item 1's fix): a `Model` built
+ * actually prove the sibling-model lookup: a `Model` built
  * directly, outside a `Package`, never gets a resolver at all, and would
  * pass even a broken implementation vacuously.
  *
@@ -143,6 +143,14 @@ const ORGROWS_SQL =
    "union all select 2, 1, 1, 'b', 'y' " +
    "union all select 3, 2, 1, 'c', 'a' " +
    "union all select 4, 2, 2, 'd', 'b'";
+
+/** The `childtable` fixture's rows, as the same inline-literal workaround
+ *  {@link ORGROWS_SQL} documents. */
+const CHILDROWS_SQL =
+   "select 1 as id, 1 as org_id " +
+   "union all select 2, 1 " +
+   "union all select 3, 2 " +
+   "union all select 4, 2";
 
 async function expectDeniedViaPackage(
    pkg: Package,
@@ -186,6 +194,20 @@ function compilationErrorOf(model: Model): Error | undefined {
 async function cleanup(duckdb: DuckDBConnection, dir?: string): Promise<void> {
    await duckdb.close();
    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/** {@link cleanup}, for a `Package.create`d package — releases the
+ *  package's OWN `MalloyConfig` connections (which the package-load worker
+ *  pool opens independently of the raw `duckdb` connection the test handed
+ *  it) before closing that raw connection, so a package test does not leak
+ *  a worker-side connection every run. */
+async function cleanupPackage(
+   pkg: Package,
+   duckdb: DuckDBConnection,
+   dir?: string,
+): Promise<void> {
+   await pkg.getMalloyConfig().releaseConnections();
+   await cleanup(duckdb, dir);
 }
 
 /** A notebook cell's `result` is Malloy's own wire-format JSON, not the
@@ -1257,7 +1279,7 @@ source: base_filtered is duckdb.table('orgtable') extend {
 });
 
 describe("filter binding guard — #(filter) cross-file notebook import fallback", () => {
-   // Loaded via `Package.create` (item 1): the innocent case below needs the
+   // Loaded via `Package.create`: the innocent case below needs the
    // sibling-model lookup to serve at all, so proving it through a bare
    // `Model.create` (no `Package`, no resolver) would pass vacuously.
    const FILES = {
@@ -1321,7 +1343,7 @@ run: child_src -> { aggregate: n is count() }
             model!.executeNotebookCell(1, { org_id: "2" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
@@ -1334,7 +1356,7 @@ run: child_src -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
@@ -1354,7 +1376,7 @@ run: child_src -> { aggregate: n is count() }
             model!.executeNotebookCell(1, { org_id: "2" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 });
@@ -1487,7 +1509,7 @@ import { derived } from "b.malloy"
    });
 });
 
-describe("filter binding guard — an unresolvable executed struct denies rather than skips (item 3)", () => {
+describe("filter binding guard — an unresolvable executed struct denies rather than skips", () => {
    // `assertGraftedGatesBind` used to `return` silently when the executed
    // struct couldn't be resolved, treating "can't tell" as "nothing to
    // check" — the one caller in this module for which that reasoning does
@@ -1518,10 +1540,10 @@ source: gated_parent is duckdb.table('orgtable') extend { measure: n is count() 
             "resolveRunTargetStruct",
          ).mockResolvedValue({
             // Keeps `modelDef` real (unlike the catch-all failure path,
-            // which nulls everything together) — this isolates the ONE
-            // thing item 3 is about: an executed struct that specifically
-            // failed to resolve, not a wholesale resolution failure every
-            // other caller of `resolveRunTargetStruct` already denies on.
+            // which nulls everything together) — this isolates an executed
+            // struct that specifically failed to resolve, not a wholesale
+            // resolution failure every other caller of
+            // `resolveRunTargetStruct` already denies on.
             struct: undefined,
             modelDef: realModelDef,
             compositeResolvedSourceDef: undefined,
@@ -1543,7 +1565,7 @@ source: gated_parent is duckdb.table('orgtable') extend { measure: n is count() 
    });
 });
 
-describe("filter binding guard — resolved through the package's sibling model (item 1)", () => {
+describe("filter binding guard — resolved through the package's sibling model", () => {
    // Loaded via `Package.create`, never a bare `Model.create` — the sibling
    // lookup is pushed down by `Package.applySiblingModelResolverToModels`
    // and is simply absent otherwise, so only the real production path can
@@ -1591,7 +1613,7 @@ import { GROUPS } from "a.malloy"
 `,
    };
 
-   it("N13: an unmodified direct run against a selectively-imported gated source now serves", async () => {
+   it("an unmodified direct run against a selectively-imported gated source now serves", async () => {
       const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_GATED);
       try {
          await expectServesWithCountViaPackage(
@@ -1602,11 +1624,11 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
-   it("N6: a caller extend renaming an UNRELATED field now serves", async () => {
+   it("a caller extend renaming an UNRELATED field now serves", async () => {
       const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_PLAIN);
       try {
          await expectServesWithCountViaPackage(
@@ -1616,11 +1638,11 @@ import { GROUPS } from "a.malloy"
             2,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
-   it("N7: a caller extend adding an UNRELATED dimension now serves", async () => {
+   it("a caller extend adding an UNRELATED dimension now serves", async () => {
       const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_PLAIN);
       try {
          await expectServesWithCountViaPackage(
@@ -1630,11 +1652,11 @@ import { GROUPS } from "a.malloy"
             2,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
-   it("N8: a caller's own FRESH where: alongside the inherited filter now serves", async () => {
+   it("a caller's own FRESH where: alongside the inherited filter now serves", async () => {
       const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_PLAIN);
       try {
          await expectServesWithCountViaPackage(
@@ -1644,11 +1666,11 @@ import { GROUPS } from "a.malloy"
             1,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
-   it("N12: a caller extend adding an UNRELATED dimension on a gated source now serves", async () => {
+   it("a caller extend adding an UNRELATED dimension on a gated source now serves", async () => {
       const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_GATED);
       try {
          await expectServesWithCountViaPackage(
@@ -1659,7 +1681,7 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
@@ -1672,7 +1694,7 @@ import { GROUPS } from "a.malloy"
             "run: derived extend { except: org_id } extend { rename: org_id is owner } -> { aggregate: n is count() }",
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 
@@ -1686,12 +1708,12 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 });
 
-describe("filter binding guard — freshness never claimed for a named run (item 2)", () => {
+describe("filter binding guard — freshness never claimed for a named run", () => {
    // `run: q1` / `queryName: "q1"` compiles no caller/cell text of its own —
    // `_query.location.url` there is just the MODEL FILE's URL, the same file
    // that declares the inherited `where:`. Passing that URL through as
@@ -1769,6 +1791,183 @@ query: q2 is base_filtered extend { where: val = 'a' } -> { aggregate: n is coun
          );
       } finally {
          await cleanup(duckdb, dir);
+      }
+   });
+});
+
+describe("filter binding guard — a derived source's own unrelated annotation never stands in for the base's gate note", () => {
+   // The gate note lives in `a.malloy`, padded well below line 1 so its own
+   // line number is unambiguously LATER than anything `b.malloy` declares.
+   // `w` (in `b.malloy`) carries a render tag of its own — nothing to do
+   // with the gate — directly above its `source:` line, at a much EARLIER
+   // line number than the gate note. A position comparison that ignores
+   // FILE identity (or that considers a non-gate note as a candidate owner
+   // at all) can mistake `w`'s own tag for having "authored" the inherited
+   // gate merely for sitting at a lower line, and then compare `w`'s own
+   // (unmodified-looking) fields to themselves — passing a misbind that
+   // should deny.
+   const GATE_FILE = `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+// padding
+// padding
+// padding
+// padding
+// padding
+// padding
+#(access_filter) org_id in $GROUPS
+source: gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`;
+   const GATE_FILE_SQL = GATE_FILE.replace(
+      "duckdb.table('orgtable')",
+      `duckdb.sql("${ORGROWS_SQL}")`,
+   );
+   const DERIVED_TAG_ABOVE = `import "a.malloy"
+# line_chart
+source: w is gated_parent extend { except: org_id } extend { rename: org_id is owner }
+`;
+   const DERIVED_TAG_BELOW = `import "a.malloy"
+
+
+
+
+# line_chart
+source: w is gated_parent extend { except: org_id } extend { rename: org_id is owner }
+`;
+
+   it("denies in-process (Model.create) when the derived source's own tag sits at an EARLIER line than the gate note", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         { "a.malloy": GATE_FILE, "b.malloy": DERIVED_TAG_ABOVE },
+         "b.malloy",
+      );
+      try {
+         await expectDenied(
+            model,
+            "run: w -> { group_by: id; aggregate: n is count() }",
+            { GROUPS: [1] },
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("denies in-process (Model.create) when the derived source's own tag sits at a LATER line than the gate note (control)", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         { "a.malloy": GATE_FILE, "b.malloy": DERIVED_TAG_BELOW },
+         "b.malloy",
+      );
+      try {
+         await expectDenied(
+            model,
+            "run: w -> { group_by: id; aggregate: n is count() }",
+            { GROUPS: [1] },
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("denies via Package.create when the derived source's own tag sits at an EARLIER line than the gate note", async () => {
+      const { pkg, duckdb, dir } = await createPackageWithFiles({
+         "a.malloy": GATE_FILE_SQL,
+         "b.malloy": DERIVED_TAG_ABOVE,
+      });
+      try {
+         await expectDeniedViaPackage(
+            pkg,
+            "b.malloy",
+            "run: w -> { group_by: id; aggregate: n is count() }",
+            { GROUPS: [1] },
+         );
+      } finally {
+         await cleanupPackage(pkg, duckdb, dir);
+      }
+   });
+
+   it("denies for a selective import with no sibling resolver and no structural link to the declaring source", async () => {
+      // `m.malloy` selectively imports just `w` (never `gated_parent`) and
+      // `GROUPS`, so `gated_parent` is not independently a `modelDef.contents`
+      // entry of the served compile — the gate-scoped note search and the
+      // structural walk both find nothing, and a bare `Model.create` (no
+      // `Package`) supplies no sibling resolver either. Every resolution
+      // mechanism this guard has genuinely fails here, which is exactly the
+      // case an unfiltered fallback (a struct comparing its own unrelated
+      // `# line_chart` tag to itself) would otherwise paper over.
+      const { model, duckdb, dir } = await createModelWithFiles(
+         {
+            "a.malloy": GATE_FILE,
+            "b.malloy": DERIVED_TAG_ABOVE,
+            "m.malloy": `import { w } from "b.malloy"
+import { GROUPS } from "a.malloy"
+`,
+         },
+         "m.malloy",
+      );
+      try {
+         await expectDenied(
+            model,
+            "run: w -> { group_by: id; aggregate: n is count() }",
+            { GROUPS: [1] },
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
+
+describe("filter binding guard — an inline join's own where: is not denied for merely sitting inside the parent's own span", () => {
+   // `child_src`'s declaration SPAN textually contains the joined member
+   // `j`'s own `where:` (it is written inline, inside `child_src`'s
+   // `extend { ... }` block) — but the filter belongs to `j`, not to
+   // `child_src`, which has no `org_id`/`val` field of its own at all. A
+   // sibling-compile candidate accepted on span CONTAINMENT alone (with no
+   // check that the candidate's own `filterList` actually holds this
+   // condition) mistakes the parent for the declarer and denies a query
+   // that never misbound anything.
+   it("serves via Package.create for a single-file inline join with its own where:", async () => {
+      const { pkg, duckdb, dir } = await createPackageWithFiles({
+         "m.malloy": `
+source: child_src is duckdb.sql("${CHILDROWS_SQL}") extend {
+   join_one: j is duckdb.sql("${ORGROWS_SQL}") extend { where: val = 'a' } on id = j.id
+   measure: n is count()
+}
+`,
+      });
+      try {
+         await expectServesWithCountViaPackage(
+            pkg,
+            "m.malloy",
+            "run: child_src -> { aggregate: n is count() }",
+            4,
+         );
+      } finally {
+         await cleanupPackage(pkg, duckdb, dir);
+      }
+   });
+
+   it("serves via Package.create for the same shape declared in a second file, queried via import", async () => {
+      const { pkg, duckdb, dir } = await createPackageWithFiles({
+         "a.malloy": `
+source: pj is duckdb.sql("${CHILDROWS_SQL}") extend {
+   join_one: j is duckdb.sql("${ORGROWS_SQL}") extend { where: val = 'a' } on id = j.id
+   measure: n is count()
+}
+`,
+         "m.malloy": `import "a.malloy"\n`,
+      });
+      try {
+         await expectServesWithCountViaPackage(
+            pkg,
+            "m.malloy",
+            "run: pj -> { aggregate: n is count() }",
+            4,
+         );
+      } finally {
+         await cleanupPackage(pkg, duckdb, dir);
       }
    });
 });
