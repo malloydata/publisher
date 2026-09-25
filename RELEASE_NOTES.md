@@ -56,9 +56,22 @@ Also fixed here: Malloy keywords are case-insensitive, and `RUN:` / `SOURCE: x I
 the pre-compile checks, including a `required` `#(filter)`. Every caller-text reader now
 matches keywords in any case.
 
-**Who is affected:** only callers who were reading through a join what they could not read
-with `run:`. If an app sends ad-hoc text that joins a gated or hidden source for users the
-gate does not admit, those requests now get 403 or 404.
+Every locked name in the request is now decided before compile, not only the run target and
+its joins: a lock (`#(authorize)`) applies wherever its source's name appears, in any case,
+inside backticks (decoded as Malloy decodes them), parentheses, `compose`, or a derivation
+chain. The read over-collects on purpose -- it takes any identifier-shaped token, including
+one in a comment or a string literal -- so a caller the lock refuses also gets 403 when some
+other name merely matches it. The run target read before compile is the last `run:` in the
+text, the one Malloy executes, and `/compile` at file or package scope walks every
+derivation in the text without a depth cap.
+
+`#(filter)` is not a security boundary against caller-authored query text or
+`bypassFilters`; use givens and `#(authorize)`.
+
+**Who is affected:** callers who were reading through a join, or through a name the
+pre-compile read missed, what they could not read with `run:`. If an app sends ad-hoc text
+that reaches a gated or hidden source for users the gate does not admit, those requests now
+get 403 or 404, and a refused caller also gets 403 for text that merely names a locked source.
 
 ## [0.8.0] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 

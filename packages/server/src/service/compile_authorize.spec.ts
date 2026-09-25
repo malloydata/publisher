@@ -92,10 +92,9 @@ describe("compile-path authorize gate (compileSource)", () => {
    });
 
    it("denies a gated source reached via the LAST run: statement (backstop, includeSql=false)", async () => {
-      // Regression guard: the early gate only matches the first `run:` (ungated
-      // open_src here), so the gated source in the executed final statement is
-      // caught only by the compiled-source backstop — which must run even when
-      // no SQL is requested.
+      // The pre-compile lock sees `gated` wherever it appears, so this denies
+      // before compile. The compiled-source backstop still runs when no SQL is
+      // requested; this pins that a last-statement gate is not a compile error.
       await expect(
          compile(
             "run: open_src -> { aggregate: c }\nrun: gated -> { aggregate: c }",
@@ -336,6 +335,154 @@ run: gated -> { aggregate: c }`,
             "file",
          ),
       ).resolves.toBeDefined();
+   });
+
+   // Boundary: this package declares no `explores`, so the query boundary is
+   // inert. These refusals are the lock, and they happen before compile.
+   describe("a locked name is decided wherever it appears (append scope)", () => {
+      const refused = [
+         ["uppercase RUN:", "RUN: gated -> { group_by: nope }"],
+         ["backtick name", "run: `gated` -> { group_by: nope }"],
+         ["escaped backtick", "run: `\\gated` -> { group_by: nope }"],
+         ["parentheses", "run: (gated) -> { group_by: nope }"],
+         ["compose", "run: compose(gated, open_src) -> { aggregate: c }"],
+         [
+            "nested is",
+            "source: a is ((gated)) extend {}\nrun: a -> { group_by: nope }",
+         ],
+         [
+            "gated run first",
+            "run: gated -> { group_by: nope }\nrun: open_src -> { aggregate: c }",
+         ],
+         [
+            "newline string does not hide the alias",
+            "run: open_src -> { where: s = 'x\n}\nsource: a is gated extend {}\nrun: a -> { group_by: nope }",
+         ],
+         [
+            "join inside a caller extend",
+            "run: open_src extend { join_one: j is gated on true } -> { aggregate: c }",
+         ],
+      ] as const;
+
+      for (const [label, source] of refused) {
+         it(`denies before compile: ${label}`, async () => {
+            await expect(
+               env.compileSource("pkg", "model.malloy", source, false),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         });
+      }
+
+      it("denies a 65-link chain before compile", async () => {
+         const lines = ["source: n0 is gated extend {}"];
+         for (let i = 1; i <= 64; i++) {
+            lines.push(`source: n${i} is n${i - 1} extend {}`);
+         }
+         lines.push("run: n64 -> { group_by: nope }");
+         await expect(
+            env.compileSource("pkg", "model.malloy", lines.join("\n"), false),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      it("file scope still compiles a two-run text whose last run is open", async () => {
+         const source = `${withoutGates(MODEL)}
+run: gated -> { aggregate: c }
+run: open_src -> { aggregate: c }`;
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            source,
+            false,
+            undefined,
+            "file",
+         );
+         expect(problems).toEqual([]);
+      });
+
+      // The file-scope derivation walk (assertLocksOnRequestDeclaredBases) has
+      // no cap: with no run target every declared name is a root, so a cap
+      // here would measure file size, not chain depth. Pins that a large
+      // file with no aliasing still compiles.
+      it("compiles a 70-definition file at file scope with no final run:", async () => {
+         const lines: string[] = [];
+         for (let i = 0; i < 70; i++) {
+            lines.push(
+               `source: n${i} is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+            );
+         }
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            lines.join("\n"),
+            false,
+            undefined,
+            "file",
+         );
+         expect(problems).toEqual([]);
+      });
+
+      it("still refuses the same large file with one alias of gated added, at file scope", async () => {
+         const lines: string[] = [];
+         for (let i = 0; i < 70; i++) {
+            lines.push(
+               `source: n${i} is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+            );
+         }
+         lines.push("source: n70 is gated extend {}");
+         await expect(
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               lines.join("\n"),
+               false,
+               undefined,
+               "file",
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      // Nothing after compile decides a lock at file scope for a declared
+      // alias that never runs, so the walk must read past a SQL block.
+      it("refuses an alias of gated declared after a multi-line SQL block, at file scope", async () => {
+         // The text declares no `gated` of its own, so only the alias can name it.
+         const source = `source: s is duckdb.sql("""
+  select 1 as x -- "
+""") extend { measure: c is count() } a is gated extend {}`;
+         await expect(
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               source,
+               false,
+               undefined,
+               "file",
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      it("package scope compiles a non-final locked run, and refuses an alias of gated", async () => {
+         const twoRuns = `${withoutGates(MODEL)}
+run: gated -> { aggregate: c }
+run: open_src -> { aggregate: c }`;
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            twoRuns,
+            false,
+            undefined,
+            "package",
+         );
+         expect(problems).toEqual([]);
+         await expect(
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               "source: a is gated extend {}",
+               false,
+               undefined,
+               "package",
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
    });
 });
 

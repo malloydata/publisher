@@ -274,12 +274,11 @@ For date-range filters, declare two filters with distinct `name` values targetin
 
 ### When to use `required`
 
-`required` filters are a correctness, latency, and governance mechanism, not just UX. Mark a filter `required` when:
+`required` filters are a correctness and latency mechanism, not just UX. Mark a filter `required` when:
 
 1. **Modeling correctness, the source's `primary_key:` is only unique under a filter.** If a high-cardinality key is not unique across the whole table but is unique within a scoping dimension, then that scoping dimension MUST be supplied for symmetric aggregation to produce correct numbers. For example, if `events.id` repeats across days but is unique within a single `event_date`, queries that don't pin the date can fan out and return hash-collision-sized garbage (~10²¹). Declare `#(filter) name=Event_Date dimension=event_date type=equal required` so the server refuses queries that don't provide it.
 2. **Query latency, the source spans more data than any single query should scan.** A multi-year, multi-region table where every reasonable analysis is scoped to a date range or region: making the date filter required prevents accidental full-table scans.
 3. **Partial views** that are only meaningful inside a date range, region, or business segment.
-4. **Governance**, an analyst should never query the raw source without a scoping filter applied.
 
 For (1), pair the required filter with a comment explaining the cardinality dependency, and consider also declaring `#(doc)` on the source noting the constraint.
 
@@ -293,7 +292,7 @@ Publisher formats values based on the dimension's data type, `string` → `'valu
 
 ### Bypass
 
-Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip filter injection entirely. Use sparingly, required-filter governance only works if bypass is restricted to trusted callers.
+Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip filter injection entirely. `#(filter)` is not a security boundary against caller-authored query text or `bypassFilters`; use givens + `#(authorize)`.
 
 ## Access Control: `#(authorize)` and `#(access_filter)`
 

@@ -873,6 +873,32 @@ describe("books a lock refusal under the label that matches it", () => {
          }),
       ).toBe(0);
    });
+
+   // Each pre-compile pass skips a lock an earlier one decided. The text does
+   // not compile, so every booking here is a pre-compile one: the run target's
+   // single decision, however often the text names the source again.
+   it("decides a lock the request names three times once before compile", async () => {
+      await writeModel("lm_gated.malloy", LOCK_METRIC_GATED);
+      await expect(
+         runGated(
+            "lm_gated.malloy",
+            "source: mine is lm_gated extend {}\nrun: lm_gated extend { join_one: j is lm_gated on true } -> { group_by: nope }",
+            { ROLE: "analyst" },
+         ),
+      ).rejects.not.toBeInstanceOf(AccessDeniedError);
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "admitted",
+            site: "entry_point",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "admitted",
+            site: "caller_join",
+         }),
+      ).toBe(0);
+   });
 });
 
 describe("authorize runtime gate", () => {
@@ -4188,6 +4214,24 @@ source: dm_gated is duckdb.table('customers') extend {
 }
 `;
 
+   // Two independently locked sources, so a request naming both pins the
+   // per-name (not per-query) shape of the "source" bypass tick.
+   const GATED_TWO = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: dm_gated is duckdb.table('customers') extend {
+  measure: c is count()
+}
+
+#(authorize) 'analyst' = $ROLE
+source: dm_gated2 is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+
    // The canonical hard case from the design doc: an access GATE and an ordinary
    // analytical `where:` on the same source. The gate is bypassable; the `where:`
    // is not.
@@ -4304,15 +4348,51 @@ source: dm_mixed is duckdb.table('customers') extend {
             undefined,
             true,
          );
-         // The early surface-syntax gate...
+         // "source" ticks once for the run target resolved before compile,
+         // locked or not, plus once for each additional locked name; here the
+         // run target is the only name.
          expect(
             await harness.collectCounter(COUNTER, { entry_point: "source" }),
          ).toBe(1);
-         // ...and the compiled backstop. Exactly one each: the walk
-         // short-circuits before its own nested assertAuthorized call.
+         // "runnable" is the compiled backstop, once per bypassed query.
          expect(
             await harness.collectCounter(COUNTER, { entry_point: "runnable" }),
          ).toBe(1);
+      });
+
+      // The per-name notes are the only record of which lock the bypass
+      // skipped for an aliased request: `earlySource` and the `runnable` note
+      // both name the alias, not the locked source underneath it.
+      it("counts and logs a source tick for EACH locked name a request names", async () => {
+         await writeModel("dm_gated_two.malloy", GATED_TWO);
+         const lines: Array<Record<string, unknown>> = [];
+         const info = logger.info;
+         (logger as { info: unknown }).info = (
+            message: string,
+            meta?: Record<string, unknown>,
+         ) => {
+            if (message === "authorize bypass" && meta) lines.push(meta);
+            return undefined as never;
+         };
+         try {
+            await runGated(
+               "dm_gated_two.malloy",
+               "source: mine is dm_gated2 extend {}\nrun: dm_gated -> { aggregate: c }",
+               {},
+               undefined,
+               true,
+            );
+         } finally {
+            (logger as { info: unknown }).info = info;
+         }
+         expect(
+            await harness.collectCounter(COUNTER, { entry_point: "source" }),
+         ).toBe(2);
+         const source = lines.filter((l) => l.entryPoint === "source");
+         expect(source.map((l) => l.sourceName).sort()).toEqual([
+            "dm_gated",
+            "dm_gated2",
+         ]);
       });
 
       /**
@@ -4446,5 +4526,67 @@ source: dm_mixed is duckdb.table('customers') extend {
             ),
          ).rejects.toThrow();
       });
+   });
+});
+
+describe("a locked name is decided wherever it appears", () => {
+   // Boundary: Model.create leaves queryableSources inert. These are lock
+   // refusals, before compile, on the /query path.
+   const MODEL = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+}
+
+source: open_src is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+
+   const refused = [
+      "RUN: gated -> { group_by: nope }",
+      "run: `gated` -> { group_by: nope }",
+      "run: `\\gated` -> { group_by: nope }",
+      "run: (gated) -> { group_by: nope }",
+      "run: compose(gated, open_src) -> { aggregate: c }",
+      "source: a is ((gated)) extend {}\nrun: a -> { group_by: nope }",
+      "run: gated -> { group_by: nope }\nrun: open_src -> { aggregate: c }",
+      "run: open_src -> { where: s = 'x\n}\nsource: a is gated extend {}\nrun: a -> { group_by: nope }",
+      "run: open_src extend { join_one: j is gated on true } -> { aggregate: c }",
+   ];
+
+   for (const query of refused) {
+      it(`denies before compile: ${query.split("\n")[0]}`, async () => {
+         await writeModel("appear.malloy", MODEL);
+         await expectDeniedByLock("appear.malloy", query, { ROLE: "intern" });
+      });
+   }
+
+   it("denies a 65-link chain before compile", async () => {
+      await writeModel("appear.malloy", MODEL);
+      const lines = ["source: n0 is gated extend {}"];
+      for (let i = 1; i <= 64; i++) {
+         lines.push(`source: n${i} is n${i - 1} extend {}`);
+      }
+      lines.push("run: n64 -> { group_by: nope }");
+      await expectDeniedByLock("appear.malloy", lines.join("\n"), {
+         ROLE: "intern",
+      });
+   });
+
+   it("still serves an uppercase run to a caller the lock admits", async () => {
+      await writeModel("appear.malloy", MODEL);
+      const { compactResult } = await runGated(
+         "appear.malloy",
+         "RUN: gated -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      expect(
+         (compactResult as unknown as { c: number }[])[0]?.c,
+      ).toBeGreaterThan(0);
    });
 });

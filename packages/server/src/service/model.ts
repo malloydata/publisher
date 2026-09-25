@@ -153,7 +153,9 @@ import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
    buildSourceAliasMap,
+   collectIdentifierNames,
    extractRunTargetSourceName,
+   extractRunTargetSourceNames,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
 import {
@@ -2010,7 +2012,7 @@ export class Model {
       // sources — see this method's doc for why the default is deny.
       const proof = this.requestChainProvesUngated(
          entryPoint,
-         buildDerivationBaseMap(stripMalloyCommentsAndLiterals(query)),
+         buildDerivationBaseMap(query),
       );
       if (proof.proven) {
          // Every gated base the chain reached must be a lock this caller
@@ -2049,14 +2051,16 @@ export class Model {
 
    /**
     * Decide, before compiling, every lock reachable from an entry point THIS
-    * REQUEST declared.
+    * REQUEST declared — `/compile` at file and package scope, where the text
+    * is the author's whole file and is not compiled in restricted mode.
     *
-    * Deliberately not a proof and never denies on its own: a chain it cannot
-    * read just gates nothing here, and
-    * {@link assertRequestDeclaredEntryPointIsNotLaundered} still decides it
-    * after compilation. The only thing this buys is ORDER — a refused caller
-    * hears "denied" instead of the compiler's opinion of a column name on a
-    * source they may not read.
+    * Throws on a refused lock. A source the text declares but never runs has
+    * no runnable, so nothing after compile decides its lock; this walk is the
+    * only check it gets. Unbounded on purpose: with no run target every
+    * declared name is a root, so a cap would measure how many sources the file
+    * defines, not chain depth, and stopping at it would let the compiler answer
+    * for a locked alias the walk never reached. `seen` bounds the work to the
+    * text's own edge count.
     */
    private async assertLocksOnRequestDeclaredBases(
       entryPoint: string,
@@ -2065,9 +2069,7 @@ export class Model {
       bypassAuthorize?: boolean,
    ): Promise<void> {
       if (!this.declaresAnyGate()) return;
-      const basesOf = buildDerivationBaseMap(
-         stripMalloyCommentsAndLiterals(query),
-      );
+      const basesOf = buildDerivationBaseMap(query);
       const seen = new Set<string>();
       // No run target (`/compile` on text that only DECLARES sources) has no
       // one place to start, so every name the text declares is a root. The walk
@@ -2077,7 +2079,6 @@ export class Model {
          const name = worklist[i];
          if (seen.has(name)) continue;
          seen.add(name);
-         if (seen.size > REQUEST_CHAIN_MAX_NAMES) return;
          if (this.entryPointGatesBySource.has(name)) {
             try {
                // Names a source the request's own text derives from, so
@@ -2496,6 +2497,8 @@ export class Model {
       query: string,
       givens: Record<string, GivenValue>,
       phase: "boundary" | "locks",
+      /** Locked names this request already decided; each one decided here is added. */
+      decided: Set<string> = new Set(),
    ): Promise<void> {
       const joins = buildJoinBaseMap(query);
       if (joins.size === 0) return;
@@ -2518,6 +2521,14 @@ export class Model {
                for (const base of derivations.get(name) ?? []) {
                   worklist.push(base);
                }
+               // A lock reached through an author query is this join's to
+               // decide, under its alias. The boundary admits a curated query
+               // on its own name, so it does not follow the hop.
+               const querySource =
+                  phase === "locks"
+                     ? this.queries?.find((q) => q.name === name)?.sourceName
+                     : undefined;
+               if (querySource) worklist.push(querySource);
                continue;
             }
             if (phase === "boundary") {
@@ -2530,6 +2541,7 @@ export class Model {
                }
                continue;
             }
+            if (decided.has(name)) continue;
             for (const entry of this.entryPointGatesBySource.get(name) ?? []) {
                const resolution = await this.resolveGateShape(
                   entry,
@@ -2539,6 +2551,7 @@ export class Model {
                if (resolution.shape === "row_level") continue;
                denyUnlessAdmitted(resolution, givens, alias, "caller_join");
             }
+            decided.add(name);
          }
       }
    }
@@ -3380,12 +3393,14 @@ export class Model {
    }
 
    /**
-    * Gate ad-hoc compile/query text by the named source it targets. Resolves the
-    * source from surface syntax (`extractRunTargetSourceName`) and applies the
-    * gate. An unnamed/inline source resolves to `undefined`, so nothing gates
-    * it — the same top-level-only boundary as the query path's early gate.
-    * Used by the `/compile` path, which has no runnable to resolve before it
-    * decides whether to compile at all.
+    * Gate ad-hoc `/compile` text before compiling. Caller text (`append`
+    * scope) has every locked name that appears anywhere in it decided, after
+    * the last `run:` target and the locks its caller-written joins reach — a
+    * caller-owned fragment has no legitimate need to name a base it may not
+    * read. At file and package scope (`wholeFile`) the text IS the author's
+    * file, so only the last `run:` target is checked, plus a derivation walk
+    * from it ({@link assertLocksOnRequestDeclaredBases}); a mention that is
+    * not what Malloy will run must still compile.
     *
     * Takes no bypass argument, deliberately. `/compile` returns schema and, with
     * `includeSql`, SQL; no caller needs to compile through a gate, so the
@@ -3395,28 +3410,67 @@ export class Model {
    public async assertAuthorizedForText(
       text: string,
       givens: Record<string, GivenValue>,
-      /** `callerJoins`: the text is appended caller text, so its joins are gated. */
-      options?: { callerJoins?: boolean },
+      /** `wholeFile`: file or package scope, where the text is the author's file. */
+      options?: { wholeFile?: boolean },
    ): Promise<void> {
       const target = extractRunTargetSourceName(text);
       await this.assertAuthorized(target, givens);
-      // The same caller-declared-alias gap the query path closes, and it bites
-      // harder here: `/compile` answers WITH the compiler's diagnostics, so a
-      // lock that is not decided first makes them readable for a source the
-      // caller is refused. Text with no `run:` resolves no target and is walked
-      // anyway — a bare `source: s is locked extend { … }` is exactly the shape
-      // that reaches the compiler with nothing gated.
-      if (!hasCallerAuthorizeAnnotation(text)) {
+      // Text carrying an annotation is left to the forgery rejecter, whose
+      // refusal is the specific one.
+      if (hasCallerAuthorizeAnnotation(text)) return;
+      if (options?.wholeFile) {
+         // `/compile` answers WITH the compiler's diagnostics, so a lock not
+         // decided first makes them readable for a source the caller is
+         // refused. Text with no `run:` resolves no target and is walked anyway.
          await this.assertLocksOnRequestDeclaredBases(
             target ?? "",
             text,
             givens,
          );
-         // Locks only: `/compile` is exempt from the query boundary. A file or
-         // package submission is the author's file, so its joins are not
-         // caller joins.
-         if (options?.callerJoins) {
-            await this.assertCallerJoinBasesEarly(text, givens, "locks");
+         return;
+      }
+      // Locks only: `/compile` is exempt from the query boundary.
+      const decided = new Set(target ? [target] : []);
+      await this.assertCallerJoinBasesEarly(text, givens, "locks", decided);
+      await this.assertLocksOnAppearingNames(text, givens, false, decided);
+   }
+
+   /**
+    * Pre-decide every locked source, and every named query over one, whose
+    * name appears in `text` and is not already in `decided`. See
+    * {@link collectIdentifierNames} for why the scan is the union of the raw
+    * and the stripped text. Parens, compose, joins and chains never have to be
+    * recognized; a field that merely shares a locked name is refused too, and
+    * only for a caller that lock already refuses.
+    */
+   private async assertLocksOnAppearingNames(
+      text: string,
+      givens: Record<string, GivenValue>,
+      bypassAuthorize: boolean,
+      decided: Set<string>,
+   ): Promise<void> {
+      if (!this.declaresAnyGate()) return;
+      for (const name of collectIdentifierNames(text)) {
+         const asQuery = this.queries?.find((q) => q.name === name)?.sourceName;
+         const source =
+            (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0
+               ? name
+               : asQuery &&
+                   (this.entryPointGatesBySource.get(asQuery)?.length ?? 0) > 0
+                 ? asQuery
+                 : undefined;
+         if (!source || decided.has(source)) continue;
+         decided.add(source);
+         try {
+            await this.assertAuthorized(source, givens, bypassAuthorize);
+         } catch (error) {
+            // A 403 that names a hidden source confirms it exists. Convert on
+            // the source actually gated, the same way the derivation walk does:
+            // a hidden one is a 404, and a curated one keeps the 403.
+            if (error instanceof AccessDeniedError) {
+               this.assertQueryBoundaryEarly(source, undefined, undefined);
+            }
+            throw error;
          }
       }
    }
@@ -4428,14 +4482,14 @@ export class Model {
       // Ad-hoc text: positively deny only a surface-resolved target that is a
       // model-declared source outside the curated surface (and doesn't derive
       // from a curated one) — pre-compile, so its compile errors can't leak
-      // schema. Everything else (inline derivations, multi-statement, forms
-      // the regex can't read) defers to the compiled backstop.
-      if (query) {
-         const target = extractRunTargetSourceName(query);
+      // schema. Every `run:` is read, not only the last one Malloy executes:
+      // Malloy compiles every statement, so an earlier one's errors answer
+      // too. Everything else (inline derivations, forms the reader can't
+      // resolve) defers to the compiled backstop.
+      for (const target of query ? extractRunTargetSourceNames(query) : []) {
          if (
-            target &&
             !this.isCuratedSource(target) &&
-            !this.derivesFromCurated(target, query) &&
+            !this.derivesFromCurated(target, query!) &&
             this.declaresSource(target)
          ) {
             // The same words the compiled backstop uses, and not the name: in a
@@ -4498,10 +4552,9 @@ export class Model {
     * exempt from the boundary; this runs only AFTER an authorize denial, to
     * decide whether the 403 would confirm a hidden source exists. It settles
     * the COMPILED run target — the source Malloy actually executes — because
-    * the early text gate resolves only the first `run:` statement, so
-    * converting on it alone lets a multi-statement decoy
-    * (`run: visible\nrun: hidden_gated`) or a derivation alias keep a 403 that
-    * names the hidden source. Same admission rule as the query surface
+    * surface syntax cannot see a `query:` indirection or a derivation, so
+    * converting on it alone lets a derivation alias keep a 403 that names the
+    * hidden source. Same admission rule as the query surface
     * (curated, or derives from curated via the submitted text), so the 403 is
     * masked exactly where the query surface answers 404. No-ops when the
     * boundary is inert.
@@ -5853,38 +5906,32 @@ export class Model {
             givens ?? {},
             bypassAuthorize,
          );
-         // A caller-declared alias (`source: s is gated extend {}`) names an
-         // entry point this model never declared, so the gate above matches
-         // nothing and the caller's own compile errors would answer before any
-         // lock did — the schema oracle this whole early gate exists to close.
-         // Decide the locks the request's OWN derivations reach, from its text,
-         // before compiling. A chain this cannot read is left to the
-         // post-compile check ({@link
-         // assertRequestDeclaredEntryPointIsNotLaundered}), which is the
-         // fail-closed one; this is only ever an earlier, opaquer refusal.
-         // Text carrying an annotation at all is left to the forgery rejecter
-         // below, whose refusal is the specific one ("not permitted in
-         // caller-submitted text") and whose counter is the one operators read.
-         // Skipping opens nothing: the post-compile check still decides.
-         if (
-            query &&
-            !hasCallerAuthorizeAnnotation(query) &&
-            !this.entryPointGatesBySource.has(earlySource)
-         ) {
-            await this.assertLocksOnRequestDeclaredBases(
-               earlySource,
-               query,
-               givens ?? {},
-               bypassAuthorize,
-            );
-         }
       }
+      // Each lock is decided once before compile, by whichever pass reaches it
+      // first; `decided` is what keeps a later pass from deciding (and booking)
+      // it again.
+      const decided = new Set(earlySource ? [earlySource] : []);
       // Not under `earlySource`: a join needs no readable run target.
       if (readCallerJoinText && !bypassAuthorize) {
          await this.assertCallerJoinBasesEarly(
             callerRegion.text,
             givens ?? {},
             "locks",
+            decided,
+         );
+      }
+      // Every other locked name the text mentions, wherever it sits: an alias,
+      // a paren, `compose`, a chain of any length. This is the pre-compile
+      // oracle guard, never the authority — the compiled checks below still
+      // decide. Text carrying an annotation at all is left to the forgery
+      // rejecter below, whose refusal ("not permitted in caller-submitted
+      // text") is the specific one.
+      if (query && !hasCallerAuthorizeAnnotation(query)) {
+         await this.assertLocksOnAppearingNames(
+            query,
+            givens ?? {},
+            bypassAuthorize,
+            decided,
          );
       }
 
@@ -6431,11 +6478,9 @@ export class Model {
             // source is this query against" rather than a second, weaker one.
             //
             // The COMPILED target specifically, for the reason the authorize gate
-            // treats it as the source of truth: `extractRunTargetSourceName`
-            // reads the FIRST `run:` and Malloy executes the LAST, so `run:
-            // cheap\nrun: expensive` would execute one source while tagging
-            // another's team and tier — attribution that is not merely missing
-            // but wrong, and wrong in the direction of blaming the cheap query.
+            // treats it as the source of truth: surface syntax cannot see a
+            // `query:` indirection or a derivation chain, so tagging off it alone
+            // could attribute the query to the wrong source's team and tier.
             // Falls back to the surface-syntax answer when the compiled one is
             // unresolved, the same degradation the gate accepts.
             compiledSource ?? earlySource,
@@ -7374,10 +7419,10 @@ export class Model {
                },
             );
             // The compiled run target, preferred over the cell's surface syntax
-            // for the reason getQueryResults prefers it: `extractRunTargetSourceName`
-            // reads the first `run:` and Malloy executes the last, so a cell
-            // holding more than one would tag the wrong source. The prepared
-            // query is read again below, so this costs nothing new.
+            // for the reason getQueryResults prefers it: surface syntax cannot
+            // see a `query:` indirection or a derivation chain, so a cell
+            // reaching its target through either would tag the wrong source.
+            // The prepared query is read again below, so this costs nothing new.
             const cellCompiledSource =
                await this.resolveAuthorizeSourceFromRunnable(runnableToExecute);
             // A notebook cell never takes `getQueryResults`' constant-false

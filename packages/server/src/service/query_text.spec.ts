@@ -8,7 +8,10 @@ import {
    buildIsEdgeMap,
    buildJoinBaseMap,
    buildSourceAliasMap,
+   collectIdentifierNames,
    extractRunTargetSourceName,
+   extractRunTargetSourceNames,
+   scanIdentifiers,
    stripMalloyCommentsAndLiterals,
    UNREADABLE_BASE,
 } from "./query_text";
@@ -195,6 +198,16 @@ describe("service/query_text", () => {
             "a -- unterminated",
             "where: s = 'unterminated",
             "run: x // one\n/* two */ run: y -- three",
+            "where: n ~ f'''x''' and m = 1",
+            "f'''x",
+            'source: a is duckdb.sql("""\nselect "x" %{ b -> { select: * } } y\n""") extend {}',
+            "#| open\n  |#\n |#\nrun: a",
+            "where: s = r'a\\'b' and t = s\"x\ny\" and u = f`z`",
+            // Blanked trivia between a prefix and a quote must not become the
+            // prefix's own spacing on a second pass.
+            "where: s /* c */ 'x' and f -- c\n\"y\"",
+            // A backslash before a line end stops a raw literal; blanking it would not.
+            'where: s"x # a\\\n',
          ]) {
             expect(strip(strip(source))).toBe(strip(source));
          }
@@ -339,6 +352,55 @@ describe("service/query_text", () => {
          ).toBe(0);
       });
 
+      it("reads case-insensitive keywords and keeps the identifier's own case", () => {
+         expect(extractRunTargetSourceName("RUN: Flights -> { }")).toBe(
+            "Flights",
+         );
+         expect(extractRunTargetSourceName("Run\n: flights")).toBe("flights");
+         expect(extractRunTargetSourceName("run : flights")).toBe("flights");
+         expect(buildSourceAliasMap("SOURCE: a IS b").get("a")).toBe("b");
+         expect(extractRunTargetSourceName("xrun: flights")).toBeUndefined();
+         expect(
+            buildSourceAliasMap("source: a is_b c").get("a"),
+         ).toBeUndefined();
+      });
+
+      it("decodes backtick escapes the way parseString does", () => {
+         expect(extractRunTargetSourceName("run: `\\locked`")).toBe("locked");
+         expect(extractRunTargetSourceName("run: `locked`")).toBe("locked");
+         expect(
+            buildDerivationBaseMap("source: mine is `\\locked`").get("mine"),
+         ).toEqual(new Set(["locked"]));
+         expect(
+            buildDerivationBaseMap("source: mine is `\\u006cocked`").get(
+               "mine",
+            ),
+         ).toEqual(new Set(["locked"]));
+         expect(buildJoinBaseMap("join_one: `\\g` is `lo\\cked`")).toEqual(
+            new Map([["g", new Set(["locked"])]]),
+         );
+         // An escaped backtick does not close the name.
+         expect(
+            buildDerivationBaseMap("source: `a\\`b` is c").get("a`b"),
+         ).toEqual(new Set(["c"]));
+      });
+
+      it("returns the last run:, which is the one Malloy executes", () => {
+         expect(
+            extractRunTargetSourceName("run: first -> { }\nrun: second -> { }"),
+         ).toBe("second");
+         expect(
+            extractRunTargetSourceNames("run: first -> { }\nRUN: `second`"),
+         ).toEqual(["first", "second"]);
+      });
+
+      it("reads a Unicode identifier", () => {
+         expect(extractRunTargetSourceName("run: café -> { }")).toBe("café");
+         // U+093E is Alphabetic but not a letter, so an \p{L} reader split
+         // this name in two.
+         expect(extractRunTargetSourceName("run: नाम -> { }")).toBe("नाम");
+      });
+
       it("does not let a literal re-point a name away from its real base", () => {
          // The two hardenings that separate this map from buildSourceAliasMap,
          // stated against the exact text that defeated that one: a real
@@ -355,6 +417,87 @@ describe("service/query_text", () => {
                "mine",
             ),
          ).toEqual(new Set(["hidden"]));
+      });
+
+      it("reads a comma-separated list, a tag between the name and is, and nested parameter parens", () => {
+         expect(
+            buildDerivationBaseMap("source: a is b, c is d").get("c"),
+         ).toEqual(new Set(["d"]));
+         expect(
+            buildDerivationBaseMap("source: a # tag\nis b").get("a"),
+         ).toEqual(new Set(["b"]));
+         expect(
+            buildDerivationBaseMap("source: mine(p is (1 + 2)) is Open").get(
+               "mine",
+            ),
+         ).toEqual(new Set(["Open"]));
+      });
+
+      it("does not treat a field definition inside extend { } as an edge", () => {
+         expect(
+            buildDerivationBaseMap(
+               "source: a is b extend { dimension: c is d }",
+            ),
+         ).toEqual(new Map([["a", new Set(["b"])]]));
+         // Nor a `query:` spelled inside a brace block.
+         expect(
+            buildDerivationBaseMap(
+               "source: a is b extend { query: v is b -> { select: * } }",
+            ),
+         ).toEqual(new Map([["a", new Set(["b"])]]));
+      });
+
+      it("does not let a definition named `exports` end the definition list (keyword guard)", () => {
+         // matchWord's leading guard alone let "export" match the first six
+         // letters of "exports", ending the scan before this edge (and the
+         // whole rest of the list) was ever read.
+         expect(
+            buildDerivationBaseMap("source: exports is b\nsource: c is d"),
+         ).toEqual(
+            new Map([
+               ["exports", new Set(["b"])],
+               ["c", new Set(["d"])],
+            ]),
+         );
+      });
+
+      it("gives the same edges whether an f-triple in the first declaration is stripped once or twice", () => {
+         // An un-idempotent stripper leaves a stray quote after the f-triple
+         // that, on a second pass, opens a new literal and blanks the rest of
+         // the line — including the extend block's closing brace, which hides
+         // every declaration after it from the walk.
+         const text =
+            "source: a is protected extend { dimension: n is f'''x''' }, b is c";
+         const once = buildDerivationBaseMap(
+            stripMalloyCommentsAndLiterals(text),
+         );
+         const twice = buildDerivationBaseMap(
+            stripMalloyCommentsAndLiterals(
+               stripMalloyCommentsAndLiterals(text),
+            ),
+         );
+         expect(once.get("b")).toEqual(new Set(["c"]));
+         expect(twice).toEqual(once);
+      });
+
+      it("reads the edge after a multi-line triple-quoted SQL block", () => {
+         const text =
+            'source: s is duckdb.sql("""\n  select 1 as x -- "\n""") extend {} a is locked extend {}';
+         expect(buildDerivationBaseMap(text).get("a")).toEqual(
+            new Set(["locked"]),
+         );
+         // Code inside `%{ … }` is Malloy, and the SQL resumes after it.
+         const embedded =
+            'source: s is duckdb.sql("""select * from %{ x -> { select: * } } "y"\n""")\nsource: a is locked';
+         expect(buildDerivationBaseMap(embedded).get("a")).toEqual(
+            new Set(["locked"]),
+         );
+      });
+
+      it("reads a base behind a blanked literal as unreadable, not as the next name", () => {
+         expect(
+            buildDerivationBaseMap("source: a is f'''x''' b is c").get("a"),
+         ).toEqual(new Set([UNREADABLE_BASE]));
       });
    });
 
@@ -573,6 +716,99 @@ describe("service/query_text", () => {
          ] as const) {
             expect(fastestMs(() => read(text))).toBeLessThan(200);
          }
+      });
+
+      it("is linear on 1MB of block annotations, SQL blocks and unterminated literals", () => {
+         for (const text of [
+            "#| a\n".repeat(250_000),
+            "  #| a\n |#\n".repeat(100_000),
+            'x """ y %{ z } '.repeat(70_000),
+            "f''' ".repeat(250_000),
+            "s = 'a\n".repeat(150_000),
+            "`a\n".repeat(400_000),
+            "\n".repeat(1_000_000) + "x -> y",
+         ]) {
+            expect(text.length).toBeGreaterThan(1_000_000);
+            expect(
+               fastestMs(() => {
+                  stripMalloyCommentsAndLiterals(text);
+                  buildDerivationBaseMap(text);
+                  collectIdentifierNames(text);
+                  extractRunTargetSourceName(text);
+               }),
+            ).toBeLessThan(1000);
+         }
+      });
+   });
+
+   describe("stripper matches the lexer", () => {
+      const strip = stripMalloyCommentsAndLiterals;
+
+      it("blanks a # line annotation", () => {
+         expect(strip("run: a # hide\nrun: b")).toBe("run: a       \nrun: b");
+      });
+
+      it("closes a #| block only at a column-matched |#", () => {
+         const text = "  #| hidden\n  |#\nrun: visible";
+         expect(strip(text)).toContain("run: visible");
+         expect(strip(text)).not.toContain("hidden");
+         // `|##` is not the closer for `#|`, and a closer in the wrong column is not either.
+         const wrong = "#| hidden\n |##\nrun: after";
+         expect(strip(wrong)).not.toContain("run: after");
+      });
+
+      it("ends a plain string at a newline, so the next line is syntax", () => {
+         const text = "run: open -> { where: s = 'unterminated\nrun: locked }";
+         const stripped = strip(text);
+         expect(stripped).toContain("run: locked");
+         expect(stripped.split("\n")[1]).toContain("locked");
+      });
+
+      it("blanks an f''' literal, and a plain ''' does not swallow the next line", () => {
+         const fenced =
+            "run: open -> { where: s = f'''\nrun: locked\n''' }\nrun: after";
+         expect(strip(fenced)).not.toContain("locked");
+         expect(strip(fenced)).toContain("run: after");
+         // A plain ''' is '' + an ordinary string, and that string ends at
+         // the newline, so the next line is syntax.
+         const plain = "where: s = '''\nrun: locked\n'''\nrun: after";
+         expect(strip(plain)).toContain("run: locked");
+         expect(strip(plain)).toContain("run: after");
+      });
+
+      it("ends a backtick name at a newline", () => {
+         // An unterminated backtick is one stray character to the lexer, and
+         // the next line is syntax.
+         expect(strip("dimension: `a\nrun: locked")).toBe(
+            "dimension: `a\nrun: locked",
+         );
+         expect(extractRunTargetSourceName("dimension: `a\nrun: locked")).toBe(
+            "locked",
+         );
+      });
+
+      it("blanks a triple-quoted SQL block to its own close, not to the end of text", () => {
+         const text =
+            'x is conn.sql("""\nselect 1 -- "\n""") extend {}\nrun: after';
+         expect(strip(text)).toContain("run: after");
+         expect(strip(text)).toContain(") extend {}");
+         expect(strip(text)).not.toContain("select");
+      });
+   });
+
+   describe("collectIdentifierNames", () => {
+      it("unions raw and stripped text, so a name the stripper blanks is still collected", () => {
+         const text = "run: open -> { where: s = 'locked' }";
+         expect(collectIdentifierNames(text).has("locked")).toBe(true);
+         expect(
+            scanIdentifiers(stripMalloyCommentsAndLiterals(text)).has("locked"),
+         ).toBe(false);
+      });
+
+      it("decodes an escaped backtick name", () => {
+         expect(collectIdentifierNames("run: `\\locked`").has("locked")).toBe(
+            true,
+         );
       });
    });
 });

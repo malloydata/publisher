@@ -552,7 +552,7 @@ There is one documented exception, [the authorize bypass](#authorize-bypass-for-
 | `POST /…/query` | Gate the run-target source; a lock denies with a 403, a filter with zero rows, and a gate that cannot be applied at all with a 403. Skipped entirely when the request carries `x-publisher-bypass-authorize` with the server's configured `PUBLISHER_BYPASS_AUTHORIZE_SECRET`. |
 | `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is denied there regardless. Use the `/environments/…` route. |
 | Notebook cell `GET` | Gate each cell that runs a query. Accepts no bypass. |
-| `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling, plus a compiled-source backstop). **The lock is evaluated in full here** — reaching a source is what it decides, and reading its SQL is reaching it — so a refused caller gets a 403 and no SQL. **A filter is decided on presence, not truth:** `/compile` never runs the query, so there is no row-truth to check; a filter whose every given the caller supplied is admitted, right or wrong, and `includeSql` then returns the **ungrafted** SQL, without the filter's `where:`. Only a filter with an unsupplied given denies. Accepts no bypass. |
+| `POST /…/compile` | Append scope decides every locked name that appears anywhere in the text; file and package scope check the final `run:` target and every locked source the text's `source:` / `query:` derivations reach, walked without a depth cap, and a compiled-source backstop re-checks what the final query reads; the caller-join rule does not apply there, since a submitted file is the author's. **The lock is evaluated in full here** — reaching a source is what it decides, and reading its SQL is reaching it — so a refused caller gets a 403 and no SQL. **A filter is decided on presence, not truth:** `/compile` never runs the query, so there is no row-truth to check; a filter whose every given the caller supplied is admitted, right or wrong, and `includeSql` then returns the **ungrafted** SQL, without the filter's `where:`. Only a filter with an unsupplied given denies. Accepts no bypass. |
 | MCP `execute_query` | Routes through the query path; a denial surfaces as `isError: true` naming the source. Sends no bypass. |
 
 **Fail-closed.** Anything that stops a lock being decided, or a graft landing, denies rather than admits. Where two *sources* gate one entry point — its own gate plus one carried from the source it derives from — each is evaluated or grafted separately, which AND-s them.
@@ -603,14 +603,14 @@ A `POST /…/query` request carrying the header `x-publisher-bypass-authorize` w
 What it does and does not touch:
 
 - **Only** the gate's condition is skipped. The author's own `where:` clauses still narrow the scan, row and byte caps still apply, restricted mode still bans raw SQL, and a gate declared in caller-submitted text is still rejected with a 400.
-- It is **not** `bypassFilters`, a separate deprecated `#(filter)`-only control in the request body. Neither reads or writes the other.
+- It is **not** `bypassFilters`, a separate deprecated `#(filter)`-only control in the request body. Neither reads or writes the other. `#(filter)` is not a security boundary against caller-authored query text or `bypassFilters`; use givens + `#(authorize)`.
 - Notebook cells, `/compile`, and MCP accept no bypass at all.
 
 **Publisher does not bound who may send it.** There is no authentication in the query path, so the header is exactly as trustworthy as the network in front of it — and the header name is published here, so treat it as known to anyone. **A deployment that reaches untrusted callers must strip this header at its edge.** [docs/authorize-bypass-deployment.md](authorize-bypass-deployment.md) is the operator's page: what to strip, why an allowlist beats a blocklist, and how to tell whether a bypass ever happened.
 
 Note what the residual case is if the strip is missing. Publisher has no tenant boundary of its own, so a fronting application's own authorization still decides which packages a caller reaches; what the header removes is the **in-model** gating — role- or row-level policy *within* data that caller is otherwise entitled to reach.
 
-Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`) and logged (`authorize bypass`, with source / model / package). The counter is the rate signal; the log line is what an investigation reads. Read the two carefully: `runnable` fires on every bypassed query, `source` only when a run target was resolvable before compilation, so they are not always paired.
+Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`) and logged (`authorize bypass`, with source / model / package). The counter is the rate signal; the log line is what an investigation reads. Read the two carefully: `runnable` fires once per bypassed query; `source` fires once for the run target resolved before compile, locked or not, plus once for each additional locked name. Alert on the sum.
 
 ### Gate metrics
 

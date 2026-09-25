@@ -713,13 +713,11 @@ export class Environment {
 
          // Authorize gate: /compile is compile-only, but it can still act
          // as a schema oracle (a denied caller learns a gated source's columns
-         // from compile errors) and, with includeSql, leak its SQL. Gate the
-         // named source the submitted text targets BEFORE compiling — mirrors
-         // the query path's early surface-syntax gate. Unnamed/inline source
-         // text resolves to undefined, so nothing gates it here — a `source:`
-         // is the only place `#(authorize)` is declared, and the compiled
-         // backstop below is what settles a target this cannot name. The
-         // gate runs against the package's cached Model (its
+         // from compile errors) and, with includeSql, leak its SQL. Decide the
+         // locks the submitted text names BEFORE compiling — mirrors the query
+         // path's early gate (see `assertAuthorizedForText` for what each scope
+         // reads); the compiled backstop below settles a target this cannot
+         // name. The gate runs against the package's cached Model (its
          // `given:` block + authorize annotations), independent of the virtual
          // compile below. A new model path has no cached Model, so its early
          // surface-syntax gate cannot run; the compiled backstop below instead
@@ -771,7 +769,11 @@ export class Environment {
                },
                () =>
                   gateModel.assertAuthorizedForText(source, givens ?? {}, {
-                     callerJoins: scope === "append",
+                     // File and package scope compile the whole file (or, at
+                     // package scope with a source, the whole replacement) —
+                     // a locked name that is not the statement Malloy runs
+                     // must not refuse it, and its joins are author joins.
+                     wholeFile: scope !== "append",
                   }),
             );
          }
@@ -1128,10 +1130,9 @@ export class Environment {
 
             // Compiled-source backstops — run REGARDLESS of includeSql. They
             // gate the source the COMPILED final query actually reads, closing
-            // named-query / multi-statement indirection the early surface-syntax
-            // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
-            // matches the FIRST `run:`, but the LAST statement is what executes).
-            // Compiling a gated source even without SQL is a schema oracle
+            // the named-query and derivation indirection the early
+            // surface-syntax gate cannot see. Compiling a gated source even
+            // without SQL is a schema oracle
             // (field-not-found errors leak its columns), so this must not be
             // conditional on SQL extraction. (A `source: x is gated` alias
             // carries the gate: only a declaration of its OWN `#(authorize)`

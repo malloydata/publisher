@@ -460,6 +460,15 @@ const enforcedVectors: EnforcedVector[] = [
       validParams: { Organization: "acme", Category: "widgets" },
       expectedRows: 1,
    },
+   {
+      // Case-insensitive `run:` still resolves the protected source.
+      label: "uppercase RUN: orders",
+      modelPath: "orders.malloy",
+      query: "RUN: orders -> { group_by: org_id, category; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme", Category: "widgets" },
+      expectedRows: 1,
+   },
 ];
 
 describe("alias/extend/chain of a protected source is enforced (not restricted)", () => {
