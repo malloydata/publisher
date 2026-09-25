@@ -28,34 +28,39 @@ source: a is scoped_orders extend {
 }`;
 
 const getModel = mock((_env: string, _pkg: string, path: string) =>
-   Promise.resolve({
-      data:
-         path === "dashboards/overview.malloy"
-            ? { modelPath: path, sourceText: PACKAGE_FILE }
-            : {
-                 modelPath: path,
-                 sources: [
-                    {
-                       name: "scoped_orders",
-                       views: [{ name: "by_category" }, { name: "by_brand" }],
-                    },
-                 ],
-                 sourceInfos: [
-                    JSON.stringify({
-                       name: "scoped_orders",
-                       schema: {
-                          fields: [
-                             {
-                                name: "cat",
-                                kind: "dimension",
-                                type: { kind: "string_type" },
-                             },
-                          ],
-                       },
-                    }),
-                 ],
-              },
-   }),
+   path === "broken.malloy"
+      ? Promise.reject(new Error("reloading"))
+      : Promise.resolve({
+           data:
+              path === "dashboards/overview.malloy"
+                 ? { modelPath: path, sourceText: PACKAGE_FILE }
+                 : {
+                      modelPath: path,
+                      sources: [
+                         {
+                            name: "scoped_orders",
+                            views: [
+                               { name: "by_category" },
+                               { name: "by_brand" },
+                            ],
+                         },
+                      ],
+                      sourceInfos: [
+                         JSON.stringify({
+                            name: "scoped_orders",
+                            schema: {
+                               fields: [
+                                  {
+                                     name: "cat",
+                                     kind: "dimension",
+                                     type: { kind: "string_type" },
+                                  },
+                               ],
+                            },
+                         }),
+                      ],
+                   },
+        }),
 );
 const getDashboard = mock(() =>
    Promise.resolve({
@@ -128,6 +133,22 @@ describe("DashboardEditor", () => {
             getModel.mock.calls.some((call) => call[2] === "data_app.malloy"),
          ).toBe(true),
       );
+      await screen.findByRole("button", { name: "Add tile", hidden: true });
+   });
+
+   it("keeps the catalog when one published model fails to load", async () => {
+      listModels.mockImplementationOnce(() =>
+         Promise.resolve({
+            data: [{ path: "data_app.malloy" }, { path: "broken.malloy" }],
+         }),
+      );
+      mount();
+      await waitFor(() =>
+         expect(
+            getModel.mock.calls.some((call) => call[2] === "broken.malloy"),
+         ).toBe(true),
+      );
+      // Adding a tile needs a catalog, so the button is the proof it built.
       await screen.findByRole("button", { name: "Add tile", hidden: true });
    });
 

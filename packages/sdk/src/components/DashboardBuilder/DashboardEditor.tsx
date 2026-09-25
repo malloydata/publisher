@@ -819,12 +819,17 @@ function Surface({
                versionId,
             )
          ).data.filter((m) => m.path && !m.error);
-         const models = await Promise.all(
+         // One model that fails to load (a reload racing this fetch, say)
+         // costs the catalog that model's sources, not every suggestion.
+         const settled = await Promise.allSettled(
             listed.map((m) =>
                apiClients.models
                   .getModel(environmentName, packageName, m.path!, versionId)
                   .then((response) => response.data),
             ),
+         );
+         const models = settled.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value] : [],
          );
          return visibleToDashboard(buildCatalog(models), imports, models);
       },
