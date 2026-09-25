@@ -1855,6 +1855,65 @@ class RejudgeImpliesRebuild(unittest.TestCase):
         self.assertTrue(a.rebuild and a.only)
 
 
+class AnErroredGetContextIsUnmeasured(unittest.TestCase):
+    """A get_context call the server refused (an answerer that left out
+    `scopes` gets an MCP validation error) is no ranking at all. Recorded as
+    an empty rankedSummary it scored as a search that found nothing, and the
+    retrieval score counted a refusal as a miss the run never observed."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.set_dir = self.tmp / "set"
+        self.set_dir.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def rebuild(self, blocks):
+        d = self.tmp / "art" / "q1"
+        d.mkdir(parents=True)
+        events = [{"type": kind, "message": {"content": content}}
+                  for kind, content in blocks]
+        events.append({"type": "result", "subtype": "success",
+                       "is_error": False, "usage": {}, "num_turns": 1})
+        (d / "answerer.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n")
+        a = argparse.Namespace(rebuild=True, target="local",
+                               set_dir=self.set_dir)
+        return rb.run_answerer({"qid": "q1", "question": "how many?"},
+                               a, self.tmp / "art")
+
+    def use(self, tid):
+        return {"type": "tool_use", "id": tid,
+                "name": "mcp__publisher__get_context",
+                "input": {"searchTerms": ["orders"]}}
+
+    def res(self, tid, text, err):
+        return {"type": "tool_result", "tool_use_id": tid,
+                "content": text, "is_error": err}
+
+    def test_a_refused_call_carries_no_summary_and_its_error(self):
+        got = self.rebuild([
+            ("assistant", [self.use("t1")]),
+            ("user", [self.res("t1", "MCP error -32602: scopes required", True)]),
+            ("assistant", [{"type": "text", "text": "I could not search."}])])
+        self.assertEqual(got["n_get_context"], 1)
+        [call] = got["calls"]
+        self.assertIsNone(call["rankedSummary"])
+        self.assertIn("scopes required", call["error"])
+
+    def test_a_call_that_answered_still_ranks(self):
+        # The guard on the errored path must not swallow the ordinary one.
+        body = json.dumps({"sources": [{"name": "orders", "relevance": 0.9}]})
+        got = self.rebuild([
+            ("assistant", [self.use("t1")]),
+            ("user", [self.res("t1", body, False)]),
+            ("assistant", [{"type": "text", "text": "Orders it is."}])])
+        [call] = got["calls"]
+        self.assertIsNotNone(call["rankedSummary"])
+        self.assertIsNone(call["error"])
+
+
 class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
     """CI runs this file as a script, `python3 <file>`, and `unittest.main()`
     runs what is defined so far and exits. A test class written below the

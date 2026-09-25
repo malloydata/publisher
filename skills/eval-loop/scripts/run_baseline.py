@@ -2110,6 +2110,16 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     calls.append({**info, "error": text[:300] if failed else None,
                                   "rankedSummary": None})
                 else:
+                    if failed:
+                        # The call errored (an answerer that left out `scopes`
+                        # gets an MCP validation error). That is no ranking at
+                        # all, not a ranking of zero: recorded like a spilled
+                        # file that cannot be read, with no summary, so the
+                        # retrieval score never counts it as a search that
+                        # found nothing.
+                        calls.append({**info, "error": text[:300],
+                                      "rankedSummary": None})
+                        continue
                     # The host may have spilled the body to a file. Read it
                     # back rather than scoring the notice as an empty response.
                     if payload is None:
