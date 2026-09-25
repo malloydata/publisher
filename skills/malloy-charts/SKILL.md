@@ -11,6 +11,8 @@ SPDX-License-Identifier: MIT
 
 > Malloy uses Vega-Lite under the hood. `#` tags control visualization. Call `search_malloy_docs` with topic "rendering" for the full tag reference (or see https://docs.malloydata.dev/documentation/visualizations/overview).
 
+> **This file is about the Malloy renderer's `#` tags.** It applies when the view itself is rendered - a notebook, a dashboard, an explore result. It does **not** apply to an app that draws its own charts with a vendored chart library: there the tag vocabulary is irrelevant and the full form vocabulary is available, so the approximations below (a funnel as a bar chart, a treemap as a nested table) are the wrong advice. Design to whichever vocabulary the surface actually uses.
+
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Decision Tree: Which Chart?
