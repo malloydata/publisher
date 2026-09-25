@@ -1,0 +1,5 @@
+{
+   "name": "notebook-givens-scope",
+   "version": "1.0.0",
+   "description": "Fixture for the HTTP E2E on a notebook cell's own given scope"
+}

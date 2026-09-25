@@ -31,6 +31,14 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — notebook cells receive only the givens in their own scope
+
+A notebook cell now ignores a given the notebook declares only in a later cell.
+Previously any code cell that ran before the notebook's `import` of a given 400'd
+with `unknown given` when the caller sent that given, which is what the Publisher
+UI and a router injecting trusted givens both do. A given the cell's own imports
+declare is still forwarded, and a name declared nowhere in the notebook still 400s.
+
 ## [0.8.1] (BREAKING) — dashboards and notebooks read only what `index.malloy` exports
 
 A package's surface is now the one list of what anyone can read, through every route. An agent
