@@ -17,11 +17,19 @@
  */
 
 import {
+   type GivenValue,
    isSourceDef,
    type ModelDef,
    type NamedQueryDef,
 } from "@malloydata/malloy";
 import type { Annotations } from "@malloydata/malloy";
+import {
+   BooleanFilterExpression,
+   NumberFilterExpression,
+   StringFilterExpression,
+   TemporalFilterExpression,
+} from "@malloydata/malloy-filter";
+import { BadRequestError } from "../errors";
 import { isReservedRoute } from "./annotations";
 import { referencedGivenNames } from "./authorize";
 import type { Tag } from "@malloydata/malloy-tag";
@@ -428,5 +436,52 @@ export function attachSuggestGivenNames(
       const names = suggestGivenNames(given.suggest, lookup);
       if (names) given.suggest.givenNames = names;
       else delete given.suggest.givenNames;
+   }
+}
+
+/** The parser for each `filter<T>` a given can declare, keyed by `T`. */
+const FILTER_PARSERS: Record<
+   string,
+   { parse(text: string): { log: { message: string; severity: string }[] } }
+> = {
+   string: StringFilterExpression,
+   number: NumberFilterExpression,
+   boolean: BooleanFilterExpression,
+   date: TemporalFilterExpression,
+   timestamp: TemporalFilterExpression,
+   timestamptz: TemporalFilterExpression,
+};
+
+/**
+ * Refuse a request whose value for a `filter<T>` given does not parse as a
+ * `T` filter, with the parser's own reason. Malloy refuses it too, but only
+ * once the query compiles, and its message loses the reason
+ * (`Filter expression parse error: [object Object].`).
+ *
+ * Checks only givens the model declares, with the same parser Malloy uses, so
+ * a value this accepts is one the compiler reads. An unknown name is left to
+ * Malloy's own "unknown given" error.
+ */
+export function assertFilterGivensParse(
+   declared: readonly { name?: string; type?: string }[] | undefined,
+   givens: Record<string, GivenValue> | undefined,
+): void {
+   if (!declared || !givens) return;
+   for (const given of declared) {
+      const inner = /^filter<(.+)>$/.exec(given.type ?? "")?.[1];
+      if (!given.name || !inner) continue;
+      const value = givens[given.name];
+      if (typeof value !== "string") continue;
+      const problem = FILTER_PARSERS[inner]
+         ?.parse(value)
+         .log.find((entry) => entry.severity === "error");
+      if (problem) {
+         throw new BadRequestError(
+            `Invalid value for given ${given.name} (${given.type}): ` +
+               `${problem.message.replace(/\.$/, "")}. Fix: send a ` +
+               `${given.type} expression, or leave ${given.name} unset to use ` +
+               `its default.`,
+         );
+      }
    }
 }

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { BadRequestError } from "../errors";
 import { Model } from "./model";
 
 const TEST_DIR = path.join(os.tmpdir(), "givens-integration-tests");
@@ -61,6 +62,24 @@ source: orders is duckdb.table('orders') extend {
 }
 `;
 
+const MODEL_WITH_FILTER_GIVENS = `
+##! experimental.givens
+
+given: BIG :: filter<boolean> is f''
+given: MIN_ID :: filter<number> is f''
+given: SINCE :: filter<date> is f''
+
+source: orders is duckdb.table('orders') extend {
+   primary_key: order_id
+   dimension: big is order_id > 1
+   measure: order_count is count()
+   view: filtered is {
+      where: big ~ $BIG and order_id ~ $MIN_ID and order_date ~ $SINCE
+      aggregate: order_count
+   }
+}
+`;
+
 beforeAll(async () => {
    await fs.mkdir(TEST_DB_DIR, { recursive: true });
    await fs.mkdir(TEST_PKG_DIR, { recursive: true });
@@ -84,6 +103,16 @@ beforeAll(async () => {
    await fs.writeFile(
       path.join(TEST_PKG_DIR, "orders_annotated.malloy"),
       MODEL_WITH_ANNOTATED_GIVEN,
+      "utf-8",
+   );
+   await fs.writeFile(
+      path.join(TEST_PKG_DIR, "orders_filter_givens.malloy"),
+      MODEL_WITH_FILTER_GIVENS,
+      "utf-8",
+   );
+   await fs.writeFile(
+      path.join(TEST_PKG_DIR, "filter_givens.malloynb"),
+      `>>>malloy\nimport "orders_filter_givens.malloy"\n>>>malloy\nrun: orders -> filtered`,
       "utf-8",
    );
 });
@@ -218,5 +247,81 @@ source: orders is duckdb.table('orders') extend {
       expect(annotations.length).toBeGreaterThanOrEqual(2);
       expect(annotations.some((a) => a.startsWith("##"))).toBe(false);
       expect(annotations.some((a) => a.startsWith('#"'))).toBe(false);
+   });
+});
+
+describe("filter given values are checked on arrival", () => {
+   const run = async (
+      givens: Record<string, string>,
+      shape: "full" | "compact" = "full",
+   ) => {
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "orders_filter_givens.malloy",
+         getConnections(),
+      );
+      return model.getQueryResults(
+         undefined,
+         undefined,
+         "run: orders -> filtered",
+         undefined,
+         undefined,
+         givens,
+         undefined,
+         undefined,
+         shape,
+      );
+   };
+   const count = async (givens: Record<string, string>) =>
+      (
+         JSON.parse((await run(givens, "compact")).serializedResult) as {
+            order_count: number;
+         }[]
+      )[0].order_count;
+
+   it("refuses a value its filter type cannot read, with the parser's reason", async () => {
+      await expect(run({ BIG: "asdf" })).rejects.toThrow(
+         "Invalid value for given BIG (filter<boolean>): Illegal boolean " +
+            "filter 'asdf'. Must be one of true,=true,false,=false,null,none. " +
+            "Fix: send a filter<boolean> expression, or leave BIG unset to " +
+            "use its default.",
+      );
+      await expect(run({ MIN_ID: "abc" })).rejects.toThrow(
+         /^Invalid value for given MIN_ID \(filter<number>\): Expected /,
+      );
+      await expect(run({ SINCE: "notadate" })).rejects.toThrow(
+         /^Invalid value for given SINCE \(filter<date>\): Expected /,
+      );
+   });
+
+   it("is a 400, not a compile error", async () => {
+      const error = await run({ BIG: "asdf" }).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(BadRequestError);
+   });
+
+   it("runs every value the filter grammar accepts, and the empty filter", async () => {
+      // Orders 1, 2 and 3; `big` is order_id > 1.
+      expect(await count({ BIG: "true" })).toBe(2);
+      expect(await count({ BIG: "=false" })).toBe(1);
+      expect(await count({ BIG: "not true" })).toBe(1);
+      expect(await count({ BIG: "" })).toBe(3);
+      expect(await count({ MIN_ID: ">= 2" })).toBe(2);
+      expect(await count({ SINCE: "2024-02" })).toBe(1);
+   });
+
+   it("checks a notebook cell's givens the same way", async () => {
+      const notebook = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "filter_givens.malloynb",
+         getConnections(),
+      );
+      await expect(
+         notebook.executeNotebookCell(1, undefined, undefined, { BIG: "asdf" }),
+      ).rejects.toThrow("Invalid value for given BIG (filter<boolean>)");
    });
 });

@@ -72,6 +72,7 @@
       "@malloydata/db-snowflake": "^0.0.432",
       "@malloydata/db-trino": "^0.0.432",
       "@malloydata/malloy": "^0.0.432",
+      "@malloydata/malloy-filter": "^0.0.432",
       "@malloydata/malloy-sql": "^0.0.432",
       "@malloydata/malloy-tag": "^0.0.432",
       "@malloydata/render-validator": "^0.0.432",

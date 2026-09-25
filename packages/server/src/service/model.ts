@@ -131,7 +131,12 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { gateGivenSource, malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   assertFilterGivensParse,
+   gateGivenSource,
+   malloyGivenToApi,
+   type MalloyGiven,
+} from "./given";
 import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
@@ -5281,6 +5286,7 @@ export class Model {
             `Model compilation failed: ${this.compilationError.message}`,
          );
       }
+      assertFilterGivensParse(this.givens, givens);
 
       let runnable: QueryMaterializer;
       let liveRunnable: QueryMaterializer | undefined;
@@ -6621,6 +6627,8 @@ export class Model {
       if (this.compilationError) {
          throw this.compilationError;
       }
+
+      assertFilterGivensParse(this.givens, givens);
 
       if (!this.runnableNotebookCells) {
          throw new BadRequestError("No notebook cells available");
