@@ -302,8 +302,7 @@ link's values, and Reset discards those too.
 The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
 `##(filters)` annotations is no longer filterable from a notebook, and one with
 a `required` filter cannot be satisfied there at all. The annotations still work
-everywhere else: the REST `filterParams` parameter and the server-side
-enforcement are unchanged. This is the UI half of the migration.
+everywhere else. `#(filter)` is not a security boundary against caller-authored query text or `bypassFilters`; use givens + `#(authorize)`. This is the UI half of the migration.
 
 There is no automatic conversion, because the two mechanisms are different
 shapes. A `#(filter)` annotation marks an existing dimension as filterable and

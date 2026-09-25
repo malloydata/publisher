@@ -200,3 +200,91 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
       ).toBe("LIVE");
    });
 });
+
+const GATED_MODEL_SRC = `##! experimental.givens
+given:
+  REG :: string[]
+#(access_filter) region_id in $REG
+source: regions is duckdb.sql("SELECT 'r1' AS region_id, 'LIVE' AS region_name")
+source: orders is duckdb.sql("SELECT 10 AS amount, 'r1' AS region_id") extend {
+  join_one: author_regions is regions on region_id = author_regions.region_id
+  measure: total is amount.sum()
+}
+`;
+
+// `Model.create` rather than the constructor: a gate's givens must be on the
+// model's declared-given surface, which only the real load records.
+async function buildGatedModel(): Promise<Model> {
+   const dir = mkdtempSync(join(tmpdir(), "mz-join-gated-"));
+   tmpDirs.push(dir);
+   writeFileSync(join(dir, "m.malloy"), GATED_MODEL_SRC);
+   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   await duckdb.runSQL(
+      "CREATE OR REPLACE TABLE orders_mz AS SELECT 99 AS amount, 'r1' AS region_id",
+   );
+   await duckdb.runSQL(
+      "CREATE OR REPLACE TABLE regions_mz AS SELECT 'r1' AS region_id, 'STORE' AS region_name",
+   );
+   const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
+   const model = await Model.create("pkg", dir, "m.malloy", connMap);
+   const serveConfig = new MalloyConfig({ connections: {} });
+   serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
+   model.setServeDestinationConfig(() => serveConfig);
+   model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
+   return model;
+}
+
+async function runGivens(
+   model: Model,
+   query: string,
+): Promise<{ region_name?: string; t: number }> {
+   const res = await model.getQueryResults(
+      undefined,
+      undefined,
+      query,
+      undefined,
+      undefined,
+      { REG: ["r1"] },
+   );
+   return (
+      res.compactResult as unknown as { region_name?: string; t: number }[]
+   )[0];
+}
+
+describe("storage= serve routing with a caller join to a row-gated source", () => {
+   afterEach(() => {
+      delete process.env.PERSIST_STORAGE_MODE;
+   });
+
+   it("serves the ungated run target alone from storage (control)", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildGatedModel();
+      const row = await runGivens(
+         model,
+         "run: orders -> { aggregate: t is amount.sum() }",
+      );
+      expect(Number(row.t)).toBe(99);
+   });
+
+   it("serves an author join into the row-gated source from storage", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildGatedModel();
+      const row = await runGivens(
+         model,
+         "run: orders -> { group_by: author_regions.region_name; aggregate: t is amount.sum() }",
+      );
+      expect(row.region_name).toBe("STORE");
+      expect(Number(row.t)).toBe(99);
+   });
+
+   it("runs live when the request joins the row-gated source itself", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildGatedModel();
+      const row = await runGivens(
+         model,
+         "run: orders extend { join_one: r is regions on region_id = r.region_id } -> { group_by: r.region_name; aggregate: t is amount.sum() }",
+      );
+      expect(row.region_name).toBe("LIVE");
+      expect(Number(row.t)).toBe(10);
+   });
+});

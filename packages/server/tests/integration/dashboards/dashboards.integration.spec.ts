@@ -42,8 +42,8 @@ const CURATED_PACKAGE = "dashboards-curated";
 // "declared" would mean every tile 404s, and here means nothing of the sort.
 const OPEN_PACKAGE = "dashboards-open";
 // A sixth package whose surface comes from an index.malloy rather than a key.
-// Its dashboard is withheld for the same reason the curated package's is, but
-// the author has no 'explores' to fix it in, so the remedy must differ.
+// Every dashboard is listed, and a tile or query over a source index.malloy
+// does not export answers 404, with a fix that names index.malloy.
 const CONVENTION_PACKAGE = "dashboards-convention";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
@@ -1122,92 +1122,118 @@ describe("Dashboard discovery (E2E)", () => {
    });
 
    /**
-    * Discovery was the only listing path in `Package` that never consulted
-    * `exploreSet()`, so a package that curates its query surface published full
-    * manifests for dashboards whose every query and given name then 404s.
-    * Notebooks are uncurated in BOTH directions; dashboards had taken "always
-    * listed" without "always queryable".
+    * A dashboard is always listed, whatever the surface is. The surface decides
+    * what its tiles may read: only what the package publishes, the same names
+    * an agent querying index.malloy can reach. A dashboard's own file admits
+    * nothing, so a tile over a hidden source answers 404 and the load warns.
     */
    describe("a package that curates its query surface", () => {
       const curatedUrl = (sub: string) =>
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CURATED_PACKAGE}${sub}`;
       const conventionUrl = (sub: string) =>
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CONVENTION_PACKAGE}${sub}`;
+      const post = (url: string, body: object) =>
+         fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+         });
+      const warningsOf = async (url: string) =>
+         (
+            (await (await fetch(url)).json()) as {
+               warnings?: {
+                  model?: string;
+                  message?: string;
+                  severity?: string;
+               }[];
+            }
+         ).warnings ?? [];
+      const wontLoad = async (url: string) =>
+         (await warningsOf(url))
+            .map((w) => w.message ?? "")
+            .filter((m) => m.includes("won't load"))
+            .sort();
 
-      it("serves only the dashboards whose entry files are in explores", async () => {
+      it("lists every dashboard, including ones explores does not list", async () => {
          const res = await fetch(curatedUrl("/dashboards"));
          expect(res.status).toBe(200);
          const dashboards = (await res.json()) as DashboardItem[];
          expect(dashboards.map((d) => d.name).sort()).toEqual([
             "composite",
             "listed",
+            "unlisted",
+            "w1.9",
          ]);
       });
 
       /**
-       * The query boundary is PACKAGE-wide, not per file. `composite.malloy` is
-       * listed and re-exports nothing of its own, but `orders.malloy` is listed
-       * too and exports `orders`, and this model resolves that name to the very
-       * declaration it exported, so the tile runs.
-       *
-       * This test used to assert 404 and was correct when written: the gate then
-       * consulted only the requested model's own `export {}` closure. #1008 made
-       * it package-wide and this is the assertion that caught it. Kept pointing
-       * at the same request rather than deleted, so the direction of the rule is
-       * pinned rather than merely unasserted.
+       * The query boundary is PACKAGE-wide, not per file: `orders.malloy` is
+       * listed and exports `orders`, and this model resolves that name to the
+       * very declaration it exported, so the tile runs.
        */
       it("runs an import-only dashboard's tile, because the source's own file is listed", async () => {
-         const res = await fetch(
+         const res = await post(
             curatedUrl("/models/dashboards/composite.malloy/query"),
-            {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({ query: "run: orders -> by_brand" }),
-            },
+            { query: "run: orders -> by_brand" },
          );
          expect(res.status).toBe(200);
       });
 
+      it("serves and runs a dashboard explores does not list, because it reads a published source", async () => {
+         const manifest = await fetch(curatedUrl("/dashboards/unlisted"));
+         expect(manifest.status).toBe(200);
+         expect(((await manifest.json()) as DashboardManifest).query).toBe(
+            "unlisted",
+         );
+         const res = await post(
+            curatedUrl("/models/dashboards/unlisted.malloy/query"),
+            { queryName: "unlisted" },
+         );
+         expect(res.status).toBe(200);
+      });
+
+      it("still runs a listed dashboard through the ordinary query endpoint", async () => {
+         const manifest = (await (
+            await fetch(curatedUrl("/dashboards/listed"))
+         ).json()) as DashboardManifest;
+         const res = await post(curatedUrl(`/models/${manifest.path}/query`), {
+            queryName: manifest.query,
+            compactJson: true,
+         });
+         expect(res.status).toBe(200);
+      });
+
       /**
-       * Curation applied AFTER the package is already serving must take effect,
-       * by both routes that can apply it.
-       *
-       * Found by security review, and both halves were real. `reloadAllModels`
-       * ran discovery BEFORE installing the freshly-read `explores`, so the
-       * reload that first curates a package computed its dashboard set against
-       * the previous policy and kept serving the manifests curation was meant
-       * to withhold, not for one request but until some later reload. And
-       * `setPackageMetadata`, which the metadata PATCH goes through, re-applied
-       * the query boundary without re-running discovery at all, so that route
-       * never took effect.
+       * A metadata PATCH changes the surface without changing a file, so the
+       * tile findings have to be re-checked then, not only at load.
        */
-      it("applies curation added by a metadata PATCH, not just at load", async () => {
+      it("re-checks tile findings after a metadata PATCH changes the surface", async () => {
          const pkgUrl = curatedUrl("");
-         const before = (await (
-            await fetch(curatedUrl("/dashboards"))
-         ).json()) as DashboardItem[];
-         expect(before.map((d) => d.name).sort()).toEqual([
-            "composite",
-            "listed",
-         ]);
+         expect(await wontLoad(pkgUrl)).toEqual([]);
          try {
-            // Curate harder: drop the one dashboard that WAS being served.
+            // Take orders.malloy off the surface: nothing listed exports orders.
             const patch = await fetch(pkgUrl, {
                method: "PATCH",
                headers: { "Content-Type": "application/json" },
                body: JSON.stringify({
                   name: CURATED_PACKAGE,
-                  explores: ["orders.malloy"],
+                  explores: ["dashboards/listed.malloy"],
                   queryableSources: "declared",
                }),
             });
             expect(patch.ok).toBe(true);
-            const after = (await (
+            const after = await wontLoad(pkgUrl);
+            expect(after).toContain(
+               `Dashboard listed reads orders, which no file "explores" lists ` +
+                  `exports, so it won't load. Fix: delete "explores" from ` +
+                  `publisher.json and add orders to the export { ... } in ` +
+                  `index.malloy.`,
+            );
+            // Still listed: the surface limits what it reads, not whether it shows.
+            const listed = (await (
                await fetch(curatedUrl("/dashboards"))
             ).json()) as DashboardItem[];
-            expect(after.map((d) => d.name)).toEqual([]);
-            const one = await fetch(curatedUrl("/dashboards/listed"));
-            expect(one.status).toBe(404);
+            expect(listed.map((d) => d.name)).toContain("listed");
          } finally {
             await fetch(pkgUrl, {
                method: "PATCH",
@@ -1226,168 +1252,119 @@ describe("Dashboard discovery (E2E)", () => {
          }
       });
 
-      it("404s the held-back dashboard rather than serving its manifest", async () => {
-         // The disclosure, not just the listing: the manifest carries the query
-         // name, the given names, and the suggest-query names, every one of
-         // which the query endpoint would refuse. The 404 echoing the slug the
-         // caller just sent is not a disclosure; its contents would be.
-         const res = await fetch(curatedUrl("/dashboards/unlisted"));
-         expect(res.status).toBe(404);
-         const body = await res.text();
-         expect(body).not.toContain("BRAND");
-         expect(body).not.toContain("givens");
-      });
-
-      it("confirms the held-back dashboard's query really would be refused", async () => {
-         // Pins WHY it is held back rather than assuming it: if the query
-         // boundary ever stopped refusing this, holding the dashboard back
-         // would become wrong and this test should fail.
-         const res = await fetch(
-            curatedUrl("/models/dashboards/unlisted.malloy/query"),
-            {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({ queryName: "unlisted" }),
-            },
+      it("reports no dead drill at a dashboard explores does not list", async () => {
+         // `orders.malloy` carries `# drill { to=unlisted }`. The dashboard is
+         // served, so the click lands and nothing is said.
+         const messages = (await warningsOf(curatedUrl(""))).map(
+            (w) => w.message ?? "",
          );
-         expect(res.status).toBe(404);
-      });
-
-      it("still runs the served dashboard through the ordinary query endpoint", async () => {
-         const manifest = (await (
-            await fetch(curatedUrl("/dashboards/listed"))
-         ).json()) as DashboardManifest;
-         const res = await fetch(curatedUrl(`/models/${manifest.path}/query`), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-               queryName: manifest.query,
-               compactJson: true,
-            }),
-         });
-         expect(res.status).toBe(200);
+         expect(messages.filter((m) => m.includes("unlisted"))).toEqual([]);
       });
 
       /**
-       * A `# drill` pointing at a WITHHELD dashboard is still pointing at a
-       * dashboard this package has. Resolving the drill lint against the served
-       * map made the gate turn a correct tag into "not a dashboard in this
-       * package", sending the author to fix something that was right.
-       * `orders.malloy` carries `# drill { to=unlisted }` for this.
-       */
-      it("reports a drill at a withheld dashboard as withheld, not as missing", async () => {
-         const body = (await (await fetch(curatedUrl(""))).json()) as {
-            warnings?: { message?: string }[];
-         };
-         const messages = (body.warnings ?? []).map((w) => w.message ?? "");
-         // Not "missing": the dashboard is real, so that wording sends the
-         // author to fix a drill tag that is correct.
-         expect(
-            messages.filter((m) => m.includes("is not a dashboard in this")),
-         ).toEqual([]);
-         // But not silent either: the click still has nowhere to land.
-         const withheld = messages.filter((m) =>
-            m.includes(
-               'targets "unlisted", which IS a dashboard in this package but is not served',
-            ),
-         );
-         // Exactly once. A drill is declared on a model dimension, so every
-         // file importing that source carries it; reporting per importer
-         // emitted this same finding four times.
-         expect(withheld).toHaveLength(1);
-
-         // And at `error`, matching `lintDrillTargets`. Both describe the same
-         // broken click and differ only in why the destination is missing, so
-         // they must not differ in how loudly they say it.
-         const finding = (body.warnings ?? []).find((w) =>
-            (w.message ?? "").includes("but is not served"),
-         );
-         expect(finding?.severity).toBe("error");
-      });
-
-      /**
-       * `queryableSources: "all"` decouples the axes: `explores` still curates
-       * DISCOVERY, but nothing is refused, so an import-only dashboard's tiles
-       * run regardless of any export closure.
+       * `queryableSources: "all"` decouples the axes: nothing is refused, so an
+       * import-only dashboard's tiles run regardless of any export closure.
        */
       it("runs an import-only dashboard's tiles when the boundary is inert", async () => {
-         const res = await fetch(
+         const res = await post(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN_PACKAGE}/models/dashboards/composite.malloy/query`,
-            {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  query: "run: orders -> by_brand",
-                  compactJson: true,
-               }),
-            },
+            { query: "run: orders -> by_brand", compactJson: true },
          );
          expect(res.status).toBe(200);
       });
 
-      /**
-       * Out of the documented name pattern AND withheld by curation. The
-       * "is served" finding used to be pushed before the gate, so this one file
-       * carried two contradictory warnings and the confident one was wrong.
-       */
-      it("does not claim a withheld dashboard is served, even when its name is unconventional", async () => {
-         const body = (await (await fetch(curatedUrl(""))).json()) as {
-            warnings?: { model?: string; message?: string }[];
-         };
-         const mine = (body.warnings ?? []).filter((w) =>
+      it("serves an unconventionally named dashboard and says only that", async () => {
+         const mine = (await warningsOf(curatedUrl(""))).filter((w) =>
             (w.model ?? "").includes("w1.9"),
          );
-         // Exactly one finding, and it is the withheld one.
          expect(mine).toHaveLength(1);
-         expect(mine[0]?.message ?? "").toContain("It is not served.");
-         expect(mine[0]?.message ?? "").not.toContain("is served, but");
-
-         // And it really is absent from the listing.
-         const listed = (await (
-            await fetch(curatedUrl("/dashboards"))
-         ).json()) as DashboardItem[];
-         expect(listed.map((d) => d.name)).not.toContain("w1.9");
+         expect(mine[0]?.message ?? "").toContain("is served, but");
       });
 
-      it("reports the omission instead of leaving it silent", async () => {
-         const res = await fetch(curatedUrl(""));
-         const body = (await res.json()) as {
-            warnings?: { model?: string; message?: string }[];
-         };
-         const warning = (body.warnings ?? []).find((w) =>
-            (w.model ?? "").includes("unlisted"),
-         );
-         expect(warning?.message ?? "").toContain(
-            "not part of this package's discovery surface",
-         );
-         // This package DECLARES its surface, so the remedy is the plain one.
-         // The convention case gets different advice -- see below.
-         expect(warning?.message ?? "").toContain("Add it to 'explores'");
-      });
+      describe("when index.malloy is the surface", () => {
+         it("lists every dashboard", async () => {
+            const res = await fetch(conventionUrl("/dashboards"));
+            const dashboards = (await res.json()) as DashboardItem[];
+            expect(dashboards.map((d) => d.name).sort()).toEqual([
+               "hidden",
+               "overview",
+               "tiles",
+            ]);
+         });
 
-      /**
-       * The same withholding, reached the other way. A package that curates
-       * through an index.malloy has no 'explores' to add the dashboard to, and
-       * a dashboard file is not something an index.malloy can export, so the
-       * generic remedy names a key that does not exist and a mechanism that
-       * cannot work. The advice has to change with the cause.
-       */
-      it("names a remedy that exists when the surface came from index.malloy", async () => {
-         const res = await fetch(conventionUrl(""));
-         const body = (await res.json()) as {
-            warnings?: { model?: string; message?: string }[];
-         };
-         const warning = (body.warnings ?? []).find((w) =>
-            (w.message ?? "").includes("is a dashboard"),
-         );
-         expect(warning).toBeDefined();
-         const message = warning?.message ?? "";
-         expect(message).toContain('This package\'s surface is "index.malloy"');
-         expect(message).toContain(
-            "declare (or extend) an 'explores' in publisher.json",
-         );
-         // The generic advice would be a dead end here.
-         expect(message).not.toContain("Add it to 'explores',");
+         it("runs a single-query dashboard over an exported source by name", async () => {
+            const res = await post(
+               conventionUrl("/models/dashboards/overview.malloy/query"),
+               { queryName: "overview" },
+            );
+            expect(res.status).toBe(200);
+         });
+
+         it("refuses a single-query dashboard over a source index.malloy does not export", async () => {
+            const res = await post(
+               conventionUrl("/models/dashboards/hidden.malloy/query"),
+               { queryName: "hidden" },
+            );
+            expect(res.status).toBe(404);
+         });
+
+         it("runs tiles over exported sources and ones the dashboard derives from them, and refuses the rest", async () => {
+            const tile = async (query: string) =>
+               (
+                  await post(
+                     conventionUrl("/models/dashboards/tiles.malloy/query"),
+                     {
+                        query: `run: ${query}`,
+                     },
+                  )
+               ).status;
+            expect(await tile("orders -> by_status")).toBe(200);
+            expect(await tile("big_orders -> by_status")).toBe(200);
+            expect(await tile("orders_staging -> by_flag")).toBe(404);
+            expect(await tile("staged -> by_flag")).toBe(404);
+            // A named query over the dashboard's own derived source, reached by
+            // name with no query text to read the derivation from.
+            const named = await post(
+               conventionUrl("/models/dashboards/tiles.malloy/query"),
+               { queryName: "big_status" },
+            );
+            expect(named.status).toBe(200);
+         });
+
+         it("shows a dashboard file's model and text, but only its names that read the surface", async () => {
+            const res = await fetch(
+               conventionUrl("/models/dashboards/tiles.malloy"),
+            );
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as {
+               modelDef: string;
+               sourceText?: string;
+            };
+            // The editor saves with the text's hash, so it has to be there.
+            expect(body.sourceText).toContain("## artifact");
+            const contents = Object.keys(
+               (JSON.parse(body.modelDef) as { contents: object }).contents,
+            ).sort();
+            expect(contents).toEqual(["big_orders", "big_status"]);
+            // A file off the surface is not shown at all.
+            const hidden = await fetch(conventionUrl("/models/orders.malloy"));
+            expect(hidden.status).toBe(404);
+         });
+
+         it("warns once per tile or dashboard that won't load, naming the source to export", async () => {
+            expect(await wontLoad(conventionUrl(""))).toEqual([
+               `Dashboard hidden reads orders_staging, which index.malloy ` +
+                  `doesn't export, so it won't load. Fix: add orders_staging to ` +
+                  `the export { ... } in index.malloy.`,
+               `Tile orders_staging -> by_flag on dashboard tiles reads ` +
+                  `orders_staging, which index.malloy doesn't export, so it ` +
+                  `won't load. Fix: add orders_staging to the export { ... } in ` +
+                  `index.malloy.`,
+               `Tile staged -> by_flag on dashboard tiles reads orders_staging, ` +
+                  `which index.malloy doesn't export, so it won't load. Fix: add ` +
+                  `orders_staging to the export { ... } in index.malloy.`,
+            ]);
+         });
       });
    });
 });

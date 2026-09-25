@@ -1,0 +1,35 @@
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+// `org_id`/`owner` are deliberately DIFFERENT per row so a misbound query
+// returns a DIFFERENT row set than the correctly-bound query, not merely an
+// empty one.
+#(access_filter) org_id in $GROUPS
+source: gated_parent is duckdb.sql("""
+   select * from (values
+      (1, 1, 2, 'a'),
+      (2, 1, 1, 'b'),
+      (3, 2, 1, 'c'),
+      (4, 2, 2, 'd')
+   ) as t(id, org_id, owner, val)
+""") extend {
+   measure: n is count()
+}
+
+// A plain author `where:` with NO `#(access_filter)`/`#(authorize)` at all —
+// the row-security-relevant case the graft mechanism never touches, and the
+// one `assertGraftedGatesBind` above can't help with; only the general
+// `assertNoMisboundInheritedFilters` walk covers this.
+source: where_filtered is duckdb.sql("""
+   select * from (values
+      (1, 1, 2, 'a'),
+      (2, 1, 1, 'b'),
+      (3, 2, 1, 'c'),
+      (4, 2, 2, 'd')
+   ) as t(id, org_id, owner, val)
+""") extend {
+   where: org_id = 1
+   measure: n is count()
+}
