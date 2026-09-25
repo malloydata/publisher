@@ -52,6 +52,7 @@ source: gated_sql is duckdb.sql("select 1 as id, 'x' as name") extend {}
 
 query: gated_q is gated -> { group_by: id, secret }
 query: hidden_q is helper -> { group_by: id, name }
+query: hq_exp is helper -> { group_by: id }
 
 query: rg_q is rowgated -> { group_by: id, region }
 source: nq_author is duckdb.table('t') extend {
@@ -64,7 +65,7 @@ source: comp_plain is compose(plain, open_src)
 
 export {
   gated, rowgated, plain, open_src, gated_ext, gated_sql, gated_q,
-  rg_q, nq_author, comp, comp_rg, comp_plain
+  rg_q, hq_exp, nq_author, comp, comp_rg, comp_plain
 }
 `;
 
@@ -288,8 +289,8 @@ describe("a caller join into an #(authorize) lock", () => {
       it(`403 for a non-admitted caller: ${label}`, async () => {
          await expectDenied(plainModel, query, DENY, alias);
       });
-      // Malloy's SQL-gen cannot resolve a join inside a nest (ungated too), so
-      // only its denial is observable.
+      // Malloy does not compile a join inside a nest (ungated too), so only
+      // its denial is observable.
       if (label === "a join inside a nest:") continue;
       it(`200 for an admitted caller: ${label}`, async () => {
          const { rows } = await run(plainModel, query, ADMIT);
@@ -604,9 +605,8 @@ source: helper is duckdb.table('t')
 });
 
 describe("a caller join cannot hide a laundered run target", () => {
-   // No reachable shape drops a gate from the run target now that the
-   // dimension form is retired, so this pins the ordering on the over-denial
-   // the laundering check gives an unprovable request-declared entry point.
+   // Pins the ordering on the over-denial the laundering check gives an
+   // unprovable request-declared entry point.
    it("an unprovable run target stays 403 with a row-gated caller join beside it", async () => {
       await expectDenied(
          plainModel,
@@ -722,7 +722,56 @@ describe("author joins", () => {
       }
    });
 
-   it("a caller join grafting a source leaves an author join through a named query over it unfiltered", async () => {
+   it("a caller join grafting a source filters an author join through a named query over it when the source is imported", async () => {
+      // An imported source reaches the named query as an object snapshot, which
+      // `graftIntoNamedQuerySnapshots` grafts too: over-filtering, never under.
+      await fs.writeFile(
+         path.join(PKG_DIR, "base.malloy"),
+         `##! experimental { givens }
+given:
+  GROUPS :: string[]
+
+#(access_filter) region in $GROUPS
+source: rowgated2 is duckdb.table('t') extend { primary_key: id }
+`,
+      );
+      await fs.writeFile(
+         path.join(PKG_DIR, "imported.malloy"),
+         `##! experimental { givens }
+import { rowgated2, GROUPS } from "base.malloy"
+query: rg2_q is rowgated2 -> { group_by: id, region }
+source: nq2_author is duckdb.table('t') extend {
+  join_one: q is rg2_q on id = q.id
+}
+`,
+      );
+      const imported = await Model.create(
+         "test-pkg",
+         PKG_DIR,
+         "imported.malloy",
+         new Map<string, Connection>([["duckdb", duck as Connection]]),
+      );
+      const alone = await run(
+         imported,
+         "run: nq2_author -> { group_by: id, qr is q.region }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(alone.rows)).toEqual([
+         { id: 1, qr: "US" },
+         { id: 2, qr: "EU" },
+      ]);
+      const withCaller = await run(
+         imported,
+         "run: nq2_author extend { join_one: r is rowgated2 on id = r.id } -> { group_by: id, qr is q.region, rr is r.region }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(withCaller.rows)).toEqual([
+         { id: 1, qr: "US", rr: "US" },
+         { id: 2, qr: null, rr: null },
+      ]);
+   });
+
+   it("a caller join grafting a source leaves an author join through a same-file named query over it unfiltered", async () => {
       const withCaller = await run(
          plainModel,
          "run: nq_author extend { join_one: r is rowgated on id = r.id } -> { group_by: id, qr is q.region, rr is r.region }",
@@ -741,5 +790,178 @@ describe("author joins", () => {
          { id: 1, qr: "US", rr: "US" },
          { id: 2, qr: "EU", rr: null },
       ]);
+   });
+});
+
+describe("a caller join under an author named-query run target", () => {
+   for (const [label, query] of [
+      [
+         "a refinement's extend",
+         "run: hidden_q + { extend: { join_one: g is gated_q on id = g.id } group_by: g.secret }",
+      ],
+      [
+         "a pipe stage's extend",
+         "run: hidden_q -> { extend: { join_one: g is gated_q on id = g.id } group_by: g.secret }",
+      ],
+      [
+         "a refinement's query-local join",
+         "run: hidden_q + { join_one: g is gated_q on id = g.id; group_by: g.secret }",
+      ],
+   ]) {
+      it(`decides the lock: ${label}`, async () => {
+         await expectDenied(plainModel, query, DENY, "g");
+      });
+   }
+
+   it("grafts the row filter", async () => {
+      const { rows } = await run(
+         plainModel,
+         "run: hidden_q + { extend: { join_one: g is rowgated on id = g.id } group_by: g.region }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, name: "a", region: "US" },
+         { id: 2, name: "b", region: null },
+      ]);
+   });
+
+   it("holds the join to the boundary", async () => {
+      await expectNotQueryable(
+         boundaryModel,
+         "run: rg_q + { extend: { join_one: h is hidden_q on id = h.id } group_by: h.name }",
+         ADMIT,
+      );
+   });
+});
+
+// Each declares `mine` over a gated or hidden base the text reader could once
+// miss, with a decoy `source: mine is plain` the compiler never reads.
+const DECOY = "dimension: `source: mine is plain` is 1";
+
+describe("a caller-declared source the text could misread", () => {
+   const runJoin =
+      "run: plain extend { join_one: m is mine on id = m.id } -> { group_by: m.secret }";
+   for (const [label, declaration] of [
+      ["a parenthesised base", `source: mine is ((gated)) extend { ${DECOY} }`],
+      [
+         "the second item of a source: list",
+         `source: a is plain extend {} mine is gated extend { ${DECOY} }`,
+      ],
+      [
+         "an annotation after is",
+         "# source: mine is plain\nsource: mine is\n# note\ngated extend {}",
+      ],
+   ]) {
+      it(`decides the lock through ${label}`, async () => {
+         await expectDenied(
+            plainModel,
+            `${declaration}\n${runJoin}`,
+            DENY,
+            "m",
+         );
+      });
+   }
+
+   it("grafts the row filter through a parenthesised base", async () => {
+      const { rows } = await run(
+         plainModel,
+         `source: mine is ((rowgated)) extend { ${DECOY} }\nrun: plain extend { join_one: m is mine on id = m.id } -> { group_by: id, m.region }`,
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, region: "US" },
+         { id: 2, region: null },
+      ]);
+   });
+
+   it("holds the join to the boundary", async () => {
+      await expectNotQueryable(
+         boundaryModel,
+         `source: mine is ((helper)) extend { ${DECOY} }\nrun: plain extend { join_one: m is mine on id = m.id } -> { group_by: m.name }`,
+         ADMIT,
+      );
+   });
+
+   it("decides the lock for an inline extend over it", async () => {
+      await expectDenied(
+         plainModel,
+         `source: mine is ((gated)) extend { ${DECOY} }\nrun: plain extend { join_one: e is mine extend {} on id = e.id } -> { group_by: e.secret }`,
+         DENY,
+         "e",
+      );
+   });
+
+   it("holds the same declaration run directly to the boundary", async () => {
+      await expectNotQueryable(
+         boundaryModel,
+         `source: mine is ((helper)) extend { ${DECOY} }\nrun: mine -> { group_by: name }`,
+         ADMIT,
+      );
+   });
+});
+
+describe("a caller join refining a curated author query", () => {
+   it("is admitted unmodified", async () => {
+      const { rows } = await run(
+         boundaryModel,
+         "run: plain extend { join_one: q is hq_exp on id = q.id } -> { group_by: q.id }",
+         ADMIT,
+      );
+      expect(rows.length).toBe(2);
+   });
+
+   for (const refinement of [
+      "hq_exp + { group_by: name }",
+      "hq_exp + { where: name = 'a' }",
+      "hq_exp -> { group_by: id }",
+   ]) {
+      it(`is 404 over a hidden base: ${refinement}`, async () => {
+         await expectNotQueryable(
+            boundaryModel,
+            `run: plain extend { join_one: q is ${refinement} on id = q.id } -> { group_by: q.id }`,
+            ADMIT,
+         );
+      });
+   }
+});
+
+describe("record and array literals are not joins", () => {
+   it("admits a record literal", async () => {
+      const { rows } = await run(
+         plainModel,
+         "run: plain extend { dimension: r is {a is 1} } -> { group_by: r.a }",
+         DENY,
+      );
+      expect(rows).toEqual([{ a: 1 }]);
+   });
+
+   it("admits an array literal", async () => {
+      const { rows } = await run(
+         plainModel,
+         "run: plain extend { dimension: xs is [1, 2] } -> { group_by: xs.each }",
+         DENY,
+      );
+      expect(rows.length).toBe(2);
+   });
+});
+
+describe("caller joins are resolved once per request", () => {
+   it("walks the compiled query once for the boundary and authorize passes", async () => {
+      const model = await loadModel(true);
+      const internals = model as unknown as {
+         computeCallerJoins: (...args: unknown[]) => Promise<unknown>;
+      };
+      const original = internals.computeCallerJoins.bind(model);
+      let calls = 0;
+      internals.computeCallerJoins = (...args: unknown[]) => {
+         calls++;
+         return original(...args);
+      };
+      await run(
+         model,
+         "run: plain extend { join_one: g is gated on id = g.id } -> { group_by: g.secret }",
+         ADMIT,
+      );
+      expect(calls).toBe(1);
    });
 });

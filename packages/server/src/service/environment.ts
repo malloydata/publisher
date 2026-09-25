@@ -769,7 +769,10 @@ export class Environment {
                      source,
                   );
                },
-               () => gateModel.assertAuthorizedForText(source, givens ?? {}),
+               () =>
+                  gateModel.assertAuthorizedForText(source, givens ?? {}, {
+                     callerJoins: scope === "append",
+                  }),
             );
          }
 

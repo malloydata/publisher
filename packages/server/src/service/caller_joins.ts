@@ -8,11 +8,11 @@
  * A caller join is held to the joined source's gate and to the query boundary
  * as if it were an extra run target (`docs/authorize.md`). Everything here
  * decides on compiler-set facts the caller cannot write: a join's `location`
- * (the caller's own text compiles under its own URL, the model's under its
- * file's) and its `sourceID` (`name@declaring-url`). A join struct's
- * annotations are never read — an annotated join REPLACES them — and caller
- * text is read only where the IR keeps no link at all (an inline `x extend
- * { … }`, a caller-declared derivation).
+ * (the author's only when its URL is one of the on-disk model's own files) and
+ * its `sourceID` (`name@declaring-url`). A join struct's annotations are never
+ * read — an annotated join REPLACES them — and caller text is read only where
+ * the IR keeps no link at all (an inline `x extend { … }`, and the derivation
+ * chain of a caller-declared source).
  *
  * Model-state-free on purpose, so `Model` supplies what only it knows (which
  * names the on-disk model declares) through {@link CallerJoinContext}.
@@ -57,11 +57,26 @@ export type CallerJoinResolution =
          * than its members, the same rule a composite run target gets.
          */
         boundaryNames: Set<string>;
-        /** An author named query the join reads, which the boundary may curate. */
+        /** An author named query the join reads unmodified, which the boundary may curate. */
         curatedQuery?: string;
         composite: boolean;
+        /**
+         * Caller-declared sources the join reads, gated from their compiled
+         * struct as a request-declared run target is, with the text chain as
+         * the laundering proof.
+         */
+        callerSources: CallerSource[];
+        /** Where the text chain the boundary needs could not be established. */
+        boundaryUnprovenAt?: string;
      }
    | { kind: "unproven"; at: string };
+
+/** A caller-declared `contents` entry a caller join reaches. */
+export interface CallerSource {
+   key: string;
+   struct: IrStruct;
+   chain: ReturnType<typeof derivationTerminals>;
+}
 
 /** Thrown for every "cannot tell"; callers turn it into a refusal. */
 export class CallerJoinWalkError extends Error {}
@@ -121,21 +136,33 @@ export interface CallerJoinContext {
    isModelSource(name: string): boolean;
    /** The on-disk model declares a named query by this name. */
    isModelQuery(name: string): boolean;
+   /** The URLs of the on-disk model's own files: it and its imports. */
+   authorUrls: ReadonlySet<string>;
 }
 
-/** Whether `location` is inside caller-written text. */
+/**
+ * Whether `location` is inside caller-written text. Fails closed: a location
+ * is the author's only when its URL is one of the on-disk model's own files
+ * (or, for a `span`, a line above the caller's), so an unknown URL or a
+ * missing location reads as the caller's.
+ */
 export function isCallerAuthored(
    location: IrLocation | undefined,
    region: CallerRegion,
-   queryUrl: string | undefined,
+   authorUrls: ReadonlySet<string>,
 ): boolean {
    const url = location?.url;
-   if (url === undefined) return false;
-   if (region.kind === "query") return url === queryUrl;
-   const line = location?.range?.start?.line;
-   return (
-      url === region.url && typeof line === "number" && line >= region.fromLine
-   );
+   if (url === undefined) return true;
+   if (region.kind === "span" && url === region.url) {
+      const line = location?.range?.start?.line;
+      return !(typeof line === "number" && line < region.fromLine);
+   }
+   return !authorUrls.has(url);
+}
+
+/** A join to a source; a record or array is `join`-typed too and is not one. */
+function isSourceJoin(field: IrStruct): boolean {
+   return !!field.join && isSourceDef(field as never);
 }
 
 function aliasOf(field: IrStruct): string {
@@ -170,22 +197,18 @@ function runTargetStruct(prepared: PreparedQueryIr): IrStruct | undefined {
  * generated from), and the query's pipeline. An author join is not recursed
  * into, which keeps the author rule and keeps a deep author graph off the
  * depth bound. Throws {@link CallerJoinWalkError} past the depth or count
- * bound, for a join with no location, when the query carries no URL to
- * recognize caller text by, and when a completeness scan finds a caller join
- * the walk did not place.
+ * bound, for a join with no location, and when a completeness scan finds a
+ * caller join the walk did not place.
  */
 export function collectCallerJoins(
    prepared: PreparedQueryIr,
    region: CallerRegion,
+   authorUrls: ReadonlySet<string>,
 ): CallerJoin[] {
    const query = prepared._query;
    if (!query) throw new CallerJoinWalkError("no compiled query to walk");
-   const queryUrl = query.location?.url;
-   if (region.kind === "query" && queryUrl === undefined) {
-      throw new CallerJoinWalkError("the compiled query carries no URL");
-   }
    const isCaller = (location: IrLocation | undefined) =>
-      isCallerAuthored(location, region, queryUrl);
+      isCallerAuthored(location, region, authorUrls);
    const modelDef = prepared._modelDef;
    const found: CallerJoin[] = [];
 
@@ -213,7 +236,7 @@ export function collectCallerJoins(
    ): void => {
       for (const field of fields ?? []) {
          const fieldPath = [...path, key, aliasOf(field)];
-         if (field.join) {
+         if (isSourceJoin(field)) {
             if (field.location?.url === undefined) {
                if (synthesized) continue;
                throw new CallerJoinWalkError("a join carries no location");
@@ -314,10 +337,10 @@ function assertResolvedJoinsAccountedFor(
    isCaller: (location: IrLocation | undefined) => boolean,
 ): void {
    const declared = new Set(
-      (target?.fields ?? []).filter((f) => f.join).map((f) => aliasOf(f)),
+      (target?.fields ?? []).filter(isSourceJoin).map((f) => aliasOf(f)),
    );
    for (const field of resolved.fields ?? []) {
-      if (!field.join || isCaller(field.location)) continue;
+      if (!isSourceJoin(field) || isCaller(field.location)) continue;
       if (!declared.has(aliasOf(field))) {
          throw new CallerJoinWalkError(
             "a resolved composite carries a join the declared source does not",
@@ -354,7 +377,7 @@ function assertEveryCallerJoinPlaced(
          continue;
       }
       const node = value as IrStruct & Record<string, unknown>;
-      if (typeof node.join === "string" && node.join) {
+      if (isSourceJoin(node)) {
          // Nothing caller-written sits beneath an author join.
          if (!isCaller(node.location)) continue;
          if (!placed.has(node)) {
@@ -373,6 +396,9 @@ function assertEveryCallerJoinPlaced(
          ) {
             continue;
          }
+         // A composite's fields are synthesized from its members, unlocated;
+         // the members are scanned instead, as the walk does.
+         if (key === "fields" && node.type === "composite") continue;
          // A caller-declared source named by string holds its joins in `contents`.
          if (key === "structRef" && typeof child === "string") {
             const named = contentsStruct(modelDef, child);
@@ -421,27 +447,29 @@ export function derivationTerminals(
  *
  * Identity is by `sourceID` against the compiled `contents`, never by name and
  * never by parsing the id (a URL may contain `@`). A matched entry the caller
- * declared is followed through the caller's text; one the model declared must
- * be a name the on-disk model declares. A query-source join also resolves its
- * base; a composite join resolves its own id AND every member. Only the join
- * itself may fall back to text when it has no `sourceID` (an inline `extend`):
- * every base any `ALIAS is BASE` spelling gives it must then prove out.
+ * declared comes back as a {@link CallerSource}, to be gated from its compiled
+ * struct; one the model declared must be a name the on-disk model declares. A
+ * query-source join also resolves its base; a composite join resolves its own
+ * id AND every member. Only the join itself may fall back to text when it has
+ * no `sourceID` (an inline `extend`): every base any `ALIAS is BASE` spelling
+ * gives it must then prove out.
  */
 export function resolveCallerJoin(
    callerJoin: CallerJoin,
    compiledModelDef: ModelDef,
    region: CallerRegion,
-   queryUrl: string | undefined,
    context: CallerJoinContext,
 ): CallerJoinResolution {
    const names = new Set<string>();
    const boundaryNames = new Set<string>();
+   const callerSources: CallerSource[] = [];
    let composite = false;
    let curatedQuery: string | undefined;
    let unprovenAt: string | undefined;
+   let boundaryUnprovenAt: string | undefined;
    const isCaller = (location: IrLocation | undefined) =>
-      isCallerAuthored(location, region, queryUrl);
-   let derivations: Map<string, Set<string>> | undefined;
+      isCallerAuthored(location, region, context.authorUrls);
+   const text = regionMaps(region);
 
    const fail = (at: string): false => {
       unprovenAt ??= at;
@@ -453,27 +481,51 @@ export function resolveCallerJoin(
       if (forBoundary) boundaryNames.add(name);
    };
 
-   const followText = (start: string, forBoundary: boolean): boolean => {
-      derivations ??= buildDerivationBaseMap(region.text);
-      const chain = derivationTerminals(start, derivations, (name) =>
+   const chainOf = (start: string) =>
+      derivationTerminals(start, text.derivations(), (name) =>
          context.isModelSource(name),
       );
-      if (!chain.proven) return fail(chain.at);
-      for (const name of chain.terminals) add(name, forBoundary);
-      return true;
-   };
 
    // Keyed like the on-disk gate map: by the entry's own `as ?? name`.
    const byContentsKey = (key: string, forBoundary: boolean): boolean => {
       const entry = contentsStruct(compiledModelDef, key);
-      if (entry && isCaller(entry.location))
-         return followText(key, forBoundary);
+      if (entry && isCaller(entry.location)) {
+         // Gated from its struct by the caller; the boundary has only text.
+         const chain = chainOf(key);
+         callerSources.push({ key, struct: entry, chain });
+         if (forBoundary) {
+            if (chain.proven) {
+               for (const name of chain.terminals) boundaryNames.add(name);
+            } else {
+               boundaryUnprovenAt ??= chain.at;
+            }
+         }
+         return true;
+      }
       const name = entry ? aliasOf(entry) : key;
       if (context.isModelSource(name)) {
          add(name, forBoundary);
          return true;
       }
-      return fail(name);
+      if (entry) return fail(name);
+      // A name no source entry holds, such as a caller `query:`.
+      const chain = chainOf(key);
+      if (!chain.proven) return fail(chain.at);
+      for (const terminal of chain.terminals) add(terminal, forBoundary);
+      return true;
+   };
+
+   // The author's query exactly as declared: a refinement keeps its name.
+   const isUnmodifiedModelQuery = (q: IrQuery): boolean => {
+      if (!q.name || !context.isModelQuery(q.name)) return false;
+      const declared = compiledModelDef.contents[q.name] as
+         | (IrQuery & { type?: string })
+         | undefined;
+      return (
+         declared?.type === "query" &&
+         !isCaller(declared.location) &&
+         JSON.stringify(q.pipeline) === JSON.stringify(declared.pipeline)
+      );
    };
 
    const bySourceID = (sourceID: string, forBoundary: boolean): boolean => {
@@ -518,12 +570,7 @@ export function resolveCallerJoin(
       }
       if (struct.type === "query_source") {
          const q = struct.query;
-         if (
-            isJoinItself &&
-            q?.name &&
-            !isCaller(q.location) &&
-            context.isModelQuery(q.name)
-         ) {
+         if (isJoinItself && q && isUnmodifiedModelQuery(q)) {
             curatedQuery = q.name;
          }
          const ref = q?.structRef;
@@ -540,12 +587,12 @@ export function resolveCallerJoin(
       if (anchored) return true;
       if (!isJoinItself) return fail(callerJoin.alias);
       const bases = new Set([
-         ...(buildJoinBaseMap(region.text).get(callerJoin.alias) ?? []),
-         ...(buildIsEdgeMap(region.text).get(callerJoin.alias) ?? []),
+         ...(text.joins().get(callerJoin.alias) ?? []),
+         ...(text.isEdges().get(callerJoin.alias) ?? []),
       ]);
       if (bases.size === 0) return fail(callerJoin.alias);
       for (const base of bases) {
-         if (!followText(base, forBoundary)) return false;
+         if (!byContentsKey(base, forBoundary)) return false;
       }
       return true;
    };
@@ -553,7 +600,41 @@ export function resolveCallerJoin(
    if (!resolveStruct(callerJoin.join, true, true, 0)) {
       return { kind: "unproven", at: unprovenAt ?? callerJoin.alias };
    }
-   return { kind: "resolved", names, boundaryNames, curatedQuery, composite };
+   return {
+      kind: "resolved",
+      names,
+      boundaryNames,
+      curatedQuery,
+      composite,
+      callerSources,
+      boundaryUnprovenAt,
+   };
+}
+
+interface RegionMaps {
+   derivations(): Map<string, Set<string>>;
+   joins(): Map<string, Set<string>>;
+   isEdges(): Map<string, Set<string>>;
+}
+
+const regionMapsCache = new WeakMap<CallerRegion, RegionMaps>();
+
+/** The region's text maps, each built at most once however many joins read it. */
+function regionMaps(region: CallerRegion): RegionMaps {
+   let maps = regionMapsCache.get(region);
+   if (!maps) {
+      const once = <T>(build: () => T): (() => T) => {
+         let value: T | undefined;
+         return () => (value ??= build());
+      };
+      maps = {
+         derivations: once(() => buildDerivationBaseMap(region.text)),
+         joins: once(() => buildJoinBaseMap(region.text)),
+         isEdges: once(() => buildIsEdgeMap(region.text)),
+      };
+      regionMapsCache.set(region, maps);
+   }
+   return maps;
 }
 
 /**
@@ -620,5 +701,7 @@ export function locateCallerJoin(
       }
    }
    const found = node as IrStruct | undefined;
-   return found && typeof found === "object" && found.join ? found : undefined;
+   return found && typeof found === "object" && isSourceJoin(found)
+      ? found
+      : undefined;
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { derivationTerminals } from "./caller_joins";
 import {
    buildDerivationBaseMap,
    buildIsEdgeMap,
@@ -9,6 +10,7 @@ import {
    buildSourceAliasMap,
    extractRunTargetSourceName,
    stripMalloyCommentsAndLiterals,
+   UNREADABLE_BASE,
 } from "./query_text";
 
 describe("service/query_text", () => {
@@ -392,10 +394,10 @@ describe("service/query_text", () => {
                "e",
             ),
          ).toEqual(new Set(["gated"]));
-         // A base the scan cannot read yields no edge rather than `e -> e`.
-         expect(
-            buildJoinBaseMap("run: s extend { join_one: e is 'x' }").has("e"),
-         ).toBe(false);
+         // A base the scan cannot read is an unreadable edge, never `e -> e`.
+         expect(bases("run: s extend { join_one: e is 'x' }", "e")).toEqual(
+            new Set([UNREADABLE_BASE]),
+         );
       });
 
       it("reads a parenthesized base and a backtick-quoted alias", () => {
@@ -482,6 +484,74 @@ describe("service/query_text", () => {
          buildIsEdgeMap(text);
          buildJoinBaseMap(text);
          expect(performance.now() - start).toBeLessThan(1000);
+      });
+   });
+
+   describe("what the text readers cannot be fed", () => {
+      it("blanks a # annotation to end of line, outside strings and backticks", () => {
+         expect(
+            stripMalloyCommentsAndLiterals("# source: a is b\nsource: c is d"),
+         ).toBe("                \nsource: c is d");
+         expect(stripMalloyCommentsAndLiterals("dimension: `a#b` is 1")).toBe(
+            "dimension: `a#b` is 1",
+         );
+         expect(stripMalloyCommentsAndLiterals("where: n = '#x'\ny")).toBe(
+            "where: n = '  '\ny",
+         );
+      });
+
+      it("reads a base the annotations around is used to hide", () => {
+         expect(
+            buildDerivationBaseMap(
+               "# source: mine is plain\nsource: mine is\n# note\ngated extend {}",
+            ).get("mine"),
+         ).toEqual(new Set(["gated"]));
+      });
+
+      it("ignores a declaration, a join, or an edge spelled inside a backtick name", () => {
+         expect(
+            buildDerivationBaseMap(
+               "source: mine is ((gated)) extend { dimension: `source: mine is plain` is 1 }",
+            ).get("mine"),
+         ).toEqual(new Set(["gated"]));
+         expect(
+            buildJoinBaseMap(
+               "run: s extend { dimension: `join_one: g is plain` is 1 }",
+            ).has("g"),
+         ).toBe(false);
+         expect(
+            buildIsEdgeMap("dimension: `mine is plain` is 1").has("mine"),
+         ).toBe(false);
+      });
+
+      it("reads every item of a source: statement", () => {
+         expect(
+            buildDerivationBaseMap(
+               "source: a is plain extend {} mine is gated extend {}",
+            ).get("mine"),
+         ).toEqual(new Set(["gated"]));
+      });
+
+      it("leaves a name whose real base it cannot read unproven beside a forged one", () => {
+         const map = buildDerivationBaseMap(
+            "source: mine is 'x'\nsource: mine is plain",
+         );
+         expect(
+            derivationTerminals("mine", map, (name) => name === "plain").proven,
+         ).toBe(false);
+      });
+
+      it("is linear on a 1MB adversarial body", () => {
+         const dashes = "a -- ".repeat(100_000);
+         const hashes = "a # ".repeat(125_000);
+         const text = `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${dashes}'; group_by: e.id }\n# ${hashes}\n`;
+         expect(text.length).toBeGreaterThan(1_000_000);
+         const start = performance.now();
+         stripMalloyCommentsAndLiterals(text);
+         buildDerivationBaseMap(text);
+         buildJoinBaseMap(text);
+         buildIsEdgeMap(text);
+         expect(performance.now() - start).toBeLessThan(500);
       });
    });
 });

@@ -34,22 +34,11 @@ function keywordPattern(pattern: string, flags = ""): RegExp {
 }
 
 /**
- * What Malloy's lexer reads around between two tokens: whitespace, comments,
- * and `#` annotations, which the join grammar allows before an item and on
- * either side of its `is`. Each alternative matches exactly one way (a line
- * form runs to the newline, a block form stops at its first close), so a
- * caller cannot make the scan backtrack exponentially.
+ * The base recorded for `NAME is …` when what follows cannot be read, so the
+ * name stays unproven rather than proven by some other edge. A backtick cannot
+ * occur inside a Malloy name, so no model source can be called this.
  */
-const TRIVIA = String.raw`(?:\s|(?:#|--|\/\/)[^\n]*(?=\n|$)|\/\*(?:[^*]|\*(?!\/))*\*\/)*`;
-
-/** A word ends here: without it `eis x` reads as `e is x` by backtracking. */
-const WORD_END = String.raw`(?![\p{L}\p{N}_])`;
-
-/** A word does not start mid-identifier, mid-path, or inside a backtick. */
-const WORD_START = String.raw`(?<![\p{L}\p{N}_.\x60])`;
-
-/** `ALIAS is BASE`, where BASE may sit behind any number of `(`. */
-const IS_EDGE = String.raw`${IDENT}${WORD_END}${TRIVIA}is${WORD_END}${TRIVIA}(?:\(${TRIVIA})*${IDENT}`;
+export const UNREADABLE_BASE = "`";
 
 /**
  * The top-level source a `run:` / `->` query targets, or undefined when the
@@ -143,7 +132,8 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
  * Comments are recognized outside literals only, and literals outside
  * comments only, in ONE left-to-right pass — a `--` inside a string is not a
  * comment, and a `'` inside a comment does not open a string. Line comments
- * (`--`, `//`) run to the newline; block comments (slash-star) to their close,
+ * (`--`, `//`) and `#` annotations run to the newline; block comments
+ * (slash-star) to their close,
  * or to end of input when unterminated.
  *
  * Backtick-quoted identifiers are PRESERVED and SKIPPED WHOLE: unlike
@@ -165,7 +155,9 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
    };
    for (let i = 0; i < text.length; i++) {
       const two = text.slice(i, i + 2);
-      if (two === "--" || two === "//") {
+      // A `#` annotation is read around like a comment, so text in one can
+      // neither hide a declaration nor plant a decoy.
+      if (two === "--" || two === "//" || text[i] === "#") {
          const nl = text.indexOf("\n", i);
          const end = nl === -1 ? text.length : nl;
          blank(i, end);
@@ -238,6 +230,11 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
  * Does NOT replace {@link buildSourceAliasMap}, which survives for
  * `resolveFilterSource`'s filter-inheritance walk.
  *
+ * Every item of a statement is read (`source: a is x extend {} b is y`), with
+ * an optional parameter list after the name and any number of `(` before the
+ * base; a name whose base cannot be read gets {@link UNREADABLE_BASE}, so a
+ * decoy elsewhere cannot stand in for the declaration it missed.
+ *
  * Strips its own input, for the reason {@link buildSourceAliasMap} gives: a
  * documented precondition holds only until the next caller, and the strip is
  * idempotent, so a caller that already stripped pays a second scan and nothing
@@ -248,25 +245,168 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
 export function buildDerivationBaseMap(
    query: string,
 ): Map<string, Set<string>> {
-   const basesOf = new Map<string, Set<string>>();
-   const text = stripMalloyCommentsAndLiterals(query);
-   // An optional parameter list after the name (`mine(p::string) is …`) and an
-   // optional `(` before the base (`is (X extend { … })`) are both read,
-   // because both are legal grammar a narrower pattern silently declined to
-   // link.
-   const declRe = keywordPattern(
-      String.raw`(?:source|query)\s*:\s*${IDENT}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${IDENT}`,
-      "g",
-   );
-   let match: RegExpExecArray | null;
-   while ((match = declRe.exec(text)) !== null) {
-      const name = match[1] ?? match[2];
-      const base = match[3] ?? match[4];
-      const bases = basesOf.get(name) ?? new Set<string>();
-      bases.add(base);
-      basesOf.set(name, bases);
+   const out = new Map<string, Set<string>>();
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   for (let i = 0; i < tokens.length; i++) {
+      if (!isStatementKeyword(tokens, i)) continue;
+      const keyword = tokens[i].text.toLowerCase();
+      if (keyword !== "source" && keyword !== "query") continue;
+      readStatementItems(tokens, i + 2, false, (name, base) =>
+         addEdge(out, name, base),
+      );
    }
-   return basesOf;
+   return out;
+}
+
+/** One token of stripped Malloy text: a name, or one punctuation character. */
+interface Token {
+   /** A name without its backticks, or the character itself. */
+   text: string;
+   name: boolean;
+   quoted: boolean;
+   /** A bracket's partner index; -1 for anything else or an unbalanced one. */
+   partner: number;
+}
+
+const NAME_CHAR = /[\p{L}\p{N}_]/u;
+
+/**
+ * Split stripped text into names and punctuation in one pass, pairing
+ * brackets, so every reader below walks tokens instead of retrying a pattern.
+ * A backtick span is one name token, so nothing inside it can read as syntax.
+ */
+function tokenize(text: string): Token[] {
+   const tokens: Token[] = [];
+   const open: number[] = [];
+   let i = 0;
+   while (i < text.length) {
+      const ch = String.fromCodePoint(text.codePointAt(i)!);
+      if (/\s/u.test(ch)) {
+         i += ch.length;
+         continue;
+      }
+      if (ch === "`") {
+         const close = text.indexOf("`", i + 1);
+         const end = close === -1 ? text.length : close;
+         tokens.push({
+            text: text.slice(i + 1, end),
+            name: true,
+            quoted: true,
+            partner: -1,
+         });
+         i = end + 1;
+         continue;
+      }
+      if (NAME_CHAR.test(ch)) {
+         let j = i + ch.length;
+         while (j < text.length) {
+            const next = String.fromCodePoint(text.codePointAt(j)!);
+            if (!NAME_CHAR.test(next)) break;
+            j += next.length;
+         }
+         tokens.push({
+            text: text.slice(i, j),
+            name: true,
+            quoted: false,
+            partner: -1,
+         });
+         i = j;
+         continue;
+      }
+      const token: Token = {
+         text: ch,
+         name: false,
+         quoted: false,
+         partner: -1,
+      };
+      if (ch === "(" || ch === "[" || ch === "{") {
+         open.push(tokens.length);
+      } else if (ch === ")" || ch === "]" || ch === "}") {
+         const at = open.pop();
+         if (at !== undefined) {
+            tokens[at].partner = tokens.length;
+            token.partner = at;
+         }
+      }
+      tokens.push(token);
+      i += ch.length;
+   }
+   return tokens;
+}
+
+function isWord(token: Token | undefined, word: string): boolean {
+   return (
+      !!token &&
+      token.name &&
+      !token.quoted &&
+      token.text.toLowerCase() === word
+   );
+}
+
+/** `name:` opening a statement, and not a `::` type or a `.` path. */
+function isStatementKeyword(tokens: readonly Token[], i: number): boolean {
+   const token = tokens[i];
+   return (
+      !!token &&
+      token.name &&
+      !token.quoted &&
+      tokens[i + 1]?.text === ":" &&
+      tokens[i + 2]?.text !== ":" &&
+      tokens[i - 1]?.text !== ":" &&
+      tokens[i - 1]?.text !== "."
+   );
+}
+
+/** The base after an `is` at `i - 1`: behind any `(`, else unreadable. */
+function readBase(tokens: readonly Token[], i: number): string {
+   let j = i;
+   while (tokens[j]?.text === "(" && !tokens[j].name) j++;
+   const token = tokens[j];
+   return token?.name ? token.text : UNREADABLE_BASE;
+}
+
+/**
+ * Walk one statement's items at its own bracket level, from `start` until a
+ * `;`, the closing bracket around it, or the next statement keyword, jumping
+ * over every bracketed group. Reports `NAME is BASE` (and `NAME(params) is
+ * BASE`) items, and with `shorthand` a bare name that opens an item.
+ */
+function readStatementItems(
+   tokens: readonly Token[],
+   start: number,
+   shorthand: boolean,
+   onItem: (name: string, base: string) => void,
+): void {
+   let atItemStart = true;
+   let i = start;
+   while (i < tokens.length) {
+      const token = tokens[i];
+      if (!token.name) {
+         if (token.text === ";") return;
+         if (token.partner > i) {
+            i = token.partner + 1;
+            atItemStart = false;
+            continue;
+         }
+         if (")]}".includes(token.text)) return;
+         atItemStart = token.text === ",";
+         i++;
+         continue;
+      }
+      if (isStatementKeyword(tokens, i)) return;
+      let k = i + 1;
+      if (tokens[k]?.text === "(" && tokens[k].partner > k) {
+         k = tokens[k].partner + 1;
+      }
+      if (isWord(tokens[k], "is")) {
+         onItem(token.text, readBase(tokens, k + 1));
+         i = k + 1;
+      } else {
+         if (shorthand && atItemStart) onItem(token.text, token.text);
+         i++;
+      }
+      atItemStart = false;
+   }
 }
 
 function addEdge(
@@ -289,94 +429,53 @@ function addEdge(
  * source that happens to share the alias and over-deny a query that never
  * reads through them.
  *
- * Reads each join statement's items at bracket depth 0 until the statement
- * ends (`;`, a closing bracket, or the next `keyword:`), so a comma-separated
- * or whitespace-separated later item is read too, and an `extend { … }` or
- * argument list inside one is not. A shorthand item is recognized only first
- * or after a comma, where it cannot be an `on` expression's identifier. Best
- * effort, and unanchored to what runs: a join in a declaration the query never
- * uses, or text in a `#` annotation, is read too, which over-denies in the
+ * Reads each join statement's items at its own bracket level until the
+ * statement ends (`;`, a closing bracket, or the next `keyword:`), so a
+ * comma-separated or whitespace-separated later item is read too, and an
+ * `extend { … }` or argument list inside one is not. A shorthand item is
+ * recognized only first or after a comma, where it cannot be an `on`
+ * expression's identifier. Best effort, and unanchored to what runs: a join in
+ * a declaration the query never uses is read too, which over-denies in the
  * pre-compile pass it feeds and admits nothing. Strips its own input, for the
  * reason {@link buildSourceAliasMap} gives.
  */
 export function buildJoinBaseMap(query: string): Map<string, Set<string>> {
    const out = new Map<string, Set<string>>();
-   const text = stripMalloyCommentsAndLiterals(query);
-   const statementRe = keywordPattern(
-      String.raw`${WORD_START}join_(?:one|many|cross)\s*:`,
-      "g",
-   );
-   const firstItemRe = keywordPattern(
-      // Shorthand only where no `is` follows: otherwise an item whose base
-      // this cannot read would map the alias to itself.
-      String.raw`${TRIVIA}${IDENT}${WORD_END}(?:${TRIVIA}is${WORD_END}${TRIVIA}(?:\(${TRIVIA})*${IDENT}|(?!${TRIVIA}is${WORD_END}))`,
-      "y",
-   );
-   const laterItemRe = keywordPattern(String.raw`${WORD_START}${IS_EDGE}`, "y");
-   const keywordRe = keywordPattern(
-      String.raw`${WORD_START}[\p{L}_][\p{L}\p{N}_]*\s*:(?!:)`,
-      "y",
-   );
-   while (statementRe.exec(text) !== null) {
-      let pos = statementRe.lastIndex;
-      let atItemStart = true;
-      let depth = 0;
-      while (pos < text.length) {
-         if (depth === 0) {
-            const itemRe = atItemStart ? firstItemRe : laterItemRe;
-            itemRe.lastIndex = pos;
-            const item = itemRe.exec(text);
-            if (item) {
-               const alias = item[1] ?? item[2];
-               addEdge(out, alias, item[3] ?? item[4] ?? alias);
-               pos = itemRe.lastIndex;
-               atItemStart = false;
-               continue;
-            }
-            atItemStart = false;
-            keywordRe.lastIndex = pos;
-            if (keywordRe.test(text)) break;
-         }
-         const ch = text[pos];
-         if (ch === "`") {
-            const close = text.indexOf("`", pos + 1);
-            pos = close === -1 ? text.length : close + 1;
-            continue;
-         }
-         if (ch === "(" || ch === "[" || ch === "{") depth++;
-         else if (ch === ")" || ch === "]" || ch === "}") {
-            if (--depth < 0) break;
-         } else if (depth === 0 && ch === ";") break;
-         else if (depth === 0 && ch === ",") atItemStart = true;
-         pos++;
-      }
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   for (let i = 0; i < tokens.length; i++) {
+      if (!isStatementKeyword(tokens, i)) continue;
+      if (!/^join_(?:one|many|cross)$/i.test(tokens[i].text)) continue;
+      readStatementItems(tokens, i + 2, true, (alias, base) =>
+         addEdge(out, alias, base),
+      );
    }
    return out;
 }
 
 /**
  * Every `NAME is BASE` edge anywhere in `query`, whatever statement it sits in,
- * read from the raw text AND the stripped text, as NAME → set of BASEs.
+ * as NAME → set of BASEs.
  *
  * For the one decision that has only text to go on: the base of a caller join
  * the compiler left no `sourceID` on (an inline `x extend { … }`). A join alias
  * may be declared again in another scope, so a scan that missed the real
  * declaration would let a decoy's base stand in for it; this one has no
- * statement structure to misread, and the raw pass cannot be blanked by a
- * phantom literal the strip opens (a `'` in an annotation). Over-collects on
- * purpose: its reader requires EVERY base to prove out, so an extra edge adds
- * an obligation and never discharges one.
+ * statement structure to misread. Over-collects on purpose: its reader
+ * requires EVERY base to prove out, so an extra edge adds an obligation and
+ * never discharges one.
  */
 export function buildIsEdgeMap(query: string): Map<string, Set<string>> {
    const out = new Map<string, Set<string>>();
-   for (const text of [query, stripMalloyCommentsAndLiterals(query)]) {
-      const edgeRe = keywordPattern(String.raw`${WORD_START}${IS_EDGE}`, "g");
-      let match: RegExpExecArray | null;
-      while ((match = edgeRe.exec(text)) !== null) {
-         addEdge(out, match[1] ?? match[2], match[3] ?? match[4]);
-         // Resume just past the name, so a base can also be the next edge's name.
-         edgeRe.lastIndex = match.index + 1;
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   for (let k = 1; k < tokens.length; k++) {
+      if (!isWord(tokens[k], "is")) continue;
+      let n = k - 1;
+      if (tokens[n].text === ")" && !tokens[n].name && tokens[n].partner >= 0) {
+         n = tokens[n].partner - 1;
       }
+      const name = tokens[n];
+      if (!name?.name) continue;
+      addEdge(out, name.text, readBase(tokens, k + 1));
    }
    return out;
 }

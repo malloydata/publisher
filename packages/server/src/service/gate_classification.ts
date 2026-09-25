@@ -895,10 +895,10 @@ export async function resolveGateShape(
  * source kept its own copy from model load (spread-assign in
  * `Model.buildGraftedMaterializer`). Do not widen it to a source that no gate
  * of this request reaches — grafting every gated source up front would fire
- * gates on author joins that must not fire. An author join through a named
- * query over the grafted source stays unfiltered too (measured): it holds its
- * own load-time copy of the query, not the snapshot
- * `Model.graftIntoNamedQuerySnapshots` appends to.
+ * gates on author joins that must not fire. One author path IS filtered, the
+ * safe direction: a join through a named query over an IMPORTED source reads
+ * the object snapshot `Model.graftIntoNamedQuerySnapshots` grafts (over a
+ * same-file source the query holds a name, and stays unfiltered).
  *
  * If `struct` IS itself a `contents` entry, the entry point is graftED
  * DIRECTLY — this covers `Y is X extend {}` inheriting `X`'s gate (`Y` is the

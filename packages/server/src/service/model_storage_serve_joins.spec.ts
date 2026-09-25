@@ -207,6 +207,7 @@ given:
 #(access_filter) region_id in $REG
 source: regions is duckdb.sql("SELECT 'r1' AS region_id, 'LIVE' AS region_name")
 source: orders is duckdb.sql("SELECT 10 AS amount, 'r1' AS region_id") extend {
+  join_one: author_regions is regions on region_id = author_regions.region_id
   measure: total is amount.sum()
 }
 `;
@@ -262,6 +263,17 @@ describe("storage= serve routing with a caller join to a row-gated source", () =
          model,
          "run: orders -> { aggregate: t is amount.sum() }",
       );
+      expect(Number(row.t)).toBe(99);
+   });
+
+   it("serves an author join into the row-gated source from storage", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildGatedModel();
+      const row = await runGivens(
+         model,
+         "run: orders -> { group_by: author_regions.region_name; aggregate: t is amount.sum() }",
+      );
+      expect(row.region_name).toBe("STORE");
       expect(Number(row.t)).toBe(99);
    });
 

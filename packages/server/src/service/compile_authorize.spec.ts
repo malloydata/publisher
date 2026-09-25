@@ -182,19 +182,34 @@ describe("compile-path authorize gate (compileSource)", () => {
       expect(problems).toEqual([]);
    });
 
+   it("decides the lock of a caller join to a caller source over a parenthesised base, at APPEND scope with includeSql", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            "source: mine is ((gated)) extend { dimension: `source: mine is open_src` is 1 }\nrun: open_src extend { join_one: m is mine on x = m.x } -> { aggregate: m.c }",
+            true,
+            { ROLE: "nobody" },
+         ),
+      ).rejects.toThrow(new AccessDeniedError('Access denied for source "m".'));
+   });
+
+   // A file or package submission is the author's own file, so its joins are
+   // author joins.
    for (const scope of ["file", "package"] as const) {
-      it(`decides a caller join's lock at ${scope.toUpperCase()} scope with the gate stripped`, async () => {
-         const edit = (role: string) =>
-            env.compileSource(
-               "pkg",
-               "model.malloy",
-               `${withoutGates(MODEL)}\nrun: open_src extend { join_cross: g is gated } -> { aggregate: g.c }`,
-               scope === "file",
-               { ROLE: role },
-               scope,
-            );
-         await expect(edit("nobody")).rejects.toBeInstanceOf(AccessDeniedError);
-         const { problems } = await edit("analyst");
+      it(`does not gate an author join at ${scope.toUpperCase()} scope`, async () => {
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGates(MODEL)}
+source: joined_author is duckdb.sql("SELECT 1 as x") extend {
+  join_one: ag is gated on x = ag.x
+}
+run: joined_author -> { aggregate: ag.c }`,
+            scope === "file",
+            { ROLE: "nobody" },
+            scope,
+         );
          expect(problems).toEqual([]);
       });
    }

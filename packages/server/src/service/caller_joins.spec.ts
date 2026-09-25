@@ -19,6 +19,7 @@ const QUERY_URL = "internal://query";
 const REGION: CallerRegion = { kind: "query", text: "" };
 const CALLER = { url: QUERY_URL, range: { start: { line: 0 } } };
 const AUTHOR = { url: "file:///m.malloy", range: { start: { line: 3 } } };
+const AUTHOR_URLS: ReadonlySet<string> = new Set(["file:///m.malloy"]);
 
 function join(alias: string, location = CALLER, fields: IrStruct[] = []) {
    return {
@@ -55,6 +56,7 @@ describe("collectCallerJoins", () => {
             fields: [join("c"), join("a", AUTHOR)],
          }),
          REGION,
+         AUTHOR_URLS,
       );
       expect(found.map((j) => j.alias)).toEqual(["c"]);
       expect(found[0].path).toEqual(["target", "fields", "c"]);
@@ -65,7 +67,7 @@ describe("collectCallerJoins", () => {
          { type: "table", location: AUTHOR, fields: [] },
          { pipeline: [{ queryFields: [], somewhereNew: [join("x")] }] },
       );
-      expect(() => collectCallerJoins(ir, REGION)).toThrow(
+      expect(() => collectCallerJoins(ir, REGION, AUTHOR_URLS)).toThrow(
          new CallerJoinWalkError(
             "a caller join sits where the walk does not look",
          ),
@@ -78,6 +80,7 @@ describe("collectCallerJoins", () => {
          collectCallerJoins(
             prepared({ type: "table", location: AUTHOR, fields: [unlocated] }),
             REGION,
+            AUTHOR_URLS,
          ),
       ).toThrow(new CallerJoinWalkError("a join carries no location"));
       expect(
@@ -89,6 +92,7 @@ describe("collectCallerJoins", () => {
                sources: [],
             }),
             REGION,
+            AUTHOR_URLS,
          ),
       ).toEqual([]);
    });
@@ -102,6 +106,7 @@ describe("collectCallerJoins", () => {
          collectCallerJoins(
             prepared({ type: "table", location: AUTHOR, fields: [inner] }),
             REGION,
+            AUTHOR_URLS,
          ),
       ).toThrow(
          new CallerJoinWalkError("caller joins nest past the depth bound"),
@@ -119,7 +124,7 @@ describe("collectCallerJoins", () => {
             },
          },
       );
-      expect(() => collectCallerJoins(ir, REGION)).toThrow(
+      expect(() => collectCallerJoins(ir, REGION, AUTHOR_URLS)).toThrow(
          new CallerJoinWalkError(
             "a resolved composite carries a join the declared source does not",
          ),
@@ -140,19 +145,46 @@ describe("isCallerAuthored", () => {
          url: "file:///virtual.malloy",
          range: { start: { line } },
       });
-      expect(isCallerAuthored(at(4), span, undefined)).toBe(false);
-      expect(isCallerAuthored(at(5), span, undefined)).toBe(true);
+      expect(isCallerAuthored(at(4), span, AUTHOR_URLS)).toBe(false);
+      expect(isCallerAuthored(at(5), span, AUTHOR_URLS)).toBe(true);
       expect(
          isCallerAuthored(
             { url: "file:///m.malloy", range: { start: { line: 9 } } },
             span,
-            undefined,
+            AUTHOR_URLS,
          ),
       ).toBe(false);
    });
 
-   it("never reads an unlocated node as caller-written", () => {
-      expect(isCallerAuthored(undefined, REGION, QUERY_URL)).toBe(false);
-      expect(isCallerAuthored(undefined, span, undefined)).toBe(false);
+   it("reads the author's only under one of the model's own URLs", () => {
+      expect(isCallerAuthored(AUTHOR, REGION, AUTHOR_URLS)).toBe(false);
+      expect(isCallerAuthored(CALLER, REGION, AUTHOR_URLS)).toBe(true);
+      expect(
+         isCallerAuthored({ url: "file:///other.malloy" }, REGION, AUTHOR_URLS),
+      ).toBe(true);
+   });
+
+   it("reads an unlocated node as caller-written", () => {
+      expect(isCallerAuthored(undefined, REGION, AUTHOR_URLS)).toBe(true);
+      expect(isCallerAuthored(undefined, span, AUTHOR_URLS)).toBe(true);
+   });
+});
+
+describe("a record or array is not a join", () => {
+   it("is not collected, and does not trip the completeness scan", () => {
+      const record = {
+         type: "record",
+         name: "r",
+         join: "one",
+         location: CALLER,
+         fields: [],
+      } as IrStruct;
+      expect(
+         collectCallerJoins(
+            prepared({ type: "table", location: AUTHOR, fields: [record] }),
+            REGION,
+            AUTHOR_URLS,
+         ),
+      ).toEqual([]);
    });
 });

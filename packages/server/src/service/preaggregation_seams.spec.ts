@@ -883,6 +883,7 @@ source: orders is duckdb.sql("""
     (30, 'B', 1)
   ) AS t(amount, category, org_id)
 """) extend {
+  join_one: author_org is orgs on org_id = author_org.org_id
   #@ preaggregate grain="category"
   measure: total is amount.sum()
 }
@@ -898,6 +899,30 @@ source: orders is duckdb.sql("""
       resetMaterializationTelemetryForTesting();
       await harness.shutdown();
    });
+
+   it(
+      "does not block routing for an author join into the row-gated source",
+      async () => {
+         const pkg = await loadPackage(CALLER_JOIN_MODEL);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: author_org.org_name; aggregate: total; order_by: org_name }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([
+            { org_name: "one", total: 40 },
+            { org_name: "two", total: 20 },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(0);
+      },
+      { timeout: 60000 },
+   );
 
    it(
       "blocks routing and filters the joined rows",

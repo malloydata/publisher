@@ -166,8 +166,16 @@ import {
    type CallerJoinPath,
    type CallerJoinResolution,
    type CallerRegion,
+   type CallerSource,
    type PreparedQueryIr,
 } from "./caller_joins";
+
+/** One caller join the live query reaches, and what it resolves to. */
+type ResolvedCallerJoin = {
+   callerJoin: CallerJoin;
+   compiledModelDef: ModelDef;
+   resolution: CallerJoinResolution;
+};
 import {
    mergeQueryMetadata,
    type QueryClass,
@@ -719,8 +727,10 @@ export class Model {
     * depends on, and (b) record `empty_after_filter` without re-deriving
     * whether a filter actually attached.
     */
-   private rowLevelFilteredRunnables: WeakSet<QueryMaterializer> =
-      new WeakSet();
+   private rowLevelFilteredRunnables = new WeakMap<
+      QueryMaterializer,
+      readonly RowLevelGraftEntry[]
+   >();
    private meter = publisherMeter();
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -1836,12 +1846,22 @@ export class Model {
             callerRegion,
          );
          if (!callerJoins) return true;
+         const gated = (name: string) =>
+            (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0;
          return callerJoins.some(
-            ({ resolution }) =>
+            ({ resolution, compiledModelDef }) =>
                resolution.kind === "unproven" ||
-               Array.from(resolution.names).some(
-                  (name) =>
-                     (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0,
+               Array.from(resolution.names).some(gated) ||
+               resolution.callerSources.some(
+                  (source) =>
+                     !source.chain.proven ||
+                     source.chain.terminals.some(gated) ||
+                     this.collectEntryPointGates(
+                        source.struct as unknown as SourceDef,
+                        compiledModelDef,
+                        new Set<SourceDef>(),
+                        true,
+                     ).length > 0,
                ),
          );
       } catch {
@@ -1926,11 +1946,9 @@ export class Model {
     * is ephemeral (no `modelDef.contents` key) and reads the same relation as
     * some gated source" — was implemented and measured, and it is wrong: a
     * gated source and the ungated siblings an author deliberately publishes
-    * beside it normally read the SAME table, so it denies the documented Q16
-    * contract (`source: j is plain extend { join_one: base_locked … }` — joins
-    * are not gated) and ad-hoc composition over an ungated source
-    * (`source: mine is plain extend { measure: … }`). Both are pinned in
-    * `authorize_integration.spec.ts`. So the defence is text-shaped by
+    * beside it normally read the SAME table, so it denies ad-hoc composition
+    * over an ungated source (`source: mine is plain extend { measure: … }`),
+    * which `authorize_integration.spec.ts` pins. So the defence is text-shaped by
     * necessity, not by preference.
     *
     * The scan is still hardened, because a miss now costs a legitimate
@@ -2192,12 +2210,31 @@ export class Model {
     * the compiler's diagnostics from answering first for a gated source.
     * Throws {@link CallerJoinWalkError} for a walk it cannot complete.
     */
-   private async resolvedCallerJoins(
+   private resolvedCallerJoins(
       runnable: { getPreparedQuery(): Promise<unknown> },
       region: CallerRegion,
-   ): Promise<
-      { callerJoin: CallerJoin; resolution: CallerJoinResolution }[] | undefined
-   > {
+   ): Promise<ResolvedCallerJoin[] | undefined> {
+      // One walk per request, shared by the routing, boundary and authorize
+      // passes, which all read the same live runnable.
+      const cached = this.callerJoinResolutions.get(runnable);
+      if (cached && cached.region === region) return cached.result;
+      const result = this.computeCallerJoins(runnable, region);
+      this.callerJoinResolutions.set(runnable, { region, result });
+      return result;
+   }
+
+   private callerJoinResolutions = new WeakMap<
+      object,
+      {
+         region: CallerRegion;
+         result: Promise<ResolvedCallerJoin[] | undefined>;
+      }
+   >();
+
+   private async computeCallerJoins(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      region: CallerRegion,
+   ): Promise<ResolvedCallerJoin[] | undefined> {
       let prepared: PreparedQueryIr;
       try {
          prepared = (await runnable.getPreparedQuery()) as PreparedQueryIr;
@@ -2208,24 +2245,105 @@ export class Model {
       if (!compiledModelDef) {
          throw new CallerJoinWalkError("the compiled query carries no model");
       }
-      const queryUrl = prepared._query?.location?.url;
+      const authorUrls = this.authorUrls();
       const context = {
          isModelSource: (name: string) =>
             this.entryPointGatesBySource.has(name),
          isModelQuery: (name: string) =>
             (this.modelDef?.contents[name] as { type?: string } | undefined)
                ?.type === "query",
+         authorUrls,
       };
-      return collectCallerJoins(prepared, region).map((callerJoin) => ({
-         callerJoin,
-         resolution: resolveCallerJoin(
+      return collectCallerJoins(prepared, region, authorUrls).map(
+         (callerJoin) => ({
             callerJoin,
             compiledModelDef,
-            region,
-            queryUrl,
-            context,
-         ),
-      }));
+            resolution: resolveCallerJoin(
+               callerJoin,
+               compiledModelDef,
+               region,
+               context,
+            ),
+         }),
+      );
+   }
+
+   private authorUrlsMemo?: ReadonlySet<string>;
+
+   /**
+    * The URLs of this model's own files, read off the on-disk `ModelDef` only:
+    * a location under any other URL is caller-written.
+    */
+   private authorUrls(): ReadonlySet<string> {
+      if (this.authorUrlsMemo) return this.authorUrlsMemo;
+      const urls = new Set<string>();
+      const modelDef = this.modelDef;
+      if (modelDef) {
+         urls.add(modelDef.modelID);
+         for (const url of Object.keys(modelDef.modelAnnotations ?? {})) {
+            urls.add(url);
+         }
+         for (const imported of modelDef.imports ?? []) {
+            urls.add(imported.importURL);
+         }
+         const walk = (tree: ModelDef["dependencies"] | undefined) => {
+            for (const [url, deps] of Object.entries(tree ?? {})) {
+               urls.add(url);
+               walk(deps);
+            }
+         };
+         walk(modelDef.dependencies);
+         for (const entry of Object.values(modelDef.contents)) {
+            const url = (entry as { location?: { url?: string } } | undefined)
+               ?.location?.url;
+            if (url) urls.add(url);
+         }
+      }
+      this.authorUrlsMemo = urls;
+      return urls;
+   }
+
+   /**
+    * The gates a caller-declared source reached by a caller join carries, read
+    * the way a request-declared run target's are: its compiled struct first,
+    * and only when that finds none, the text chain as the laundering proof —
+    * every base a model source, and any gated one an admitting lock.
+    */
+   private async decideCallerSource(
+      source: CallerSource,
+      compiledModelDef: ModelDef,
+      alias: string,
+      givens: Record<string, GivenValue>,
+      graftScope: GraftScope | undefined,
+   ): Promise<Awaited<ReturnType<Model["resolveGateShape"]>>[]> {
+      const gates = this.collectEntryPointGates(
+         source.struct as unknown as SourceDef,
+         compiledModelDef,
+         new Set<SourceDef>(),
+         true,
+      );
+      if (gates.length > 0) {
+         return Promise.all(
+            gates.map((entry) =>
+               this.resolveGateShape(entry, compiledModelDef, graftScope),
+            ),
+         );
+      }
+      if (!source.chain.proven) {
+         this.denyCallerJoin(alias, "chain_not_established", source.chain.at);
+      }
+      for (const base of source.chain.terminals) {
+         for (const entry of this.entryPointGatesBySource.get(base) ?? []) {
+            const shape = this.modelDef
+               ? await this.resolveGateShape(entry, this.modelDef, graftScope)
+               : ({ shape: "rejected", cause: undefined } as const);
+            if (shape.shape === "row_level") {
+               this.denyCallerJoin(alias, "row_filter_not_graftable", base);
+            }
+            denyUnlessAdmitted(shape, givens, alias, "caller_join");
+         }
+      }
+      return [];
    }
 
    /**
@@ -2259,40 +2377,56 @@ export class Model {
       }
       if (!resolved) return [];
       const grafts: RowLevelGraftEntry[] = [];
-      for (const { callerJoin, resolution } of resolved) {
+      for (const { callerJoin, compiledModelDef, resolution } of resolved) {
          const alias = callerJoin.alias;
          if (resolution.kind === "unproven") {
             this.denyCallerJoin(alias, "chain_not_established", resolution.at);
          }
+         const shapes: {
+            at: string;
+            shape: Awaited<ReturnType<Model["resolveGateShape"]>>;
+         }[] = [];
          for (const name of resolution.names) {
             for (const entry of this.entryPointGatesBySource.get(name) ?? []) {
-               const shape = this.modelDef
-                  ? await this.resolveGateShape(
-                       entry,
-                       this.modelDef,
-                       graftScope,
-                    )
-                  : ({ shape: "rejected", cause: undefined } as const);
-               if (shape.shape === "row_level") {
-                  if (resolution.composite) {
-                     this.denyCallerJoin(
-                        alias,
-                        "row_filter_not_graftable",
-                        name,
-                     );
-                  }
-                  grafts.push({
-                     label: alias,
-                     graftTarget: shape.graftTarget,
-                     filterText: shape.filterText,
-                     condition: shape.condition,
-                     givenNames: shape.givenNames,
-                     callerJoinPath: callerJoin.path,
-                  });
-                  continue;
-               }
-               denyUnlessAdmitted(shape, givens, alias, "caller_join");
+               shapes.push({
+                  at: name,
+                  shape: this.modelDef
+                     ? await this.resolveGateShape(
+                          entry,
+                          this.modelDef,
+                          graftScope,
+                       )
+                     : ({ shape: "rejected", cause: undefined } as const),
+               });
             }
+         }
+         for (const source of resolution.callerSources) {
+            for (const shape of await this.decideCallerSource(
+               source,
+               compiledModelDef,
+               alias,
+               givens,
+               graftScope,
+            )) {
+               shapes.push({ at: source.key, shape });
+            }
+         }
+         for (const { at, shape } of shapes) {
+            if (shape.shape === "row_level") {
+               if (resolution.composite) {
+                  this.denyCallerJoin(alias, "row_filter_not_graftable", at);
+               }
+               grafts.push({
+                  label: alias,
+                  graftTarget: shape.graftTarget,
+                  filterText: shape.filterText,
+                  condition: shape.condition,
+                  givenNames: shape.givenNames,
+                  callerJoinPath: callerJoin.path,
+               });
+               continue;
+            }
+            denyUnlessAdmitted(shape, givens, alias, "caller_join");
          }
       }
       return grafts;
@@ -2337,6 +2471,7 @@ export class Model {
       if (!resolved) throw refusal();
       for (const { resolution } of resolved) {
          if (resolution.kind === "unproven") throw refusal();
+         if (resolution.boundaryUnprovenAt !== undefined) throw refusal();
          if (
             resolution.curatedQuery &&
             this.isCuratedQuery(resolution.curatedQuery)
@@ -2640,7 +2775,7 @@ export class Model {
          } else {
             await this.assertGateLanded(recompiled, rowLevel);
          }
-         this.rowLevelFilteredRunnables.add(recompiled);
+         this.rowLevelFilteredRunnables.set(recompiled, rowLevel);
          return recompiled;
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", siteOf(rowLevel[0]));
@@ -2881,11 +3016,12 @@ export class Model {
     * source's `filterList` propagates into every copy compiled from the grafted
     * model afterward, which is exactly what the caller's recompiled text needs;
     * an AUTHOR join inside another model source kept its own `filterList`
-    * array from model load, so the spread-assign below leaves it unfiltered,
-    * including one reached through a named query. Do not "simplify" this by
-    * grafting every gated
-    * source in the model up front — that fires gates on author joins that must
-    * not fire.
+    * array from model load, so the spread-assign below leaves it unfiltered.
+    * One author path is filtered too, the safe direction: a join through a
+    * named query over an IMPORTED source reads the object snapshot
+    * {@link graftIntoNamedQuerySnapshots} grafts. Do not "simplify" this by
+    * grafting every gated source in the model up front — that fires gates on
+    * author joins that must not fire.
     */
    private buildGraftedMaterializer(
       grafts: ReadonlyArray<{
@@ -3259,6 +3395,8 @@ export class Model {
    public async assertAuthorizedForText(
       text: string,
       givens: Record<string, GivenValue>,
+      /** `callerJoins`: the text is appended caller text, so its joins are gated. */
+      options?: { callerJoins?: boolean },
    ): Promise<void> {
       const target = extractRunTargetSourceName(text);
       await this.assertAuthorized(target, givens);
@@ -3274,8 +3412,12 @@ export class Model {
             text,
             givens,
          );
-         // Locks only: `/compile` is exempt from the query boundary.
-         await this.assertCallerJoinBasesEarly(text, givens, "locks");
+         // Locks only: `/compile` is exempt from the query boundary. A file or
+         // package submission is the author's file, so its joins are not
+         // caller joins.
+         if (options?.callerJoins) {
+            await this.assertCallerJoinBasesEarly(text, givens, "locks");
+         }
       }
    }
 
@@ -6404,9 +6546,22 @@ export class Model {
                   modelPath: this.modelPath,
                   error: err instanceof Error ? err.message : String(err),
                });
-               recordRowLevelGateDecision("denied_by_gate");
+               // A caller join's graft answers under the caller's own alias.
+               const unbound = this.rowLevelFilteredRunnables
+                  .get(runnable)
+                  ?.find(
+                     (graft) =>
+                        graft.callerJoinPath &&
+                        graft.givenNames.some(
+                           (name) => !(name in (givens ?? {})),
+                        ),
+                  );
+               recordRowLevelGateDecision(
+                  "denied_by_gate",
+                  unbound ? "caller_join" : "entry_point",
+               );
                throw new AccessDeniedError(
-                  `Access denied for source "${compiledSource ?? sourceName ?? "unknown"}".`,
+                  `Access denied for source "${unbound?.label ?? compiledSource ?? sourceName ?? "unknown"}".`,
                );
             }
 

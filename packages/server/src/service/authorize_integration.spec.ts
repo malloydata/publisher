@@ -1328,9 +1328,8 @@ source: top_join is duckdb.table('customers') extend {
    // Q16: authorization is evaluated at the ENTRY POINT only. A gate is a
    // statement about who may query the source it is declared on, not about
    // everything reachable beneath that source, so an AUTHOR joining a locked
-   // base into an ungated model source does NOT carry the base's gate along. These are the shapes
-   // that used to deny and now do not — asserted positively, because the whole
-   // point is that this is the intended contract and not an oversight. The
+   // base into an ungated model source does NOT carry the base's gate along.
+   // Asserted positively, because this is the intended contract. The
    // author-facing rule: joining sensitive data into an ungated source publishes
    // it; put the gate on the source callers enter through.
    describe("joins are not gated (Q16 — entry-point-only evaluation)", () => {
@@ -2681,9 +2680,9 @@ source: open_laundered is open_src -> { group_by: id }
   extend: { join_one: laundered on id = laundered.id }
   group_by: id, leak is laundered.locked_region
 }`;
-      await expect(
-         runGated("c_unified.malloy", query, {}),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await expect(runGated("c_unified.malloy", query, {})).rejects.toThrow(
+         new AccessDeniedError('Access denied for source "laundered".'),
+      );
       const { compactResult } = await runGated("c_unified.malloy", query, {
          DENY: [1],
       });
