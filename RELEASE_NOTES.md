@@ -31,6 +31,24 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — the model Explorer takes givens
+
+The Console's model Explorer now shows a **Parameters** row when the model declares givens, and
+sends the values with every Run. Before this, a source gated with `#(authorize)` on a given could
+not be explored from the Console at all: the Explorer had no way to supply the value, the server
+answered 403, and the Explorer showed nothing.
+
+- The values live in the page URL, so a parameterized exploration is a shareable link (the page's
+  copy-link button now carries them too).
+- A blank given with a default runs, and the result says which default it used. When a query is
+  refused and a given with no default was left blank, the results pane names it.
+- Query errors, including a 403 from a gate, now show in the results pane instead of vanishing.
+- **Explore from here** on a dashboard and a notebook cell's **Data sources** dialog open the
+  Explorer with the document's current values rather than none.
+
+No server or API change: the Explorer sends givens through the same `POST …/query` field notebooks
+and dashboards use. See [docs/explorer.md](docs/explorer.md#parameters).
+
 ## [Unreleased] — notebook cells receive only the givens in their own scope
 
 A notebook cell now ignores a given the notebook declares only in a later cell.
