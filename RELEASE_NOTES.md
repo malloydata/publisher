@@ -63,12 +63,11 @@ What can break:
   untagged file `explores` lists is published like any other model, as before.
 - **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
   caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
-  `run: secret` there answers 404, but a query over a published source that joins a hidden source
-  the dashboard file imports runs and returns the joined rows:
-  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`. That is how a
-  query sent to `index.malloy` already behaves. Only tiles are checked at load; other query text on
-  the dashboard path is not. If a dashboard imports a file whose sources must stay unreadable, gate
-  them with `#(authorize)`.
+  `run: secret` there answers 404, and so does a query over a published source that joins a hidden
+  source the dashboard file imports:
+  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`, the same as a
+  query sent to `index.malloy` (see the caller-join section below). Only tiles are checked at load;
+  other query text on the dashboard path is checked when it runs.
 
 **A model off the surface answers 404 when read, not only when queried.** `GET …/models/{path}`
 used to return any file, with its full compiled model and its text. Now a file off the surface gets

@@ -1383,6 +1383,15 @@ import { customers } from "../index.malloy"`,
             "run: customers -> v",
          );
          expect(customers.result.data).toBeDefined();
+         // A caller join is held to the boundary too, so the hidden import is
+         // no more reachable through a join than through `run:`.
+         await expect(
+            dash.getQueryResults(
+               undefined,
+               undefined,
+               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            ),
+         ).rejects.toThrow(NotQueryableError);
 
          // The fix the warning names works.
          writeIndex("customers, raw_data");
@@ -1397,6 +1406,14 @@ import { customers } from "../index.malloy"`,
             .getModel("dashboards/dash.malloy")!
             .getQueryResults(undefined, undefined, "run: raw_data -> v");
          expect(ran.result.data).toBeDefined();
+         const joined = await fixed
+            .getModel("dashboards/dash.malloy")!
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            );
+         expect(joined.result.data).toBeDefined();
 
          // Under a written explores, the fix names a file the key lists, and
          // listing the dashboard itself adds nothing to the surface.
