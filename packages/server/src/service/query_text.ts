@@ -187,6 +187,9 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
  * token boundary in the result matches the input, and a second pass is a no-op.
  */
 export function stripMalloyCommentsAndLiterals(text: string): string {
+   // Request bodies are JSON, so the type annotation alone doesn't bound the loops below.
+   if (typeof text !== "string")
+      throw new TypeError("query text must be a string");
    // Unblanked text is copied in slices between blanked spans, never per char.
    const parts: string[] = [];
    let copied = 0;

@@ -174,13 +174,6 @@ import {
    type CallerSource,
    type PreparedQueryIr,
 } from "./caller_joins";
-
-/** One caller join the live query reaches, and what it resolves to. */
-type ResolvedCallerJoin = {
-   callerJoin: CallerJoin;
-   compiledModelDef: ModelDef;
-   resolution: CallerJoinResolution;
-};
 import {
    mergeQueryMetadata,
    type QueryClass,
@@ -238,6 +231,13 @@ import {
 } from "../authorize_metrics";
 import { decideLock } from "./authorize_lock";
 import { safeJoinUnderRoot } from "../path_safety";
+
+/** One caller join the live query reaches, and what it resolves to. */
+type ResolvedCallerJoin = {
+   callerJoin: CallerJoin;
+   compiledModelDef: ModelDef;
+   resolution: CallerJoinResolution;
+};
 
 /**
  * The shared tail of every gate resolution that is not a row filter: a
@@ -7398,7 +7398,11 @@ export class Model {
          this.queryHadRowLevelFilterAttached(runnable) &&
          queryResults.totalRows === 0
       ) {
-         recordRowLevelGateDecision("empty_after_filter");
+         const first = this.rowLevelFilteredRunnables.get(runnable)?.[0];
+         recordRowLevelGateDecision(
+            "empty_after_filter",
+            first?.callerJoinPath ? "caller_join" : "entry_point",
+         );
       }
       // Rows first, and above `wrapResult` rather than merely above the
       // serialize. A row overflow is a `maxRows + 1`-row result by construction,
