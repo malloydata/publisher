@@ -348,6 +348,74 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
       }
    });
 
+   it("a notebook cell hydrated from the worker's cellModelDef receives only its own scope's givens", async () => {
+      // Here a cell's modelDef comes from the worker's cellModelDef, not a live compile.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "nb.malloynb"),
+         `>>>malloy
+source: plain is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
+  measure: c is count()
+}
+run: plain -> { aggregate: c }
+>>>malloy
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: gated is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
+  measure: c is count()
+}
+run: gated -> { aggregate: c }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("nb.malloynb");
+
+         const preImport = await model!.executeNotebookCell(
+            0,
+            undefined,
+            false,
+            { GROUPS: [1] },
+         );
+         const preImportRows = JSON.parse(preImport.result!) as {
+            data?: {
+               array_value?: Array<{
+                  record_value?: Array<{ number_value?: number }>;
+               }>;
+            };
+         };
+         expect(
+            preImportRows.data?.array_value?.[0]?.record_value?.[0]
+               ?.number_value,
+         ).toBe(4);
+
+         const postImport = await model!.executeNotebookCell(
+            1,
+            undefined,
+            false,
+            { GROUPS: [1] },
+         );
+         const postImportRows = JSON.parse(postImport.result!) as {
+            data?: {
+               array_value?: Array<{
+                  record_value?: Array<{ number_value?: number }>;
+               }>;
+            };
+         };
+         const count =
+            postImportRows.data?.array_value?.[0]?.record_value?.[0]
+               ?.number_value;
+         expect(count).toBe(2);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("logs a warning for a package whose view carries an invalid renderer tag", async () => {
       writeManifest();
       // `# big_value { sparkline=... }` is a child-only renderer config placed on

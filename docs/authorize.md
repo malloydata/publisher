@@ -644,6 +644,7 @@ Two more counters cover row filters specifically:
   filtered rows (never a leak — no rows are returned either way). Reference the joined field
   somewhere in the run query's own projection or grouping to avoid it.
 - **A given the entry model does not surface is usually refused, not ignored.** Malloy's given-namespace merge covers only one level of `import`, so a value for a given the entry model doesn't surface reaches Malloy's own resolution and errors (`unknown given`) rather than being silently dropped and falling back to a default. The one exception is a name some reachable gate actually references: that value is forwarded to the gate and withheld from the query (`filterGivensToModelSurface`, `model.ts`), which is what lets a gate carried in from a base in another file evaluate at all. Author-side implication: for a caller to supply a given the query itself reads, some source or file within one import hop of the entry model must declare (or import) it.
+- **A notebook cell also withholds a given only a later cell declares.** A name on the notebook's surface that the running cell's compile closure never declares (at any import depth) is withheld from that cell, so a code cell that runs before the notebook's `import` no longer 400s on it. Nothing in that cell can reference the name, so no default can bind. A name the cell declares deep but does not surface still reaches Malloy and 400s, as above.
 
 ## Runnable example
 
