@@ -172,6 +172,16 @@ function fieldsIdentical(
    return true;
 }
 
+/** Whether an expression tree contains a field reference anywhere. */
+function expressionReadsField(e: unknown): boolean {
+   if (Array.isArray(e)) return e.some(expressionReadsField);
+   if (!e || typeof e !== "object") return false;
+   if ((e as { node?: unknown }).node === "field") return true;
+   return Object.values(e as Record<string, unknown>).some(
+      expressionReadsField,
+   );
+}
+
 /** Resolve a dotted field path (a join path, for a field reached through one
  *  or more joins) against one struct's own `fields`. `undefined` if any
  *  segment is missing, or an intermediate segment is not itself a join. */
@@ -225,18 +235,26 @@ function fieldPathIdentical(
 
 /**
  * Every field-usage path reachable from `refSummary`, resolved TRANSITIVELY
- * through `declaring`: a filter that reads a dimension (`org_id in $GROUPS`
- * over `#(access_filter) authorized`, say) only lists `authorized` in its own
- * `fieldUsage` — the fields THAT dimension's own expression reads are only
- * discoverable by following its own `refSummary`, one hop at a time. Returns
- * `truncated: true` (never a partial list) when the walk would exceed
- * {@link MAX_CLOSURE_SIZE} — the caller must treat that as "cannot prove
- * this binds correctly" (deny), not "here is everything there is".
+ * through `declaring`. Three kinds of dependency are followed, each one hop at
+ * a time:
+ * - a field's own expression: a filter that reads a dimension (`org_id in
+ *   $GROUPS` over `#(access_filter) authorized`, say) only lists `authorized`
+ *   in its own `fieldUsage`, so the fields THAT dimension reads come from its
+ *   own `refSummary`;
+ * - each join a path goes through: the fields its ON (or `with`) reads,
+ *   relative to the struct that declares the join;
+ * - each such join's joined source: the fields its own `where:` conditions
+ *   read, relative to the joined struct.
+ * Returns `truncated: true` (never a partial list) when the walk would exceed
+ * {@link MAX_CLOSURE_SIZE}, and `unrecordedJoin` naming a join whose ON reads
+ * fields but carries no `refSummary` to list them. The caller must treat
+ * either as "cannot prove this binds correctly" (deny), not "here is
+ * everything there is".
  */
 function fieldUsageClosure(
    declaring: SourceDef,
    refSummary: RefSummaryLike | undefined,
-): { paths: string[][]; truncated: boolean } {
+): { paths: string[][]; truncated: boolean; unrecordedJoin?: string } {
    const seen = new Set<string>();
    const paths: string[][] = [];
    const queue: string[][] = (refSummary?.fieldUsage ?? []).map(
@@ -275,10 +293,22 @@ function fieldUsageClosure(
       for (let i = 0; i < path.length - 1; i++) {
          const join = resolveFieldByPath(declaring, path.slice(0, i + 1)) as
             | {
+                 onExpression?: unknown;
                  refSummary?: RefSummaryLike;
                  filterList?: readonly { refSummary?: RefSummaryLike }[];
               }
             | undefined;
+         if (
+            join &&
+            !join.refSummary &&
+            expressionReadsField(join.onExpression)
+         ) {
+            return {
+               paths,
+               truncated: false,
+               unrecordedJoin: path.slice(0, i + 1).join("."),
+            };
+         }
          for (const u of join?.refSummary?.fieldUsage ?? []) {
             queue.push([...path.slice(0, i), ...u.path]);
          }
@@ -303,13 +333,18 @@ export function assertFilterConditionBindsToDeclaringSource(
    executedStruct: SourceDef,
    condition: FilterCondition,
 ): void {
-   const { paths, truncated } = fieldUsageClosure(
+   const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
       condition.refSummary,
    );
    if (truncated) {
       throw new Error(
          "a row-security filter's field-usage closure exceeded the resolution bound",
+      );
+   }
+   if (unrecordedJoin) {
+      throw new Error(
+         `a row-security filter reaches through \`${unrecordedJoin}\`, whose ON inputs are not recorded`,
       );
    }
    for (const path of paths) {
@@ -338,12 +373,18 @@ export function assertFilterDimensionBindsToDeclaringSource(
    executedStruct: SourceDef,
    dimension: string,
 ): void {
-   const { paths, truncated } = fieldUsageClosure(declaringStruct, {
-      fieldUsage: [{ path: [dimension] }],
-   });
+   const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
+      declaringStruct,
+      { fieldUsage: [{ path: [dimension] }] },
+   );
    if (truncated) {
       throw new Error(
          "a #(filter) dimension's field-usage closure exceeded the resolution bound",
+      );
+   }
+   if (unrecordedJoin) {
+      throw new Error(
+         `a #(filter) dimension reaches through \`${unrecordedJoin}\`, whose ON inputs are not recorded`,
       );
    }
    for (const path of paths) {

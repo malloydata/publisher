@@ -16,12 +16,18 @@
  * children 1,2.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { type Connection, type GivenValue } from "@malloydata/malloy";
+import {
+   type Connection,
+   type FilterCondition,
+   type GivenValue,
+   type SourceDef,
+} from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError } from "../errors";
+import { assertFilterConditionBindsToDeclaringSource } from "./filter_binding_guard";
 import { Model } from "./model";
 
 const SEED_SQL = `
@@ -232,6 +238,55 @@ describe("filter binding guard — the columns a gated join's ON reads", () => {
          });
       },
    );
+});
+
+describe("filter binding guard — a caller join into a gated source that rebinds its ON column", () => {
+   it("is denied", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: child_all extend { join_one: gp is gated_plain extend { rename: real_id is id; dimension: id is 1 } on id = gp.real_id } -> { group_by: gp.real_id; order_by: 1 }",
+            { GROUPS: [1] },
+         );
+      });
+   });
+});
+
+describe("filter binding guard — a join whose ON inputs are not recorded", () => {
+   it("denies rather than skipping the ON", () => {
+      const join = {
+         type: "table",
+         name: "duckdb:childtable",
+         as: "child",
+         dialect: "duckdb",
+         connection: "duckdb",
+         tablePath: "childtable",
+         join: "one",
+         onExpression: {
+            node: "=",
+            kids: {
+               left: { node: "field", path: ["id"] },
+               right: { node: "field", path: ["child", "id"] },
+            },
+         },
+         fields: [{ type: "number", name: "org_id" }],
+      };
+      const root = {
+         type: "table",
+         name: "duckdb:orgtable",
+         dialect: "duckdb",
+         connection: "duckdb",
+         tablePath: "orgtable",
+         fields: [{ type: "number", name: "id" }, join],
+      } as unknown as SourceDef;
+      const condition = {
+         code: "child.org_id in $GROUPS",
+         refSummary: { fieldUsage: [{ path: ["child", "org_id"] }] },
+      } as unknown as FilterCondition;
+      expect(() =>
+         assertFilterConditionBindsToDeclaringSource(root, root, condition),
+      ).toThrow(/ON inputs are not recorded/);
+   });
 });
 
 describe("filter binding guard — a swapped-in joined source that rebinds what the join reads", () => {
