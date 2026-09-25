@@ -1626,7 +1626,7 @@ paths:
         every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. `sourceText` is left out
-        when the file declares something it does not publish; a dashboard's text is always
+        when the text names a source the file does not publish; a dashboard's text is always
         returned.
       parameters:
         - name: environmentName
@@ -4102,7 +4102,7 @@ components:
             Optional: absent from servers that predate it; omitted (with a
             server-side warning) when the file cannot be read, so a compiled
             model is never withheld for want of its text; and omitted when the
-            file declares something it does not publish, on a package with a
+            file text names a source it does not publish, on a package with a
             surface. A dashboard's text is always returned.
 
     View:

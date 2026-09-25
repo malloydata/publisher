@@ -284,8 +284,8 @@ export { customers }`,
          expect(warnings.map((w) => w.message)).toContain(
             `index.malloy is ignored because "explores" in publisher.json ` +
                `doesn't list it. Fix: delete "explores" to publish what ` +
-               `index.malloy exports, or rename index.malloy if it isn't meant ` +
-               `to decide what is published.`,
+               `index.malloy exports, or rename index.malloy (and any import of ` +
+               `it) if it isn't meant to decide what is published.`,
          );
       } finally {
          await duckdb.close();
@@ -456,7 +456,18 @@ source: hidden is duckdb.sql("select 2 as id")`,
          expect(response.modelDef).not.toContain("hidden");
          expect(response.modelInfo).not.toContain("hidden");
          expect(JSON.stringify(response.sources)).not.toContain("hidden");
-         expect(index.showsFileText()).toBe(true);
+         // The text runs `hidden`, so it is withheld, although the file does
+         // not declare it. An import path or a comment naming it does not
+         // count; a published file whose text names only what it publishes
+         // keeps its text.
+         const text = (file: string) =>
+            fs.readFileSync(path.join(tempDir, file), "utf8");
+         expect(index.showsFileText(text("index.malloy"))).toBe(false);
+         expect(
+            index.showsFileText(
+               `import "hidden.malloy"\n// hidden is not exported\nexport { pub }`,
+            ),
+         ).toBe(true);
 
          // The hidden file is refused outright, with the query route's words.
          expect(() =>
@@ -477,9 +488,39 @@ export { pub }`,
             tempDir,
             malloyConfig,
          );
-         expect(withHelper.getModel("index.malloy")!.showsFileText()).toBe(
-            false,
+         expect(
+            withHelper
+               .getModel("index.malloy")!
+               .showsFileText(text("index.malloy")),
+         ).toBe(false);
+
+         // A published source built on a hidden one, or joining one, must not
+         // carry the hidden source's identity either. The join's own name is
+         // part of the published field paths, so it is renamed here to prove
+         // the identity, not the path, is what goes.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+source: pub2 is hidden extend { dimension: two is 2 }
+source: pub3 is pub extend { join_one: j is hidden on id = j.id }
+export { pub2, pub3 }`,
          );
+         const derived = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         const derivedDef = (
+            (await derived.getModel("index.malloy")!.getModel()) as {
+               modelDef: string;
+            }
+         ).modelDef;
+         expect(Object.keys(JSON.parse(derivedDef).contents).sort()).toEqual([
+            "pub2",
+            "pub3",
+         ]);
+         expect(derivedDef).not.toContain("hidden");
 
          // With no surface, nothing is curated.
          writeManifest({ explores: [] });
@@ -492,9 +533,10 @@ export { pub }`,
             ).modelDef,
          ) as { contents: Record<string, unknown> };
          expect(Object.keys(openDef.contents).sort()).toEqual([
-            "helper",
             "hidden",
             "pub",
+            "pub2",
+            "pub3",
          ]);
          expect(() =>
             open.getModel("base.malloy")!.assertFileOnSurface(),

@@ -59,8 +59,8 @@ describe("service/package_manifest", () => {
                `from it, then delete "explores".`,
             `index.malloy is ignored because "explores" in publisher.json ` +
                `doesn't list it. Fix: delete "explores" to publish what ` +
-               `index.malloy exports, or rename index.malloy if it isn't meant ` +
-               `to decide what is published.`,
+               `index.malloy exports, or rename index.malloy (and any import of ` +
+               `it) if it isn't meant to decide what is published.`,
          ]);
       });
 
@@ -121,7 +121,8 @@ describe("service/package_manifest", () => {
          expect(warnings).toEqual([
             `"explores" in publisher.json is deprecated. Here it stops ` +
                `index.malloy from limiting what this package publishes. Fix: to ` +
-               `publish everything, rename index.malloy and delete "explores".`,
+               `publish everything, rename index.malloy, point any import of it at ` +
+               `the new name, then delete "explores".`,
          ]);
          // With no index.malloy there is nothing to suppress.
          expect(resolve([], ["orders.malloy"]).warnings).toEqual([

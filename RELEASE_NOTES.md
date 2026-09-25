@@ -57,13 +57,21 @@ What can break:
   `index.malloy` (or from a file `explores` lists).
 - **Dashboards `explores` left out on purpose are now listed**, with their givens and filter names.
   To hide one, remove its `# artifact` tag.
+- **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
+  caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
+  `run: secret` there answers 404, but a query over a published source that joins a hidden source
+  the dashboard file imports runs and returns the joined rows:
+  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`. That is how a
+  query sent to `index.malloy` already behaves. Only tiles are checked at load; other query text on
+  the dashboard path is not. If a dashboard imports a file whose sources must stay unreadable, gate
+  them with `#(authorize)`.
 
 **A model off the surface answers 404 when read, not only when queried.** `GET …/models/{path}`
 used to return any file, with its full compiled model and its text. Now a file off the surface gets
 the same 404 the query route gives. Files it does return carry only the names they publish:
 `modelDef.contents` and `exports`, `modelInfo`, `sources` and `sourceInfos` are limited to them, so
 `index.malloy`'s own response no longer includes the sources it imports and hides. `sourceText` is
-left out when the file declares something it does not publish. A dashboard's text is always returned,
+left out when the text names a source the file does not publish. A dashboard's text is always returned,
 because the Console's dashboard editor saves with it. The editor now builds its field list from the
 published models rather than from the files a dashboard imports. None of this applies with no surface
 or under `queryableSources: "all"`.
@@ -82,7 +90,7 @@ this package, then `Fix:` and the one edit:
 | `publisher.json` | Warning |
 | --- | --- |
 | `explores` naming files | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement. |
-| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy` and delete `explores`. |
+| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`. |
 | `explores: []` alone | Does nothing. Delete it. |
 | `queryableSources: "declared"` | Does nothing. Delete it. |
 | `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |

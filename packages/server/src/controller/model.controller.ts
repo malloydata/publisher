@@ -76,20 +76,20 @@ export class ModelController {
          // never the compiled model the spec marks it optional beside.
          const [compiled, sourceText] = await Promise.all([
             model.getModel(),
-            // Withheld when the file declares something it does not publish,
-            // or the text would show it.
-            (model.showsFileText()
-               ? p.getModelFileText(modelPath)
-               : Promise.resolve(undefined)
-            ).catch((error: unknown) => {
-               logger.warn("getModel: model source text unavailable", {
-                  environmentName,
-                  packageName,
-                  modelPath,
-                  error: error instanceof Error ? error.message : String(error),
-               });
-               return undefined;
-            }),
+            // Withheld when the text names a source the file does not publish.
+            p
+               .getModelFileText(modelPath)
+               .then((text) => (model.showsFileText(text) ? text : undefined))
+               .catch((error: unknown) => {
+                  logger.warn("getModel: model source text unavailable", {
+                     environmentName,
+                     packageName,
+                     modelPath,
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  });
+                  return undefined;
+               }),
          ]);
          return sourceText === undefined
             ? compiled

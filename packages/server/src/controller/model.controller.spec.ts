@@ -21,7 +21,7 @@ function buildController(
       getType: () => "model" | "notebook";
       getModel?: sinon.SinonStub;
       assertFileOnSurface?: () => void;
-      showsFileText?: () => boolean;
+      showsFileText?: (text: string) => boolean;
    },
    getModelFileText: sinon.SinonStub = sinon.stub().resolves(SOURCE_TEXT),
 ) {
@@ -92,17 +92,19 @@ describe("ModelController.getModel", () => {
       expect(getModelFileText.called).toBe(false);
    });
 
-   it("withholds the text of a file that declares something it does not publish", async () => {
-      const { controller, getModelFileText } = buildController({
+   it("withholds the text when the model says it names something unpublished", async () => {
+      const showsFileText = sinon.stub().returns(false);
+      const { controller } = buildController({
          getType: () => "model",
          getModel: sinon.stub().resolves(COMPILED),
-         showsFileText: () => false,
+         showsFileText,
       });
 
       const result = await controller.getModel("env", "faa", "index.malloy");
 
       expect(result).toEqual(COMPILED);
-      expect(getModelFileText.called).toBe(false);
+      // The decision is made on the text itself.
+      expect(showsFileText.calledOnceWithExactly(SOURCE_TEXT)).toBe(true);
    });
 
    it("still refuses a notebook before reading anything", async () => {

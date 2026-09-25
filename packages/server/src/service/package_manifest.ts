@@ -578,14 +578,17 @@ function exploresDeprecation(
 const EXPLORES_OMITS_INDEX_MODEL =
    `${INDEX_MODEL_NAME} is ignored because "explores" in publisher.json ` +
    `doesn't list it. Fix: delete "explores" to publish what ` +
-   `${INDEX_MODEL_NAME} exports, or rename ${INDEX_MODEL_NAME} if it isn't ` +
-   `meant to decide what is published.`;
+   `${INDEX_MODEL_NAME} exports, or rename ${INDEX_MODEL_NAME} (and any import ` +
+   `of it) if it isn't meant to decide what is published.`;
 
-/** The old opt-out: an empty array beside an index.malloy. */
+/** The old opt-out: an empty array beside an index.malloy. The fix names the
+ *  imports because a rename alone breaks every file that imports the old
+ *  name, and a broken import fails the whole package's compile. */
 const EXPLORES_EMPTY_SUPPRESSES_CONVENTION =
    `"explores" in publisher.json is deprecated. Here it stops ` +
    `${INDEX_MODEL_NAME} from limiting what this package publishes. Fix: to ` +
-   `publish everything, rename ${INDEX_MODEL_NAME} and delete "explores".`;
+   `publish everything, rename ${INDEX_MODEL_NAME}, point any import of it at ` +
+   `the new name, then delete "explores".`;
 
 /** An empty array with no index.malloy: the package is uncurated anyway. */
 const EXPLORES_EMPTY_IS_UNCURATED = `"explores": [] in publisher.json does nothing. Fix: delete it.`;

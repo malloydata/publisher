@@ -6757,9 +6757,9 @@ export class Model {
       return {
          ...this.modelDef,
          contents: Object.fromEntries(
-            Object.entries(this.modelDef.contents ?? {}).filter(([name]) =>
-               published.has(name),
-            ),
+            Object.entries(this.modelDef.contents ?? {})
+               .filter(([name]) => published.has(name))
+               .map(([name, def]) => [name, scrubHiddenIds(def, published)]),
          ),
          exports: (this.modelDef.exports ?? []).filter((name) =>
             published.has(name),
@@ -6778,23 +6778,28 @@ export class Model {
    }
 
    /**
-    * Whether the model GET may return this file's text. Not when the file
-    * declares something it does not publish: the text would show that
-    * source's name and definition. A dashboard's text is always returned,
+    * Whether the model GET may return this file's text. Not when the text
+    * names a source the file does not publish, whether it declares it, runs
+    * it, or builds on it: the text would show that name and how it is used.
+    * Reads identifiers outside comments and string literals, so an import
+    * path or a note does not count. A dashboard's text is always returned,
     * because the dashboard editor needs it to save.
     */
-   public showsFileText(): boolean {
+   public showsFileText(text: string): boolean {
       if (this.isDashboard()) return true;
       const published = this.publishedNames();
       if (!published) return true;
-      const suffix = `/${this.modelPath}`;
-      return Object.entries(this.modelDef?.contents ?? {}).every(
-         ([name, def]) => {
-            const url = (def as { location?: { url?: string } }).location?.url;
-            const declaredHere = url !== undefined && url.endsWith(suffix);
-            return !declaredHere || published.has(name);
-         },
+      const unpublished = new Set(
+         Object.keys(this.modelDef?.contents ?? {}).filter(
+            (name) => !published.has(name),
+         ),
       );
+      if (unpublished.size === 0) return true;
+      const identifiers =
+         stripMalloyCommentsAndLiterals(text).match(
+            /[A-Za-z_][A-Za-z0-9_]*/g,
+         ) ?? [];
+      return !identifiers.some((word) => unpublished.has(word));
    }
 
    /**
@@ -7808,4 +7813,35 @@ function hydrateMarkdownOnlyCells(
       // A code cell without a hydratable scope — surface text only.
       return { type: "code", text: sc.text };
    });
+}
+
+/** The keys of a compiled struct that hold a `name@file` identity of another
+ *  source: what it extends, and what a join points at. */
+const SOURCE_IDENTITY_KEYS = new Set(["extends", "sourceID", "referenceID"]);
+
+/**
+ * A copy of `def` without identities of sources outside `published`. A
+ * published source built on a hidden one (`source: pub is hidden extend
+ * {...}`) records `extends: "hidden@file"`, and a join records the joined
+ * source's identity even when the join is renamed. The join's own name stays:
+ * it is part of the published source's field paths.
+ */
+function scrubHiddenIds<T>(def: T, published: ReadonlySet<string>): T {
+   const walk = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(walk);
+      if (!value || typeof value !== "object") return value;
+      const out: Record<string, unknown> = {};
+      for (const [key, inner] of Object.entries(value)) {
+         if (
+            SOURCE_IDENTITY_KEYS.has(key) &&
+            typeof inner === "string" &&
+            !published.has(inner.split("@")[0])
+         ) {
+            continue;
+         }
+         out[key] = walk(inner);
+      }
+      return out;
+   };
+   return walk(def) as T;
 }

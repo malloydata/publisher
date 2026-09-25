@@ -36,7 +36,7 @@ before this convention existed.
   file still compiles for import and join resolution, but is hidden. `GET .../models/{path}` for a
   hidden file answers 404, with the same message a query to it gets. For a file it does return,
   the response lists only the names that file publishes, and `sourceText` is left out when the file
-  declares something it does not publish.
+  text names a source it does not publish.
 
   Notebooks and dashboards (`dashboards/*.malloy` files with an `# artifact` tag) are always
   listed, whatever the surface. To hide a dashboard, remove its tag.
@@ -157,7 +157,7 @@ queryable by name.
   - a list that leaves out an existing `index.malloy` gets a second warning saying `index.malloy`
     is ignored.
   - `"explores": []` beside an `index.malloy` stops that file from limiting what the package
-    publishes. The fix: to publish everything, rename `index.malloy` and delete `explores`.
+    publishes. The fix: to publish everything, rename `index.malloy`, point any import of it at the new name, then delete `explores`.
   - `"explores": []` with no `index.malloy` does nothing. The fix: delete it.
 
 - **`queryableSources`** — `"declared"` (the default) or `"all"`. `"declared"` makes queryable ==
