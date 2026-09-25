@@ -147,6 +147,8 @@ There is one exception. On a source guarded by `#(access_filter)`, the authorize
 
 The `/compile` endpoint (with `includeSql: true`) follows the same handling: a bad given is surfaced rather than silently omitting `sql`.
 
+A given the entry model does not surface, but that some gate reads, is withheld from the query so the gate can still see it. It is not withheld when the query itself also reads a given of that name, for example a `where:` on a source imported from another file that declares its own `HIDE` with a default. Withholding it there would run that `where:` at its default and ignore the value the caller sent, so the request returns a **400** (`unknown given`). To fix it, import the given at the entry model so the query can bind the caller's value.
+
 ### A notebook cell binds only the givens its own scope declares
 
 A notebook cell run ignores a given that the notebook declares only in a later cell,
