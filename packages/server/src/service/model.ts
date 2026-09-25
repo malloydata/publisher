@@ -1282,17 +1282,20 @@ export class Model {
    }
 
    /**
-    * Every given name read anywhere in `runnable`'s compiled IR, following
-    * name-string `structRef`s (a same-document source, a query-source's base)
-    * through the prepared model. Pass the runnable BEFORE any gate graft, so a
-    * gate's own `$NAME` is not counted as a read.
+    * The given names `runnable`'s compiled query actually reads. Malloy's
+    * `_query.givenUsage` says which given ids the query uses (an unused field
+    * or join that reads one is not counted); the IR walk maps each id to its
+    * name, following name-string `structRef`s (a named query, a same-document
+    * source) through the prepared model. Pass the runnable BEFORE any gate
+    * graft, so a gate's own `$NAME` is not counted as a read.
     *
     * Only computed when a supplied given is a drop candidate, so the common
     * request pays nothing. A `getPreparedQuery()` throw yields the empty set,
     * i.e. today's drop: the same compilation fails at run, so no data is
     * returned, and propagating it here would put Malloy's compile text ahead
-    * of the boundary 404 and the gate 403. An unresolvable name reference
-    * forwards every candidate, since that query will still run.
+    * of the boundary 404 and the gate 403. A used id the walk cannot name, or
+    * IR with no `givenUsage`, forwards every candidate, since that query will
+    * still run.
     */
    private async givenNamesReadByQuery(
       runnable: { getPreparedQuery(): Promise<unknown> },
@@ -1303,17 +1306,30 @@ export class Model {
       );
       const names = new Set<string>();
       if (candidates.length === 0) return names;
-      let prepared: { _query?: unknown; _modelDef?: ModelDef };
+      let prepared: {
+         _query?: { givenUsage?: { id: string }[] };
+         _modelDef?: ModelDef;
+      };
       try {
          prepared = (await runnable.getPreparedQuery()) as typeof prepared;
       } catch {
          return names;
       }
+      const usage = prepared._query?.givenUsage;
+      if (!usage) {
+         for (const name of candidates) names.add(name);
+         return names;
+      }
+      const unnamed = new Set(usage.map((g) => g.id));
       const modelDef = prepared._modelDef ?? this.modelDef;
+      // A surfaced given is never a drop candidate; settling it here also
+      // covers a default-chain id that appears nowhere in the query IR.
+      for (const entry of Object.values(modelDef?.contents ?? {})) {
+         if (entry.type === "given") unnamed.delete(entry.id);
+      }
       const seen = new Set<unknown>();
       const worklist: unknown[] = [prepared._query];
-      let unresolved = false;
-      while (worklist.length > 0) {
+      while (worklist.length > 0 && unnamed.size > 0) {
          const value = worklist.pop();
          if (value === null || typeof value !== "object" || seen.has(value)) {
             continue;
@@ -1324,20 +1340,24 @@ export class Model {
             continue;
          }
          const node = value as Record<string, unknown>;
-         if (node.node === "given" && typeof node.refName === "string") {
+         if (
+            node.node === "given" &&
+            typeof node.refName === "string" &&
+            typeof node.id === "string" &&
+            unnamed.has(node.id)
+         ) {
             names.add(node.refName);
+            unnamed.delete(node.id);
          }
          for (const [key, child] of Object.entries(node)) {
-            if (key === "structRef" && typeof child === "string") {
-               const resolved = modelDef?.contents[child];
-               if (resolved) worklist.push(resolved);
-               else unresolved = true;
-            } else {
-               worklist.push(child);
-            }
+            const resolved =
+               key === "structRef" && typeof child === "string"
+                  ? modelDef?.contents[child]
+                  : child;
+            worklist.push(resolved);
          }
       }
-      if (unresolved) for (const name of candidates) names.add(name);
+      if (unnamed.size > 0) for (const name of candidates) names.add(name);
       return names;
    }
 

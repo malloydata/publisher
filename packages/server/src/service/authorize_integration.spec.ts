@@ -2671,6 +2671,11 @@ source: ungated_deep is duckdb.table('customers') extend {
   where: region != $HIDE
   measure: c is count()
 }
+
+source: field_reader is duckdb.table('customers') extend {
+  dimension: hidden is $HIDE
+  measure: c is count()
+}
 `;
    const OG_GATE = `##! experimental.givens
 
@@ -2684,10 +2689,11 @@ source: deep_gated is duckdb.table('customers') extend {
 `;
    // The base is imported selectively so only the gate's undefaulted HIDE
    // is on the hub's surface; the entry, two hops away, surfaces neither.
-   const OG_HUB = `import { ungated_deep } from "og_base.malloy"
+   const OG_HUB = `import { ungated_deep, field_reader } from "og_base.malloy"
 import "og_gate.malloy"
 
 source: mid_ungated is ungated_deep extend {}
+source: mid_fields is field_reader extend {}
 source: mid_gated is deep_gated extend {}
 source: mid_q is mid_ungated -> { group_by: region }
 query: q_mid is mid_ungated -> { aggregate: c }
@@ -2754,6 +2760,22 @@ source: plain is duckdb.table('customers') extend {
       );
       const rows = compactResult as unknown as Array<Record<string, unknown>>;
       expect(Number(rows[0]?.c)).toBe(2);
+   });
+
+   it("still drops the name when only an unused field reads it", async () => {
+      const { compactResult } = await runGated(
+         "og_entry.malloy",
+         "run: mid_fields -> { aggregate: c }",
+         { HIDE: "us-west" },
+      );
+      const rows = compactResult as unknown as Array<Record<string, unknown>>;
+      expect(Number(rows[0]?.c)).toBe(2);
+   });
+
+   it("400s once the query uses a field that reads it", async () => {
+      await expectUnknownHide(
+         "run: mid_fields -> { group_by: hidden; aggregate: c }",
+      );
    });
 
    it("leaves the gated source's refusal ahead of the new 400", async () => {
