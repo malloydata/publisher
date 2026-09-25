@@ -2557,14 +2557,19 @@ export class Model {
                for (const base of derivations.get(name) ?? []) {
                   worklist.push(base);
                }
-               // A lock reached through an author query is this join's to
-               // decide, under its alias. The boundary admits a curated query
-               // on its own name, so it does not follow the hop.
-               const querySource =
-                  phase === "locks"
-                     ? this.queries?.find((q) => q.name === name)?.sourceName
-                     : undefined;
-               if (querySource) worklist.push(querySource);
+               // A named-query hop is this join's to decide, under its alias,
+               // the same way the compiled boundary check treats it: an
+               // exported query admits on its own name, so only a
+               // non-curated one follows the hop to its source.
+               const querySource = this.queries?.find(
+                  (q) => q.name === name,
+               )?.sourceName;
+               if (
+                  querySource &&
+                  (phase !== "boundary" || !this.isCuratedQuery(name))
+               ) {
+                  worklist.push(querySource);
+               }
                continue;
             }
             if (phase === "boundary") {
@@ -2578,14 +2583,25 @@ export class Model {
                continue;
             }
             if (decided.has(name)) continue;
-            for (const entry of this.entryPointGatesBySource.get(name) ?? []) {
-               const resolution = await this.resolveGateShape(
-                  entry,
-                  this.modelDef!,
-                  this.defaultGraftScope(),
-               );
-               if (resolution.shape === "row_level") continue;
-               denyUnlessAdmitted(resolution, givens, alias, "caller_join");
+            try {
+               for (const entry of this.entryPointGatesBySource.get(name) ??
+                  []) {
+                  const resolution = await this.resolveGateShape(
+                     entry,
+                     this.modelDef!,
+                     this.defaultGraftScope(),
+                  );
+                  if (resolution.shape === "row_level") continue;
+                  denyUnlessAdmitted(resolution, givens, alias, "caller_join");
+               }
+            } catch (error) {
+               // A 403 naming a hidden source over this join's alias confirms
+               // it exists; convert on the source actually gated, the same
+               // way the other early lock passes do.
+               if (error instanceof AccessDeniedError) {
+                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+               }
+               throw error;
             }
             decided.add(name);
          }
@@ -2861,6 +2877,7 @@ export class Model {
          await this.assertNoMisboundInheritedFilters(
             recompiled,
             new Set(rowLevel.map((r) => r.condition)),
+            siteOf(rowLevel[0]),
          );
          this.rowLevelFilteredRunnables.set(recompiled, rowLevel);
          return recompiled;
@@ -3307,9 +3324,25 @@ export class Model {
          if (callerJoinPath) {
             preparedForCallerJoins ??=
                (await recompiled.getPreparedQuery()) as PreparedQueryIr;
-            site = locateCallerJoin(preparedForCallerJoins, callerJoinPath) as
-               | SourceDef
-               | undefined;
+            const located = locateCallerJoin(
+               preparedForCallerJoins,
+               callerJoinPath,
+            ) as SourceDef | undefined;
+            // A query-expression or named-query join site's OWN struct is the
+            // query's output columns; the graft landed on the inner base
+            // `resolveGraftTarget` targeted. Recurse the same way
+            // `filterListContainsCode` does for the landing proof, so the
+            // bind check compares against the struct that actually has the
+            // field the condition reads — never the outer, unrelated one.
+            site =
+               located && condition.code
+                  ? this.resolveFilterListLandingStruct(
+                       located,
+                       graftScope.modelDef,
+                       condition.code,
+                       0,
+                    )
+                  : undefined;
             if (!site) {
                throw new Error(
                   "a caller join's row-security gate could not be re-located on the recompiled query",
@@ -3374,6 +3407,7 @@ export class Model {
          getPreparedQuery(): Promise<unknown>;
       },
       alreadyProven: ReadonlySet<FilterCondition> = new Set(),
+      site: AuthorizeGateSite = "entry_point",
    ): Promise<void> {
       const {
          struct,
@@ -3395,7 +3429,7 @@ export class Model {
             alreadyProven,
          );
       } catch (err) {
-         recordRowLevelGateDecision("denied_by_gate");
+         recordRowLevelGateDecision("denied_by_gate", site);
          logger.debug("Inherited source filter binding check failed; denying", {
             modelPath: this.modelPath,
             error: err instanceof Error ? err.message : String(err),
@@ -3610,8 +3644,30 @@ export class Model {
       code: string,
       depth: number,
    ): boolean {
-      if (!struct || depth > Model.MAX_GATE_PROOF_DEPTH) return false;
-      if (struct.filterList?.some((f) => f.code === code)) return true;
+      return (
+         this.resolveFilterListLandingStruct(struct, modelDef, code, depth) !==
+         undefined
+      );
+   }
+
+   /**
+    * The struct in `struct`'s query-source chain whose OWN `filterList`
+    * literally carries `code` — the landing site a grafted condition's field
+    * paths must be checked against. A `query_source`'s visible struct is its
+    * output columns, not the inner base {@link resolveGraftTarget} grafted
+    * onto, so {@link assertGraftedGatesBind}'s bind check needs this same
+    * recursion, not just {@link assertGateLanded}'s landing proof. Fail-closed:
+    * `undefined` when the chain doesn't reach it within
+    * {@link MAX_GATE_PROOF_DEPTH}.
+    */
+   private resolveFilterListLandingStruct(
+      struct: SourceDef | undefined,
+      modelDef: ModelDef | undefined,
+      code: string,
+      depth: number,
+   ): SourceDef | undefined {
+      if (!struct || depth > Model.MAX_GATE_PROOF_DEPTH) return undefined;
+      if (struct.filterList?.some((f) => f.code === code)) return struct;
       const duck = struct as unknown as {
          type: string;
          query?: {
@@ -3628,10 +3684,15 @@ export class Model {
             duck.query?.compositeResolvedSourceDef ?? duck.query?.structRef;
          const base = typeof ref === "string" ? modelDef.contents[ref] : ref;
          if (base && isSourceDef(base)) {
-            return this.filterListContainsCode(base, modelDef, code, depth + 1);
+            return this.resolveFilterListLandingStruct(
+               base,
+               modelDef,
+               code,
+               depth + 1,
+            );
          }
       }
-      return false;
+      return undefined;
    }
 
    /**
@@ -6951,13 +7012,13 @@ export class Model {
       // Authoritative authorize gate: resolve the gated source from the
       // COMPILED query — the source Malloy actually runs (the LAST `run:`
       // statement) — not from surface syntax. Surface-syntax resolution alone
-      // is both bypassable (first-statement regex vs. last-statement execution:
-      // `run: ungated\nrun: gated` would gate `ungated` while running `gated`)
-      // and over-restrictive, so this compiled check always runs and is the
-      // source of truth; it handles named-query / blank-source / multi-statement
-      // forms uniformly. Skip only the redundant re-probe when it's the same
-      // source the early gate already cleared. Outside the loadQuery try so
-      // AccessDeniedError stays a 403; independent of bypassFilters.
+      // is both bypassable (a named query or a derivation the surface-syntax
+      // reader cannot see through) and over-restrictive, so this compiled
+      // check always runs and is the source of truth; it handles named-query
+      // / blank-source / multi-statement forms uniformly. Skip only the
+      // redundant re-probe when it's the same source the early gate already
+      // cleared. Outside the loadQuery try so AccessDeniedError stays a 403;
+      // independent of bypassFilters.
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
 

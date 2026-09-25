@@ -150,8 +150,9 @@ inside backticks (decoded as Malloy decodes them), parentheses, `compose`, or a 
 chain. The read over-collects on purpose -- it takes any identifier-shaped token, including
 one in a comment or a string literal -- so a caller the lock refuses also gets 403 when some
 other name merely matches it. The run target read before compile is the last `run:` in the
-text, the one Malloy executes, and `/compile` at file or package scope walks every
-derivation in the text without a depth cap.
+text, the one Malloy executes, and `/compile` at file or package scope walks, without a depth
+cap, every derivation reachable from that final `run:` target -- or from every declared name,
+when the text has no `run:` at all.
 
 `#(filter)` is not a security boundary against caller-authored query text or
 `bypassFilters`; use givens and `#(authorize)`.

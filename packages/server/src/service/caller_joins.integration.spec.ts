@@ -53,8 +53,10 @@ source: gated_sql is duckdb.sql("select 1 as id, 'x' as name") extend {}
 query: gated_q is gated -> { group_by: id, secret }
 query: hidden_q is helper -> { group_by: id, name }
 query: hq_exp is helper -> { group_by: id }
+query: hgq is hidden_gated -> { group_by: id, hsecret }
 
 query: rg_q is rowgated -> { group_by: id, region }
+query: rg_agg is rowgated -> { group_by: id; aggregate: rc }
 source: nq_author is duckdb.table('t') extend {
   join_one: q is rg_q on id = q.id
 }
@@ -402,6 +404,32 @@ describe("a caller join into an #(access_filter) row gate", () => {
       ]);
    });
 
+   it("a query-expression join into the row-gated source is filtered even when the filtered field isn't projected", async () => {
+      const { rows, sql } = await run(
+         plainModel,
+         "run: plain extend { join_one: q is rowgated -> { group_by: id; aggregate: rc } on id = q.id } -> { group_by: id, q.rc }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, rc: 1 },
+         { id: 2, rc: null },
+      ]);
+      expect(sql).toMatch(/"region" IN \('US'\)/);
+   });
+
+   it("a named-query join into the row-gated source is filtered even when the filtered field isn't projected", async () => {
+      const { rows, sql } = await run(
+         plainModel,
+         "run: plain extend { join_one: q is rg_agg on id = q.id } -> { group_by: id, q.rc }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, rc: 1 },
+         { id: 2, rc: null },
+      ]);
+      expect(sql).toMatch(/"region" IN \('US'\)/);
+   });
+
    it("a composite join with a row-gated member is refused", async () => {
       await expectDenied(
          plainModel,
@@ -475,6 +503,27 @@ describe("the query boundary reaches caller joins", () => {
          "run: plain extend { join_one: h is hidden_gated on id = h.id } -> { group_by: h.hsecret }",
          DENY,
       );
+   });
+
+   it("a join into a non-exported named query over a hidden AND gated source is 404 whether or not the lock admits", async () => {
+      await expectNotQueryable(
+         boundaryModel,
+         "run: plain extend { join_one: hq is hgq on id = hq.id } -> { group_by: hq.hsecret }",
+         DENY,
+      );
+      await expectNotQueryable(
+         boundaryModel,
+         "run: plain extend { join_one: hq is hgq on id = hq.id } -> { group_by: hq.hsecret }",
+         ADMIT,
+      );
+      // control: an exported named query over the same kind of locked source
+      // is admitted for an admitted caller.
+      const { rows } = await run(
+         boundaryModel,
+         "run: plain extend { join_one: q is gated_q on id = q.id } -> { group_by: q.secret }",
+         ADMIT,
+      );
+      expect(rows.length).toBe(2);
    });
 
    it("an inline extend over a hidden table source is 404", async () => {

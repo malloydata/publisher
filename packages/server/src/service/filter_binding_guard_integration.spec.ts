@@ -2037,6 +2037,20 @@ source: base is duckdb.table('orgtable') extend {
       }
    });
 
+   it("(b2) a query-source caller join misbinding the gated field inside the inner query's base extend still denies", async () => {
+      const { model, duckdb, dir } = await createModel(MODEL);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expectDenied(
+            model,
+            "run: base extend { join_one: g is gated_child extend { except: org_id } extend { rename: org_id is owner } -> { group_by: id, org_id } on id = g.id } -> { group_by: id, gorg is g.org_id; order_by: id }",
+            { GROUPS: [1] },
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
    it("(c) an ungated caller join still serves", async () => {
       const { model, duckdb, dir } = await createModel(MODEL);
       try {
