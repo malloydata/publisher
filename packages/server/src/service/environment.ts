@@ -37,6 +37,11 @@ import {
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
+import {
+   assertFilterGivensParse,
+   malloyGivenToApi,
+   type MalloyGiven,
+} from "./given";
 import { assertNoRestrictedConstructs } from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
@@ -746,10 +751,6 @@ export class Environment {
                hasExactGateModel = true;
             }
          }
-         // A given value the model's filter types cannot read is a bad
-         // request, as on the query route, not a diagnostic about the source.
-         if (gateModel && hasExactGateModel)
-            gateModel.assertFilterGivens(givens);
          if (gateModel && hasExactGateModel && source !== undefined) {
             // Only the authorize gate (the *who* axis) applies to /compile.
             // The query boundary (`explores`/`queryableSources`, the *what*
@@ -1187,6 +1188,17 @@ export class Environment {
             // If includeSql is requested and compilation succeeded, attempt to extract SQL
             let sql: string | undefined;
             if (includeSql && queryMaterializer) {
+               // A given value the compiled text's own filter types cannot read
+               // is a bad request, as on the query route. Checked here, after
+               // the gate and against the submitted text's givens rather than
+               // the cached model's, because this is the only place /compile
+               // binds given values.
+               assertFilterGivensParse(
+                  Array.from(model.givens.values()).map((g) =>
+                     malloyGivenToApi(g as MalloyGiven),
+                  ),
+                  givens,
+               );
                try {
                   sql = await queryMaterializer.getSQL({ givens });
                } catch (error) {

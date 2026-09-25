@@ -143,6 +143,8 @@ See the [Malloy accepted JS shapes table](https://docs.malloydata.dev/documentat
 
 Malloy validates supplied givens when it prepares the query: an unknown given name (a typo, or a name the model doesn't declare) and a value that doesn't fit the given's declared type both throw a `runtime-given-*` error, which the publisher maps to a **400** with Malloy's message (unknown names come with a "did you mean?" hint).
 
+A `filter<T>` value is checked by the publisher itself, after the authorize check and before the query runs: a value that doesn't parse as a `T` filter gets a **400** that names the given, quotes the parser's reason, and says how to fix it.
+
 There is one exception. On a source guarded by `#(access_filter)`, the authorize check runs first and binds the full supplied givens map, and it fails closed: a bad given (unknown name _or_ wrong-typed value) makes that check throw and the gate denies, so the request returns **403** rather than 400. That looks like access denied, not validation. If a gated query returns 403 unexpectedly, check the given names and values against the model before assuming it's a permission problem.
 
 The `/compile` endpoint (with `includeSql: true`) follows the same handling: a bad given is surfaced rather than silently omitting `sql`.
@@ -266,6 +268,7 @@ The model Explorer shows the same Parameters panel whenever the model it opens d
 | `boolean`                                                  | Checkbox                                                                                                                    |
 | `date`, `timestamp`, `timestamptz`                         | Date picker with native clear                                                                                               |
 | `filter<date>`, `filter<timestamp>`, `filter<timestamptz>` | Time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days; a single day keeps the date picker |
+| `filter<boolean>`                                          | Dropdown of true and false; blank means no filter. Other spellings, such as `not true`, keep the text input                 |
 | `string`, `filter<…>`, anything else                       | Text input with × clear                                                                                                     |
 
 The UI can also render a two-handled range slider for a `filter<number>` and a

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { BadRequestError } from "../errors";
+import { AccessDeniedError, BadRequestError } from "../errors";
 import { Environment } from "./environment";
 
 // /compile takes given values too (they bind when it builds SQL), so a value a
@@ -15,12 +15,17 @@ import { Environment } from "./environment";
 
 const MODEL = `##! experimental.givens
 
-given: FLAG :: filter<boolean> is f''
+given:
+  FLAG :: filter<boolean> is f''
+  ROLE :: string
 
 source: orders is duckdb.sql("SELECT 1 as id, true as big") extend {
   measure: c is count()
   view: filtered is { where: big ~ $FLAG; aggregate: c }
 }
+
+#(authorize) 'analyst' = $ROLE
+source: gated is orders
 `;
 
 describe("compileSource checks filter given values", () => {
@@ -67,6 +72,59 @@ describe("compileSource checks filter given values", () => {
             "Fix: send a filter<boolean> expression, or leave FLAG unset to " +
             "use its default.",
       );
+   });
+
+   it("checks the submitted text's givens on a model path not on disk", async () => {
+      const error = await env
+         .compileSource(
+            "pkg",
+            "new.malloy",
+            "##! experimental.givens\n" +
+               "given: NEW_FLAG :: filter<boolean> is f''\n" +
+               'source: t is duckdb.sql("SELECT true as big") extend {\n' +
+               "  measure: c is count()\n" +
+               "}\n" +
+               "run: t -> { where: big ~ $NEW_FLAG; aggregate: c }",
+            true,
+            { NEW_FLAG: "asdf" },
+            "file",
+         )
+         .then(
+            () => undefined,
+            (e: unknown) => e,
+         );
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect((error as Error).message).toStartWith(
+         "Invalid value for given NEW_FLAG (filter<boolean>): ",
+      );
+   });
+
+   it("denies a caller the gate refuses before judging a value", async () => {
+      const compileError = await env
+         .compileSource("pkg", "model.malloy", "run: gated -> filtered", true, {
+            FLAG: "asdf",
+         })
+         .then(
+            () => undefined,
+            (e: unknown) => e,
+         );
+      expect(compileError).toBeInstanceOf(AccessDeniedError);
+
+      const model = (await env.getPackage("pkg")).getModel("model.malloy")!;
+      const queryError = await model
+         .getQueryResults(
+            undefined,
+            undefined,
+            "run: gated -> filtered",
+            undefined,
+            undefined,
+            { FLAG: "asdf" },
+         )
+         .then(
+            () => undefined,
+            (e: unknown) => e,
+         );
+      expect(queryError).toBeInstanceOf(AccessDeniedError);
    });
 
    it("compiles with a value it can read, and with none", async () => {
