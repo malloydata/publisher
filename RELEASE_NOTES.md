@@ -139,6 +139,11 @@ Also fixed here: Malloy keywords are case-insensitive, and `RUN:` / `SOURCE: x I
 the pre-compile checks, including a `required` `#(filter)`. Every caller-text reader now
 matches keywords in any case.
 
+Also fixed here: a row filter now stays bound to the field it was written against. An inherited
+filter (`where:`, a grafted `#(access_filter)`, or an injected `#(filter)`) that would evaluate
+against a different field of the same name in the executed query, including inside a caller's join,
+is refused with 403 instead of served. Renaming or excepting a field that no filter reads still works.
+
 Every locked name in the request is now decided before compile, not only the run target and
 its joins: a lock (`#(authorize)`) applies wherever its source's name appears, in any case,
 inside backticks (decoded as Malloy decodes them), parentheses, `compose`, or a derivation
