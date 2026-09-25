@@ -1008,7 +1008,7 @@ function findContentsKey(
  * `exclude` keeps this from re-matching a struct already visited in the
  * ancestor walk.
  */
-function findSourceByOwnAnnotationIdentity(
+export function findSourceByOwnAnnotationIdentity(
    struct: SourceDef,
    modelDef: ModelDef,
    exclude: Set<SourceDef>,
