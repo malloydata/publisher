@@ -2840,7 +2840,10 @@ export class Model {
          // satisfies, since the graft appended the SAME condition object and
          // Malloy resolves its field references late, against whatever
          // struct it ends up on. This proves the condition still reads the
-         // field it was written against — see `./filter_binding_guard`.
+         // field it was written against — see `./filter_binding_guard`. Runs
+         // for a caller-join graft too: each is bound against the JOINED
+         // source's own declaring struct, located again on the recompile by
+         // its recorded `callerJoinPath`, not against the run target.
          await this.assertGraftedGatesBind(recompiled, rowLevel, graftScope!);
          // Covers the OTHER inherited-filter shapes the graft above never
          // touches: a plain author `where:` (no `#(authorize)`/
@@ -2850,7 +2853,11 @@ export class Model {
          // (`alreadyProven`): `assertGraftedGatesBind` above already proved
          // them by annotation-note identity, which this walk's location-based
          // classification cannot reproduce for a grafted condition's synthetic
-         // compile location.
+         // compile location. `rowLevel` already holds every caller-join graft
+         // alongside the run target's own, so `alreadyProven` — and this
+         // walk's recursion into the caller's join struct, which otherwise
+         // has no other way to recognize that condition as already proven —
+         // covers both uniformly.
          await this.assertNoMisboundInheritedFilters(
             recompiled,
             new Set(rowLevel.map((r) => r.condition)),
@@ -3268,6 +3275,16 @@ export class Model {
     * names the entry point ITSELF, which is exactly what
     * `assertGraftedGateBindsToDeclaringSource` needs to find who ELSE
     * shares its annotation note by reference.
+    *
+    * A `callerJoinPath` entry's graft target names the JOINED source's own
+    * `contents` key (`probeCallerJoinGates` collects it from
+    * `entryPointGatesBySource`/`decideCallerSource`, never from the run
+    * target), so the SAME lookup resolves its declaring struct correctly —
+    * but the struct it must bind against is the join actually reached on
+    * THIS recompile, not the run target: `locateCallerJoin` re-finds it by
+    * the exact path the walk recorded, mirroring {@link assertGateLanded}'s
+    * identical site resolution for the same reason (the caller's join
+    * struct is not `resolveRunTargetStruct`'s concern at all).
     */
    private async assertGraftedGatesBind(
       recompiled: QueryMaterializer,
@@ -3275,28 +3292,52 @@ export class Model {
          graftTarget: string;
          condition: FilterCondition;
          label: string;
+         callerJoinPath?: CallerJoinPath;
       }>,
       graftScope: GraftScope,
    ): Promise<void> {
-      const { struct, compositeResolvedSourceDef } =
-         await this.resolveRunTargetStruct(recompiled);
-      const executedStruct = compositeResolvedSourceDef ?? struct;
-      // An unresolvable executed struct is not "nothing to check" here the
-      // way it is for `assertNoMisboundInheritedFilters`'s callers (which
-      // each have their OWN authoritative deny already): this method IS the
-      // authoritative proof that a grafted row-security condition still
-      // binds, so silently skipping it would serve the grafted query with
-      // the gate unverified rather than deny it.
-      if (!executedStruct) {
-         throw new Error(
-            "a row-security gate's executed source could not be resolved",
-         );
-      }
-      for (const { graftTarget, condition } of rowLevel) {
+      // Resolved lazily: a caller-join-only `rowLevel` never reads it, and
+      // the run target can be legitimately unresolvable in ways that have
+      // nothing to do with a caller join's own, separately-located site.
+      let executedStruct: SourceDef | undefined;
+      let preparedForCallerJoins: PreparedQueryIr | undefined;
+      for (const { graftTarget, condition, callerJoinPath } of rowLevel) {
          const entryPointStruct = graftScope.modelDef.contents[graftTarget];
+         let site: SourceDef | undefined;
+         if (callerJoinPath) {
+            preparedForCallerJoins ??=
+               (await recompiled.getPreparedQuery()) as PreparedQueryIr;
+            site = locateCallerJoin(preparedForCallerJoins, callerJoinPath) as
+               | SourceDef
+               | undefined;
+            if (!site) {
+               throw new Error(
+                  "a caller join's row-security gate could not be re-located on the recompiled query",
+               );
+            }
+         } else {
+            if (executedStruct === undefined) {
+               const { struct, compositeResolvedSourceDef } =
+                  await this.resolveRunTargetStruct(recompiled);
+               executedStruct = compositeResolvedSourceDef ?? struct;
+               // An unresolvable executed struct is not "nothing to check"
+               // here the way it is for `assertNoMisboundInheritedFilters`'s
+               // callers (which each have their OWN authoritative deny
+               // already): this method IS the authoritative proof that a
+               // grafted row-security condition still binds, so silently
+               // skipping it would serve the grafted query with the gate
+               // unverified rather than deny it.
+               if (!executedStruct) {
+                  throw new Error(
+                     "a row-security gate's executed source could not be resolved",
+                  );
+               }
+            }
+            site = executedStruct;
+         }
          assertGraftedGateBindsToDeclaringSource(
             isSourceDef(entryPointStruct) ? entryPointStruct : undefined,
-            executedStruct,
+            site,
             condition,
             graftScope.modelDef,
             this.siblingModelDefResolver,

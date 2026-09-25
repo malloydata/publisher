@@ -1971,3 +1971,92 @@ source: pj is duckdb.sql("${CHILDROWS_SQL}") extend {
       }
    });
 });
+
+describe("filter binding guard — a caller-written join into a row-gated source", () => {
+   // `base`/`plain_child` are ungated; `gated_child` carries the row filter.
+   // The caller writes the `join_one:` itself (never a model-declared join),
+   // so `Model.probeCallerJoinGates` grafts the condition onto the CALLER's
+   // own join struct, which `assertGraftedGatesBind` must bind-check against
+   // `gated_child`'s declaring struct via `locateCallerJoin` — the entry
+   // point (`base`) itself carries no gate at all, so this exercises a path
+   // distinct from every other test in this file.
+   const MODEL = `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: gated_child is duckdb.table('orgtable') extend {
+   primary_key: id
+   measure: n is count()
+}
+
+source: plain_child is duckdb.table('orgtable') extend {
+   primary_key: id
+}
+
+source: base is duckdb.table('orgtable') extend {
+   primary_key: id
+}
+`;
+
+   it("(a) a caller join into the gated source serves, correctly filtered", async () => {
+      const { model, duckdb, dir } = await createModel(MODEL);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: base extend { join_one: g is gated_child on id = g.id } -> { group_by: id, gorg is g.org_id; order_by: id }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         expect(result.compactResult).toEqual([
+            { id: 1, gorg: 1 },
+            { id: 2, gorg: 1 },
+            { id: 3, gorg: null },
+            { id: 4, gorg: null },
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("(b) a caller join misbinding the gated field inside the join's own extend denies", async () => {
+      const { model, duckdb, dir } = await createModel(MODEL);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expectDenied(
+            model,
+            "run: base extend { join_one: g is gated_child extend { except: org_id } extend { rename: org_id is owner } on id = g.id } -> { group_by: id, gorg is g.org_id; order_by: id }",
+            { GROUPS: [1] },
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("(c) an ungated caller join still serves", async () => {
+      const { model, duckdb, dir } = await createModel(MODEL);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: base extend { join_one: p is plain_child on id = p.id } -> { group_by: id, porg is p.org_id; order_by: id }",
+            {},
+            true,
+            {},
+         );
+         expect(result.compactResult).toEqual([
+            { id: 1, porg: 1 },
+            { id: 2, porg: 1 },
+            { id: 3, porg: 2 },
+            { id: 4, porg: 2 },
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
