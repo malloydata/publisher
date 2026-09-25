@@ -61,7 +61,9 @@ export default function Model({
       {},
    );
    const effectiveGivens = givens ?? localGivens;
-   const effectiveOnGivensChange = onGivensChange ?? setLocalGivens;
+   const effectiveOnGivensChange =
+      onGivensChange ??
+      ((applied: Record<string, string>) => setLocalGivens(applied));
 
    // Whether the model imports other files — drives the empty-state hint for
    // import-only models, whose discovery surface is legitimately empty (no

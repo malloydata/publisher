@@ -47,7 +47,10 @@ can be explored from the Console instead of refusing with a 403.
   every given; if the server refuses the query, the Results Panel names the blank givens it may
   need.
 - The values live in the page URL (`?TENANT=acme`), so a parameterized exploration is a shareable
-  link, and the maximized view shows the same values.
+  link, and the maximized view shows the same values. Anyone you send the link to can read those
+  values, and so can browser history and server access logs, so keep an identifier you would not
+  share out of a link. The link does not grant the recipient your view: the server decides what
+  their request may see.
 - **Explore from here** on a dashboard tile, and a notebook cell's **Data sources** dialog, open the
   Explorer with that document's current values. Reset there returns to those values.
 - A refused query, such as an `#(authorize)` expression that evaluates false, shows the server's

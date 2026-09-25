@@ -139,6 +139,51 @@ describe("a given with no value and no default", () => {
       expect(executeQueryModel).toHaveBeenCalledTimes(1);
    });
 
+   // The refusal check is status OR message; each case below pins one half alone.
+   it("names the given on a 403 whatever its message says", async () => {
+      reject(403, "Forbidden");
+      render(
+         <ModelExplorer
+            data={modelWith([{ name: "TENANT", type: "string" }])}
+            existingQuery={EXISTING_QUERY}
+            resourceUri={URI}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      await screen.findByLabelText("TENANT");
+      run();
+
+      expect(await screen.findByText("Forbidden")).toBeTruthy();
+      expect(
+         screen.getByText(/may need a value for the given TENANT/),
+      ).toBeTruthy();
+   });
+
+   it("names the given on a gate's message that carries no status", async () => {
+      executeQueryModel.mockImplementation(() =>
+         Promise.reject(new Error('Access denied for source "regions".')),
+      );
+      render(
+         <ModelExplorer
+            data={modelWith([{ name: "TENANT", type: "string" }])}
+            existingQuery={EXISTING_QUERY}
+            resourceUri={URI}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      await screen.findByLabelText("TENANT");
+      run();
+
+      expect(
+         await screen.findByText('Access denied for source "regions".'),
+      ).toBeTruthy();
+      expect(
+         screen.getByText(/may need a value for the given TENANT/),
+      ).toBeTruthy();
+   });
+
    it("adds no hint to an error that is not a refusal", async () => {
       reject(400, "syntax error near 'aggregat'");
       render(
