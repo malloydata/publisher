@@ -90,8 +90,10 @@ sources the notebook may read, and the notebook GET leaves out `queryInfo` for a
 refused, since its schema lists the columns the hidden source returns. A cell's own source over a raw table (`duckdb.table(...)`,
 `duckdb.sql(...)`) has no published source under it, so on a curated package it answers 404 too.
 
-**Every use of `explores` is deprecated, and every warning is two sentences.** A root `index.malloy`
-with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
+**Every use of `explores` is deprecated, and every warning is two sentences.** `explores` still works
+as before: the files it lists are listed and queryable, and what they export is the surface, wherever
+they live. The one change is a tagged dashboard it lists, which reads the surface and adds nothing to
+it (see above). A root `index.malloy` with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
 this package, then `Fix:` and the one edit:
 
 | `publisher.json` | Warning |

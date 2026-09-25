@@ -3126,7 +3126,9 @@ components:
             `export {}` closures. Every other .malloy file still compiles for
             import/join resolution but is hidden. Notebooks and dashboards are
             always listed regardless of this field, and a dashboard entry
-            needs no listing.
+            needs no listing: a tagged dashboard listed here reads the surface
+            and adds nothing to it. An untagged file under `dashboards/` that
+            is listed is an ordinary surface file.
             DEPRECATED, still honored. Every non-empty value gets a load
             warning naming the replacement: a root `index.malloy` that imports
             the listed files and exports what they publish. `[]` is deprecated

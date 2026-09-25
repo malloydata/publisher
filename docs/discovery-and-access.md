@@ -150,8 +150,10 @@ none, so it loads with no warning: it is the one way to hide a source from listi
 queryable by name.
 
 - **`explores`** — an optional `string[]` of `.malloy` file paths, relative to the package root,
-  naming the surface. The surface is then what those files export. An explicit `explores` always
-  wins over `index.malloy`. Its warnings:
+  naming the surface. It works as it always has: the listed files are listed and queryable, and the
+  surface is what they export, wherever they live. The one exception is a tagged dashboard it lists,
+  which reads the surface and adds nothing to it; an untagged file under `dashboards/` that it lists
+  is an ordinary listed file. An explicit `explores` always wins over `index.malloy`. Its warnings:
   - a non-empty list: `"explores" in publisher.json is deprecated.`, then either `Fix: import …
     into index.malloy, export the sources you publish from it, then delete "explores".` (with the
     package's own file names) or, when the list names only `index.malloy`, `index.malloy already

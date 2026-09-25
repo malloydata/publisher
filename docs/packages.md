@@ -58,7 +58,7 @@ The fields the server reads:
 | --- | --- |
 | `name` | Conventionally the package's name, but the server never surfaces it: the registered name (config entry or API call) wins in API URLs and responses. |
 | `description` | Shown in the Publisher UI and in API responses. |
-| `explores` | **Deprecated, still honored.** Names the files whose exports are the surface. Every use gets a load warning: an `index.malloy` that imports those files replaces it. Dashboards never need to be listed. See [discovery-and-access.md](discovery-and-access.md). |
+| `explores` | **Deprecated, still honored.** Names the files whose exports are the surface; they are listed and queryable, as before. A tagged dashboard listed here reads the surface and adds nothing to it. Every use gets a load warning: an `index.malloy` that imports those files replaces it. Dashboards never need to be listed. See [discovery-and-access.md](discovery-and-access.md). |
 | `queryableSources` | `"declared"` (the default) or `"all"`. Deprecated. `"declared"` does nothing, and writing it gets a warning. `"all"` still works with no warning, because nothing replaces it: the surface then decides listings only, and every source stays queryable by name. Use it to hide an `#(authorize)`-gated source from listings while authorized callers still query it. See [discovery-and-access.md](discovery-and-access.md). |
 | `materialization` | Persisted-source build policy (`schedule`, `freshness`). Package root only. See [materialization.md](materialization.md). |
 | `scope` | `"package"` (the default) or `"version"`. Any other value fails the package load. |
