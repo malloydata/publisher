@@ -645,6 +645,8 @@ Two more counters cover row filters specifically:
   query never itself references that joined field, the cell denies with a 400 rather than serving
   filtered rows (never a leak — no rows are returned either way). Reference the joined field
   somewhere in the run query's own projection or grouping to avoid it.
+- **`except:`-ing a column a plain, unannotated `where:` inherits reads answers 403, not a SQL error** — a plain inherited filter carries no load-time probe the way an `#(access_filter)`/`#(authorize)` graft does (see above), so Malloy itself would otherwise only fail once it tries to generate SQL against the dropped column; the request-time binding check denies it first.
+- **`#(filter)` does not propagate through a `query_source` derivation** (`Z is X -> { … }`) — this predates the request-time binding check above and is unrelated to it; a `#(filter)` annotation is carried by `extend`, not by a named query's own pipeline.
 - **A given the entry model does not surface is usually refused, not ignored.** Malloy's given-namespace merge covers only one level of `import`, so a value for a given the entry model doesn't surface reaches Malloy's own resolution and errors (`unknown given`) rather than being silently dropped and falling back to a default. The one exception is a name some reachable gate actually references: that value is forwarded to the gate and withheld from the query (`filterGivensToModelSurface`, `model.ts`), which is what lets a gate carried in from a base in another file evaluate at all. Author-side implication: for a caller to supply a given the query itself reads, some source or file within one import hop of the entry model must declare (or import) it.
 
 ## Runnable example

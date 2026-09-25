@@ -172,6 +172,8 @@ import {
    assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
    findFilterAnnotationDeclaringSource,
+   type DocumentLocationLike,
+   type SiblingModelDefResolver,
 } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix: `Model` declares its own private methods of
 // these same names (thin per-instance wrappers, see each one's doc) — an
@@ -590,6 +592,20 @@ export class Model {
     *  Defaults to false (legacy listings) so a Model created outside a
     *  Package matches pre-opt-in behavior. */
    private discoveryCurationEnabled = false;
+   /**
+    * Resolves the `ModelDef` the owning Package independently compiled for
+    * the file a `file://` URL names — pushed down by
+    * `Package.applySiblingModelResolverToModels`, `undefined` for a Model
+    * created outside a Package (every guard call that consults it already
+    * treats "unresolvable" as deny, so an absent resolver is just the most
+    * conservative case, not a special one). See
+    * `./filter_binding_guard`'s `SiblingModelDefResolver` doc for why this
+    * is needed at all: a selectively-imported or per-cell-narrowed ancestor
+    * file can have no entry of its own in THIS model's `modelDef.contents`,
+    * even though the package compiled it independently as its own top-level
+    * Model.
+    */
+   private siblingModelDefResolver: SiblingModelDefResolver | undefined;
    /** Per-package query-boundary policy, pushed down by the owning Package
     *  (see `Package.applyQueryBoundaryToModels`). Defaults are inert (mode
     *  "all" / not declared) so a Model created outside a Package — or before
@@ -2383,27 +2399,27 @@ export class Model {
    }
 
    /**
-    * Resolve the run-target `SourceDef` and its `ModelDef`, for walking joined
-    * sources. `prepared._modelDef` is the modelDef the query actually compiled
-    * against (falls back to `this.modelDef`); a string `structRef` resolves
-    * through `modelDef.contents`. Also surfaces `compositeResolvedSourceDef` —
-    * when the run target is itself a composite source (`compose(a, b)`), this
-    * is the ONE concrete member branch Malloy resolved the query against (see
-    * {@link assertAuthorizedForAllSources}) — and `compiledUrl`, the synthetic
-    * URL Malloy compiled THIS request's own text under (`prepared._query.location.url`,
-    * falling back to `modelDef.modelID`, which names the same compile unit):
-    * an ad-hoc query's `internal://query/…`, or a notebook cell's
-    * `internal://loadModel/…`/`internal://extendModel/…`. `./filter_binding_guard`'s
-    * {@link isOwnFreshFilter} uses it to POSITIVELY identify a condition
-    * parsed as part of THIS request's own text, rather than inferring
-    * freshness from `at.url` being merely absent from `modelDef.contents` —
-    * which an inherited condition from an ancestor file a narrower
-    * per-cell/selective-import compile never promoted to a top-level entry
-    * would satisfy just as well, despite not being fresh at all.
-    * Returns `undefined`s if these can't be resolved — callers treat that as
-    * "no further gate to check" rather than denying, since
-    * {@link assertAuthorizedForAllSources}'s own-source gate above is still
-    * the authoritative deny for an unresolvable target.
+    * Resolve the run-target `SourceDef`/`ModelDef` for walking joined
+    * sources, plus `compositeResolvedSourceDef` (the one concrete branch a
+    * `compose(a, b)` run target resolved to; see
+    * {@link assertAuthorizedForAllSources}) and two freshness signals
+    * `./filter_binding_guard`'s `isOwnFreshFilter` uses to POSITIVELY
+    * identify a condition parsed as part of THIS request's own text:
+    *
+    * - `compiledUrl`: the synthetic `internal://` URL of THIS request's own
+    *   caller/cell text. `undefined` for a named run (`run: q1` /
+    *   `queryName`) — its location URL is just the model file's, and passing
+    *   it through would let a misbind baked into the model's own declared
+    *   query claim freshness merely for sharing a file with its caller.
+    * - `queryLocation`: `prepared._query.location` itself, set for every run.
+    *   Needed because `query: q2 is X extend { where: … }` can leave the
+    *   inline-extended struct without its own `.location` (it carries X's
+    *   forward), so a filter `q2` itself declared can sit outside the
+    *   struct's span while still sitting inside `q2`'s own declared span.
+    *
+    * `undefined`s here mean "no further gate to check", not deny —
+    * {@link assertAuthorizedForAllSources}'s own-source gate is still the
+    * authoritative deny for an unresolvable target.
     */
    private async resolveRunTargetStruct(runnable: {
       getPreparedQuery(): Promise<unknown>;
@@ -2412,13 +2428,14 @@ export class Model {
       modelDef: ModelDef | undefined;
       compositeResolvedSourceDef: SourceDef | undefined;
       compiledUrl: string | undefined;
+      queryLocation: DocumentLocationLike | undefined;
    }> {
       try {
          const prepared = (await runnable.getPreparedQuery()) as {
             _query?: {
                structRef?: unknown;
                compositeResolvedSourceDef?: SourceDef;
-               location?: { url?: string };
+               location?: DocumentLocationLike;
             };
             _modelDef?: ModelDef;
          };
@@ -2429,6 +2446,7 @@ export class Model {
                modelDef: undefined,
                compositeResolvedSourceDef: undefined,
                compiledUrl: undefined,
+               queryLocation: undefined,
             };
          const structRef = prepared._query?.structRef;
          const struct =
@@ -2443,7 +2461,12 @@ export class Model {
             modelDef,
             compositeResolvedSourceDef:
                prepared._query?.compositeResolvedSourceDef,
-            compiledUrl: prepared._query?.location?.url ?? modelDef.modelID,
+            compiledUrl:
+               typeof prepared._query?.location?.url === "string" &&
+               prepared._query.location.url.startsWith("internal://")
+                  ? prepared._query.location.url
+                  : undefined,
+            queryLocation: prepared._query?.location,
          };
       } catch {
          // Not fail-open: if getPreparedQuery() throws here, execution's own
@@ -2454,6 +2477,7 @@ export class Model {
             modelDef: undefined,
             compositeResolvedSourceDef: undefined,
             compiledUrl: undefined,
+            queryLocation: undefined,
          };
       }
    }
@@ -2782,7 +2806,17 @@ export class Model {
       const { struct, compositeResolvedSourceDef } =
          await this.resolveRunTargetStruct(recompiled);
       const executedStruct = compositeResolvedSourceDef ?? struct;
-      if (!executedStruct) return;
+      // An unresolvable executed struct is not "nothing to check" here the
+      // way it is for `assertNoMisboundInheritedFilters`'s callers (which
+      // each have their OWN authoritative deny already): this method IS the
+      // authoritative proof that a grafted row-security condition still
+      // binds, so silently skipping it would serve the grafted query with
+      // the gate unverified rather than deny it.
+      if (!executedStruct) {
+         throw new Error(
+            "a row-security gate's executed source could not be resolved",
+         );
+      }
       for (const { graftTarget, condition } of rowLevel) {
          const entryPointStruct = graftScope.modelDef.contents[graftTarget];
          assertGraftedGateBindsToDeclaringSource(
@@ -2790,6 +2824,7 @@ export class Model {
             executedStruct,
             condition,
             graftScope.modelDef,
+            this.siblingModelDefResolver,
          );
       }
    }
@@ -2824,15 +2859,21 @@ export class Model {
       },
       alreadyProven: ReadonlySet<FilterCondition> = new Set(),
    ): Promise<void> {
-      const { struct, modelDef, compositeResolvedSourceDef, compiledUrl } =
-         await this.resolveRunTargetStruct(runnable);
+      const {
+         struct,
+         modelDef,
+         compositeResolvedSourceDef,
+         compiledUrl,
+         queryLocation,
+      } = await this.resolveRunTargetStruct(runnable);
       const target = compositeResolvedSourceDef ?? struct;
       if (!target) return;
       try {
          assertInheritedSourceFiltersBind(
             target,
             modelDef,
-            compiledUrl,
+            { compiledUrl, queryLocation },
+            this.siblingModelDefResolver,
             undefined,
             undefined,
             alreadyProven,
@@ -3201,15 +3242,9 @@ export class Model {
    }
 
    /**
-    * Whether `a` and `b` were declared at the exact same source span (same
-    * file, same start/end) — a cheaper, more forgiving stand-in for object
-    * identity when comparing a struct pulled from `modelDef.contents` against
-    * one a query's own compiled IR handed back: Malloy does not guarantee the
-    * two are the SAME object even when nothing was derived between them, so
-    * reference equality under-matches the common unmodified case. Same span
-    * is exactly "nothing else could have been declared here" — necessary for
-    * {@link assertFilterAnnotationsBindToDeclaringSource}'s fallback, but not
-    * sufficient on its own; see {@link fieldIsUnaliased}.
+    * Span equality stands in for object identity: Malloy doesn't guarantee
+    * the same struct object survives from `modelDef.contents` to a query's
+    * compiled IR, so reference equality under-matches the unmodified case.
     */
    private sameDeclarationLocation(
       a: { location?: unknown },
@@ -3230,30 +3265,8 @@ export class Model {
    }
 
    /**
-    * Whether `struct`'s own field active under `name` genuinely IS `name` —
-    * its intrinsic `.name`, not merely the alias it is reached by, AND is a
-    * plain pass-through column rather than a redeclared computed field.
-    * `except: name; rename: name is other` produces a field whose ACTIVE
-    * name is `name` but whose intrinsic `.name` is `other`; this is exactly
-    * the shape {@link sameDeclarationLocation}'s comparison cannot see, since
-    * that comparison — for the one caller that combines the two,
-    * {@link assertFilterAnnotationsBindToDeclaringSource}'s fallback — fires
-    * precisely when the caller runs `struct` directly with no further
-    * derivation, making `executedStruct` `struct`'s OWN declaration: a
-    * struct's fields compared to itself are vacuously identical no matter
-    * what `struct` itself did to the field. This does not require reaching
-    * any ancestor at all, which is the point — it is the fallback's ONLY
-    * proof for a misbind baked into a struct whose own true ancestor a
-    * notebook cell's narrower compile has made unreachable.
-    *
-    * Name equality alone is not enough: `except: name; dimension: name is
-    * other` redeclares `name` as a brand-new computed field whose intrinsic
-    * `.name` IS `name` again — unaliased by the check above, but bound to a
-    * completely different expression. A physical, pass-through column (what
-    * every genuinely untouched field looks like) carries no `e`; a
-    * redeclaration that computes its value from something else always does,
-    * so requiring `!field.e` closes this without needing to resolve any
-    * ancestor.
+    * `!field.e` closes the `except: name; dimension: name is other` shape —
+    * name equality alone can't tell that apart from a genuinely untouched column.
     */
    private fieldIsUnaliased(struct: SourceDef, name: string): boolean {
       const field = struct.fields?.find(
@@ -3285,84 +3298,76 @@ export class Model {
     * TRUE declaring struct is re-resolved with
     * {@link findFilterAnnotationDeclaringSource} before the field-identity
     * check runs, exactly the way `assertGraftedGateBindsToDeclaringSource`
-    * does for a row-level gate.
-    *
-    * A declaring struct or run-target struct that fails to resolve denies —
-    * there is no fallback that stays honest about what a filter meant to
-    * bind to, and `getFilters` returning non-empty already means this
-    * dimension IS meant to be enforced.
+    * does for a row-level gate. That resolution now also tries the PACKAGE's
+    * sibling-model compile ({@link siblingModelDefResolver}), which is what
+    * closes the gap for a genuinely unmodified inheritance — but a `Model`
+    * built outside a `Package` (a bare `Model.create`, no resolver) still
+    * has nothing to fall back on there, which is what the
+    * `sameDeclarationLocation`/`fieldIsUnaliased` pair below covers: the ONE
+    * case where the caller runs `candidateStruct` directly with no further
+    * derivation, so comparing `candidateStruct`'s own fields to themselves
+    * (via `executedStruct`, which IS that same declaration) cannot be
+    * fooled by a rename but is by a redeclare with the same active name —
+    * `fieldIsUnaliased` is the part that still catches that.
     */
    private async assertFilterAnnotationsBindToDeclaringSource(
       runnable: { getPreparedQuery(): Promise<unknown> },
       declaringSourceName: string,
       filters: readonly FilterDefinition[],
    ): Promise<void> {
-      const { struct, modelDef, compositeResolvedSourceDef } =
-         await this.resolveRunTargetStruct(runnable);
-      const executedStruct = compositeResolvedSourceDef ?? struct;
-      // The RUNNABLE's own compiled `modelDef` (`prepared._modelDef`), not
-      // `this.modelDef` — for a notebook, `this.modelDef` can be a narrower
-      // view than what the cell's own query actually compiled against (a
-      // multi-file `import` chain resolved fully for the runnable but not
-      // carried onto `this.modelDef`), which would otherwise lose an
-      // imported base source `findFilterAnnotationDeclaringSource` needs to
-      // walk back to and deny a perfectly legitimate, unmodified inheritance.
-      if (!executedStruct || !modelDef) {
-         throw new AccessDeniedError(
-            `Access denied for source "${declaringSourceName}".`,
-         );
-      }
-      const candidateStruct = modelDef.contents[declaringSourceName];
-      if (!candidateStruct || !isSourceDef(candidateStruct)) {
-         throw new AccessDeniedError(
-            `Access denied for source "${declaringSourceName}".`,
-         );
-      }
-      for (const filter of filters) {
-         const declaringStruct =
-            findFilterAnnotationDeclaringSource(
-               candidateStruct,
-               modelDef,
-               filter,
-               parseFilterAnnotation,
-            ) ??
-            // `findFilterAnnotationDeclaringSource` can fail to resolve even
-            // a genuinely unmodified inheritance: a notebook's per-cell
-            // compile can drop an imported base entirely (empty
-            // `modelDef.contents`/`sourceRegistry` for it), leaving no
-            // ancestor to walk back to at all, however innocent.
-            // `sameDeclarationLocation` alone is NOT enough here: when the
-            // caller runs `candidateStruct` directly with no further
-            // derivation (exactly the case this fires for), `executedStruct`
-            // IS `candidateStruct`'s own declaration — comparing a struct's
-            // fields to ITSELF is vacuously identical no matter what
-            // `candidateStruct` itself did to the field, which is the one
-            // thing this fallback cannot afford to assume. `fieldIsUnaliased`
-            // below is the actual gate: it fails for exactly the shape this
-            // module exists to catch (`except: name; rename: name is
-            // other` leaves the field's OWN `.name` as `other` under the
-            // active name `name`), so a misbind baked into the MODEL itself
-            // still denies even when its true ancestor is unreachable.
-            (this.sameDeclarationLocation(candidateStruct, executedStruct) &&
-            this.fieldIsUnaliased(candidateStruct, filter.dimension)
-               ? candidateStruct
-               : undefined);
-         if (!declaringStruct) {
-            throw new AccessDeniedError(
-               `Access denied for source "${declaringSourceName}".`,
+      try {
+         const { struct, modelDef, compositeResolvedSourceDef } =
+            await this.resolveRunTargetStruct(runnable);
+         const executedStruct = compositeResolvedSourceDef ?? struct;
+         // The RUNNABLE's own compiled `modelDef` (`prepared._modelDef`), not
+         // `this.modelDef` — for a notebook, `this.modelDef` can be a
+         // narrower view than what the cell's own query actually compiled
+         // against (a multi-file `import` chain resolved fully for the
+         // runnable but not carried onto `this.modelDef`), which would
+         // otherwise lose an imported base source
+         // `findFilterAnnotationDeclaringSource` needs to walk back to and
+         // deny a perfectly legitimate, unmodified inheritance.
+         if (!executedStruct || !modelDef) {
+            throw new Error("a #(filter) run target could not be resolved");
+         }
+         const candidateStruct = modelDef.contents[declaringSourceName];
+         if (!candidateStruct || !isSourceDef(candidateStruct)) {
+            throw new Error(
+               `a #(filter) declaring source "${declaringSourceName}" could not be resolved`,
             );
          }
-         try {
+         for (const filter of filters) {
+            const declaringStruct =
+               findFilterAnnotationDeclaringSource(
+                  candidateStruct,
+                  modelDef,
+                  filter,
+                  parseFilterAnnotation,
+                  this.siblingModelDefResolver,
+               ) ??
+               (this.sameDeclarationLocation(candidateStruct, executedStruct) &&
+               this.fieldIsUnaliased(candidateStruct, filter.dimension)
+                  ? candidateStruct
+                  : undefined);
+            if (!declaringStruct) {
+               throw new Error(
+                  "a #(filter) dimension's declaring source could not be resolved",
+               );
+            }
             assertFilterDimensionBindsToDeclaringSource(
                declaringStruct,
                executedStruct,
                filter.dimension,
             );
-         } catch {
-            throw new AccessDeniedError(
-               `Access denied for source "${declaringSourceName}".`,
-            );
          }
+      } catch (err) {
+         logger.debug("#(filter) annotation binding check failed; denying", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         throw new AccessDeniedError(
+            `Access denied for source "${declaringSourceName}".`,
+         );
       }
    }
 
@@ -4036,6 +4041,13 @@ export class Model {
       offSurface?: OffSurfaceContext;
    }): void {
       this.queryBoundary = policy;
+   }
+
+   /** Set by the owning Package; see {@link siblingModelDefResolver}. */
+   public setSiblingModelDefResolver(
+      resolver: SiblingModelDefResolver | undefined,
+   ): void {
+      this.siblingModelDefResolver = resolver;
    }
 
    /**
