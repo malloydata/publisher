@@ -31,6 +31,35 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a join written in query text is held to the joined source's gate and to the query boundary
+
+A caller's ad-hoc query could join a source it was not allowed to query, and read it.
+`#(authorize)`, `#(access_filter)` and the `queryableSources` boundary ran on the run
+target only, so `run: open_src extend { join_cross: g is locked } -> { group_by: g.secret }`
+returned `locked`'s rows, a join into a hidden source returned its rows, and a join into a
+row-filtered source returned every row.
+
+A join the **caller** writes is now checked as if it were another run target:
+
+| The caller joins                                  | Before         | Now                                                     |
+| ------------------------------------------------- | -------------- | ------------------------------------------------------- |
+| an `#(authorize)` source they are not admitted to | 200            | 403 naming the join alias                               |
+| an `#(access_filter)` source                      | 200, every row | 200, their rows (the filter applies in the join's `ON`) |
+| a source off the discovery surface                | 200            | 404 `Query target is not queryable.`                    |
+| anything else, including an admitted lock         | 200            | 200                                                     |
+
+Joins the **author** declares in the model are unchanged: joining sensitive data into an
+ungated source still publishes it, as documented in `docs/authorize.md`. Named queries and
+notebook cells are author text and are unaffected.
+
+Also fixed here: Malloy keywords are case-insensitive, and `RUN:` / `SOURCE: x IS y` skipped
+the pre-compile checks, including a `required` `#(filter)`. Every caller-text reader now
+matches keywords in any case.
+
+**Who is affected:** only callers who were reading through a join what they could not read
+with `run:`. If an app sends ad-hoc text that joins a gated or hidden source for users the
+gate does not admit, those requests now get 403 or 404.
+
 ## [0.8.0] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 
 Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because
