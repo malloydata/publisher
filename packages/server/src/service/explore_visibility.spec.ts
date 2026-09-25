@@ -435,13 +435,13 @@ export { customers }`,
          const warnings = pkg.emptyDiscoveryWarnings();
          expect(warnings.length).toBe(1);
          expect(warnings[0].model).toBe("consumer.malloy");
-         expect(warnings[0].message).toContain(
-            `Model "consumer.malloy" is on this package's discovery surface but exposes nothing`,
+         // One of several possible listed files, so it takes only itself off
+         // the surface, and the key it is listed in is still a remedy.
+         expect(warnings[0].message).toBe(
+            `consumer.malloy exports nothing, so nothing can be queried ` +
+               `through it. Fix: add an export { ... } naming the sources to ` +
+               `publish, or remove it from "explores".`,
          );
-         expect(warnings[0].message).toContain("export { source_name }");
-         // This package DECLARES its surface, so the remedy names the key.
-         // A convention package has none, and gets "delete the file" instead.
-         expect(warnings[0].message).toContain("remove it from explores");
          // Advisory warnings also ride the package metadata (the QA gap:
          // exploresWarnings said none while a listed file surfaced nothing).
          expect(
@@ -624,10 +624,9 @@ export { customers }`,
       }
    });
 
-   it("gives a remedy that holds when explores names index.malloy by hand", async () => {
-      // surfaceIsIndexModel() is true here too, and "delete the file" alone
-      // would leave the key naming a model that no longer exists -- the
-      // package would then list NOTHING, the inverse of what it promises.
+   it("says nothing can be queried when index.malloy is the whole surface and exports nothing", async () => {
+      // A hand-written explores of just index.malloy is the same surface as
+      // the convention, so it gets the same words.
       writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
@@ -643,10 +642,11 @@ export { customers }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const warnings = pkg.emptyDiscoveryWarnings();
          expect(warnings.length).toBe(1);
-         expect(warnings[0].message).toContain(
-            'delete the file AND any "explores" entry naming it',
+         expect(warnings[0].message).toBe(
+            `index.malloy exports nothing, so nothing in this package can be ` +
+               `queried. Fix: add an export { ... } naming the sources to ` +
+               `publish.`,
          );
-         expect(warnings[0].message).toContain("would list nothing");
       } finally {
          await duckdb.close();
       }

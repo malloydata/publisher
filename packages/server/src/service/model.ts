@@ -605,7 +605,18 @@ export class Model {
        *  surface. Set by the Package, which knows whether the surface is an
        *  index.malloy or an explores list. See {@link notQueryable}. */
       offSurface?: OffSurfaceContext;
+      /** This file is a dashboard the package discovered. A dashboard is an
+       *  entry point, but like a notebook it admits nothing of its own: its
+       *  tiles read only the package surface. */
+      dashboard?: boolean;
+      /** The dashboard's own file text, so a source it declares on top of a
+       *  surface source (`source: big is orders extend {...}`) can be proven
+       *  to derive from it. Author text, not caller text. */
+      derivationText?: string;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
+   /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
+    *  computed once per policy rather than per query. */
+   private fileDerivationBases?: Map<string, Set<string>>;
    /** Per-query freshness resolver, pushed down by the owning Package (see
     *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
     *  manifest for the serve path — threaded into Malloy's per-query
@@ -3727,8 +3738,36 @@ export class Model {
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
       offSurface?: OffSurfaceContext;
+      dashboard?: boolean;
+      derivationText?: string;
    }): void {
       this.queryBoundary = policy;
+      this.fileDerivationBases = policy.derivationText
+         ? buildDerivationBaseMap(
+              stripMalloyCommentsAndLiterals(policy.derivationText),
+           )
+         : undefined;
+   }
+
+   /**
+    * File-level half of the query boundary: refuse a file that is not an
+    * entry point. Inert when there is no surface or under `"all"`. Notebooks
+    * and discovered dashboards always pass; they are always listed, and what
+    * they may read is held to the surface by the name-level checks.
+    *
+    * Public because the model GET applies the same rule: a file nobody can
+    * query is not shown either.
+    */
+   public assertFileOnSurface(): void {
+      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      if (!isQueryEntryPoint && !this.isNotebook()) {
+         throw this.notQueryable(
+            `No queryable model "${this.modelPath}".`,
+            true,
+            "model",
+         );
+      }
    }
 
    /**
@@ -3774,23 +3813,31 @@ export class Model {
             ? `import "${this.modelPath}" in "${INDEX_MODEL_NAME}", name the ` +
               `sources you want in that file's export { ... }, and address ` +
               `the query to "${INDEX_MODEL_NAME}".`
-            : `add "${this.modelPath}" to "explores" in publisher.json, or ` +
-              `import it in a listed model and name the sources you want in ` +
-              `that model's export { ... }.`;
-      } else if (!this.isNotebook()) {
+            : // `explores` is deprecated, so the fix goes through a file it
+              // already lists rather than growing the key.
+              `import "${this.modelPath}" in a listed model, name the sources ` +
+              `you want in that model's export { ... }, and address the ` +
+              `query to that model.`;
+      } else if (!this.isNotebook() && !this.isDashboard()) {
          // This file is on the surface and already sees the name, so the only
          // edit is to export it here.
          fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
       } else {
-         // A notebook exports nothing: the name has to be exported by a
-         // surface file, which may first need to import where it is declared.
-         fix = surface.indexModel
-            ? `name the ${refused} in the export { ... } of ` +
-              `"${INDEX_MODEL_NAME}", importing the file that declares it if ` +
-              `needed, and address the query to "${INDEX_MODEL_NAME}".`
-            : `name the ${refused} in the export { ... } of a listed model, ` +
-              `importing the file that declares it if needed, and address the ` +
-              `query to that model.`;
+         // A notebook or dashboard admits nothing of its own: the name has to
+         // be exported by a surface file, which may first need to import where
+         // it is declared. A dashboard's tiles keep running against the
+         // dashboard file, so only a notebook caller is told to re-address.
+         const exporter = surface.indexModel
+            ? `"${INDEX_MODEL_NAME}"`
+            : `a listed model`;
+         const readdress = this.isDashboard()
+            ? ""
+            : surface.indexModel
+              ? `, and address the query to "${INDEX_MODEL_NAME}"`
+              : `, and address the query to that model`;
+         fix =
+            `name the ${refused} in the export { ... } of ${exporter}, ` +
+            `importing the file that declares it if needed${readdress}.`;
       }
       return `${where} Fix: ${fix}`;
    }
@@ -3861,10 +3908,13 @@ export class Model {
 
    /** Named-query counterpart of {@link isCuratedSource}. */
    private isCuratedQuery(name: string): boolean {
-      // Same reason as ownCuratedSourceNames: a notebook's own queries are run
-      // through the cell endpoint, not admitted by name here.
+      // Same reason as ownCuratedSourceNames: a notebook's or dashboard's own
+      // queries admit nothing by name. A dashboard's own query is deferred to
+      // the compiled check instead (see assertQueryBoundaryEarly), which asks
+      // whether the source it reads is on the surface.
       if (
          !this.isNotebook() &&
+         !this.isDashboard() &&
          (this.getQueries() ?? []).some((q) => q.name === name)
       )
          return true;
@@ -3902,25 +3952,18 @@ export class Model {
       queryName?: string,
       query?: string,
    ): "cleared" | "deferred" {
-      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      const { mode, exploresDeclared } = this.queryBoundary;
       // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
       // boundary is discovery-only; everything compiled stays queryable.
       if (mode === "all" || !exploresDeclared) return "cleared";
 
-      // File-level: a non-`explores` model file is not a query entry point.
-      // This is the robust line — the file is named by the request URL, so
-      // there is nothing to resolve and nothing to evade. A notebook passes
-      // it, because notebooks are always listed, but the text sent to it is
-      // then held to the package surface below like any other file's: a
-      // notebook's cells run through executeNotebookCell, which never reaches
-      // this gate, so what is refused here is only text a caller wrote.
-      if (!isQueryEntryPoint && !this.isNotebook()) {
-         throw this.notQueryable(
-            `No queryable model "${this.modelPath}".`,
-            true,
-            "model",
-         );
-      }
+      // File-level: a file off the surface is not a query entry point. This is
+      // the robust line: the file is named by the request URL, so there is
+      // nothing to resolve and nothing to evade. Notebooks and dashboards pass
+      // it, because they are always listed, and what is sent to them is then
+      // held to the package surface below. A notebook's cells get the same two
+      // checks in executeNotebookCell.
+      this.assertFileOnSurface();
 
       // A named query/view is an author-exported entry point (the author chose
       // to expose it, even if it reads hidden sources internally) — admit it on
@@ -3935,6 +3978,18 @@ export class Model {
          // gates the request.
          if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
          if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
+         // A dashboard's own named query (a single-query dashboard, or a
+         // control's `suggest { query= }`, both sent by name alone) is neither
+         // admitted nor refused here: the compiled check decides by the source
+         // it reads, so a dashboard query over a surface source runs and one
+         // over a hidden source does not.
+         if (
+            !sourceName &&
+            this.isDashboard() &&
+            (this.queries ?? []).some((q) => q.name === queryName)
+         ) {
+            return "deferred";
+         }
          // With a source named, the source is what is off the surface, so the
          // refusal names it (both are the caller's own words, echoed back).
          if (sourceName) {
@@ -4007,19 +4062,19 @@ export class Model {
       compiledSource: string | undefined,
       query?: string,
    ): void {
-      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
-      // A notebook passes the file-level check (see assertQueryBoundaryEarly).
-      if (!isQueryEntryPoint && !this.isNotebook()) {
-         throw this.notQueryable(
-            `No queryable model "${this.modelPath}".`,
-            true,
-            "model",
-         );
-      }
+      this.assertFileOnSurface();
       if (compiledSource) {
          if (this.isCuratedSource(compiledSource)) return;
-         if (query && this.derivesFromCurated(compiledSource, query)) return;
+         // No request text is still worth the walk for a dashboard, whose own
+         // file supplies the derivation edges (a named query over a source the
+         // dashboard declares).
+         if (
+            (query || this.fileDerivationBases) &&
+            this.derivesFromCurated(compiledSource, query)
+         )
+            return;
       }
       throw this.notQueryable(
          "Query target is not queryable.",
@@ -4054,21 +4109,96 @@ export class Model {
       );
    }
 
-   /** Source names in THIS model's export-curated discovery surface. The
-    *  package-wide closure is applied separately and identity-checked (see
-    *  {@link isCuratedSource}); it is deliberately not merged in here, so this
-    *  stays the one set whose membership needs no identity proof. */
+   /**
+    * Whether the query route would refuse this request for being off the
+    * surface, for the load-time dashboard lint. Runs the same two checks as
+    * {@link getQueryResults}, so the lint and the query cannot disagree.
+    *
+    * Returns undefined when the request would pass, or when it does not
+    * compile: a tile that fails to compile is a different finding, and a
+    * missing target must not be reported as a hidden one. On a refusal,
+    * `source` is the source the query reads, when it can be read.
+    */
+   public async surfaceRefusal(request: {
+      queryName?: string;
+      query?: string;
+   }): Promise<{ source?: string } | undefined> {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return undefined;
+      const text =
+         request.query ??
+         (request.queryName
+            ? `run: ${quoteMalloyIdentifier(request.queryName)}`
+            : undefined);
+      if (!text || !this.modelMaterializer) return undefined;
+      let compiledSource: string | undefined;
+      try {
+         const runnable = this.modelMaterializer.loadRestrictedQuery(
+            "\n" + text,
+         );
+         await runnable.getPreparedQuery();
+         compiledSource =
+            await this.resolveAuthorizeSourceFromRunnable(runnable);
+      } catch {
+         return undefined;
+      }
+      try {
+         const early = this.assertQueryBoundaryEarly(
+            undefined,
+            request.query ? undefined : request.queryName,
+            request.query,
+         );
+         if (early === "deferred") {
+            this.assertQueryBoundaryCompiled(compiledSource, request.query);
+         }
+         return undefined;
+      } catch (error) {
+         if (error instanceof NotQueryableError) {
+            return {
+               source: compiledSource && this.offSurfaceBase(compiledSource),
+            };
+         }
+         throw error;
+      }
+   }
+
+   /**
+    * The source to name in a refusal's fix. For a source this dashboard
+    * declares (`source: staged is orders_staging extend {...}`), exporting it
+    * from index.malloy is impossible, so follow its declared bases to the one
+    * that is off the surface. Otherwise the name itself.
+    */
+   private offSurfaceBase(name: string): string {
+      const seen = new Set<string>();
+      let current = name;
+      while (!seen.has(current)) {
+         seen.add(current);
+         const bases = this.fileDerivationBases?.get(current);
+         const next = bases
+            ? Array.from(bases).find((base) => !this.isCuratedSource(base))
+            : undefined;
+         if (!next) return current;
+         current = next;
+      }
+      return current;
+   }
+
    private isNotebook(): boolean {
       return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
    }
 
+   private isDashboard(): boolean {
+      return this.queryBoundary.dashboard === true;
+   }
+
    private ownCuratedSourceNames(): Set<string> {
-      // A notebook is never on the surface, so nothing it declares or imports
-      // is curated by being visible to it: its cells can see a hidden file's
-      // sources through an import, and counting those would let query text
-      // sent to the notebook's path reach them. Only the package-wide surface
-      // admits there.
-      if (this.isNotebook()) return new Set();
+      // A notebook or dashboard is never on the surface, so nothing it
+      // declares or imports is curated by being visible to it: it can see a
+      // hidden file's sources through an import, and counting those would let
+      // query text sent to its path reach them. Only the package-wide surface
+      // admits there. A source it declares on top of a surface source is
+      // admitted by derivesFromCurated, not here.
+      if (this.isNotebook() || this.isDashboard()) return new Set();
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
@@ -4115,14 +4245,22 @@ export class Model {
     * a chain longer than {@link REQUEST_CHAIN_MAX_NAMES}, and a cycle (a
     * back-edge proves nothing, so `a is b` / `b is a` is not admitted).
     */
-   private derivesFromCurated(name: string, query: string): boolean {
+   private derivesFromCurated(name: string, query?: string): boolean {
       // Hoisted out of the walk: the own-closure set is the same for every link
       // in the derivation chain, and only the identity check varies by name.
       const own = this.ownCuratedSourceNames();
       const packageCurated = this.queryBoundary.packageCuratedSources;
-      const basesOf = buildDerivationBaseMap(
-         stripMalloyCommentsAndLiterals(query),
-      );
+      // A dashboard's own declarations are edges too. Merged, never replacing:
+      // every base of a name must prove out, so an extra edge can only add an
+      // obligation, never discharge one.
+      const basesOf = query
+         ? buildDerivationBaseMap(stripMalloyCommentsAndLiterals(query))
+         : new Map<string, Set<string>>();
+      for (const [derived, bases] of this.fileDerivationBases ?? []) {
+         const into = basesOf.get(derived);
+         if (into) for (const base of bases) into.add(base);
+         else basesOf.set(derived, new Set(bases));
+      }
       // Only positive results are memoized: a name proven curated is proven
       // wherever it appears, while a `false` may be the local verdict of the
       // in-progress cycle guard rather than a property of the name.

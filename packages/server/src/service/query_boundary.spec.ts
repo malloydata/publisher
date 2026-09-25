@@ -1181,7 +1181,7 @@ source: locked is duckdb.sql("select 1 as id") extend {
       }
    });
 
-   it("declared: under an explores list, a hidden file's refusal says to list it", async () => {
+   it("declared: under an explores list, a hidden file's refusal says to import it into a listed file", async () => {
       // Curated by "explores" rather than index.malloy, so there is a list to
       // add the file to.
       writeLayeredModels("surface.malloy");
@@ -1198,10 +1198,10 @@ source: locked is duckdb.sql("select 1 as id") extend {
             "run: base_source -> v",
          );
          expect(hiddenFile.message).toBe(
-            `No queryable model "base.malloy". ${surface} Fix: add ` +
-               `"base.malloy" to "explores" in publisher.json, or import it in ` +
-               `a listed model and name the sources you want in that model's ` +
-               `export { ... }.`,
+            `No queryable model "base.malloy". ${surface} Fix: import ` +
+               `"base.malloy" in a listed model, name the sources you want in ` +
+               `that model's export { ... }, and address the query to that ` +
+               `model.`,
          );
          const named = await refusedBy(
             pkg.getModel("surface.malloy")!.getQueryResults("helper", "hv"),
@@ -1215,12 +1215,11 @@ source: locked is duckdb.sql("select 1 as id") extend {
       }
    });
 
-   it("declared: warns at load when a served dashboard's tile reads an unpublished source", async () => {
+   it("declared: warns at load when a dashboard's tile reads a source the surface does not publish", async () => {
       // The dashboard is listed and compiles (/compile is exempt from the
-      // boundary), so without this the author learns of the problem only when
-      // the tile 404s after publishing. raw.malloy is not listed; the
-      // dashboard imports it, and listing a file publishes what it declares,
-      // not what it imports.
+      // surface), so without this the author learns of the problem only when
+      // the tile 404s. The dashboard imports raw_data straight from raw.malloy,
+      // which is not on the surface.
       fs.writeFileSync(
          path.join(tempDir, "raw.malloy"),
          `source: raw_data is duckdb.sql("select 1 as id") extend {
@@ -1248,34 +1247,41 @@ import { customers } from "../index.malloy"`,
       );
       const tileWarnings = (pkg: Package) =>
          (pkg.getPackageMetadata().warnings ?? []).filter((w) =>
-            (w.message ?? "").includes("does not publish"),
+            (w.message ?? "").includes("won't load"),
          );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
-         writeManifest({
-            explores: ["index.malloy", "dashboards/dash.malloy"],
-         });
+         // The recommended shape: no keys, index.malloy is the surface. The
+         // dashboard is listed, and only the tile over raw_data is refused.
+         writeManifest({});
          writeIndex("customers");
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getDashboard("dash")).toBeDefined();
          const dash = pkg.getModel("dashboards/dash.malloy")!;
-
-         // One finding, for the one tile the surface refuses, and it agrees
-         // with what the query endpoint actually does.
          const found = tileWarnings(pkg);
-         expect(found).toHaveLength(1);
-         expect(found[0]).toMatchObject({
-            model: "dashboards/dash.malloy",
-            subject: "dash",
-            severity: "error",
-         });
-         expect(found[0].message).toContain('tile "raw_data -> v"');
-         expect(found[0].message).toContain('such as "index.malloy"');
+         expect(found).toEqual([
+            {
+               model: "dashboards/dash.malloy",
+               subject: "dash",
+               severity: "error",
+               message:
+                  `Tile raw_data -> v on dashboard dash reads raw_data, which ` +
+                  `index.malloy doesn't export, so it won't load. Fix: add ` +
+                  `raw_data to the export { ... } in index.malloy.`,
+            },
+         ]);
+         // The lint agrees with the query route, both ways.
          await expect(
             dash.getQueryResults(undefined, undefined, "run: raw_data -> v"),
          ).rejects.toThrow(NotQueryableError);
+         const customers = await dash.getQueryResults(
+            undefined,
+            undefined,
+            "run: customers -> v",
+         );
+         expect(customers.result.data).toBeDefined();
 
-         // The remedy the warning names works: re-exported from a listed
-         // file, the tile runs and the warning is gone.
+         // The fix the warning names works.
          writeIndex("customers, raw_data");
          const fixed = await Package.create(
             "env",
@@ -1289,8 +1295,25 @@ import { customers } from "../index.malloy"`,
             .getQueryResults(undefined, undefined, "run: raw_data -> v");
          expect(ran.result.data).toBeDefined();
 
-         // Nothing is refused under "all", so there is nothing to warn about.
+         // Under a written explores, the fix names a file the key lists, and
+         // listing the dashboard itself adds nothing to the surface.
          writeIndex("customers");
+         writeManifest({
+            explores: ["index.malloy", "dashboards/dash.malloy"],
+         });
+         const listed = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(tileWarnings(listed).map((w) => w.message)).toEqual([
+            `Tile raw_data -> v on dashboard dash reads raw_data, which no ` +
+               `file "explores" lists exports, so it won't load. Fix: add ` +
+               `raw_data to the export { ... } in index.malloy.`,
+         ]);
+
+         // Nothing is refused under "all", so there is nothing to warn about.
          writeManifest({
             explores: ["index.malloy", "dashboards/dash.malloy"],
             queryableSources: "all",
@@ -1298,35 +1321,26 @@ import { customers } from "../index.malloy"`,
          const open = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(tileWarnings(open)).toEqual([]);
 
-         // The example file comes from the key. index.malloy is on disk but
-         // unlisted here, so importing into it would publish nothing, and the
-         // warning must not suggest it.
+         // explores listing only the dashboard leaves no file that can export
+         // anything, so both tiles are refused and the fix is to let
+         // index.malloy be the surface.
          writeManifest({ explores: ["dashboards/dash.malloy"] });
-         const unlisted = await Package.create(
+         const onlyDash = await Package.create(
             "env",
             "pkg",
             tempDir,
             malloyConfig,
          );
-         const unlistedFound = tileWarnings(unlisted);
-         expect(unlistedFound).toHaveLength(2);
-         for (const finding of unlistedFound) {
-            expect(finding.message).not.toContain("index.malloy");
-            expect(finding.message).toContain("a file you list there");
-         }
-
-         // With no key, the surface is index.malloy alone. The dashboard is
-         // held back before this lint runs, so its remedy never needs the
-         // index.malloy wording the held-back warning has.
-         writeManifest({});
-         const convention = await Package.create(
-            "env",
-            "pkg",
-            tempDir,
-            malloyConfig,
-         );
-         expect(convention.getDashboard("dash")).toBeUndefined();
-         expect(tileWarnings(convention)).toEqual([]);
+         expect(tileWarnings(onlyDash).map((w) => w.message)).toEqual([
+            `Tile raw_data -> v on dashboard dash reads raw_data, which no ` +
+               `file "explores" lists exports, so it won't load. Fix: delete ` +
+               `"explores" from publisher.json and add raw_data to the ` +
+               `export { ... } in index.malloy.`,
+            `Tile customers -> v on dashboard dash reads customers, which no ` +
+               `file "explores" lists exports, so it won't load. Fix: delete ` +
+               `"explores" from publisher.json and add customers to the ` +
+               `export { ... } in index.malloy.`,
+         ]);
       } finally {
          await duckdb.close();
       }
