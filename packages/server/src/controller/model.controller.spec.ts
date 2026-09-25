@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
-import { ModelNotFoundError } from "../errors";
+import { ModelNotFoundError, NotQueryableError } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { ModelController } from "./model.controller";
 
@@ -17,14 +17,23 @@ import { ModelController } from "./model.controller";
 const SOURCE_TEXT = 'source: flights is duckdb.table("flights.parquet")\n';
 
 function buildController(
-   model: { getType: () => "model" | "notebook"; getModel?: sinon.SinonStub },
+   model: {
+      getType: () => "model" | "notebook";
+      getModel?: sinon.SinonStub;
+      assertFileOnSurface?: () => void;
+      showsFileText?: () => boolean;
+   },
    getModelFileText: sinon.SinonStub = sinon.stub().resolves(SOURCE_TEXT),
 ) {
    // The text is read from the PACKAGE on getPackage's lock-free fast path,
    // never through the environment's locked read — the fake environment
    // deliberately has no getModelFileText.
    const fakePackage = {
-      getModel: sinon.stub().returns(model),
+      getModel: sinon.stub().returns({
+         assertFileOnSurface: () => {},
+         showsFileText: () => true,
+         ...model,
+      }),
       getModelFileText,
    };
    const fakeEnv = { getPackage: sinon.stub().resolves(fakePackage) };
@@ -63,6 +72,37 @@ describe("ModelController.getModel", () => {
 
       expect(result).toEqual(COMPILED);
       expect("sourceText" in result).toBe(false);
+   });
+
+   it("refuses a file off the surface with the query route's 404, unwrapped", async () => {
+      const refusal = new NotQueryableError(
+         'No queryable model "orders.malloy".',
+      );
+      const { controller, getModelFileText } = buildController({
+         getType: () => "model",
+         getModel: sinon.stub().resolves(COMPILED),
+         assertFileOnSurface: () => {
+            throw refusal;
+         },
+      });
+
+      await expect(
+         controller.getModel("env", "faa", "orders.malloy"),
+      ).rejects.toBe(refusal);
+      expect(getModelFileText.called).toBe(false);
+   });
+
+   it("withholds the text of a file that declares something it does not publish", async () => {
+      const { controller, getModelFileText } = buildController({
+         getType: () => "model",
+         getModel: sinon.stub().resolves(COMPILED),
+         showsFileText: () => false,
+      });
+
+      const result = await controller.getModel("env", "faa", "index.malloy");
+
+      expect(result).toEqual(COMPILED);
+      expect(getModelFileText.called).toBe(false);
    });
 
    it("still refuses a notebook before reading anything", async () => {

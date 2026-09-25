@@ -6617,27 +6617,111 @@ export class Model {
    }
 
    private getStandardModel(): ApiCompiledModel {
+      const published = this.publishedNames();
+      const keep = <T extends { name?: string }>(items: T[] | undefined) =>
+         published && items
+            ? items.filter((item) => item.name && published.has(item.name))
+            : items;
       return {
          type: "source",
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
          dataStyles: JSON.stringify(this.dataStyles),
-         modelDef: JSON.stringify(this.modelDef),
+         modelDef: JSON.stringify(this.publishedModelDef(published)),
          // `this.modelInfo` is precomputed once at construction (either
          // by the worker or in the Model.create constructor); don't
-         // re-run `modelDefToModelInfo` on every API hit.
-         modelInfo: JSON.stringify(this.modelInfo ?? {}),
-         sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
+         // re-run `modelDefToModelInfo` on every API hit. It is already
+         // export-curated by Malloy; `keep` adds a dashboard's surface rule.
+         modelInfo: JSON.stringify(
+            this.modelInfo
+               ? { ...this.modelInfo, entries: keep(this.modelInfo.entries) }
+               : {},
+         ),
+         sourceInfos: keep(this.getSourceInfos())?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
          // Discovery surface: an explore lists only its export closure
          // (getSources/getQueries curate); `this.sources` stays complete for
          // enforcement and resolution.
-         sources: this.getSources(),
-         queries: this.getQueries(),
+         sources: keep(this.getSources()),
+         queries: keep(this.getQueries()),
          givens: this.givens,
       } as ApiCompiledModel;
+   }
+
+   /**
+    * The names this file's model GET may show, or undefined when the package
+    * curates nothing (then every name is public).
+    *
+    * For an ordinary file, its export closure, the same set
+    * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
+    * its own, only the exported names that trace to the package surface: a
+    * source it may read, or a query over one.
+    */
+   private publishedNames(): Set<string> | undefined {
+      if (!this.discoveryCurationEnabled) return undefined;
+      const exports = this.modelDef?.exports;
+      if (!Array.isArray(exports)) return undefined;
+      const names = new Set<string>(exports);
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (!this.isDashboard() || mode === "all" || !exploresDeclared) {
+         return names;
+      }
+      const readable = (source: string) =>
+         this.isCuratedSource(source) || this.derivesFromCurated(source);
+      const admitted = new Set<string>();
+      for (const name of names) {
+         const query = this.queries?.find((q) => q.name === name);
+         const source = query ? query.sourceName : name;
+         if (source && readable(source)) admitted.add(name);
+      }
+      return admitted;
+   }
+
+   /**
+    * `modelDef` with its top-level `contents` and `exports` limited to
+    * `published`. A file that imports another whole (`import "orders.malloy"`)
+    * carries every imported definition in `contents`, including sources it
+    * does not export, so without this the surface file's own response named
+    * and described the sources it hides. Every other key (`imports`, which the
+    * app reads) is kept, and so is the full IR on the model itself.
+    */
+   private publishedModelDef(
+      published: Set<string> | undefined,
+   ): ModelDef | undefined {
+      if (!published || !this.modelDef) return this.modelDef;
+      return {
+         ...this.modelDef,
+         contents: Object.fromEntries(
+            Object.entries(this.modelDef.contents ?? {}).filter(([name]) =>
+               published.has(name),
+            ),
+         ),
+         exports: (this.modelDef.exports ?? []).filter((name) =>
+            published.has(name),
+         ),
+      };
+   }
+
+   /**
+    * Whether the model GET may return this file's text. Not when the file
+    * declares something it does not publish: the text would show that
+    * source's name and definition. A dashboard's text is always returned,
+    * because the dashboard editor needs it to save.
+    */
+   public showsFileText(): boolean {
+      if (this.isDashboard()) return true;
+      const published = this.publishedNames();
+      if (!published) return true;
+      const suffix = `/${this.modelPath}`;
+      return Object.entries(this.modelDef?.contents ?? {}).every(
+         ([name, def]) => {
+            const url = (def as { location?: { url?: string } }).location?.url;
+            const declaredHere = url !== undefined && url.endsWith(suffix);
+            return !declaredHere || published.has(name);
+         },
+      );
    }
 
    /**

@@ -1331,6 +1331,26 @@ describe("Dashboard discovery (E2E)", () => {
             expect(named.status).toBe(200);
          });
 
+         it("shows a dashboard file's model and text, but only its names that read the surface", async () => {
+            const res = await fetch(
+               conventionUrl("/models/dashboards/tiles.malloy"),
+            );
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as {
+               modelDef: string;
+               sourceText?: string;
+            };
+            // The editor saves with the text's hash, so it has to be there.
+            expect(body.sourceText).toContain("## artifact");
+            const contents = Object.keys(
+               (JSON.parse(body.modelDef) as { contents: object }).contents,
+            ).sort();
+            expect(contents).toEqual(["big_orders", "big_status"]);
+            // A file off the surface is not shown at all.
+            const hidden = await fetch(conventionUrl("/models/orders.malloy"));
+            expect(hidden.status).toBe(404);
+         });
+
          it("warns once per tile or dashboard that won't load, naming the source to export", async () => {
             expect(await wontLoad(conventionUrl(""))).toEqual([
                `Dashboard hidden reads orders_staging, which index.malloy ` +

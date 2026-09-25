@@ -418,6 +418,86 @@ export { customers }`,
       }
    });
 
+   it("the model GET shows only what the surface publishes", async () => {
+      // index.malloy imports base.malloy whole, so its compiled model carries
+      // `hidden` too. The GET must not name it, in any field.
+      writeManifest({});
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: pub is duckdb.sql("select 1 as id")
+source: hidden is duckdb.sql("select 2 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "base.malloy"\nexport { pub }`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const index = pkg.getModel("index.malloy")!;
+         const response = (await index.getModel()) as {
+            modelDef?: string;
+            modelInfo?: string;
+            sources?: { name?: string }[];
+         };
+         const modelDef = JSON.parse(response.modelDef ?? "{}") as {
+            contents: Record<string, unknown>;
+            exports: string[];
+            imports?: unknown[];
+         };
+         expect(Object.keys(modelDef.contents)).toEqual(["pub"]);
+         expect(modelDef.exports).toEqual(["pub"]);
+         // The app reads `imports`; pruning `contents` must leave it.
+         expect(modelDef.imports?.length).toBe(1);
+         expect(JSON.stringify(response)).not.toContain('"hidden"');
+         expect(index.showsFileText()).toBe(true);
+
+         // The hidden file is refused outright, with the query route's words.
+         expect(() =>
+            pkg.getModel("base.malloy")!.assertFileOnSurface(),
+         ).toThrow('No queryable model "base.malloy".');
+
+         // A surface file that declares an unexported helper keeps its
+         // compiled view but not its text, which would show the helper.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+source: helper is duckdb.sql("select 3 as id")
+export { pub }`,
+         );
+         const withHelper = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(withHelper.getModel("index.malloy")!.showsFileText()).toBe(
+            false,
+         );
+
+         // With no surface, nothing is curated.
+         writeManifest({ explores: [] });
+         const open = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const openDef = JSON.parse(
+            (
+               (await open.getModel("index.malloy")!.getModel()) as {
+                  modelDef: string;
+               }
+            ).modelDef,
+         ) as { contents: Record<string, unknown> };
+         expect(Object.keys(openDef.contents).sort()).toEqual([
+            "helper",
+            "hidden",
+            "pub",
+         ]);
+         expect(() =>
+            open.getModel("base.malloy")!.assertFileOnSurface(),
+         ).not.toThrow();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("warns for a LISTED import-only model (blank page), not for a hidden one", async () => {
       writeManifest({ explores: ["consumer.malloy"] });
       fs.writeFileSync(

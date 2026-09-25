@@ -223,3 +223,39 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
 
    return { sources };
 }
+
+/**
+ * The part of the package catalog a dashboard file can actually use.
+ *
+ * The builder never writes an import, so a source the file cannot see would
+ * produce a tile that does not compile. A named import says exactly which
+ * names it brings. A whole-file import of a published model brings that
+ * model's sources. A whole-file import of a file off the surface cannot be
+ * read, so then every published source is offered and a wrong pick is caught
+ * by the compile check the editor already runs.
+ */
+export function visibleToDashboard(
+   catalog: PackageCatalog,
+   imports: ReadonlyArray<
+      | { kind: "all"; path: string }
+      | { kind: "names"; names: string[]; path: string }
+   >,
+   published: CompiledModel[],
+): PackageCatalog {
+   const visible = new Set<string>();
+   for (const imported of imports) {
+      if (imported.kind === "names") {
+         for (const name of imported.names) visible.add(name);
+         continue;
+      }
+      const model = published.find((m) => pathOf(m) === imported.path);
+      if (!model) return catalog;
+      for (const source of model.sources ?? []) {
+         if (source.name) visible.add(source.name);
+      }
+   }
+   return {
+      ...catalog,
+      sources: catalog.sources.filter((source) => visible.has(source.name)),
+   };
+}

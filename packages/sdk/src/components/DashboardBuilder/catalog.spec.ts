@@ -9,6 +9,7 @@ import {
    docOf,
    filterableFields,
    isDashboardModel,
+   visibleToDashboard,
 } from "./catalog";
 
 /**
@@ -134,6 +135,49 @@ describe("buildCatalog", () => {
       ]);
       expect(catalog.sources).toHaveLength(1);
       expect(catalog.sources[0].modelPath).toBe("data_app.malloy");
+   });
+});
+
+describe("visibleToDashboard", () => {
+   const published: CompiledModel[] = [
+      {
+         path: "index.malloy",
+         sources: [{ name: "orders" }, { name: "users" }],
+      },
+   ];
+   const catalog = buildCatalog(published);
+   const names = (c: ReturnType<typeof buildCatalog>) =>
+      c.sources.map((s) => s.name).sort();
+
+   it("offers only the names a named import brings", () => {
+      const seen = visibleToDashboard(
+         catalog,
+         [{ kind: "names", names: ["orders"], path: "orders.malloy" }],
+         published,
+      );
+      expect(names(seen)).toEqual(["orders"]);
+   });
+
+   it("offers a published model's sources to a whole-file import of it", () => {
+      const seen = visibleToDashboard(
+         catalog,
+         [{ kind: "all", path: "index.malloy" }],
+         published,
+      );
+      expect(names(seen)).toEqual(["orders", "users"]);
+   });
+
+   it("offers everything published when a whole-file import cannot be read", () => {
+      // The imported file is off the surface, so what it declares is unknown.
+      const seen = visibleToDashboard(
+         catalog,
+         [
+            { kind: "names", names: ["orders"], path: "orders.malloy" },
+            { kind: "all", path: "hidden.malloy" },
+         ],
+         published,
+      );
+      expect(names(seen)).toEqual(["orders", "users"]);
    });
 });
 

@@ -66,8 +66,13 @@ const listDashboards = mock(() =>
    Promise.resolve({ data: [{ name: "overview" }, { name: "regions" }] }),
 );
 const executeQueryModel = mock(() => pending());
+// What the package publishes: the catalog is built from these, not from
+// whatever file the dashboard imports.
+const listModels = mock(() =>
+   Promise.resolve({ data: [{ path: "data_app.malloy" }] }),
+);
 mockServerProvider({
-   models: { getModel, executeQueryModel },
+   models: { getModel, executeQueryModel, listModels },
    dashboards: { getDashboard, listDashboards },
 });
 
@@ -113,7 +118,11 @@ describe("DashboardEditor", () => {
       mount();
       expect(await screen.findByText("Storefront")).toBeDefined();
       expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
-      // The catalog came from the model the file imports, by its resolved path.
+      // The catalog came from the published models, and the file's import of
+      // scoped_orders is what keeps it on offer.
+      await waitFor(() =>
+         expect(listModels.mock.calls.length).toBeGreaterThan(0),
+      );
       await waitFor(() =>
          expect(
             getModel.mock.calls.some((call) => call[2] === "data_app.malloy"),
