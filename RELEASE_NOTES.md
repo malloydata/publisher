@@ -31,6 +31,17 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a given the query reads is no longer silently replaced by its default
+
+Publisher withholds a given the entry model doesn't surface when a gate is the only thing reading
+it, so the gate can still evaluate. It also withheld it when the query itself read a given of the
+same name, such as a `where:` on a source from another file that declares its own defaulted
+`HIDE`. That `where:` then ran at its default: a caller who sent `HIDE: us-west` got the rows for
+`'none'`, with no error. The value is now forwarded, so the request returns a 400 (`unknown given
+'HIDE'`), the same as for any given the entry model doesn't surface. **Behavior change:** a
+request that used to return rows at the default now fails with a 400. To fix the model, import the
+given at the entry model.
+
 ## [Unreleased] — the model Explorer takes givens
 
 The Console's model Explorer now shows a **Parameters** row when the model declares givens, and
