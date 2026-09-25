@@ -1,0 +1,4 @@
+{
+   "name": "filter-binding-guard",
+   "description": "Fixture: a row-security filter that stays bound to its original field even when a caller renames the name it reads — HTTP integration coverage for the filter binding guard."
+}

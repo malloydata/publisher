@@ -3,7 +3,7 @@
 
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
-import { ModelNotFoundError } from "../errors";
+import { ModelNotFoundError, NotQueryableError } from "../errors";
 import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
@@ -63,6 +63,9 @@ export class ModelController {
          if (model.getType() === "notebook") {
             throw new ModelNotFoundError(`${modelPath} is a notebook`);
          }
+         // A file nobody can query is not shown either: same rule, same 404
+         // text as the query route. Inert with no surface and under "all".
+         model.assertFileOnSurface();
          // The compiled view and the file's own text, together: the file is on
          // disk beside the package, and a client showing code next to the model
          // otherwise has no way to fetch it. The read stays on `getPackage`'s
@@ -73,22 +76,30 @@ export class ModelController {
          // never the compiled model the spec marks it optional beside.
          const [compiled, sourceText] = await Promise.all([
             model.getModel(),
-            p.getModelFileText(modelPath).catch((error: unknown) => {
-               logger.warn("getModel: model source text unavailable", {
-                  environmentName,
-                  packageName,
-                  modelPath,
-                  error: error instanceof Error ? error.message : String(error),
-               });
-               return undefined;
-            }),
+            // Withheld when the text names a source the file does not publish.
+            p
+               .getModelFileText(modelPath)
+               .then((text) => (model.showsFileText(text) ? text : undefined))
+               .catch((error: unknown) => {
+                  logger.warn("getModel: model source text unavailable", {
+                     environmentName,
+                     packageName,
+                     modelPath,
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  });
+                  return undefined;
+               }),
          ]);
          return sourceText === undefined
             ? compiled
             : { ...compiled, sourceText };
       } catch (error) {
-         // Re-throw ModelNotFoundError as-is
-         if (error instanceof ModelNotFoundError) {
+         // Re-throw these as-is, so they keep their 404.
+         if (
+            error instanceof ModelNotFoundError ||
+            error instanceof NotQueryableError
+         ) {
             throw error;
          }
          // Wrap other errors with more context

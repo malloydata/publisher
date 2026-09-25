@@ -2267,7 +2267,7 @@ async function runContextQuery(
       // "the package exposes nothing" look identical. The package DID
       // load (a failed load throws out of getPackageIndex above), so an
       // empty result means its models expose no sources: a curation gap
-      // (explores/export {}), not an empty database. Say so, only in the
+      // (index.malloy's export {}), not an empty database. Say so, only in the
       // empty case, so the populated payload stays byte-identical.
       // `kinds` is empty only when EVERY target named a type this server does
       // not index, and unsupportedTargetWarnings has already said so exactly.
@@ -2279,7 +2279,7 @@ async function runContextQuery(
             sources,
             ...listingEnvelope,
             ...warningsFor(
-               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call get_status for load errors and stale packages.",
+               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
             ),
          });
       }
