@@ -87,6 +87,28 @@ class FinalQuery(unittest.TestCase):
         self.assertEqual(rb._norm("run: t -> { where: x = 1; aggregate: n }"),
                          rb._norm("run: t -> {\n  where: x = 1\n  aggregate: n\n}"))
 
+    def test_an_escaped_quote_does_not_end_the_string(self):
+        # `'O\'Brien'`: the loop used to read the escaped quote as the end of
+        # the string, the real closing quote opened one that never closed, and
+        # a later `;` was kept as quoted text -- so the printed form (newlines)
+        # and the executed form (semicolons) normalised differently.
+        ran = "run: customers -> { where: last_name = 'O\\'Brien'; aggregate: n is count() }"
+        printed = "run: customers -> {\n  where: last_name = 'O\\'Brien'\n  aggregate: n is count()\n}"
+        self.assertEqual(rb._norm(ran), rb._norm(printed))
+
+    def test_an_apostrophe_in_a_comment_opens_no_string(self):
+        ran = "run: t -> { // it's the filtered one\n where: x = 1; aggregate: n }"
+        printed = "run: t -> { // it's the filtered one\n where: x = 1\n aggregate: n }"
+        self.assertEqual(rb._norm(ran), rb._norm(printed))
+        dashed = "run: t -> { -- don't\n where: x = 1; aggregate: n }"
+        self.assertEqual(rb._norm(dashed), rb._norm("run: t -> { -- don't\n where: x = 1\n aggregate: n }"))
+
+    def test_double_quotes_and_backticks_are_strings_too(self):
+        self.assertNotEqual(rb._norm('run: t -> { where: cat = "Books;Media"; aggregate: n }'),
+                            rb._norm('run: t -> { where: cat = "Books Media"; aggregate: n }'))
+        self.assertNotEqual(rb._norm("run: t -> { group_by: `a;b`; aggregate: n }"),
+                            rb._norm("run: t -> { group_by: `a b`; aggregate: n }"))
+
     def test_a_declared_query_matches_however_it_was_laid_out(self):
         # The executed query is one line with semicolons; the answer prints the
         # same query on several lines. Before, they never compared equal and

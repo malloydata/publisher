@@ -1270,16 +1270,33 @@ def _norm(q: str) -> str:
     model edit as a regression: the answer led with the filtered figure and
     the harness graded the unfiltered probe it ran afterwards.
 
-    Only a `;` outside a string literal is a clause separator. Replacing every
-    one made `'Books;Media'` and `'Books Media'` the same query, and the
-    declared block could then resolve to the wrong one of two that ran."""
+    Only a `;` outside a string literal is a clause separator, and the lexer's
+    other two rules are honoured too: inside a string a backslash escapes the
+    next character (`'O\\'Brien'` does not end at the escaped quote), and
+    outside one `--` or `//` starts a comment that runs to the end of the line
+    (an apostrophe in it opens no string). Without those, an escaped quote or a
+    comment apostrophe made the printed form and the executed form normalise
+    differently, and the harness graded the probe query instead."""
     out: list[str] = []
     quote: str | None = None
-    for ch in (q or ""):
+    q = q or ""
+    i, n = 0, len(q)
+    while i < n:
+        ch = q[i]
         if quote:
             out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(q[i + 1])
+                i += 2
+                continue
             if ch == quote:
                 quote = None
+        elif q.startswith("--", i) or q.startswith("//", i):
+            j = q.find("\n", i)
+            j = n if j < 0 else j
+            out.append(q[i:j])
+            i = j
+            continue
         elif ch in ("'", '"', "`"):
             quote = ch
             out.append(ch)
@@ -1287,6 +1304,7 @@ def _norm(q: str) -> str:
             out.append(" ")
         else:
             out.append(ch)
+        i += 1
     return " ".join("".join(out).split())
 
 
