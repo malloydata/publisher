@@ -83,7 +83,7 @@ What it exports is what agents discover **and** what may be queried. Everything 
 
 `publisher.json` has two older keys for this, `explores` and `queryableSources`. A new package uses neither: `index.malloy` does the job.
 
-- **`explores`** (`string[]`) is deprecated in every form. It still works as before: the files it lists are listed and queryable, and what they export is the surface, wherever they live. The one exception is a tagged dashboard it lists, which reads the surface and adds nothing to it. A package that sets it gets a load-time warning naming the edit that replaces it. A surface spanning several files needs no `explores`: import them all into one `index.malloy` and export what you publish.
+- **`explores`** (`string[]`) is deprecated in every form. The files it lists are listed and queryable, and what they export is the surface, wherever they live. The one exception is a tagged dashboard it lists, which reads the surface and adds nothing to it. A package that sets it gets a load-time warning naming the edit that replaces it. A surface spanning several files needs no `explores`: import them all into one `index.malloy` and export what you publish.
 
   ```malloy
   // index.malloy
