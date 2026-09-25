@@ -81,19 +81,20 @@ What it exports is what agents discover **and** what may be queried. Everything 
 
 ### The older manifest fields
 
-Both still work and are not going away in this release. Both are deprecated where `index.malloy` replaces them, and a package using them that way gets a load-time warning naming the replacement. The two uses it cannot replace, an `explores` naming several files and `queryableSources: "all"`, stay supported without a warning. Do not add either key to a new package that does not need one of those two.
+`publisher.json` has two older keys for this, `explores` and `queryableSources`. A new package uses neither: `index.malloy` does the job.
 
-```json
-{
-  "name": "ecommerce",
-  "explores": ["order_analysis.malloy", "customer_health.malloy"],
-  "queryableSources": "all"
-}
-```
+- **`explores`** (`string[]`) is deprecated in every form. It still works, and a package that sets it gets a load-time warning naming the edit that replaces it. A surface spanning several files needs no `explores`: import them all into one `index.malloy` and export what you publish.
 
-- **`explores`** (`string[]`) - model file paths relative to the package root, naming the surface. Reach for it for the one thing `index.malloy` cannot express: a surface spanning **several** files. An explicit `explores` always wins over the convention, and a package with both an `index.malloy` and an `explores` that omits it carries a warning saying so. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`; publishing a package that has any is rejected, so fix the path before publishing. An explicit `"explores": []` means "do not curate" and suppresses the convention.
-- **`queryableSources`** (`"declared"` | `"all"`, default `"declared"`) - the query boundary. `"declared"` is already the default, so the key changes nothing. **`"all"` is the exception, and `index.malloy` does not replace it:** it curates listings while leaving every source queryable by name, and a surface derived from an `index.malloy` always enforces the boundary. If you want listings-only curation, keep both keys.
+  ```malloy
+  // index.malloy
+  import "order_analysis.malloy"
+  import "customer_health.malloy"
 
+  export { orders, customers, customer_health }
+  ```
+
+  `"explores": []` is deprecated too. It used to mean "do not curate". To publish everything now, rename or remove `index.malloy`. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`, and publishing a package that has any is rejected. When `explores` is set and does not list `index.malloy`, the index file is ignored, and a warning says so.
+- **`queryableSources`** (`"declared"` | `"all"`). `"declared"` is the default, so setting it does nothing and draws a warning. **`"all"` has one use:** hiding an `#(authorize)`-gated source from listings while authorized callers still query it by name. It keeps the listings `index.malloy` curates and leaves every source queryable by name. It needs no `explores` beside it and draws no warning. Leave it out unless you have that case.
 
 > **Not access control.** The surface gates the query surface (the query endpoints, REST and MCP alike), not compile and not raw file retrieval by exact path: `/compile` and `compile_model` are deliberately exempt, because compile is the authoring loop and the boundary is discovery curation. It doesn't restrict *who* may query, only *what* is queryable by name. Queryable sources are the union of every listed file's `export {}` closure, whichever listed model path a query addresses them through. To gate access by caller-supplied identity/role, use `#(authorize)` on the source (and `#(access_filter)` to scope rows), see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and these gates are independent layers.
 

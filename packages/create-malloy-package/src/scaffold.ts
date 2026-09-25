@@ -2061,13 +2061,6 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
             ? `That file is also \`${result.indexFile}\`, this package's published surface: what it \`export\`s is what Publisher lists and what may be queried. Query through it.`
             : `\`${result.packageName}/${result.indexFile}\` is the package's published surface: it imports that model and \`export\`s \`${result.sourceName}\`. Publisher lists and accepts queries against the surface, so address queries to \`${result.indexFile}\`, not to \`${result.modelFile}\` -- a model off the surface is refused with a 404. Add a source to the \`export\` list to publish it.`,
          "",
-         // A dashboard is a FILE, and a surface file exports sources, so there
-         // is no way to put one on the surface from index.malloy. Left unsaid,
-         // the first dashboard added to a scaffolded package is written, is
-         // never routed, and reports only a load warning whose remedy is to
-         // abandon the file this package was scaffolded around.
-         `One thing that surface cannot publish: a dashboard. A \`dashboards/*.malloy\` file is a file, not a source, so \`${result.indexFile}\` has no way to \`export\` it, and a dashboard added to this package is NOT served -- it is written, it compiles, and it is withheld with a load warning. To serve dashboards, declare an \`explores\` in \`publisher.json\` naming \`${result.indexFile}\` and every dashboard file; the explicit key overrides the convention. Decide that before building one, because the fix is a different curation shape rather than an extra line.`,
-         "",
          `The package's REST base is:`,
          "",
          "```",
