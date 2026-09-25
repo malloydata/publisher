@@ -288,6 +288,11 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
     # so a dirty model repo read clean and the pin silently stopped pinning.
     path = path.resolve()
     scope = scope.resolve() if scope is not None else None
+    if scope is not None and not scope.exists():
+        # `git status -- <missing path>` exits 0 with empty output, so a typo
+        # (`pgk`) or a doubled path (`--model-repo repo/pkg --model-dir pkg`)
+        # read as a clean model. No pin is the honest answer here too.
+        return None
     try:
         d = path if path.is_dir() else path.parent
         head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
@@ -2843,7 +2848,9 @@ def main(argv: list[str] | None = None) -> int:
                          "decided over this path, so an unrelated untracked file "
                          "elsewhere in the repo (a scratch notebook, a run "
                          "directory) does not stamp a clean model dirty. A "
-                         "relative path is taken from --model-repo. Recorded as "
+                         "relative path is taken from --model-repo (not from the "
+                         "working directory, unlike diagnose.py's --model-dir); "
+                         "a path that does not exist records no pin. Recorded as "
                          "modelDir; defaults to the whole repo")
     ap.add_argument("--skills-root", default=None,
                     help="a checkout holding skills/ and manifests/ to load the "

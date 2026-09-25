@@ -1570,6 +1570,14 @@ class GitSha(unittest.TestCase):
         outside.mkdir()
         self.assertIsNone(rb.git_sha(pathlib.Path("."), scope=outside))
 
+    def test_a_scope_that_does_not_exist_pins_nothing(self):
+        # A typo (`pgk`) or a doubled path (`--model-repo repo/pkg --model-dir
+        # pkg`): git status on a missing pathspec exits 0 with empty output and
+        # used to read as clean on a dirty model.
+        self.dirty()
+        self.assertIsNone(rb.git_sha(pathlib.Path("."), scope=pathlib.Path("pgk")))
+        self.assertIsNone(rb.git_sha(pathlib.Path("."), scope=pathlib.Path("sub/sub")))
+
     def test_a_relative_model_dir_resolves_against_the_repo(self):
         repo = pathlib.Path("/r")
         self.assertEqual(rb.model_scope(repo, pathlib.Path("packages/x")), repo / "packages/x")
