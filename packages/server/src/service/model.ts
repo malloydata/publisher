@@ -328,6 +328,12 @@ export interface OffSurfaceContext {
 export type ServedFrom = "storage" | "live_fallback";
 export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
+/** Registry ids and declaration names of every given a cell's closure declares. */
+interface CellDeclaredGivens {
+   ids: ReadonlySet<string>;
+   names: ReadonlySet<string>;
+}
+
 interface RunnableNotebookCell {
    type: "code" | "markdown";
    text: string;
@@ -353,8 +359,8 @@ interface RunnableNotebookCell {
     *    same "Cannot redefine" collision would occur if it were recompiled,
     *    but the repoint mechanism sidesteps it entirely by never
     *    re-parsing any text.
-    *  - its `.givens` (transitive through every import) is the set of givens
-    *    this cell can bind at all.
+    *  - its `.givens` (transitive through every import) is every given
+    *    anything this cell runs can reference.
     */
    modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
@@ -559,7 +565,7 @@ export class Model {
     *  for surfacing on the compiled-model response. */
    private givens: ApiGiven[] | undefined;
    /** Indexed like {@link runnableNotebookCells}; `undefined` = no modelDef, filter as before. */
-   private notebookCellDeclaredGivens: (ReadonlySet<string> | undefined)[] = [];
+   private notebookCellDeclaredGivens: (CellDeclaredGivens | undefined)[] = [];
    /**
     * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
     * `null` = computed and nothing declared.
@@ -785,14 +791,14 @@ export class Model {
       this.filterMap = filterMap ?? new Map();
       this.givens = givens;
       this.notebookCellDeclaredGivens = (this.runnableNotebookCells ?? []).map(
-         (cell) =>
-            cell.modelDef
-               ? new Set(
-                    Object.values(cell.modelDef.givens ?? {}).map(
-                       (g) => g.name,
-                    ),
-                 )
-               : undefined,
+         (cell) => {
+            if (!cell.modelDef) return undefined;
+            const registry = cell.modelDef.givens ?? {};
+            return {
+               ids: new Set(Object.keys(registry)),
+               names: new Set(Object.values(registry).map((g) => g.name)),
+            };
+         },
       );
       // One walk, both consumers. `collectEntryPointGates` is the single
       // definition of "what gates this source as an entry point" — it follows
@@ -1117,13 +1123,15 @@ export class Model {
     * `cellDeclared` (a notebook cell's declared set) also drops a surface name
     * the cell's closure never declares, i.e. one only a later cell imports.
     * Nothing the cell runs can reference such a name, so no default can bind.
+    * Match by id as well as name: an aliased import (`import { T is TENANT }`)
+    * surfaces `T` while the registry keeps the declaration name `TENANT`.
     * Do NOT instead scope the gate-only rule to the cell's surface: a name
     * declared deep in the cell would be dropped while its `where:` still reads
     * it, binding the default where the cell must 400.
     */
    private filterGivensToModelSurface(
       givens: Record<string, GivenValue> | undefined,
-      cellDeclared?: ReadonlySet<string>,
+      cellDeclared?: CellDeclaredGivens,
    ): Record<string, GivenValue> | undefined {
       if (!givens) return givens;
       const surfaceNames = new Set((this.givens ?? []).map((g) => g.name));
@@ -1135,10 +1143,19 @@ export class Model {
          const outOfCellScope =
             cellDeclared !== undefined &&
             surfaceNames.has(name) &&
-            !cellDeclared.has(name);
+            !cellDeclared.names.has(name) &&
+            !this.cellDeclaresGivenId(name, cellDeclared);
          if (!authorizeOnly && !outOfCellScope) filtered[name] = value;
       }
       return filtered;
+   }
+
+   private cellDeclaresGivenId(
+      surfaceName: string,
+      cellDeclared: CellDeclaredGivens,
+   ): boolean {
+      const entry = this.modelDef?.contents[surfaceName];
+      return entry?.type === "given" && cellDeclared.ids.has(entry.id);
    }
 
    /**

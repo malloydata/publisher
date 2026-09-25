@@ -353,7 +353,9 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
       writeManifest();
       fs.writeFileSync(
          path.join(tempDir, "nb.malloynb"),
-         `>>>malloy
+         `>>>markdown
+# Notes
+>>>malloy
 source: plain is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
   measure: c is count()
 }
@@ -377,7 +379,7 @@ run: gated -> { aggregate: c }`,
          const model = pkg.getModel("nb.malloynb");
 
          const preImport = await model!.executeNotebookCell(
-            0,
+            1,
             undefined,
             false,
             { GROUPS: [1] },
@@ -395,7 +397,7 @@ run: gated -> { aggregate: c }`,
          ).toBe(4);
 
          const postImport = await model!.executeNotebookCell(
-            1,
+            2,
             undefined,
             false,
             { GROUPS: [1] },

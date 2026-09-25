@@ -326,6 +326,75 @@ run: gated_tenant -> { aggregate: c }
       }
    });
 
+   const TENANT_BASE = `##! experimental.givens
+
+given:
+  TENANT :: number is 1
+
+source: rows is duckdb.table('orgtable') extend {
+  where: org_id = $TENANT
+  measure: c is count()
+}
+`;
+
+   // The surface and the runtime bind by the alias; the cell's registry keeps
+   // the declaration name, so a name-only match would drop T and bind the default.
+   it("(6a) a given imported under an alias binds the caller's value, not the default", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         {
+            "tenant_base.malloy": TENANT_BASE,
+            "nb.malloynb": `>>>malloy
+##! experimental.givens
+import { T is TENANT, rows } from "tenant_base.malloy"
+run: rows -> { aggregate: c }
+`,
+         },
+         "nb.malloynb",
+      );
+      try {
+         const result = await model.executeNotebookCell(0, undefined, false, {
+            T: 2,
+         });
+         expect(cellCount(result)).toBe(2);
+         const none = await model.executeNotebookCell(0, undefined, false, {
+            T: 3,
+         });
+         expect(cellCount(none)).toBe(0);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("(6b) an alias surfaced only by a later cell still 400s on an earlier cell that reaches the given deep", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         {
+            "tenant_base.malloy": TENANT_BASE,
+            "tenant_hub.malloy": `import "tenant_base.malloy"
+
+source: visible_rows is rows extend {}
+`,
+            "nb.malloynb": `>>>malloy
+import "tenant_hub.malloy"
+run: visible_rows -> { aggregate: c }
+>>>malloy
+##! experimental.givens
+import { T is TENANT } from "tenant_base.malloy"
+run: visible_rows -> { aggregate: c }
+`,
+         },
+         "nb.malloynb",
+      );
+      try {
+         const rejection = model.executeNotebookCell(0, undefined, false, {
+            T: 3,
+         });
+         await expect(rejection).rejects.toBeInstanceOf(MalloyError);
+         await expect(rejection).rejects.toThrow(/'T'/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
    it("(7) same-cell import+run still gates", async () => {
       const { model, duckdb, dir } = await createModelWithFiles(
          {
