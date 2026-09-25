@@ -429,7 +429,8 @@ source: hidden is duckdb.sql("select 2 as id")`,
       );
       fs.writeFileSync(
          path.join(tempDir, "index.malloy"),
-         `import "base.malloy"\nexport { pub }`,
+         // A top-level run over the hidden source puts it in queryList too.
+         `import "base.malloy"\nrun: hidden -> { group_by: id }\nexport { pub }`,
       );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
@@ -449,7 +450,12 @@ source: hidden is duckdb.sql("select 2 as id")`,
          expect(modelDef.exports).toEqual(["pub"]);
          // The app reads `imports`; pruning `contents` must leave it.
          expect(modelDef.imports?.length).toBe(1);
-         expect(JSON.stringify(response)).not.toContain('"hidden"');
+         // Searched as text, not for a quoted name: inside the JSON-encoded
+         // modelDef every quote is escaped, so a quoted search never matches.
+         // Covers contents, sourceRegistry (keyed name@file) and queryList.
+         expect(response.modelDef).not.toContain("hidden");
+         expect(response.modelInfo).not.toContain("hidden");
+         expect(JSON.stringify(response.sources)).not.toContain("hidden");
          expect(index.showsFileText()).toBe(true);
 
          // The hidden file is refused outright, with the query route's words.

@@ -6730,7 +6730,7 @@ export class Model {
    }
 
    /**
-    * `modelDef` with its top-level `contents` and `exports` limited to
+    * `modelDef` with every top-level list of named definitions limited to
     * `published`. A file that imports another whole (`import "orders.malloy"`)
     * carries every imported definition in `contents`, including sources it
     * does not export, so without this the surface file's own response named
@@ -6741,6 +6741,19 @@ export class Model {
       published: Set<string> | undefined,
    ): ModelDef | undefined {
       if (!published || !this.modelDef) return this.modelDef;
+      // `sourceRegistry` is keyed `name@file` and lists every source the file
+      // can see; `queryList` holds the file's top-level `run:` statements, each
+      // with the source it reads inline. `modelAnnotations`, `dependencies`
+      // and `imports` are keyed by file, not by source, and are kept.
+      const runsPublished = (query: unknown) => {
+         const ref = (query as { structRef?: unknown }).structRef;
+         const name =
+            typeof ref === "string"
+               ? ref
+               : ((ref as { as?: string; name?: string } | undefined)?.as ??
+                 (ref as { name?: string } | undefined)?.name);
+         return name !== undefined && published.has(name);
+      };
       return {
          ...this.modelDef,
          contents: Object.fromEntries(
@@ -6751,6 +6764,16 @@ export class Model {
          exports: (this.modelDef.exports ?? []).filter((name) =>
             published.has(name),
          ),
+         sourceRegistry: Object.fromEntries(
+            Object.entries(this.modelDef.sourceRegistry ?? {}).filter(([key]) =>
+               published.has(key.split("@")[0]),
+            ),
+         ),
+         queryList: (this.modelDef.queryList ?? []).filter(runsPublished),
+         // Every name the file uses, with where it is defined: editor
+         // go-to-definition data that names hidden sources and their fields.
+         // Nothing that reads this response uses it.
+         references: [],
       };
    }
 
