@@ -35,6 +35,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
+import { NotQueryableError } from "../errors";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -580,6 +581,63 @@ export { pub2, pub3 }`,
          expect(() =>
             open.getModel("base.malloy")!.assertFileOnSurface(),
          ).not.toThrow();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("the model GET and the query route treat named queries like sources", async () => {
+      writeManifest({});
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         // Named queries follow the same rule. An exported one is listed and
+         // runs, even when it reads a hidden source through a join; one the
+         // surface declares but does not export, and one in a hidden file,
+         // are neither listed nor runnable.
+         fs.writeFileSync(
+            path.join(tempDir, "base.malloy"),
+            `source: pub is duckdb.sql("select 1 as id")
+   source: hidden is duckdb.sql("select 2 as id")
+   query: hidden_ids is hidden -> { group_by: id }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+   source: pub3 is pub extend { join_one: j is hidden on id = j.id }
+   query: through_join is pub3 -> { group_by: j.id }
+   query: unexported is pub3 -> { group_by: id }
+   export { pub3, through_join }`,
+         );
+         const named = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         const namedIndex = named.getModel("index.malloy")!;
+         const namedResponse = (await namedIndex.getModel()) as {
+            modelDef: string;
+            modelInfo: string;
+            queries?: { name?: string }[];
+         };
+         expect((namedResponse.queries ?? []).map((q) => q.name)).toEqual([
+            "through_join",
+         ]);
+         for (const absent of ["unexported", "hidden_ids", "select 2"]) {
+            expect(namedResponse.modelDef).not.toContain(absent);
+            expect(namedResponse.modelInfo).not.toContain(absent);
+         }
+         const ran = await namedIndex.getQueryResults(
+            undefined,
+            "through_join",
+            undefined,
+         );
+         expect(ran.result.data).toBeDefined();
+         for (const refused of ["unexported", "hidden_ids"]) {
+            await expect(
+               namedIndex.getQueryResults(undefined, refused, undefined),
+            ).rejects.toThrow(NotQueryableError);
+         }
       } finally {
          await duckdb.close();
       }
