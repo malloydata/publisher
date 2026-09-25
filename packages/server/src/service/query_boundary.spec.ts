@@ -521,10 +521,9 @@ source: track_analysis is tracks extend {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("index.malloy")!;
 
-         // Curated decoy first, hidden real target last. The early gate only
-         // sees the first `run:` (curated → defers); the compiled backstop
-         // resolves the LAST statement — the one Malloy actually executes —
-         // and denies it. This is the case the structRef read exists for.
+         // Curated decoy first, hidden real target last. The early gate reads
+         // every `run:`, so it denies `helper` before compile. The compiled
+         // backstop, which resolves the LAST statement, would deny it too.
          await expect(
             model.getQueryResults(
                undefined,
@@ -533,8 +532,9 @@ source: track_analysis is tracks extend {
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
-         // Hidden target FIRST is positively denied by the early gate, before
-         // compilation — its compile errors can't be used as a schema oracle.
+         // Hidden target FIRST is denied before compile too: Malloy runs only
+         // the last statement but compiles every one, so the hidden source's
+         // compile errors would otherwise answer.
          await expect(
             model.getQueryResults(
                undefined,
@@ -696,6 +696,40 @@ export { \`customer-orders\` }`,
                undefined,
                undefined,
                "source: y is helper extend { measure: m is count() }\nrun: y -> { aggregate: m }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: an uppercase derivation of a curated source is admitted, and an uppercase or escaped alias of a hidden source is refused", async () => {
+      // Boundary is `declared` (explores is set). Keywords are case-insensitive;
+      // the alias's own case is not a different name.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const { result } = await model.getQueryResults(
+            undefined,
+            undefined,
+            "SOURCE: x IS customers EXTEND { measure: m is count() }\nRUN: x -> { aggregate: m }",
+         );
+         expect(result.data).toBeDefined();
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "SOURCE: y IS helper EXTEND { measure: m is count() }\nRUN: y -> { aggregate: m }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: y is `\\helper` extend { measure: m is count() }\nrun: y -> { aggregate: m }",
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
@@ -1168,6 +1202,20 @@ source: locked is duckdb.sql("select 1 as id") extend {
          );
          expect(hiddenFile).not.toBeInstanceOf(OffSurfaceError);
          expect(hiddenFile.message).toBe('No queryable model "base.malloy".');
+
+         // A hidden AND locked source (base_locked) reached by NAME, not as
+         // the run target, still gets the boundary's 404 — the pre-compile
+         // walk's own conversion (assertLocksOnAppearingNames), same as
+         // `helper`'s alias above.
+         const lockedAlias = await refusal(
+            model,
+            "source: y is base_locked extend {\n  measure: c is count()\n  view: hv is { aggregate: c }\n}\nrun: y -> hv",
+         );
+         expect(lockedAlias).not.toBeInstanceOf(OffSurfaceError);
+         // The caller's own word echoed back (`assertQueryBoundaryEarly`'s
+         // explicit-source branch), not the 403 the lock threw: a 404 that
+         // does not confirm which lock, if any, base_locked carries.
+         expect(lockedAlias.message).toBe('No queryable source "base_locked".');
       } finally {
          await duckdb.close();
       }
@@ -1335,6 +1383,15 @@ import { customers } from "../index.malloy"`,
             "run: customers -> v",
          );
          expect(customers.result.data).toBeDefined();
+         // A caller join is held to the boundary too, so the hidden import is
+         // no more reachable through a join than through `run:`.
+         await expect(
+            dash.getQueryResults(
+               undefined,
+               undefined,
+               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            ),
+         ).rejects.toThrow(NotQueryableError);
 
          // The fix the warning names works.
          writeIndex("customers, raw_data");
@@ -1349,6 +1406,14 @@ import { customers } from "../index.malloy"`,
             .getModel("dashboards/dash.malloy")!
             .getQueryResults(undefined, undefined, "run: raw_data -> v");
          expect(ran.result.data).toBeDefined();
+         const joined = await fixed
+            .getModel("dashboards/dash.malloy")!
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            );
+         expect(joined.result.data).toBeDefined();
 
          // Under a written explores, the fix names a file the key lists, and
          // listing the dashboard itself adds nothing to the surface.

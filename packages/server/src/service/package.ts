@@ -3,6 +3,7 @@
 
 import * as fs from "fs/promises";
 import * as path from "path";
+import { pathToFileURL } from "url";
 
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -15,6 +16,7 @@ import {
    MalloyConfig,
    MalloyError,
    SourceDef,
+   type ModelDef,
 } from "@malloydata/malloy";
 import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
@@ -317,6 +319,7 @@ export class Package {
       this.malloyConfig = malloyConfig;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      this.applySiblingModelResolverToModels();
    }
 
    /**
@@ -571,6 +574,40 @@ export class Package {
     *  `explores` lists is published like any other. */
    private isServedDashboard(modelPath: string): boolean {
       return this.dashboardFileText.has(modelPath);
+   }
+
+   /**
+    * Push a sibling-model lookup down onto each Model: given a `file://` URL,
+    * find the `.malloy`/`.malloynb` file it names among this PACKAGE's own
+    * discovered models (every one is compiled independently — see the
+    * worker's `filterModelPaths`/`recursive` scan — regardless of whether
+    * anything imports it, or whether the served model's own compile promoted
+    * it to a `modelDef.contents` entry) and hand back that sibling's own
+    * `ModelDef`. See `./filter_binding_guard`'s `SiblingModelDefResolver` doc
+    * for why a served model needs this at all: a selective `import { name }
+    * from "file"` or a notebook cell's narrower per-cell compile can leave an
+    * ancestor file with no `modelDef.contents` entry of its own, even though
+    * the package compiled it fine on its own.
+    *
+    * Built fresh from `this.models`/`this.packagePath` (never memoized across
+    * calls) and re-run alongside {@link applyDiscoveryPolicyToModels}/
+    * {@link applyQueryBoundaryToModels} — both at construction and after a
+    * reload swaps `this.models` wholesale — so every model always resolves
+    * against the CURRENT model set, never a stale one from before a reload.
+    */
+   private applySiblingModelResolverToModels(): void {
+      const byUrl = new Map<string, Model>();
+      for (const [modelPath, model] of this.models) {
+         byUrl.set(
+            pathToFileURL(path.join(this.packagePath, modelPath)).toString(),
+            model,
+         );
+      }
+      const resolver = (url: string): ModelDef | undefined =>
+         byUrl.get(url)?.getModelDef();
+      for (const model of this.models.values()) {
+         model.setSiblingModelDefResolver(resolver);
+      }
    }
 
    static async create(
@@ -2603,6 +2640,7 @@ export class Package {
          outcome.packageMetadata.manifestLocation ?? null;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      this.applySiblingModelResolverToModels();
       // AFTER the refreshed explore set is installed, never before: the tile
       // lint in dashboard discovery asks the query boundary about each tile,
       // and would otherwise answer against the PREVIOUS surface.
@@ -3534,5 +3572,6 @@ export class Package {
       this.packageMetadata = packageMetadata;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      this.applySiblingModelResolverToModels();
    }
 }

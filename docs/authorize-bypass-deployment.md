@@ -75,9 +75,9 @@ Two signals, emitted together on every skipped gate.
 This is the alertable one. Any nonzero rate from a path that should not be using the bypass is a
 finding. Two cautions:
 
-- Alert on the **sum**, not on a ratio. `runnable` fires on every bypassed query; `source` fires
-  only when the run target was resolvable from surface syntax before compilation, so an ad-hoc
-  query emits `runnable` alone.
+- Alert on the **sum**, not on a ratio. `runnable` fires once per bypassed query; `source` fires
+  once for the run target resolved before compile, locked or not, plus once for each additional
+  locked name, so one query can tick `source` more than once.
 - The counter has no org / package / source labels, deliberately — they are unbounded cardinality.
   They are on the log line.
 

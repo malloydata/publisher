@@ -63,12 +63,11 @@ What can break:
   untagged file `explores` lists is published like any other model, as before.
 - **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
   caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
-  `run: secret` there answers 404, but a query over a published source that joins a hidden source
-  the dashboard file imports runs and returns the joined rows:
-  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`. That is how a
-  query sent to `index.malloy` already behaves. Only tiles are checked at load; other query text on
-  the dashboard path is not. If a dashboard imports a file whose sources must stay unreadable, gate
-  them with `#(authorize)`.
+  `run: secret` there answers 404, and so does a query over a published source that joins a hidden
+  source the dashboard file imports:
+  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`, the same as a
+  query sent to `index.malloy` (see the caller-join section below). Only tiles are checked at load;
+  other query text on the dashboard path is checked when it runs.
 
 **A model off the surface answers 404 when read, not only when queried.** `GET …/models/{path}`
 used to return any file, with its full compiled model and its text. Now a file off the surface gets
@@ -114,6 +113,54 @@ intermediate is still built and an exported source still reads its table. `/comp
 `compile_model` stay exempt. The check is on what a query runs, so a query over a published source
 can still join a hidden source its file can see. The surface decides what is listed and queryable by
 name; `#(authorize)` is what decides who may read a source.
+
+## [Unreleased] — a join written in query text is held to the joined source's gate and to the query boundary
+
+A caller's ad-hoc query could join a source it was not allowed to query, and read it.
+`#(authorize)`, `#(access_filter)` and the `queryableSources` boundary ran on the run
+target only, so `run: open_src extend { join_cross: g is locked } -> { group_by: g.secret }`
+returned `locked`'s rows, a join into a hidden source returned its rows, and a join into a
+row-filtered source returned every row.
+
+A join the **caller** writes is now checked as if it were another run target:
+
+| The caller joins                                  | Before         | Now                                                     |
+| ------------------------------------------------- | -------------- | ------------------------------------------------------- |
+| an `#(authorize)` source they are not admitted to | 200            | 403 naming the join alias                               |
+| an `#(access_filter)` source                      | 200, every row | 200, their rows (the filter applies in the join's `ON`) |
+| a source off the discovery surface                | 200            | 404 `Query target is not queryable.`                    |
+| anything else, including an admitted lock         | 200            | 200                                                     |
+
+Joins the **author** declares in the model are unchanged: joining sensitive data into an
+ungated source still publishes it, as documented in `docs/authorize.md`. Named queries and
+notebook cells are author text and are unaffected.
+
+Also fixed here: Malloy keywords are case-insensitive, and `RUN:` / `SOURCE: x IS y` skipped
+the pre-compile checks, including a `required` `#(filter)`. Every caller-text reader now
+matches keywords in any case.
+
+Also fixed here: a row filter now stays bound to the field it was written against. An inherited
+filter (`where:`, a grafted `#(access_filter)`, or an injected `#(filter)`) that would evaluate
+against a different field of the same name in the executed query, including inside a caller's join,
+is refused with 403 instead of served. Renaming or excepting a field that no filter reads still works.
+
+Every locked name in the request is now decided before compile, not only the run target and
+its joins: a lock (`#(authorize)`) applies wherever its source's name appears, in any case,
+inside backticks (decoded as Malloy decodes them), parentheses, `compose`, or a derivation
+chain. The read over-collects on purpose -- it takes any identifier-shaped token, including
+one in a comment or a string literal -- so a caller the lock refuses also gets 403 when some
+other name merely matches it. The run target read before compile is the last `run:` in the
+text, the one Malloy executes, and `/compile` at file or package scope walks, without a depth
+cap, every derivation reachable from that final `run:` target -- or from every declared name,
+when the text has no `run:` at all.
+
+`#(filter)` is not a security boundary against caller-authored query text or
+`bypassFilters`; use givens and `#(authorize)`.
+
+**Who is affected:** callers who were reading through a join, or through a name the
+pre-compile read missed, what they could not read with `run:`. If an app sends ad-hoc text
+that reaches a gated or hidden source for users the gate does not admit, those requests now
+get 403 or 404, and a refused caller also gets 403 for text that merely names a locked source.
 
 ## [0.8.0] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 
