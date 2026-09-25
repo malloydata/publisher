@@ -85,7 +85,7 @@ this package, then `Fix:` and the one edit:
 | `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy` and delete `explores`. |
 | `explores: []` alone | Does nothing. Delete it. |
 | `queryableSources: "declared"` | Does nothing. Delete it. |
-| `queryableSources: "all"` | No warning. It stays supported as the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
+| `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
 | `Index.malloy` (any other case) | Ignored: only a root file named exactly `index.malloy` decides what is published. |
 
 Renaming `index.malloy` is now the way to leave a package uncurated. The caveat from 0.7.0 still

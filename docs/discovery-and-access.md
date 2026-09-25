@@ -141,10 +141,10 @@ curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \
 
 ## The older form: `explores` and `queryableSources`
 
-Both keys still work, but every use of `explores` is deprecated, and so is
-`queryableSources: "declared"`. Each deprecated use gets a load-time warning in the package's
-`warnings` that names the edit that replaces it. `queryableSources: "all"` is the one exception: it
-is supported and loads with no warning.
+Both keys are deprecated and both still work. Each use that has a replacement gets a load-time
+warning in the package's `warnings` naming the edit that replaces it. `queryableSources: "all"` has
+none, so it loads with no warning: it is the one way to hide a source from listings while it stays
+queryable by name.
 
 - **`explores`** — an optional `string[]` of `.malloy` file paths, relative to the package root,
   naming the surface. The surface is then what those files export. An explicit `explores` always

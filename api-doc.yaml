@@ -3321,6 +3321,7 @@ components:
                   never reached are exactly what it cannot report.
         queryableSources:
           type: string
+          deprecated: true
           enum:
             - declared
             - all
