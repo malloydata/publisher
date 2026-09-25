@@ -23,6 +23,7 @@
  */
 
 import {
+   BooleanFilterExpression,
    isStringCondition,
    NumberFilterExpression,
    StringFilterExpression,
@@ -40,6 +41,26 @@ dayjs.extend(utc);
 /** True for the `filter<…>` family, whose values are filter syntax, not plain. */
 export function isFilterType(type: string | undefined): boolean {
    return (type ?? "").startsWith("filter<");
+}
+
+/**
+ * The value a `filter<boolean>` dropdown shows for `value`: `"true"` or
+ * `"false"`, however it is spelled (`TRUE`, ` true `). Undefined for anything
+ * else the grammar can say (`=false`, `not true`, `null`, and text that does
+ * not parse), which the dropdown cannot show and must not rewrite.
+ *
+ * The plain forms are the ones offered because they are what a reader means:
+ * `true` matches true rows, and `false` matches false or null. `=false`, which
+ * leaves null out, is a different filter and stays in the text box as written.
+ */
+export function decodeBooleanFilter(
+   value: string,
+): "true" | "false" | undefined {
+   const { parsed } = BooleanFilterExpression.parse(value);
+   if (!parsed || parsed.not) return undefined;
+   return parsed.operator === "true" || parsed.operator === "false"
+      ? parsed.operator
+      : undefined;
 }
 
 /** The `T` of a `filter<T>`, or undefined for any other type. */
