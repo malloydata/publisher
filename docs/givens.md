@@ -152,7 +152,9 @@ The `/compile` endpoint (with `includeSql: true`) follows the same handling: a b
 A notebook cell run ignores a given that the notebook declares only in a later cell,
 so a code cell that runs before the notebook's `import` of a given does not 400 when
 the caller sends that given's value. A given the cell's own imports declare, at any
-depth, is still forwarded, and a name declared nowhere in the notebook still 400s.
+depth, is still forwarded, but forwarding is not binding: one declared deep and not
+surfaced by the cell's imports still 400s. A name declared nowhere in the notebook
+still 400s.
 Model queries are unaffected.
 
 ### A gate's givens must be on the gating model's own surface

@@ -52,13 +52,18 @@ describe("notebook cell given scope (HTTP E2E)", () => {
          );
       }
       const deadline = Date.now() + 30_000;
+      let loaded = false;
       while (Date.now() < deadline) {
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}`,
          );
-         if (res.ok) break;
+         if (res.ok) {
+            loaded = true;
+            break;
+         }
          await new Promise((r) => setTimeout(r, 250));
       }
+      if (!loaded) throw new Error(`package ${PKG} never loaded within 30s`);
    });
 
    afterAll(async () => {

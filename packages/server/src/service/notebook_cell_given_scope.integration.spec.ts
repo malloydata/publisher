@@ -488,4 +488,52 @@ run: gated -> { aggregate: c }
          await cleanup(duckdb, dir);
       }
    });
+
+   it("(10) a `#(secure)` given, the shape a host injects on every run, is dropped before its import and binds after it", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         {
+            "plain.malloy": PLAIN,
+            "gate.malloy": `##! experimental.givens
+
+#(secure)
+given: GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: gated is duckdb.table('orgtable') extend {
+  measure: c is count()
+}
+`,
+            "nb.malloynb": `>>>malloy
+import "plain.malloy"
+run: plain -> { aggregate: c }
+>>>malloy
+##! experimental.givens
+import "gate.malloy"
+run: gated -> { aggregate: c }
+`,
+         },
+         "nb.malloynb",
+      );
+      try {
+         const preImport = await model.executeNotebookCell(
+            0,
+            undefined,
+            false,
+            { GROUPS: [1] },
+         );
+         expect(cellCount(preImport)).toBe(4);
+
+         const mine = await model.executeNotebookCell(1, undefined, false, {
+            GROUPS: [1],
+         });
+         expect(cellCount(mine)).toBe(2);
+
+         const none = await model.executeNotebookCell(1, undefined, false, {
+            GROUPS: [],
+         });
+         expect(cellCount(none)).toBe(0);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
 });

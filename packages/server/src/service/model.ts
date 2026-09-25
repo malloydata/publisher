@@ -1214,6 +1214,8 @@ export class Model {
       return filtered;
    }
 
+   // The id/name OR is safe only because Malloy refuses a second given of one
+   // name across a notebook's extendModel chain, so it never picks between two.
    private cellDeclaresGivenId(
       surfaceName: string,
       cellDeclared: CellDeclaredGivens,
