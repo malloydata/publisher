@@ -42,8 +42,8 @@ const CURATED_PACKAGE = "dashboards-curated";
 // "declared" would mean every tile 404s, and here means nothing of the sort.
 const OPEN_PACKAGE = "dashboards-open";
 // A sixth package whose surface comes from an index.malloy rather than a key.
-// Its dashboard is withheld for the same reason the curated package's is, but
-// the author has no 'explores' to fix it in, so the remedy must differ.
+// Every dashboard is listed, and a tile or query over a source index.malloy
+// does not export answers 404, with a fix that names index.malloy.
 const CONVENTION_PACKAGE = "dashboards-convention";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
