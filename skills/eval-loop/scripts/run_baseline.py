@@ -510,9 +510,13 @@ def format_rows(rows: list[dict], limit: int = 60) -> str:
 # with a trailing period. Two regexes and two readers for this one concept
 # handled those differently, and a rebuild after the CLI's temporary file was
 # gone matched one, missed the other, and scored the call as zero entities.
+# Only the CLI's own note counts, in either of its spellings, and only a
+# .json or .txt path: a looser "saved to|written to" also matched a source doc
+# that said "nightly extract is written to /etc/hosts" inside an ordinary JSON
+# result, replaced the result with that file, and scored the call as zero.
 SAVED_TO = re.compile(
-    r"(?:saved to|written to):?\s+(/[^\s'\"]+?)\.?(?=\s|$)", re.S)
-OFFLOADED = SAVED_TO   # the name the call sites grew up with
+    r"(?:<persisted-output>.*?Full output saved to|Output has been saved to):?"
+    r"\s+(/[^\s'\"]+?\.(?:json|txt))\.?(?=\s|$)", re.S)
 
 
 def saved_result(text: str) -> tuple[pathlib.Path | None, str | None]:
@@ -641,9 +645,6 @@ def path_breaches(events: list[dict[str, Any]],
     return list(r["reasons"])
 
 
-# Two spellings, from two CLI paths: the persisted-output stub, and the MCP
-# token-cap error ("result ... exceeds maximum allowed tokens. Output has been
-# saved to <path>"). Both leave the whole payload on disk.
 def result_text(block: dict[str, Any]) -> str:
     """The text of one tool_result block, with a spilled result read back.
 
@@ -655,9 +656,15 @@ def result_text(block: dict[str, Any]) -> str:
     still there its content is the result; when it is gone (the CLI's
     tool-results/ files are temporary, so a later rebuild always lands here)
     the note comes back unchanged and the caller records the call as
-    unmeasured through `saved_result`, never as zero.
+    unmeasured through `saved_result`, never as zero. Text that already parses
+    as a result is returned as it is, whatever paths it mentions.
     """
     text = _raw_result_text(block)
+    if resource_json(text) is not None:
+        # Already a result. A note naming a file is looked for only when the
+        # text is not one, so a doc string that mentions a real path inside a
+        # JSON result is never read in its place.
+        return text
     _, body = saved_result(text)
     if body is None:
         return text

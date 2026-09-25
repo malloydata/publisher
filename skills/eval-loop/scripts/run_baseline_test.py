@@ -1783,19 +1783,34 @@ class PersistedStubIsTheResult(unittest.TestCase):
         # A rebuild after the CLI's temporary file is gone: both spellings,
         # with the colon and with the trailing period, name a file, and the
         # caller must record no summary rather than an empty one.
-        for note in (f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n\nPreview",
-                     f"Error: result exceeds maximum allowed tokens. Output has been saved to {self.tmp / 'gone.txt'}."):
+        for note, named in (
+                (f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n\nPreview", "gone.json"),
+                (f"Error: result exceeds maximum allowed tokens. Output has been saved to {self.tmp / 'gone.txt'}.", "gone.txt")):
             with self.subTest(note=note[:30]):
                 path, body = rb.saved_result(note)
-                self.assertEqual(path.name, path.name)  # a path was named
+                self.assertEqual(path, self.tmp / named)
                 self.assertIsNone(body)
                 self.assertIsNone(rb.offloaded_json(note))
 
     def test_the_colon_spelling_is_read_back_too(self):
         saved = self.tmp / "r.json"
         saved.write_text(json.dumps({"sources": [], "retrieval": "semantic"}))
-        self.assertEqual(rb.offloaded_json(f"Full output saved to: {saved}\n"),
+        self.assertEqual(rb.offloaded_json(f"<persisted-output>\nFull output saved to: {saved}\n"),
                          {"sources": [], "retrieval": "semantic"})
+
+    def test_a_result_that_mentions_a_real_path_is_left_alone(self):
+        # A source doc inside an ordinary JSON result says a file is written
+        # somewhere real. That is a result, not a note: it comes back as it is,
+        # and the file is never read in its place.
+        real = self.tmp / "extract.txt"; real.write_text("not the result")
+        result = json.dumps({"sources": [{"docs": f"Nightly extract is written to {real} for downstream jobs."}], "retrieval": "semantic"})
+        self.assertEqual(rb.result_text(self.block(result)), result)
+        self.assertIsNone(rb.saved_result(f"Nightly extract is written to {real}")[0])
+
+    def test_only_the_clis_own_note_names_a_saved_result(self):
+        saved = self.tmp / "r.json"; saved.write_text(json.dumps([{"type": "text", "text": "body"}]))
+        self.assertEqual(rb.result_text(self.block(f"see {saved} for details")), f"see {saved} for details")
+        self.assertEqual(rb.result_text(self.block(f"<persisted-output>\nFull output saved to: {saved}\n")), "body")
 
     def test_an_unreadable_file_is_not_read_twice(self):
         # The path is a directory: the read raises OSError, and the note comes
