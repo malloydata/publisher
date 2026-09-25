@@ -11,6 +11,7 @@ import {
    collectIdentifierNames,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   locateProblemsInCallerText,
    scanIdentifiers,
    stripMalloyCommentsAndLiterals,
    UNREADABLE_BASE,
@@ -809,6 +810,65 @@ describe("service/query_text", () => {
          expect(collectIdentifierNames("run: `\\locked`").has("locked")).toBe(
             true,
          );
+      });
+   });
+
+   describe("locateProblemsInCallerText", () => {
+      const at = (url: string, startLine: number, endLine = startLine) => ({
+         url,
+         range: {
+            start: { line: startLine, character: 4 },
+            end: { line: endLine, character: 8 },
+         },
+      });
+      const problem = (location?: ReturnType<typeof at>) => ({
+         message: "'nope' is not defined",
+         severity: "error" as const,
+         code: "field-not-found",
+         ...(location ? { at: location } : {}),
+      });
+
+      it("moves a problem in the compiled document back by the prefix's lines", () => {
+         const [located] = locateProblemsInCallerText(
+            [problem(at("internal://query/0f1e", 2))],
+            "source: x is customers extend {}\nrun: x -> { group_by: nope }",
+            1,
+         );
+         expect(located.at?.range).toEqual({
+            start: { line: 1, character: 4 },
+            end: { line: 1, character: 8 },
+         });
+      });
+
+      it("drops the location of a problem outside the caller's lines", () => {
+         const located = locateProblemsInCallerText(
+            [
+               problem(at("internal://query/0f1e", 0)),
+               problem(at("internal://query/0f1e", 2)),
+            ],
+            "run: customers -> { group_by: id }",
+            1,
+         );
+         expect(located.map((prob) => prob.at)).toEqual([undefined, undefined]);
+         expect(located.map((prob) => prob.message)).toEqual([
+            "'nope' is not defined",
+            "'nope' is not defined",
+         ]);
+      });
+
+      it("drops the location of a problem in another document", () => {
+         const [located] = locateProblemsInCallerText(
+            [problem(at("file:///pkg/index.malloy", 1))],
+            "run: customers -> { group_by: id }\n",
+            1,
+         );
+         expect(located.at).toBeUndefined();
+      });
+
+      it("keeps a problem that never had a location", () => {
+         expect(
+            locateProblemsInCallerText([problem()], "run: customers -> {}", 1),
+         ).toEqual([problem()]);
       });
    });
 });

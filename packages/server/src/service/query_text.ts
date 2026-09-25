@@ -22,6 +22,7 @@
  */
 
 import { ParseUtil } from "@malloydata/malloy-tag";
+import type { LogMessage } from "@malloydata/malloy";
 
 /**
  * The base recorded for `NAME is …` when what follows cannot be read, so the
@@ -1068,4 +1069,66 @@ export function collectIdentifierNames(text: string): Set<string> {
       names.add(name);
    }
    return names;
+}
+
+/**
+ * One compile problem as a caller can act on it: `line L:C message` when it is
+ * located (1-based, the compiler's own columns), the bare message otherwise.
+ * Shared so the query 400 and the dashboard-write `Error` body format a problem
+ * the same way rather than drifting apart.
+ */
+export function formatProblem(problem: {
+   message: string;
+   at?: { range?: { start?: { line?: number; character?: number } } };
+}): string {
+   const start = problem.at?.range?.start;
+   return start?.line === undefined
+      ? problem.message
+      : `line ${start.line + 1}:${(start.character ?? 0) + 1} ${problem.message}`;
+}
+
+/**
+ * Re-express compile problems for query text in the coordinates of the text the
+ * caller sent.
+ *
+ * The server compiles `prefix + callerText (+ appended refinement)`, so the
+ * compiler's line numbers are shifted by the prefix's line count. A problem in
+ * the caller's own lines is moved back by that many lines; one that falls
+ * outside them (in the prefix, or in a refinement the server appended, such as
+ * an injected source filter) keeps its message and loses its location, since no
+ * span of the caller's payload produced it. A problem in any other document
+ * keeps no location either.
+ *
+ * The compiled document is recognized by the `internal://` URL the compiler
+ * gives text that has none of its own; restricted mode forbids `import`, so no
+ * other document can contribute a problem located in caller-written text.
+ */
+export function locateProblemsInCallerText(
+   problems: readonly LogMessage[],
+   callerText: string,
+   prefixLines: number,
+): LogMessage[] {
+   const callerLines = callerText.split("\n").length;
+   return problems.map((problem) => {
+      const at = problem.at;
+      if (!at) return problem;
+      const start = at.range.start.line - prefixLines;
+      const end = at.range.end.line - prefixLines;
+      const inCallerText =
+         at.url.startsWith("internal://") && start >= 0 && end < callerLines;
+      if (!inCallerText) {
+         const { at: _dropped, ...unlocated } = problem;
+         return unlocated;
+      }
+      return {
+         ...problem,
+         at: {
+            ...at,
+            range: {
+               start: { ...at.range.start, line: start },
+               end: { ...at.range.end, line: end },
+            },
+         },
+      };
+   });
 }

@@ -19,6 +19,7 @@ import {
    QueryMaterializer,
    Runtime,
    type FilterCondition,
+   type LogMessage,
    type SourceDef,
    type VirtualMap,
 } from "@malloydata/malloy";
@@ -57,6 +58,7 @@ import {
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
+   QueryCompileError,
    OffSurfaceError,
    PayloadTooLargeError,
 } from "../errors";
@@ -158,6 +160,8 @@ import {
    collectIdentifierNames,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   formatProblem,
+   locateProblemsInCallerText,
    malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
@@ -469,6 +473,56 @@ function isGivenBindingFailure(err: unknown): boolean {
  * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
+
+/**
+ * What ad-hoc query text is compiled behind. Compile problems are located in
+ * the compiled document, so their line numbers are shifted back by this
+ * prefix's line count before a caller sees them.
+ */
+const AD_HOC_QUERY_PREFIX = "\n";
+
+/** A compile failure of ad-hoc text, as the caller's own text locates it. */
+function queryCompileError(
+   error: MalloyError,
+   callerText: string,
+): QueryCompileError {
+   const problems = locateProblemsInCallerText(
+      error.problems,
+      callerText,
+      AD_HOC_QUERY_PREFIX.split("\n").length - 1,
+   );
+   return new QueryCompileError(describeProblems(problems, error), problems);
+}
+
+/**
+ * The error problems as one message, each led by its 1-based `line:column` in
+ * the caller's text when it has one, so a client that reads only `message`
+ * still learns where. Falls back to the compiler's own message when no problem
+ * is an error.
+ */
+function describeProblems(problems: LogMessage[], error: MalloyError): string {
+   const errors = problems.filter((p) => p.severity === "error");
+   if (errors.length === 0) return error.message;
+   return errors.map(formatProblem).join("; ");
+}
+
+/**
+ * The compile failure of a runnable, or undefined when it compiles or fails for
+ * a reason that is not a compile error (a connection failure while fetching a
+ * schema, say, which keeps surfacing wherever it did before). Malloy memoizes
+ * the compile per runnable, so this costs nothing when the same runnable is
+ * compiled again later.
+ */
+async function compileErrorOf(runnable: {
+   getPreparedQuery(): Promise<unknown>;
+}): Promise<MalloyError | undefined> {
+   try {
+      await runnable.getPreparedQuery();
+      return undefined;
+   } catch (error) {
+      return error instanceof MalloyError ? error : undefined;
+   }
+}
 
 /**
  * Whether a run-time store failure may be retried against the live warehouse,
@@ -5033,6 +5087,32 @@ export class Model {
    }
 
    /**
+    * Whether the compiler's problems for ad-hoc `query` may be shown (400) or
+    * the text keeps the boundary's 404. Every source the text NAMES must pass
+    * the compiled boundary's admission test — curated, or derived only from
+    * curated sources through the text's own declarations — not just its run
+    * targets: Malloy compiles every statement, so a hidden source named in a
+    * `source:`/`query:` declaration that is never run still has its field and
+    * existence errors in the problems otherwise, which tells a caller the
+    * hidden source exists. An empty run-target list (nothing readable to run)
+    * keeps the 404.
+    */
+   private queryTextSourcesQueryable(query: string): boolean {
+      const queryable = (name: string): boolean =>
+         this.isCuratedSource(name) || this.derivesFromCurated(name, query);
+      const runTargets = extractRunTargetSourceNames(query);
+      if (runTargets.length === 0) return false;
+      if (!runTargets.every(queryable)) return false;
+      // Each caller-declared source's base chain must ground in curated too, so
+      // a hidden source reached only by a declaration the caller never runs
+      // cannot have its schema described by the returned problems.
+      for (const declared of buildDerivationBaseMap(query).keys()) {
+         if (!queryable(declared)) return false;
+      }
+      return true;
+   }
+
+   /**
     * Query boundary, step 2 of 2 — the POST-compilation backstop for
     * "deferred" admissions. `compiledSource` is the run target read off the
     * compiled query's `structRef` (see
@@ -7059,6 +7139,62 @@ export class Model {
       // redundant re-probe when it's the same source the early gate already
       // cleared. Outside the loadQuery try so AccessDeniedError stays a 403;
       // independent of bypassFilters.
+      // Caller-written text that does not compile is settled here, before the
+      // compiled backstop below turns an unresolved target into a 404 with no
+      // diagnostic. Every gate, boundary and caller-join check has already run
+      // pre-compile (a locked or hidden source the text names, as a run target
+      // or a join base, is a 403/404 before this point), so a compile error
+      // that reaches here is in text the caller may run: when every run target
+      // is queryable (curated, or derived only from curated sources) the caller
+      // gets the compiler's problems as a 400 located in its own text;
+      // otherwise the answer is the backstop's 404. A given that will not bind
+      // is left to the run path, which answers it opaquely when a gate reads it.
+      // Skipped when the query routed: the routed runnable compiled the same
+      // text, so checking the live one would cost a second compile.
+      if (
+         !sourceName &&
+         !queryName &&
+         query &&
+         liveRunnable &&
+         runnable === liveRunnable
+      ) {
+         const compileError = await compileErrorOf(liveRunnable);
+         if (compileError && !isGivenBindingFailure(compileError)) {
+            if (
+               boundary === "deferred" &&
+               !this.queryTextSourcesQueryable(query)
+            ) {
+               // Explain the refusal (`OffSurfaceError`, ungated only) when a
+               // run target is a real model source off the surface — the same
+               // help #1228 gives `run: hidden` without a typo. A name that is
+               // not a declared source, or a hidden source reached only through
+               // a caller alias, keeps the plain form.
+               const explainable = extractRunTargetSourceNames(query).some(
+                  (t) =>
+                     this.declaresSource(t) &&
+                     !this.isCuratedSource(t) &&
+                     !this.derivesFromCurated(t, query),
+               );
+               throw this.notQueryable(
+                  "Query target is not queryable.",
+                  explainable,
+                  "source",
+               );
+            }
+            this.queryExecutionHistogram.record(
+               performance.now() - startTime,
+               this.queryMetricAttributes({
+                  environment: queryMetadataInput?.environment,
+                  queryName,
+                  sourceName,
+                  status: "error",
+                  servedFrom,
+               }),
+            );
+            throw queryCompileError(compileError, query);
+         }
+      }
+
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
 

@@ -40,7 +40,11 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
-import { NotQueryableError, OffSurfaceError } from "../errors";
+import {
+   NotQueryableError,
+   OffSurfaceError,
+   QueryCompileError,
+} from "../errors";
 import type { Model } from "./model";
 import { Package } from "./package";
 
@@ -173,6 +177,118 @@ export { customers }`,
    }
 
    // -- default mode ("declared") -----------------------------------------
+
+   it("declared: a compile error over the queryable surface is a 400 located in the submitted text", async () => {
+      // A failed compile leaves the compiled backstop no run target, and it
+      // refuses an unresolved target as not queryable. For text whose every run
+      // target is curated (or derived from curated), that refusal hid the
+      // caller's own typo behind a 404; the problems are the answer a package
+      // with no surface already gives.
+      const query =
+         "source: x is customers extend {\n" +
+         "  where: id = 1\n" +
+         "}\n" +
+         "run: x -> { aggregate: n is coutn() }";
+      const compileError = async (model: Model): Promise<QueryCompileError> => {
+         try {
+            await model.getQueryResults(undefined, undefined, query);
+         } catch (error) {
+            expect(error).toBeInstanceOf(QueryCompileError);
+            return error as QueryCompileError;
+         }
+         throw new Error("the query compiled");
+      };
+
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      let armed: QueryCompileError;
+      {
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            armed = await compileError(pkg.getModel("index.malloy")!);
+         } finally {
+            await duckdb.close();
+         }
+      }
+      // Located in the text as sent: `coutn` starts at line 3, column 28
+      // (0-based), not where the server's own prefix moved it to.
+      expect(armed.problems).toHaveLength(1);
+      expect(armed.problems[0].code).toBe("function-not-found");
+      expect(armed.problems[0].at?.range.start).toEqual({
+         line: 3,
+         character: 28,
+      });
+      expect(armed.message).toStartWith("line 4:29 Unknown function 'coutn'");
+
+      // The same text on a package with no surface gets the same answer.
+      fs.rmSync(path.join(tempDir, "index.malloy"));
+      writeManifest();
+      writeLayeredModels("surface.malloy");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const inert = await compileError(pkg.getModel("surface.malloy")!);
+         expect(inert.message).toBe(armed.message);
+         expect(inert.problems.map((pr) => pr.at?.range)).toEqual(
+            armed.problems.map((pr) => pr.at?.range),
+         );
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a compile error in text that reaches a hidden source stays the generic 404", async () => {
+      // Each of these fails to compile, and returning its problems would
+      // describe a source off the surface. Each keeps the plain 404 a missing
+      // source gets: text that does not compile names no target the boundary
+      // could explain.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const refusedNotCompiled = async (model: Model, query: string) => {
+         try {
+            await model.getQueryResults(undefined, undefined, query);
+         } catch (error) {
+            // A boundary 404, never the compiler's problems: returning those
+            // would describe a source off the surface.
+            expect(error).toBeInstanceOf(NotQueryableError);
+            expect(error).not.toBeInstanceOf(QueryCompileError);
+            return;
+         }
+         throw new Error(`"${query}" was admitted`);
+      };
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         for (const query of [
+            // A caller alias over a source that does not exist.
+            "source: x is no_such_source extend {}\nrun: x -> { group_by: nope }",
+            // A derivation over the hidden source.
+            "source: x is helper extend { where: id = 1 }\nrun: x -> { group_by: nope }",
+            // A curated decoy first; Malloy runs the LAST statement, which
+            // reads the hidden source.
+            "run: customers -> { aggregate: total }\nrun: helper -> { group_by: nope }",
+            // The run target is curated, but a NON-RUN declaration names the
+            // hidden source; its field errors would describe helper. A source
+            // that does not exist must answer the same, so a caller cannot tell
+            // the hidden name from a missing one.
+            "source: h is helper extend { dimension: d is nope }\n" +
+               "run: customers -> { aggregate: total }",
+            "source: h is no_such extend { dimension: d is nope }\n" +
+               "run: customers -> { aggregate: total }",
+         ]) {
+            await refusedNotCompiled(model, query);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
 
    it("declared: exported source in an explores file IS queryable (incl. join-through)", async () => {
       writeManifest({ explores: ["index.malloy"] }); // queryableSources defaults to "declared"
