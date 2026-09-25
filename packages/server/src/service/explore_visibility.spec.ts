@@ -494,6 +494,33 @@ export { pub }`,
                .showsFileText(text("index.malloy")),
          ).toBe(false);
 
+         // A backticked name is one name, and a bare name may be non-ASCII:
+         // split into pieces, neither matched the hidden set, and the text
+         // went out naming both.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+source: \`orders-staging\` is duckdb.sql("select 4 as id")
+source: café is duckdb.sql("select 5 as id")
+export { pub }`,
+         );
+         const quoted = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(
+            quoted
+               .getModel("index.malloy")!
+               .showsFileText(text("index.malloy")),
+         ).toBe(false);
+         expect(
+            quoted
+               .getModel("index.malloy")!
+               .showsFileText(`import "base.malloy"\nexport { pub }`),
+         ).toBe(true);
+
          // A published source built on a hidden one, or joining one, must not
          // carry the hidden source's identity either. The join's own name is
          // part of the published field paths, so it is renamed here to prove
@@ -516,11 +543,23 @@ export { pub2, pub3 }`,
                modelDef: string;
             }
          ).modelDef;
-         expect(Object.keys(JSON.parse(derivedDef).contents).sort()).toEqual([
-            "pub2",
-            "pub3",
-         ]);
+         const derivedContents = JSON.parse(derivedDef).contents as Record<
+            string,
+            { fields: Record<string, unknown>[] }
+         >;
+         expect(Object.keys(derivedContents).sort()).toEqual(["pub2", "pub3"]);
          expect(derivedDef).not.toContain("hidden");
+         // The join also carried the hidden source's whole definition, SQL
+         // included. What is left is its name and the fields reached through
+         // it. (pub2 is built on `hidden`, so its own SQL is that SQL.)
+         const join = derivedContents.pub3.fields.find((f) => f.join);
+         expect(join).toEqual({
+            type: join?.type,
+            join: "one",
+            name: "j",
+            fields: [{ type: "number", name: "id" }],
+         });
+         expect(JSON.stringify(derivedContents.pub3)).not.toContain("select 2");
 
          // With no surface, nothing is curated.
          writeManifest({ explores: [] });

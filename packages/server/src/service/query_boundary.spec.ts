@@ -1016,6 +1016,12 @@ export { \`customer-orders\` }`,
          expect(
             (raw.sources ?? []).map((source) => source.name).sort(),
          ).toEqual(["customers", "mine"]);
+         // Nor a refused cell's queryInfo, whose schema lists the columns its
+         // query returns. The cells that run keep theirs.
+         const queryInfo = (raw.notebookCells ?? []).map(
+            (cell) => cell.queryInfo !== undefined,
+         );
+         expect(queryInfo).toEqual([false, false, false, true, true]);
       } finally {
          await duckdb.close();
       }
@@ -1390,6 +1396,131 @@ import { customers } from "../index.malloy"`,
                `"explores" from publisher.json and add customers to the ` +
                `export { ... } in index.malloy.`,
          ]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: warns for a filter suggest over a hidden source, and never names a gated one", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "raw.malloy"),
+         `source: raw_data is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}
+query: raw_ids is raw_data -> { group_by: id }
+export { raw_data, raw_ids }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "locked.malloy"),
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id")
+query: locked_ids is locked -> { group_by: id }
+export { locked, locked_ids }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: customers is duckdb.sql("select 1 as id") extend {
+  measure: k is count()
+  view: v is { aggregate: k }
+}
+export { customers }`,
+      );
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      const writeDash = (body: string) =>
+         fs.writeFileSync(
+            path.join(tempDir, "dashboards", "dash.malloy"),
+            `##! experimental.givens
+import "../raw.malloy"
+import { customers } from "../index.malloy"
+${body}`,
+         );
+      const tileWarnings = (pkg: Package) =>
+         (pkg.getPackageMetadata().warnings ?? [])
+            .map((w) => w.message ?? "")
+            .filter((m) => m.includes("index.malloy doesn't export"));
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         writeManifest({});
+         writeDash(`# label="Id" control=select suggest { source=raw_data dimension=id }
+given: BY_SOURCE :: filter<number> is f''
+# label="Id" control=select suggest { query=raw_ids dimension=id }
+given: BY_QUERY :: filter<number> is f''
+# artifact { title="Dash" }
+query: dash is customers -> {
+  where: id ~ $BY_SOURCE and id ~ $BY_QUERY
+  group_by: id
+}`);
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(tileWarnings(pkg)).toEqual([
+            `Filter BY_SOURCE on dashboard dash suggests from raw_data, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add raw_data to the export { ... } in index.malloy.`,
+            `Filter BY_QUERY on dashboard dash suggests from raw_data, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add raw_data to the export { ... } in index.malloy.`,
+         ]);
+         // The suggest the lint flags is refused the same way at run time.
+         await expect(
+            pkg
+               .getModel("dashboards/dash.malloy")!
+               .getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: raw_data -> { group_by: id }",
+               ),
+         ).rejects.toThrow(NotQueryableError);
+
+         // A gated model's refusal never names the source, and nor does the
+         // warning. The dashboard's own text names only the query.
+         writeDash(`import "../locked.malloy"
+## artifact { title="Dash" tiles=["locked_ids"] }`);
+         const gated = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         const gatedWarnings = (gated.getPackageMetadata().warnings ?? [])
+            .map((w) => w.message ?? "")
+            .filter((m) => m.includes("won't load"));
+         expect(gatedWarnings).toEqual([
+            `Tile locked_ids on dashboard dash reads a source, which ` +
+               `index.malloy doesn't export, so it won't load. Fix: add the ` +
+               `source it reads to the export { ... } in index.malloy.`,
+         ]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a dashboards/ file with no artifact tag is not queryable, even when explores lists it", async () => {
+      // Removing the tag is how an author hides a dashboard. The file is then
+      // not listed and adds nothing to the surface, so its own exports must
+      // not answer queries sent to its path either.
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: customers is duckdb.sql("select 1 as id")
+export { customers }`,
+      );
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards", "old.malloy"),
+         `source: secret is duckdb.sql("select 2 as id")
+export { secret }`,
+      );
+      writeManifest({ explores: ["index.malloy", "dashboards/old.malloy"] });
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const old = pkg.getModel("dashboards/old.malloy")!;
+         expect(() => old.assertFileOnSurface()).toThrow(NotQueryableError);
+         await expect(
+            old.getQueryResults(
+               undefined,
+               undefined,
+               "run: secret -> { group_by: id }",
+            ),
+         ).rejects.toThrow(NotQueryableError);
       } finally {
          await duckdb.close();
       }

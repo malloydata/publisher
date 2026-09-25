@@ -36,10 +36,13 @@ before this convention existed.
   file still compiles for import and join resolution, but is hidden. `GET .../models/{path}` for a
   hidden file answers 404, with the same message a query to it gets. For a file it does return,
   the response lists only the names that file publishes, and `sourceText` is left out when the file
-  text names a source it does not publish.
+  text names a source it does not publish. A join to a hidden source keeps only its name and the
+  names and types of its fields, which is what querying through it needs; the hidden source's table,
+  SQL and connection are left out.
 
   Notebooks and dashboards (`dashboards/*.malloy` files with an `# artifact` tag) are always
-  listed, whatever the surface. To hide a dashboard, remove its tag.
+  listed, whatever the surface. To hide a dashboard, remove its tag. Any other file under
+  `dashboards/` is neither listed nor queryable, even when `explores` names it.
 
   Listed is not a way around the surface. A notebook cell may read only sources on the surface. A
   cell over a hidden source answers 404, and 404 rather than 403 even when the source is also

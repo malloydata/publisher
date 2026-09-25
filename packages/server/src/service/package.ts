@@ -545,8 +545,12 @@ export class Package {
             exploresDeclared,
             // A discovered dashboard is always an entry point: it is always
             // listed, and the model marks it as admitting nothing of its own.
+            // Any other file under dashboards/ is never one, even when
+            // `explores` lists it: it adds nothing to the surface and is not
+            // listed, so its own exports must not be queryable either.
             isQueryEntryPoint: exploreSet
-               ? exploreSet.has(modelPath) || dashboard
+               ? dashboard ||
+                 (exploreSet.has(modelPath) && !isDashboardModelPath(modelPath))
                : true,
             packageCuratedSources,
             packageCuratedQueries,
@@ -2997,43 +3001,36 @@ export class Package {
       // Under a written `explores` the fix goes through a file it lists. When
       // it lists only dashboards, no listed file can export anything, and the
       // working fix is to let index.malloy be the surface.
-      const fixFor = (source: string) =>
-         surfaceIsIndex
-            ? `Fix: add ${source} to the export { ... } in ${INDEX_MODEL_NAME}.`
+      // `source` is absent when the query route's refusal would not name it
+      // (a gated model), and then neither does the warning.
+      const fixFor = (source: string | undefined) => {
+         const name = source ?? "the source it reads";
+         return surfaceIsIndex
+            ? `Fix: add ${name} to the export { ... } in ${INDEX_MODEL_NAME}.`
             : listedModel
-              ? `Fix: add ${source} to the export { ... } in ${listedModel}.`
-              : `Fix: delete "explores" from publisher.json and add ${source} ` +
+              ? `Fix: add ${name} to the export { ... } in ${listedModel}.`
+              : `Fix: delete "explores" from publisher.json and add ${name} ` +
                 `to the export { ... } in ${INDEX_MODEL_NAME}.`;
-      const findings: ApiPackageWarning[] = [];
-      const check = async (
-         request: { queryName?: string; query?: string },
-         describe: (source: string) => string,
-      ) => {
-         const refusal = await model.surfaceRefusal(request);
-         if (!refusal) return;
-         const source = refusal.source ?? "a source";
-         findings.push({
-            model: modelPath,
-            subject: manifest.name,
-            message: `${describe(source)} ${fixFor(source)}`,
-            severity: "error",
-         });
       };
+      const checks: {
+         request: { queryName?: string; query?: string };
+         describe: (source: string) => string;
+      }[] = [];
       for (const tile of manifest.tiles ?? []) {
-         await check(
-            { query: `run: ${tile.query}` },
-            (source) =>
+         checks.push({
+            request: { query: `run: ${tile.query}` },
+            describe: (source) =>
                `Tile ${tile.query} on dashboard ${manifest.name} reads ` +
                `${source}, ${unexported}, so it won't load.`,
-         );
+         });
       }
       if (manifest.query) {
-         await check(
-            { queryName: manifest.query },
-            (source) =>
+         checks.push({
+            request: { queryName: manifest.query },
+            describe: (source) =>
                `Dashboard ${manifest.name} reads ${source}, ` +
                `${unexported}, so it won't load.`,
-         );
+         });
       }
       for (const given of manifest.givens) {
          const suggest = given.suggest;
@@ -3046,14 +3043,29 @@ export class Package {
                 }
               : undefined;
          if (!request) continue;
-         await check(
+         checks.push({
             request,
-            (source) =>
+            describe: (source) =>
                `Filter ${given.name} on dashboard ${manifest.name} suggests ` +
                `from ${source}, ${unexported}, so its list will be ` +
                `empty.`,
-         );
+         });
       }
+      // Each check compiles one query against the loaded model, independently
+      // of the others, so they run together; the order of findings is kept.
+      const refusals = await Promise.all(
+         checks.map(({ request }) => model.surfaceRefusal(request)),
+      );
+      const findings: ApiPackageWarning[] = [];
+      refusals.forEach((refusal, i) => {
+         if (!refusal) return;
+         findings.push({
+            model: modelPath,
+            subject: manifest.name,
+            message: `${checks[i].describe(refusal.source ?? "a source")} ${fixFor(refusal.source)}`,
+            severity: "error",
+         });
+      });
       return findings;
    }
 

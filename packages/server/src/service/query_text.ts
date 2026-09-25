@@ -40,6 +40,26 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
 }
 
 /**
+ * A Malloy identifier: a backticked name (group 1, any characters but a
+ * backtick) or a bare one (group 2). Bare names use the Unicode property
+ * classes because `\w` is ASCII-only, so `café` matched nothing.
+ */
+const MALLOY_IDENT = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
+
+/**
+ * Every identifier in `text` outside comments and string literals, with a
+ * backticked name read whole (`` `orders-staging` `` is one name, not two).
+ */
+export function malloyIdentifiers(text: string): string[] {
+   const names: string[] = [];
+   const re = new RegExp(MALLOY_IDENT, "gu");
+   for (const match of stripMalloyCommentsAndLiterals(text).matchAll(re)) {
+      names.push(match[1] ?? match[2]);
+   }
+   return names;
+}
+
+/**
  * Map each ad-hoc source alias to the base it derives from
  * (`source: NAME is BASE …` → NAME → BASE). Used to walk derivation chains in
  * caller-authored text for filter inheritance -- a filter-protected source
@@ -77,7 +97,7 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
    // so the pattern matching the compiler's reading is what the guarantee rests
    // on. Deliberately still `source:`-only and single-valued: this feeds
    // `resolveFilterSource`, which needs exactly one base to inject from.
-   const ident = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
+   const ident = MALLOY_IDENT;
    const declRe = new RegExp(
       String.raw`source\s*:\s*${ident}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${ident}`,
       "gu",
@@ -220,7 +240,7 @@ export function buildDerivationBaseMap(
    // name (`mine(p::string) is …`) and an optional `(` before the base
    // (`is (X extend { … })`) are both read, because both are legal grammar a
    // narrower pattern silently declined to link.
-   const ident = String.raw`(?:\x60([^\x60]+)\x60|([\p{L}\p{N}_]+))`;
+   const ident = MALLOY_IDENT;
    const declRe = new RegExp(
       String.raw`(?:source|query)\s*:\s*${ident}(?:\s*\([^)]*\))?\s+is\s*\(?\s*${ident}`,
       "gu",

@@ -1625,7 +1625,8 @@ paths:
         always returned. A package with no surface, or with `queryableSources: "all"`, returns
         every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
-        the surface file does not carry the hidden sources it imports. `sourceText` is left out
+        the surface file does not carry the hidden sources it imports. A join to a hidden source
+        keeps only its name and the names and types of its fields. `sourceText` is left out
         when the text names a source the file does not publish; a dashboard's text is always
         returned.
       parameters:
@@ -4523,7 +4524,8 @@ components:
           type: string
           description:
             JSON string containing QueryInfo object for the query in this cell
-            (if the cell contains a query)
+            (if the cell contains a query). On a package with a surface, left out
+            for a cell whose query reads a source the notebook may not read.
 
     NotebookCellResult:
       type: object

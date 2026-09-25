@@ -287,9 +287,10 @@ export { orders, customers } // every source a tile or a suggest reads
 
 A source the dashboard declares on top of a surface source (`source: big is orders extend { … }`)
 may be read. One declared on top of a hidden source may not. A tile or suggest over a hidden source
-answers `404`, and the package load warns about each one by name (see
-[What Publisher checks at load](#what-publisher-checks-at-load)). To hide a dashboard, remove its
-`# artifact` tag. A package with no `explores` and no root `index.malloy` has curation off, so
+answers `404`, and the package load warns about each one (see
+[What Publisher checks at load](#what-publisher-checks-at-load)); the warning leaves the source
+unnamed when the package gates anything with `#(authorize)`. To hide a dashboard, remove its
+`# artifact` tag: the file is then neither listed nor queryable, even when `explores` names it. A package with no `explores` and no root `index.malloy` has curation off, so
 importing what the suggest names is enough for a `source=`.
 
 It is not enough for a `query=`. An import is not transitive, so a suggest query resolves by _name_

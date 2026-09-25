@@ -153,6 +153,7 @@ import {
    buildDerivationBaseMap,
    buildSourceAliasMap,
    extractRunTargetSourceName,
+   malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
 import {
@@ -4155,7 +4156,8 @@ export class Model {
     * Returns undefined when the request would pass, or when it does not
     * compile: a tile that fails to compile is a different finding, and a
     * missing target must not be reported as a hidden one. On a refusal,
-    * `source` is the source the query reads, when it can be read.
+    * `source` is the source the query reads, when it can be read and the
+    * query route's own refusal would name it.
     */
    public async surfaceRefusal(request: {
       queryName?: string;
@@ -4177,8 +4179,16 @@ export class Model {
          await runnable.getPreparedQuery();
          compiledSource =
             await this.resolveAuthorizeSourceFromRunnable(runnable);
-      } catch {
-         return undefined;
+      } catch (error) {
+         // Only a compile failure is someone else's finding. Anything else
+         // reaches lintDashboards, which reports the lint as incomplete.
+         if (
+            error instanceof MalloyError ||
+            error instanceof ModelCompilationError
+         ) {
+            return undefined;
+         }
+         throw error;
       }
       try {
          const early = this.assertQueryBoundaryEarly(
@@ -4191,11 +4201,15 @@ export class Model {
          }
          return undefined;
       } catch (error) {
-         if (error instanceof NotQueryableError) {
+         // Name the source only where the query route would: an explained
+         // refusal. In a gated model the refusal stays generic, so a warning
+         // naming the source would give away what the 404 keeps back.
+         if (error instanceof OffSurfaceError) {
             return {
                source: compiledSource && this.offSurfaceBase(compiledSource),
             };
          }
+         if (error instanceof NotQueryableError) return {};
          throw error;
       }
    }
@@ -6782,8 +6796,9 @@ export class Model {
     * names a source the file does not publish, whether it declares it, runs
     * it, or builds on it: the text would show that name and how it is used.
     * Reads identifiers outside comments and string literals, so an import
-    * path or a note does not count. A dashboard's text is always returned,
-    * because the dashboard editor needs it to save.
+    * path or a note does not count, and reads a backticked name whole. A
+    * dashboard's text is always returned, because the dashboard editor needs
+    * it to save.
     */
    public showsFileText(text: string): boolean {
       if (this.isDashboard()) return true;
@@ -6795,11 +6810,7 @@ export class Model {
          ),
       );
       if (unpublished.size === 0) return true;
-      const identifiers =
-         stripMalloyCommentsAndLiterals(text).match(
-            /[A-Za-z_][A-Za-z0-9_]*/g,
-         ) ?? [];
-      return !identifiers.some((word) => unpublished.has(word));
+      return !malloyIdentifiers(text).some((name) => unpublished.has(name));
    }
 
    /**
@@ -6854,20 +6865,41 @@ export class Model {
          this.derivesFromCurated(name, undefined, context);
    }
 
+   /**
+    * Whether the notebook GET may show a cell's `queryInfo`. Its schema lists
+    * every column the cell's query returns, so a cell the query route would
+    * refuse (`run: secret -> { select: * }`) would otherwise describe the
+    * hidden source here. Asks the same check running the cell does.
+    */
+   private async showsCellQueryInfo(
+      cellIndex: number,
+      cell: RunnableNotebookCell,
+   ): Promise<boolean> {
+      if (!cell.runnable) return true;
+      try {
+         await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
+         return true;
+      } catch (error) {
+         if (error instanceof NotQueryableError) return false;
+         throw error;
+      }
+   }
+
    private async getNotebookModel(): Promise<ApiRawNotebook> {
       // Return raw cell contents without executing them
-      const notebookCells: ApiNotebookCell[] = (
-         this.runnableNotebookCells as RunnableNotebookCell[]
-      ).map((cell, index) => {
-         return {
+      const cells = this.runnableNotebookCells as RunnableNotebookCell[];
+      const notebookCells: ApiNotebookCell[] = [];
+      for (const [index, cell] of cells.entries()) {
+         notebookCells.push({
             type: cell.type,
             text: cell.text,
             newSources: this.serializeNewSources(cell.newSources, index),
-            queryInfo: cell.queryInfo
-               ? JSON.stringify(cell.queryInfo)
-               : undefined,
-         } as ApiNotebookCell;
-      });
+            queryInfo:
+               cell.queryInfo && (await this.showsCellQueryInfo(index, cell))
+                  ? JSON.stringify(cell.queryInfo)
+                  : undefined,
+         } as ApiNotebookCell);
+      }
 
       // A notebook's own `##` tags, not its imports': `ownModelNotes` does NOT
       // fold the import lineage the way `modelAnnotations` (`./annotations`)
@@ -7823,25 +7855,52 @@ const SOURCE_IDENTITY_KEYS = new Set(["extends", "sourceID", "referenceID"]);
  * A copy of `def` without identities of sources outside `published`. A
  * published source built on a hidden one (`source: pub is hidden extend
  * {...}`) records `extends: "hidden@file"`, and a join records the joined
- * source's identity even when the join is renamed. The join's own name stays:
- * it is part of the published source's field paths.
+ * source's identity even when the join is renamed.
+ *
+ * A join to a hidden source also carries that source's whole compiled
+ * definition: its table path or SQL, its connection, and its fields. It is cut
+ * down to what the published source's field paths need, the join's own name
+ * and the names and types of the fields reached through it.
  */
 function scrubHiddenIds<T>(def: T, published: ReadonlySet<string>): T {
+   const hidden = (id: unknown) =>
+      typeof id === "string" && !published.has(id.split("@")[0]);
    const walk = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(walk);
       if (!value || typeof value !== "object") return value;
+      const record = value as Record<string, unknown>;
+      if (
+         typeof record.join === "string" &&
+         (hidden(record.sourceID) || hidden(record.referenceID))
+      ) {
+         return joinOutline(record);
+      }
       const out: Record<string, unknown> = {};
-      for (const [key, inner] of Object.entries(value)) {
-         if (
-            SOURCE_IDENTITY_KEYS.has(key) &&
-            typeof inner === "string" &&
-            !published.has(inner.split("@")[0])
-         ) {
-            continue;
-         }
+      for (const [key, inner] of Object.entries(record)) {
+         if (SOURCE_IDENTITY_KEYS.has(key) && hidden(inner)) continue;
          out[key] = walk(inner);
       }
       return out;
    };
    return walk(def) as T;
+}
+
+/** A field reached through a hidden join, as its name and type only, and a
+ *  join nested inside one the same way. */
+function joinOutline(field: Record<string, unknown>): Record<string, unknown> {
+   const name = field.as ?? field.name;
+   if (typeof field.join !== "string") {
+      return { type: field.type, name };
+   }
+   const fields = Array.isArray(field.fields) ? field.fields : [];
+   return {
+      type: field.type,
+      join: field.join,
+      name,
+      fields: fields.map((inner) =>
+         inner && typeof inner === "object"
+            ? joinOutline(inner as Record<string, unknown>)
+            : inner,
+      ),
+   };
 }

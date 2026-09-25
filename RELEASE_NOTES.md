@@ -49,6 +49,9 @@ over a hidden source answers 404, and the load warns once per tile:
 Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.
 ```
 
+In a package that gates anything with `#(authorize)`, the warning says "a source" rather than naming
+it, the same way the query's own 404 does.
+
 What can break:
 
 - **A dashboard file no longer admits anything of its own.** Its `export { ... }` and its own named
@@ -56,7 +59,8 @@ What can break:
   so a tile that relied on that answers 404 and is named in the warnings. Export the source from
   `index.malloy` (or from a file `explores` lists).
 - **Dashboards `explores` left out on purpose are now listed**, with their givens and filter names.
-  To hide one, remove its `# artifact` tag.
+  To hide one, remove its `# artifact` tag. The file is then neither listed nor queryable, even when
+  `explores` names it.
 - **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
   caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
   `run: secret` there answers 404, but a query over a published source that joins a hidden source
@@ -70,8 +74,10 @@ What can break:
 used to return any file, with its full compiled model and its text. Now a file off the surface gets
 the same 404 the query route gives. Files it does return carry only the names they publish:
 `modelDef.contents` and `exports`, `modelInfo`, `sources` and `sourceInfos` are limited to them, so
-`index.malloy`'s own response no longer includes the sources it imports and hides. `sourceText` is
-left out when the text names a source the file does not publish. A dashboard's text is always returned,
+`index.malloy`'s own response no longer includes the sources it imports and hides. A join to a hidden
+source keeps its name and its fields' names and types, which is what querying through it needs, but
+not the hidden source's table, SQL or connection. `sourceText` is left out when the text names a
+source the file does not publish, backticked names included. A dashboard's text is always returned,
 because the Console's dashboard editor saves with it. The editor now builds its field list from the
 published models rather than from the files a dashboard imports. None of this applies with no surface
 or under `queryableSources: "all"`.
@@ -80,7 +86,8 @@ or under `queryableSources: "all"`.
 `GET …/notebooks/{path}/cells/{i}` returned rows from a source `index.malloy` hides. Now a cell over a
 hidden source answers 404, and 404 rather than 403 when the source is also gated. A source an earlier
 cell derives from a published one still works. The notebook GET and the cell response list only the
-sources the notebook may read. A cell's own source over a raw table (`duckdb.table(...)`,
+sources the notebook may read, and the notebook GET leaves out `queryInfo` for a cell that would be
+refused, since its schema lists the columns the hidden source returns. A cell's own source over a raw table (`duckdb.table(...)`,
 `duckdb.sql(...)`) has no published source under it, so on a curated package it answers 404 too.
 
 **Every use of `explores` is deprecated, and every warning is two sentences.** A root `index.malloy`
