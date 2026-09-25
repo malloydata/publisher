@@ -5172,6 +5172,18 @@ export class Model {
       });
    }
 
+   /**
+    * Refuse a request whose value for one of this model's `filter<T>` givens
+    * does not parse, with a 400 naming the given and the parser's reason. Run
+    * by every path that takes given values: a query, a notebook cell, and
+    * /compile.
+    */
+   public assertFilterGivens(
+      givens: Record<string, GivenValue> | undefined,
+   ): void {
+      assertFilterGivensParse(this.givens, givens);
+   }
+
    public async getQueryResults(
       sourceName?: string,
       queryName?: string,
@@ -5286,7 +5298,7 @@ export class Model {
             `Model compilation failed: ${this.compilationError.message}`,
          );
       }
-      assertFilterGivensParse(this.givens, givens);
+      this.assertFilterGivens(givens);
 
       let runnable: QueryMaterializer;
       let liveRunnable: QueryMaterializer | undefined;
@@ -6628,7 +6640,7 @@ export class Model {
          throw this.compilationError;
       }
 
-      assertFilterGivensParse(this.givens, givens);
+      this.assertFilterGivens(givens);
 
       if (!this.runnableNotebookCells) {
          throw new BadRequestError("No notebook cells available");
