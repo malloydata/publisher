@@ -271,21 +271,26 @@ so import it there: a dashboard that surfaces a given whose suggest names someth
 is a package warning at load, not a surprise when someone opens the dropdown.
 
 In a package that [curates its surface](discovery-and-access.md), resolving is not enough. A
-package curates when its `publisher.json` has an `explores` list, or when its root holds an
-`index.malloy` (every scaffolded package does). An `index.malloy` cannot export a dashboard file,
-so a package curated only by that file withholds every dashboard: declare an `explores` naming
-`index.malloy` and each dashboard file to serve them. Under curation an option list is an ordinary
-query, so the source or query behind it must also be _queryable_ from the dashboard file, which
-means exported from it. Re-export what the controls read, and note that an explicit `export { … }`
-replaces the default "everything top-level", so the dashboard's own query belongs on the list too:
+package curates when its root holds an `index.malloy` (every scaffolded package does), or when its
+`publisher.json` has a legacy `explores` list. The surface is the set of sources `index.malloy`
+exports (under `explores`, what the listed files export). Every dashboard is listed and served
+whatever the surface is, but its tiles, its single query, and each `suggest` may read only sources
+on the surface. The dashboard file's own `export { … }` and its own named queries do not add
+anything to the surface. So export what the controls and tiles read from `index.malloy`:
 
 ```malloy
-export { governed_overview, region_suggest, status_suggest }
+// index.malloy
+import "orders.malloy"
+
+export { orders, customers } // every source a tile or a suggest reads
 ```
 
-Leave a suggest off and only that dropdown comes up empty; leave the dashboard's own query off and
-the grid stops loading. A package with no `explores` and no root `index.malloy` has curation off,
-so importing what the suggest names is enough for a `source=`.
+A source the dashboard declares on top of a surface source (`source: big is orders extend { … }`)
+may be read. One declared on top of a hidden source may not. A tile or suggest over a hidden source
+answers `404`, and the package load warns about each one by name (see
+[What Publisher checks at load](#what-publisher-checks-at-load)). To hide a dashboard, remove its
+`# artifact` tag. A package with no `explores` and no root `index.malloy` has curation off, so
+importing what the suggest names is enough for a `source=`.
 
 It is not enough for a `query=`. An import is not transitive, so a suggest query resolves by _name_
 while the source it reads does not: the file compiles, the package loads, the manifest lists the
@@ -548,9 +553,9 @@ Every package load lints the dashboards and reports findings as package warnings
 package page and in the server log. They catch the failures that are otherwise silent: a control
 that never appears, a click that goes nowhere. Broadly, they cover:
 
-- **Drill targets.** A `# drill { to=… }` naming a dashboard that does not exist in the package, or
-  one that exists but is not served; a `# drill` with no destination at all; and a `to=self` drill
-  whose given no model in the package declares, so the clicked value has nowhere to land.
+- **Drill targets.** A `# drill { to=… }` naming a dashboard that does not exist in the package; a
+  `# drill` with no destination at all; and a `to=self` drill whose given no model in the package
+  declares, so the clicked value has nowhere to land.
 - **Controls.** A given surfaced by a dashboard whose `suggest` names a source, query or dimension
   that file cannot see, or declares a `suggest` in a form that cannot fetch options at all.
 - **Layout and tiles.** A tile that does not resolve to a real view; a `# dashboard { columns= }`
@@ -559,9 +564,14 @@ that never appears, a click that goes nowhere. Broadly, they cover:
   Publisher does not read, `dashboard_columns=` included.
 - **Tags that did not parse**, on the dashboard or on a `given:` declaration, which otherwise lose
   their whole line in silence.
-- **Curation.** A dashboard whose entry file is off the package's surface (not listed in
-  `explores`, or not the surface in a package curated by its root `index.malloy`) under
-  `queryableSources: "declared"`, so its queries would be refused. It is not served.
+- **Curation.** A tile, a single query, or a filter `suggest` that reads a source the surface does
+  not publish, so it won't load. The warning names the tile, the source and the fix, for example:
+
+  ```
+  Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy
+  doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.
+  ```
+
 - **Renderer tags the validator rejects.**
 
 That is the shape of the list rather than the whole of it: the findings on the package page are the
