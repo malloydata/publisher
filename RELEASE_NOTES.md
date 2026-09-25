@@ -31,6 +31,90 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] (BREAKING) — dashboards and notebooks read only what `index.malloy` exports
+
+A package's surface is now the one list of what anyone can read, through every route. An agent
+querying `index.malloy`, a dashboard tile, and a notebook cell see the same sources. This reverses
+two pieces of 0.7.0 advice: you no longer need `explores` to serve dashboards, and the opt-out is no
+longer `"explores": []`.
+
+**Every dashboard is listed.** In 0.7.0 a root `index.malloy` withheld every dashboard, and the fix
+was an `explores` listing `index.malloy` and each dashboard file. Now each tagged `dashboards/*.malloy`
+is served whatever the surface is. Its tiles, its single query, and its filters' `suggest` read only
+what the surface publishes. A source the dashboard declares on top of a published one
+(`source: big_orders is orders extend { ... }`) can be read; one over a hidden source cannot. A tile
+over a hidden source answers 404, and the load warns once per tile:
+
+```
+Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.
+```
+
+In a package that gates anything with `#(authorize)`, the warning says "a source" rather than naming
+it, the same way the query's own 404 does.
+
+What can break:
+
+- **A dashboard file no longer admits anything of its own.** Its `export { ... }` and its own named
+  queries used to make a hidden source queryable, even under a written `explores`. They don't now,
+  so a tile that relied on that answers 404 and is named in the warnings. Export the source from
+  `index.malloy` (or from a file `explores` lists).
+- **Dashboards `explores` left out on purpose are now listed**, with their givens and filter names.
+  To hide one, remove its `# artifact` tag, and take it out of `explores` if that lists it: an
+  untagged file `explores` lists is published like any other model, as before.
+- **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
+  caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
+  `run: secret` there answers 404, but a query over a published source that joins a hidden source
+  the dashboard file imports runs and returns the joined rows:
+  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`. That is how a
+  query sent to `index.malloy` already behaves. Only tiles are checked at load; other query text on
+  the dashboard path is not. If a dashboard imports a file whose sources must stay unreadable, gate
+  them with `#(authorize)`.
+
+**A model off the surface answers 404 when read, not only when queried.** `GET …/models/{path}`
+used to return any file, with its full compiled model and its text. Now a file off the surface gets
+the same 404 the query route gives. Files it does return carry only the names they publish:
+`modelDef.contents` and `exports`, `modelInfo`, `sources` and `sourceInfos` are limited to them, so
+`index.malloy`'s own response no longer includes the sources it imports and hides. A join to a hidden
+source keeps its name and its fields' names and types, which is what querying through it needs, but
+not the hidden source's table, SQL or connection. `sourceText` is left out when the text names a
+source the file does not publish, backticked names included. A dashboard's text is always returned,
+because the Console's dashboard editor saves with it. The editor now builds its field list from the
+published models rather than from the files a dashboard imports. None of this applies with no surface
+or under `queryableSources: "all"`.
+
+**Notebook cells are held to the surface.** A cell used to run whatever its notebook imported, so
+`GET …/notebooks/{path}/cells/{i}` returned rows from a source `index.malloy` hides. Now a cell over a
+hidden source answers 404, and 404 rather than 403 when the source is also gated. A source an earlier
+cell derives from a published one still works. The notebook GET and the cell response list only the
+sources the notebook may read, and the notebook GET leaves out `queryInfo` for a cell that would be
+refused, since its schema lists the columns the hidden source returns. A cell's own source over a raw table (`duckdb.table(...)`,
+`duckdb.sql(...)`) has no published source under it, so on a curated package it answers 404 too.
+
+**Every use of `explores` is deprecated, and every warning is two sentences.** `explores` still works
+as before: the files it lists are listed and queryable, and what they export is the surface, wherever
+they live. The one change is a tagged dashboard it lists, which reads the surface and adds nothing to
+it (see above). A root `index.malloy` with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
+this package, then `Fix:` and the one edit:
+
+| `publisher.json` | Warning |
+| --- | --- |
+| `explores` naming files | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement. |
+| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`. |
+| `explores: []` alone | Does nothing. Delete it. |
+| `queryableSources: "declared"` | Does nothing. Delete it. |
+| `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
+| `Index.malloy` (any other case) | Ignored: only a root file named exactly `index.malloy` decides what is published. |
+
+Renaming `index.malloy` is now the way to leave a package uncurated. The caveat from 0.7.0 still
+holds: a file that imports `"index.malloy"` fails to compile after the rename, and the compile error
+names it. Nothing is removed in this release; both keys still work.
+
+**Unchanged:** materialization and pre-aggregation builds ignore the surface, so a hidden `#@ persist`
+intermediate is still built and an exported source still reads its table. `/compile` and MCP
+`compile_model` stay exempt. The check is on what a query runs, so a query over a published source
+can still join a hidden source its file can see. The surface decides what is listed and queryable by
+name; `#(authorize)` is what decides who may read a source.
+
 ## [0.8.0] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 
 Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because

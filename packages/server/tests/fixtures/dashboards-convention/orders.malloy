@@ -5,3 +5,11 @@ source: orders is duckdb.sql("select 1 as id, 100 as amt, 'a' as status") extend
     aggregate: total
   }
 }
+
+// Declared beside orders but not exported by index.malloy, so no dashboard
+// may read it.
+source: orders_staging is duckdb.sql("select 1 as id, 'held' as flag") extend {
+  view: by_flag is {
+    group_by: flag
+  }
+}

@@ -162,12 +162,13 @@ describe("a package whose published surface disappears", () => {
       const pkg = await getPackage();
       const message = widenedWarning(pkg);
       expect(message).toBeDefined();
-      // Names what was published, so the author can tell which file went.
-      expect(message).toContain("index.malloy");
-      // Names the consequence, and the remedies, including the deliberate one.
-      expect(message).toContain("queryable by name again");
-      expect(message).toContain("the name IS the surface");
-      expect(message).toContain('"explores": []');
+      // What was published, the consequence, and the one fix.
+      expect(message).toBe(
+         `This package published "index.malloy" before the last reload and ` +
+            `publishes no surface now, so every model in it is listed and ` +
+            `queryable by name again. Fix: if that was not intended, restore ` +
+            `index.malloy under that exact name.`,
+      );
 
       // And the widening is real, not just reported: the model the surface was
       // withholding is listed and answers now.

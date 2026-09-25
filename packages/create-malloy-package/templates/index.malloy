@@ -13,9 +13,11 @@
 // exist, so it cannot be used to find hidden names.) Add a name here to
 // publish it; leave one out to keep it as an internal building block.
 //
-// To curate listings WITHOUT refusing queries, keep an explicit "explores" in
-// publisher.json alongside "queryableSources": "all". That is the one thing
-// this file cannot express. See docs/discovery-and-access.md.
+// To curate listings WITHOUT refusing queries, add "queryableSources": "all"
+// to publisher.json: this file still decides what is listed, and every source
+// stays queryable by name. Its one use is an authorize-gated source kept out
+// of listings that authorized callers still query. See
+// docs/discovery-and-access.md.
 
 import "{{modelFile}}"
 
