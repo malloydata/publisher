@@ -269,6 +269,25 @@ function fieldUsageClosure(
       for (const u of nested?.fieldUsage ?? []) {
          queue.push([...prefix, ...u.path]);
       }
+      // Each join on the way also reads its ON (relative to the struct that
+      // declares it) and its own `where:` (relative to the joined struct):
+      // rebinding either moves the row the path reaches without touching it.
+      for (let i = 0; i < path.length - 1; i++) {
+         const join = resolveFieldByPath(declaring, path.slice(0, i + 1)) as
+            | {
+                 refSummary?: RefSummaryLike;
+                 filterList?: readonly { refSummary?: RefSummaryLike }[];
+              }
+            | undefined;
+         for (const u of join?.refSummary?.fieldUsage ?? []) {
+            queue.push([...path.slice(0, i), ...u.path]);
+         }
+         for (const condition of join?.filterList ?? []) {
+            for (const u of condition.refSummary?.fieldUsage ?? []) {
+               queue.push([...path.slice(0, i + 1), ...u.path]);
+            }
+         }
+      }
    }
    return { paths, truncated: false };
 }
