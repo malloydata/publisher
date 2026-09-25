@@ -77,6 +77,38 @@ class FinalQuery(unittest.TestCase):
             rb.pick_final_query(["run: a -> answer"] * 2, calls, text)[2],
             "answer.malloy")
 
+    def test_a_semicolon_inside_a_literal_is_not_a_separator(self):
+        # Two queries that both ran, one filtering on 'Books;Media' and one on
+        # 'Books Media', must stay two queries, or the declared block resolves
+        # to whichever ran later.
+        a = "run: t -> { where: cat = 'Books;Media'; aggregate: n }"
+        b = "run: t -> { where: cat = 'Books Media'; aggregate: n }"
+        self.assertNotEqual(rb._norm(a), rb._norm(b))
+        self.assertEqual(rb._norm("run: t -> { where: x = 1; aggregate: n }"),
+                         rb._norm("run: t -> {\n  where: x = 1\n  aggregate: n\n}"))
+
+    def test_an_escaped_quote_does_not_end_the_string(self):
+        # `'O\'Brien'`: the loop used to read the escaped quote as the end of
+        # the string, the real closing quote opened one that never closed, and
+        # a later `;` was kept as quoted text -- so the printed form (newlines)
+        # and the executed form (semicolons) normalised differently.
+        ran = "run: customers -> { where: last_name = 'O\\'Brien'; aggregate: n is count() }"
+        printed = "run: customers -> {\n  where: last_name = 'O\\'Brien'\n  aggregate: n is count()\n}"
+        self.assertEqual(rb._norm(ran), rb._norm(printed))
+
+    def test_an_apostrophe_in_a_comment_opens_no_string(self):
+        ran = "run: t -> { // it's the filtered one\n where: x = 1; aggregate: n }"
+        printed = "run: t -> { // it's the filtered one\n where: x = 1\n aggregate: n }"
+        self.assertEqual(rb._norm(ran), rb._norm(printed))
+        dashed = "run: t -> { -- don't\n where: x = 1; aggregate: n }"
+        self.assertEqual(rb._norm(dashed), rb._norm("run: t -> { -- don't\n where: x = 1\n aggregate: n }"))
+
+    def test_double_quotes_and_backticks_are_strings_too(self):
+        self.assertNotEqual(rb._norm('run: t -> { where: cat = "Books;Media"; aggregate: n }'),
+                            rb._norm('run: t -> { where: cat = "Books Media"; aggregate: n }'))
+        self.assertNotEqual(rb._norm("run: t -> { group_by: `a;b`; aggregate: n }"),
+                            rb._norm("run: t -> { group_by: `a b`; aggregate: n }"))
+
     def test_a_declared_query_matches_however_it_was_laid_out(self):
         # The executed query is one line with semicolons; the answer prints the
         # same query on several lines. Before, they never compared equal and
@@ -1530,6 +1562,29 @@ class GitSha(unittest.TestCase):
             .endswith("-dirty"))
         self.assertTrue(rb.git_sha(pathlib.Path(".")).endswith("-dirty"))
 
+    def test_a_scope_outside_the_repo_pins_nothing_rather_than_clean(self):
+        # git exits 128 with empty stdout for a pathspec outside the repo; that
+        # used to read as "clean" on a dirty model. No pin is the honest answer.
+        self.dirty()
+        outside = pathlib.Path(self.tmp) / "elsewhere"
+        outside.mkdir()
+        self.assertIsNone(rb.git_sha(pathlib.Path("."), scope=outside))
+
+    def test_a_scope_that_does_not_exist_pins_nothing(self):
+        # A typo (`pgk`) or a doubled path (`--model-repo repo/pkg --model-dir
+        # pkg`): git status on a missing pathspec exits 0 with empty output and
+        # used to read as clean on a dirty model.
+        self.dirty()
+        self.assertIsNone(rb.git_sha(pathlib.Path("."), scope=pathlib.Path("pgk")))
+        self.assertIsNone(rb.git_sha(pathlib.Path("."), scope=pathlib.Path("sub/sub")))
+
+    def test_a_relative_model_dir_resolves_against_the_repo(self):
+        repo = pathlib.Path("/r")
+        self.assertEqual(rb.model_scope(repo, pathlib.Path("packages/x")), repo / "packages/x")
+        self.assertEqual(rb.model_scope(repo, pathlib.Path("/abs/x")), pathlib.Path("/abs/x"))
+        self.assertEqual(rb.model_scope(repo, None), repo)
+        self.assertIsNone(rb.model_scope(None, pathlib.Path("packages/x")))
+
     def test_a_relative_path_still_marks_dirt(self):
         self.dirty()
         self.assertTrue(
@@ -1669,8 +1724,6 @@ class OffloadedToolResult(unittest.TestCase):
     def test_an_ordinary_result_is_not_mistaken_for_an_offload(self):
         self.assertIsNone(rb.offloaded_json('{"sources": []}'))
 
-if __name__ == "__main__":
-    unittest.main()
 
 class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
     """`--rebuild --only <qid>` re-derives one case. It used to write the whole
@@ -1734,5 +1787,148 @@ class PersistedStubIsTheResult(unittest.TestCase):
         stub = f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n"
         self.assertEqual(rb.result_text(self.block(stub)), stub)
 
+    def test_a_missing_file_is_reported_as_unmeasured_not_zero(self):
+        # A rebuild after the CLI's temporary file is gone: both spellings,
+        # with the colon and with the trailing period, name a file, and the
+        # caller must record no summary rather than an empty one.
+        for note, named in (
+                (f"<persisted-output>\nFull output saved to: {self.tmp / 'gone.json'}\n\nPreview", "gone.json"),
+                (f"Error: result exceeds maximum allowed tokens. Output has been saved to {self.tmp / 'gone.txt'}.", "gone.txt")):
+            with self.subTest(note=note[:30]):
+                path, body = rb.saved_result(note)
+                self.assertEqual(path, self.tmp / named)
+                self.assertIsNone(body)
+                self.assertIsNone(rb.offloaded_json(note))
+
+    def test_the_colon_spelling_is_read_back_too(self):
+        saved = self.tmp / "r.json"
+        saved.write_text(json.dumps({"sources": [], "retrieval": "semantic"}))
+        self.assertEqual(rb.offloaded_json(f"<persisted-output>\nFull output saved to: {saved}\n"),
+                         {"sources": [], "retrieval": "semantic"})
+
+    def test_a_result_that_mentions_a_real_path_is_left_alone(self):
+        # A source doc inside an ordinary JSON result says a file is written
+        # somewhere real. That is a result, not a note: it comes back as it is,
+        # and the file is never read in its place.
+        real = self.tmp / "extract.txt"; real.write_text("not the result")
+        result = json.dumps({"sources": [{"docs": f"Nightly extract is written to {real} for downstream jobs."}], "retrieval": "semantic"})
+        self.assertEqual(rb.result_text(self.block(result)), result)
+        self.assertIsNone(rb.saved_result(f"Nightly extract is written to {real}")[0])
+
+    def test_only_the_clis_own_note_names_a_saved_result(self):
+        saved = self.tmp / "r.json"; saved.write_text(json.dumps([{"type": "text", "text": "body"}]))
+        self.assertEqual(rb.result_text(self.block(f"see {saved} for details")), f"see {saved} for details")
+        self.assertEqual(rb.result_text(self.block(f"<persisted-output>\nFull output saved to: {saved}\n")), "body")
+
+    def test_an_unreadable_file_is_not_read_twice(self):
+        # The path is a directory: the read raises OSError, and the note comes
+        # back as it was instead of a second read raising out of the handler.
+        stub = f"<persisted-output>\nFull output saved to: {self.tmp}\n"
+        self.assertEqual(rb.result_text(self.block(stub)), stub)
+
     def test_an_ordinary_result_is_unchanged(self):
         self.assertEqual(rb.result_text(self.block("{\"sources\": []}")), "{\"sources\": []}")
+
+
+class RejudgeImpliesRebuild(unittest.TestCase):
+    """`--rejudge` alone answered every case again and, with `--only`, wrote
+    the ledger from the one case. It is rebuild's answer half plus a fresh
+    judge, and every gate reads `a.rebuild`."""
+
+    def test_rejudge_sets_rebuild(self):
+        a = rb.imply_flags(argparse.Namespace(rejudge=True, rebuild=False))
+        self.assertTrue(a.rebuild)
+
+    def test_rebuild_alone_is_unchanged(self):
+        a = rb.imply_flags(argparse.Namespace(rejudge=False, rebuild=True))
+        self.assertTrue(a.rebuild)
+        self.assertFalse(a.rejudge)
+
+    def test_neither_flag_stays_a_fresh_run(self):
+        a = rb.imply_flags(argparse.Namespace(rejudge=False, rebuild=False))
+        self.assertFalse(a.rebuild)
+
+    def test_a_narrowed_rejudge_splices_the_ledger(self):
+        # The splice decision reads (rebuild and only); with rebuild implied,
+        # a `--rejudge --only <qid>` keeps the other cases' lines.
+        a = rb.imply_flags(argparse.Namespace(rejudge=True, rebuild=False, only="q2"))
+        self.assertTrue(a.rebuild and a.only)
+
+
+class AnErroredGetContextIsUnmeasured(unittest.TestCase):
+    """A get_context call the server refused (an answerer that left out
+    `scopes` gets an MCP validation error) is no ranking at all. Recorded as
+    an empty rankedSummary it scored as a search that found nothing, and the
+    retrieval score counted a refusal as a miss the run never observed."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.set_dir = self.tmp / "set"
+        self.set_dir.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def rebuild(self, blocks):
+        d = self.tmp / "art" / "q1"
+        d.mkdir(parents=True)
+        events = [{"type": kind, "message": {"content": content}}
+                  for kind, content in blocks]
+        events.append({"type": "result", "subtype": "success",
+                       "is_error": False, "usage": {}, "num_turns": 1})
+        (d / "answerer.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n")
+        a = argparse.Namespace(rebuild=True, target="local",
+                               set_dir=self.set_dir)
+        return rb.run_answerer({"qid": "q1", "question": "how many?"},
+                               a, self.tmp / "art")
+
+    def use(self, tid):
+        return {"type": "tool_use", "id": tid,
+                "name": "mcp__publisher__get_context",
+                "input": {"searchTerms": ["orders"]}}
+
+    def res(self, tid, text, err):
+        return {"type": "tool_result", "tool_use_id": tid,
+                "content": text, "is_error": err}
+
+    def test_a_refused_call_carries_no_summary_and_its_error(self):
+        got = self.rebuild([
+            ("assistant", [self.use("t1")]),
+            ("user", [self.res("t1", "MCP error -32602: scopes required", True)]),
+            ("assistant", [{"type": "text", "text": "I could not search."}])])
+        self.assertEqual(got["n_get_context"], 1)
+        [call] = got["calls"]
+        self.assertIsNone(call["rankedSummary"])
+        self.assertIn("scopes required", call["error"])
+
+    def test_a_call_that_answered_still_ranks(self):
+        # The guard on the errored path must not swallow the ordinary one.
+        body = json.dumps({"sources": [{"name": "orders", "relevance": 0.9}]})
+        got = self.rebuild([
+            ("assistant", [self.use("t1")]),
+            ("user", [self.res("t1", body, False)]),
+            ("assistant", [{"type": "text", "text": "Orders it is."}])])
+        [call] = got["calls"]
+        self.assertIsNotNone(call["rankedSummary"])
+        self.assertIsNone(call["error"])
+
+
+class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
+    """CI runs this file as a script, `python3 <file>`, and `unittest.main()`
+    runs what is defined so far and exits. A test class written below the
+    guard is collected by `-m unittest` and never by CI: four classes sat
+    there after one PR, and one review earlier had moved two more up for the
+    same reason. Reading the file is the check that does not depend on how the
+    tests were invoked."""
+
+    def test_the_guard_is_the_last_statement(self):
+        src = pathlib.Path(__file__).read_text().splitlines()
+        guard = [i for i, l in enumerate(src) if l.startswith('if __name__ == "__main__":')]
+        self.assertEqual(len(guard), 1)
+        below = [l for l in src[guard[0]:] if l.startswith(("class ", "def "))]
+        self.assertEqual(below, [], f"defined below the main guard: {below}")
+
+
+if __name__ == "__main__":
+    unittest.main()

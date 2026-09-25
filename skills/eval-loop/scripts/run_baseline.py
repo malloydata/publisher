@@ -288,6 +288,11 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
     # so a dirty model repo read clean and the pin silently stopped pinning.
     path = path.resolve()
     scope = scope.resolve() if scope is not None else None
+    if scope is not None and not scope.exists():
+        # `git status -- <missing path>` exits 0 with empty output, so a typo
+        # (`pgk`) or a doubled path (`--model-repo repo/pkg --model-dir pkg`)
+        # read as a clean model. No pin is the honest answer here too.
+        return None
     try:
         d = path if path.is_dir() else path.parent
         head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
@@ -298,9 +303,27 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
         if scope is not None:
             cmd += ["--", str(scope)]
         dirty = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if dirty.returncode != 0:
+            # A scope outside the repo makes git exit 128 with empty stdout,
+            # which read as "clean" and dropped the marker on a dirty model.
+            # No pin beats a wrong one: the schema says absent is honest.
+            return None
         return head.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:  # noqa: BLE001
         return None
+
+
+def model_scope(repo: pathlib.Path | None, model_dir: pathlib.Path | None
+                ) -> pathlib.Path | None:
+    """The path the -dirty marker is decided over. A relative --model-dir is
+    resolved against --model-repo, not the working directory: given from
+    anywhere but the repo root it pointed outside the repo, git status exited
+    128 with empty stdout, and a dirty model pinned as clean."""
+    if repo is None:
+        return None
+    if model_dir is None:
+        return repo
+    return model_dir if model_dir.is_absolute() else repo / model_dir
 
 
 # --- Run naming --------------------------------------------------------------
@@ -352,6 +375,18 @@ def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
     while n in used:
         n += 1
     return f"{stem}-{n:02d}"
+
+
+def imply_flags(a: argparse.Namespace) -> argparse.Namespace:
+    """`--rejudge` is `--rebuild`'s answer half plus a fresh judge, so it sets
+    `rebuild`. Without this, `--rejudge` alone reached every `if a.rebuild`
+    gate as a fresh run: it spawned a new answerer per case ($0.33 each) against
+    the flag's own help text, and with `--only` it took the ledger's full-write
+    path and left a 12-case run holding one case. `--from` already set both;
+    this makes the bare flag mean what it says."""
+    if getattr(a, "rejudge", False):
+        a.rebuild = True
+    return a
 
 
 def existing_run_refusal(out: pathlib.Path) -> str | None:
@@ -474,22 +509,43 @@ def format_rows(rows: list[dict], limit: int = 60) -> str:
 # did not measure. Seen twice in one arm: 86.4% printed against 95% actual, and
 # diagnose went on to explain the phantom miss with an index-readiness story
 # that was not true.
-OFFLOADED = re.compile(r"(?:saved to|written to)\s+(/[^\s'\"]+)")
+# One note, one regex, one reader. The CLI names the file it spilled a result
+# to in two spellings ("<persisted-output> ... Full output saved to: <path>" and
+# "Output has been saved to <path>.txt."), sometimes with a colon, sometimes
+# with a trailing period. Two regexes and two readers for this one concept
+# handled those differently, and a rebuild after the CLI's temporary file was
+# gone matched one, missed the other, and scored the call as zero entities.
+# Only the CLI's own note counts, in either of its spellings, and only a
+# .json or .txt path: a looser "saved to|written to" also matched a source doc
+# that said "nightly extract is written to /etc/hosts" inside an ordinary JSON
+# result, replaced the result with that file, and scored the call as zero.
+SAVED_TO = re.compile(
+    r"(?:<persisted-output>.*?Full output saved to|Output has been saved to):?"
+    r"\s+(/[^\s'\"]+?\.(?:json|txt))\.?(?=\s|$)", re.S)
+
+
+def saved_result(text: str) -> tuple[pathlib.Path | None, str | None]:
+    """(path, body) for a result the host spilled to a file.
+
+    (None, None) when the text names no file; (path, None) when it names one
+    that cannot be read, which is the ordinary state of a rebuild since the
+    CLI's tool-results/ files are temporary; (path, body) when it can. Only
+    ever reads a path the host itself named in the result it returned.
+    """
+    m = SAVED_TO.search(text or "")
+    if not m:
+        return None, None
+    path = pathlib.Path(m.group(1))
+    try:
+        return path, path.read_text()
+    except OSError:
+        return path, None
 
 
 def offloaded_json(text: str) -> dict[str, Any] | None:
-    """The response body a host spilled to a file, read back, or None.
-
-    Only ever reads a path the host itself named in the result it returned.
-    """
-    m = OFFLOADED.search(text or "")
-    if not m:
-        return None
-    try:
-        body = pathlib.Path(m.group(1)).read_text()
-    except OSError:
-        return None
-    return resource_json(body)
+    """The response body a host spilled to a file, read back, or None."""
+    _, body = saved_result(text)
+    return resource_json(body) if body is not None else None
 
 
 def resource_json(text: str) -> dict[str, Any] | None:
@@ -594,40 +650,39 @@ def path_breaches(events: list[dict[str, Any]],
     return list(r["reasons"])
 
 
-# Two spellings, from two CLI paths: the persisted-output stub, and the MCP
-# token-cap error ("result ... exceeds maximum allowed tokens. Output has been
-# saved to <path>"). Both leave the whole payload on disk.
-PERSISTED_STUB = re.compile(
-    r"(?:<persisted-output>.*?Full output saved to|Output has been saved to):? "
-    r"(/\S+?\.(?:json|txt))\.?(?=\s|$)", re.S)
-
-
 def result_text(block: dict[str, Any]) -> str:
-    """The text of one tool_result block, with a persisted stub resolved.
+    """The text of one tool_result block, with a spilled result read back.
 
-    Above a size the CLI decides, a tool result reaches the answerer as a
-    `<persisted-output>` stub: a file path and a 2 KB preview. Measured on the
-    first arm against a real model, 14 of 74 get_context results (53 to 70 KB each) arrived that
-    way, and the answerer followed the path with Read every time. Reading the
-    stub as the payload scored those calls as zero entities delivered, which
-    is the opposite of what happened: the whole ranking was on disk. So when
-    the stub names a file that still exists, its content is the result.
+    Above a size the CLI decides, a tool result reaches the answerer as a note
+    naming a file plus a 2 KB preview. Measured on the first arm against a real
+    model, 14 of 74 get_context results (53 to 70 KB each) arrived that way and
+    the answerer followed the path with Read every time. Reading the note as
+    the payload scored those calls as zero entities delivered. When the file is
+    still there its content is the result; when it is gone (the CLI's
+    tool-results/ files are temporary, so a later rebuild always lands here)
+    the note comes back unchanged and the caller records the call as
+    unmeasured through `saved_result`, never as zero. Text that already parses
+    as a result is returned as it is, whatever paths it mentions.
     """
     text = _raw_result_text(block)
-    m = PERSISTED_STUB.search(text)
-    if m:
-        path = pathlib.Path(m.group(1))
-        if path.exists():
-            try:
-                blocks = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
-                return path.read_text()
-            if isinstance(blocks, list):
-                return "\n".join(b.get("text", "") for b in blocks
-                                 if isinstance(b, dict) and b.get("type") == "text")
-            if isinstance(blocks, dict) and blocks.get("type") == "text":
-                return blocks.get("text", "")
-    return text
+    if resource_json(text) is not None:
+        # Already a result. A note naming a file is looked for only when the
+        # text is not one, so a doc string that mentions a real path inside a
+        # JSON result is never read in its place.
+        return text
+    _, body = saved_result(text)
+    if body is None:
+        return text
+    try:
+        blocks = json.loads(body)
+    except json.JSONDecodeError:
+        return body
+    if isinstance(blocks, list):
+        return "\n".join(b.get("text", "") for b in blocks
+                         if isinstance(b, dict) and b.get("type") == "text")
+    if isinstance(blocks, dict) and blocks.get("type") == "text":
+        return blocks.get("text", "")
+    return body
 
 
 def _raw_result_text(block: dict[str, Any]) -> str:
@@ -1225,8 +1280,44 @@ def _norm(q: str) -> str:
     never compared equal and `declared` never fired -- the harness fell through
     to `last_ok` and re-executed a probe. On one acceptance arm that read a
     model edit as a regression: the answer led with the filtered figure and
-    the harness graded the unfiltered probe it ran afterwards."""
-    return " ".join((q or "").replace(";", " ").split())
+    the harness graded the unfiltered probe it ran afterwards.
+
+    Only a `;` outside a string literal is a clause separator, and the lexer's
+    other two rules are honoured too: inside a string a backslash escapes the
+    next character (`'O\\'Brien'` does not end at the escaped quote), and
+    outside one `--` or `//` starts a comment that runs to the end of the line
+    (an apostrophe in it opens no string). Without those, an escaped quote or a
+    comment apostrophe made the printed form and the executed form normalise
+    differently, and the harness graded the probe query instead."""
+    out: list[str] = []
+    quote: str | None = None
+    q = q or ""
+    i, n = 0, len(q)
+    while i < n:
+        ch = q[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(q[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif q.startswith("--", i) or q.startswith("//", i):
+            j = q.find("\n", i)
+            j = n if j < 0 else j
+            out.append(q[i:j])
+            i = j
+            continue
+        elif ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+        elif ch == ";":
+            out.append(" ")
+        else:
+            out.append(ch)
+        i += 1
+    return " ".join("".join(out).split())
 
 
 def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
@@ -2019,12 +2110,23 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     calls.append({**info, "error": text[:300] if failed else None,
                                   "rankedSummary": None})
                 else:
+                    if failed:
+                        # The call errored (an answerer that left out `scopes`
+                        # gets an MCP validation error). That is no ranking at
+                        # all, not a ranking of zero: recorded like a spilled
+                        # file that cannot be read, with no summary, so the
+                        # retrieval score never counts it as a search that
+                        # found nothing.
+                        calls.append({**info, "error": text[:300],
+                                      "rankedSummary": None})
+                        continue
                     # The host may have spilled the body to a file. Read it
                     # back rather than scoring the notice as an empty response.
                     if payload is None:
                         payload = offloaded_json(text)
-                    if payload is None and OFFLOADED.search(text or ""):
-                        # Named a file we could not read. Record NO summary
+                    if payload is None and saved_result(text)[0] is not None:
+                        # Named a file we could not read (a rebuild after the
+                        # CLI's temporary file is gone). Record NO summary
                         # rather than an empty one: unmeasured is the truth,
                         # and a zero here is a miss the run did not observe.
                         calls.append({**info,
@@ -2745,7 +2847,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="model within the package; defaults to set.json targetModelPath")
     ap.add_argument("--model-repo", default=None, type=pathlib.Path,
                     help="the git checkout the MODEL is versioned in, recorded "
-                         "as modelGitSha (dirty-marked over this path). The "
+                         "as modelGitSha (dirty-marked over --model-dir, or over "
+                         "this whole path without it). The "
                          "Publisher serves a copy under publisher_data/, so "
                          "there is no way to infer it; without this the run "
                          "carries modelSha, the content pin, and no git pin")
@@ -2754,8 +2857,11 @@ def main(argv: list[str] | None = None) -> int:
                          "was served from. The -dirty marker on modelGitSha is "
                          "decided over this path, so an unrelated untracked file "
                          "elsewhere in the repo (a scratch notebook, a run "
-                         "directory) does not stamp a clean model dirty. "
-                         "Recorded as modelDir; defaults to the whole repo")
+                         "directory) does not stamp a clean model dirty. A "
+                         "relative path is taken from --model-repo (not from the "
+                         "working directory, unlike diagnose.py's --model-dir); "
+                         "a path that does not exist records no pin. Recorded as "
+                         "modelDir; defaults to the whole repo")
     ap.add_argument("--skills-root", default=None,
                     help="a checkout holding skills/ and manifests/ to load the "
                          "answerer's and judge's doctrine from -- a Publisher "
@@ -2831,9 +2937,10 @@ def main(argv: list[str] | None = None) -> int:
                          "delete events.jsonl, find -name judge.md -delete) was "
                          "done three times on one set")
     ap.add_argument("--rejudge", action="store_true",
-                    help="with --rebuild: reuse the answers but score them "
-                         "again, for a judge or rubric change")
+                    help="reuse the saved answers but score them again, for a "
+                         "judge or rubric change. Implies --rebuild")
     a = ap.parse_args(argv)
+    imply_flags(a)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
     a.hosted_tools = hosted_tools(
@@ -3269,7 +3376,7 @@ def main(argv: list[str] | None = None) -> int:
         # nobody said where that is.
         modelRepo=str(a.model_repo) if a.model_repo else None,
         modelDir=str(a.model_dir) if a.model_dir else None,
-        modelGitSha=(git_sha(a.model_repo, scope=a.model_dir or a.model_repo)
+        modelGitSha=(git_sha(a.model_repo, scope=model_scope(a.model_repo, a.model_dir))
                      if a.model_repo else None),
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),

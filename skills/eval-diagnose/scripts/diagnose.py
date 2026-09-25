@@ -706,7 +706,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run", required=True, type=pathlib.Path)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
     ap.add_argument("--model-dir", type=pathlib.Path, default=None,
-                    help="the Malloy package under test; the agent's cwd")
+                    help="the Malloy package under test; the agent's cwd. A "
+                         "relative path is taken from the working directory "
+                         "(run_baseline's --model-dir is relative to its "
+                         "--model-repo instead)")
     # The split is cheap-on-per-case, expensive-on-clustering, and one measured
     # run says it is the wrong way round: every failure in it came from per-case
     # work (wrong output shape, a probe at the wrong grain) while the clustering

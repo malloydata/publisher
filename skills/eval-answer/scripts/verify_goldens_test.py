@@ -1192,8 +1192,6 @@ class VerifyQuotedFigures(unittest.TestCase):
         self.assertEqual(called, ["opus"])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class HeldGoldensAreNotReDerived(unittest.TestCase):
@@ -1258,3 +1256,23 @@ class ANotQueryableKeyNamesItsRootSource(unittest.TestCase):
                                         return_value=(None, "HTTP 500: boom")):
             got, detail, _ = check_value(case, a)
         self.assertEqual((got, detail), ("error", "HTTP 500: boom"))
+
+
+class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
+    """CI runs this file as a script, `python3 <file>`, and `unittest.main()`
+    runs what is defined so far and exits. A test class written below the
+    guard is collected by `-m unittest` and never by CI: four classes sat
+    there after one PR, and one review earlier had moved two more up for the
+    same reason. Reading the file is the check that does not depend on how the
+    tests were invoked."""
+
+    def test_the_guard_is_the_last_statement(self):
+        src = pathlib.Path(__file__).read_text().splitlines()
+        guard = [i for i, l in enumerate(src) if l.startswith('if __name__ == "__main__":')]
+        self.assertEqual(len(guard), 1)
+        below = [l for l in src[guard[0]:] if l.startswith(("class ", "def "))]
+        self.assertEqual(below, [], f"defined below the main guard: {below}")
+
+
+if __name__ == "__main__":
+    unittest.main()
