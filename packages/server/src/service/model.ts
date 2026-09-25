@@ -131,7 +131,12 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { gateGivenSource, malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   assertFilterGivensParse,
+   gateGivenSource,
+   malloyGivenToApi,
+   type MalloyGiven,
+} from "./given";
 import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
@@ -5369,6 +5374,18 @@ export class Model {
       });
    }
 
+   /**
+    * Refuse a request whose value for one of this model's `filter<T>` givens
+    * does not parse, with a 400 naming the given and the parser's reason. Run
+    * by every path that takes given values: a query, a notebook cell, and
+    * /compile.
+    */
+   public assertFilterGivens(
+      givens: Record<string, GivenValue> | undefined,
+   ): void {
+      assertFilterGivensParse(this.givens, givens);
+   }
+
    public async getQueryResults(
       sourceName?: string,
       queryName?: string,
@@ -5483,6 +5500,7 @@ export class Model {
             `Model compilation failed: ${this.compilationError.message}`,
          );
       }
+      this.assertFilterGivens(givens);
 
       let runnable: QueryMaterializer;
       let liveRunnable: QueryMaterializer | undefined;
@@ -6997,6 +7015,8 @@ export class Model {
       if (this.compilationError) {
          throw this.compilationError;
       }
+
+      this.assertFilterGivens(givens);
 
       if (!this.runnableNotebookCells) {
          throw new BadRequestError("No notebook cells available");

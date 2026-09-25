@@ -33,7 +33,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.2.7",
+      "version": "0.8.0",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -86,7 +86,7 @@
     },
     "packages/create-malloy-package": {
       "name": "@malloy-publisher/create-malloy-package",
-      "version": "0.0.13",
+      "version": "0.0.21",
       "bin": {
         "create-malloy-package": "./dist/index.js",
       },
@@ -108,7 +108,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.2.7",
+      "version": "0.8.0",
       "dependencies": {
         "@dnd-kit/collision": "^0.5.0",
         "@dnd-kit/dom": "^0.5.0",
@@ -175,7 +175,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.2.7",
+      "version": "0.8.0",
       "bin": {
         "malloy-publisher": "dist/server.mjs",
       },
@@ -195,6 +195,7 @@
         "@malloydata/db-snowflake": "^0.0.432",
         "@malloydata/db-trino": "^0.0.432",
         "@malloydata/malloy": "^0.0.432",
+        "@malloydata/malloy-filter": "^0.0.432",
         "@malloydata/malloy-sql": "^0.0.432",
         "@malloydata/malloy-tag": "^0.0.432",
         "@malloydata/render-validator": "^0.0.432",
@@ -255,7 +256,7 @@
     },
     "packages/skills": {
       "name": "@malloy-publisher/skills",
-      "version": "0.1.17",
+      "version": "0.1.25",
       "devDependencies": {
         "@eslint/js": "^8.57.0",
         "@types/bun": "^1.2.21",

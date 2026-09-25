@@ -736,6 +736,10 @@ export class Environment {
                hasExactGateModel = true;
             }
          }
+         // A given value the model's filter types cannot read is a bad
+         // request, as on the query route, not a diagnostic about the source.
+         if (gateModel && hasExactGateModel)
+            gateModel.assertFilterGivens(givens);
          if (gateModel && hasExactGateModel && source !== undefined) {
             // Only the authorize gate (the *who* axis) applies to /compile.
             // The query boundary (`explores`/`queryableSources`, the *what*
