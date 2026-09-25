@@ -546,12 +546,45 @@ describe("service/query_text", () => {
          const hashes = "a # ".repeat(125_000);
          const text = `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${dashes}'; group_by: e.id }\n# ${hashes}\n`;
          expect(text.length).toBeGreaterThan(1_000_000);
-         const start = performance.now();
-         stripMalloyCommentsAndLiterals(text);
-         buildDerivationBaseMap(text);
-         buildJoinBaseMap(text);
-         buildIsEdgeMap(text);
-         expect(performance.now() - start).toBeLessThan(500);
+         expect(
+            fastestMs(() => {
+               stripMalloyCommentsAndLiterals(text);
+               buildDerivationBaseMap(text);
+               buildJoinBaseMap(text);
+               buildIsEdgeMap(text);
+            }),
+         ).toBeLessThan(500);
+      });
+
+      it("is linear on one 1MB statement", () => {
+         const items = Array.from(
+            { length: 70_000 },
+            (_, i) => `a${i} is plain`,
+         ).join(", ");
+         const joins = `run: plain extend { join_one: ${items} } -> { group_by: a1.id }`;
+         const chain = Array.from({ length: 125_000 }, (_, i) => `x${i}`).join(
+            " is ",
+         );
+         expect(joins.length).toBeGreaterThan(1_000_000);
+         expect(chain.length).toBeGreaterThan(1_000_000);
+         for (const [text, read] of [
+            [joins, buildJoinBaseMap],
+            [chain, buildIsEdgeMap],
+         ] as const) {
+            expect(fastestMs(() => read(text))).toBeLessThan(200);
+         }
       });
    });
 });
+
+/** The best of a few runs, each after a full GC, so the suite's leftover heap and a busy machine do not read as super-linearity. */
+function fastestMs(run: () => void, runs = 5): number {
+   let best = Infinity;
+   for (let i = 0; i < runs; i++) {
+      Bun.gc(true);
+      const start = performance.now();
+      run();
+      best = Math.min(best, performance.now() - start);
+   }
+   return best;
+}

@@ -8,13 +8,15 @@
  * to identify the run target and follow `source: NAME is BASE` derivation
  * chains *before* the query compiles — a denied caller must never reach
  * compilation. These helpers are deliberately side-effect free (no model
- * state) so the regexes that back those security checks can be unit tested in
+ * state) so the readers behind those security checks can be unit tested in
  * isolation from the stateful `Model`.
  *
- * Both helpers recognize a bare `\w+` identifier and a backtick-quoted Malloy
- * identifier (e.g. `customer-orders`, which needs quoting for the hyphen), and
- * return the inner name without backticks so callers can key it the same way
- * sources are keyed.
+ * Every reader first blanks comments, `#` annotations and string-literal
+ * bodies ({@link stripMalloyCommentsAndLiterals}). The run-target and alias
+ * readers then match a pattern; the derivation, join and `is`-edge readers walk
+ * one linear tokenization with paired brackets. All of them read a bare
+ * Unicode name and a backtick-quoted one (`customer-orders`) and return the
+ * name without backticks, keyed the same way sources are.
  */
 
 /**
@@ -147,24 +149,39 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
  * boundary in the result matches the input.
  */
 export function stripMalloyCommentsAndLiterals(text: string): string {
-   const out = text.split("");
+   // Unblanked text is copied in slices between blanked spans, never per char.
+   const parts: string[] = [];
+   let copied = 0;
    const blank = (from: number, to: number): void => {
-      for (let i = from; i < to && i < out.length; i++) {
-         if (out[i] !== "\n") out[i] = " ";
+      const end = Math.min(to, text.length);
+      if (from >= end) return;
+      parts.push(text.slice(copied, from));
+      let run = from;
+      for (let k = from; k < end; k++) {
+         if (text.charCodeAt(k) === 10) {
+            parts.push(" ".repeat(k - run), "\n");
+            run = k + 1;
+         }
       }
+      parts.push(" ".repeat(end - run));
+      copied = end;
    };
+   // startsWith rather than a per-char slice: a 1MB body must not allocate a string per character.
    for (let i = 0; i < text.length; i++) {
-      const two = text.slice(i, i + 2);
       // A `#` annotation is read around like a comment, so text in one can
       // neither hide a declaration nor plant a decoy.
-      if (two === "--" || two === "//" || text[i] === "#") {
+      if (
+         text.startsWith("--", i) ||
+         text.startsWith("//", i) ||
+         text[i] === "#"
+      ) {
          const nl = text.indexOf("\n", i);
          const end = nl === -1 ? text.length : nl;
          blank(i, end);
          i = end;
          continue;
       }
-      if (two === "/*") {
+      if (text.startsWith("/*", i)) {
          const close = text.indexOf("*/", i + 2);
          const end = close === -1 ? text.length : close + 2;
          blank(i, end);
@@ -204,7 +221,8 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
          continue;
       }
    }
-   return out.join("");
+   parts.push(text.slice(copied));
+   return parts.join("");
 }
 
 /**
@@ -247,9 +265,9 @@ export function buildDerivationBaseMap(
 ): Map<string, Set<string>> {
    const out = new Map<string, Set<string>>();
    const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
-   for (let i = 0; i < tokens.length; i++) {
+   for (let i = 0; i < tokens.count; i++) {
       if (!isStatementKeyword(tokens, i)) continue;
-      const keyword = tokens[i].text.toLowerCase();
+      const keyword = textOf(tokens, i).toLowerCase();
       if (keyword !== "source" && keyword !== "query") continue;
       readStatementItems(tokens, i + 2, false, (name, base) =>
          addEdge(out, name, base),
@@ -258,111 +276,159 @@ export function buildDerivationBaseMap(
    return out;
 }
 
-/** One token of stripped Malloy text: a name, or one punctuation character. */
-interface Token {
-   /** A name without its backticks, or the character itself. */
-   text: string;
-   name: boolean;
-   quoted: boolean;
+const PUNCT = 0;
+const NAME = 1;
+const QUOTED = 2;
+
+/**
+ * Stripped Malloy text as names and single punctuation characters, held in
+ * flat arrays rather than one object per token. A token's text is
+ * `source.slice(start, end)`: a name without its backticks, or the character.
+ */
+interface Tokens {
+   source: string;
+   count: number;
+   kind: Uint8Array;
+   start: Int32Array;
+   end: Int32Array;
    /** A bracket's partner index; -1 for anything else or an unbalanced one. */
-   partner: number;
+   partner: Int32Array;
 }
 
 const NAME_CHAR = /[\p{L}\p{N}_]/u;
+const SPACE_CHAR = /\s/u;
+
+/** ASCII is decided by code; only a non-ASCII character pays for the regex. */
+function isNameCode(code: number, text: string, at: number): boolean {
+   if (code < 128) {
+      return (
+         (code >= 48 && code <= 57) ||
+         (code >= 65 && code <= 90) ||
+         (code >= 97 && code <= 122) ||
+         code === 95
+      );
+   }
+   return NAME_CHAR.test(String.fromCodePoint(text.codePointAt(at)!));
+}
+
+function isSpaceCode(code: number, text: string, at: number): boolean {
+   if (code < 128) return code === 32 || (code >= 9 && code <= 13);
+   return SPACE_CHAR.test(String.fromCodePoint(text.codePointAt(at)!));
+}
+
+/** UTF-16 units in the character at `at`. */
+function unitsAt(text: string, at: number): number {
+   return text.codePointAt(at)! > 0xffff ? 2 : 1;
+}
 
 /**
  * Split stripped text into names and punctuation in one pass, pairing
  * brackets, so every reader below walks tokens instead of retrying a pattern.
  * A backtick span is one name token, so nothing inside it can read as syntax.
  */
-function tokenize(text: string): Token[] {
-   const tokens: Token[] = [];
+function tokenize(text: string): Tokens {
+   const size = text.length + 1;
+   const tokens: Tokens = {
+      source: text,
+      count: 0,
+      kind: new Uint8Array(size),
+      start: new Int32Array(size),
+      end: new Int32Array(size),
+      partner: new Int32Array(size).fill(-1),
+   };
+   const push = (kind: number, start: number, end: number): number => {
+      const index = tokens.count++;
+      tokens.kind[index] = kind;
+      tokens.start[index] = start;
+      tokens.end[index] = end;
+      return index;
+   };
    const open: number[] = [];
    let i = 0;
    while (i < text.length) {
-      const ch = String.fromCodePoint(text.codePointAt(i)!);
-      if (/\s/u.test(ch)) {
-         i += ch.length;
+      const code = text.charCodeAt(i);
+      if (isSpaceCode(code, text, i)) {
+         i += unitsAt(text, i);
          continue;
       }
-      if (ch === "`") {
+      if (code === 96) {
          const close = text.indexOf("`", i + 1);
          const end = close === -1 ? text.length : close;
-         tokens.push({
-            text: text.slice(i + 1, end),
-            name: true,
-            quoted: true,
-            partner: -1,
-         });
+         push(QUOTED, i + 1, end);
          i = end + 1;
          continue;
       }
-      if (NAME_CHAR.test(ch)) {
-         let j = i + ch.length;
-         while (j < text.length) {
-            const next = String.fromCodePoint(text.codePointAt(j)!);
-            if (!NAME_CHAR.test(next)) break;
-            j += next.length;
+      if (isNameCode(code, text, i)) {
+         let j = i + unitsAt(text, i);
+         while (j < text.length && isNameCode(text.charCodeAt(j), text, j)) {
+            j += unitsAt(text, j);
          }
-         tokens.push({
-            text: text.slice(i, j),
-            name: true,
-            quoted: false,
-            partner: -1,
-         });
+         push(NAME, i, j);
          i = j;
          continue;
       }
-      const token: Token = {
-         text: ch,
-         name: false,
-         quoted: false,
-         partner: -1,
-      };
-      if (ch === "(" || ch === "[" || ch === "{") {
-         open.push(tokens.length);
-      } else if (ch === ")" || ch === "]" || ch === "}") {
+      const units = unitsAt(text, i);
+      const index = push(PUNCT, i, i + units);
+      if (code === 40 || code === 91 || code === 123) {
+         open.push(index);
+      } else if (code === 41 || code === 93 || code === 125) {
          const at = open.pop();
          if (at !== undefined) {
-            tokens[at].partner = tokens.length;
-            token.partner = at;
+            tokens.partner[at] = index;
+            tokens.partner[index] = at;
          }
       }
-      tokens.push(token);
-      i += ch.length;
+      i += units;
    }
    return tokens;
 }
 
-function isWord(token: Token | undefined, word: string): boolean {
+function textOf(tokens: Tokens, i: number): string {
+   return tokens.source.slice(tokens.start[i], tokens.end[i]);
+}
+
+/** Whether token `i` exists and its text is the one character `char`. */
+function textIs(tokens: Tokens, i: number, char: string): boolean {
    return (
-      !!token &&
-      token.name &&
-      !token.quoted &&
-      token.text.toLowerCase() === word
+      i >= 0 &&
+      i < tokens.count &&
+      tokens.end[i] - tokens.start[i] === 1 &&
+      tokens.source.charCodeAt(tokens.start[i]) === char.charCodeAt(0)
+   );
+}
+
+function isName(tokens: Tokens, i: number): boolean {
+   return i >= 0 && i < tokens.count && tokens.kind[i] !== PUNCT;
+}
+
+/** An unquoted name whose lower-cased text is `word`. */
+function isWord(tokens: Tokens, i: number, word: string): boolean {
+   return (
+      i >= 0 &&
+      i < tokens.count &&
+      tokens.kind[i] === NAME &&
+      tokens.end[i] - tokens.start[i] === word.length &&
+      textOf(tokens, i).toLowerCase() === word
    );
 }
 
 /** `name:` opening a statement, and not a `::` type or a `.` path. */
-function isStatementKeyword(tokens: readonly Token[], i: number): boolean {
-   const token = tokens[i];
+function isStatementKeyword(tokens: Tokens, i: number): boolean {
    return (
-      !!token &&
-      token.name &&
-      !token.quoted &&
-      tokens[i + 1]?.text === ":" &&
-      tokens[i + 2]?.text !== ":" &&
-      tokens[i - 1]?.text !== ":" &&
-      tokens[i - 1]?.text !== "."
+      i < tokens.count &&
+      tokens.kind[i] === NAME &&
+      textIs(tokens, i + 1, ":") &&
+      !textIs(tokens, i + 2, ":") &&
+      !textIs(tokens, i - 1, ":") &&
+      !textIs(tokens, i - 1, ".")
    );
 }
 
 /** The base after an `is` at `i - 1`: behind any `(`, else unreadable. */
-function readBase(tokens: readonly Token[], i: number): string {
+function readBase(tokens: Tokens, i: number): string {
    let j = i;
-   while (tokens[j]?.text === "(" && !tokens[j].name) j++;
-   const token = tokens[j];
-   return token?.name ? token.text : UNREADABLE_BASE;
+   while (textIs(tokens, j, "(") && tokens.kind[j] === PUNCT) j++;
+   return isName(tokens, j) ? textOf(tokens, j) : UNREADABLE_BASE;
 }
 
 /**
@@ -372,37 +438,45 @@ function readBase(tokens: readonly Token[], i: number): string {
  * BASE`) items, and with `shorthand` a bare name that opens an item.
  */
 function readStatementItems(
-   tokens: readonly Token[],
+   tokens: Tokens,
    start: number,
    shorthand: boolean,
    onItem: (name: string, base: string) => void,
 ): void {
    let atItemStart = true;
    let i = start;
-   while (i < tokens.length) {
-      const token = tokens[i];
-      if (!token.name) {
-         if (token.text === ";") return;
-         if (token.partner > i) {
-            i = token.partner + 1;
+   while (i < tokens.count) {
+      if (tokens.kind[i] === PUNCT) {
+         if (textIs(tokens, i, ";")) return;
+         if (tokens.partner[i] > i) {
+            i = tokens.partner[i] + 1;
             atItemStart = false;
             continue;
          }
-         if (")]}".includes(token.text)) return;
-         atItemStart = token.text === ",";
+         if (
+            textIs(tokens, i, ")") ||
+            textIs(tokens, i, "]") ||
+            textIs(tokens, i, "}")
+         ) {
+            return;
+         }
+         atItemStart = textIs(tokens, i, ",");
          i++;
          continue;
       }
       if (isStatementKeyword(tokens, i)) return;
       let k = i + 1;
-      if (tokens[k]?.text === "(" && tokens[k].partner > k) {
-         k = tokens[k].partner + 1;
+      if (textIs(tokens, k, "(") && tokens.partner[k] > k) {
+         k = tokens.partner[k] + 1;
       }
-      if (isWord(tokens[k], "is")) {
-         onItem(token.text, readBase(tokens, k + 1));
+      if (isWord(tokens, k, "is")) {
+         onItem(textOf(tokens, i), readBase(tokens, k + 1));
          i = k + 1;
       } else {
-         if (shorthand && atItemStart) onItem(token.text, token.text);
+         if (shorthand && atItemStart) {
+            const name = textOf(tokens, i);
+            onItem(name, name);
+         }
          i++;
       }
       atItemStart = false;
@@ -442,9 +516,9 @@ function addEdge(
 export function buildJoinBaseMap(query: string): Map<string, Set<string>> {
    const out = new Map<string, Set<string>>();
    const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
-   for (let i = 0; i < tokens.length; i++) {
+   for (let i = 0; i < tokens.count; i++) {
       if (!isStatementKeyword(tokens, i)) continue;
-      if (!/^join_(?:one|many|cross)$/i.test(tokens[i].text)) continue;
+      if (!/^join_(?:one|many|cross)$/i.test(textOf(tokens, i))) continue;
       readStatementItems(tokens, i + 2, true, (alias, base) =>
          addEdge(out, alias, base),
       );
@@ -467,15 +541,18 @@ export function buildJoinBaseMap(query: string): Map<string, Set<string>> {
 export function buildIsEdgeMap(query: string): Map<string, Set<string>> {
    const out = new Map<string, Set<string>>();
    const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
-   for (let k = 1; k < tokens.length; k++) {
-      if (!isWord(tokens[k], "is")) continue;
+   for (let k = 1; k < tokens.count; k++) {
+      if (!isWord(tokens, k, "is")) continue;
       let n = k - 1;
-      if (tokens[n].text === ")" && !tokens[n].name && tokens[n].partner >= 0) {
-         n = tokens[n].partner - 1;
+      if (
+         textIs(tokens, n, ")") &&
+         tokens.kind[n] === PUNCT &&
+         tokens.partner[n] >= 0
+      ) {
+         n = tokens.partner[n] - 1;
       }
-      const name = tokens[n];
-      if (!name?.name) continue;
-      addEdge(out, name.text, readBase(tokens, k + 1));
+      if (!isName(tokens, n)) continue;
+      addEdge(out, textOf(tokens, n), readBase(tokens, k + 1));
    }
    return out;
 }
