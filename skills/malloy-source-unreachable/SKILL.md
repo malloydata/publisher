@@ -34,6 +34,16 @@ Same source, same package. `orders.malloy` is off the surface, so it is not an e
 
 **Use the `model_path` that `get_context` gave you, verbatim.** Its `source_info.resource_id` holds `environment`, `package`, `model_path` and `source`, and those are exactly `execute_query`'s `environmentName`, `packageName`, `modelPath` and `sourceName`. On a curated package the `model_path` is the surface file, not the file that declares the source. Substituting the declaring file because it looks more correct is how this 404 happens.
 
+## Other places a hidden source answers 404
+
+The query route is not the only one held to the surface. On a curated package, a source or file off it also shows up as a 404 here:
+
+- **Reading a model.** `GET .../models/{path}` answers 404 for a file off the surface, with the same words as the query route. The file still exists and still compiles; read `index.malloy` instead. A model that is on the surface lists only the names it publishes, not everything it imports.
+- **A dashboard tile.** A tile, a single-query dashboard's query, or a filter `suggest` over a hidden source answers 404. The dashboard itself is still listed. The package load warns once per tile, for example `Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.` It is in the `warnings` on the package's own response, `GET .../packages/{pkg}`.
+- **A notebook cell.** A cell over a hidden source answers 404, even when the notebook imports its file. A source an earlier cell derives from a published one still works.
+
+The fix is the same in each case: add the source to the `export { ... }` in `index.malloy`, or use what is already published.
+
 ## When the source is not in `get_context` at all
 
 Work down this list. The first three are far more common than the last.

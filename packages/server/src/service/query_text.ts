@@ -92,6 +92,14 @@ function opensLine(tokens: Tokens, k: number): boolean {
 }
 
 /**
+ * Every identifier in `text` outside comments and string literals, with a
+ * backticked name read whole (`` `orders-staging` `` is one name, not two).
+ */
+export function malloyIdentifiers(text: string): string[] {
+   return [...scanIdentifiers(stripMalloyCommentsAndLiterals(text))];
+}
+
+/**
  * Map each ad-hoc source alias to the base it derives from
  * (`source: NAME is BASE …` → NAME → BASE). Used to walk derivation chains in
  * caller-authored text for filter inheritance -- a filter-protected source

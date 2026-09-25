@@ -35,6 +35,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
+import { NotQueryableError } from "../errors";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -280,13 +281,13 @@ export { customers }`,
          // The author wrote a file the convention would have used and a key
          // that leaves it out. The key wins; nothing else would tell them.
          const warnings = pkg.getPackageMetadata().warnings ?? [];
-         expect(
-            warnings.some(
-               (w) =>
-                  (w.message ?? "").includes("index.malloy") &&
-                  (w.message ?? "").includes("does not list it"),
-            ),
-         ).toBe(true);
+         // Pinned as the author sees it, on the package they fetch.
+         expect(warnings.map((w) => w.message)).toContain(
+            `index.malloy is ignored because "explores" in publisher.json ` +
+               `doesn't list it. Fix: delete "explores" to publish what ` +
+               `index.malloy exports, or rename index.malloy (and any import of ` +
+               `it) if it isn't meant to decide what is published.`,
+         );
       } finally {
          await duckdb.close();
       }
@@ -418,6 +419,230 @@ export { customers }`,
       }
    });
 
+   it("the model GET shows only what the surface publishes", async () => {
+      // index.malloy imports base.malloy whole, so its compiled model carries
+      // `hidden` too. The GET must not name it, in any field.
+      writeManifest({});
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: pub is duckdb.sql("select 1 as id")
+source: hidden is duckdb.sql("select 2 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         // A top-level run over the hidden source puts it in queryList too.
+         `import "base.malloy"\nrun: hidden -> { group_by: id }\nexport { pub }`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const index = pkg.getModel("index.malloy")!;
+         const response = (await index.getModel()) as {
+            modelDef?: string;
+            modelInfo?: string;
+            sources?: { name?: string }[];
+         };
+         const modelDef = JSON.parse(response.modelDef ?? "{}") as {
+            contents: Record<string, unknown>;
+            exports: string[];
+            imports?: unknown[];
+         };
+         expect(Object.keys(modelDef.contents)).toEqual(["pub"]);
+         expect(modelDef.exports).toEqual(["pub"]);
+         // The app reads `imports`; pruning `contents` must leave it.
+         expect(modelDef.imports?.length).toBe(1);
+         // Searched as text, not for a quoted name: inside the JSON-encoded
+         // modelDef every quote is escaped, so a quoted search never matches.
+         // Covers contents, sourceRegistry (keyed name@file) and queryList.
+         expect(response.modelDef).not.toContain("hidden");
+         expect(response.modelInfo).not.toContain("hidden");
+         expect(JSON.stringify(response.sources)).not.toContain("hidden");
+         // The text runs `hidden`, so it is withheld, although the file does
+         // not declare it. An import path or a comment naming it does not
+         // count; a published file whose text names only what it publishes
+         // keeps its text.
+         const text = (file: string) =>
+            fs.readFileSync(path.join(tempDir, file), "utf8");
+         expect(index.showsFileText(text("index.malloy"))).toBe(false);
+         expect(
+            index.showsFileText(
+               `import "hidden.malloy"\n// hidden is not exported\nexport { pub }`,
+            ),
+         ).toBe(true);
+
+         // The hidden file is refused outright, with the query route's words.
+         expect(() =>
+            pkg.getModel("base.malloy")!.assertFileOnSurface(),
+         ).toThrow('No queryable model "base.malloy".');
+
+         // A surface file that declares an unexported helper keeps its
+         // compiled view but not its text, which would show the helper.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+source: helper is duckdb.sql("select 3 as id")
+export { pub }`,
+         );
+         const withHelper = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(
+            withHelper
+               .getModel("index.malloy")!
+               .showsFileText(text("index.malloy")),
+         ).toBe(false);
+
+         // A backticked name is one name, and a bare name may be non-ASCII:
+         // split into pieces, neither matched the hidden set, and the text
+         // went out naming both.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+source: \`orders-staging\` is duckdb.sql("select 4 as id")
+source: café is duckdb.sql("select 5 as id")
+export { pub }`,
+         );
+         const quoted = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(
+            quoted
+               .getModel("index.malloy")!
+               .showsFileText(text("index.malloy")),
+         ).toBe(false);
+         expect(
+            quoted
+               .getModel("index.malloy")!
+               .showsFileText(`import "base.malloy"\nexport { pub }`),
+         ).toBe(true);
+
+         // A published source built on a hidden one, or joining one, must not
+         // carry the hidden source's identity either. The join's own name is
+         // part of the published field paths, so it is renamed here to prove
+         // the identity, not the path, is what goes.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+source: pub2 is hidden extend { dimension: two is 2 }
+source: pub3 is pub extend { join_one: j is hidden on id = j.id }
+export { pub2, pub3 }`,
+         );
+         const derived = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         const derivedDef = (
+            (await derived.getModel("index.malloy")!.getModel()) as {
+               modelDef: string;
+            }
+         ).modelDef;
+         const derivedContents = JSON.parse(derivedDef).contents as Record<
+            string,
+            { fields: Record<string, unknown>[] }
+         >;
+         expect(Object.keys(derivedContents).sort()).toEqual(["pub2", "pub3"]);
+         expect(derivedDef).not.toContain("hidden");
+         // The join also carried the hidden source's whole definition, SQL
+         // included. What is left is its name and the fields reached through
+         // it. (pub2 is built on `hidden`, so its own SQL is that SQL.)
+         const join = derivedContents.pub3.fields.find((f) => f.join);
+         expect(join).toEqual({
+            type: join?.type,
+            join: "one",
+            name: "j",
+            fields: [{ type: "number", name: "id" }],
+         });
+         expect(JSON.stringify(derivedContents.pub3)).not.toContain("select 2");
+
+         // With no surface, nothing is curated.
+         writeManifest({ explores: [] });
+         const open = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const openDef = JSON.parse(
+            (
+               (await open.getModel("index.malloy")!.getModel()) as {
+                  modelDef: string;
+               }
+            ).modelDef,
+         ) as { contents: Record<string, unknown> };
+         expect(Object.keys(openDef.contents).sort()).toEqual([
+            "hidden",
+            "pub",
+            "pub2",
+            "pub3",
+         ]);
+         expect(() =>
+            open.getModel("base.malloy")!.assertFileOnSurface(),
+         ).not.toThrow();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("the model GET and the query route treat named queries like sources", async () => {
+      writeManifest({});
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         // Named queries follow the same rule. An exported one is listed and
+         // runs, even when it reads a hidden source through a join; one the
+         // surface declares but does not export, and one in a hidden file,
+         // are neither listed nor runnable.
+         fs.writeFileSync(
+            path.join(tempDir, "base.malloy"),
+            `source: pub is duckdb.sql("select 1 as id")
+   source: hidden is duckdb.sql("select 2 as id")
+   query: hidden_ids is hidden -> { group_by: id }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "base.malloy"
+   source: pub3 is pub extend { join_one: j is hidden on id = j.id }
+   query: through_join is pub3 -> { group_by: j.id }
+   query: unexported is pub3 -> { group_by: id }
+   export { pub3, through_join }`,
+         );
+         const named = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         const namedIndex = named.getModel("index.malloy")!;
+         const namedResponse = (await namedIndex.getModel()) as {
+            modelDef: string;
+            modelInfo: string;
+            queries?: { name?: string }[];
+         };
+         expect((namedResponse.queries ?? []).map((q) => q.name)).toEqual([
+            "through_join",
+         ]);
+         for (const absent of ["unexported", "hidden_ids", "select 2"]) {
+            expect(namedResponse.modelDef).not.toContain(absent);
+            expect(namedResponse.modelInfo).not.toContain(absent);
+         }
+         const ran = await namedIndex.getQueryResults(
+            undefined,
+            "through_join",
+            undefined,
+         );
+         expect(ran.result.data).toBeDefined();
+         for (const refused of ["unexported", "hidden_ids"]) {
+            await expect(
+               namedIndex.getQueryResults(undefined, refused, undefined),
+            ).rejects.toThrow(NotQueryableError);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("warns for a LISTED import-only model (blank page), not for a hidden one", async () => {
       writeManifest({ explores: ["consumer.malloy"] });
       fs.writeFileSync(
@@ -435,13 +660,13 @@ export { customers }`,
          const warnings = pkg.emptyDiscoveryWarnings();
          expect(warnings.length).toBe(1);
          expect(warnings[0].model).toBe("consumer.malloy");
-         expect(warnings[0].message).toContain(
-            `Model "consumer.malloy" is on this package's discovery surface but exposes nothing`,
+         // One of several possible listed files, so it takes only itself off
+         // the surface, and the key it is listed in is still a remedy.
+         expect(warnings[0].message).toBe(
+            `consumer.malloy exports nothing, so nothing can be queried ` +
+               `through it. Fix: add an export { ... } naming the sources to ` +
+               `publish, or remove it from "explores".`,
          );
-         expect(warnings[0].message).toContain("export { source_name }");
-         // This package DECLARES its surface, so the remedy names the key.
-         // A convention package has none, and gets "delete the file" instead.
-         expect(warnings[0].message).toContain("remove it from explores");
          // Advisory warnings also ride the package metadata (the QA gap:
          // exploresWarnings said none while a listed file surfaced nothing).
          expect(
@@ -624,10 +849,9 @@ export { customers }`,
       }
    });
 
-   it("gives a remedy that holds when explores names index.malloy by hand", async () => {
-      // surfaceIsIndexModel() is true here too, and "delete the file" alone
-      // would leave the key naming a model that no longer exists -- the
-      // package would then list NOTHING, the inverse of what it promises.
+   it("says nothing can be queried when index.malloy is the whole surface and exports nothing", async () => {
+      // A hand-written explores of just index.malloy is the same surface as
+      // the convention, so it gets the same words.
       writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
@@ -643,10 +867,11 @@ export { customers }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const warnings = pkg.emptyDiscoveryWarnings();
          expect(warnings.length).toBe(1);
-         expect(warnings[0].message).toContain(
-            'delete the file AND any "explores" entry naming it',
+         expect(warnings[0].message).toBe(
+            `index.malloy exports nothing, so nothing in this package can be ` +
+               `queried. Fix: add an export { ... } naming the sources to ` +
+               `publish.`,
          );
-         expect(warnings[0].message).toContain("would list nothing");
       } finally {
          await duckdb.close();
       }

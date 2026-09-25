@@ -156,6 +156,7 @@ import {
    collectIdentifierNames,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
 import {
@@ -631,7 +632,18 @@ export class Model {
        *  surface. Set by the Package, which knows whether the surface is an
        *  index.malloy or an explores list. See {@link notQueryable}. */
       offSurface?: OffSurfaceContext;
+      /** This file is a dashboard the package discovered. A dashboard is an
+       *  entry point, but like a notebook it admits nothing of its own: its
+       *  tiles read only the package surface. */
+      dashboard?: boolean;
+      /** The dashboard's own file text, so a source it declares on top of a
+       *  surface source (`source: big is orders extend {...}`) can be proven
+       *  to derive from it. Author text, not caller text. */
+      derivationText?: string;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
+   /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
+    *  computed once per policy rather than per query. */
+   private fileDerivationBases?: Map<string, Set<string>>;
    /** Per-query freshness resolver, pushed down by the owning Package (see
     *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
     *  manifest for the serve path — threaded into Malloy's per-query
@@ -4245,8 +4257,36 @@ export class Model {
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
       offSurface?: OffSurfaceContext;
+      dashboard?: boolean;
+      derivationText?: string;
    }): void {
       this.queryBoundary = policy;
+      this.fileDerivationBases = policy.derivationText
+         ? buildDerivationBaseMap(
+              stripMalloyCommentsAndLiterals(policy.derivationText),
+           )
+         : undefined;
+   }
+
+   /**
+    * File-level half of the query boundary: refuse a file that is not an
+    * entry point. Inert when there is no surface or under `"all"`. Notebooks
+    * and discovered dashboards always pass; they are always listed, and what
+    * they may read is held to the surface by the name-level checks.
+    *
+    * Public because the model GET applies the same rule: a file nobody can
+    * query is not shown either.
+    */
+   public assertFileOnSurface(): void {
+      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      if (!isQueryEntryPoint && !this.isNotebook()) {
+         throw this.notQueryable(
+            `No queryable model "${this.modelPath}".`,
+            true,
+            "model",
+         );
+      }
    }
 
    /**
@@ -4292,23 +4332,31 @@ export class Model {
             ? `import "${this.modelPath}" in "${INDEX_MODEL_NAME}", name the ` +
               `sources you want in that file's export { ... }, and address ` +
               `the query to "${INDEX_MODEL_NAME}".`
-            : `add "${this.modelPath}" to "explores" in publisher.json, or ` +
-              `import it in a listed model and name the sources you want in ` +
-              `that model's export { ... }.`;
-      } else if (!this.isNotebook()) {
+            : // `explores` is deprecated, so the fix goes through a file it
+              // already lists rather than growing the key.
+              `import "${this.modelPath}" in a listed model, name the sources ` +
+              `you want in that model's export { ... }, and address the ` +
+              `query to that model.`;
+      } else if (!this.isNotebook() && !this.isDashboard()) {
          // This file is on the surface and already sees the name, so the only
          // edit is to export it here.
          fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
       } else {
-         // A notebook exports nothing: the name has to be exported by a
-         // surface file, which may first need to import where it is declared.
-         fix = surface.indexModel
-            ? `name the ${refused} in the export { ... } of ` +
-              `"${INDEX_MODEL_NAME}", importing the file that declares it if ` +
-              `needed, and address the query to "${INDEX_MODEL_NAME}".`
-            : `name the ${refused} in the export { ... } of a listed model, ` +
-              `importing the file that declares it if needed, and address the ` +
-              `query to that model.`;
+         // A notebook or dashboard admits nothing of its own: the name has to
+         // be exported by a surface file, which may first need to import where
+         // it is declared. A dashboard's tiles keep running against the
+         // dashboard file, so only a notebook caller is told to re-address.
+         const exporter = surface.indexModel
+            ? `"${INDEX_MODEL_NAME}"`
+            : `a listed model`;
+         const readdress = this.isDashboard()
+            ? ""
+            : surface.indexModel
+              ? `, and address the query to "${INDEX_MODEL_NAME}"`
+              : `, and address the query to that model`;
+         fix =
+            `name the ${refused} in the export { ... } of ${exporter}, ` +
+            `importing the file that declares it if needed${readdress}.`;
       }
       return `${where} Fix: ${fix}`;
    }
@@ -4379,10 +4427,13 @@ export class Model {
 
    /** Named-query counterpart of {@link isCuratedSource}. */
    private isCuratedQuery(name: string): boolean {
-      // Same reason as ownCuratedSourceNames: a notebook's own queries are run
-      // through the cell endpoint, not admitted by name here.
+      // Same reason as ownCuratedSourceNames: a notebook's or dashboard's own
+      // queries admit nothing by name. A dashboard's own query is deferred to
+      // the compiled check instead (see assertQueryBoundaryEarly), which asks
+      // whether the source it reads is on the surface.
       if (
          !this.isNotebook() &&
+         !this.isDashboard() &&
          (this.getQueries() ?? []).some((q) => q.name === name)
       )
          return true;
@@ -4419,26 +4470,22 @@ export class Model {
       sourceName?: string,
       queryName?: string,
       query?: string,
+      /** More author text whose declarations count as derivation edges: the
+       *  notebook cells before this one. Never caller text. */
+      derivationContext?: string,
    ): "cleared" | "deferred" {
-      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      const { mode, exploresDeclared } = this.queryBoundary;
       // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
       // boundary is discovery-only; everything compiled stays queryable.
       if (mode === "all" || !exploresDeclared) return "cleared";
 
-      // File-level: a non-`explores` model file is not a query entry point.
-      // This is the robust line — the file is named by the request URL, so
-      // there is nothing to resolve and nothing to evade. A notebook passes
-      // it, because notebooks are always listed, but the text sent to it is
-      // then held to the package surface below like any other file's: a
-      // notebook's cells run through executeNotebookCell, which never reaches
-      // this gate, so what is refused here is only text a caller wrote.
-      if (!isQueryEntryPoint && !this.isNotebook()) {
-         throw this.notQueryable(
-            `No queryable model "${this.modelPath}".`,
-            true,
-            "model",
-         );
-      }
+      // File-level: a file off the surface is not a query entry point. This is
+      // the robust line: the file is named by the request URL, so there is
+      // nothing to resolve and nothing to evade. Notebooks and dashboards pass
+      // it, because they are always listed, and what is sent to them is then
+      // held to the package surface below. A notebook's cells get the same two
+      // checks in executeNotebookCell.
+      this.assertFileOnSurface();
 
       // A named query/view is an author-exported entry point (the author chose
       // to expose it, even if it reads hidden sources internally) — admit it on
@@ -4453,6 +4500,18 @@ export class Model {
          // gates the request.
          if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
          if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
+         // A dashboard's own named query (a single-query dashboard, or a
+         // control's `suggest { query= }`, both sent by name alone) is neither
+         // admitted nor refused here: the compiled check decides by the source
+         // it reads, so a dashboard query over a surface source runs and one
+         // over a hidden source does not.
+         if (
+            !sourceName &&
+            this.isDashboard() &&
+            (this.queries ?? []).some((q) => q.name === queryName)
+         ) {
+            return "deferred";
+         }
          // With a source named, the source is what is off the surface, so the
          // refusal names it (both are the caller's own words, echoed back).
          if (sourceName) {
@@ -4489,7 +4548,7 @@ export class Model {
       for (const target of query ? extractRunTargetSourceNames(query) : []) {
          if (
             !this.isCuratedSource(target) &&
-            !this.derivesFromCurated(target, query!) &&
+            !this.derivesFromCurated(target, query, derivationContext) &&
             this.declaresSource(target)
          ) {
             // The same words the compiled backstop uses, and not the name: in a
@@ -4524,20 +4583,21 @@ export class Model {
    public assertQueryBoundaryCompiled(
       compiledSource: string | undefined,
       query?: string,
+      derivationContext?: string,
    ): void {
-      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
-      // A notebook passes the file-level check (see assertQueryBoundaryEarly).
-      if (!isQueryEntryPoint && !this.isNotebook()) {
-         throw this.notQueryable(
-            `No queryable model "${this.modelPath}".`,
-            true,
-            "model",
-         );
-      }
+      this.assertFileOnSurface();
       if (compiledSource) {
          if (this.isCuratedSource(compiledSource)) return;
-         if (query && this.derivesFromCurated(compiledSource, query)) return;
+         // No request text is still worth the walk for a dashboard, whose own
+         // file supplies the derivation edges (a named query over a source the
+         // dashboard declares).
+         if (
+            (query || derivationContext || this.fileDerivationBases) &&
+            this.derivesFromCurated(compiledSource, query, derivationContext)
+         )
+            return;
       }
       throw this.notQueryable(
          "Query target is not queryable.",
@@ -4571,21 +4631,143 @@ export class Model {
       );
    }
 
-   /** Source names in THIS model's export-curated discovery surface. The
-    *  package-wide closure is applied separately and identity-checked (see
-    *  {@link isCuratedSource}); it is deliberately not merged in here, so this
-    *  stays the one set whose membership needs no identity proof. */
+   /**
+    * The query boundary for one notebook cell: the same two checks as the
+    * query route, with every code cell up to this one as derivation context,
+    * so `source: big is orders extend {...}` in an earlier cell still counts
+    * as derived from `orders`. Inert with no surface and under `"all"`.
+    */
+   private async assertNotebookCellOnSurface(
+      cellIndex: number,
+      runnable: { getPreparedQuery(): Promise<unknown> },
+   ): Promise<void> {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      const cells = this.runnableNotebookCells ?? [];
+      const cellText = cells[cellIndex]?.text ?? "";
+      const context = cells
+         .slice(0, cellIndex + 1)
+         .filter((c) => c.type === "code")
+         .map((c) => c.text)
+         .join("\n");
+      const early = this.assertQueryBoundaryEarly(
+         undefined,
+         undefined,
+         cellText,
+         context,
+      );
+      if (early === "deferred") {
+         this.assertQueryBoundaryCompiled(
+            await this.resolveAuthorizeSourceFromRunnable(runnable),
+            cellText,
+            context,
+         );
+      }
+   }
+
+   /**
+    * Whether the query route would refuse this request for being off the
+    * surface, for the load-time dashboard lint. Runs the same two checks as
+    * {@link getQueryResults}, so the lint and the query cannot disagree.
+    *
+    * Returns undefined when the request would pass, or when it does not
+    * compile: a tile that fails to compile is a different finding, and a
+    * missing target must not be reported as a hidden one. On a refusal,
+    * `source` is the source the query reads, when it can be read and the
+    * query route's own refusal would name it.
+    */
+   public async surfaceRefusal(request: {
+      queryName?: string;
+      query?: string;
+   }): Promise<{ source?: string } | undefined> {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return undefined;
+      const text =
+         request.query ??
+         (request.queryName
+            ? `run: ${quoteMalloyIdentifier(request.queryName)}`
+            : undefined);
+      if (!text || !this.modelMaterializer) return undefined;
+      let compiledSource: string | undefined;
+      try {
+         const runnable = this.modelMaterializer.loadRestrictedQuery(
+            "\n" + text,
+         );
+         await runnable.getPreparedQuery();
+         compiledSource =
+            await this.resolveAuthorizeSourceFromRunnable(runnable);
+      } catch (error) {
+         // Only a compile failure is someone else's finding. Anything else
+         // reaches lintDashboards, which reports the lint as incomplete.
+         if (
+            error instanceof MalloyError ||
+            error instanceof ModelCompilationError
+         ) {
+            return undefined;
+         }
+         throw error;
+      }
+      try {
+         const early = this.assertQueryBoundaryEarly(
+            undefined,
+            request.query ? undefined : request.queryName,
+            request.query,
+         );
+         if (early === "deferred") {
+            this.assertQueryBoundaryCompiled(compiledSource, request.query);
+         }
+         return undefined;
+      } catch (error) {
+         // Name the source only where the query route would: an explained
+         // refusal. In a gated model the refusal stays generic, so a warning
+         // naming the source would give away what the 404 keeps back.
+         if (error instanceof OffSurfaceError) {
+            return {
+               source: compiledSource && this.offSurfaceBase(compiledSource),
+            };
+         }
+         if (error instanceof NotQueryableError) return {};
+         throw error;
+      }
+   }
+
+   /**
+    * The source to name in a refusal's fix. For a source this dashboard
+    * declares (`source: staged is orders_staging extend {...}`), exporting it
+    * from index.malloy is impossible, so follow its declared bases to the one
+    * that is off the surface. Otherwise the name itself.
+    */
+   private offSurfaceBase(name: string): string {
+      const seen = new Set<string>();
+      let current = name;
+      while (!seen.has(current)) {
+         seen.add(current);
+         const bases = this.fileDerivationBases?.get(current);
+         const next = bases
+            ? Array.from(bases).find((base) => !this.isCuratedSource(base))
+            : undefined;
+         if (!next) return current;
+         current = next;
+      }
+      return current;
+   }
+
    private isNotebook(): boolean {
       return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
    }
 
+   private isDashboard(): boolean {
+      return this.queryBoundary.dashboard === true;
+   }
+
    private ownCuratedSourceNames(): Set<string> {
-      // A notebook is never on the surface, so nothing it declares or imports
-      // is curated by being visible to it: its cells can see a hidden file's
-      // sources through an import, and counting those would let query text
-      // sent to the notebook's path reach them. Only the package-wide surface
-      // admits there.
-      if (this.isNotebook()) return new Set();
+      // A notebook or dashboard is never on the surface, so nothing it
+      // declares or imports is curated by being visible to it: it can see a
+      // hidden file's sources through an import, and counting those would let
+      // query text sent to its path reach them. Only the package-wide surface
+      // admits there. A source it declares on top of a surface source is
+      // admitted by derivesFromCurated, not here.
+      if (this.isNotebook() || this.isDashboard()) return new Set();
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
@@ -4632,14 +4814,34 @@ export class Model {
     * a chain longer than {@link REQUEST_CHAIN_MAX_NAMES}, and a cycle (a
     * back-edge proves nothing, so `a is b` / `b is a` is not admitted).
     */
-   private derivesFromCurated(name: string, query: string): boolean {
+   private derivesFromCurated(
+      name: string,
+      query?: string,
+      derivationContext?: string,
+   ): boolean {
       // Hoisted out of the walk: the own-closure set is the same for every link
       // in the derivation chain, and only the identity check varies by name.
       const own = this.ownCuratedSourceNames();
       const packageCurated = this.queryBoundary.packageCuratedSources;
-      const basesOf = buildDerivationBaseMap(
-         stripMalloyCommentsAndLiterals(query),
-      );
+      // A dashboard's own declarations are edges too. Merged, never replacing:
+      // every base of a name must prove out, so an extra edge can only add an
+      // obligation, never discharge one.
+      const basesOf = query
+         ? buildDerivationBaseMap(stripMalloyCommentsAndLiterals(query))
+         : new Map<string, Set<string>>();
+      const contextBases = derivationContext
+         ? buildDerivationBaseMap(
+              stripMalloyCommentsAndLiterals(derivationContext),
+           )
+         : undefined;
+      for (const [derived, bases] of [
+         ...(this.fileDerivationBases ?? []),
+         ...(contextBases ?? []),
+      ]) {
+         const into = basesOf.get(derived);
+         if (into) for (const base of bases) into.add(base);
+         else basesOf.set(derived, new Set(bases));
+      }
       // Only positive results are memoized: a name proven curated is proven
       // wherever it appears, while a `false` may be the local verdict of the
       // in-progress cycle guard rather than a property of the name.
@@ -7034,27 +7236,136 @@ export class Model {
    }
 
    private getStandardModel(): ApiCompiledModel {
+      const published = this.publishedNames();
+      const keep = <T extends { name?: string }>(items: T[] | undefined) =>
+         published && items
+            ? items.filter((item) => item.name && published.has(item.name))
+            : items;
       return {
          type: "source",
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
          dataStyles: JSON.stringify(this.dataStyles),
-         modelDef: JSON.stringify(this.modelDef),
+         modelDef: JSON.stringify(this.publishedModelDef(published)),
          // `this.modelInfo` is precomputed once at construction (either
          // by the worker or in the Model.create constructor); don't
-         // re-run `modelDefToModelInfo` on every API hit.
-         modelInfo: JSON.stringify(this.modelInfo ?? {}),
-         sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
+         // re-run `modelDefToModelInfo` on every API hit. It is already
+         // export-curated by Malloy; `keep` adds a dashboard's surface rule.
+         modelInfo: JSON.stringify(
+            this.modelInfo
+               ? { ...this.modelInfo, entries: keep(this.modelInfo.entries) }
+               : {},
+         ),
+         sourceInfos: keep(this.getSourceInfos())?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
          // Discovery surface: an explore lists only its export closure
          // (getSources/getQueries curate); `this.sources` stays complete for
          // enforcement and resolution.
-         sources: this.getSources(),
-         queries: this.getQueries(),
+         sources: keep(this.getSources()),
+         queries: keep(this.getQueries()),
          givens: this.givens,
       } as ApiCompiledModel;
+   }
+
+   /**
+    * The names this file's model GET may show, or undefined when the package
+    * curates nothing (then every name is public).
+    *
+    * For an ordinary file, its export closure, the same set
+    * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
+    * its own, only the exported names that trace to the package surface: a
+    * source it may read, or a query over one.
+    */
+   private publishedNames(): Set<string> | undefined {
+      if (!this.discoveryCurationEnabled) return undefined;
+      const exports = this.modelDef?.exports;
+      if (!Array.isArray(exports)) return undefined;
+      const names = new Set<string>(exports);
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (!this.isDashboard() || mode === "all" || !exploresDeclared) {
+         return names;
+      }
+      const readable = (source: string) =>
+         this.isCuratedSource(source) || this.derivesFromCurated(source);
+      const admitted = new Set<string>();
+      for (const name of names) {
+         const query = this.queries?.find((q) => q.name === name);
+         const source = query ? query.sourceName : name;
+         if (source && readable(source)) admitted.add(name);
+      }
+      return admitted;
+   }
+
+   /**
+    * `modelDef` with every top-level list of named definitions limited to
+    * `published`. A file that imports another whole (`import "orders.malloy"`)
+    * carries every imported definition in `contents`, including sources it
+    * does not export, so without this the surface file's own response named
+    * and described the sources it hides. Every other key (`imports`, which the
+    * app reads) is kept, and so is the full IR on the model itself.
+    */
+   private publishedModelDef(
+      published: Set<string> | undefined,
+   ): ModelDef | undefined {
+      if (!published || !this.modelDef) return this.modelDef;
+      // `sourceRegistry` is keyed `name@file` and lists every source the file
+      // can see; `queryList` holds the file's top-level `run:` statements, each
+      // with the source it reads inline. `modelAnnotations`, `dependencies`
+      // and `imports` are keyed by file, not by source, and are kept.
+      const runsPublished = (query: unknown) => {
+         const ref = (query as { structRef?: unknown }).structRef;
+         const name =
+            typeof ref === "string"
+               ? ref
+               : ((ref as { as?: string; name?: string } | undefined)?.as ??
+                 (ref as { name?: string } | undefined)?.name);
+         return name !== undefined && published.has(name);
+      };
+      return {
+         ...this.modelDef,
+         contents: Object.fromEntries(
+            Object.entries(this.modelDef.contents ?? {})
+               .filter(([name]) => published.has(name))
+               .map(([name, def]) => [name, scrubHiddenIds(def, published)]),
+         ),
+         exports: (this.modelDef.exports ?? []).filter((name) =>
+            published.has(name),
+         ),
+         sourceRegistry: Object.fromEntries(
+            Object.entries(this.modelDef.sourceRegistry ?? {}).filter(([key]) =>
+               published.has(key.split("@")[0]),
+            ),
+         ),
+         queryList: (this.modelDef.queryList ?? []).filter(runsPublished),
+         // Every name the file uses, with where it is defined: editor
+         // go-to-definition data that names hidden sources and their fields.
+         // Nothing that reads this response uses it.
+         references: [],
+      };
+   }
+
+   /**
+    * Whether the model GET may return this file's text. Not when the text
+    * names a source the file does not publish, whether it declares it, runs
+    * it, or builds on it: the text would show that name and how it is used.
+    * Reads identifiers outside comments and string literals, so an import
+    * path or a note does not count, and reads a backticked name whole. A
+    * dashboard's text is always returned, because the dashboard editor needs
+    * it to save.
+    */
+   public showsFileText(text: string): boolean {
+      if (this.isDashboard()) return true;
+      const published = this.publishedNames();
+      if (!published) return true;
+      const unpublished = new Set(
+         Object.keys(this.modelDef?.contents ?? {}).filter(
+            (name) => !published.has(name),
+         ),
+      );
+      if (unpublished.size === 0) return true;
+      return !malloyIdentifiers(text).some((name) => unpublished.has(name));
    }
 
    /**
@@ -7073,30 +7384,77 @@ export class Model {
     */
    private serializeNewSources(
       newSources: Malloy.SourceInfo[] | undefined,
+      cellIndex: number,
    ): string[] | undefined {
-      return newSources?.map((source) =>
-         JSON.stringify(
-            this.givens && this.givens.length > 0
-               ? { ...source, givens: this.givens }
-               : source,
-         ),
-      );
+      // An import cell reports every source it brings in, schema and all, so
+      // under a surface only the ones this notebook may read are shown.
+      const readable = this.notebookReadable(cellIndex);
+      return newSources
+         ?.filter((source) => !readable || readable(source.name))
+         .map((source) =>
+            JSON.stringify(
+               this.givens && this.givens.length > 0
+                  ? { ...source, givens: this.givens }
+                  : source,
+            ),
+         );
+   }
+
+   /**
+    * Under an active surface, a predicate for the source names a notebook may
+    * read and so show: what the surface publishes, and what the code cells up
+    * to `cellIndex` derive from it. Undefined when nothing is curated.
+    */
+   private notebookReadable(
+      cellIndex: number,
+   ): ((name: string) => boolean) | undefined {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return undefined;
+      const context = (this.runnableNotebookCells ?? [])
+         .slice(0, cellIndex + 1)
+         .filter((c) => c.type === "code")
+         .map((c) => c.text)
+         .join("\n");
+      return (name) =>
+         this.isCuratedSource(name) ||
+         this.derivesFromCurated(name, undefined, context);
+   }
+
+   /**
+    * Whether the notebook GET may show a cell's `queryInfo`. Its schema lists
+    * every column the cell's query returns, so a cell the query route would
+    * refuse (`run: secret -> { select: * }`) would otherwise describe the
+    * hidden source here. Asks the same check running the cell does.
+    */
+   private async showsCellQueryInfo(
+      cellIndex: number,
+      cell: RunnableNotebookCell,
+   ): Promise<boolean> {
+      if (!cell.runnable) return true;
+      try {
+         await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
+         return true;
+      } catch (error) {
+         if (error instanceof NotQueryableError) return false;
+         throw error;
+      }
    }
 
    private async getNotebookModel(): Promise<ApiRawNotebook> {
       // Return raw cell contents without executing them
-      const notebookCells: ApiNotebookCell[] = (
-         this.runnableNotebookCells as RunnableNotebookCell[]
-      ).map((cell) => {
-         return {
+      const cells = this.runnableNotebookCells as RunnableNotebookCell[];
+      const notebookCells: ApiNotebookCell[] = [];
+      for (const [index, cell] of cells.entries()) {
+         notebookCells.push({
             type: cell.type,
             text: cell.text,
-            newSources: this.serializeNewSources(cell.newSources),
-            queryInfo: cell.queryInfo
-               ? JSON.stringify(cell.queryInfo)
-               : undefined,
-         } as ApiNotebookCell;
-      });
+            newSources: this.serializeNewSources(cell.newSources, index),
+            queryInfo:
+               cell.queryInfo && (await this.showsCellQueryInfo(index, cell))
+                  ? JSON.stringify(cell.queryInfo)
+                  : undefined,
+         } as ApiNotebookCell);
+      }
 
       // A notebook's own `##` tags, not its imports': `ownModelNotes` does NOT
       // fold the import lineage the way `modelAnnotations` (`./annotations`)
@@ -7117,18 +7475,36 @@ export class Model {
       // field name after a rename in `api-doc.yaml`, typechecking clean while
       // the client reads undefined. The schema now declares every field this
       // returns, so the next rename fails here instead.
+      // Not export-curated (`getSources`/`getQueries`): a notebook cannot be
+      // imported, so its own sources have no import-only role to hide. But it
+      // can import hidden files, and under a surface it shows only what its
+      // cells may read.
+      const readable = this.notebookReadable(notebookCells.length - 1);
+      const shownSource = (name: string | undefined) =>
+         !readable || (name !== undefined && readable(name));
       const notebook: ApiRawNotebook = {
          type: "notebook",
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
-         modelInfo: JSON.stringify(this.modelInfo ?? {}),
-         // Raw-notebook view is uncurated (complete `this.sources`/`this.queries`,
-         // not the export-filtered `getSources`/`getQueries`): notebooks can't be
-         // imported, so their in-file sources have no internal/import-only role to
-         // hide — they're always public. Model files curate; notebooks don't.
-         sources: this.modelDef && this.sources,
-         queries: this.modelDef && this.queries,
+         modelInfo: JSON.stringify(
+            this.modelInfo
+               ? {
+                    ...this.modelInfo,
+                    entries: this.modelInfo.entries?.filter((entry) =>
+                       entry.kind === "source" ? shownSource(entry.name) : true,
+                    ),
+                 }
+               : {},
+         ),
+         sources:
+            this.modelDef &&
+            this.sources?.filter((source) => shownSource(source.name)),
+         queries:
+            this.modelDef &&
+            this.queries?.filter(
+               (query) => !readable || shownSource(query.sourceName),
+            ),
          annotations: allAnnotations,
          // Derived here rather than left to the client, so `## autorun=false`
          // on a notebook and `# artifact { autorun=false }` on a dashboard
@@ -7201,6 +7577,12 @@ export class Model {
       let queryResult: string | undefined = undefined;
 
       if (cell.runnable) {
+         // The package surface, first and outside the try below: before the
+         // authorize gate, so a hidden gated source answers 404 rather than a
+         // 403 that confirms it exists, and outside the catch, which would turn
+         // the 404 into a 400. A cell may read what the surface publishes, and
+         // what an earlier cell derives from it.
+         await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
          try {
             let runnableToExecute = cell.runnable;
             // The text the runnable that actually executes was built from —
@@ -7548,7 +7930,7 @@ export class Model {
          text: cell.text,
          queryName: queryName,
          result: queryResult,
-         newSources: this.serializeNewSources(cell.newSources),
+         newSources: this.serializeNewSources(cell.newSources, cellIndex),
       };
    }
 
@@ -8018,4 +8400,62 @@ function hydrateMarkdownOnlyCells(
       // A code cell without a hydratable scope — surface text only.
       return { type: "code", text: sc.text };
    });
+}
+
+/** The keys of a compiled struct that hold a `name@file` identity of another
+ *  source: what it extends, and what a join points at. */
+const SOURCE_IDENTITY_KEYS = new Set(["extends", "sourceID", "referenceID"]);
+
+/**
+ * A copy of `def` without identities of sources outside `published`. A
+ * published source built on a hidden one (`source: pub is hidden extend
+ * {...}`) records `extends: "hidden@file"`, and a join records the joined
+ * source's identity even when the join is renamed.
+ *
+ * A join to a hidden source also carries that source's whole compiled
+ * definition: its table path or SQL, its connection, and its fields. It is cut
+ * down to what the published source's field paths need, the join's own name
+ * and the names and types of the fields reached through it.
+ */
+function scrubHiddenIds<T>(def: T, published: ReadonlySet<string>): T {
+   const hidden = (id: unknown) =>
+      typeof id === "string" && !published.has(id.split("@")[0]);
+   const walk = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(walk);
+      if (!value || typeof value !== "object") return value;
+      const record = value as Record<string, unknown>;
+      if (
+         typeof record.join === "string" &&
+         (hidden(record.sourceID) || hidden(record.referenceID))
+      ) {
+         return joinOutline(record);
+      }
+      const out: Record<string, unknown> = {};
+      for (const [key, inner] of Object.entries(record)) {
+         if (SOURCE_IDENTITY_KEYS.has(key) && hidden(inner)) continue;
+         out[key] = walk(inner);
+      }
+      return out;
+   };
+   return walk(def) as T;
+}
+
+/** A field reached through a hidden join, as its name and type only, and a
+ *  join nested inside one the same way. */
+function joinOutline(field: Record<string, unknown>): Record<string, unknown> {
+   const name = field.as ?? field.name;
+   if (typeof field.join !== "string") {
+      return { type: field.type, name };
+   }
+   const fields = Array.isArray(field.fields) ? field.fields : [];
+   return {
+      type: field.type,
+      join: field.join,
+      name,
+      fields: fields.map((inner) =>
+         inner && typeof inner === "object"
+            ? joinOutline(inner as Record<string, unknown>)
+            : inner,
+      ),
+   };
 }

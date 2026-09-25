@@ -1619,6 +1619,16 @@ paths:
         Retrieves a compiled Malloy model with its source information, queries, and metadata.
         The model is compiled using the specified version of the Malloy compiler. This endpoint
         provides access to the model's structure, sources, and named queries for use in applications.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
+        that surface answers 404 with the same message a query to it gets. Dashboard files are
+        always returned. A package with no surface, or with `queryableSources: "all"`, returns
+        every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
+        `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
+        the surface file does not carry the hidden sources it imports. A join to a hidden source
+        keeps only its name and the names and types of its fields. `sourceText` is left out
+        when the text names a source the file does not publish; a dashboard's text is always
+        returned.
       parameters:
         - name: environmentName
           in: path
@@ -1904,32 +1914,20 @@ paths:
         would break one is refused and leaves the previously loaded package
         serving, so `error` is only reachable on the paths that keep per-model
         placeholders. Treat it as present-but-uncommon rather than the normal
-        way a broken dashboard surfaces. When the package curates its query surface
-        (a surface from `explores` or from a root `index.malloy`, with
-        `queryableSources` left at `"declared"`), a dashboard whose entry file is
-        not on that surface is omitted, because its query and given names would
-        not be runnable. A root `index.malloy` cannot export a dashboard file,
-        so a package curated only by that file omits every dashboard; the omission is reported in the package's `warnings` as of the
-        last load. A metadata `PATCH` that TIGHTENS curation takes effect on
-        this listing immediately; one that relaxes it takes effect on the next
-        package reload, because the withheld dashboards were never built into
-        the cached set. Either way the matching warning is computed at load, so
-        after a `PATCH` it appears only once the package reloads.
+        way a broken dashboard surfaces.
 
-        Where the boundary is active at all, which needs a surface (`explores`
-        declared, or a root `index.malloy`) AND `queryableSources` left at
-        `"declared"`, being listed does not by
-        itself guarantee the dashboard runs: the queryable sources are the
-        union of every listed file's `export {}` closure, so a dashboard whose
-        tiles read a source that only an UNLISTED file exports is still served
-        while those queries are refused. The fix is to list that file too, or
-        to re-export the source from one already listed. It is served rather
-        than withheld because withholding on a guess would hide dashboards that
-        do work. Each such tile is reported in the package's `warnings` with
-        severity `error`, as of the last load, naming the tile. The check reads
-        the tile's source from its text, so a tile written in a form it cannot
-        read is not reported. Under `"all"` nothing is refused, so the
-        situation does not arise.
+        Every tagged dashboard is listed, whatever the package's surface. To
+        hide one, remove its `# artifact` tag. On a package with a surface (a
+        root `index.malloy`, or a legacy `explores`) with `queryableSources`
+        left at `"declared"`, a dashboard's tiles, its single query and its
+        filter `suggest` queries may read only sources the surface exports. A
+        source the dashboard declares on top of a surface source may be read;
+        one over a hidden source may not. The dashboard file's own
+        `export {}` and named queries add nothing to the surface. A tile over a
+        hidden source answers 404 when it runs, and the package's `warnings`
+        report each such tile, single query and suggest, with severity
+        `error`, as of the last load, naming the source and the fix. Under
+        `"all"` nothing is refused, so the situation does not arise.
       parameters:
         - name: environmentName
           in: path
@@ -1999,10 +1997,8 @@ paths:
           in: path
           description: >-
             The dashboard's name: its filename basename. Conventionally letters,
-            digits, "-" and "_", and a package is warned when one of its SERVED
-            dashboards falls outside that. A dashboard withheld by curation gets
-            no naming finding, because the naming check runs after the curation
-            gate and a withheld dashboard is already reported as withheld. It is NOT constrained to it, because
+            digits, "-" and "_", and a package is warned when one of its
+            dashboards falls outside that. It is NOT constrained to it, because
             the name comes from a filename rather than being chosen: a file such
             as `dashboards/v1.2.malloy` is served, and its published `resource`
             carries the name percent-encoded. Send it percent-encoded.
@@ -2092,6 +2088,7 @@ paths:
       description: |
         Retrieves a Malloy notebook with its raw cell contents (markdown and code).
         Cell execution should be done separately via the execute-notebook-cell endpoint.
+        On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
         - name: environmentName
           in: path
@@ -2143,6 +2140,14 @@ paths:
         Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
         and runs the Malloy code, returning query results and any new sources defined.
         For markdown cells, this simply returns the cell content.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
+        `queryableSources` left at `"declared"`, a code cell may read only sources the surface
+        exports. A cell over a hidden source answers 404, and 404 rather than 403 even when the
+        source is also `#(authorize)`-gated. A source an earlier cell declares on top of a
+        published source still works. A cell's own source over a raw table (`duckdb.table(...)`
+        or `.sql(...)`) has no published source under it, so it is refused. The response shows
+        only the sources the notebook may read.
       parameters:
         - name: environmentName
           in: path
@@ -3117,23 +3122,27 @@ components:
           description: >-
             The package's discovery surface and query boundary: model file
             paths relative to the package root. Only these models are listed
-            via `listModels()`, and within-file discovery is filtered to each
-            model's `export {}` closure. Every other .malloy file still
-            compiles for import/join resolution but is hidden. Notebooks are
-            always listed regardless of this field.
-            DEPRECATED for a one-file surface, still honored: a root
-            `index.malloy` is the surface when this key is absent, and gives the
-            same listing and the same boundary with no manifest field. A surface
-            spanning several files is what the convention cannot express, so
-            that use stays supported, with no replacement and no deprecation
-            warning at load.
+            via `listModels()`, and the surface is the union of their
+            `export {}` closures. Every other .malloy file still compiles for
+            import/join resolution but is hidden. Notebooks and dashboards are
+            always listed regardless of this field, and a dashboard entry
+            needs no listing: a tagged dashboard listed here reads the surface
+            and adds nothing to it. An untagged file under `dashboards/` that
+            is listed is an ordinary surface file.
+            DEPRECATED, still honored. Every non-empty value gets a load
+            warning naming the replacement: a root `index.malloy` that imports
+            the listed files and exports what they publish. `[]` is deprecated
+            too: beside an `index.malloy` it stops that file from limiting
+            what the package publishes (the fix is to rename `index.malloy`
+            and delete this key), and without one it does nothing.
+            A value that is not a list of strings refuses the package load
+            (424).
             This value MAY have been derived by the server from a root
             `index.malloy` rather than written by the package author, and the
             response does not distinguish the two — deliberately, because
             nothing downstream treats them differently. An explicit key always
-            wins over the convention, and an explicit empty array means
-            "do not curate" and suppresses it. A package is uncurated only when
-            it has neither this key nor a root `index.malloy`.
+            wins over `index.malloy`. A package is uncurated only when it has
+            neither this key nor a root `index.malloy`.
         exploresWarnings:
           type: array
           readOnly: true
@@ -3173,12 +3182,17 @@ components:
             surface whose every model failed to compile, so every model in the
             package answers 404 by name; and, on the reload that caused it, a
             package that had a surface and now has none, so every source that
-            surface withheld is listed and queryable by name again. Dashboard findings: a
+            surface hid is listed and queryable by name again. Manifest
+            findings: each deprecated use of `explores` or of
+            `queryableSources: "declared"`, and a root file such as
+            `Index.malloy` that differs from `index.malloy` only in case and
+            so is ignored. A root `index.malloy` with no manifest keys gets no
+            warning. Dashboard findings: a
             `dashboards/` file whose `# artifact` tag does not parse or does not
             describe a dashboard, a tile or suggest query that does not resolve,
             a `# drill` naming a destination that is not a dashboard, and a
-            dashboard held back from the listing because its entry file is not
-            on the package's surface. Two dashboard findings are about Publisher rather
+            tile, single query or filter suggest that reads a source the
+            surface does not export, so it won't load. Two dashboard findings are about Publisher rather
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
@@ -3299,8 +3313,8 @@ components:
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
-                  author probably intended, such as a dashboard held back by
-                  curation. The two findings about Publisher rather than about
+                  author probably intended, such as a dashboard name outside
+                  the conventional shape. The two findings about Publisher rather than about
                   the package split across both: a file that carries an artifact
                   tag and could not be read is `error`, because the dashboard it
                   should have produced does not exist, and a lint that stopped
@@ -3316,10 +3330,11 @@ components:
             - all
           description: >-
             Controls whether the discovery surface is also a query boundary.
-            `"declared"` (the default) makes queryable == discoverable: when
-            `explores` is declared, only `explores` model files are valid query
-            entry points, and the queryable sources are the union of those
-            files' `export {}` closures — so a source exported by any listed
+            `"declared"` (the default) makes queryable == discoverable: when the
+            package has a surface (a root `index.malloy`, or `explores`), only
+            the surface's model files are valid query entry points, and the
+            queryable sources are the union of those files' `export {}`
+            closures — so a source exported by any listed
             file stays queryable whichever listed model path the request
             addresses it through. Admission is by declaration, not by name: a
             request clears only when the model it names resolves the name to the
@@ -3333,21 +3348,21 @@ components:
             A source that is both hidden and authorize-gated still answers
             `/compile` with the generic 404, so the exemption cannot be used to
             enumerate gated names.
-            `"all"` decouples the axes: `explores`/`export {}` gate discovery
-            only and every compiled source stays directly queryable. The two
-            modes are equivalent (everything queryable) only where there is no
-            curated surface at all, which now means no `explores` AND no root
+            `"all"` decouples the axes: the surface gates discovery only, every
+            compiled source stays directly queryable, and model files off the
+            surface are returned by path. The two modes are equivalent
+            (everything queryable) only where there is no curated surface at
+            all, which means no `explores` AND no root
             `index.malloy` — a package with that file has a surface whether or
-            not the key is present. Invalid values fall back to `"declared"`. Identity-based access is a separate concern — see
-            `#(authorize)` and `#(access_filter)`.
-            DEPRECATED, still honored. `"declared"` is already the default, so
-            the key changes nothing and a root `index.malloy` gives the same
-            curated-and-enforced surface with no manifest field.
-            `"all"` is the exception: `index.malloy` does NOT replace it,
-            because a surface derived from one always enforces the boundary.
-            It stays supported with no deprecation warning at load. To curate
-            listings without refusing queries, keep both this key and an
-            explicit `explores`.
+            not the key is present. Invalid values fall back to `"declared"`.
+            Identity-based access is a separate concern — see `#(authorize)`
+            and `#(access_filter)`.
+            `"declared"` is DEPRECATED: it is already the default, so the key
+            changes nothing, and writing it gets a load warning saying to
+            delete it. `"all"` is supported, with no warning, and works beside
+            a root `index.malloy`. It is the one way to hide an
+            `#(authorize)`-gated source from listings while authorized callers
+            can still query it by name.
         manifestLocation:
           type: ["string", "null"]
           description: |
@@ -4087,9 +4102,11 @@ components:
             code beside the compiled view of the same file without a second,
             differently-shaped fetch. Named `sourceText`, not `source`, because
             `sources` on this same object are the model's Malloy sources.
-            Optional twice over: absent from servers that predate it, and
-            omitted (with a server-side warning) when the file cannot be read,
-            so a compiled model is never withheld for want of its text.
+            Optional: absent from servers that predate it; omitted (with a
+            server-side warning) when the file cannot be read, so a compiled
+            model is never withheld for want of its text; and omitted when the
+            file text names a source it does not publish, on a package with a
+            surface. A dashboard's text is always returned.
 
     View:
       type: object
@@ -4509,7 +4526,8 @@ components:
           type: string
           description:
             JSON string containing QueryInfo object for the query in this cell
-            (if the cell contains a query)
+            (if the cell contains a query). On a package with a surface, left out
+            for a cell whose query reads a source the notebook may not read.
 
     NotebookCellResult:
       type: object

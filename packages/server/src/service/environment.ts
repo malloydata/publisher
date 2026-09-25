@@ -2989,6 +2989,11 @@ export class Environment {
                await _package.reloadAllModels({});
                _package.bindStorageServeBindings({});
             }
+         } else {
+            // The surface may have changed with no file changing, so the tile
+            // findings are re-checked against it. (A manifest rebind above
+            // reloads, which re-discovers and re-lints on its own.)
+            await _package.relintDashboards();
          }
 
          return _package.getPackageMetadata();

@@ -27,7 +27,11 @@ import { DashboardBar } from "../Dashboard/DashboardBar";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
-import { buildCatalog, type PackageCatalog } from "./catalog";
+import {
+   buildCatalog,
+   visibleToDashboard,
+   type PackageCatalog,
+} from "./catalog";
 import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument } from "./document";
 import { previewGivens, previewTileQuery } from "./preview";
@@ -785,36 +789,51 @@ function Surface({
       [dashboardList, slug],
    );
 
-   // The catalog: the models this file imports, which is where its tiles'
-   // sources and their fields are declared.
-   const importPaths = useMemo(() => {
+   // The catalog: what the package publishes, limited to what this file can
+   // see. A tile runs against this file and may read only the package surface,
+   // so offering a source from any other file would offer a tile that 404s.
+   // Files off the surface are not readable anyway (their model GET is 404).
+   const imports = useMemo(() => {
       const dir = modelPath.slice(0, modelPath.lastIndexOf("/") + 1);
-      const resolved = new Set<string>();
-      for (const imported of opened.document.imports) {
-         const url = new URL(imported.from, `https://malloy.invalid/${dir}`);
-         resolved.add(url.pathname.slice(1));
-      }
-      return [...resolved];
+      return opened.document.imports.map((imported) => ({
+         ...imported,
+         path: new URL(
+            imported.from,
+            `https://malloy.invalid/${dir}`,
+         ).pathname.slice(1),
+      }));
    }, [opened.document.imports, modelPath]);
    const { data: catalog } = useQueryWithApiError<PackageCatalog>({
       queryKey: [
          "dashboard-editor-catalog",
          environmentName,
          packageName,
-         ...importPaths,
+         ...imports.map((i) => i.path),
          versionId,
       ],
       queryFn: async () => {
-         const models = await Promise.all(
-            importPaths.map((path) =>
+         const listed = (
+            await apiClients.models.listModels(
+               environmentName,
+               packageName,
+               versionId,
+            )
+         ).data.filter((m) => m.path && !m.error);
+         // One model that fails to load (a reload racing this fetch, say)
+         // costs the catalog that model's sources, not every suggestion.
+         const settled = await Promise.allSettled(
+            listed.map((m) =>
                apiClients.models
-                  .getModel(environmentName, packageName, path, versionId)
+                  .getModel(environmentName, packageName, m.path!, versionId)
                   .then((response) => response.data),
             ),
          );
-         return buildCatalog(models);
+         const models = settled.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value] : [],
+         );
+         return visibleToDashboard(buildCatalog(models), imports, models);
       },
-      enabled: importPaths.length > 0,
+      enabled: imports.length > 0,
    });
 
    const [doc, setDoc] = useState(opened.document);
