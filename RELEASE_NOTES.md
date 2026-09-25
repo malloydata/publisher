@@ -39,7 +39,7 @@ with `unknown given` when the caller sent that given, which is what the Publishe
 UI and a router injecting trusted givens both do. A given the cell's own imports
 declare is still forwarded, and a name declared nowhere in the notebook still 400s.
 
-## [Unreleased] (BREAKING) — dashboards and notebooks read only what `index.malloy` exports
+## [0.8.1] (BREAKING) — dashboards and notebooks read only what `index.malloy` exports
 
 A package's surface is now the one list of what anyone can read, through every route. An agent
 querying `index.malloy`, a dashboard tile, and a notebook cell see the same sources. This reverses
@@ -122,7 +122,7 @@ intermediate is still built and an exported source still reads its table. `/comp
 can still join a hidden source its file can see. The surface decides what is listed and queryable by
 name; `#(authorize)` is what decides who may read a source.
 
-## [Unreleased] — a join written in query text is held to the joined source's gate and to the query boundary
+## [0.8.1] — a join written in query text is held to the joined source's gate and to the query boundary
 
 A caller's ad-hoc query could join a source it was not allowed to query, and read it.
 `#(authorize)`, `#(access_filter)` and the `queryableSources` boundary ran on the run
