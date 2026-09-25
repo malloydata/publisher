@@ -25,21 +25,38 @@ sales/
 
 `orders_staging` is now a building block: it still compiles, and other models can import, join and
 extend it by importing `orders.malloy`, but it is not listed and a direct query against it is
-refused. A source reached through a join is read as normal — hiding a source does not hide the
-fields a published source joins in. A package with no
+refused. A source reached through an author join is read as normal — hiding a source does not hide
+the fields a published source joins in. A join the caller writes into a hidden source is refused
+like a direct query (404), whether it names the source, an alias or extension of it declared in the
+request, or a query over it. A package with no
 `index.malloy` and no `explores` publishes everything, which is the behavior every package had
 before this convention existed.
 
 ## The two granularities
 
 - **File level.** Only the surface's files are returned by `listModels()`. Every other `.malloy`
-  file still compiles for import and join resolution, but is hidden. Notebooks are always listed
-  regardless (they can't be imported, so they have nothing to hide behind).
+  file still compiles for import and join resolution, but is hidden. `GET .../models/{path}` for a
+  hidden file answers 404, with the same message a query to it gets. For a file it does return,
+  the response lists only the names that file publishes, and `sourceText` is left out when the file
+  text names a source it does not publish. A join to a hidden source keeps only its name and the
+  names and types of its fields, which is what querying through it needs; the hidden source's table,
+  SQL and connection are left out.
 
-  Listed is not a way around the surface. A notebook's own cells run as the author wrote them, so
-  a cell can read a source the notebook imports from a hidden file. A query a caller sends to the
-  notebook's path is held to the surface like one sent to any other file: `run: hidden_source`
-  addressed to `report.malloynb` is refused with a 404, as it is addressed to `index.malloy`.
+  Notebooks and dashboards (`dashboards/*.malloy` files with an `# artifact` tag) are always
+  listed, whatever the surface. To hide a dashboard, remove its tag. An untagged file under
+  `dashboards/` is an ordinary model: hidden, unless `explores` lists it.
+
+  Listed is not a way around the surface. A notebook cell may read only sources on the surface. A
+  cell over a hidden source answers 404, and 404 rather than 403 even when the source is also
+  gated. A source an earlier cell declares on top of a published one
+  (`source: mine is customers extend { … }`) still works. A cell's own source over a raw table
+  (`duckdb.table(…)` or `.sql(…)`) has no published source under it, so on a curated package it is
+  refused. The notebook GET and each cell's response show only the sources the notebook may read.
+  A query a caller sends to the notebook's path is held to the surface the same way.
+
+  Dashboards follow the same rule. A tile, a dashboard's single query, and a filter `suggest` may
+  read only sources on the surface, and a tile over a hidden source answers 404. The package load
+  warns about each one; see [dashboards.md](dashboards.md#what-publisher-checks-at-load).
 
 - **Within a file — `export { … }`.** The discovery accessors list only the model's re-export
   closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` expose. A model
@@ -98,13 +115,19 @@ weakened by curation: a hidden source keeps its gate.
 The boundary applies to the **query** surface (`getQueryResults` and the MCP query tool). It does
 **not** gate `/compile` (or `compile_model`): compile is the authoring loop, so a curated package
 stays authorable. The consequence is that `/compile` can reveal a hidden source's schema, and with
-`includeSql` its SQL. It does not cover raw retrieval by exact path either — a hidden model's file
-text and its compiled metadata are still fetchable by path. Both are by design. Use `#(authorize)`
-when the contents themselves must be protected rather than merely removed from discovery: a lock is
-truth-evaluated on `/compile`, so a refused caller gets a 403 and no SQL. `#(access_filter)` is not,
+`includeSql` its SQL. That is by design. Use `#(authorize)` when the contents themselves must be
+protected rather than merely removed from discovery: a lock is truth-evaluated on `/compile`, so a
+refused caller gets a 403 and no SQL. `#(access_filter)` is not,
 because it decides rows and `/compile` returns none. A source that is both hidden and locked still
 answers `/compile` with the boundary's generic 404, so the exemption cannot be used to enumerate
 gated names.
+
+The boundary checks the source a query **runs**. A query over an exported source that joins a
+hidden source still runs, and returns the joined fields.
+
+Materialization ignores the surface. A build compiles every model, so a hidden `#@ persist`
+intermediate is built, and an exported source that reads it reads the built table. See
+[materialization.md](materialization.md).
 
 ## Runnable example
 
@@ -131,33 +154,40 @@ curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \
 
 ## The older form: `explores` and `queryableSources`
 
-Both keys still work and are not going away in this release. Both are deprecated where the
-convention replaces them, and only there does a package get a load-time warning naming the
-replacement: an `explores` naming one file, and `queryableSources: "declared"`. The two uses the
-convention cannot replace, an `explores` naming several files and `queryableSources: "all"`, stay
-supported and load without a deprecation warning.
+Both keys are deprecated and both still work. Each use that has a replacement gets a load-time
+warning in the package's `warnings` naming the edit that replaces it. `queryableSources: "all"` has
+none, so it loads with no warning: it is the one way to hide a source from listings while it stays
+queryable by name.
 
 - **`explores`** — an optional `string[]` of `.malloy` file paths, relative to the package root,
-  naming the surface. Reach for it for the one thing `index.malloy` cannot express: a surface
-  spanning **several** files. An explicit `explores` always wins over the convention, and a package
-  that has both an `index.malloy` and an `explores` that leaves it out carries a warning saying so
-  rather than the server guessing.
+  naming the surface. The listed files are listed and queryable, and the surface is what they
+  export, wherever they live. The one exception is a tagged dashboard it lists,
+  which reads the surface and adds nothing to it; an untagged file under `dashboards/` that it lists
+  is an ordinary listed file. An explicit `explores` always wins over `index.malloy`. Its warnings:
+  - a non-empty list: `"explores" in publisher.json is deprecated.`, then either `Fix: import …
+    into index.malloy, export the sources you publish from it, then delete "explores".` (with the
+    package's own file names) or, when the list names only `index.malloy`, `index.malloy already
+    publishes the same thing. Fix: delete "explores".` Dashboard entries need no replacement, since
+    every dashboard is served.
+  - a list that leaves out an existing `index.malloy` gets a second warning saying `index.malloy`
+    is ignored.
+  - `"explores": []` beside an `index.malloy` stops that file from limiting what the package
+    publishes. The fix: to publish everything, rename `index.malloy`, point any import of it at the new name, then delete `explores`.
+  - `"explores": []` with no `index.malloy` does nothing. The fix: delete it.
 
 - **`queryableSources`** — `"declared"` (the default) or `"all"`. `"declared"` makes queryable ==
-  discoverable, which is what the section above describes. Admission is by _declaration_, not by
-  name: a request clears only when the model it names resolves the name to the very source a listed
-  file exported, so a same-named source in a hidden file is not admitted by the coincidence.
+  discoverable, which is what the sections above describe, so writing it does nothing and the
+  warning says to delete it. Admission is by _declaration_, not by name: a request clears only when
+  the model it names resolves the name to the very source a surface file exported, so a same-named
+  source in a hidden file is not admitted by the coincidence.
 
-  `"all"` decouples the axes — the surface gates discovery only, and every compiled source stays
-  queryable by name. **`index.malloy` does not replace this one.** A surface derived from an
-  `index.malloy` always enforces the boundary, because `queryableSources` defaults to `"declared"`.
-  If you want listings-only curation, keep both keys.
+  `"all"` makes the surface decide listings only: every compiled source stays queryable by name,
+  and model files off the surface are returned by path. It works beside `index.malloy`. Use it to
+  hide an `#(authorize)`-gated source from listings while authorized callers can still query it by
+  name. `index.malloy` has no way to say this on its own.
 
-Declaring `"explores": []` is a third, explicit state: an empty array means "do not curate", and it
-suppresses the convention. A package is uncurated by default only when it has no `explores` key
-**and** no `index.malloy`. Beside an `index.malloy` that empty array is the supported way to keep a
-package open, and it is the one use of the key that is not deprecated — its load-time message says
-so and tells you not to delete it.
+Only a root file named exactly `index.malloy` counts. A root file that differs only in case, such
+as `Index.malloy`, gets a warning that it is ignored.
 
 ## Validation
 
@@ -167,23 +197,20 @@ serves but hides the unresolved entry (it never falls back to listing everything
 reason in the package's `exploresWarnings` field. A surface derived from `index.malloy` always
 resolves, so it never appears there.
 
-`exploresWarnings` is about entries that name nothing. Three other conditions ride the package's
+`exploresWarnings` is about entries that name nothing. The conditions below ride the package's
 general `warnings` field instead, because they are about a surface that resolves and still leaves
 the package answering differently than its author expects:
 
-- **The convention curated a package that never asked.** A root `index.malloy` and no `explores`
-  key is the one path that curates on the strength of a file, so it reports what it withholds and
-  how to opt out (`"explores": []`). A package whose `index.malloy` is its only model hides nothing
-  and says nothing.
 - **The surface disappeared.** A reload that leaves a package with no surface where it had one --
   a deleted or renamed `index.malloy` -- warns once, naming what was published and how to restore
   it. Without it the change is invisible: an uncurated package looks exactly like one that was
-  never curated. An explicit `"explores": []` is not this case; the author asked for it and gets
-  the opt-out message instead.
-
-- **A malformed `explores`** is not a warning at all: it fails the package load, like an invalid
-  `scope`. Ignoring it would resolve to no surface and publish every source the key was meant to
-  withhold, and keeping the entries that parse would serve a surface the author did not write.
+  never curated. An explicit `"explores": []` is not this case; it gets its own deprecation
+  warning instead.
+- **A malformed `explores`** is not a warning at all: it fails the package load (`424`), like an
+  invalid `scope`, with `Invalid "explores" in publisher.json: it must be a list of file names, but
+  is […]. The package was not loaded. Fix: delete "explores" and add an index.malloy.` Ignoring it
+  would resolve to no surface and publish every source the key was meant to withhold, and keeping
+  the entries that parse would serve a surface the author did not write.
 - **The whole surface failed to compile.** A surface that does not compile exports nothing, so the
   boundary refuses every model in the package — including the ones that compiled — with the 404 a
   hidden model gets (plain where the model is gated, explained where it is not). The warning names the broken files and how many working models they

@@ -1343,12 +1343,9 @@ describe("service/model", () => {
       });
 
       it("tags the source the query RUNS, not the first one its text names", async () => {
-         // Malloy executes the LAST `run:`; `extractRunTargetSourceName` reads
-         // the FIRST. Tagging off the surface syntax therefore attributed an
-         // expensive statement to the cheap source's team and tier — worse than
-         // missing attribution, because the bill lands on a source that never
-         // ran. The authorize gate already resolves the compiled target for
-         // exactly this reason; metadata now reads the same answer.
+         // Malloy executes the LAST `run:`, and `extractRunTargetSourceName`
+         // does too. Metadata still reads the compiled target, which is the
+         // source that actually ran.
          process.env.PUBLISHER_QUERY_METADATA = "on";
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],

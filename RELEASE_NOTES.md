@@ -31,6 +31,137 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] (BREAKING) — dashboards and notebooks read only what `index.malloy` exports
+
+A package's surface is now the one list of what anyone can read, through every route. An agent
+querying `index.malloy`, a dashboard tile, and a notebook cell see the same sources. This reverses
+two pieces of 0.7.0 advice: you no longer need `explores` to serve dashboards, and the opt-out is no
+longer `"explores": []`.
+
+**Every dashboard is listed.** In 0.7.0 a root `index.malloy` withheld every dashboard, and the fix
+was an `explores` listing `index.malloy` and each dashboard file. Now each tagged `dashboards/*.malloy`
+is served whatever the surface is. Its tiles, its single query, and its filters' `suggest` read only
+what the surface publishes. A source the dashboard declares on top of a published one
+(`source: big_orders is orders extend { ... }`) can be read; one over a hidden source cannot. A tile
+over a hidden source answers 404, and the load warns once per tile:
+
+```
+Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.
+```
+
+In a package that gates anything with `#(authorize)`, the warning says "a source" rather than naming
+it, the same way the query's own 404 does.
+
+What can break:
+
+- **A dashboard file no longer admits anything of its own.** Its `export { ... }` and its own named
+  queries used to make a hidden source queryable, even under a written `explores`. They don't now,
+  so a tile that relied on that answers 404 and is named in the warnings. Export the source from
+  `index.malloy` (or from a file `explores` lists).
+- **Dashboards `explores` left out on purpose are now listed**, with their givens and filter names.
+  To hide one, remove its `# artifact` tag, and take it out of `explores` if that lists it: an
+  untagged file `explores` lists is published like any other model, as before.
+- **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
+  caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
+  `run: secret` there answers 404, and so does a query over a published source that joins a hidden
+  source the dashboard file imports:
+  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`, the same as a
+  query sent to `index.malloy` (see the caller-join section below). Only tiles are checked at load;
+  other query text on the dashboard path is checked when it runs.
+
+**A model off the surface answers 404 when read, not only when queried.** `GET …/models/{path}`
+used to return any file, with its full compiled model and its text. Now a file off the surface gets
+the same 404 the query route gives. Files it does return carry only the names they publish:
+`modelDef.contents` and `exports`, `modelInfo`, `sources` and `sourceInfos` are limited to them, so
+`index.malloy`'s own response no longer includes the sources it imports and hides. A join to a hidden
+source keeps its name and its fields' names and types, which is what querying through it needs, but
+not the hidden source's table, SQL or connection. `sourceText` is left out when the text names a
+source the file does not publish, backticked names included. A dashboard's text is always returned,
+because the Console's dashboard editor saves with it. The editor now builds its field list from the
+published models rather than from the files a dashboard imports. None of this applies with no surface
+or under `queryableSources: "all"`.
+
+**Notebook cells are held to the surface.** A cell used to run whatever its notebook imported, so
+`GET …/notebooks/{path}/cells/{i}` returned rows from a source `index.malloy` hides. Now a cell over a
+hidden source answers 404, and 404 rather than 403 when the source is also gated. A source an earlier
+cell derives from a published one still works. The notebook GET and the cell response list only the
+sources the notebook may read, and the notebook GET leaves out `queryInfo` for a cell that would be
+refused, since its schema lists the columns the hidden source returns. A cell's own source over a raw table (`duckdb.table(...)`,
+`duckdb.sql(...)`) has no published source under it, so on a curated package it answers 404 too.
+
+**Every use of `explores` is deprecated, and every warning is two sentences.** `explores` still works
+as before: the files it lists are listed and queryable, and what they export is the surface, wherever
+they live. The one change is a tagged dashboard it lists, which reads the surface and adds nothing to
+it (see above). A root `index.malloy` with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
+this package, then `Fix:` and the one edit:
+
+| `publisher.json` | Warning |
+| --- | --- |
+| `explores` naming files | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement. |
+| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`. |
+| `explores: []` alone | Does nothing. Delete it. |
+| `queryableSources: "declared"` | Does nothing. Delete it. |
+| `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
+| `Index.malloy` (any other case) | Ignored: only a root file named exactly `index.malloy` decides what is published. |
+
+Renaming `index.malloy` is now the way to leave a package uncurated. The caveat from 0.7.0 still
+holds: a file that imports `"index.malloy"` fails to compile after the rename, and the compile error
+names it. Nothing is removed in this release; both keys still work.
+
+**Unchanged:** materialization and pre-aggregation builds ignore the surface, so a hidden `#@ persist`
+intermediate is still built and an exported source still reads its table. `/compile` and MCP
+`compile_model` stay exempt. The check is on what a query runs, so a query over a published source
+can still join a hidden source its file can see. The surface decides what is listed and queryable by
+name; `#(authorize)` is what decides who may read a source.
+
+## [Unreleased] — a join written in query text is held to the joined source's gate and to the query boundary
+
+A caller's ad-hoc query could join a source it was not allowed to query, and read it.
+`#(authorize)`, `#(access_filter)` and the `queryableSources` boundary ran on the run
+target only, so `run: open_src extend { join_cross: g is locked } -> { group_by: g.secret }`
+returned `locked`'s rows, a join into a hidden source returned its rows, and a join into a
+row-filtered source returned every row.
+
+A join the **caller** writes is now checked as if it were another run target:
+
+| The caller joins                                  | Before         | Now                                                     |
+| ------------------------------------------------- | -------------- | ------------------------------------------------------- |
+| an `#(authorize)` source they are not admitted to | 200            | 403 naming the join alias                               |
+| an `#(access_filter)` source                      | 200, every row | 200, their rows (the filter applies in the join's `ON`) |
+| a source off the discovery surface                | 200            | 404 `Query target is not queryable.`                    |
+| anything else, including an admitted lock         | 200            | 200                                                     |
+
+Joins the **author** declares in the model are unchanged: joining sensitive data into an
+ungated source still publishes it, as documented in `docs/authorize.md`. Named queries and
+notebook cells are author text and are unaffected.
+
+Also fixed here: Malloy keywords are case-insensitive, and `RUN:` / `SOURCE: x IS y` skipped
+the pre-compile checks, including a `required` `#(filter)`. Every caller-text reader now
+matches keywords in any case.
+
+Also fixed here: a row filter now stays bound to the field it was written against. An inherited
+filter (`where:`, a grafted `#(access_filter)`, or an injected `#(filter)`) that would evaluate
+against a different field of the same name in the executed query, including inside a caller's join,
+is refused with 403 instead of served. Renaming or excepting a field that no filter reads still works.
+
+Every locked name in the request is now decided before compile, not only the run target and
+its joins: a lock (`#(authorize)`) applies wherever its source's name appears, in any case,
+inside backticks (decoded as Malloy decodes them), parentheses, `compose`, or a derivation
+chain. The read over-collects on purpose -- it takes any identifier-shaped token, including
+one in a comment or a string literal -- so a caller the lock refuses also gets 403 when some
+other name merely matches it. The run target read before compile is the last `run:` in the
+text, the one Malloy executes, and `/compile` at file or package scope walks, without a depth
+cap, every derivation reachable from that final `run:` target -- or from every declared name,
+when the text has no `run:` at all.
+
+`#(filter)` is not a security boundary against caller-authored query text or
+`bypassFilters`; use givens and `#(authorize)`.
+
+**Who is affected:** callers who were reading through a join, or through a name the
+pre-compile read missed, what they could not read with `run:`. If an app sends ad-hoc text
+that reaches a gated or hidden source for users the gate does not admit, those requests now
+get 403 or 404, and a refused caller also gets 403 for text that merely names a locked source.
+
 ## [0.8.0] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 
 Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because

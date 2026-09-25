@@ -28,34 +28,39 @@ source: a is scoped_orders extend {
 }`;
 
 const getModel = mock((_env: string, _pkg: string, path: string) =>
-   Promise.resolve({
-      data:
-         path === "dashboards/overview.malloy"
-            ? { modelPath: path, sourceText: PACKAGE_FILE }
-            : {
-                 modelPath: path,
-                 sources: [
-                    {
-                       name: "scoped_orders",
-                       views: [{ name: "by_category" }, { name: "by_brand" }],
-                    },
-                 ],
-                 sourceInfos: [
-                    JSON.stringify({
-                       name: "scoped_orders",
-                       schema: {
-                          fields: [
-                             {
-                                name: "cat",
-                                kind: "dimension",
-                                type: { kind: "string_type" },
-                             },
-                          ],
-                       },
-                    }),
-                 ],
-              },
-   }),
+   path === "broken.malloy"
+      ? Promise.reject(new Error("reloading"))
+      : Promise.resolve({
+           data:
+              path === "dashboards/overview.malloy"
+                 ? { modelPath: path, sourceText: PACKAGE_FILE }
+                 : {
+                      modelPath: path,
+                      sources: [
+                         {
+                            name: "scoped_orders",
+                            views: [
+                               { name: "by_category" },
+                               { name: "by_brand" },
+                            ],
+                         },
+                      ],
+                      sourceInfos: [
+                         JSON.stringify({
+                            name: "scoped_orders",
+                            schema: {
+                               fields: [
+                                  {
+                                     name: "cat",
+                                     kind: "dimension",
+                                     type: { kind: "string_type" },
+                                  },
+                               ],
+                            },
+                         }),
+                      ],
+                   },
+        }),
 );
 const getDashboard = mock(() =>
    Promise.resolve({
@@ -66,8 +71,13 @@ const listDashboards = mock(() =>
    Promise.resolve({ data: [{ name: "overview" }, { name: "regions" }] }),
 );
 const executeQueryModel = mock(() => pending());
+// What the package publishes: the catalog is built from these, not from
+// whatever file the dashboard imports.
+const listModels = mock(() =>
+   Promise.resolve({ data: [{ path: "data_app.malloy" }] }),
+);
 mockServerProvider({
-   models: { getModel, executeQueryModel },
+   models: { getModel, executeQueryModel, listModels },
    dashboards: { getDashboard, listDashboards },
 });
 
@@ -113,12 +123,32 @@ describe("DashboardEditor", () => {
       mount();
       expect(await screen.findByText("Storefront")).toBeDefined();
       expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
-      // The catalog came from the model the file imports, by its resolved path.
+      // The catalog came from the published models, and the file's import of
+      // scoped_orders is what keeps it on offer.
+      await waitFor(() =>
+         expect(listModels.mock.calls.length).toBeGreaterThan(0),
+      );
       await waitFor(() =>
          expect(
             getModel.mock.calls.some((call) => call[2] === "data_app.malloy"),
          ).toBe(true),
       );
+      await screen.findByRole("button", { name: "Add tile", hidden: true });
+   });
+
+   it("keeps the catalog when one published model fails to load", async () => {
+      listModels.mockImplementationOnce(() =>
+         Promise.resolve({
+            data: [{ path: "data_app.malloy" }, { path: "broken.malloy" }],
+         }),
+      );
+      mount();
+      await waitFor(() =>
+         expect(
+            getModel.mock.calls.some((call) => call[2] === "broken.malloy"),
+         ).toBe(true),
+      );
+      // Adding a tile needs a catalog, so the button is the proof it built.
       await screen.findByRole("button", { name: "Add tile", hidden: true });
    });
 
