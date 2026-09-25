@@ -280,9 +280,10 @@ export class Package {
    private dashboards: Map<string, DashboardManifest & { error?: string }> =
       new Map();
    /**
-    * Manifest-shape deprecations the load tolerated (a root-level `scope`), kept
-    * so publish can report a still-parsing-but-outdated manifest. Not on the wire
-    * package: it is a property of the manifest text, not of the loaded package.
+    * Manifest-shape warnings the load tolerated: the `explores` and
+    * `queryableSources` deprecations and a root-level `scope`. Kept so publish
+    * can report a still-parsing-but-outdated manifest, and carried on the
+    * package's `warnings` (see getPackageMetadata).
     */
    private manifestWarnings: string[] = [];
    private static meter = publisherMeter();
@@ -367,8 +368,8 @@ export class Package {
     *  - `undefined` is "no `explores` key and no root index.malloy", which is
     *    what deleting or renaming the surface file resolves to. Nobody asked
     *    for it and nothing else says it happened.
-    *  - `[]` is an author writing `"explores": []`, the documented opt-out.
-    *    They asked for exactly this and already get a warning saying so.
+    *  - `[]` is an author writing `"explores": []`, the old opt-out. They
+    *    asked for exactly this and already get a warning about the key.
     *
     * It is a transition, so it is said once, on the reload that caused it; the
     * next reload of an already-uncurated package clears it.
@@ -387,15 +388,10 @@ export class Package {
          return;
       }
       const message =
-         `This package published "${previousSurface.join('", "')}" before the last ` +
-         `reload and publishes no surface now, so every model in it is listed ` +
-         `and queryable by name again, including the sources that surface was ` +
-         `withholding. A surface file that was deleted or renamed is the usual ` +
-         `cause. If that was intended, nothing to do. If not, restore the file ` +
-         `(under its original name -- the name IS the surface), or declare an ` +
-         `"explores" in publisher.json naming what this package should ` +
-         `publish. To keep the package open deliberately, write ` +
-         `"explores": [], which says so and stops this notice.`;
+         `This package published "${previousSurface.join('", "')}" before the ` +
+         `last reload and publishes no surface now, so every model in it is ` +
+         `listed and queryable by name again. Fix: if that was not intended, ` +
+         `restore ${INDEX_MODEL_NAME} under that exact name.`;
       this.surfaceWidenedWarning = message;
       logger.warn(`Package ${this.packageName} no longer publishes a surface`, {
          packageName: this.packageName,

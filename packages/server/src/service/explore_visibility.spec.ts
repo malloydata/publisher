@@ -280,13 +280,13 @@ export { customers }`,
          // The author wrote a file the convention would have used and a key
          // that leaves it out. The key wins; nothing else would tell them.
          const warnings = pkg.getPackageMetadata().warnings ?? [];
-         expect(
-            warnings.some(
-               (w) =>
-                  (w.message ?? "").includes("index.malloy") &&
-                  (w.message ?? "").includes("does not list it"),
-            ),
-         ).toBe(true);
+         // Pinned as the author sees it, on the package they fetch.
+         expect(warnings.map((w) => w.message)).toContain(
+            `index.malloy is ignored because "explores" in publisher.json ` +
+               `doesn't list it. Fix: delete "explores" to publish what ` +
+               `index.malloy exports, or rename index.malloy if it isn't meant ` +
+               `to decide what is published.`,
+         );
       } finally {
          await duckdb.close();
       }

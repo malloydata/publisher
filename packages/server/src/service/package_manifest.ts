@@ -8,12 +8,9 @@
  * package-load worker that consumes it.
  */
 
-import {
-   INDEX_MODEL_NAME,
-   MODEL_FILE_SUFFIX,
-   normalizeModelPath,
-} from "../constants";
+import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
 import { PackageManifestError } from "../errors";
+import { isDashboardModelPath } from "./dashboard";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -412,8 +409,12 @@ export function queryMetadataParseWarnings(
  * Only a root-level `index.malloy` counts, matched exactly. A nested
  * `reports/index.malloy` is an ordinary model, and `Index.malloy` does not
  * trigger the convention even where the filesystem would open it under the
- * conventional name — the code tests for one spelling, so it must claim only
- * that one.
+ * conventional name: the code tests for one spelling, so it must claim only
+ * that one. A root file that differs only in case is almost certainly meant
+ * as the surface, so it gets a warning saying it is not.
+ *
+ * Every warning is at most two sentences: what is wrong in this package, then
+ * `Fix:` and the one edit. How the surface works belongs in the docs.
  *
  * Precedence never throws: a package that declares both a surface and an index
  * file has a defined answer, and only the author's intent is in doubt, which is
@@ -464,12 +465,10 @@ export function resolveExplores(input: {
       )
    ) {
       throw new PackageManifestError(
-         `Invalid "explores" in publisher.json: expected an array of model ` +
-            `paths, got ${JSON.stringify(declaredExplores)}. The package is ` +
-            `not served, because ignoring the key would publish every source ` +
-            `it was meant to withhold. Fix: "explores": ` +
-            `["${INDEX_MODEL_NAME}"], or delete the key to use a root ` +
-            `"${INDEX_MODEL_NAME}" instead.`,
+         `Invalid "explores" in publisher.json: it must be a list of file ` +
+            `names, but is ${JSON.stringify(declaredExplores)}. The package ` +
+            `was not loaded. Fix: delete "explores" and add an ` +
+            `${INDEX_MODEL_NAME}.`,
       );
    }
    const declared = Array.isArray(declaredExplores)
@@ -488,140 +487,111 @@ export function resolveExplores(input: {
    }
 
    if (declared !== undefined) {
-      if (declared.length === 0 && !hasIndexModel) {
-         // Still the supported "do not curate" state, just with nothing to
-         // suppress. The deprecation must not reach it: its advice ends "it
-         // curates and enforces exactly as the key does", which is false of an
-         // empty array, and an author who followed it would curate a package
-         // they had deliberately left open.
-         warnings.push(EXPLORES_EMPTY_IS_UNCURATED);
-      } else if (declared.length === 0) {
-         // The one case where the key is load-bearing rather than legacy.
-         // `explores: []` beside an index.malloy is the documented way to keep
-         // a package uncurated, so the ordinary "delete the key" advice is
-         // exactly backwards here: deleting it hands the surface to the file
-         // the author opted out of. Say what it is doing instead.
-         warnings.push(EXPLORES_EMPTY_SUPPRESSES_CONVENTION);
-      } else if (declared.length === 1) {
-         // Only a one-file surface has a replacement to name. Several files is
-         // what the convention cannot express, and it is also the documented
-         // way to serve dashboards beside an index.malloy.
-         warnings.push(EXPLORES_DEPRECATION);
+      // Every use of the key is deprecated, and each shape gets the one edit
+      // that replaces it. An empty array beside an index.malloy is the old
+      // opt-out; the file itself is now the switch.
+      if (declared.length === 0) {
+         warnings.push(
+            hasIndexModel
+               ? EXPLORES_EMPTY_SUPPRESSES_CONVENTION
+               : EXPLORES_EMPTY_IS_UNCURATED,
+         );
+      } else {
+         warnings.push(exploresDeprecation(declared, hasIndexModel));
       }
-      // Only worth reporting a disagreement when there is one to report. An
-      // empty array curates nothing, so every model including the index file
-      // is still listed and nothing is hidden.
-      if (hasIndexModel && declared.length > 0) {
-         if (!declared.includes(INDEX_MODEL_NAME)) {
-            warnings.push(exploresOmitsIndexModel(declared));
-         }
+      // Beside the deprecation, not instead of it: together they say "you are
+      // using a deprecated key, and it is overriding the recommended one".
+      if (
+         hasIndexModel &&
+         declared.length > 0 &&
+         !declared.includes(INDEX_MODEL_NAME)
+      ) {
+         warnings.push(EXPLORES_OMITS_INDEX_MODEL);
       }
       return { explores: declared, warnings };
    }
 
    if (!hasIndexModel) {
+      // Only here: with an `explores` key the file is not what decides the
+      // surface anyway, and beside an exact index.malloy it is just a file.
+      for (const modelPath of modelPaths) {
+         if (
+            !modelPath.includes("/") &&
+            modelPath.toLowerCase() === INDEX_MODEL_NAME
+         ) {
+            warnings.push(
+               `${modelPath} is ignored: only a root file named exactly ` +
+                  `${INDEX_MODEL_NAME} decides what is published. Fix: rename ` +
+                  `it to ${INDEX_MODEL_NAME}.`,
+            );
+         }
+      }
       return { explores: undefined, warnings };
    }
 
-   // The one path that curates a package on the strength of a file alone, with
-   // nothing in publisher.json asking for it. For a package written for the
-   // convention that is simply the feature working, but for one that predates
-   // it -- or that happens to carry a file by that name -- it is a surface
-   // appearing where there was none, and models that answered yesterday start
-   // returning 404. Say so once, and only where there is something to hide.
-   // MODELS, not every path: `filterModelPaths` also yields `.malloynb`, and a
-   // notebook is always listed and never subject to the boundary, so a package
-   // of an index.malloy and a notebook withholds nothing.
-   if (
-      modelPaths.some(
-         (modelPath) =>
-            modelPath.endsWith(MODEL_FILE_SUFFIX) &&
-            modelPath !== INDEX_MODEL_NAME,
-      )
-   ) {
-      warnings.push(INDEX_MODEL_IS_THE_SURFACE);
-   }
-
+   // The recommended shape, so nothing to say.
    return { explores: [INDEX_MODEL_NAME], warnings };
 }
 
-/**
- * Said when a root `index.malloy` becomes the surface with no manifest key
- * asking for it. Not a deprecation and not a complaint -- the convention is
- * the recommended shape, and for a package written for it this is a one-line
- * confirmation. It exists for the package that did NOT ask: nothing else in
- * the system reports that a surface appeared, and the symptom an author meets
- * instead is a 404 on a model that reads as missing rather than withheld.
- */
-const INDEX_MODEL_IS_THE_SURFACE =
-   `This package has a root "${INDEX_MODEL_NAME}" and no "explores" in ` +
-   `publisher.json, so that file is its published surface: only it is listed, ` +
-   `and sources it does not "export { ... }" are refused by name with a 404. ` +
-   `Other models still compile and are still importable and joinable. If that ` +
-   `is intended, nothing to do. If this package is not meant to be curated, ` +
-   `add "explores": [] to publisher.json, which keeps every model listed and ` +
-   `queryable. Do NOT rename or delete the file to opt out: that widens the ` +
-   `surface silently and breaks every import that names it.`;
-
-/**
- * Said when a package has a root `index.malloy` but its explicit `explores`
- * does not list it. The explicit key wins, so the index file is not part of
- * the surface — which is almost never what an author who wrote that file
- * wanted, and nothing else in the system would tell them.
- */
-function exploresOmitsIndexModel(declared: string[]): string {
-   return (
-      `This package has an "${INDEX_MODEL_NAME}" but its publisher.json ` +
-      `"explores" does not list it (${JSON.stringify(declared)}). The ` +
-      `explicit key wins, so "${INDEX_MODEL_NAME}" is neither listed nor ` +
-      `queryable. If that is intended, rename the file to silence this. If you ` +
-      `meant it to be the package's entry point, delete "explores" and let the ` +
-      `convention use it, or add it to the list.`
-   );
+/** `a.malloy`, `a.malloy and b.malloy`, `a.malloy, b.malloy and c.malloy`. */
+function listFiles(files: readonly string[]): string {
+   return files.length <= 1
+      ? (files[0] ?? "")
+      : `${files.slice(0, -1).join(", ")} and ${files[files.length - 1]}`;
 }
 
-const EXPLORES_DEPRECATION =
-   `"explores" in publisher.json is deprecated: put an "${INDEX_MODEL_NAME}" ` +
-   `at the package root that imports your models and "export { ... }"s what ` +
-   `you publish, then delete the key. The file is the surface, it is checked ` +
-   `by the compiler rather than by a path list, and it curates and enforces ` +
-   `exactly as the key does. The key still works and is not going away in this ` +
-   `release.`;
-
 /**
- * Said for `"explores": []` in a package that HAS a root index.malloy.
- *
- * Not a deprecation. The empty array is the supported way to say "do not
- * curate", and beside an index.malloy it is the only way, so this author is
- * using the key for the one job it keeps. Telling them to delete it would
- * silently curate and bound their package -- the opposite of what they asked
- * for -- so this says what the key is doing and leaves it alone.
+ * The deprecation for a non-empty `explores`, with the edit that replaces it.
+ * Entries for index.malloy and for dashboards need no replacement: the file is
+ * the surface, and every dashboard is served. What is left is what index.malloy
+ * has to import.
  */
+function exploresDeprecation(
+   declared: readonly string[],
+   hasIndexModel: boolean,
+): string {
+   const lead = `"explores" in publisher.json is deprecated.`;
+   const files = declared.filter(
+      (entry) => entry !== INDEX_MODEL_NAME && !isDashboardModelPath(entry),
+   );
+   if (files.length > 0) {
+      return hasIndexModel
+         ? `${lead} Fix: import ${listFiles(files)} into ${INDEX_MODEL_NAME}, ` +
+              `export the sources you publish from it, then delete "explores".`
+         : `${lead} Fix: add an ${INDEX_MODEL_NAME} at the package root that ` +
+              `imports ${listFiles(files)} and exports the sources you want to ` +
+              `publish, then delete "explores".`;
+   }
+   if (declared.includes(INDEX_MODEL_NAME)) {
+      return (
+         `${lead} ${INDEX_MODEL_NAME} already publishes the same thing. ` +
+         `Fix: delete "explores".`
+      );
+   }
+   return hasIndexModel
+      ? `${lead} Fix: delete "explores", so ${INDEX_MODEL_NAME} decides what is published.`
+      : `${lead} Fix: add an ${INDEX_MODEL_NAME} at the package root that ` +
+           `exports the sources you want to publish, then delete "explores".`;
+}
+
+/** A root index.malloy that the explicit key leaves out, and so ignores. */
+const EXPLORES_OMITS_INDEX_MODEL =
+   `${INDEX_MODEL_NAME} is ignored because "explores" in publisher.json ` +
+   `doesn't list it. Fix: delete "explores" to publish what ` +
+   `${INDEX_MODEL_NAME} exports, or rename ${INDEX_MODEL_NAME} if it isn't ` +
+   `meant to decide what is published.`;
+
+/** The old opt-out: an empty array beside an index.malloy. */
 const EXPLORES_EMPTY_SUPPRESSES_CONVENTION =
-   `"explores": [] in publisher.json is keeping this package uncurated. It has ` +
-   `an "${INDEX_MODEL_NAME}", which would otherwise be its published surface: ` +
-   `only that file would be listed, and sources it does not export would stop ` +
-   `answering by name. The empty array suppresses that, so every model stays ` +
-   `listed and queryable. This is supported and is the intended way to opt out ` +
-   `-- do NOT delete the key unless you want the convention to take effect.`;
+   `"explores" in publisher.json is deprecated. Here it stops ` +
+   `${INDEX_MODEL_NAME} from limiting what this package publishes. Fix: to ` +
+   `publish everything, rename ${INDEX_MODEL_NAME} and delete "explores".`;
 
-/**
- * Said for `"explores": []` in a package with NO root index.malloy. There is
- * no convention to suppress here, so this is the plain opt-out: the author
- * asked for an uncurated package and got one. Said rather than deprecated,
- * because the deprecation's advice -- swap the key for an index.malloy, which
- * "curates and enforces exactly as the key does" -- is the one thing an empty
- * array does not do.
- */
-const EXPLORES_EMPTY_IS_UNCURATED =
-   `"explores": [] in publisher.json is keeping this package uncurated: every ` +
-   `model is listed and queryable by name. This is supported and is the ` +
-   `intended way to say "do not curate". Nothing to do unless you meant to ` +
-   `publish a surface, in which case list the models, or add a root ` +
-   `"${INDEX_MODEL_NAME}" and delete the key.`;
+/** An empty array with no index.malloy: the package is uncurated anyway. */
+const EXPLORES_EMPTY_IS_UNCURATED = `"explores": [] in publisher.json does nothing. Fix: delete it.`;
 
-const QUERYABLE_SOURCES_DEPRECATION =
-   `"queryableSources" in publisher.json is deprecated. "declared" is already ` +
-   `the default, so the key changes nothing, and an "${INDEX_MODEL_NAME}" ` +
-   `gives the same curated-and-enforced surface with no manifest field at all. ` +
-   `Delete it. The key still works and is not going away in this release.`;
+/** `"declared"` is the default, so the key changes nothing. `"all"` is not
+ *  warned about: it is the one way to hide a source from listings while it
+ *  stays queryable by name (for an #(authorize)-gated source), and nothing
+ *  replaces it. */
+const QUERYABLE_SOURCES_DEPRECATION = `"queryableSources" in publisher.json does nothing. Fix: delete it.`;
