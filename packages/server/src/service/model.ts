@@ -160,6 +160,7 @@ import {
    collectIdentifierNames,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   formatProblem,
    locateProblemsInCallerText,
    malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
@@ -494,14 +495,7 @@ function queryCompileError(
 function describeProblems(problems: LogMessage[], error: MalloyError): string {
    const errors = problems.filter((p) => p.severity === "error");
    if (errors.length === 0) return error.message;
-   return errors
-      .map((p) => {
-         const start = p.at?.range.start;
-         return start
-            ? `line ${start.line + 1}:${start.character + 1} ${p.message}`
-            : p.message;
-      })
-      .join("; ");
+   return errors.map(formatProblem).join("; ");
 }
 
 /**
@@ -5048,22 +5042,29 @@ export class Model {
    }
 
    /**
-    * Whether every run target in ad-hoc text passes the compiled boundary's own
-    * admission test: curated, or derived from curated sources through the
-    * text's own declarations. Decides whether text that failed to compile may
-    * show its compile problems (400) or keeps the boundary's 404. Reads every
-    * `run:`, since the backstop settles the last one and only compiling
-    * identifies it; an empty target list (nothing readable to run) keeps the
-    * 404.
+    * Whether the compiler's problems for ad-hoc `query` may be shown (400) or
+    * the text keeps the boundary's 404. Every source the text NAMES must pass
+    * the compiled boundary's admission test — curated, or derived only from
+    * curated sources through the text's own declarations — not just its run
+    * targets: Malloy compiles every statement, so a hidden source named in a
+    * `source:`/`query:` declaration that is never run still has its field and
+    * existence errors in the problems otherwise, which tells a caller the
+    * hidden source exists. An empty run-target list (nothing readable to run)
+    * keeps the 404.
     */
-   private queryTextRunTargetsQueryable(query: string): boolean {
-      const targets = extractRunTargetSourceNames(query);
-      if (targets.length === 0) return false;
-      return targets.every(
-         (target) =>
-            this.isCuratedSource(target) ||
-            this.derivesFromCurated(target, query),
-      );
+   private queryTextSourcesQueryable(query: string): boolean {
+      const queryable = (name: string): boolean =>
+         this.isCuratedSource(name) || this.derivesFromCurated(name, query);
+      const runTargets = extractRunTargetSourceNames(query);
+      if (runTargets.length === 0) return false;
+      if (!runTargets.every(queryable)) return false;
+      // Each caller-declared source's base chain must ground in curated too, so
+      // a hidden source reached only by a declaration the caller never runs
+      // cannot have its schema described by the returned problems.
+      for (const declared of buildDerivationBaseMap(query).keys()) {
+         if (!queryable(declared)) return false;
+      }
+      return true;
    }
 
    /**
@@ -6509,7 +6510,6 @@ export class Model {
       // row-level authorize recompile, which runs after that try/catch, can
       // still hand this SAME caller text back to `loadRestrictedQuery`.
       let queryString: string;
-      let filterRefinementInjected = false;
       // Set when this query is routed through the `storage=` serve-shape
       // transform; threaded into prepare + run so the virtual sources resolve to
       // their physical tables. Undefined ⇒ served live (the default path).
@@ -6732,9 +6732,6 @@ export class Model {
                      queryString,
                      filterClause,
                   );
-                  // injectFilterRefinement trims the text it appends to, so the
-                  // caller's lines, as compiled, are the trimmed ones.
-                  filterRefinementInjected = true;
                   // Only a filter `filterParams` actually supplied a value
                   // for landed in `filterClause` at all — an optional filter
                   // the caller never gave a value for was never injected, so
@@ -7120,11 +7117,22 @@ export class Model {
          if (compileError && !isGivenBindingFailure(compileError)) {
             if (
                boundary === "deferred" &&
-               !this.queryTextRunTargetsQueryable(query)
+               !this.queryTextSourcesQueryable(query)
             ) {
+               // Explain the refusal (`OffSurfaceError`, ungated only) when a
+               // run target is a real model source off the surface — the same
+               // help #1228 gives `run: hidden` without a typo. A name that is
+               // not a declared source, or a hidden source reached only through
+               // a caller alias, keeps the plain form.
+               const explainable = extractRunTargetSourceNames(query).some(
+                  (t) =>
+                     this.declaresSource(t) &&
+                     !this.isCuratedSource(t) &&
+                     !this.derivesFromCurated(t, query),
+               );
                throw this.notQueryable(
                   "Query target is not queryable.",
-                  false,
+                  explainable,
                   "source",
                );
             }
@@ -7138,10 +7146,7 @@ export class Model {
                   servedFrom,
                }),
             );
-            throw queryCompileError(
-               compileError,
-               filterRefinementInjected ? query.trimEnd() : query,
-            );
+            throw queryCompileError(compileError, query);
          }
       }
 

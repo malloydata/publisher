@@ -1072,6 +1072,22 @@ export function collectIdentifierNames(text: string): Set<string> {
 }
 
 /**
+ * One compile problem as a caller can act on it: `line L:C message` when it is
+ * located (1-based, the compiler's own columns), the bare message otherwise.
+ * Shared so the query 400 and the dashboard-write `Error` body format a problem
+ * the same way rather than drifting apart.
+ */
+export function formatProblem(problem: {
+   message: string;
+   at?: { range?: { start?: { line?: number; character?: number } } };
+}): string {
+   const start = problem.at?.range?.start;
+   return start?.line === undefined
+      ? problem.message
+      : `line ${start.line + 1}:${(start.character ?? 0) + 1} ${problem.message}`;
+}
+
+/**
  * Re-express compile problems for query text in the coordinates of the text the
  * caller sent.
  *

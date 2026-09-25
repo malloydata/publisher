@@ -274,6 +274,14 @@ export { customers }`,
             // A curated decoy first; Malloy runs the LAST statement, which
             // reads the hidden source.
             "run: customers -> { aggregate: total }\nrun: helper -> { group_by: nope }",
+            // The run target is curated, but a NON-RUN declaration names the
+            // hidden source; its field errors would describe helper. A source
+            // that does not exist must answer the same, so a caller cannot tell
+            // the hidden name from a missing one.
+            "source: h is helper extend { dimension: d is nope }\n" +
+               "run: customers -> { aggregate: total }",
+            "source: h is no_such extend { dimension: d is nope }\n" +
+               "run: customers -> { aggregate: total }",
          ]) {
             await refusedNotCompiled(model, query);
          }
