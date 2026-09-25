@@ -404,8 +404,12 @@ include {
   #(doc) The search terms the answerer sent. Null for execute_query.
   #(doc) Without this, a low recall cannot be told from a bad search.
   public: targets
-  #(doc) How many entities came back.
+  #(doc) How many entities came back. Empty when the call was never measured.
   public: n_returned
+  #(doc) True when a get_context call has no recorded ranking: its saved result
+  #(doc) file was gone at rebuild time, or the call errored. Not a search that
+  #(doc) found nothing, and not counted in empty_calls.
+  public: unmeasured
   #(doc) The entities returned, pipe-separated, best rank first.
   public: entity_ids
   #(doc) Non-null when the call failed.
@@ -424,6 +428,8 @@ extend {
     call_count is count()
     #(doc) get_context calls that returned nothing at all.
     empty_calls is count() { where: tool = 'get_context' and n_returned = 0 }
+    #(doc) get_context calls with no recorded ranking (saved file gone, or errored).
+    unmeasured_calls is count() { where: tool = 'get_context' and unmeasured }
 }
 
 #(doc) Failures grouped by shared root cause, largest first. The unit of work.
