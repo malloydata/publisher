@@ -2662,7 +2662,7 @@ source: hb_top is duckdb.table('customers') extend {
 // dropped even when the query itself read a same-named `where:` given, which
 // bound that declaration's default instead of the caller's value.
 describe("an off-surface gate given the query also reads is forwarded, not dropped", () => {
-   const OG_BASE = `##! experimental.givens
+   const OG_BASE = `##! experimental { givens parameters }
 
 given:
   HIDE :: string is 'none'
@@ -2676,6 +2676,11 @@ source: field_reader is duckdb.table('customers') extend {
   dimension: hidden is $HIDE
   measure: c is count()
 }
+
+source: pp(x::string is 'none') is duckdb.table('customers') extend {
+  where: region != x
+}
+source: arg_bound is pp(x is $HIDE) -> { group_by: region }
 `;
    const OG_GATE = `##! experimental.givens
 
@@ -2689,11 +2694,12 @@ source: deep_gated is duckdb.table('customers') extend {
 `;
    // The base is imported selectively so only the gate's undefaulted HIDE
    // is on the hub's surface; the entry, two hops away, surfaces neither.
-   const OG_HUB = `import { ungated_deep, field_reader } from "og_base.malloy"
+   const OG_HUB = `import { ungated_deep, field_reader, arg_bound } from "og_base.malloy"
 import "og_gate.malloy"
 
 source: mid_ungated is ungated_deep extend {}
 source: mid_fields is field_reader extend {}
+source: mid_arg is arg_bound extend {}
 source: mid_gated is deep_gated extend {}
 source: mid_q is mid_ungated -> { group_by: region }
 query: q_mid is mid_ungated -> { aggregate: c }
@@ -2710,10 +2716,15 @@ source: plain is duckdb.table('customers') extend {
       await writeModel("og_gate.malloy", OG_GATE);
       await writeModel("og_hub.malloy", OG_HUB);
       await writeModel("og_entry.malloy", OG_ENTRY);
+      // Surfaces the base's HIDE under another name; `HIDE` itself stays off.
+      await writeModel(
+         "og_alias.malloy",
+         `import "og_hub.malloy"\nimport { T is HIDE } from "og_base.malloy"\n`,
+      );
    });
 
-   async function expectUnknownHide(query: string) {
-      const err = await runGated("og_entry.malloy", query, {
+   async function expectUnknownHide(query: string, entry = "og_entry.malloy") {
+      const err = await runGated(entry, query, {
          HIDE: "us-west",
       }).catch((e: unknown) => e);
       // MalloyError is what the HTTP layer maps to 400.
@@ -2775,6 +2786,18 @@ source: plain is duckdb.table('customers') extend {
    it("400s once the query uses a field that reads it", async () => {
       await expectUnknownHide(
          "run: mid_fields -> { group_by: hidden; aggregate: c }",
+      );
+   });
+
+   it("400s a source that binds it as a source argument", async () => {
+      // Malloy's givenUsage does not list an argument binding.
+      await expectUnknownHide("run: mid_arg -> { aggregate: c is count() }");
+   });
+
+   it("400s when the entry surfaces the same given under an alias", async () => {
+      await expectUnknownHide(
+         "run: mid_ungated -> { aggregate: c }",
+         "og_alias.malloy",
       );
    });
 

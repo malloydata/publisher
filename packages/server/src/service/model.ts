@@ -1284,9 +1284,10 @@ export class Model {
    /**
     * The given names `runnable`'s compiled query actually reads. Malloy's
     * `_query.givenUsage` says which given ids the query uses (an unused field
-    * or join that reads one is not counted); the IR walk maps each id to its
-    * name, following name-string `structRef`s (a named query, a same-document
-    * source) through the prepared model. Pass the runnable BEFORE any gate
+    * or join that reads one is not counted); the IR walk maps each id to every
+    * name it is spelled with, following name-string `structRef`s (a named
+    * query, a same-document source) through the prepared model. A given bound
+    * as a source argument is always counted. Pass the runnable BEFORE any gate
     * graft, so a gate's own `$NAME` is not counted as a read.
     *
     * Only computed when a supplied given is a drop candidate, so the common
@@ -1320,44 +1321,54 @@ export class Model {
          for (const name of candidates) names.add(name);
          return names;
       }
-      const unnamed = new Set(usage.map((g) => g.id));
+      const usedIds = new Set(usage.map((g) => g.id));
+      const namedIds = new Set<string>();
       const modelDef = prepared._modelDef ?? this.modelDef;
-      // A surfaced given is never a drop candidate; settling it here also
-      // covers a default-chain id that appears nowhere in the query IR.
-      for (const entry of Object.values(modelDef?.contents ?? {})) {
-         if (entry.type === "given") unnamed.delete(entry.id);
-      }
-      const seen = new Set<unknown>();
-      const worklist: unknown[] = [prepared._query];
-      while (worklist.length > 0 && unnamed.size > 0) {
-         const value = worklist.pop();
-         if (value === null || typeof value !== "object" || seen.has(value)) {
-            continue;
-         }
-         seen.add(value);
+      // Separate visited sets: a struct seen outside a source argument must
+      // still be read again when an argument reaches it.
+      const seen = { plain: new Set<object>(), argument: new Set<object>() };
+      const worklist: Array<[unknown, boolean]> = [[prepared._query, false]];
+      while (worklist.length > 0) {
+         const [value, inArgument] = worklist.pop()!;
+         if (value === null || typeof value !== "object") continue;
+         const visited = inArgument ? seen.argument : seen.plain;
+         if (visited.has(value)) continue;
+         visited.add(value);
          if (Array.isArray(value)) {
-            worklist.push(...value);
+            for (const item of value) worklist.push([item, inArgument]);
             continue;
          }
          const node = value as Record<string, unknown>;
          if (
             node.node === "given" &&
             typeof node.refName === "string" &&
-            typeof node.id === "string" &&
-            unnamed.has(node.id)
+            typeof node.id === "string"
          ) {
-            names.add(node.refName);
-            unnamed.delete(node.id);
+            // A source argument binds while the source is built, so
+            // `givenUsage` never lists it (see persist_dynamic_terms.ts).
+            if (inArgument || usedIds.has(node.id)) names.add(node.refName);
+            namedIds.add(node.id);
          }
          for (const [key, child] of Object.entries(node)) {
             const resolved =
                key === "structRef" && typeof child === "string"
                   ? modelDef?.contents[child]
                   : child;
-            worklist.push(resolved);
+            worklist.push([
+               resolved,
+               inArgument || key === "arguments" || key === "sourceArguments",
+            ]);
          }
       }
-      if (unnamed.size > 0) for (const name of candidates) names.add(name);
+      // A used id the walk never met is unnamed, so forward every candidate,
+      // unless the model surfaces it: a default chain's ids appear nowhere in
+      // the query IR, and a surfaced given is never a drop candidate by name.
+      for (const entry of Object.values(modelDef?.contents ?? {})) {
+         if (entry.type === "given") namedIds.add(entry.id);
+      }
+      if ([...usedIds].some((id) => !namedIds.has(id))) {
+         for (const name of candidates) names.add(name);
+      }
       return names;
    }
 
