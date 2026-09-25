@@ -3328,12 +3328,7 @@ export class Model {
                preparedForCallerJoins,
                callerJoinPath,
             ) as SourceDef | undefined;
-            // A query-expression or named-query join site's OWN struct is the
-            // query's output columns; the graft landed on the inner base
-            // `resolveGraftTarget` targeted. Recurse the same way
-            // `filterListContainsCode` does for the landing proof, so the
-            // bind check compares against the struct that actually has the
-            // field the condition reads — never the outer, unrelated one.
+            // A query-source join's own struct is its output columns; bind against the inner base the graft landed on.
             site =
                located && condition.code
                   ? this.resolveFilterListLandingStruct(
