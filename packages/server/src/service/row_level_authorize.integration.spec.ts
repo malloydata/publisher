@@ -3574,15 +3574,11 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   // `queryEntryPointHasRowLevelGate` (the routing pre-check above) is
-   // ROUTE-BLIND for annotation-tagged gates but detects NOTHING for a plain,
-   // unannotated author `where:` — `collectEntryPointGates` only ever walks
-   // annotations. So `routingBlockedByRowLevelGate` never fires for this
-   // shape, and `getQueryResults` swaps `runnable` for the storage serve-shape
-   // BEFORE `authorizeAndBindRunnable` runs its `assertNoMisboundInheritedFilters`
-   // check — which then inspects the serve-shape's struct, not the live one
-   // whose `except:`/`rename:` actually misbound the filter. A genuinely
-   // misbound plain `where:` must still deny, storage routing or not.
+   // The storage serve-shape re-emits a plain author `where:` verbatim onto
+   // its own transient struct, so `assertNoMisboundInheritedFilters` still
+   // sees and denies a genuinely misbound one even after `getQueryResults`
+   // swaps `runnable` for the shape and routing succeeds. A regression pin,
+   // not a gap: a misbound plain `where:` must still deny, routed or not.
    it("CRITICAL — a plain (unannotated) where:-filtered source's misbound derivation still denies under storage routing", async () => {
       const originalMode = process.env.PERSIST_STORAGE_MODE;
       process.env.PERSIST_STORAGE_MODE = "on";

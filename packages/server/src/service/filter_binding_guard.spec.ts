@@ -6,13 +6,19 @@
  * cases cheaper and more precise to prove directly against synthetic
  * `SourceDef`-shaped test doubles than by compiling a real Malloy model
  * (join-depth exhaustion) or that a single alias mismatch would otherwise
- * bury in a large integration fixture (finding 6). Every other shape this
+ * bury in a large integration fixture. Every other shape this
  * module covers (grafted gates, plain inherited `where:`, `#(filter)`
  * injection) is exercised end to end in `filter_binding_guard_integration.spec.ts`.
  */
 import { describe, expect, it } from "bun:test";
-import type { FieldDef, SourceDef } from "@malloydata/malloy";
+import type {
+   FieldDef,
+   FilterCondition,
+   ModelDef,
+   SourceDef,
+} from "@malloydata/malloy";
 import {
+   assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
    fieldPathIdentical,
    MAX_JOIN_RECURSION_DEPTH,
@@ -80,7 +86,26 @@ describe("filter_binding_guard — assertInheritedSourceFiltersBind join-depth b
    });
 });
 
-describe("filter_binding_guard — activeName alias resolution (finding 6)", () => {
+describe("filter_binding_guard — assertGraftedGateBindsToDeclaringSource entry-point resolution", () => {
+   it("throws when the entry point struct could not be resolved (deny, not a silent no-op)", () => {
+      const executed = joinedLeaf("executed");
+      const condition = {
+         code: "true",
+         refSummary: { fieldUsage: [] },
+      } as unknown as FilterCondition;
+      const modelDef = { contents: {} } as unknown as ModelDef;
+      expect(() =>
+         assertGraftedGateBindsToDeclaringSource(
+            undefined,
+            executed,
+            condition,
+            modelDef,
+         ),
+      ).toThrow(/entry point could not be resolved/);
+   });
+});
+
+describe("filter_binding_guard — activeName alias resolution", () => {
    /** A field with a real `.name` but a different DISPLAYED `.as` — the
     *  shape an aliased join member (`join_one: alias is real_join on ...`)
     *  takes. */

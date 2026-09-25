@@ -146,10 +146,10 @@ describe("filter binding guard (HTTP E2E)", () => {
       const json = (await res.json()) as { code: number; message: string };
       expect(json.code).toBe(403);
       // No `#(access_filter)`/`#(authorize)` gate is declared here at all, so
-      // this denial comes from `assertNoMisboundInheritedFilters`'s own catch
-      // (not the gate's), which names the struct by its PHYSICAL identity
-      // rather than the model's local alias — still a 403, still no data.
-      expect(json.message).toMatch(/^Access denied for source ".+"\.$/);
+      // this denial comes from `assertNoMisboundInheritedFilters`'s own
+      // catch (not the gate's) — it must still name the model's own alias,
+      // never the physical table identity behind it.
+      expect(json.message).toBe('Access denied for source "where_filtered".');
       expect(json.message).not.toContain("org_id");
    });
 });

@@ -168,9 +168,9 @@ import {
 } from "./preaggregation_validation";
 import { derivedStructsReachable } from "./gate_registry_walk";
 import {
+   assertFilterDimensionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
-   fieldPathIdentical,
    findFilterAnnotationDeclaringSource,
 } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix: `Model` declares its own private methods of
@@ -2254,18 +2254,20 @@ export class Model {
          checkOnly?: boolean;
       },
    ): Promise<QueryMaterializer> {
-      // Returns BEFORE the entry-point walk below, so this books at most one
-      // `runnable` emission and never two. It still skips the walk, which is
-      // the expensive part (resolveRunTargetStruct + collectEntryPointGates)
-      // — but NOT the source-name resolution, which is the only thing that
-      // tells an investigator what a bypass actually read. An ad-hoc query is
-      // exactly the case where the caller-side name is unavailable and this
-      // is the sole record of the target.
+      // Returns BEFORE the entry-point GATE walk below, so this books at most
+      // one `runnable` emission and never two. It still skips
+      // `collectEntryPointGates` — bypassing row-level AUTHORIZATION is
+      // exactly what this flag means — but not the source-name resolution
+      // (the only thing that tells an investigator what a bypass actually
+      // read) or the inherited-filter bind check: a misbound `where:` is a
+      // WRONG ANSWER, not an authorization decision, and has no gate to
+      // bypass in the first place.
       if (options?.bypassAuthorize) {
          this.noteAuthorizeBypass(
             "runnable",
             await this.resolveAuthorizeSourceFromRunnable(runnable),
          );
+         await this.assertNoMisboundInheritedFilters(runnable);
          return runnable;
       }
 
@@ -2351,8 +2353,7 @@ export class Model {
          // satisfies, since the graft appended the SAME condition object and
          // Malloy resolves its field references late, against whatever
          // struct it ends up on. This proves the condition still reads the
-         // field it was written against — see `./filter_binding_guard`'s
-         // module doc for the "Known hole" this closes.
+         // field it was written against — see `./filter_binding_guard`.
          await this.assertGraftedGatesBind(recompiled, rowLevel, graftScope!);
          // Covers the OTHER inherited-filter shapes the graft above never
          // touches: a plain author `where:` (no `#(authorize)`/
@@ -2388,11 +2389,21 @@ export class Model {
     * through `modelDef.contents`. Also surfaces `compositeResolvedSourceDef` —
     * when the run target is itself a composite source (`compose(a, b)`), this
     * is the ONE concrete member branch Malloy resolved the query against (see
-    * {@link assertAuthorizedForAllSources}). Returns `undefined`s if these
-    * can't be resolved — callers treat that as "no further gate to check"
-    * rather than denying, since {@link assertAuthorizedForAllSources}'s
-    * own-source gate above is still the authoritative deny for an unresolvable
-    * target.
+    * {@link assertAuthorizedForAllSources}) — and `compiledUrl`, the synthetic
+    * URL Malloy compiled THIS request's own text under (`prepared._query.location.url`,
+    * falling back to `modelDef.modelID`, which names the same compile unit):
+    * an ad-hoc query's `internal://query/…`, or a notebook cell's
+    * `internal://loadModel/…`/`internal://extendModel/…`. `./filter_binding_guard`'s
+    * {@link isOwnFreshFilter} uses it to POSITIVELY identify a condition
+    * parsed as part of THIS request's own text, rather than inferring
+    * freshness from `at.url` being merely absent from `modelDef.contents` —
+    * which an inherited condition from an ancestor file a narrower
+    * per-cell/selective-import compile never promoted to a top-level entry
+    * would satisfy just as well, despite not being fresh at all.
+    * Returns `undefined`s if these can't be resolved — callers treat that as
+    * "no further gate to check" rather than denying, since
+    * {@link assertAuthorizedForAllSources}'s own-source gate above is still
+    * the authoritative deny for an unresolvable target.
     */
    private async resolveRunTargetStruct(runnable: {
       getPreparedQuery(): Promise<unknown>;
@@ -2400,12 +2411,14 @@ export class Model {
       struct: SourceDef | undefined;
       modelDef: ModelDef | undefined;
       compositeResolvedSourceDef: SourceDef | undefined;
+      compiledUrl: string | undefined;
    }> {
       try {
          const prepared = (await runnable.getPreparedQuery()) as {
             _query?: {
                structRef?: unknown;
                compositeResolvedSourceDef?: SourceDef;
+               location?: { url?: string };
             };
             _modelDef?: ModelDef;
          };
@@ -2415,6 +2428,7 @@ export class Model {
                struct: undefined,
                modelDef: undefined,
                compositeResolvedSourceDef: undefined,
+               compiledUrl: undefined,
             };
          const structRef = prepared._query?.structRef;
          const struct =
@@ -2429,6 +2443,7 @@ export class Model {
             modelDef,
             compositeResolvedSourceDef:
                prepared._query?.compositeResolvedSourceDef,
+            compiledUrl: prepared._query?.location?.url ?? modelDef.modelID,
          };
       } catch {
          // Not fail-open: if getPreparedQuery() throws here, execution's own
@@ -2438,6 +2453,7 @@ export class Model {
             struct: undefined,
             modelDef: undefined,
             compositeResolvedSourceDef: undefined,
+            compiledUrl: undefined,
          };
       }
    }
@@ -2745,7 +2761,7 @@ export class Model {
     * Throws (denying, via the caller's catch) if any condition is not found.
     */
    /**
-    * The grafted-gate half of the "Known hole" guard — see
+    * The grafted-gate half of the filter-binding guard — see
     * `./filter_binding_guard`'s module doc. Each `rowLevel` entry's
     * `graftTarget` is the `graftScope.modelDef.contents` key
     * {@link resolveGraftTarget} resolved for that entry point; for the
@@ -2779,33 +2795,28 @@ export class Model {
    }
 
    /**
-    * Fail-closed guard against `docs/authorize.md`'s former "Known hole": a
-    * `rename:`/`except:`/`accept:` derivation can free up the name a filter
-    * still reads by TEXT, silently rebinding it to a different physical
-    * column instead of failing to compile. Resolves `runnable`'s run-target
-    * struct the same way {@link resolveRunTargetStruct} does (mirroring the
-    * compiler's own `compositeResolvedSourceDef ?? structRef` precedence —
-    * see that method's doc) and hands it to
-    * `./filter_binding_guard`'s {@link assertInheritedSourceFiltersBind},
-    * which walks every INHERITED entry in its `filterList` — a grafted
-    * `#(access_filter)` condition included, since the graft appends onto an
-    * ancestor's `filterList` exactly like an author `where:` would — plus
-    * every joined source reachable from it.
+    * Fail-closed guard against a `rename:`/`except:`/`accept:` derivation
+    * freeing up the name a filter still reads by TEXT, silently rebinding it
+    * to a different physical column instead of failing to compile. Resolves
+    * `runnable`'s run-target struct the same way {@link resolveRunTargetStruct}
+    * does and hands it to `./filter_binding_guard`'s
+    * {@link assertInheritedSourceFiltersBind}, which walks every INHERITED
+    * entry in its `filterList` — a grafted `#(access_filter)` condition
+    * included, since the graft appends onto an ancestor's `filterList`
+    * exactly like an author `where:` would — plus every joined source
+    * reachable from it.
     *
     * A struct that fails to resolve is not this method's problem to flag:
-    * every caller of this method already has its OWN authoritative deny for
-    * that case (the entry-point gate above, or `assertGateLanded`'s own
-    * "condition did not land"), so this simply no-ops rather than duplicate
-    * it.
+    * every caller already has its OWN authoritative deny for that case (the
+    * entry-point gate, or `assertGateLanded`'s "condition did not land"), so
+    * this simply no-ops rather than duplicate it.
     *
     * `alreadyProven` names the grafted conditions {@link assertGraftedGatesBind}
     * already proved-or-denied by annotation-note identity: a grafted
-    * condition's `.at` never lies inside its own entry point's span (the
-    * graft resolves the annotation text at its own compile location, not the
-    * entry point's), so this walk's location-based classification cannot
-    * tell "genuinely the entry point's own gate" from "unresolvable" for it.
-    * Skipping it here is not a gap — it is already covered, by a check this
-    * walk cannot reproduce with its own logic.
+    * condition's `.at` never lies inside its own entry point's span, so this
+    * walk's location-based classification cannot tell "genuinely the entry
+    * point's own gate" from "unresolvable" for it — skipping it here is
+    * already covered, not a gap.
     */
    private async assertNoMisboundInheritedFilters(
       runnable: {
@@ -2813,7 +2824,7 @@ export class Model {
       },
       alreadyProven: ReadonlySet<FilterCondition> = new Set(),
    ): Promise<void> {
-      const { struct, modelDef, compositeResolvedSourceDef } =
+      const { struct, modelDef, compositeResolvedSourceDef, compiledUrl } =
          await this.resolveRunTargetStruct(runnable);
       const target = compositeResolvedSourceDef ?? struct;
       if (!target) return;
@@ -2821,6 +2832,7 @@ export class Model {
          assertInheritedSourceFiltersBind(
             target,
             modelDef,
+            compiledUrl,
             undefined,
             undefined,
             alreadyProven,
@@ -2831,9 +2843,14 @@ export class Model {
             modelPath: this.modelPath,
             error: err instanceof Error ? err.message : String(err),
          });
-         throw new AccessDeniedError(
-            `Access denied for source "${target.name}".`,
-         );
+         // The MODEL alias, never the raw struct name — `target.name` on a
+         // table source is the physical table identifier (`duckdb:orgtable`),
+         // exactly what a gate exists to keep from a caller who was denied
+         // read of it. Same `.as || .name` convention
+         // {@link resolveAuthorizeSourceFromRunnable} and the row-level gate
+         // path's own label (`gate_classification.ts`) already use.
+         const label = (target as { as?: string }).as || target.name;
+         throw new AccessDeniedError(`Access denied for source "${label}".`);
       }
    }
 
@@ -3190,8 +3207,9 @@ export class Model {
     * one a query's own compiled IR handed back: Malloy does not guarantee the
     * two are the SAME object even when nothing was derived between them, so
     * reference equality under-matches the common unmodified case. Same span
-    * is exactly "nothing else could have been declared here", which is all
-    * {@link assertFilterAnnotationsBindToDeclaringSource}'s fallback needs.
+    * is exactly "nothing else could have been declared here" — necessary for
+    * {@link assertFilterAnnotationsBindToDeclaringSource}'s fallback, but not
+    * sufficient on its own; see {@link fieldIsUnaliased}.
     */
    private sameDeclarationLocation(
       a: { location?: unknown },
@@ -3209,6 +3227,39 @@ export class Model {
          JSON.stringify(la.range.start) === JSON.stringify(lb.range.start) &&
          JSON.stringify(la.range.end) === JSON.stringify(lb.range.end)
       );
+   }
+
+   /**
+    * Whether `struct`'s own field active under `name` genuinely IS `name` —
+    * its intrinsic `.name`, not merely the alias it is reached by, AND is a
+    * plain pass-through column rather than a redeclared computed field.
+    * `except: name; rename: name is other` produces a field whose ACTIVE
+    * name is `name` but whose intrinsic `.name` is `other`; this is exactly
+    * the shape {@link sameDeclarationLocation}'s comparison cannot see, since
+    * that comparison — for the one caller that combines the two,
+    * {@link assertFilterAnnotationsBindToDeclaringSource}'s fallback — fires
+    * precisely when the caller runs `struct` directly with no further
+    * derivation, making `executedStruct` `struct`'s OWN declaration: a
+    * struct's fields compared to itself are vacuously identical no matter
+    * what `struct` itself did to the field. This does not require reaching
+    * any ancestor at all, which is the point — it is the fallback's ONLY
+    * proof for a misbind baked into a struct whose own true ancestor a
+    * notebook cell's narrower compile has made unreachable.
+    *
+    * Name equality alone is not enough: `except: name; dimension: name is
+    * other` redeclares `name` as a brand-new computed field whose intrinsic
+    * `.name` IS `name` again — unaliased by the check above, but bound to a
+    * completely different expression. A physical, pass-through column (what
+    * every genuinely untouched field looks like) carries no `e`; a
+    * redeclaration that computes its value from something else always does,
+    * so requiring `!field.e` closes this without needing to resolve any
+    * ancestor.
+    */
+   private fieldIsUnaliased(struct: SourceDef, name: string): boolean {
+      const field = struct.fields?.find(
+         (f) => ((f as { as?: string }).as ?? f.name) === name,
+      );
+      return !!field && field.name === name && !(field as { e?: unknown }).e;
    }
 
    /**
@@ -3277,19 +3328,23 @@ export class Model {
             ) ??
             // `findFilterAnnotationDeclaringSource` can fail to resolve even
             // a genuinely unmodified inheritance: a notebook's per-cell
-            // compile does not always carry an imported base source forward
-            // as its own `modelDef.contents`/`sourceRegistry` entry, so there
-            // is no ancestor left to walk back to at all, however innocent.
-            // Safe ONLY when `candidateStruct` (what `filterMap` named) is
-            // the SAME DECLARATION as `executedStruct` (what actually ran) —
-            // same file, same source span — not merely reference-equal:
-            // a run target's struct can arrive as a freshly allocated object
-            // for this compile even when nothing was derived at all, so
-            // reference identity under-matches the common case. Same
-            // declaration means nothing was derived in between, so there was
-            // no opportunity for a `rename:`/`except:` to have moved this
-            // dimension since `filterMap` was built from this exact struct.
-            (this.sameDeclarationLocation(candidateStruct, executedStruct)
+            // compile can drop an imported base entirely (empty
+            // `modelDef.contents`/`sourceRegistry` for it), leaving no
+            // ancestor to walk back to at all, however innocent.
+            // `sameDeclarationLocation` alone is NOT enough here: when the
+            // caller runs `candidateStruct` directly with no further
+            // derivation (exactly the case this fires for), `executedStruct`
+            // IS `candidateStruct`'s own declaration — comparing a struct's
+            // fields to ITSELF is vacuously identical no matter what
+            // `candidateStruct` itself did to the field, which is the one
+            // thing this fallback cannot afford to assume. `fieldIsUnaliased`
+            // below is the actual gate: it fails for exactly the shape this
+            // module exists to catch (`except: name; rename: name is
+            // other` leaves the field's OWN `.name` as `other` under the
+            // active name `name`), so a misbind baked into the MODEL itself
+            // still denies even when its true ancestor is unreachable.
+            (this.sameDeclarationLocation(candidateStruct, executedStruct) &&
+            this.fieldIsUnaliased(candidateStruct, filter.dimension)
                ? candidateStruct
                : undefined);
          if (!declaringStruct) {
@@ -3297,11 +3352,13 @@ export class Model {
                `Access denied for source "${declaringSourceName}".`,
             );
          }
-         if (
-            !fieldPathIdentical(declaringStruct, executedStruct, [
+         try {
+            assertFilterDimensionBindsToDeclaringSource(
+               declaringStruct,
+               executedStruct,
                filter.dimension,
-            ])
-         ) {
+            );
+         } catch {
             throw new AccessDeniedError(
                `Access denied for source "${declaringSourceName}".`,
             );
@@ -5778,7 +5835,23 @@ export class Model {
          // declaring source and the struct this query actually executes
          // against. Checked against the struct actually compiled, not the
          // declaring source's — see `./filter_binding_guard`'s module doc.
-         if (injectedFilters && injectedFilterSourceName) {
+         if (
+            injectedFilters &&
+            injectedFilters.length > 0 &&
+            injectedFilterSourceName
+         ) {
+            // Let a refinement that fails to COMPILE (the caller `except:`s
+            // the injected filter's own dimension, with nothing renamed onto
+            // it) surface as that compile failure, same as the notebook
+            // cell's identical bind check does — not as a misleading
+            // `AccessDeniedError`. `resolveRunTargetStruct` (which the bind
+            // check below calls) swallows a `getPreparedQuery()` throw and
+            // reports "cannot resolve", which the bind check's own
+            // fail-closed default then denies on; awaiting it here first,
+            // unguarded, and still inside this method's own try/catch above,
+            // lets a genuine compile error propagate as itself (re-thrown as
+            // `MalloyError`, or wrapped as a 400) instead of a 403.
+            await runnable.getPreparedQuery();
             await this.assertFilterAnnotationsBindToDeclaringSource(
                runnable,
                injectedFilterSourceName,

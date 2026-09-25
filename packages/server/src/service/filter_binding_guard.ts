@@ -2,53 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Closes the "filters bind by NAME, not by field identity" gap documented in
- * `docs/authorize.md`'s former "Known hole" paragraph: Malloy resolves a
- * filter's field references late, against whatever struct the filter ends up
- * attached to. `rename:`/`except:`/`accept:` free a name up, and nothing in
- * Malloy itself re-checks that the filter still reads the field it was
- * written against. This module is Publisher's own guard against that —
- * fail-closed, independent of the (much later) Malloy-side fix.
+ * Guards against a filter resolving to the WRONG field once a caller frees
+ * up the name it was written against (`rename:`, or `except:`/`accept:`
+ * dropping the original then a later block reusing the name) — Malloy
+ * resolves a filter's field references by name, late, against whatever
+ * struct it ends up attached to, and never re-checks that the name still
+ * points at what it did when the filter was written. See `docs/authorize.md`.
  *
- * It covers every shape that carries a row-security-relevant filter into an
- * executed struct: a grafted `#(access_filter)`/`#(authorize)` condition
- * ({@link assertGraftedGateBindsToDeclaringSource}, which finds the struct
- * whose OWN annotation wrote the note the entry point merely carries a
- * by-reference copy of — see {@link findAnnotationDeclaringSource} — since
- * the graft plants the condition fresh on the entry point itself, with no
- * shared condition object to walk back through; that search tries the
- * annotation's own `.inherits` chain first, by NOTE identity and location,
- * then falls back to the same structural derivation walk
- * {@link nextDerivationLink} does for the plain-filter case below, for a
- * `query_source` derivation — `Z is X -> {...}` — which carries no
- * `annotations` at all, so no note ever travels down to it to walk), a plain
- * author `where:` inherited through an `extend`, and a joined source's own
- * filters ({@link assertInheritedSourceFiltersBind}, which discovers the
- * declaring struct by walking {@link nextDerivationLink}'s structural links —
- * `resolveDeclaredSource`'s `sourceRegistry` link, real for a plain join or an
- * unmodified reference; `findSourceByOwnAnnotationIdentity`, real for a
- * modified derivation that still carries its base's annotation notes by
- * reference; `resolveQuerySourceBase`'s `query.structRef`, the one link
- * `resolveDeclaredSource` never carries for a `query_source` — falling back
- * to `findConditionOriginByLocation` (the one link that survives an
- * UNANNOTATED modified derivation with none of the above, using the
- * condition's own field references' parse location instead of an annotation
- * note's) — every candidate is still confirmed by the CONTAINMENT check below
- * it before being accepted, which also rejects a location match that doesn't
- * actually own this filter object. That structural walk runs BEFORE the
- * fresh-filter shortcut, never after: an unnamed, caller-declared derivation
- * (`extend { except: ...; rename: ... }` with no `source:` of its own) is not
- * always given its own `.location` by Malloy — it can carry its BASE's
- * `.location` forward unchanged, which would otherwise make the location-
- * containment check below wrongly "prove" a condition the struct never wrote
- * is its own).
- * `#(filter)` injection (`Model.assertFilterAnnotationsBindToDeclaringSource`,
- * `./filter.ts`) reuses the same field-identity primitive
- * ({@link assertFilterConditionBindsToDeclaringSource}) against a single
- * named dimension, resolving its TRUE declaring struct with
- * {@link findFilterAnnotationDeclaringSource} rather than trusting whatever
- * name `getFilters` resolved the definition from — that name can itself be a
- * derived, possibly-misbound source (see that function's doc).
+ * Covers a grafted `#(access_filter)`/`#(authorize)` condition
+ * ({@link assertGraftedGateBindsToDeclaringSource}, which resolves the
+ * struct whose OWN annotation wrote the note via
+ * {@link findAnnotationDeclaringSource}), a plain author `where:` inherited
+ * through an `extend` and a joined source's own filters
+ * ({@link assertInheritedSourceFiltersBind}, walking
+ * {@link nextDerivationLink}'s structural links back to the declaring
+ * struct), and `#(filter)` injection (`Model.assertFilterAnnotationsBindToDeclaringSource`
+ * in `./model.ts`, via {@link findFilterAnnotationDeclaringSource} and
+ * {@link assertFilterDimensionBindsToDeclaringSource}). All three reuse the
+ * one field-identity primitive, {@link assertFilterConditionBindsToDeclaringSource}.
  *
  * "Identical field" (this module's one comparison) means: same `name`, same
  * `type`, and a deep-equal `e` — ignoring `location`, `annotations` and
@@ -62,16 +33,11 @@
  * **The default direction is DENY, not pass.** Whenever this module cannot
  * resolve a filter's declaring source, cannot resolve a field along the way,
  * or a resolution walk hits its bound, the caller-facing answer is "cannot
- * prove this binds correctly" — never "must be fine". A condition is treated
- * as needing NO check at all only when it is PROVEN to read no field
+ * prove this binds correctly" — never "must be fine". A condition needs NO
+ * check at all only when it is PROVEN to read no field
  * ({@link conditionReadsNoField}) or PROVEN to be the executed struct's own,
- * freshly-authored filter by its PARSE LOCATION sitting inside that struct's
- * own span ({@link isOwnFreshFilter}) — never merely because a resolution
- * attempt came up empty. A struct that is not itself, by reference, a
- * `modelDef.contents` entry (a caller's own `extend`, inline or named) is
- * exactly the shape that used to slip through an unresolved-origin no-op;
- * every one of its inherited filters must now be PROVEN bound or the request
- * is denied.
+ * freshly-authored filter ({@link isOwnFreshFilter}) — never merely because
+ * a resolution attempt came up empty.
  */
 
 import {
@@ -335,6 +301,40 @@ export function assertFilterConditionBindsToDeclaringSource(
 }
 
 /**
+ * The `#(filter)` analogue of {@link assertFilterConditionBindsToDeclaringSource}
+ * for a bare dimension NAME rather than a compiled `FilterCondition` — there
+ * is no condition object here to read a `refSummary` off directly, since the
+ * value being injected is a runtime parameter, not a stored expression.
+ * Seeds {@link fieldUsageClosure} with a single top-level path (`[dimension]`)
+ * and walks its transitive closure exactly the same way: a dimension defined
+ * as an alias of another field (`dimension: safe_col is val`) has its OWN
+ * `.e` unchanged by a caller renaming `val` out from under it, so comparing
+ * only `[dimension]` at the top level sees no difference — the closure is
+ * what follows into `val` itself and catches the rebind.
+ */
+export function assertFilterDimensionBindsToDeclaringSource(
+   declaringStruct: SourceDef,
+   executedStruct: SourceDef,
+   dimension: string,
+): void {
+   const { paths, truncated } = fieldUsageClosure(declaringStruct, {
+      fieldUsage: [{ path: [dimension] }],
+   });
+   if (truncated) {
+      throw new Error(
+         "a #(filter) dimension's field-usage closure exceeded the resolution bound",
+      );
+   }
+   for (const path of paths) {
+      if (!fieldPathIdentical(declaringStruct, executedStruct, path)) {
+         throw new Error(
+            `a #(filter) dimension references \`${path.join(".")}\`, which resolves to a different field on the executed source`,
+         );
+      }
+   }
+}
+
+/**
  * Whether `a` sits strictly before `b` in a document (line first, then
  * character) — mirrors `source_extraction.ts`'s identical helper (kept
  * self-contained here rather than imported: that module is bundled into the
@@ -561,37 +561,23 @@ export function findFilterAnnotationDeclaringSource(
  * binds to the same fields at `executedStruct` (the entry point actually
  * queried) as it did at the struct whose OWN annotation wrote it.
  *
- * Unlike a plain author `where:` (see {@link assertInheritedSourceFiltersBind}),
- * a grafted condition is NOT the same object copied down an `extend` chain —
- * {@link resolveGraftTarget} plants it directly on the ENTRY POINT's own
- * `filterList` (compiling the annotation's filter text fresh, AGAINST the
- * entry point's own — possibly already-renamed — field space), so there is
- * no shared object to walk back to a declaring ancestor. The declaring
- * struct here is instead found by {@link findAnnotationDeclaringSource} — the
- * struct whose OWN annotation, by LOCATION, actually wrote the note the entry
- * point merely carries a by-reference copy of.
+ * Unlike a plain author `where:`, a grafted condition is not the same object
+ * copied down an `extend` chain — {@link resolveGraftTarget} compiles the
+ * annotation's filter text fresh onto the entry point's own field space, so
+ * there is no shared object to walk back through. The declaring struct is
+ * instead found by {@link findAnnotationDeclaringSource}, by NOTE identity.
  *
- * Always runs the field-by-field comparison below, even when
- * `entryPointStruct` owns its gate directly (`declaring === entryPointStruct`)
- * and nothing was derived at all: `entryPointStruct` (read off
- * `graftScope.modelDef`, BEFORE the graft/recompile) and `executedStruct`
- * (read off the recompiled query, AFTER it) are essentially never the same
- * OBJECT even in the totally unmodified case, since a fresh compile allocates
- * its own struct instances for a declaration that did not change — so a
- * reference-equality (or same-declaration-span) shortcut would rarely if ever
- * fire, while a version that DID fire broadly enough to matter would also
- * skip the one case this function exists to catch: {@link resolveGraftTarget}
- * plants the condition on the nearest struct it CAN identify unambiguously,
- * often an ancestor of the actual run target (a caller-declared
- * `except:`/`rename:` derivation with no `modelDef.contents` entry of its
- * own) — so entry point and executed struct differing is exactly the
- * misbindable case, regardless of who wrote the note. Always comparing is
- * therefore both simpler and safer than trying to prove "nothing to check".
+ * Always runs the comparison, even when nothing was derived: a fresh compile
+ * allocates its own struct instances, so `entryPointStruct` and
+ * `executedStruct` are essentially never reference-equal even in the
+ * unmodified case — a shortcut permissive enough to fire there would also
+ * skip the misbindable case this exists to catch (`resolveGraftTarget`
+ * plants the condition on an ancestor of the actual run target whenever the
+ * caller's own derivation has no `modelDef.contents` entry of its own).
  *
- * THROWS when the declaring struct cannot be resolved at all, per this
- * module's fail-closed default: a gate whose declaring source cannot be
- * proven is not "nothing to check", it is "cannot prove this binds", and the
- * two must not read the same.
+ * THROWS when `entryPointStruct` itself or its declaring struct cannot be
+ * resolved — an unprovable gate denies, it is never treated as nothing to
+ * check.
  */
 export function assertGraftedGateBindsToDeclaringSource(
    entryPointStruct: SourceDef | undefined,
@@ -599,7 +585,11 @@ export function assertGraftedGateBindsToDeclaringSource(
    condition: FilterCondition,
    modelDef: ModelDef,
 ): void {
-   if (!entryPointStruct) return;
+   if (!entryPointStruct) {
+      throw new Error(
+         "a row-security gate's entry point could not be resolved",
+      );
+   }
    const declaring = findAnnotationDeclaringSource(entryPointStruct, modelDef);
    if (!declaring) {
       throw new Error(
@@ -771,60 +761,64 @@ function conditionReadsNoField(condition: FilterCondition): boolean {
 }
 
 /**
- * Whether `condition` is `struct`'s OWN, freshly-authored filter — proven
- * ONLY by `condition`'s parse location sitting INSIDE `struct`'s own span
- * (for caller-submitted text, inside the compiled query text's own span,
- * since Malloy locates ephemeral query IR the same way it locates a model
- * file), never merely because {@link findFilterOrigin} failed to resolve
- * anything else. A struct with no `.location` at all — an anonymous/ephemeral
- * struct nothing was ever recorded for — can never satisfy this, since there
- * is no span for anything to be "inside": every caller-modified struct that
- * cannot prove a filter is its own must instead prove where it DID come from,
- * or be denied (see {@link assertInheritedSourceFiltersBind}).
+ * Whether `condition` is `struct`'s OWN, freshly-authored filter — never
+ * merely because {@link findFilterOrigin} failed to resolve anything else.
+ * Proven either of two ways:
+ *
+ * - `condition`'s parse location sits INSIDE `struct`'s own span — true for a
+ *   NAMED derivation (`source: mine is X extend { where: … }`), which gets
+ *   its own `.location` covering exactly the text that wrote the filter.
+ * - `condition`'s parse location's URL is EXACTLY `compiledUrl` — the
+ *   synthetic URL Malloy compiled the currently-executing request's own text
+ *   under (an ad-hoc query's `internal://query/…`, a notebook cell's
+ *   `internal://extendModel/…` or `internal://loadModel/…`). This is a
+ *   POSITIVE identification of "this was parsed as part of THIS request's
+ *   own submitted text", not a negative inference from absence: checking
+ *   instead "is `at.url` unrecognized by `modelDef.contents`" is unsound —
+ *   an inherited condition from a base file that a narrower per-cell (or
+ *   selectively-`import { name } from …`d) compile simply never promoted to
+ *   a top-level `contents` entry is EQUALLY "unrecognized", and is not
+ *   remotely fresh. `compiledUrl` is read once per request, from the exact
+ *   compile the struct itself came from (see `resolveRunTargetStruct` in
+ *   `./model.ts`), so it can never accidentally match an ancestor file's own
+ *   URL.
  */
 function isOwnFreshFilter(
    struct: SourceDef,
    condition: FilterCondition,
+   compiledUrl: string | undefined,
 ): boolean {
-   const structLocation = (struct as { location?: DocumentLocationLike })
-      .location;
-   if (!structLocation) return false;
    const at = firstFieldUsageLocation(condition);
    if (!at) return false;
-   return locationContains(structLocation, at);
+   const structLocation = (struct as { location?: DocumentLocationLike })
+      .location;
+   if (structLocation && locationContains(structLocation, at)) return true;
+   return !!compiledUrl && at.url === compiledUrl;
 }
 
 /**
  * Assert every INHERITED entry in `struct.filterList` — an author `where:`
  * carried in from a base, or a grafted `#(access_filter)` condition — still
  * binds to the same fields it did where it was declared, then recurse into
- * every joined source reachable from `struct` (a join's own struct carries
- * its own, separately inheritable, `filterList`). A condition that reads no
- * field ({@link conditionReadsNoField}) or is genuinely `struct`'s OWN fresh
- * filter ({@link isOwnFreshFilter}) is skipped: there is nothing for it to
- * have drifted away from. Every OTHER condition must resolve to a declaring
- * source and prove binding — an unresolvable origin DENIES, it is never
- * treated as "this must be the struct's own" by default. That default is
- * exactly the gap a caller-modified struct (one that is not itself, by
- * reference, a `modelDef.contents` entry) can exploit: "I can't tell" and
- * "this is fine" must not read the same to this function.
+ * every joined source reachable from `struct`. A condition that reads no
+ * field or is genuinely `struct`'s OWN fresh filter is skipped; every other
+ * condition must resolve to a declaring source and prove binding — an
+ * unresolvable origin DENIES, never "must be the struct's own". That default
+ * is the gap a caller-modified struct (not itself a `modelDef.contents`
+ * entry) can otherwise exploit: "can't tell" and "fine" must not read the
+ * same here. Runs for every executed struct regardless of whether an
+ * `#(authorize)`/`#(access_filter)` annotation was ever involved — a plain
+ * filtered source is just as misbindable and has no graft step to hook.
  *
- * This is the ONE check that runs for every executed struct regardless of
- * whether a `#(authorize)`/`#(access_filter)` annotation was ever involved —
- * a plain filtered source used for row security with no annotation at all is
- * just as misbindable, and carries no separate graft step for anything else
- * to hook.
- *
- * `visited` bounds a genuine CYCLE (a struct reachable from itself through
- * some join chain) with a silent return — it has already been checked on
- * this walk, checking it again finds nothing new. `depth` bounds how DEEP a
- * single walk may go before giving up on ever reaching a real cycle or a
- * leaf; exhausting it THROWS rather than returning, because unlike a cycle
- * it proves nothing — a struct beyond the bound was never actually checked.
+ * `visited` bounds a genuine CYCLE with a silent return (already checked on
+ * this walk). `depth` bounds how deep a walk may go before giving up on ever
+ * reaching one; exhausting it THROWS rather than returning, because unlike a
+ * cycle it proves nothing — a struct beyond the bound was never checked.
  */
 export function assertInheritedSourceFiltersBind(
    struct: SourceDef,
    modelDef: ModelDef | undefined,
+   compiledUrl: string | undefined = undefined,
    depth = 0,
    visited: Set<SourceDef> = new Set(),
    alreadyProven: ReadonlySet<FilterCondition> = new Set(),
@@ -837,40 +831,25 @@ export function assertInheritedSourceFiltersBind(
    }
    visited.add(struct);
    for (const condition of struct.filterList ?? []) {
-      // A grafted `#(access_filter)`/`#(authorize)` condition is planted onto
-      // its entry point's OWN `filterList` by identity (the same object the
-      // caller already ran through `assertGraftedGateBindsToDeclaringSource`,
-      // which resolves its declaring source by ANNOTATION NOTE identity, not
-      // by parse location). That condition's `.at` is the location it
-      // compiled at when the graft resolved it — never inside `struct`'s own
-      // span even when the gate is genuinely `struct`'s own — so this walk's
-      // location-based `isOwnFreshFilter`/`findFilterOrigin` cannot correctly
-      // classify it and must not try: the caller already proved-or-denied it
-      // through the annotation-identity path, and re-checking it here with
-      // different logic only produces a false deny on the common case where
-      // both paths actually agree.
+      // A grafted condition's `.at` is where the graft compiled it, never
+      // inside `struct`'s own span even when the gate genuinely IS
+      // `struct`'s own — so this walk's location-based classification can't
+      // read it, and shouldn't: the caller already proved-or-denied it by
+      // annotation-note identity (`assertGraftedGateBindsToDeclaringSource`).
       if (alreadyProven.has(condition)) continue;
       if (conditionReadsNoField(condition)) continue;
-      // `findFilterOrigin` runs FIRST, ahead of the fresh-filter shortcut:
-      // it only ever returns a struct OTHER than `struct` itself when that
-      // struct genuinely carries this exact condition OBJECT in its own
-      // `filterList` — proof positive this was inherited, not authored here.
-      // Checking `isOwnFreshFilter` first would be wrong for a struct that
-      // isn't itself a NAMED `modelDef.contents` declaration (a caller's
-      // inline, unnamed `extend {}`): Malloy does not always give such a
-      // struct its own `.location` — an `except:`/`rename:`-only derivation
-      // with no `source:` name of its own can carry its BASE's `.location`
-      // forward unchanged, which would make `isOwnFreshFilter`'s containment
-      // check pass for a condition this struct never wrote, purely because
-      // the location it "contains" is actually the base's own span reused.
-      // Only when NO ancestor can be identified at all does the location
-      // proof get to decide "this is genuinely fresh" versus "unresolvable".
+      // Runs BEFORE the fresh-filter check: an unnamed inline `extend {}`
+      // does not always get its own `.location` (it can carry its BASE's
+      // forward unchanged), which would make that check wrongly "prove" a
+      // condition the struct never wrote. `findFilterOrigin` only returns
+      // something other than `struct` when an ancestor genuinely carries
+      // this exact condition object, so it is the safe one to trust first.
       const origin = findFilterOrigin(struct, condition, modelDef);
       if (origin !== struct) {
          assertFilterConditionBindsToDeclaringSource(origin, struct, condition);
          continue;
       }
-      if (isOwnFreshFilter(struct, condition)) continue;
+      if (isOwnFreshFilter(struct, condition, compiledUrl)) continue;
       throw new Error(
          "a row-security filter's declaring source could not be resolved",
       );
@@ -885,6 +864,7 @@ export function assertInheritedSourceFiltersBind(
          assertInheritedSourceFiltersBind(
             field as unknown as SourceDef,
             modelDef,
+            compiledUrl,
             depth + 1,
             visited,
             alreadyProven,
