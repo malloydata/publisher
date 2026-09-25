@@ -959,18 +959,18 @@ export { \`customer-orders\` }`,
    });
 
    it("declared: text sent to a notebook path reaches only the package surface", async () => {
-      // A notebook is always listed, but it is not a way around the surface.
-      // Its cells may read what it imports (they run through
-      // executeNotebookCell, the author's saved text); query text a caller
-      // sends to its path is held to the surface like any other file's.
-      // Before this, the notebook path skipped the boundary entirely, so an
-      // ad-hoc `run:` addressed to it read every source it imported.
+      // A notebook is always listed, but it is not a way around the surface:
+      // query text a caller sends to its path, and its own saved cells, are
+      // held to the surface like any other file's.
       writeManifest({ explores: ["index.malloy"] });
       writeLayeredModels();
       fs.writeFileSync(
          path.join(tempDir, "report.malloynb"),
          `>>>malloy\nimport "index.malloy"\nimport "base.malloy"\n` +
-            `>>>malloy\nrun: base_source -> v`,
+            `>>>malloy\nrun: base_source -> v\n` +
+            `>>>malloy\nsource: mine is customers extend { where: id > 0 }\n` +
+            `>>>malloy\nrun: mine -> v\n` +
+            `>>>malloy\nrun: customers -> v`,
       );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
@@ -998,10 +998,59 @@ export { \`customer-orders\` }`,
          );
          expect(published.result.data).toBeDefined();
 
-         // The author's own cell still runs, although it reads base_source.
-         const cell = await notebook.executeNotebookCell(1);
-         expect(cell.type).toBe("code");
-         expect(cell.result).toBeDefined();
+         // The author's own cell is held to the surface too: it reads
+         // base_source, which the surface does not publish.
+         await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
+            NotQueryableError,
+         );
+         // A cell over what the surface publishes runs, and so does one over a
+         // source an EARLIER cell derives from it.
+         expect((await notebook.executeNotebookCell(4)).result).toBeDefined();
+         expect((await notebook.executeNotebookCell(3)).result).toBeDefined();
+
+         // And the notebook does not show what it may not read: the import
+         // cell's newSources and the notebook's sources leave base_source out.
+         const raw = await notebook.getNotebook();
+         const shown = JSON.stringify(raw);
+         expect(shown).not.toContain('"base_source"');
+         expect(
+            (raw.sources ?? []).map((source) => source.name).sort(),
+         ).toEqual(["customers", "mine"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a notebook cell over a hidden gated source answers 404, not 403", async () => {
+      // The surface check runs before the authorize gate, so a cell cannot
+      // learn that a hidden source exists from which refusal it gets. And a
+      // cell's own source over a raw table has no published base, so it is
+      // refused too.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const base = path.join(tempDir, "base.malloy");
+      fs.writeFileSync(
+         base,
+         fs.readFileSync(base, "utf8") +
+            `\n#(authorize) false\nsource: base_locked is duckdb.sql("select 1 as id")\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "report.malloynb"),
+         `>>>malloy\nimport "base.malloy"\n` +
+            `>>>malloy\nrun: base_locked -> { aggregate: c is count() }\n` +
+            `>>>malloy\nsource: raw is duckdb.sql("select 1 as id")\n` +
+            `>>>malloy\nrun: raw -> { aggregate: c is count() }`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const notebook = pkg.getModel("report.malloynb")!;
+         await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
+            NotQueryableError,
+         );
+         await expect(notebook.executeNotebookCell(3)).rejects.toThrow(
+            NotQueryableError,
+         );
       } finally {
          await duckdb.close();
       }
