@@ -290,7 +290,8 @@ may be read. One declared on top of a hidden source may not. A tile or suggest o
 answers `404`, and the package load warns about each one (see
 [What Publisher checks at load](#what-publisher-checks-at-load)); the warning leaves the source
 unnamed when the package gates anything with `#(authorize)`. To hide a dashboard, remove its
-`# artifact` tag: the file is then neither listed nor queryable, even when `explores` names it. A package with no `explores` and no root `index.malloy` has curation off, so
+`# artifact` tag (and take it out of `explores`, if that lists it: a file `explores` lists is
+published as an ordinary model). A package with no `explores` and no root `index.malloy` has curation off, so
 importing what the suggest names is enough for a `source=`.
 
 It is not enough for a `query=`. An import is not transitive, so a suggest query resolves by _name_

@@ -41,8 +41,8 @@ before this convention existed.
   SQL and connection are left out.
 
   Notebooks and dashboards (`dashboards/*.malloy` files with an `# artifact` tag) are always
-  listed, whatever the surface. To hide a dashboard, remove its tag. Any other file under
-  `dashboards/` is neither listed nor queryable, even when `explores` names it.
+  listed, whatever the surface. To hide a dashboard, remove its tag. An untagged file under
+  `dashboards/` is an ordinary model: hidden, unless `explores` lists it.
 
   Listed is not a way around the surface. A notebook cell may read only sources on the surface. A
   cell over a hidden source answers 404, and 404 rather than 403 even when the source is also

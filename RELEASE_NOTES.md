@@ -59,8 +59,8 @@ What can break:
   so a tile that relied on that answers 404 and is named in the warnings. Export the source from
   `index.malloy` (or from a file `explores` lists).
 - **Dashboards `explores` left out on purpose are now listed**, with their givens and filter names.
-  To hide one, remove its `# artifact` tag. The file is then neither listed nor queryable, even when
-  `explores` names it.
+  To hide one, remove its `# artifact` tag, and take it out of `explores` if that lists it: an
+  untagged file `explores` lists is published like any other model, as before.
 - **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
   caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
   `run: secret` there answers 404, but a query over a published source that joins a hidden source

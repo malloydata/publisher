@@ -1493,10 +1493,10 @@ query: dash is customers -> {
       }
    });
 
-   it("declared: a dashboards/ file with no artifact tag is not queryable, even when explores lists it", async () => {
-      // Removing the tag is how an author hides a dashboard. The file is then
-      // not listed and adds nothing to the surface, so its own exports must
-      // not answer queries sent to its path either.
+   it("declared: a dashboards/ file with no artifact tag, listed in explores, is published like any other file", async () => {
+      // Only a tagged file is a dashboard. An untagged one that explores lists
+      // is an ordinary surface file, as it always was: listed, queryable, and
+      // its exports count toward the surface.
       fs.writeFileSync(
          path.join(tempDir, "index.malloy"),
          `source: customers is duckdb.sql("select 1 as id")
@@ -1505,22 +1505,24 @@ export { customers }`,
       fs.mkdirSync(path.join(tempDir, "dashboards"));
       fs.writeFileSync(
          path.join(tempDir, "dashboards", "old.malloy"),
-         `source: secret is duckdb.sql("select 2 as id")
-export { secret }`,
+         `source: listed is duckdb.sql("select 2 as id")
+export { listed }`,
       );
       writeManifest({ explores: ["index.malloy", "dashboards/old.malloy"] });
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.listDashboards()).toEqual([]);
+         const models = (await pkg.listModels()).map((m) => m.path).sort();
+         expect(models).toEqual(["dashboards/old.malloy", "index.malloy"]);
          const old = pkg.getModel("dashboards/old.malloy")!;
-         expect(() => old.assertFileOnSurface()).toThrow(NotQueryableError);
-         await expect(
-            old.getQueryResults(
-               undefined,
-               undefined,
-               "run: secret -> { group_by: id }",
-            ),
-         ).rejects.toThrow(NotQueryableError);
+         expect(() => old.assertFileOnSurface()).not.toThrow();
+         const ran = await old.getQueryResults(
+            undefined,
+            undefined,
+            "run: listed -> { group_by: id }",
+         );
+         expect(ran.result.data).toBeDefined();
       } finally {
          await duckdb.close();
       }

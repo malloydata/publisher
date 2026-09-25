@@ -516,10 +516,11 @@ export class Package {
             // same way.
             if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
             if (!exploreSet.has(modelPath)) continue;
-            // Nor does anything under dashboards/, even when `explores` lists
-            // it (the shape older advice produced). A dashboard reads the
-            // surface; it never adds to it.
-            if (isDashboardModelPath(modelPath)) continue;
+            // Nor does a dashboard, even when `explores` lists it (the shape
+            // older advice produced): it reads the surface, it never adds to
+            // it. An untagged file under dashboards/ is not a dashboard, so a
+            // listing publishes it like any other file.
+            if (this.isServedDashboard(modelPath)) continue;
             for (const source of model.getSources() ?? []) {
                add(sources, source.name, model.definitionIdentity(source.name));
             }
@@ -545,12 +546,8 @@ export class Package {
             exploresDeclared,
             // A discovered dashboard is always an entry point: it is always
             // listed, and the model marks it as admitting nothing of its own.
-            // Any other file under dashboards/ is never one, even when
-            // `explores` lists it: it adds nothing to the surface and is not
-            // listed, so its own exports must not be queryable either.
             isQueryEntryPoint: exploreSet
-               ? dashboard ||
-                 (exploreSet.has(modelPath) && !isDashboardModelPath(modelPath))
+               ? exploreSet.has(modelPath) || dashboard
                : true,
             packageCuratedSources,
             packageCuratedQueries,
@@ -568,6 +565,13 @@ export class Package {
     * surface. Set by {@link discoverDashboards}, which re-applies the boundary.
     */
    private dashboardFileText = new Map<string, string>();
+
+   /** Whether discovery made this file a dashboard: a tagged file under
+    *  dashboards/. The path alone does not, so an untagged file there that
+    *  `explores` lists is published like any other. */
+   private isServedDashboard(modelPath: string): boolean {
+      return this.dashboardFileText.has(modelPath);
+   }
 
    static async create(
       environmentName: string,
@@ -2214,7 +2218,7 @@ export class Package {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
          if (exploreSet && !exploreSet.has(modelPath)) continue;
          // A dashboard exports nothing by design; it reads the surface.
-         if (exploreSet && isDashboardModelPath(modelPath)) continue;
+         if (exploreSet && this.isServedDashboard(modelPath)) continue;
          if (model.hasEmptyDiscoverySurface()) {
             // When the file IS the whole surface, nothing in the package can be
             // queried, which is the thing worth saying. One empty file among
@@ -2276,7 +2280,7 @@ export class Package {
          ([modelPath]) =>
             modelPath.endsWith(MODEL_FILE_SUFFIX) &&
             exploreSet.has(modelPath) &&
-            !isDashboardModelPath(modelPath),
+            !this.isServedDashboard(modelPath),
       );
       if (surface.length === 0) return [];
       // Only when NOTHING on the surface compiled. One broken file beside a
@@ -2649,7 +2653,8 @@ export class Package {
                // `explores` lists it: it is listed as a dashboard instead.
                if (!exploreSet) return true;
                return (
-                  exploreSet.has(modelPath) && !isDashboardModelPath(modelPath)
+                  exploreSet.has(modelPath) &&
+                  !this.isServedDashboard(modelPath)
                );
             })
             .map(async (modelPath) => {
@@ -2993,7 +2998,7 @@ export class Package {
       const surfaceIsIndex = this.surfaceIsIndexModel();
       const listedModel = (this.packageMetadata.explores ?? []).find(
          (entry) =>
-            entry.endsWith(MODEL_FILE_SUFFIX) && !isDashboardModelPath(entry),
+            entry.endsWith(MODEL_FILE_SUFFIX) && !this.isServedDashboard(entry),
       );
       const unexported = surfaceIsIndex
          ? `which ${INDEX_MODEL_NAME} doesn't export`
