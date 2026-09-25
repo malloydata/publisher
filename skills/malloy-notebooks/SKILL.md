@@ -93,7 +93,7 @@ run: orders -> by_month
 
 Interactive parameters are common and important. Add them to most notebooks. **Use `given:` for anything new.** The older `#(filter)` mechanism still works and is documented below, but it is deprecated: do not reach for it just because you saw it in an existing model.
 
-A notebook's parameter surface comes from the `given:` declarations on the models it imports, not from anything declared in the `.malloynb` itself. When an imported model declares givens, Publisher's notebook UI automatically renders a Parameters panel above the notebook: declared givens become parameter inputs, the values a user sets are forwarded to Malloy's runtime, and every cell re-executes against the model with those values applied.
+A notebook's parameter surface comes from the `given:` declarations on the models it imports, not from anything declared in the `.malloynb` itself. When an imported model declares givens, Publisher's notebook UI automatically renders a Parameters panel above the notebook: declared givens become parameter inputs, the values a user sets are forwarded to Malloy's runtime, and every cell re-executes against the model with those values applied. A cell that runs before the notebook's `import` of a given ignores that given's value.
 
 The widget for each parameter follows the given's declared Malloy type (`string`, `string[]`, `number`, `boolean`, `date`/`timestamp`, `filter<T>`); see `docs/givens.md` for the full type table. A `#(description="...")` annotation on the given renders as helper text under its input.
 

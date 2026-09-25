@@ -365,6 +365,12 @@ export interface OffSurfaceContext {
 export type ServedFrom = "storage" | "live_fallback";
 export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
+/** Registry ids and declaration names of every given a cell's closure declares. */
+interface CellDeclaredGivens {
+   ids: ReadonlySet<string>;
+   names: ReadonlySet<string>;
+}
+
 interface RunnableNotebookCell {
    type: "code" | "markdown";
    text: string;
@@ -390,6 +396,8 @@ interface RunnableNotebookCell {
     *    same "Cannot redefine" collision would occur if it were recompiled,
     *    but the repoint mechanism sidesteps it entirely by never
     *    re-parsing any text.
+    *  - its `.givens` (transitive through every import) is every given
+    *    anything this cell runs can reference.
     */
    modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
@@ -593,6 +601,8 @@ export class Model {
     *  `Model.givens` already collapses inheritance; we just stash the list
     *  for surfacing on the compiled-model response. */
    private givens: ApiGiven[] | undefined;
+   /** Indexed like {@link runnableNotebookCells}; `undefined` = no modelDef, filter as before. */
+   private notebookCellDeclaredGivens: (CellDeclaredGivens | undefined)[] = [];
    /**
     * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
     * `null` = computed and nothing declared.
@@ -844,6 +854,16 @@ export class Model {
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
       this.givens = givens;
+      this.notebookCellDeclaredGivens = (this.runnableNotebookCells ?? []).map(
+         (cell) => {
+            if (!cell.modelDef) return undefined;
+            const registry = cell.modelDef.givens ?? {};
+            return {
+               ids: new Set(Object.keys(registry)),
+               names: new Set(Object.values(registry).map((g) => g.name)),
+            };
+         },
+      );
       // One walk, both consumers. `collectEntryPointGates` is the single
       // definition of "what gates this source as an entry point" — it follows
       // the `inherits`/registry chain AND a query-source's derivation base.
@@ -1163,9 +1183,19 @@ export class Model {
     * `where:` given still reaches the real query and fails closed via
     * Malloy's own "unknown given" error, instead of being silently swallowed
     * and falling back to its declared default (over-exposure).
+    *
+    * `cellDeclared` (a notebook cell's declared set) also drops a surface name
+    * the cell's closure never declares, i.e. one only a later cell imports.
+    * Nothing the cell runs can reference such a name, so no default can bind.
+    * Match by id as well as name: an aliased import (`import { T is TENANT }`)
+    * surfaces `T` while the registry keeps the declaration name `TENANT`.
+    * Do NOT instead scope the gate-only rule to the cell's surface: a name
+    * declared deep in the cell would be dropped while its `where:` still reads
+    * it, binding the default where the cell must 400.
     */
    private filterGivensToModelSurface(
       givens: Record<string, GivenValue> | undefined,
+      cellDeclared?: CellDeclaredGivens,
    ): Record<string, GivenValue> | undefined {
       if (!givens) return givens;
       const surfaceNames = new Set((this.givens ?? []).map((g) => g.name));
@@ -1174,9 +1204,24 @@ export class Model {
          const authorizeOnly =
             !surfaceNames.has(name) &&
             this.authorizeReferencedGivenNames.has(name);
-         if (!authorizeOnly) filtered[name] = value;
+         const outOfCellScope =
+            cellDeclared !== undefined &&
+            surfaceNames.has(name) &&
+            !cellDeclared.names.has(name) &&
+            !this.cellDeclaresGivenId(name, cellDeclared);
+         if (!authorizeOnly && !outOfCellScope) filtered[name] = value;
       }
       return filtered;
+   }
+
+   // The id/name OR is safe only because Malloy refuses a second given of one
+   // name across a notebook's extendModel chain, so it never picks between two.
+   private cellDeclaresGivenId(
+      surfaceName: string,
+      cellDeclared: CellDeclaredGivens,
+   ): boolean {
+      const entry = this.modelDef?.contents[surfaceName];
+      return entry?.type === "given" && cellDeclared.ids.has(entry.id);
    }
 
    /**
@@ -8299,7 +8344,10 @@ export class Model {
             );
             // See getQueryResults / filterGivensToModelSurface: the gate
             // above already saw the full unfiltered givens.
-            const cellSurfaceGivens = this.filterGivensToModelSurface(givens);
+            const cellSurfaceGivens = this.filterGivensToModelSurface(
+               givens,
+               this.notebookCellDeclaredGivens[cellIndex],
+            );
             const preparedCell = await runnableToExecute.getPreparedResult({
                givens: cellSurfaceGivens,
                buildManifest,
