@@ -1290,6 +1290,12 @@ export class Model {
     * as a source argument is always counted. Pass the runnable BEFORE any gate
     * graft, so a gate's own `$NAME` is not counted as a read.
     *
+    * Two over-refusals (a 400 rather than a default) are accepted: an aliased
+    * id also spelled by an unused field counts that spelling, because
+    * `givenUsage` keeps one `at` per id and matching on it would drop a live
+    * read; and an unused join's source argument counts, as in
+    * persist_dynamic_terms.ts, because `activeJoins` misses caller joins.
+    *
     * Only computed when a supplied given is a drop candidate, so the common
     * request pays nothing. A `getPreparedQuery()` throw yields the empty set,
     * i.e. today's drop: the same compilation fails at run, so no data is
