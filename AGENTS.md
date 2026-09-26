@@ -260,6 +260,33 @@ curl -s -X POST \
   -d '{"query":"run: order_items -> by_category","compactJson":true}' | jq -r .result
 ```
 
+The same query from Python, with only the standard library. There is no Python SDK on PyPI to install: `packages/python-client` is generated from the OpenAPI spec but not published, and an unrelated `malloy-publisher-client` there is a third-party project.
+
+```python
+import json
+import urllib.error
+import urllib.request
+
+URL = ("http://localhost:4000/api/v0/environments/examples/packages/storefront"
+       "/models/storefront.malloy/query")
+
+def query(malloy: str) -> list[dict]:
+    body = json.dumps({"query": malloy, "compactJson": True}).encode()
+    req = urllib.request.Request(
+        URL, data=body, headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            payload = json.load(resp)
+    except urllib.error.HTTPError as err:
+        # The body carries the Malloy diagnostics; print it, don't swallow it.
+        raise SystemExit(f"{err.code}: {err.read().decode()}")
+    # `result` is a JSON string, not an object: parse it a second time.
+    return json.loads(payload["result"])
+
+for row in query("run: order_items -> by_category"):
+    print(row)
+```
+
 The map:
 
 - `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded, and the REST equivalent of `get_status`). Re-check it after every edit-and-reload: an entry with `stale: true` names a package that is still answering, from the model it compiled before your last save.
