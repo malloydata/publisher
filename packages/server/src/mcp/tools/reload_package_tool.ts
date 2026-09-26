@@ -48,7 +48,7 @@ ${RELOAD_FAILURE_IS_SAFE} Running compile_model first is still the faster way to
 Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package whose stored metadata carries an install location (only a PATCH that supplies one sets it) is re-fetched from that source instead, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, the package's load-time warnings (renderer-tag findings and the full dashboard lint, including the served-shape findings compile_model does not report), and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.`;
 
 /**
  * Registers the reload_package MCP tool: recompiles a package from its

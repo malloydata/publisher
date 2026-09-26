@@ -43,7 +43,7 @@ const compileShape = {
       .enum(["append", "file", "package"])
       .optional()
       .describe(
-         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": run reload\'s worker compiler over all .malloy/.malloynb files without serving the result; an optional source replaces modelPath.',
+         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": run reload\'s worker compiler over all .malloy/.malloynb files without serving the result, and additionally lint dashboards and renderer tags; an optional source replaces modelPath.',
       ),
    includeSql: z
       .boolean()
@@ -65,6 +65,8 @@ const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use t
 - "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file. Refused here, with a 400: import, connection.table(...), connection.sql(...), raw-SQL functions, given: declarations (reading the model's givens as $NAME is fine), ##! flags, and text that does not stand alone as top-level Malloy — a bare view:/dimension:/measure:, or anything parsing only as a continuation of the model's last statement. Wrap a view body in a top-level query:, a field in a throwaway source: check is <source> extend { … }; use "file" or "package" for a model that declares data roots.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
 - "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and authorize gates still apply to caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
+
+Package scope also lints dashboards and renderer tags: unresolvable tiles, bad artifact/dashboard/colspan tags, dangling drills, missing suggest queries. These compile cleanly, so authoring a dashboard without this reports success on a broken page. Always severity "warn" (none fail a load); served-shape findings come from reload_package.
 
 ## Parameters
 - environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and authorize-gate values. Caller source may not declare an access-control gate — neither #(authorize) nor #(access_filter).
