@@ -195,8 +195,10 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
   against the model — [docs/html-data-apps.md](docs/html-data-apps.md).
 - **The Publisher Console.** Browse packages, models, and every artifact in the built-in web UI, with
   your own [colors, fonts, and dark mode](docs/theming.md) — [docs/console.md](docs/console.md).
-- **Your own applications.** The REST API serves any language; a Python client ships in
-  [`packages/python-client`](packages/python-client), and the running server publishes its OpenAPI spec.
+- **Your own applications.** The REST API serves any language, and the running server publishes its
+  OpenAPI spec. From Python, the standard library is enough: [AGENTS.md section 7](AGENTS.md#7-working-unattended-the-rest-api)
+  has a copyable example. A generated client lives in [`packages/python-client`](packages/python-client),
+  but it is not published to PyPI.
 
 ### Govern
 
