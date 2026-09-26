@@ -163,7 +163,9 @@ function predictionBlock(p) {
     catch { /* fall through */ }
   }
   // Keep the separator line too: Malloy's text tables draw it with `+` at
-  // column breaks and no `|`, so filtering on `|` alone dropped it.
+  // column breaks and no `|`, so filtering on `|` alone dropped it. The
+  // header must still be the first line, so a table with a `+---+` top
+  // border falls through to raw; format_rows() never draws one.
   const lines = t.split('\n').filter(l => l.includes('|') || /^[\s:+-]{3,}$/.test(l));
   if (lines.length >= 2 && lines[0].includes('|') && /^[\s|:+-]+$/.test(lines[1])) {
     const cells = l => l.split('|').map(s => s.trim());
@@ -440,12 +442,16 @@ function summaryTab(d, mine) {
   if (flags.length) h += `<div class="flags">${flags.map(f => `<div class="flag">${f}</div>`).join('')}</div>`;
 
   // 1. Why.
-  const group = state.backlog.find(g => (g.cases || []).some(c => c.qid === d.qid));
+  const groups = state.backlog.filter(g => (g.cases || []).some(c => c.qid === d.qid));
+  // "coverage not measured" only says the harness had no coverage label to
+  // place the miss by. Beside a diagnosis that did place it, it reads as a
+  // contradiction, so the diagnosis wins.
+  const wtf = groups.length && d.where_to_fix === 'coverage not measured' ? '' : d.where_to_fix;
   h += sec('Why the judge decided this', 'The judge compared the agent\'s answer with the answer key, using the rubric at the bottom of this panel.',
     `<p class="judge">${esc(d.judge_reasoning || 'No reasoning recorded.')}</p>${
-      d.where_to_fix || group ? `<div class="fixline">${d.where_to_fix ? `<div><span class="k">Where the failure lives</span><span class="chip">${esc(d.where_to_fix)}</span>${
+      wtf || groups.length ? `<div class="fixline">${wtf ? `<div><span class="k">Where the failure lives</span><span class="chip">${esc(wtf)}</span>${
         d.why ? ` <span class="mute">${esc(d.why)}</span>` : ''}</div>` : ''}${
-        group ? `<div><span class="k">Diagnosis</span><span class="chip acc">fix in: ${esc(group.lever || '?')}</span> ${esc(group.cluster)}</div>` : ''}</div>` : ''}`);
+        groups.map(g => `<div><span class="k">Diagnosis</span><span class="chip acc">fix in: ${esc(g.lever || '?')}</span> ${esc(g.cluster)}</div>`).join('')}</div>` : ''}`);
 
   // 2. The two answers, side by side.
   const agentRows = predictionBlock(d.prediction);
@@ -468,7 +474,7 @@ function summaryTab(d, mine) {
     h += sec(`What search had to find <span class="count-inline ${got < req.length ? 'short' : ''}">${got} of ${req.length}</span>`,
       'The fields the correct answer depends on. The agent can only use a field that its <span class="mono">get_context</span> search returned.',
       `<ul class="ents">${req.map(e => { const [a, b] = ENTITY_STATUS[e.status] || [e.status, '']; return `<li class="${esc(e.status)}">
-        <i class="dot ${esc(e.status)}"></i><span class="mono">${esc(e.entity_id)}</span><span>${a}<span class="mute"> · ${b}</span></span></li>`; }).join('')}</ul>`);
+        <i class="dot ${esc(e.status)}"></i><span class="mono">${esc(e.entity_id)}</span><span>${esc(a)}<span class="mute"> · ${esc(b)}</span></span></li>`; }).join('')}</ul>`);
   }
 
   // 5. Effort.
@@ -571,14 +577,17 @@ function splitFor(arm) {
   for (const r of state.rows) {
     const a = r.arms.find(x => x.arm === arm);
     if (!a) continue;
-    const p = a.outcome === 'pass' ? add('pass', 'pass', 'correct', null)
+    // A score against a key established wrong is in the attempts but not in
+    // `passed`, so it gets its own part rather than hiding under correct/wrong.
+    const p = a.counts === 'false' ? add('unscored', 'unscored', 'not scored · answer key is wrong', null)
+      : a.outcome === 'pass' ? add('pass', 'pass', 'correct', null)
       : a.outcome === 'fail' ? add('fail:' + (a.where_to_fix || ''), 'fail',
           'wrong · ' + (a.where_to_fix || 'not attributed'),
           a.where_to_fix ? { wtf: a.where_to_fix } : { mode: 'failures' })
       : add('neither', 'neither', 'undecided (partly or needs human)', { mode: 'undecided' });
     p.qids.push(r.qid);
   }
-  const order = { pass: 0, fail: 1, neither: 2 };
+  const order = { pass: 0, fail: 1, neither: 2, unscored: 3 };
   return [...parts.values()].sort((x, y) => order[x.cls] - order[y.cls] || y.n - x.n);
 }
 
@@ -606,7 +615,7 @@ function renderHeroes() {
       ? `<button class="${p.cls}${segActive(p.filter) ? ' on' : ''}" style="flex:${p.n}" data-arm="${si}" data-part="${i}"
           title="${esc(p.label)}: ${p.n} of ${total}. Click to list them." aria-label="${esc(p.label)}, ${p.n} cases"></button>`
       : `<button class="${p.cls}" style="flex:${p.n}" tabindex="-1" title="${esc(p.label)}: ${p.n} of ${total}" aria-hidden="true"></button>`).join('');
-    const legend = parts.map((p, i) => `<li><i style="background:var(--${p.cls === 'neither' ? 'near' : p.cls})"></i><b>${p.n}</b><span>${
+    const legend = parts.map((p, i) => `<li><i style="background:var(--${p.cls === 'neither' ? 'near' : p.cls === 'unscored' ? 'soft' : p.cls})"></i><b>${p.n}</b><span>${
       p.filter ? `<button data-arm="${si}" data-part="${i}">${esc(p.label)}</button>` : esc(p.label)}${
       p.cls === 'fail' ? ` <span class="why mono">${p.qids.map(q => esc(short(q))).join(', ')}</span>` : ''}</span></li>`).join('');
     return `<div class="hero">
@@ -707,9 +716,12 @@ function renderStrip() {
   const el = document.getElementById('strip');
   const W = Math.max(320, el.clientWidth || 800), padL = state.arms.length > 1 ? 120 : 8, padR = 24;
   const laneH = 84, H = 28 + laneH * state.arms.length;
-  const max = Math.max(...pts.map(p => p.v), 1);
+  const max = Math.max(...pts.map(p => p.v), 0) || 1;
   const x = v => padL + (W - padL - padR) * (v / max);
-  const step = max <= 10 ? 1 : Math.pow(10, Math.floor(Math.log10(max))) * (max / Math.pow(10, Math.floor(Math.log10(max))) > 4 ? 1 : .5);
+  // A step from the axis's own magnitude, so a dollar axis under $1 still gets
+  // ticks. A whole-number measure never steps below 1.
+  const mag = Math.pow(10, Math.floor(Math.log10(max)));
+  const step = Math.max(mag * (max / mag > 4 ? 1 : .5), dp ? 0 : 1);
   let svg = '';
   for (let t = 0; t <= max + 1e-9; t += step)
     svg += `<text class="tick" x="${x(t)}" y="${H - 6}" text-anchor="middle">${unit === 'dollars' ? '$' : ''}${num(t, dp)}</text>`;
