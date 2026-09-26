@@ -19,6 +19,12 @@ interface ModelExplorerDialogProps {
    initialSelectedSourceIndex?: number;
    onChange?: (query: QueryExplorerResult) => void;
    onSourceChange?: (index: number) => void;
+   givens?: Record<string, string>;
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
+   startingGivens?: Record<string, string>;
 }
 
 export function ModelExplorerDialog({
@@ -32,6 +38,9 @@ export function ModelExplorerDialog({
    initialSelectedSourceIndex,
    onChange,
    onSourceChange,
+   givens,
+   onGivensChange,
+   startingGivens,
 }: ModelExplorerDialogProps) {
    return (
       <Dialog open={open} onClose={onClose} fullScreen>
@@ -56,6 +65,9 @@ export function ModelExplorerDialog({
                   initialSelectedSourceIndex={initialSelectedSourceIndex}
                   onChange={onChange}
                   onSourceChange={onSourceChange}
+                  givens={givens}
+                  onGivensChange={onGivensChange}
+                  startingGivens={startingGivens}
                />
             ) : (
                <div>No valid import statement found in cell</div>

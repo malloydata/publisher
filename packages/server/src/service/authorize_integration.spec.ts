@@ -873,6 +873,32 @@ describe("books a lock refusal under the label that matches it", () => {
          }),
       ).toBe(0);
    });
+
+   // Each pre-compile pass skips a lock an earlier one decided. The text does
+   // not compile, so every booking here is a pre-compile one: the run target's
+   // single decision, however often the text names the source again.
+   it("decides a lock the request names three times once before compile", async () => {
+      await writeModel("lm_gated.malloy", LOCK_METRIC_GATED);
+      await expect(
+         runGated(
+            "lm_gated.malloy",
+            "source: mine is lm_gated extend {}\nrun: lm_gated extend { join_one: j is lm_gated on true } -> { group_by: nope }",
+            { ROLE: "analyst" },
+         ),
+      ).rejects.not.toBeInstanceOf(AccessDeniedError);
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "admitted",
+            site: "entry_point",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter(COUNTER, {
+            decision: "admitted",
+            site: "caller_join",
+         }),
+      ).toBe(0);
+   });
 });
 
 describe("authorize runtime gate", () => {
@@ -1327,10 +1353,9 @@ source: top_join is duckdb.table('customers') extend {
 
    // Q16: authorization is evaluated at the ENTRY POINT only. A gate is a
    // statement about who may query the source it is declared on, not about
-   // everything reachable beneath that source, so joining a locked base into an
-   // ungated source does NOT carry the base's gate along. These are the shapes
-   // that used to deny and now do not — asserted positively, because the whole
-   // point is that this is the intended contract and not an oversight. The
+   // everything reachable beneath that source, so an AUTHOR joining a locked
+   // base into an ungated model source does NOT carry the base's gate along.
+   // Asserted positively, because this is the intended contract. The
    // author-facing rule: joining sensitive data into an ungated source publishes
    // it; put the gate on the source callers enter through.
    describe("joins are not gated (Q16 — entry-point-only evaluation)", () => {
@@ -1345,6 +1370,11 @@ source: top_join is duckdb.table('customers') extend {
             "run: mixed_joiner -> { aggregate: c }",
          ],
          ["a transitive A→B→C join", "run: top_join -> { aggregate: c }"],
+      ];
+
+      // The same joins written in REQUEST text are the caller's own entry into
+      // the locked base, so its lock is decided for them.
+      const callerJoinShapes: [string, string][] = [
          [
             "an annotated join_one of the locked base",
             `source: j is plain extend {
@@ -1384,6 +1414,24 @@ source: top_join is duckdb.table('customers') extend {
             // unaffected by a join to the locked `base_locked` (Q16), so a
             // wrongly-fired join gate (which would zero this out) is
             // distinguishable from a genuine allow — unlike `.toBeDefined()`.
+            const rows = compactResult as unknown as { c: number }[];
+            expect(rows[0].c).toBe(2);
+         });
+      }
+
+      for (const [label, query] of callerJoinShapes) {
+         it(`denies a caller-written ${label} unless its lock admits`, async () => {
+            await writeModel("rt_locked.malloy", LOCKED_BASE);
+            await expect(
+               runGated("rt_locked.malloy", query, { DENY: ["y"] }),
+            ).rejects.toThrow(
+               new AccessDeniedError('Access denied for source "base_locked".'),
+            );
+            const { compactResult } = await runGated(
+               "rt_locked.malloy",
+               query,
+               { DENY: ["x"] },
+            );
             const rows = compactResult as unknown as { c: number }[];
             expect(rows[0].c).toBe(2);
          });
@@ -2023,39 +2071,69 @@ source: qs is combo -> { group_by: org_id }
    });
 });
 
-// The sharpest consequence of entry-point-only evaluation, pinned deliberately
-// because it is the one a reviewer will want to see stated: a caller may join a
-// locked source inside its OWN query refinement and project that source's
-// columns. The entry point is `open_src`, which is ungated, so nothing denies.
-// This is the shape that makes "the gate belongs on the source callers enter
-// through" a real obligation on authors rather than advice.
-describe("a query-local join to a locked source is not gated (Q16)", () => {
-   it("allows projecting a locked source's column through a query-local join", async () => {
-      await writeModel(
-         "c_query_local_join.malloy",
-         `source: open_src is duckdb.table('customers') extend { measure: c is count() }
+// A join the CALLER writes is not an author join: the entry point being ungated
+// does not publish what the caller's own text reaches through a join, so the
+// joined source's gate applies to the caller join as if it were a run target.
+describe("a query-local join to a gated source is gated", () => {
+   const QUERY_LOCAL = `source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
 ##! experimental.givens
 
 given:
   DENY :: number[]
+  ROLE :: string
 
 #(access_filter) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
 }
-`,
-      );
-      const { result } = await runGated(
+
+#(authorize) 'analyst' = $ROLE
+source: role_locked is duckdb.table('customers') extend {
+  dimension: secret is name
+}
+`;
+
+   it("filters a row-gated source's column projected through a query-local join", async () => {
+      await writeModel("c_query_local_join.malloy", QUERY_LOCAL);
+      const { compactResult } = await runGated(
          "c_query_local_join.malloy",
          `run: open_src -> {
   join_one: locked_src on id = locked_src.id
-  group_by: locked_src.secret
+  group_by: id, locked_src.secret
 }`,
-         {},
+         { DENY: [2] },
       );
-      expect(result.data).toBeDefined();
+      expect(compactResult).toEqual([
+         { id: 1, secret: null },
+         { id: 2, secret: "b" },
+      ]);
+   });
+
+   it("denies a locked source's column projected through a query-local join", async () => {
+      await writeModel("c_query_local_join.malloy", QUERY_LOCAL);
+      await expect(
+         runGated(
+            "c_query_local_join.malloy",
+            `run: open_src -> {
+  join_one: role_locked on id = role_locked.id
+  group_by: role_locked.secret
+}`,
+            { ROLE: "intern", DENY: [] },
+         ),
+      ).rejects.toThrow(
+         new AccessDeniedError(`Access denied for source "role_locked".`),
+      );
+      const { compactResult } = await runGated(
+         "c_query_local_join.malloy",
+         `run: open_src -> {
+  join_one: role_locked on id = role_locked.id
+  group_by: role_locked.secret
+}`,
+         { ROLE: "analyst", DENY: [] },
+      );
+      expect(compactResult).toEqual([{ secret: "a" }, { secret: "b" }]);
    });
 });
 
@@ -2620,20 +2698,24 @@ source: open_laundered is open_src -> { group_by: id }
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("allows a run target's own query-local join to a query-source derived from a locked base", async () => {
-      // Derivation carries the gate, but only to the derived source's OWN entry
-      // point. Reached via a query-local join it is not gated — the join rule
-      // wins over the derivation rule when the two meet.
+   it("gates a caller's query-local join to a query-source derived from a locked base", async () => {
+      // A caller-written join is the caller's own entry into `laundered`, so
+      // the gate its derivation carries applies to it.
       await writeModel("c_unified.malloy", UNIFIED_MODEL);
-      const { result } = await runGated(
-         "c_unified.malloy",
-         `run: open_src -> {
+      const query = `run: open_src -> {
   extend: { join_one: laundered on id = laundered.id }
-  group_by: leak is laundered.locked_region
-}`,
-         {},
+  group_by: id, leak is laundered.locked_region
+}`;
+      await expect(runGated("c_unified.malloy", query, {})).rejects.toThrow(
+         new AccessDeniedError('Access denied for source "laundered".'),
       );
-      expect(result.data).toBeDefined();
+      const { compactResult } = await runGated("c_unified.malloy", query, {
+         DENY: [1],
+      });
+      const rows = (
+         compactResult as unknown as { id: number; leak: string | null }[]
+      ).filter((row) => row.leak !== null);
+      expect(rows.map((row) => row.id)).toEqual([1]);
    });
 
    it("allows a composite query resolving to the ungated open branch", async () => {
@@ -3657,6 +3739,56 @@ source: laundered is locked_src -> { group_by: region }
    // not a silently dropped guarantee.
 });
 
+describe("the pre-compile lock reads keywords in any case", () => {
+   const MODEL = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: kc_gated is duckdb.table('customers') extend { measure: c is count() }
+
+source: kc_open is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   for (const query of [
+      "RUN: kc_gated -> { group_by: no_such_field }",
+      "Run: kc_gated -> { group_by: no_such_field }",
+      "SOURCE: mine IS kc_gated EXTEND {}\nRUN: mine -> { group_by: no_such_field }",
+   ]) {
+      it(`denies before compiling: ${JSON.stringify(query)}`, async () => {
+         await writeModel("keyword_case.malloy", MODEL);
+         const err = await runGated("keyword_case.malloy", query, {}).then(
+            () => undefined,
+            (e: Error) => e,
+         );
+         expect(err).toBeInstanceOf(AccessDeniedError);
+         expect(String(err!.message)).not.toContain("no_such_field");
+      });
+   }
+
+   it("still admits the permitted caller through `RUN:`", async () => {
+      await writeModel("keyword_case.malloy", MODEL);
+      const { result } = await runGated(
+         "keyword_case.malloy",
+         "RUN: kc_gated -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("still reports compile errors for an ungated `RUN:` target", async () => {
+      await writeModel("keyword_case.malloy", MODEL);
+      await expect(
+         runGated(
+            "keyword_case.malloy",
+            "RUN: kc_open -> { group_by: no_such_field }",
+            {},
+         ),
+      ).rejects.not.toBeInstanceOf(AccessDeniedError);
+   });
+});
+
 // Two more oracle/consistency holes, found by an independent review pass. Both
 // concern a source the PACKAGE declares — no caller-declared alias involved — so
 // neither is covered by the known limitation about caller-declared sources.
@@ -4082,6 +4214,24 @@ source: dm_gated is duckdb.table('customers') extend {
 }
 `;
 
+   // Two independently locked sources, so a request naming both pins the
+   // per-name (not per-query) shape of the "source" bypass tick.
+   const GATED_TWO = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: dm_gated is duckdb.table('customers') extend {
+  measure: c is count()
+}
+
+#(authorize) 'analyst' = $ROLE
+source: dm_gated2 is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+
    // The canonical hard case from the design doc: an access GATE and an ordinary
    // analytical `where:` on the same source. The gate is bypassable; the `where:`
    // is not.
@@ -4198,15 +4348,51 @@ source: dm_mixed is duckdb.table('customers') extend {
             undefined,
             true,
          );
-         // The early surface-syntax gate...
+         // "source" ticks once for the run target resolved before compile,
+         // locked or not, plus once for each additional locked name; here the
+         // run target is the only name.
          expect(
             await harness.collectCounter(COUNTER, { entry_point: "source" }),
          ).toBe(1);
-         // ...and the compiled backstop. Exactly one each: the walk
-         // short-circuits before its own nested assertAuthorized call.
+         // "runnable" is the compiled backstop, once per bypassed query.
          expect(
             await harness.collectCounter(COUNTER, { entry_point: "runnable" }),
          ).toBe(1);
+      });
+
+      // The per-name notes are the only record of which lock the bypass
+      // skipped for an aliased request: `earlySource` and the `runnable` note
+      // both name the alias, not the locked source underneath it.
+      it("counts and logs a source tick for EACH locked name a request names", async () => {
+         await writeModel("dm_gated_two.malloy", GATED_TWO);
+         const lines: Array<Record<string, unknown>> = [];
+         const info = logger.info;
+         (logger as { info: unknown }).info = (
+            message: string,
+            meta?: Record<string, unknown>,
+         ) => {
+            if (message === "authorize bypass" && meta) lines.push(meta);
+            return undefined as never;
+         };
+         try {
+            await runGated(
+               "dm_gated_two.malloy",
+               "source: mine is dm_gated2 extend {}\nrun: dm_gated -> { aggregate: c }",
+               {},
+               undefined,
+               true,
+            );
+         } finally {
+            (logger as { info: unknown }).info = info;
+         }
+         expect(
+            await harness.collectCounter(COUNTER, { entry_point: "source" }),
+         ).toBe(2);
+         const source = lines.filter((l) => l.entryPoint === "source");
+         expect(source.map((l) => l.sourceName).sort()).toEqual([
+            "dm_gated",
+            "dm_gated2",
+         ]);
       });
 
       /**
@@ -4340,5 +4526,67 @@ source: dm_mixed is duckdb.table('customers') extend {
             ),
          ).rejects.toThrow();
       });
+   });
+});
+
+describe("a locked name is decided wherever it appears", () => {
+   // Boundary: Model.create leaves queryableSources inert. These are lock
+   // refusals, before compile, on the /query path.
+   const MODEL = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+}
+
+source: open_src is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+
+   const refused = [
+      "RUN: gated -> { group_by: nope }",
+      "run: `gated` -> { group_by: nope }",
+      "run: `\\gated` -> { group_by: nope }",
+      "run: (gated) -> { group_by: nope }",
+      "run: compose(gated, open_src) -> { aggregate: c }",
+      "source: a is ((gated)) extend {}\nrun: a -> { group_by: nope }",
+      "run: gated -> { group_by: nope }\nrun: open_src -> { aggregate: c }",
+      "run: open_src -> { where: s = 'x\n}\nsource: a is gated extend {}\nrun: a -> { group_by: nope }",
+      "run: open_src extend { join_one: j is gated on true } -> { aggregate: c }",
+   ];
+
+   for (const query of refused) {
+      it(`denies before compile: ${query.split("\n")[0]}`, async () => {
+         await writeModel("appear.malloy", MODEL);
+         await expectDeniedByLock("appear.malloy", query, { ROLE: "intern" });
+      });
+   }
+
+   it("denies a 65-link chain before compile", async () => {
+      await writeModel("appear.malloy", MODEL);
+      const lines = ["source: n0 is gated extend {}"];
+      for (let i = 1; i <= 64; i++) {
+         lines.push(`source: n${i} is n${i - 1} extend {}`);
+      }
+      lines.push("run: n64 -> { group_by: nope }");
+      await expectDeniedByLock("appear.malloy", lines.join("\n"), {
+         ROLE: "intern",
+      });
+   });
+
+   it("still serves an uppercase run to a caller the lock admits", async () => {
+      await writeModel("appear.malloy", MODEL);
+      const { compactResult } = await runGated(
+         "appear.malloy",
+         "RUN: gated -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      expect(
+         (compactResult as unknown as { c: number }[])[0]?.c,
+      ).toBeGreaterThan(0);
    });
 });

@@ -36,6 +36,7 @@ import {
    WriteRolledBackError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import type { CallerRegion } from "./caller_joins";
 import { assertNoRestrictedConstructs } from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
@@ -662,6 +663,10 @@ export class Environment {
          const virtualUri = virtualUrl.toString();
 
          let fullSource = source ?? "";
+         // Where the caller's own text starts in the compiled file, so its joins
+         // are gated as the query path gates them. "file" and "package" have
+         // none: the whole text is the author's file.
+         let callerRegion: CallerRegion | undefined;
          if (scope === "append") {
             // Read the full model file so the submitted source inherits the
             // model's complete namespace — imports, source definitions,
@@ -680,6 +685,13 @@ export class Environment {
             fullSource = modelContent
                ? `${modelContent}\n${source}`
                : (source ?? "");
+            callerRegion = {
+               kind: "span",
+               url: virtualUri,
+               // 0-based: the appended text starts on the line after the model's.
+               fromLine: modelContent ? modelContent.split("\n").length : 0,
+               text: source ?? "",
+            };
          }
 
          // Create a URL Reader that serves the source string for the virtual
@@ -701,13 +713,11 @@ export class Environment {
 
          // Authorize gate: /compile is compile-only, but it can still act
          // as a schema oracle (a denied caller learns a gated source's columns
-         // from compile errors) and, with includeSql, leak its SQL. Gate the
-         // named source the submitted text targets BEFORE compiling — mirrors
-         // the query path's early surface-syntax gate. Unnamed/inline source
-         // text resolves to undefined, so nothing gates it here — a `source:`
-         // is the only place `#(authorize)` is declared, and the compiled
-         // backstop below is what settles a target this cannot name. The
-         // gate runs against the package's cached Model (its
+         // from compile errors) and, with includeSql, leak its SQL. Decide the
+         // locks the submitted text names BEFORE compiling — mirrors the query
+         // path's early gate (see `assertAuthorizedForText` for what each scope
+         // reads); the compiled backstop below settles a target this cannot
+         // name. The gate runs against the package's cached Model (its
          // `given:` block + authorize annotations), independent of the virtual
          // compile below. A new model path has no cached Model, so its early
          // surface-syntax gate cannot run; the compiled backstop below instead
@@ -757,7 +767,14 @@ export class Environment {
                      source,
                   );
                },
-               () => gateModel.assertAuthorizedForText(source, givens ?? {}),
+               () =>
+                  gateModel.assertAuthorizedForText(source, givens ?? {}, {
+                     // File and package scope compile the whole file (or, at
+                     // package scope with a source, the whole replacement) —
+                     // a locked name that is not the statement Malloy runs
+                     // must not refuse it, and its joins are author joins.
+                     wholeFile: scope !== "append",
+                  }),
             );
          }
 
@@ -1113,10 +1130,9 @@ export class Environment {
 
             // Compiled-source backstops — run REGARDLESS of includeSql. They
             // gate the source the COMPILED final query actually reads, closing
-            // named-query / multi-statement indirection the early surface-syntax
-            // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
-            // matches the FIRST `run:`, but the LAST statement is what executes).
-            // Compiling a gated source even without SQL is a schema oracle
+            // the named-query and derivation indirection the early
+            // surface-syntax gate cannot see. Compiling a gated source even
+            // without SQL is a schema oracle
             // (field-not-found errors leak its columns), so this must not be
             // conditional on SQL extraction. (A `source: x is gated` alias
             // carries the gate: only a declaration of its OWN `#(authorize)`
@@ -1153,8 +1169,11 @@ export class Environment {
                         ? gateModel.assertAuthorizedForRunnable(
                              materializer,
                              givens ?? {},
+                             callerRegion,
                           )
-                        : gateModel.assertAuthorizedFromCompiledRunnable(
+                        : // No region: this gate model is another file's
+                          // namespace, so its source names cannot place a join.
+                          gateModel.assertAuthorizedFromCompiledRunnable(
                              materializer,
                              givens ?? {},
                           ),
@@ -2970,6 +2989,11 @@ export class Environment {
                await _package.reloadAllModels({});
                _package.bindStorageServeBindings({});
             }
+         } else {
+            // The surface may have changed with no file changing, so the tile
+            // findings are re-checked against it. (A manifest rebind above
+            // reloads, which re-discovers and re-lints on its own.)
+            await _package.relintDashboards();
          }
 
          return _package.getPackageMetadata();

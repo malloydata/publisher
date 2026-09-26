@@ -3573,6 +3573,88 @@ source: X is duckdb.table('parent') extend {
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
+
+   // The storage serve-shape re-emits a plain author `where:` verbatim onto
+   // its own transient struct, so `assertNoMisboundInheritedFilters` still
+   // sees and denies a genuinely misbound one even after `getQueryResults`
+   // swaps `runnable` for the shape and routing succeeds. A regression pin,
+   // not a gap: a misbound plain `where:` must still deny, routed or not.
+   it("CRITICAL — a plain (unannotated) where:-filtered source's misbound derivation still denies under storage routing", async () => {
+      const originalMode = process.env.PERSIST_STORAGE_MODE;
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-plain-"));
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `source: X is duckdb.table('parent') extend {
+   where: org_id = 1
+}
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeUndefined();
+
+         // A storage binding for X that, if routed to, would answer with a
+         // value the live query could never produce — proof of routing
+         // independent of whether the misbind is caught.
+         await duckdb.runSQL(
+            "CREATE OR REPLACE TABLE mz_real AS SELECT * FROM parent",
+         );
+         const connMap = new Map<string, Connection>([["duckdb", duckdb]]);
+         const serveConfig = new MalloyConfig({ connections: {} });
+         serveConfig.wrapConnections(
+            () => new FixedConnectionMap(connMap, "duckdb"),
+         );
+         model.setServeDestinationConfig(() => serveConfig);
+         model.setServeBindings([
+            {
+               sourceName: "X",
+               destinationName: "duckdb",
+               virtualHandle: "h",
+               tablePath: "mz_real",
+               schema: [
+                  { name: "id", type: "BIGINT" },
+                  { name: "org_id", type: "BIGINT" },
+                  { name: "child_id", type: "BIGINT" },
+                  { name: "val", type: "STRING" },
+               ],
+            },
+         ]);
+
+         // `except: org_id` then `rename: org_id is val` frees the name
+         // `org_id` the inherited `where:` still reads by text, rebinding it
+         // to a different physical column (`val`) — the same misbind
+         // `filter_binding_guard_integration.spec.ts`'s "a plain where:
+         // filter with NO access_filter annotation" tests prove denies with
+         // storage routing off.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: X extend { except: org_id } extend { rename: org_id is val } -> { aggregate: n is count() }",
+               {},
+               true,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         if (originalMode === undefined) {
+            delete process.env.PERSIST_STORAGE_MODE;
+         } else {
+            process.env.PERSIST_STORAGE_MODE = originalMode;
+         }
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
 });
 
 // ---------------------------------------------------------------------------

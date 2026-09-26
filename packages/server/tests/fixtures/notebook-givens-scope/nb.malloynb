@@ -1,0 +1,16 @@
+>>>malloy
+source: plain is duckdb.table('data/orgtable.csv') extend {
+  measure: c is count()
+}
+run: plain -> { aggregate: c }
+>>>malloy
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: gated is duckdb.table('data/orgtable.csv') extend {
+  measure: c is count()
+}
+run: gated -> { aggregate: c }

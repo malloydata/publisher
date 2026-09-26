@@ -19,7 +19,7 @@
       "snowflake"
    ],
    "homepage": "https://docs.malloydata.dev/documentation/user_guides/publishing/mcp_agents",
-   "version": "0.8.0",
+   "version": "0.8.2",
    "main": "dist/server.mjs",
    "bin": {
       "malloy-publisher": "dist/server.mjs"

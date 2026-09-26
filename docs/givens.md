@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 > [row-level access](row-level-access.md), and [`#(access_filter)`](authorize.md) gates.
 > Runnable example: [examples/governed-analytics](../examples/governed-analytics).
 
-Givens are Malloy's native mechanism for declaring runtime parameters on a model — one typed value a caller supplies at query time — and the base primitive Publisher builds several features on top of. A model declares a `given:`, queries reference it as `$name`, and the caller supplies a value (or the declared default applies). Publisher introspects declared givens, exposes them through the API, renders inputs in the notebook UI, and forwards values to Malloy's runtime.
+Givens are Malloy's native mechanism for declaring runtime parameters on a model — one typed value a caller supplies at query time — and the base primitive Publisher builds several features on top of. A model declares a `given:`, queries reference it as `$name`, and the caller supplies a value (or the declared default applies). Publisher introspects declared givens, exposes them through the API, renders inputs in the notebook UI and the model Explorer, and forwards values to Malloy's runtime.
 
 For the authoritative Malloy reference (semantics, supported types, scoping rules), see [Malloy: Givens](https://docs.malloydata.dev/documentation/experiments/givens).
 
@@ -19,7 +19,7 @@ Givens are deliberately simple; the leverage is in what they enable. Jump to the
 
 | Application                              | What it does                                                                                                                                                                                                    | Where                                   |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| **Interactive filters**                  | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI; changing one re-runs the cells.                                               | [Notebook UI](#notebook-ui), below      |
+| **Interactive filters**                  | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI, where changing one re-runs the cells, and in the model Explorer.         | [Notebook UI](#notebook-ui), below      |
 | **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out.                                                                      | [Row-level access](row-level-access.md) |
 | **Source authorization**                 | `#(authorize)` decides whether a caller may reach the source at all and refuses with a 403; `#(access_filter)` is grafted as a row filter, so a caller it matches nowhere gets a normal 200 with zero rows. A 403 also covers either gate failing to attach. | [Authorize](authorize.md)               |
 
@@ -147,6 +147,16 @@ There is one exception. On a source guarded by `#(access_filter)`, the authorize
 
 The `/compile` endpoint (with `includeSql: true`) follows the same handling: a bad given is surfaced rather than silently omitting `sql`.
 
+### A notebook cell binds only the givens its own scope declares
+
+A notebook cell run ignores a given that the notebook declares only in a later cell,
+so a code cell that runs before the notebook's `import` of a given does not 400 when
+the caller sends that given's value. A given the cell's own imports declare, at any
+depth, is still forwarded, but forwarding is not binding: one declared deep and not
+surfaced by the cell's imports still 400s. A name declared nowhere in the notebook
+still 400s.
+Model queries are unaffected.
+
 ### A gate's givens must be on the gating model's own surface
 
 There is no longer a separate "whole-source (given-only)" gate class — every `#(access_filter)` gate is a
@@ -246,6 +256,8 @@ Change a control and every cell re-runs with the new value, no reload and no rew
 
 The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics`](../examples/governed-analytics/) to try it.
 
+The model Explorer shows the same Parameters panel whenever the model it opens declares givens, and sends the values with every Run, so a source gated on a given can be explored from the Console. See [Explorer: parameters](explorer.md#parameters).
+
 | Malloy type                                                | Widget                                                                                                                      |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `number`                                                   | Numeric input with × clear                                                                                                  |
@@ -300,8 +312,7 @@ link's values, and Reset discards those too.
 The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
 `##(filters)` annotations is no longer filterable from a notebook, and one with
 a `required` filter cannot be satisfied there at all. The annotations still work
-everywhere else: the REST `filterParams` parameter and the server-side
-enforcement are unchanged. This is the UI half of the migration.
+everywhere else. `#(filter)` is not a security boundary against caller-authored query text or `bypassFilters`; use givens + `#(authorize)`. This is the UI half of the migration.
 
 There is no automatic conversion, because the two mechanisms are different
 shapes. A `#(filter)` annotation marks an existing dimension as filterable and

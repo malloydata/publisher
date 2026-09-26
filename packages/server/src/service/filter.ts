@@ -233,6 +233,26 @@ function buildPredicate(
 }
 
 /**
+ * Whether `params` actually supplies a value for `filter` — the single
+ * source of truth for "was this filter injected", shared by
+ * {@link buildFilterClause} (what goes in the `where:`) and by the binding
+ * guard's caller (which filters actually need their binding checked; an
+ * optional filter the caller never supplied a value for was never injected
+ * at all, so there is nothing for it to have misbound).
+ */
+export function filterHasValue(
+   filter: FilterDefinition,
+   params: FilterParams,
+): boolean {
+   const value = params[filter.name];
+   return (
+      value !== undefined &&
+      value !== null &&
+      (Array.isArray(value) ? value.length > 0 : value !== "")
+   );
+}
+
+/**
  * Build a complete Malloy `where:` clause fragment from filter definitions
  * and provided parameter values.
  *
@@ -246,13 +266,7 @@ export function buildFilterClause(
    const predicates: string[] = [];
 
    for (const filter of filters) {
-      const value = params[filter.name];
-      const hasValue =
-         value !== undefined &&
-         value !== null &&
-         (Array.isArray(value) ? value.length > 0 : value !== "");
-
-      if (!hasValue) {
+      if (!filterHasValue(filter, params)) {
          if (filter.required) {
             throw new FilterValidationError(
                `Required filter "${filter.name}" (dimension: ${filter.dimension}) was not provided`,
@@ -261,7 +275,7 @@ export function buildFilterClause(
          continue;
       }
 
-      predicates.push(buildPredicate(filter, value));
+      predicates.push(buildPredicate(filter, params[filter.name]));
    }
 
    if (predicates.length === 0) {
