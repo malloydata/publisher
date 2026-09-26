@@ -1,11 +1,14 @@
 {
    "name": "@malloy-publisher/skills",
    "description": "Agent skills for Malloy and the Malloy Publisher",
-   "version": "0.1.29",
+   "version": "0.1.30",
    "license": "MIT",
    "type": "module",
    "main": "dist/index.js",
    "types": "dist/index.d.ts",
+   "bin": {
+      "malloy-skills": "dist/cli.js"
+   },
    "exports": {
       ".": {
          "types": "./dist/index.d.ts",
