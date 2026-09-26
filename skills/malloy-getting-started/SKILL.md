@@ -1,6 +1,6 @@
 ---
 name: malloy-getting-started
-description: First steps for using a Malloy Publisher deployment through its MCP tools. Use when connecting to Publisher for the first time, when you do not yet know the available environments, packages, or models, or when a user asks what data they can explore. Covers verifying the server, discovering data with get_context, and running a first grounded query.
+description: First steps with Malloy Publisher, from nothing installed through to a first grounded answer. Use on first contact: when asked to chart, explore, or model some data with Publisher, when no Publisher tools are available yet, when you do not know the available environments, packages, or models, or when a user asks what data they can explore. Covers what Publisher is, finding the data, starting the server, discovering with get_context, and running a first query.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -9,13 +9,37 @@ SPDX-License-Identifier: MIT
 
 # Getting started with Malloy Publisher
 
-Goal: go from "connected" to a correct, grounded answer without guessing any names.
+Malloy Publisher serves semantic-model packages: a package is a directory of `.malloy` files
+defining sources, dimensions, measures, and views over a database, and the server makes them
+queryable, renders their charts and dashboards, and exposes them to agents as MCP tools. You write
+the model once and every surface reads the same definitions. A local package needs no account and
+no cloud: DuckDB and a file on disk are enough to get to a chart.
 
-## 0. Confirm the tools are reachable
+Goal: go from nothing to a correct, grounded answer without guessing any names. Work in order --
+find the data, serve it, discover what it holds, then query. Skip to section 1 if the `get_context`
+and `execute_query` tools are already in your tool list.
+
+## 0. Find the data
+
+Every query reads a package, and every package reads data. Before starting anything, work out which
+of these you are in:
+
+- **A package already here.** A directory holding a `publisher.json`, or a `publisher.config.json`
+  naming one. Go straight to section 0.1.
+- **A file the user has** (CSV, Parquet, or Excel `.xlsx`). Scaffold a package around it, under
+  "Scaffolding a package around the user's data" in section 0.1.
+- **A database** the user can name. Scaffold a package the same way, then point its model at a
+  connection `publisher.config.json` defines rather than at a file.
+- **Nothing named yet.** Ask which of the three it is. Do not start the server first and hope: the
+  bundled examples will answer, and they are not the user's data.
+
+## 0.1 Confirm the tools are reachable
 
 At minimum you need `get_context`, `list_packages`, `execute_query`, and `search_malloy_docs`. Authoring a model also needs `compile_model` and `reload_package` (see section 4); an older Publisher may not serve those two.
 
-If none of the tools are there, either the server is not running or your client connected before it was. Start the server (`npx @malloy-publisher/server --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`. If the point is to author models against a local package, add `--watch-env <env>`: without it Publisher copies local packages at boot and serves the copies, so saved edits are never read.
+If none of the tools are there, either the server is not running or your client connected before it was. Start the server (`npx @malloy-publisher/server@latest --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`. If the point is to author models against a local package, add `--watch-env <env>`: without it Publisher copies local packages at boot and serves the copies, so saved edits are never read.
+
+### Scaffolding a package around the user's data
 
 If there is no Publisher workspace here at all, and the user wants to work with data of their own rather than the bundled examples, `npm create @malloy-publisher/malloy-package@latest <name>` scaffolds one: the package and a starter model, registered so the server actually serves it, plus the start script, the MCP config and these skills. Keep the `@latest` when you type it: `npm create` resolves through npm's npx cache and an unversioned name is satisfied by any copy already there, so on a machine that has scaffolded before npm never asks the registry and you get an old scaffolder pinning an old server, with nothing to say so. Run bare, it comes with a small sample dataset, so there is something to query straight away. In a fresh directory `npm start` then runs the pinned server against the package in watch mode; if the directory already had a `package.json` the scaffolder leaves it alone and adds no script, printing the equivalent `npx` command to use instead. Where you run it matters: only the package lands in `<name>/`, and the workspace files, the agent instructions and the MCP config among them, are written to the current directory. Run it here if this directory is empty or is meant to become the workspace. If it already holds other work, scaffold into a new directory instead (`mkdir my-data && cd my-data`), because agent config is discovered by walking up, so writing those files here changes what every session beneath this directory inherits. Seed the starter model from a local file with `npm create @malloy-publisher/malloy-package@latest <name> -- --data <path/to/their-file.csv>` (CSV, Parquet, or Excel `.xlsx`), keeping the `--`, which is how `npm create` passes options through. That path is relative to wherever you run the command, so if you scaffolded into a new directory it has to reach back out to their file; the scaffolder copies it into the package and leaves the original alone. A seeded package starts smaller than the sample one, since the scaffolder does not read their columns: expect a row count and an overview, and build the model from there. A package is just Malloy, so it can instead query a database connection the config defines. Because it writes a `.mcp.json` that did not exist when the client connected, the user has to restart or reconnect once before these tools appear, and their client will ask them to approve the new project-scoped server the first time. That only works when the workspace is at the session's own root, so if you scaffolded into a new directory below that root, the user has to open a session there instead: a `.mcp.json` further down is never discovered.
 
@@ -124,6 +148,7 @@ If the data you want is in a connected database but not yet in any package, use 
 
 Answering questions is the start, not the whole surface. When the user asks what is possible, say so rather than offering queries alone. Switch skills for the deeper work:
 
+- `malloy-model-as-you-go`: answer the question first, then codify what the answer assumed. The path for a user who has a question and no model yet, which is most first sessions.
 - `malloy-modeling`: build or change a model. Validate the edit with `compile_model`, save it, then `reload_package` so the new sources and views run by name without restarting the server.
 - `malloy-analysis`: explore a package and answer data questions.
 - `malloy-html-data-apps`: build a data app, a hand-authored HTML page in the package's `public/` directory that Publisher serves, backed by the package's models and needing no build step.
