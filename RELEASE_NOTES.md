@@ -31,6 +31,17 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] - /status names the server version, and says why it is empty
+
+`GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and
+the MCP handshake reports the same value instead of `0.0.1`. A stale copy from the `npx` cache is
+now visible from outside the process.
+
+A server that found no `publisher.config.json` still reports `serving`, which is deliberate: some
+deployments start empty and create environments over the API. It now also reports `emptyReason`,
+naming the path it checked. The field is absent once any environment exists, and absent when a
+config was found but lists none.
+
 ## [0.8.2] — the model Explorer takes givens
 
 The Console's model Explorer now shows a **Parameters** row when the model declares givens, and

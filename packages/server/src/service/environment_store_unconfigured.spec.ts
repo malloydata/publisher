@@ -15,6 +15,7 @@ import * as path from "path";
 import { getUnresolvedPublisherConfigPath } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { logger } from "../logger";
+import packageJson from "../../package.json";
 
 /**
  * A server that loads nothing reports `serving` with `environments=0
@@ -184,6 +185,13 @@ describe("unconfigured boot notice", () => {
       // The two ways out, both of which a reader needs to act on it.
       expect(notices[0]).toContain("--config");
       expect(notices[0]).toContain("runtime");
+
+      // The log line reaches an operator. A caller polling /status sees only
+      // "serving" and an empty list unless the same sentence is there too.
+      const status = await store.getStatus();
+      expect(status.environments).toHaveLength(0);
+      expect(status.emptyReason).toBe(notices[0]);
+      expect(status.version).toBe(packageJson.version);
    });
 
    it("can still create an environment at runtime, as the notice claims", async () => {
@@ -204,6 +212,8 @@ describe("unconfigured boot notice", () => {
       expect(environments.map((environment) => environment.name)).toContain(
          "created-at-runtime",
       );
+      // The server is no longer empty, so the reason it was empty is stale.
+      expect((await store.getStatus()).emptyReason).toBeUndefined();
    });
 
    it("stays quiet when the database held an environment that did not load", async () => {
@@ -221,6 +231,9 @@ describe("unconfigured boot notice", () => {
 
       assertInitialized();
       expect(noticeLines()).toHaveLength(0);
+      // Same gate on /status: blaming a missing config here would point at
+      // the wrong fix, right after the log line naming the real cause.
+      expect((await store.getStatus()).emptyReason).toBeUndefined();
    });
 
    it("stays quiet when a config resolved, however empty", async () => {
@@ -236,5 +249,6 @@ describe("unconfigured boot notice", () => {
 
       assertInitialized();
       expect(noticeLines()).toHaveLength(0);
+      expect((await store.getStatus()).emptyReason).toBeUndefined();
    });
 });

@@ -48,6 +48,7 @@ import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
+import { SERVER_VERSION } from "../version";
 type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
@@ -449,6 +450,14 @@ export class EnvironmentStore {
     * missing rather than never asked for. Surfaced on `getStatus`.
     */
    private failedEnvironments = new Map<string, string>();
+   /**
+    * Why this server booted empty, when it did because no config was found.
+    * Set by logUnconfiguredNotice, so it carries that method's gate: an
+    * environment the database held but could not load does not set it.
+    * Reported on getStatus as `emptyReason` only while no environment exists,
+    * so it disappears once one is created at runtime.
+    */
+   private unconfiguredNotice: string | null = null;
    private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
@@ -883,11 +892,11 @@ export class EnvironmentStore {
       if (!checkedPath) {
          return;
       }
-      logger.info(
+      this.unconfiguredNotice =
          `Serving with no environments: no ${PUBLISHER_CONFIG_NAME} was found at ${checkedPath}. ` +
-            `Create one there (in Docker, mount it at that path) or pass --config <path>. ` +
-            `Environments can also be created at runtime through the API.`,
-      );
+         `Create one there (in Docker, mount it at that path) or pass --config <path>. ` +
+         `Environments can also be created at runtime through the API.`;
+      logger.info(this.unconfiguredNotice);
    }
 
    /**
@@ -1450,6 +1459,8 @@ export class EnvironmentStore {
          initialized: boolean;
          frozenConfig: boolean;
          operationalState: components["schemas"]["ServerStatus"]["operationalState"];
+         version: string;
+         emptyReason?: string;
          loadErrors?: LoadError[];
       } = {
          timestamp: Date.now(),
@@ -1457,6 +1468,7 @@ export class EnvironmentStore {
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState,
+         version: SERVER_VERSION,
       };
 
       const environments = await this.listEnvironments(true);
@@ -1539,6 +1551,12 @@ export class EnvironmentStore {
       // this field existed.
       if (loadErrors.length > 0) {
          status.loadErrors = loadErrors;
+      }
+      // "serving" with an empty environments list reads as healthy. This is
+      // the one place a caller polling /status learns the server found no
+      // config, rather than having been configured with nothing.
+      if (this.unconfiguredNotice && status.environments.length === 0) {
+         status.emptyReason = this.unconfiguredNotice;
       }
 
       return status;
