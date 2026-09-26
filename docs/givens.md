@@ -309,6 +309,11 @@ link's values, and Reset discards those too.
 
 ## Coming from `#(filter)`
 
+`#(filter)` is deprecated. Do not add one to a model, not even for `required`,
+`implicit`, or a date or number range: each of those has a `given:` form, listed
+below. Existing `#(filter)` models still run, and this section is for migrating
+them.
+
 The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
 `##(filters)` annotations is no longer filterable from a notebook, and one with
 a `required` filter cannot be satisfied there at all. The annotations still work
@@ -337,7 +342,7 @@ becomes two givens and one `where:`:
 given: REGION :: filter<string> is f''
 
 #(description="Only include orders above this amount (USD)")
-given: MIN_AMOUNT :: number is 0
+given: MIN_AMOUNT :: number
 
 source: sales is orders_base extend {
   where: region ~ $REGION and amount > $MIN_AMOUNT
@@ -351,16 +356,21 @@ is exclusive in the same way. There is no inclusive comparator, so a `>=` filter
 was already being expressed some other way and should keep whatever spelling it
 had.
 
-Three things worth knowing while converting:
+Things worth knowing while converting:
 
 - **`type=in` and `type=equal` become `filter<string>`**, whose value is filter
   syntax rather than a bare value, so one control can carry several values. The
   empty filter `f''` is the natural "no constraint" starting point.
-- **A `required` filter has no direct equivalent.** A given always has a value,
-  its default, so "the reader must choose" is expressed by picking a default
-  that is safe to run, or by using `#(access_filter)` where the requirement is
-  really about access rather than about filtering. See
+- **A `required` filter becomes a given with no default**, as `MIN_AMOUNT` is
+  above. A query that omits it fails with "Given 'MIN_AMOUNT' has no value and
+  no default", which is what `required` did. Where the requirement is really
+  about access rather than filtering, use `#(access_filter)` instead. See
   [Row-level access](row-level-access.md).
+- **An `implicit` filter becomes `#(access_filter)`**, over a given that a
+  trusted tier sets, since the value comes from the system and not the reader.
+- **A range (`greater_than` and `less_than` on one dimension) becomes one
+  `filter<number>` or `filter<date>` given**, e.g. `where: amount ~ $AMOUNT`,
+  and the caller sends a filter expression such as `>= 50`.
 - **The name is the reader-facing label**, so it appears in the Parameters panel
   and in the URL. `#(description=…)` supplies the helper text underneath.
 
