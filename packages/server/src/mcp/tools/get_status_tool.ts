@@ -14,7 +14,9 @@ const GET_STATUS_DESCRIPTION = `Report the server's health: its operational stat
 A JSON object with:
 - operationalState: "initializing" | "serving" | "throttled" | "draining".
 - initialized: whether startup finished.
+- version: this server's release version.
 - environments: each environment's name with its loaded package names.
+- emptyReason (only present when the server found no config at startup): why environments is empty, and the path it checked. The server still reports serving in that state.
 - loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (reload_package) to clear it.
 
 No loadErrors key means everything configured loaded and nothing is stale.`;
@@ -41,6 +43,7 @@ export function registerGetStatusTool(
          const payload = {
             operationalState: status.operationalState,
             initialized: status.initialized,
+            version: status.version,
             environments: status.environments.map((environment) => ({
                name: environment.name,
                // Name is optional in the API schema but always set by
@@ -50,6 +53,9 @@ export function registerGetStatusTool(
                   .map((pkg) => pkg.name)
                   .filter((name): name is string => name !== undefined),
             })),
+            ...(status.emptyReason !== undefined && {
+               emptyReason: status.emptyReason,
+            }),
             ...(status.loadErrors !== undefined && {
                loadErrors: status.loadErrors,
             }),
