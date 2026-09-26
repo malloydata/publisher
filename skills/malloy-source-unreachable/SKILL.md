@@ -21,6 +21,8 @@ Most packages publish a curated surface, so a source being absent or refused is 
 
 A 403 names a source, so it tells you the source exists. A plain 404 tells you nothing at all. That asymmetry is deliberate: a source that is both hidden AND gated answers a plain **404**, so you can never use a 403, or the wording of a 404, to discover that a hidden gated name is real.
 
+**One 404 is not about the source at all.** If an exported source you are addressing through `index.malloy` answers `Query target is not queryable`, check its givens. A source that reads a given with no default, which `index.malloy` does not import, is refused that way. Run the same query through `compile_model`: the problem then reads "references given NAME ... which is not surfaced in this model". The fix belongs in the model, not the query, so report it to the model's author: `index.malloy` has to import that given, either by importing its declaring file whole or by naming the given in a selective import.
+
 ## Addressing the surface, which is the most common 404
 
 A query names a model file. When a package curates its surface, only files on that surface are valid entry points, **even for a source that file declares itself**:
