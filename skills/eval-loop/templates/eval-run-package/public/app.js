@@ -579,7 +579,7 @@ function splitFor(arm) {
     if (!a) continue;
     // A score against a key established wrong is in the attempts but not in
     // `passed`, so it gets its own part rather than hiding under correct/wrong.
-    const p = a.counts === 'false' ? add('unscored', 'unscored', 'not scored · answer key is wrong', null)
+    const p = a.counts != null && !truthy(a.counts) ? add('unscored', 'unscored', 'not scored · answer key is wrong', null)
       : a.outcome === 'pass' ? add('pass', 'pass', 'correct', null)
       : a.outcome === 'fail' ? add('fail:' + (a.where_to_fix || ''), 'fail',
           'wrong · ' + (a.where_to_fix || 'not attributed'),
