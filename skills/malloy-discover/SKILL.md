@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
-> **PREREQUISITE:** Make sure the Malloy MCP tools (`get_context`, `execute_query`, `search_malloy_docs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
+> **PREREQUISITE:** Make sure the Malloy tools (`get_context`, `execute_query`, `search_malloy_docs`) are reachable. If they are missing and a user is present, stop and have them fix the connection (`skill:malloy-getting-started` section 0). If you are running unattended against a local Publisher, with nobody to reconnect you, use its REST API instead: discovery, query, compile and reload all have REST equivalents, listed in the same section.
 
 **This step is silent.** The agent does not present findings to the user yet. That happens in the next step (PROPOSE SCOPE). Silent does not mean unrecorded: append findings to your modeling workflow's `modeling-notes.md` as you go (grain proofs, key collisions, coverage cliffs, metadata drift, problems) so the scope proposal argues from a durable record rather than a reconstruction.
 
@@ -41,7 +41,13 @@ SPDX-License-Identifier: MIT
 9. Proceed to Step 2 (PROPOSE SCOPE)
 ```
 
-**If the model has no sources defined** and no LookML files are present, do NOT silently retry or proceed without data. Tell the user: "No model sources were found. Please check that the package points at a connected data source, then try again."
+**If the model has no sources defined** and no LookML files are present, start from the database instead. If you have `search_database_schema`:
+
+1. Call it with no arguments to list environments and their connections, then with a `connectionName` to list its schemas.
+2. Pass a schema name exactly as it was returned, plus a `searchQuery` describing the data you need, to rank that schema's tables. DuckDB schema names are qualified (`memory.main`), so a bare `main` is rejected.
+3. Each table comes back with a `source:` line. Paste it into the model verbatim as your minimal source (step 6). Compile the whole file with `compile_model` at `scope: "file"` (the default `append` scope rejects a `connection.table(...)` line), then save and reload before previewing it.
+
+If the environment lists no connection, or you do not have `search_database_schema`, do NOT silently retry or proceed without data. Tell the user: "No model sources were found, and no database connection is configured to start one from. Add a connection to the package, then try again."
 
 **If the model has no sources defined** but LookML files ARE present (LookML-only mode), skip steps 3-7. Use connection name and table paths from the LookML review. Flag all proposals as unvalidated.
 
