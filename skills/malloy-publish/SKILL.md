@@ -79,6 +79,22 @@ What it exports is what agents discover **and** what may be queried. Everything 
 
 **About `export { … }`:** the surface filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, and the two compose. You usually don't write it in a leaf model: a file with **no** `export` exposes all of its own top-level sources. It must appear after the definitions it names. See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
 
+**Givens reach callers through `index.malloy`'s imports, not its `export`.** A `given:` is a name like a source. A caller can set it only if `index.malloy` has it in scope, and you never list givens in `export { … }`. How you import decides it:
+
+- `import "orders.malloy"` (the whole file) brings every given `orders.malloy` declares. Use this form, then `export` only the curated sources.
+- `import { orders } from "orders.malloy"` brings only `orders`. Its givens stay behind. Name them too: `import { orders, REGION } from "orders.malloy"`.
+- Imports don't chain. If `orders.malloy` gets its givens from a `givens.malloy`, import `givens.malloy` into `index.malloy` as well, or list the givens in `orders.malloy`'s own `export { … }`.
+
+A given `index.malloy` leaves out fails in one of three ways, depending on how it is declared:
+
+| the given | what happens |
+| --- | --- |
+| has a default | the source runs on the default, and a caller who sets the given gets `400 unknown given 'REGION'. Model surfaces [...]`. Agents never learn it exists |
+| has no default | every query on the source is refused with `404 Query target is not queryable`, although the source is exported. `compile_model` on the same query shows the real cause: `references given ... which is not surfaced in this model` |
+| is read by an `#(authorize)` or `#(access_filter)` gate | the package does not load: `$GROUPS references a given named GROUPS, which is not declared in this model` |
+
+To check, fetch `index.malloy`'s model: its `givens` should list every given a published source reads.
+
 ### The older manifest fields
 
 `publisher.json` has two older keys for this, `explores` and `queryableSources`. A new package uses neither: `index.malloy` does the job.
