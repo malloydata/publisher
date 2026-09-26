@@ -37,17 +37,22 @@ where the failures are, retrieval, the backlog. Publisher renders it natively, s
 these are Malloy reading the model directly with no JavaScript in between and
 nothing to drift.
 
-**`public/index.html`** is the case list -- one expandable row per case, with a
-verdict pill and a row of dots per arm (the entities the golden depends on: a
-ranked entity, a sibling-source alias, in a returned source's docs, or missing).
-Opening a row shows the golden as a table, then per arm: the effort line (turns,
-calls, errors, seconds, dollars), the judge's reasoning, the re-executed rows,
-and the attempt as a **timeline** -- every `get_context` and `execute_query` with
-its input and result, and the prose between them. That is the view a verdict
-cannot give: whether a wrong number came out of a wrong query or a right query
-read wrongly. A notebook cannot do that, and drilling into one case is most of
-what reading an eval consists of. Data comes from `steps.csv`, `required.csv`
-and the `prediction` column on attempts, all built from the run's transcripts.
+**`public/index.html`** leads with the score and where every question landed,
+then the diagnosis backlog (failures grouped by shared cause), an effort strip
+(one dot per question), and the case list: one row per case, with a verdict pill
+and a row of dots per arm (the entities the golden depends on: a ranked entity, a
+sibling-source alias, in a returned source's docs, or missing). Clicking a row
+opens that case in a side panel. Its **Summary** tab says why the judge decided
+as it did, puts the golden beside the rows the agent's final query returns when
+the harness re-runs it, shows the agent's final message, which required entities
+search delivered, and what the attempt cost. Its **Step by step** tab is the
+attempt as a list -- every `get_context` and `execute_query` and the prose
+between them, one line each, opened in place to show the full query and its
+result. That is the view a verdict cannot give: whether a wrong number came out
+of a wrong query or a right query read wrongly. A notebook cannot do that, and
+drilling into one case is most of what reading an eval consists of. Data comes
+from `steps.csv`, `required.csv` and the `prediction` column on attempts, all
+built from the run's transcripts.
 
 Both read the same model, which is what stops the two from disagreeing.
 

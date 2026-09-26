@@ -775,7 +775,7 @@ query: case_matrix is scores -> {
     arms is count()
     arms_passed is passed
   nest: by_arm is {
-    group_by: arm is runs.label, verdict, outcome, confidence,
+    group_by: arm is runs.label, verdict, outcome, confidence, counts,
               where_to_fix is retrieval.where_to_fix,
               recall is retrieval.recall
     order_by: arm
