@@ -2839,6 +2839,24 @@ components:
             governor). Already-loaded packages remain serviceable while throttled;
             callers can treat a throttled server as unhealthy for new load.
             Only reported when the memory governor is enabled.
+        version:
+          type: string
+          readOnly: true
+          description:
+            This server's release version, for example "0.8.2". Use it to tell
+            which build answered, for instance to rule out an old copy served
+            from the npx cache.
+        emptyReason:
+          type: string
+          readOnly: true
+          description:
+            Present only when the server has no environments because no
+            publisher.config.json was found at startup. It names the path that
+            was checked and how to fix it. A server in this state still reports
+            serving, so check this before treating an empty environments list as
+            intended. Absent once any environment exists, including one created
+            at runtime through the API, and absent when a config was found but
+            lists no environments.
         loadErrors:
           type: array
           readOnly: true

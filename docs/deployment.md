@@ -99,7 +99,7 @@ there), REST is on `:4000`, and MCP is on `:4040`.
 
 Without that mount the server still starts and reports `operationalState: serving`, with no
 environments and an empty catalog. That is a supported way to run, since environments can be created
-over the API afterwards, so it is not treated as an error. Two places say so at startup: a line
+over the API afterwards, so it is not treated as an error. Three places say so: a line
 naming the path that was checked,
 
 ```
@@ -109,6 +109,8 @@ be created at runtime through the API.
 ```
 
 and the machine-readable readiness line on stderr, whose counts carry what `serving` alone does not.
+Third, `GET /api/v0/status` (and the `get_status` MCP tool) carries the first line's text as
+`emptyReason`, for as long as no environment exists.
 
 ```
 PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=0 packages=0 load_errors=0
