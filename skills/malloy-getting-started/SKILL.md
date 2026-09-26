@@ -37,7 +37,7 @@ of these you are in:
 
 At minimum you need `get_context`, `list_packages`, `execute_query`, and `search_malloy_docs`. Authoring a model also needs `compile_model` and `reload_package` (see section 4); an older Publisher may not serve those two.
 
-If none of the tools are there, either the server is not running or your client connected before it was. Start the server (`npx @malloy-publisher/server --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`. If the point is to author models against a local package, add `--watch-env <env>`: without it Publisher copies local packages at boot and serves the copies, so saved edits are never read.
+If none of the tools are there, either the server is not running or your client connected before it was. Start the server (`npx @malloy-publisher/server@latest --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`. If the point is to author models against a local package, add `--watch-env <env>`: without it Publisher copies local packages at boot and serves the copies, so saved edits are never read.
 
 ### Scaffolding a package around the user's data
 
