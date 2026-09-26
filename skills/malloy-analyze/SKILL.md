@@ -255,9 +255,9 @@ A notebook is also the home for a polished, narrated report: alternate `>>>markd
 
 **Notebooks do NOT define filters themselves.** When you import a model, the model's runtime parameters are **inherited and displayed automatically**: the publisher renders the controls, parses caller parameters, and applies them server-side. You don't redeclare them in the consumer. If the analysis needs a knob the model doesn't expose, the right move is to add it to the source itself, not to wedge filtering into the consumer.
 
-**Declare that knob as a `given:`.** `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters.
+**Declare that knob as a `given:`.** `#(filter)` is deprecated. Never add a `#(filter)` annotation: every use, including `required`, `implicit`, and date/number ranges, has a `given:` form. See `skill:malloy-model` § Parameterizing sources with `given:`.
 
-The notebook-level `##(filters)` annotation and the dimension-level `#(filter) {"type": "..."}` JSON-blob form are **unsupported legacy syntax**, don't use them. The only supported form is `#(filter) name=... dimension=... type=...` declared above the source.
+The notebook-level `##(filters)` annotation and the dimension-level `#(filter) {"type": "..."}` JSON-blob form are **unsupported legacy syntax**, don't use them.
 
 ### View Refinement
 

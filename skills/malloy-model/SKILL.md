@@ -203,7 +203,7 @@ gets unwieldy.
 
 ## Parameterizing sources with `given:` (preferred)
 
-Native Malloy **`given:` parameters** are the going-forward way to expose tunable knobs (date range, region, manufacturer) on a source - prefer them over `#(filter)` when you author a new model. A `given:` is a first-class runtime parameter you reference in the model's own logic; callers supply values at query time and the model uses them however it declares. Enable them with `##! experimental.givens` at the top of the model.
+Native Malloy **`given:` parameters** are how you expose tunable knobs (date range, region, manufacturer) on a source. `#(filter)` is deprecated: never add one. A `given:` is a first-class runtime parameter you reference in the model's own logic; callers supply values at query time and the model uses them however it declares. Enable them with `##! experimental.givens` at the top of the model.
 
 ```malloy
 ##! experimental.givens
@@ -222,77 +222,40 @@ A given is **declared bare** but **referenced with a `$` sigil** in expressions 
 
 - **Give every optional filter a neutral, match-all default** - a `filter<>` given defaulting to `f''` - so an unsupplied value returns unfiltered rows, matching how `#(filter)` behaves when a value is omitted. Because the given bakes an always-on `where:` into the source, a non-neutral default (e.g. a date floor) applies to *every* read of the source, not just the ones that opt in - so keep defaults neutral. Defaults must be Malloy literals.
 - **Givens don't auto-inject a `where:`.** Unlike `#(filter)`, you write the filter expression that references the given yourself (e.g. `where: dimension ~ $given_name`).
-- **Not every filter maps cleanly.** A filter with no neutral match-all literal default - e.g. a scalar date/number range like `> @2020-01-01` - is not a good `given:`; keep those on `#(filter)`. Two more cases keep using `#(filter)`: mandatory scoping filters (`required`) and system-injected row-level filters (`implicit`), both below.
+- **Every `#(filter)` use has a `given:` form.** Never add a `#(filter)` annotation to a model, not even for `required`, `implicit`, or a date/number range:
+
+| You want | Write this | Not this |
+|---|---|---|
+| An optional value or list filter | `given: REGION :: filter<string> is f''` and `where: region ~ $REGION` | `#(filter) dimension=region type=in` |
+| A date or number range | `given: MIN_SALE :: filter<number> is f''` (or `filter<date>`) and `where: sale_price ~ $MIN_SALE`. The caller sends a filter expression such as `>= 50`. | two `#(filter)` lines, `greater_than` and `less_than` |
+| A value every query must supply (the primary key is only unique within it, or the table is too big to scan whole) | a given with **no default**, e.g. `given: EVENT_DATE :: date` and `where: event_date = $EVENT_DATE`. A query that omits it fails with "Given 'EVENT_DATE' has no value and no default". | `#(filter) ... required` |
+| A row filter the system applies, not the caller | `#(access_filter) org_id in $ORG_IDS`, with `ORG_IDS` set by a trusted tier (see the trust caveat below) | `#(filter) ... implicit` |
 
 Givens are also the substrate for access control - see "Access Control: `#(authorize)` and `#(access_filter)`" below.
 
-## Legacy: Parameterizable Filters with `#(filter)`
+## Legacy: reading an existing `#(filter)` model
 
-`#(filter)` is the older, Publisher-specific mechanism for the same idea. Publisher parses the annotation, exposes filter metadata via the API, renders filter widgets in the notebook UI, and **injects `where:` clauses into queries server-side** when callers supply parameters. Prefer `given:` (above) for new models; keep reading and maintaining `#(filter)` on existing models, and keep using it for the two cases `given:` can't cover yet - `required` (mandatory scoping) and `implicit` (system-injected filters), below.
+`#(filter)` is deprecated. Do not add one, and do not copy one from an existing model into a new source. This section is here so you can read, call, and migrate a model that already has them.
 
-Filters are a **runtime/modeling construct**, not just documentation. They shape governance, query latency (forcing filters keeps result sets bounded), and correctness (see `required` below). They live on the source, never on the consumer: an ad-hoc report or notebook that imports a source inherits and displays that source's filters automatically; it does not (and cannot) declare new ones. If an existing `#(filter)`-based source needs another knob, add it to the source itself, not to the consumer.
-
-### Syntax
+Publisher parses the annotation, lists the filters in the API, and **injects a `where:` clause server-side** when a caller passes a value (`filterParams` / `filter_params`). The annotation sits above the `source:` line:
 
 ```malloy
 #(filter) [name=NAME] dimension=DIMENSION type=TYPE [implicit] [required]
 ```
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `name` | No | Unique identifier for the filter; defaults to the dimension name. Used as the API parameter key. |
-| `dimension` | Yes | The source dimension this filter targets. Quote with `"..."` if the name contains spaces. |
-| `type` | Yes | Comparator (see below). |
-| `implicit` | No | Hides the filter from the UI and API summaries. Used for infrastructure concerns the system injects rather than the user. |
-| `required` | No | Server returns 400 if a required filter has no value at query time. Use this for governance, latency, and correctness, see below. |
+| Part | Meaning |
+|------|---------|
+| `name` | The API parameter key. Defaults to the dimension name. |
+| `dimension` | The dimension the filter targets. |
+| `type` | `equal` (`=`), `in` (any of several values), `like` (`~ '%value%'`), `greater_than` (`>`, exclusive), `less_than` (`<`, exclusive). |
+| `required` | The server returns 400 when a query supplies no value. |
+| `implicit` | Hidden from the UI and the API filter list. |
 
-### Filter types
+Publisher formats the value from the dimension's type (`'value'`, bare `true`/`false`, `@YYYY-MM-DD`), so a caller passes it unquoted.
 
-| Type | Malloy clause | Use case |
-|------|---------------|----------|
-| `equal` | `dimension = 'value'` | Exact match on a single value |
-| `in` | `dimension ? 'a' \| 'b' \| 'c'` | Match any of multiple values |
-| `like` | `dimension ~ '%value%'` | Substring / pattern matching |
-| `greater_than` | `dimension > value` | Range floor (after, minimum) |
-| `less_than` | `dimension < value` | Range ceiling (before, maximum) |
+`#(filter)` is not a security boundary. A caller skips it with `bypass_filters=true` (REST) or `bypassFilters: true` (POST body), or by writing their own query text. Use givens with `#(authorize)` / `#(access_filter)` for access control.
 
-### Example
-
-```malloy
-#(filter) name=Manufacturer dimension=Manufacturer type=in
-#(filter) name=Subject dimension=Subject type=like
-#(filter) name=Major_Recall dimension="Major Recall" type=equal
-#(filter) name=Recall_After dimension="Report Received Date" type=greater_than
-#(filter) name=Recall_Before dimension="Report Received Date" type=less_than
-source: recalls is duckdb.table('data/auto_recalls.csv') extend {
-  measure:
-    recall_count is count()
-}
-```
-
-For date-range filters, declare two filters with distinct `name` values targeting the same dimension (one `greater_than`, one `less_than`).
-
-### When to use `required`
-
-`required` filters are a correctness and latency mechanism, not just UX. Mark a filter `required` when:
-
-1. **Modeling correctness, the source's `primary_key:` is only unique under a filter.** If a high-cardinality key is not unique across the whole table but is unique within a scoping dimension, then that scoping dimension MUST be supplied for symmetric aggregation to produce correct numbers. For example, if `events.id` repeats across days but is unique within a single `event_date`, queries that don't pin the date can fan out and return hash-collision-sized garbage (~10²¹). Declare `#(filter) name=Event_Date dimension=event_date type=equal required` so the server refuses queries that don't provide it.
-2. **Query latency, the source spans more data than any single query should scan.** A multi-year, multi-region table where every reasonable analysis is scoped to a date range or region: making the date filter required prevents accidental full-table scans.
-3. **Partial views** that are only meaningful inside a date range, region, or business segment.
-
-For (1), pair the required filter with a comment explaining the cardinality dependency, and consider also declaring `#(doc)` on the source noting the constraint.
-
-### When to use `implicit`
-
-Use `implicit` for filters the *system* must inject but users should not see. The filter applies; it just doesn't appear in the UI or API filter list.
-
-### Type-aware literals
-
-Publisher formats values based on the dimension's data type, `string` → `'value'`, `boolean` → bare `true`/`false`, `date` → `@YYYY-MM-DD`. You don't quote values yourself in the API call; Publisher handles formatting.
-
-### Bypass
-
-Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip filter injection entirely. `#(filter)` is not a security boundary against caller-authored query text or `bypassFilters`; use givens + `#(authorize)`.
+**To migrate** a source, replace each annotation using the table above, then delete it. `type=greater_than` and `type=less_than` are exclusive, so a plain comparison you convert one to is `>` or `<`, not `>=` or `<=`. `docs/givens.md` § "Coming from `#(filter)`" has a worked conversion.
 
 ## Access Control: `#(authorize)` and `#(access_filter)`
 
