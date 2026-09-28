@@ -23,6 +23,25 @@
 #       statement: >
 #         Package and version, how it is reached, why the vulnerable path is not
 #         exercised here, and what fix or upgrade retires the entry.
+#
+# Version overrides added to clear findings. package.json cannot carry comments, so
+# each security-driven `resolutions` entry is recorded here with the condition that
+# retires it. Retiring one means deleting it, refreshing the lockfile, and re-running
+# the scans: the entry can go when the scans stay clean without it.
+#
+#   package.json  "fast-xml-parser": "^5.5.6"
+#     Forces every copy onto 5.x. Needed because @aws-sdk/xml-builder exact-pins
+#     5.2.5 inside the AWS SDK tree that snowflake-sdk 2.3.1 carries (itself exact-
+#     pinned by @malloydata/db-snowflake), and Bun has no nested overrides. Moving the
+#     server's own @aws-sdk/client-s3 does not reach that tree. Retire when
+#     @malloydata/db-snowflake moves to a snowflake-sdk whose AWS SDK uses
+#     @aws-sdk/xml-builder 3.972.31 or later, which has no fast-xml-parser dependency.
+#   package.json  "basic-ftp": "^5.3.1", "protobufjs": "^7.5.5"
+#     In range for every parent; they only move the lockfile. Retire at the next
+#     refresh that resolves those versions without them.
+#   packages/server/k6-tests/package.json  "orval": "^7.21.0", "handlebars": "^4.7.9"
+#     Retire with the orval entries below, when k6-tests moves to an
+#     @grafana/openapi-to-k6 release that supports orval 8.
 vulnerabilities:
   # Eleven CRITICALs and one HIGH in orval 7.21.0, reached as k6-tests -> @grafana/openapi-to-k6 ->
   # orval. The fix is 8.21.0-only (no 7.x backport), and no @grafana/openapi-to-k6
@@ -50,9 +69,11 @@ vulnerabilities:
   #      builder's own URL handling was not audited against the same injection.
   #   2. Every CVE needs attacker-controlled schema content. The only schema consumed
   #      is this repository's own api-doc.yaml.
-  #   3. orval is build-time codegen only, run by `bun run generate-clients` in
-  #      .github/workflows/k6-tests.yml on push to main and on dispatch. k6-tests has
-  #      its own lockfile outside the root workspace, so it is in no Publisher image.
+  #   3. orval is build-time codegen only, run by `bun run generate-clients`. The one
+  #      workflow that runs it, .github/workflows/k6-tests.yml, has been disabled since
+  #      2026-08-12, so today it runs only when someone generates the clients by hand.
+  #      k6-tests has its own lockfile outside the root workspace, so it is in no
+  #      Publisher image.
   # HIGH, accepted so the SARIF upload (which reads this file) stops reporting it:
   # GitHub's Code Scanning check on pull requests fails on new HIGH alerts.
   - id: CVE-2026-62680

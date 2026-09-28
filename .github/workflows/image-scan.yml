@@ -79,8 +79,10 @@ jobs:
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
           tags: malloy-publisher:scan
+          # Read-only: build.yml's docker_smoke_test builds the same image with the same
+          # arguments and writes this cache. Writing it again here would store a second
+          # copy per PR without making either build faster.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -98,7 +100,7 @@ jobs:
       # below still runs on those PRs; only the Code Scanning upload is skipped.
       - name: Upload SARIF to Code Scanning
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
@@ -138,7 +140,7 @@ jobs:
 
       - name: Upload SARIF to Code Scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-image-published.sarif
           category: trivy-image-published

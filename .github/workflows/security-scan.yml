@@ -84,7 +84,7 @@ jobs:
       # below still runs on those PRs; only the Code Scanning upload is skipped.
       - name: Upload SARIF to Code Scanning
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-vulns.sarif
           category: trivy-fs-vulns
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload SARIF to Code Scanning
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-config.sarif
           category: trivy-config
@@ -187,13 +187,17 @@ jobs:
 
       - name: Upload SARIF to Code Scanning
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-secrets.sarif
           category: trivy-secrets
 
-      # Gated at CRITICAL to match the other two jobs.
-      - name: Fail on CRITICAL secrets
+      # Gated at HIGH, unlike the other two jobs. For a vulnerability, severity measures
+      # exploitability; a committed credential is an incident whatever its rating, and
+      # Trivy rates `private-key`, `slack-access-token` and `dockerconfig-secret` HIGH.
+      # The SARIF upload above is skipped for fork pull requests, so this step is the
+      # only signal those get.
+      - name: Fail on CRITICAL or HIGH secrets
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -201,7 +205,7 @@ jobs:
           scan-ref: .
           scanners: secret
           format: table
-          severity: CRITICAL
+          severity: CRITICAL,HIGH
           exit-code: "1"
           trivyignores: .trivyignore.yaml
           skip-dirs: |
