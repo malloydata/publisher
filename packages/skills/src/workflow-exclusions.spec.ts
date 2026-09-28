@@ -76,7 +76,10 @@ describe("publish-packages.sh's skills EXCLUDE agrees with exclusions.ts", () =>
       // to actually hand it to `git diff`, or excluding a path here does
       // nothing to the release-time content check it exists to fix.
       const fn = /skills_diff_status\(\)\s*\{[\s\S]*?\n\}/.exec(script);
-      expect(fn, "could not find the skills_diff_status() function body").not.toBeNull();
+      expect(
+         fn,
+         "could not find the skills_diff_status() function body",
+      ).not.toBeNull();
       expect(
          fn![0],
          'skills_diff_status\'s git diff does not pass "${EXCLUDE[@]}"',

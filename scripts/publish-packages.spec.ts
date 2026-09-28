@@ -19,7 +19,7 @@
 // python-client skips on every run: a fake python3 answers its manifest read
 // and a fake curl reports the version as already on PyPI.
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -34,11 +34,42 @@ import path from "node:path";
 const REPO_ROOT = path.join(import.meta.dir, "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "publish-packages.sh");
 
-// A real commit before this repo's independent-versioning work landed, used
-// as a stand-in npm `gitHead` so the skills content diff against HEAD comes
-// out "changed" (packages/skills/package.json's version differs, and that is
-// not excluded).
-const OLD_SHA = "281aecbfcd7a156e86873ad194180b87605bf232";
+// A synthetic empty-tree commit, so the skills diff against HEAD is "changed"
+// in any clone, shallow CI checkouts included. It is written to a temp object
+// store layered over the repo's, so the repo itself gains no objects.
+const GIT_OBJECTS = mkdtempSync(
+  path.join(tmpdir(), "publish-packages-objects-"),
+);
+const GIT_ENV: Record<string, string> = {
+  GIT_OBJECT_DIRECTORY: GIT_OBJECTS,
+  GIT_ALTERNATE_OBJECT_DIRECTORIES: path.resolve(
+    REPO_ROOT,
+    Bun.spawnSync(["git", "rev-parse", "--git-path", "objects"], {
+      cwd: REPO_ROOT,
+    })
+      .stdout.toString()
+      .trim(),
+  ),
+};
+function gitOut(args: string[], stdin?: string): string {
+  const proc = Bun.spawnSync(["git", ...args], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      ...GIT_ENV,
+      GIT_AUTHOR_NAME: "test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    },
+    stdin: stdin === undefined ? undefined : Buffer.from(stdin),
+  });
+  if (proc.exitCode !== 0)
+    throw new Error(`git ${args.join(" ")}: ${proc.stderr}`);
+  return proc.stdout.toString().trim();
+}
+const OLD_SHA = gitOut(["commit-tree", gitOut(["mktree"], ""), "-m", "old"]);
+afterAll(() => rmSync(GIT_OBJECTS, { recursive: true, force: true }));
 
 // This checkout's own HEAD, used as a stand-in npm `gitHead` so the skills
 // content diff comes out "unchanged" (diffing HEAD against HEAD is always
@@ -46,7 +77,6 @@ const OLD_SHA = "281aecbfcd7a156e86873ad194180b87605bf232";
 const HEAD_SHA = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: REPO_ROOT })
   .stdout.toString()
   .trim();
-
 
 const dirs: string[] = [];
 
@@ -184,6 +214,7 @@ function runPublishScript(
 
   const env: Record<string, string> = {
     ...process.env,
+    ...GIT_ENV,
     PATH: `${binDir}:${process.env.PATH}`,
     FAKE_NPM_CONFIG: npmConfigPath,
     FAKE_NPM_STATE: npmStatePath,
@@ -225,9 +256,16 @@ function runPublishScript(
 }
 
 /** Whether the gh log recorded a `workflow run <name> ...` dispatch. */
-function dispatchedArgs(ghLog: unknown[][], workflowFile: string): string[] | null {
+function dispatchedArgs(
+  ghLog: unknown[][],
+  workflowFile: string,
+): string[] | null {
   for (const call of ghLog) {
-    if (call[0] === "workflow" && call[1] === "run" && call[2] === workflowFile) {
+    if (
+      call[0] === "workflow" &&
+      call[1] === "run" &&
+      call[2] === workflowFile
+    ) {
       return call as string[];
     }
   }
@@ -242,7 +280,9 @@ function baseConfig(overrides: NpmConfig): NpmConfig {
 
 describe("publish-packages.sh", () => {
   it("prerelease NEW_VERSION: exits 0 and dispatches nothing", () => {
-    const result = runPublishScript(baseConfig({}), { NEW_VERSION: "0.9.0-rc.1" });
+    const result = runPublishScript(baseConfig({}), {
+      NEW_VERSION: "0.9.0-rc.1",
+    });
     expect(result.code).toBe(0);
     expect(result.summary).toContain("Skipped for prerelease version");
     expect(result.ghLog.length).toBe(0);
@@ -259,8 +299,12 @@ describe("publish-packages.sh", () => {
           { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
           { stdout: "0.1.29" },
         ],
-        "@malloy-publisher/create-malloy-package dist-tags.latest": { stdout: "0.0.22" },
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": { stdout: "" },
+        "@malloy-publisher/create-malloy-package dist-tags.latest": {
+          stdout: "0.0.22",
+        },
+        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+          stdout: "",
+        },
         "@malloy-publisher/create-malloy-package@0.0.23 version": [
           { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
           { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
@@ -275,11 +319,12 @@ describe("publish-packages.sh", () => {
 
     const skillsRun = dispatchedArgs(result.ghLog, "skills-npm.yml");
     expect(skillsRun).not.toBeNull();
-    expect(skillsRun).toEqual(
-      expect.arrayContaining(["-f", "version=0.1.29"]),
-    );
+    expect(skillsRun).toEqual(expect.arrayContaining(["-f", "version=0.1.29"]));
 
-    const scaffolderRun = dispatchedArgs(result.ghLog, "create-malloy-package-npm.yml");
+    const scaffolderRun = dispatchedArgs(
+      result.ghLog,
+      "create-malloy-package-npm.yml",
+    );
     expect(scaffolderRun).not.toBeNull();
     expect(scaffolderRun).toEqual(
       expect.arrayContaining([
@@ -298,8 +343,12 @@ describe("publish-packages.sh", () => {
       baseConfig({
         "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
         "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
-        "@malloy-publisher/create-malloy-package dist-tags.latest": { stdout: "0.0.22" },
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": { stdout: "" },
+        "@malloy-publisher/create-malloy-package dist-tags.latest": {
+          stdout: "0.0.22",
+        },
+        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+          stdout: "",
+        },
         "@malloy-publisher/create-malloy-package@0.0.23 version": [
           { exit: 1, stdout: "npm ERR! code E404" },
           { exit: 1, stdout: "npm ERR! code E404" },
@@ -312,7 +361,10 @@ describe("publish-packages.sh", () => {
     expect(dispatchedArgs(result.ghLog, "skills-npm.yml")).toBeNull();
     expect(result.summary).toContain("skipped: nothing to publish");
 
-    const scaffolderRun = dispatchedArgs(result.ghLog, "create-malloy-package-npm.yml");
+    const scaffolderRun = dispatchedArgs(
+      result.ghLog,
+      "create-malloy-package-npm.yml",
+    );
     expect(scaffolderRun).not.toBeNull();
     expect(scaffolderRun).toEqual(
       expect.arrayContaining([
@@ -336,20 +388,28 @@ describe("publish-packages.sh", () => {
           { exit: 1, stdout: "npm ERR! code E404" },
           { stdout: "0.1.29" },
         ],
-        "@malloy-publisher/create-malloy-package dist-tags.latest": { stdout: "0.0.22" },
+        "@malloy-publisher/create-malloy-package dist-tags.latest": {
+          stdout: "0.0.22",
+        },
         // Already pinned to this release's server version: a re-run.
-        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": { stdout: "0.9.0" },
+        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+          stdout: "0.9.0",
+        },
       }),
     );
 
     expect(dispatchedArgs(result.ghLog, "skills-npm.yml")).not.toBeNull();
-    expect(dispatchedArgs(result.ghLog, "create-malloy-package-npm.yml")).toBeNull();
+    expect(
+      dispatchedArgs(result.ghLog, "create-malloy-package-npm.yml"),
+    ).toBeNull();
     expect(result.summary).toContain(
       "@malloy-publisher/create-malloy-package` skipped: nothing to publish",
     );
     // The specific reason (decideScaffolder's stderr) rides on stdout via the
     // job log prefixer, not the step summary.
-    expect(result.stdout).toContain("latest's publisherServer already equals 0.9.0");
+    expect(result.stdout).toContain(
+      "latest's publisherServer already equals 0.9.0",
+    );
   }, 15000);
 
   it("gitHead empty: aborts, exits non-zero, dispatches nothing", () => {
