@@ -24,7 +24,7 @@
 #         Package and version, how it is reached, why the vulnerable path is not
 #         exercised here, and what fix or upgrade retires the entry.
 vulnerabilities:
-  # Eleven CRITICALs in orval 7.21.0, reached as k6-tests -> @grafana/openapi-to-k6 ->
+  # Eleven CRITICALs and one HIGH in orval 7.21.0, reached as k6-tests -> @grafana/openapi-to-k6 ->
   # orval. The fix is 8.21.0-only (no 7.x backport), and no @grafana/openapi-to-k6
   # release admits orval 8.x: 0.3.2 and the latest, 0.4.1, both declare `orval: ^7.5.0`.
   # Forcing it does not work either: with orval resolved to 8.38.0, `bun run
@@ -53,6 +53,19 @@ vulnerabilities:
   #   3. orval is build-time codegen only, run by `bun run generate-clients` in
   #      .github/workflows/k6-tests.yml on push to main and on dispatch. k6-tests has
   #      its own lockfile outside the root workspace, so it is in no Publisher image.
+  # HIGH, accepted so the SARIF upload (which reads this file) stops reporting it:
+  # GitHub's Code Scanning check on pull requests fails on new HIGH alerts.
+  - id: CVE-2026-62680
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Generation-time SSRF and
+      remote/local file inclusion through an unrestricted `$ref`. The only input
+      schema is this repository's api-doc.yaml, and every one of its `$ref`s is a
+      local `#/...` pointer, so no remote or file reference is followed. Used only
+      to generate the k6 smoke and load test clients; not part of the Publisher
+      server or its image. Fix is 8.22.0 and no @grafana/openapi-to-k6 release
+      admits 8.x yet; tracking https://github.com/grafana/openapi-to-k6/pull/156.
   - id: CVE-2026-62681
     paths: ["packages/server/k6-tests/bun.lock"]
     expired_at: 2026-12-01
