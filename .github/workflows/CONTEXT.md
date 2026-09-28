@@ -402,6 +402,12 @@ everything in this file that follows from them changes with it.
 
 ### The first PyPI publish
 
+**Paused (work in progress).** `publish-packages.sh` currently does not dispatch `python-sdk.yml`:
+the `publish_pkg python-client` line at the end of the script is commented out, and the job prints a
+notice saying so. The first publish, `malloy-publisher-sdk==0.1.0`, never appeared on PyPI, and the
+25-minute wait for it failed the release after skills and create-malloy-package had already published.
+Everything below describes the path as it runs once that line is restored.
+
 `python-client` is the third train `publish-packages` dispatches, and it got there by replacing a
 publish gate that had never run rather than by repairing it. The old job was gated
 `if: startsWith(github.ref, 'refs/tags/sdk-python-')` while `on: push` named `branches: [main]` and no

@@ -16,8 +16,8 @@
 // registry or git dependency of its own and is exercised by reading the
 // script, not by this harness.
 //
-// python-client skips on every run: a fake python3 answers its manifest read
-// and a fake curl reports the version as already on PyPI.
+// python-client's publish is paused in the script; the fake python3 and curl
+// keep it skipping (already on PyPI) if that line is restored.
 
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {

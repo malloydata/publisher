@@ -386,7 +386,9 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Publish skills, create-malloy-package, then python-client
+      # python-client's PyPI publish is paused (work in progress); see the end of
+      # scripts/publish-packages.sh.
+      - name: Publish skills and create-malloy-package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Through env, not interpolated into the script body.

@@ -918,4 +918,13 @@ publish_resolved() {
 # npm packages already published, which the job summary records.
 publish_indep_pkg skills skills-npm.yml
 publish_indep_pkg create-malloy-package create-malloy-package-npm.yml
-publish_pkg python-client python-sdk.yml pypi
+
+# Work in progress: the PyPI publish of python-client is paused. Its first
+# publish (malloy-publisher-sdk==0.1.0) never appeared on PyPI, and waiting
+# for it failed the release after the npm packages had already published.
+# The publish path is kept intact; restore the line below to re-enable it.
+# python-sdk.yml's publish job runs only on a workflow_dispatch on main, so
+# while this stays commented out nothing publishes to PyPI from a release.
+# publish_pkg python-client python-sdk.yml pypi
+echo "::notice title=python-client::PyPI publish is paused (work in progress); python-sdk.yml was not dispatched"
+echo "- \`python-client\` NOT dispatched: PyPI publish is paused (work in progress)" >> "$GITHUB_STEP_SUMMARY"

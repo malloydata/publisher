@@ -263,10 +263,13 @@ npm view "@malloy-publisher/create-malloy-package@$(npm view @malloy-publisher/c
 its `publisherServer` already equals the version this release is about to ship —
 that only happens on a re-run.
 
-Also confirm the Python client, since the release now publishes it. Its version
-is in `pyproject.toml`, not a `package.json`, and PyPI answers 404 for the whole
-project until the first upload lands — so "PyPI: 404" here is the expected
-reading today and NOT a reason to skip the comparison next time.
+Also check the Python client. Its PyPI publish is paused (work in progress): the
+release does not dispatch python-sdk.yml until the `publish_pkg python-client`
+line at the end of scripts/publish-packages.sh is restored, so this reading does
+not change between releases for now. Its version is in `pyproject.toml`, not a
+`package.json`, and PyPI answers 404 for the whole project until the first upload
+lands — so "PyPI: 404" here is the expected reading today and NOT a reason to
+skip the comparison next time.
 
 ```bash
 printf 'python-client: PyPI %s, main %s\n' \
