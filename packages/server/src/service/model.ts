@@ -135,7 +135,12 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { gateGivenSource, malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   assertFilterGivensParse,
+   gateGivenSource,
+   malloyGivenToApi,
+   type MalloyGiven,
+} from "./given";
 import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
@@ -6544,6 +6549,19 @@ export class Model {
       });
    }
 
+   /**
+    * Refuse a request whose value for one of this model's `filter<T>` givens
+    * does not parse, with a 400 naming the given and the parser's reason. Run
+    * by a query and a notebook cell after their authorize gate, so a denied
+    * caller still gets its 403. /compile checks the submitted text's own givens
+    * instead (see Environment.compileSource).
+    */
+   public assertFilterGivens(
+      givens: Record<string, GivenValue> | undefined,
+   ): void {
+      assertFilterGivensParse(this.givens, givens);
+   }
+
    public async getQueryResults(
       sourceName?: string,
       queryName?: string,
@@ -7367,6 +7385,9 @@ export class Model {
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
       });
+      // After the gate, so a denied caller gets its 403 rather than a 400 about
+      // a value; before prepare, which is where Malloy would parse it.
+      this.assertFilterGivens(givens);
       // No post-hoc check of `queryHadRowLevelFilterAttached(runnable)` here:
       // when `routingBlockedByRowLevelGate` was false and routing succeeded
       // above, `runnable` at this point is the storage serve-shape's own
@@ -8585,6 +8606,8 @@ export class Model {
                   givens ?? {},
                );
             }
+            // After the gate, as on the query path; before prepare.
+            this.assertFilterGivens(givens);
 
             const cellMaxRows = getMaxQueryRows();
             const cellMaxBytes = getMaxResponseBytes();

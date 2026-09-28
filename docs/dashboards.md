@@ -256,14 +256,19 @@ given: MIN_SALE :: filter<number> is f''
 given: SINCE :: date is @2023-01-01
 ```
 
-| Tag                                              | Renders as                                                                                 |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| `control=select` + `suggest { … }`               | A dropdown whose options are queried from the data                                         |
-| `control=multiselect` + `suggest { … }`          | The same, taking several values                                                            |
-| `range_min=` / `range_max=` on `filter<number>`  | A two-handled range slider (`[lo to hi]`, or `>= lo` with the upper handle at the ceiling) |
-| none, on a `filter<date>` or `filter<timestamp>` | A time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days  |
-| none, on a `date` or `timestamp`                 | A date picker                                                                              |
-| none, on a `filter<string>`                      | A text box taking Malloy filter syntax                                                     |
+| Tag                                              | Renders as                                                                                        |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `control=select` + `suggest { … }`               | A dropdown whose options are queried from the data                                                |
+| `control=multiselect` + `suggest { … }`          | The same, taking several values                                                                   |
+| `range_min=` / `range_max=` on `filter<number>`  | A two-handled range slider (`[lo to hi]`, or `>= lo` with the upper handle at the ceiling)        |
+| none, on a `filter<date>` or `filter<timestamp>` | A time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days         |
+| none, on a `date` or `timestamp`                 | A date picker                                                                                     |
+| none, on a `filter<boolean>`                     | A dropdown of `true` and `false`; blank uses the model's default, so no filter when that is `f''` |
+| none, on a `filter<string>`                      | A text box taking Malloy filter syntax                                                            |
+
+`control=select` and `suggest` apply to string givens only; any other type gets the control in this
+table for its type. A value a given's type cannot read, such as `asdf` for a `filter<boolean>`, is
+refused with a `400` that names the given and quotes the parser's reason.
 
 A `suggest` reads either a `source=` and `dimension=` pair, or a named `query=` when the option list
 needs its own ordering or filtering. **The source or query has to resolve in the dashboard file**,
