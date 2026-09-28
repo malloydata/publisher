@@ -61,6 +61,12 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
   Publisher *honours* the header is working as documented. A finding that it honours one it should
   not — on a notebook or `/compile` request, from a body field, or without counting and logging
   it — is in scope below.
+- `PUBLISHER_PRELOAD_MODULES` importing whatever the process environment names. It is a
+  deployment setting with the authority of the command line, read from the environment alone and
+  never from the config file or the API
+  ([docs/security-posture.md § The trust boundary](docs/security-posture.md#the-trust-boundary)).
+  A finding that it loads a module the operator named is working as documented; a finding that a
+  request or a config edit can add to the list is in scope below.
 - Broad reach for whoever can publish a package or `PATCH` a connection on a bare Publisher
   ([docs/query-metadata.md](docs/query-metadata.md), [docs/packages.md](docs/packages.md)).
 - A deployment that has widened `PUBLISHER_FRAME_ANCESTORS` from its `'self'` default, which is how

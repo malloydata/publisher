@@ -246,6 +246,13 @@ never sees, which is why the list is an environment variable rather than a `--pr
 preload runs after the built-in drivers have registered, so a module that registers an existing type
 name replaces the built-in for that name; the registries are last-writer-wins.
 
+This is a deployment setting with the authority of the command line, and it is read from the process
+environment only: whoever can set it can already choose the image, the `CMD`, or `NODE_OPTIONS`. It is
+deliberately not a key in `publisher.config.json` and not settable over the API — package registration
+is reachable over the API unless `frozenConfig` is set, and a preload list that lived beside it would
+have made that endpoint a way to load code. See
+[security-posture.md](security-posture.md#the-trust-boundary).
+
 A module that fails to import ends the boot with the module's name in the error. Left to fail quietly,
 the same mistake surfaces on the first package that needs the driver, as an unknown connection type,
 which points nowhere near the cause.

@@ -43,6 +43,15 @@ Concretely:
   reachable server with the default config it is open — but so is the query API, and an attacker
   who can register a package can already read the data directly. Set `"frozenConfig": true` to
   close registration on a deployment where that matters.
+- **Preloading a module is the operator choosing what the process runs.** `PUBLISHER_PRELOAD_MODULES`
+  imports the modules it names into the server and every load worker before they accept work — it
+  is how a connection type or dialect packaged outside this repository registers with the compiler.
+  It is read from the process environment only, which is the same authority as the command line:
+  whoever can set it can already choose the image, the `CMD`, or `NODE_OPTIONS`, so it opens no
+  door that was shut. What keeps it there is that the list is never read from
+  `publisher.config.json` and never settable over the API — package registration is reachable over
+  the API unless `frozenConfig` is set, and a preload list that lived beside it would have made that
+  endpoint a way to load code.
 - **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
   dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
   kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
