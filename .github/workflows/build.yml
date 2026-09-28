@@ -286,6 +286,12 @@ jobs:
         id: duckdb
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
+      # The ISO week, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds weekly instead of being served from the build cache forever.
+      - name: Week for the apt refresh
+        id: week
+        run: echo "value=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        shell: bash
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -294,6 +300,7 @@ jobs:
           load: true
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
+            APT_REFRESH=${{ steps.week.outputs.value }}
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
