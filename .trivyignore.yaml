@@ -1,0 +1,28 @@
+# Trivy ignore file, passed via `trivyignores:` to the vulnerability, config, and
+# secret scans in .github/workflows/security-scan.yml and the image scans in
+# .github/workflows/image-scan.yml.
+#
+# Entries here are scoped acceptances, not blanket suppressions: each is pinned to
+# a specific finding id and (where the finding is file-bound) a path, so it cannot
+# relax policy for anything else. The CRITICAL gates fail the build on any critical
+# finding NOT listed here, so this file is the complete set of criticals the repo
+# currently tolerates.
+#
+# Anything that will be fixed by an upgrade carries `expired_at` -- on that date Trivy
+# stops honouring the entry and the gate goes red again, so the acceptance lapses
+# unless the upgrade lands. Entries with no expiry are risk-accepted won't-fix
+# decisions and must state the compensating control or why the vulnerable code path
+# is unreachable.
+#
+# Entry shape:
+#
+#   vulnerabilities:
+#     - id: CVE-YYYY-NNNNN
+#       paths: ["packages/server/k6-tests/bun.lock"]
+#       expired_at: YYYY-MM-DD
+#       statement: >
+#         Package and version, how it is reached, why the vulnerable path is not
+#         exercised here, and what fix or upgrade retires the entry.
+vulnerabilities: []
+misconfigurations: []
+secrets: []

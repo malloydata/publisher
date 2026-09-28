@@ -1,0 +1,156 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+name: Image Scan
+
+# Trivy vulnerability scans of the Publisher container image.
+#
+# security-scan.yml reads lockfiles in the source tree; this workflow reads the
+# built image, which is what a user actually runs. The two disagree in both
+# directions: the image carries the Debian base layer, the Bun runtime, and the
+# binaries the Dockerfile downloads (DuckDB CLI and extensions), none of which is in
+# a lockfile, and it omits whatever `bun install --production` drops.
+#
+# - `image` job: builds the image from this checkout with the same Dockerfile and
+#   build args as the release build and scans it. Runs on PR, on push to main, and
+#   weekly.
+# - `published-image` job: scans `ms2data/malloy-publisher:latest` as pulled from
+#   Docker Hub. Runs weekly and on dispatch only, since a PR cannot change it. New
+#   advisories against the base layer land here first, without anyone touching the
+#   repo.
+#
+# Enforcement matches security-scan.yml: the full SARIF (all severities) uploads to
+# Code Scanning, then a second CRITICAL-scoped scan with `exit-code: 1` fails the
+# job. Acceptances live in the same .trivyignore.yaml as the source-tree scans.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 12:00 UTC, alongside security-scan.yml.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PUBLISHED_IMAGE: ms2data/malloy-publisher:latest
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+# Keyed on the event as well as the ref: a push to main shares the scheduled run's
+# ref, and without the event in the key it would cancel the weekly run, which is the
+# only run that executes `published-image`.
+concurrency:
+  group: image-scan-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Trivy image scan (built from source)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: "true"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Same derivation as build.yml's docker_smoke_test and docker-image.yml, so
+      # the scanned image bakes the same DuckDB CLI and extensions as a release.
+      - name: Resolve DuckDB version from Malloy
+        id: duckdb
+        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          build-args: |
+            DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
+          tags: malloy-publisher:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: malloy-publisher:scan
+          scanners: vuln
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          trivyignores: .trivyignore.yaml
+
+      # Pull requests from forks get a read-only GITHUB_TOKEN regardless of the
+      # `permissions:` block, so a SARIF upload from one is refused. The gate step
+      # below still runs on those PRs; only the Code Scanning upload is skipped.
+      - name: Upload SARIF to Code Scanning
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Fail on CRITICAL vulnerabilities
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: malloy-publisher:scan
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+
+  published-image:
+    name: Trivy image scan (published latest)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Checked out only for .trivyignore.yaml; nothing is built.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.PUBLISHED_IMAGE }}
+          scanners: vuln
+          format: sarif
+          output: trivy-image-published.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          trivyignores: .trivyignore.yaml
+
+      - name: Upload SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: trivy-image-published.sarif
+          category: trivy-image-published
+
+      - name: Fail on CRITICAL vulnerabilities
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.PUBLISHED_IMAGE }}
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml

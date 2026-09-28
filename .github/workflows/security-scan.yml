@@ -1,0 +1,211 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+name: Security Scan
+
+# Trivy filesystem + config + secret scans of the source tree.
+#
+# - `vulns` job: scans the working tree for language-package CVEs in lockfiles
+#   (bun.lock, package-lock.json, pyproject.toml, etc.). Uploads results as SARIF
+#   to the Code Scanning UI.
+# - `config` job: scans Dockerfiles, GitHub Actions workflows, and manifests for
+#   security misconfigurations.
+# - `secret-scan` job: scans the working tree for committed secrets / keys.
+# - All three run on PR, on push to main, and on a weekly schedule (so new
+#   advisories show up against unchanged code).
+#
+# Enforcement: each job uploads its full SARIF (all severities) to Code Scanning
+# for triage, then runs a second scan scoped to CRITICAL with `exit-code: 1` that
+# fails the build. The two steps are separate on purpose -- `format: sarif` emits
+# every severity regardless of the `severity:` input, so putting `exit-code` on the
+# SARIF step would gate on LOW/MEDIUM findings too. HIGH and below stay advisory.
+#
+# Criticals accepted today are enumerated in .trivyignore.yaml. Anything that will be
+# fixed carries an `expired_at` so the acceptance lapses instead of becoming permanent;
+# a reviewed won't-fix acceptance may omit it and must state its compensating control
+# instead. A critical finding that is not listed there fails the build.
+#
+# The built container image is scanned separately by image-scan.yml; this workflow
+# covers only what is in the repository.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 12:00 UTC.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vulns:
+    name: Trivy filesystem scan (vulnerabilities)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          # Explicit: `fs` defaults to `vuln,secret`, which would duplicate the
+          # secret-scan job's findings under this job's name.
+          scanners: vuln
+          format: sarif
+          output: trivy-vulns.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          # Same acceptances as the gate step below. An accepted finding that still
+          # uploads shows up in Code Scanning as an open CRITICAL with nothing linking
+          # it to its .trivyignore.yaml statement, so the triage surface contradicts the
+          # record that was actually reviewed. `expired_at` still does its job -- when
+          # an entry lapses, the alert reappears here too.
+          trivyignores: .trivyignore.yaml
+          skip-dirs: |
+            node_modules
+            .venv
+            **/dist
+            **/build
+
+      # Pull requests from forks get a read-only GITHUB_TOKEN regardless of the
+      # `permissions:` block, so a SARIF upload from one is refused. The gate step
+      # below still runs on those PRs; only the Code Scanning upload is skipped.
+      - name: Upload SARIF to Code Scanning
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: trivy-vulns.sarif
+          category: trivy-fs-vulns
+
+      # Blocking gate. Unfixed criticals are NOT exempt: a critical with no upstream
+      # patch is still a critical, and exempting it hides the cases that most need a
+      # decision (drop the dependency, vendor a patch, or formally risk-accept). When
+      # there is genuinely nothing to upgrade to, the escape hatch is an explicit
+      # path-scoped entry in .trivyignore.yaml with a statement -- a visible, reviewed
+      # acceptance rather than a silent class-wide one.
+      - name: Fail on CRITICAL vulnerabilities
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+          skip-dirs: |
+            node_modules
+            .venv
+            **/dist
+            **/build
+
+  config:
+    name: Trivy config scan (Dockerfiles, Actions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run Trivy config scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          trivyignores: .trivyignore.yaml
+          skip-dirs: |
+            node_modules
+            .venv
+
+      - name: Upload SARIF to Code Scanning
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+      # Blocking gate. `format: table` because this step's output is read by a human
+      # in the job log; the machine-readable copy is the SARIF upload above.
+      - name: Fail on CRITICAL misconfigurations
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+          skip-dirs: |
+            node_modules
+            .venv
+
+  secret-scan:
+    name: Trivy secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Working-tree scan only. Trivy's `fs` secret scanner reads files on disk, not
+      # git objects, so a secret that exists only in an older commit is not detected
+      # here and a full clone would buy nothing. History scanning needs a dedicated
+      # tool.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run Trivy secret scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          # Same acceptances as this job's gate step; see the note on the vulns job.
+          trivyignores: .trivyignore.yaml
+          format: sarif
+          output: trivy-secrets.sarif
+          severity: CRITICAL,HIGH
+          skip-dirs: |
+            node_modules
+            .venv
+            **/dist
+            **/build
+
+      - name: Upload SARIF to Code Scanning
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: trivy-secrets.sarif
+          category: trivy-secrets
+
+      # Gated at CRITICAL to match the other two jobs.
+      - name: Fail on CRITICAL secrets
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+          skip-dirs: |
+            node_modules
+            .venv
+            **/dist
+            **/build
