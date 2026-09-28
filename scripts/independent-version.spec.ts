@@ -12,7 +12,10 @@
 // which is the part a shell test could not check without a real registry and
 // a real checkout.
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   checkFree,
   decideScaffolder,
@@ -281,5 +284,29 @@ describe("the CLI, end to end", () => {
       "not-a-real-command",
     ]);
     expect(proc.exitCode).toBe(1);
+  });
+});
+
+describe("the is-main guard, through a symlink", () => {
+  // `node <symlink>` resolves process.argv[1] to the symlink path, not the
+  // real file import.meta.url points at. A guard comparing the two verbatim
+  // never matches through a symlink, so the CLI silently does nothing —
+  // exits 0 printing nothing, instead of running the command — which is
+  // exactly the failure mode this checks for.
+  const dirs: string[] = [];
+  afterEach(() => {
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
+  it("still runs the CLI when invoked through a symlink", () => {
+    const real = new URL("./independent-version.mjs", import.meta.url).pathname;
+    const dir = mkdtempSync(path.join(tmpdir(), "independent-version-symlink-"));
+    dirs.push(dir);
+    const link = path.join(dir, "independent-version-link.mjs");
+    symlinkSync(real, link);
+
+    const proc = Bun.spawnSync(["node", link, "next", "0.1.28"]);
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString().trim()).toBe("0.1.29");
   });
 });

@@ -2,6 +2,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 // Pure decision logic for release-time versioning of the independently-versioned
 // npm packages (skills, create-malloy-package). `scripts/publish-packages.sh`
 // gathers the facts — what npm's `latest` is, what commit it was published
@@ -10,9 +13,6 @@
 // no network access and no git calls of their own. Kept pure and separate from
 // the shell so the decision itself can be unit-tested without a registry or a
 // checkout, the same split `set-version.mjs` makes for the version-writing side.
-//
-// Versions used to be bumped ahead of time by a human PR; now the decision of
-// WHETHER and to WHAT moves to release time, here.
 
 // Plain major.minor.patch only, deliberately stricter than set-version.mjs's
 // VERSION regex: a "next patch" is arithmetic on the third component, and a
@@ -83,7 +83,9 @@ export function decideSkills({ npmOk, latest, gitHead, objectPresent, changed })
   }
   if (!objectPresent) {
     return abort(
-      `commit ${gitHead} (the gitHead npm recorded for @malloy-publisher/skills@${latest}) is not present in this checkout`,
+      `commit ${gitHead} (the gitHead npm recorded for @malloy-publisher/skills@${latest}) is not present in this checkout ` +
+        `(a version published by hand from a workstation, outside this checkout's history, can do this). ` +
+        `Recovery: hand-dispatch skills-npm.yml on main to publish a CI-built version, which records a gitHead this checkout can diff against next time.`,
     );
   }
   if (changed === "error") {
@@ -161,7 +163,8 @@ export function checkFree({ status, name, version }) {
       return null;
     case "published":
       return abort(
-        `${name}@${version} is already on npm; refusing to publish over it (the version this release computed should have been free)`,
+        `${name}@${version} is already on npm; refusing to publish over it (the version this release computed should have been free). ` +
+          `This can happen if a CDN edge was still serving a stale \`latest\` when this was checked. Recovery: re-run this job after a few minutes.`,
       );
     default:
       return abort(
@@ -268,7 +271,14 @@ function main(argv) {
 }
 
 // Only run the CLI when executed directly, so the spec can import the pure
-// functions above with no side effects.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// functions above with no side effects. Resolved through realpath on both
+// sides: a caller invoking this file through a symlink (as the release
+// workflow can, depending on checkout layout) would otherwise compare a
+// symlink path against import.meta.url's real one and never match, silently
+// turning every dispatch into a no-op CLI.
+if (
+  pathToFileURL(realpathSync(process.argv[1])).href ===
+  pathToFileURL(realpathSync(fileURLToPath(import.meta.url))).href
+) {
   main(process.argv.slice(2));
 }

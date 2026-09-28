@@ -159,11 +159,6 @@ for pass in 1 2; do
     VERSION_FAILED=1
   fi
 
-  # skills and create-malloy-package no longer need a bump-ahead here: their
-  # version is decided at release time by publish-packages.sh (via
-  # independent-version.mjs) from npm's own state, not from a value main
-  # declares in advance, so there is nothing for this step to move ahead of.
-
   if [ "$STAMPED" = "0" ] && [ "$VERSIONED" = "0" ]; then
     # Nothing to stamp and nothing to reset. Two different states for
     # the notes half, and conflating them is how a summary line ends up

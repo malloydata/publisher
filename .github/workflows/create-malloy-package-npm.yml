@@ -19,9 +19,10 @@ name: create-malloy-package
 # release publishes every package. It dispatches this file through the Actions
 # API rather than calling it with workflow_call, which is what keeps this
 # workflow_dispatch entry point working as well; see the trusted-publishing note
-# on the publish step. release.yml asks the registry first and does not dispatch
-# a version that is already published, so an unchanged scaffolder is skipped
-# rather than reddening the release.
+# on the publish step. release.yml decides whether to dispatch this workflow at
+# all (scripts/independent-version.mjs): the scaffolder publishes on every
+# non-prerelease release, except a re-run where its published `publisherServer`
+# already equals the release's version.
 on:
   workflow_dispatch:
     inputs:
@@ -385,10 +386,9 @@ jobs:
             exit 1
           fi
 
-          # Moved here from the old PR-time bump check: a hand-dispatched
-          # `version` still has to clear it, since with the bump check gone
-          # this is the only thing standing between a typo'd input and moving
-          # the latest dist-tag backwards. `sort -V` ranks a PRERELEASE ABOVE
+          # A hand-dispatched `version` still has to clear this: nothing else
+          # here stands between a typo'd input and moving the latest dist-tag
+          # backwards. `sort -V` ranks a PRERELEASE ABOVE
           # its own release (verified: `printf '0.2.0\n0.2.0-rc.1\n' | sort -V
           # | tail -1` is `0.2.0-rc.1`), so a prerelease is exempted rather
           # than compared: it publishes under the "next" dist-tag below and
@@ -435,8 +435,8 @@ jobs:
       # Taken from the skills_version input (release.yml passes what skills
       # just published, or its npm latest when skills was skipped) or, on a
       # hand dispatch, from skills' own npm latest — NOT from
-      # packages/skills/package.json, which is a fixed placeholder
-      # ("0.0.0-dev") now that skills decides its version at publish time too.
+      # packages/skills/package.json, which never declares a real version:
+      # skills decides its own version at publish time too.
       - name: Resolve workspace:* skills dep for publishing
         id: skills_dep
         env:
@@ -519,7 +519,7 @@ jobs:
           # means this version is free. Any other failure means the registry did
           # not answer, which is not the same as a green light.
           if PUBLISHED="$(npm view "$SPEC" version 2>&1)"; then
-            echo "::error title=Version::$SPEC is already published; bump the version in packages/create-malloy-package/package.json"
+            echo "::error title=Version::$SPEC is already published; re-dispatch this workflow with no version input (publishes npm latest + 1 patch) or with version set higher than $CURRENT_VERSION"
             exit 1
           elif [[ "$PUBLISHED" != *E404* ]]; then
             printf '%s\n' "$PUBLISHED" | sed 's/^/[npm] /'

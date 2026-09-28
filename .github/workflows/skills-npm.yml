@@ -12,8 +12,9 @@ name: skills
 # package. It dispatches this file rather than calling it with workflow_call, so
 # that both entry points keep working; do not change that without reading
 # .github/workflows/CONTEXT.md first, because it is a one-way door. release.yml
-# also asks the registry first and does not dispatch a version that is already
-# published, so an unchanged skills package is skipped rather than reddening the
+# decides whether to dispatch this workflow at all (scripts/independent-version.mjs):
+# it skips skills when nothing publishable changed since npm latest's recorded
+# gitHead, so an unchanged skills package is skipped rather than reddening the
 # release.
 #
 # The published version is decided here, at dispatch time, not by a bump
@@ -120,11 +121,11 @@ jobs:
       # Decide what to publish, before installing anything: the input if the
       # dispatch named one (release.yml always does), else npm latest + 1
       # patch. Refuses anything at or below npm's latest, since a hand
-      # dispatch is the one path nothing else gates. Must run before "Read
-      # version" writes packages/skills/package.json's version, and before
-      # anything packs: prepack (copy-skills.ts) stamps that version into
-      # every SKILL.md, so the resolved version has to be in the manifest
-      # first.
+      # dispatch is the one path nothing else gates. Must run before "Apply
+      # resolved version" writes packages/skills/package.json's version, and
+      # before anything packs: prepack (copy-skills.ts) stamps that version
+      # into every SKILL.md, so the resolved version has to be in the
+      # manifest first.
       - name: Resolve version to publish
         id: resolve_version
         env:
@@ -159,10 +160,9 @@ jobs:
             exit 1
           fi
 
-          # Moved here from the old PR-time bump check: a hand-dispatched
-          # `version` still has to clear it, since with the bump check gone
-          # this is the only thing standing between a typo'd input and moving
-          # the latest dist-tag backwards. `sort -V` ranks a PRERELEASE ABOVE
+          # A hand-dispatched `version` still has to clear this: nothing else
+          # here stands between a typo'd input and moving the latest dist-tag
+          # backwards. `sort -V` ranks a PRERELEASE ABOVE
           # its own release (verified: `printf '0.2.0\n0.2.0-rc.1\n' | sort -V
           # | tail -1` is `0.2.0-rc.1`), so a prerelease is exempted rather
           # than compared: it publishes under the "next" dist-tag below and
@@ -210,10 +210,10 @@ jobs:
       # EPUBLISHCONFLICT. Ask up front, the same way create-malloy-package-npm.yml
       # does.
       #
-      # This is for the human path. release.yml asks the same question before it
-      # dispatches and simply does not dispatch a version that is already
-      # published, so an unchanged skills package is skipped there rather than
-      # reaching this step.
+      # This is for the human path. release.yml decides whether to dispatch this
+      # workflow at all (scripts/independent-version.mjs), skipping skills when
+      # nothing publishable changed since npm latest's recorded gitHead, so an
+      # unchanged skills package never reaches this step from that path.
       - name: Verify this version is not already published
         env:
           # Through env rather than interpolated into the script body: a ${{ }}
@@ -231,7 +231,7 @@ jobs:
           # means this version is free. Any other failure means the registry did
           # not answer, which is not the same as a green light.
           if PUBLISHED="$(npm view "$SPEC" version 2>&1)"; then
-            echo "::error title=Version::$SPEC is already published; bump the version in packages/skills/package.json"
+            echo "::error title=Version::$SPEC is already published; re-dispatch this workflow with no version input (publishes npm latest + 1 patch) or with version set higher than $CURRENT_VERSION"
             exit 1
           elif [[ "$PUBLISHED" != *E404* ]]; then
             # Registry output is untrusted text, and a line starting with "::"

@@ -41,23 +41,24 @@ const PUBLISH_SCRIPT = path.join(
 );
 
 /**
- * The `:!<path>` entries of `skills_diff_status`'s `local -a EXCLUDE=(...)`
- * array.
+ * The `:!<path>` entries of publish-packages.sh's top-level `EXCLUDE=(...)`
+ * array, shared by `skills_diff_status` (the release-time content diff) and
+ * `publish_resolved` (documented there as deliberately NOT re-applied to its
+ * own "main moved" file matching).
  *
- * Deliberately strict about finding it. A rename of the variable, the function
- * losing its `local -a` declaration, or the array moving to a form this cannot
- * read, must fail rather than quietly return an empty list — an empty list
- * would pass every assertion below and switch this test off for good, which is
- * the same failure mode the script's own watched-path assertions exist to
- * prevent.
+ * Deliberately strict about finding it. A rename of the variable, or the
+ * array moving to a form this cannot read, must fail rather than quietly
+ * return an empty list — an empty list would pass every assertion below and
+ * switch this test off for good, which is the same failure mode the script's
+ * own watched-path assertions exist to prevent.
  */
 function excludePathspecs(script: string): string[] {
-   const line = /^\s*local -a EXCLUDE=\(([^)]*)\)\s*$/m.exec(script);
+   const line = /^EXCLUDE=\(([^)]*)\)\s*$/m.exec(script);
    expect(
       line,
-      "scripts/publish-packages.sh no longer has a single-line " +
-         "`local -a EXCLUDE=(...)` array in skills_diff_status; this test " +
-         "cannot verify the contract it exists for",
+      "scripts/publish-packages.sh no longer has a single-line top-level " +
+         "`EXCLUDE=(...)` array; this test cannot verify the contract it " +
+         "exists for",
    ).not.toBeNull();
 
    const specs = Array.from(line![1].matchAll(/'([^']*)'|"([^"]*)"/g)).map(
@@ -69,6 +70,18 @@ function excludePathspecs(script: string): string[] {
 
 describe("publish-packages.sh's skills EXCLUDE agrees with exclusions.ts", () => {
    const script = fs.readFileSync(PUBLISH_SCRIPT, "utf8");
+
+   it("skills_diff_status's git diff actually passes EXCLUDE", () => {
+      // The array existing is not enough on its own: skills_diff_status has
+      // to actually hand it to `git diff`, or excluding a path here does
+      // nothing to the release-time content check it exists to fix.
+      const fn = /skills_diff_status\(\)\s*\{[\s\S]*?\n\}/.exec(script);
+      expect(fn, "could not find the skills_diff_status() function body").not.toBeNull();
+      expect(
+         fn![0],
+         'skills_diff_status\'s git diff does not pass "${EXCLUDE[@]}"',
+      ).toContain('"${EXCLUDE[@]}"');
+   });
 
    it("excludes only paths the packer actually refuses to ship", () => {
       for (const spec of excludePathspecs(script)) {

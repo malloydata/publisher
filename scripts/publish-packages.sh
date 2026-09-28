@@ -44,20 +44,22 @@ fi
 # A wall-clock deadline rather than an attempt count, so npm latency
 # cannot stretch the budget past the job's timeout-minutes and cost us
 # the diagnostic below.
-POLL_BUDGET_SECONDS=1500
-POLL_SLEEP=15
+# Overridable via env so the shell test harness (publish-packages.spec.ts)
+# can run the whole poll loop in milliseconds instead of the real budget.
+POLL_BUDGET_SECONDS="${POLL_BUDGET_SECONDS:-1500}"
+POLL_SLEEP="${POLL_SLEEP:-15}"
 # How many consecutive unexpected registry answers end the wait. One
 # is not enough: a single 5xx or DNS blip says almost nothing about
 # whether the child published, and giving up on it would reintroduce
 # exactly the failure the budget comment above is about, with the
 # remaining packages never dispatched.
-POLL_MAX_REGISTRY_ERRORS=3
+POLL_MAX_REGISTRY_ERRORS="${POLL_MAX_REGISTRY_ERRORS:-3}"
 # How long to wait for the server's npm `latest` to read NEW_VERSION
 # before dispatching the scaffolder (see wait_for_server_latest). npm
 # took about 7 minutes to show 0.7.0 after publish-npm printed it as
 # published. Counted in release.yml's timeout-minutes alongside the
 # three poll budgets.
-SERVER_LATEST_BUDGET_SECONDS=900
+SERVER_LATEST_BUDGET_SECONDS="${SERVER_LATEST_BUDGET_SECONDS:-900}"
 
 # Registry and API output can contain anything, including a line starting with
 # "::" that the runner would parse as a workflow command. Prefix every
@@ -79,6 +81,17 @@ if ! CHECKOUT_SHA="$(git rev-parse HEAD)"; then
   exit 1
 fi
 
+# The paths @malloy-publisher/skills's published content is built from.
+# Defined once here rather than separately in skills_diff_status (the
+# release-time content diff) and publish_resolved (the "main moved"
+# guard), which used to carry their own copies and could drift.
+SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json)
+# git pathspecs excluding files skills_diff_status's diff must NOT treat as
+# published content, because the packer never ships them. Mirrors
+# packages/skills/src/exclusions.ts; workflow-exclusions.spec.ts asserts
+# the two agree.
+EXCLUDE=(':!skills/README.md' ':!packages/skills/src/*.spec.ts')
+
 # The two registries differ in exactly two places — how a manifest is
 # read and how the registry is asked — so those are the only two things
 # parameterised. Everything else in publish_pkg below (the watched-path
@@ -90,10 +103,10 @@ fi
 # The slug is what goes in a URL; for npm it is unused and echoes the
 # name back so both kinds print three fields.
 #
-# For skills and create-malloy-package the version this prints is no longer
-# what gets published — the decision logic below computes that at release
-# time — but the name (and, for python-client, the version too) still comes
-# from here, because the name is not something a release should be deciding.
+# For skills and create-malloy-package the version this prints is unused —
+# independent-version.mjs computes the real one — but the name (and, for
+# python-client, the version too) still comes from here, because the name is
+# not something a release should be deciding.
 read_manifest() {
   local kind="$1" dir="$2"
   case "$kind" in
@@ -232,17 +245,12 @@ wait_for_server_latest() {
 
 # ---- Release-time version decisions for skills and create-malloy-package --
 #
-# Everything above this point (echo_untrusted_output, registry_has,
-# wait_for_server_latest, the watched-path and "main moved" guards inside
-# publish_pkg below) is unchanged: both packages still get dispatched through
-# the same guarded path python-client uses. What changed is where the VERSION
-# comes from. It used to be whatever packages/<dir>/package.json declared,
-# bumped ahead of time by a human PR (or, for these two, by
-# stamp-release-notes.sh's now-removed AHEAD_PKGS step). Now it is decided
-# here, at release time, by scripts/independent-version.mjs — pure decision
-# logic, unit-tested on its own — from facts this script gathers: what npm's
-# `latest` is, what commit it was published from, and whether anything
-# publishable has changed since.
+# skills and create-malloy-package are dispatched through the same guarded
+# path (watched-path guard, "main moved" compare, dispatch, poll) as
+# python-client, but their VERSION is decided here, at release time, by
+# scripts/independent-version.mjs — pure decision logic, unit-tested on its
+# own — from facts this script gathers: what npm's `latest` is, what commit
+# it was published from, and whether anything publishable has changed since.
 #
 # Set as globals rather than returned, because a function's stdout is the one
 # channel `$(...)` can capture, and capturing gather_*_facts as a whole would
@@ -263,15 +271,8 @@ G_PUBLISHER_SERVER=""
 # as "unchanged" — an unreadable diff must never look like nothing changed.
 skills_diff_status() {
   local git_head="$1"
-  local -a paths=(skills/ packages/skills/ bun.lock package.json)
-  # Kept as a single-line EXCLUDE=(...) array on purpose, mirroring
-  # skills-npm.yml's own bump check: a later task repoints
-  # packages/skills/src/workflow-exclusions.spec.ts's contract check at
-  # THIS line once skills-npm.yml's copy is retired, and that test asserts
-  # the array is exactly this shape.
-  local -a EXCLUDE=(':!skills/README.md' ':!packages/skills/src/*.spec.ts')
   local rc
-  if git diff --quiet "$git_head" HEAD -- "${paths[@]}" "${EXCLUDE[@]}"; then
+  if git diff --quiet "$git_head" HEAD -- "${SKILLS_CONTENT_PATHS[@]}" "${EXCLUDE[@]}"; then
     rc=0
   else
     rc=$?
@@ -280,7 +281,7 @@ skills_diff_status() {
     0) echo unchanged ;;
     1)
       echo changed
-      git diff --stat "$git_head" HEAD -- "${paths[@]}" "${EXCLUDE[@]}" 2>&1
+      git diff --stat "$git_head" HEAD -- "${SKILLS_CONTENT_PATHS[@]}" "${EXCLUDE[@]}" 2>&1
       ;;
     *) echo error ;;
   esac
@@ -356,9 +357,6 @@ SKILLS_VERSION_FOR_SCAFFOLDER=""
 
 publish_pkg() {
   local dir="$1" wf="$2" reg="$3" name version slug spec out rc
-  local deadline live_sha errors
-  local changed file_count relevant file path
-  local -a paths
   # Read through `if !`, and validate. A bare assignment under set -e
   # dies with a raw Node stack trace, no annotation and no summary
   # line, which is the silent failure the summary lines exist to
@@ -401,10 +399,10 @@ publish_pkg() {
   # rather than a bare call, because a non-zero return under set -e
   # would kill the step before the case below could read it.
   #
-  # Unlike publish_indep_pkg's check-free, "already published" here is a
-  # legitimate skip, not an error: this version came from a manifest a human
-  # (or a prior CI run) already committed, so finding it on npm just means
-  # there was nothing new to publish.
+  # "Already published" is a legitimate skip here, not an error: this
+  # version came from a manifest a human (or a prior CI run) already
+  # committed, so finding it on npm just means there was nothing new to
+  # publish.
   if out="$(registry_has "$reg" "$name" "$version" "$slug")"; then rc=0; else rc=$?; fi
   case "$rc" in
     0)
@@ -429,7 +427,7 @@ publish_pkg() {
 # whatever independent-version.mjs decided, computed from npm's own state
 # rather than from packages/<dir>/package.json.
 publish_indep_pkg() {
-  local dir="$1" wf="$2" name out rc reason version spec
+  local dir="$1" wf="$2" name out rc reason version spec reason_lines
 
   if ! out="$(read_manifest npm "$dir")" || [ -z "$out" ]; then
     echo_untrusted_output "$out"
@@ -459,24 +457,32 @@ publish_indep_pkg() {
           echo "</details>"
         } >> "$GITHUB_STEP_SUMMARY"
       fi
+      local decide_err_file
+      decide_err_file="$(mktemp)"
       if out="$(NPM_OK="$G_NPM_OK" LATEST="$G_LATEST" GIT_HEAD="$G_GIT_HEAD" \
                 OBJECT_PRESENT="$G_OBJECT_PRESENT" CHANGED="$G_CHANGED" \
-                node scripts/independent-version.mjs decide-skills 2>&1)"; then
+                node scripts/independent-version.mjs decide-skills 2>"$decide_err_file")"; then
         rc=0
       else
         rc=$?
       fi
+      reason_lines="$(cat "$decide_err_file")"
+      rm -f "$decide_err_file"
       ;;
     create-malloy-package)
       gather_scaffolder_facts
       echo "## ${name}" >> "$GITHUB_STEP_SUMMARY"
       echo "- npm \`latest\`: ${G_LATEST:-(unknown)}, publisherServer: \`${G_PUBLISHER_SERVER:-(not set)}\`" >> "$GITHUB_STEP_SUMMARY"
+      local decide_err_file
+      decide_err_file="$(mktemp)"
       if out="$(NPM_OK="$G_NPM_OK" LATEST="$G_LATEST" PUBLISHER_SERVER="$G_PUBLISHER_SERVER" \
-                RELEASE="$NEW_VERSION" node scripts/independent-version.mjs decide-scaffolder 2>&1)"; then
+                RELEASE="$NEW_VERSION" node scripts/independent-version.mjs decide-scaffolder 2>"$decide_err_file")"; then
         rc=0
       else
         rc=$?
       fi
+      reason_lines="$(cat "$decide_err_file")"
+      rm -f "$decide_err_file"
       ;;
     *)
       echo "::error title=${dir}::publish_indep_pkg does not know package ${dir}"
@@ -484,23 +490,53 @@ publish_indep_pkg() {
       ;;
   esac
 
-  # independent-version.mjs's CLI prints exactly one of "publish <version>",
-  # "skip", or "abort <reason>" as its FIRST line on stdout, with its
-  # human-readable reason on stderr (folded into $out above by 2>&1, so it
-  # rides along in the summary/log for free); "publish"/"skip" exit 0, abort
-  # exits with a distinct non-zero code the CLI documents.
-  local first_line reason_lines action arg
-  first_line="$(printf '%s\n' "$out" | head -n 1)"
-  reason_lines="$(printf '%s\n' "$out" | tail -n +2)"
-  read -r action arg <<<"$first_line"
+  # independent-version.mjs's CLI prints exactly one machine-readable line —
+  # "publish <version>", "skip", or "abort <reason>" — on STDOUT, captured
+  # above with stderr redirected to its own file rather than folded in with
+  # 2>&1: node's stdout and stderr are two independent buffers with no
+  # ordering guarantee once piped, so parsing "the first line of a combined
+  # stream" could pick up a stderr line instead of the decision. The exit
+  # code is part of the same contract (0 for publish/skip, the CLI's
+  # ABORT_EXIT_CODE of 3 for abort), and is validated against the action
+  # actually printed rather than trusted on its own, so the two cannot
+  # silently disagree.
+  local action arg
+  read -r action arg <<<"$out"
 
   if [ -n "$reason_lines" ]; then
-    printf '%s\n' "$reason_lines" | sed "s/^/[${name}] /"
+    # A prefixer, not a sed substitution: name is a package name and can
+    # contain "/" (e.g. @malloy-publisher/skills), which would break a
+    # sed pattern built by interpolating it into `s/^/.../`.
+    while IFS= read -r line; do
+      printf '[%s] %s\n' "$name" "$line"
+    done <<< "$reason_lines"
   fi
+
+  case "$rc" in
+    0)
+      if [ "$action" != "publish" ] && [ "$action" != "skip" ]; then
+        echo "::error title=${name}::independent-version.mjs exited 0 but printed '${out}' on stdout (expected 'publish <version>' or 'skip'); ${wf} was NOT dispatched."
+        echo "- \`${name}\` NOT dispatched: unrecognised decision output" >> "$GITHUB_STEP_SUMMARY"
+        return 1
+      fi
+      ;;
+    3)
+      if [ "$action" != "abort" ]; then
+        echo "::error title=${name}::independent-version.mjs exited 3 (its abort code) but printed '${out}' on stdout, not 'abort <reason>'; ${wf} was NOT dispatched."
+        echo "- \`${name}\` NOT dispatched: unrecognised decision output" >> "$GITHUB_STEP_SUMMARY"
+        return 1
+      fi
+      ;;
+    *)
+      echo "::error title=${name}::independent-version.mjs exited ${rc}, neither 0 (publish/skip) nor 3 (abort); ${wf} was NOT dispatched."
+      echo "- \`${name}\` NOT dispatched: unexpected exit code ${rc}" >> "$GITHUB_STEP_SUMMARY"
+      return 1
+      ;;
+  esac
 
   case "$action" in
     abort)
-      reason="${first_line#abort }"
+      reason="${out#abort }"
       echo "::error title=${name}::${reason}. ${wf} was NOT dispatched."
       echo "- \`${name}\` NOT dispatched: ${reason}" >> "$GITHUB_STEP_SUMMARY"
       return 1
@@ -515,11 +551,6 @@ publish_indep_pkg() {
       ;;
     publish)
       version="$arg"
-      ;;
-    *)
-      echo "::error title=${name}::independent-version.mjs printed an unrecognised decision (logged above); ${wf} was NOT dispatched."
-      echo "- \`${name}\` NOT dispatched: unrecognised version decision" >> "$GITHUB_STEP_SUMMARY"
-      return 1
       ;;
   esac
 
@@ -540,19 +571,44 @@ publish_indep_pkg() {
   if [ "$status" != "free" ]; then
     echo_untrusted_output "$out"
   fi
-  local check_out check_rc
+  # check-free's success contract is exit 0 AND stdout exactly "ok" — checked
+  # explicitly rather than trusting the exit code alone, for the same reason
+  # the decide-* calls above now cross-check their action against their exit
+  # code.
+  # check-free never writes to stderr in independent-version.mjs today, but
+  # stderr is still redirected to its own file rather than left to inherit
+  # the caller's, for the same reason the decide-* calls above do: so a
+  # future stderr write there could never be mistaken for the stdout
+  # decision this parses.
+  local check_err_file check_out check_rc
+  check_err_file="$(mktemp)"
   if check_out="$(STATUS="$status" NAME="$name" VERSION="$version" \
-                  node scripts/independent-version.mjs check-free)"; then
+                  node scripts/independent-version.mjs check-free 2>"$check_err_file")"; then
     check_rc=0
   else
     check_rc=$?
   fi
-  if [ "$check_rc" != 0 ]; then
-    reason="${check_out#abort }"
-    echo "::error title=${name}::${reason}. ${wf} was NOT dispatched."
-    echo "- \`${spec}\` NOT dispatched: ${reason}" >> "$GITHUB_STEP_SUMMARY"
-    return 1
-  fi
+  rm -f "$check_err_file"
+  case "$check_rc" in
+    0)
+      if [ "$check_out" != "ok" ]; then
+        echo "::error title=${name}::independent-version.mjs check-free exited 0 but printed '${check_out}' (expected 'ok'); ${wf} was NOT dispatched."
+        echo "- \`${spec}\` NOT dispatched: unrecognised check-free output" >> "$GITHUB_STEP_SUMMARY"
+        return 1
+      fi
+      ;;
+    3)
+      reason="${check_out#abort }"
+      echo "::error title=${name}::${reason}. ${wf} was NOT dispatched."
+      echo "- \`${spec}\` NOT dispatched: ${reason}" >> "$GITHUB_STEP_SUMMARY"
+      return 1
+      ;;
+    *)
+      echo "::error title=${name}::independent-version.mjs check-free exited ${check_rc}, neither 0 (free) nor 3 (abort); ${wf} was NOT dispatched."
+      echo "- \`${spec}\` NOT dispatched: unexpected exit code ${check_rc}" >> "$GITHUB_STEP_SUMMARY"
+      return 1
+      ;;
+  esac
 
   if [ "$dir" = "skills" ]; then
     SKILLS_VERSION_FOR_SCAFFOLDER="$version"
@@ -563,8 +619,8 @@ publish_indep_pkg() {
 
 # Shared tail of both publish paths: the watched-path guard, the "main moved"
 # fast-forward compare, the dispatch, and the poll for the version to appear.
-# Registry-agnostic and unchanged in shape from before independent
-# versioning; only the callers above now decide $version differently.
+# Registry-agnostic; the callers above differ only in how they decide
+# $version.
 publish_resolved() {
   local dir="$1" wf="$2" reg="$3" name="$4" version="$5" slug="$6" spec="$7"
   local deadline live_sha errors
@@ -574,36 +630,33 @@ publish_resolved() {
   # The paths this package's PUBLISHED content is built from, which is
   # not the same as the paths it lives in.
   #
-  # skills packs the repo-root skills/ tree as well as its own
-  # directory, so it has both.
+  # skills packs the repo-root skills/ tree as well as its own directory
+  # (SKILLS_CONTENT_PATHS, shared with skills_diff_status above). It also
+  # watches the root install inputs: its dist/ is emitted by `tsc`, whose
+  # version bun resolves from the root lockfile, so a lockfile-only bump
+  # changes the published bytes.
   #
   # create-malloy-package ships dist/ and templates/ built from its own
-  # directory. It no longer also watches packages/skills/package.json: its
-  # publish job used to bake its skills dependency range by reading that
-  # file from main at dispatch time, but it now takes the skills version as
-  # a dispatch input (`skills_version`, set below from what skills just
-  # published, or its npm latest when skills was skipped), so a bare skills
-  # version bump with no scaffolder-relevant change no longer needs to
-  # retrigger this guard.
+  # directory. Its dist/ comes from `bun build --packages external`, where
+  # the bun version is pinned by BUN_VERSION in its own (watched) workflow
+  # file, so nothing from node_modules enters the bundle the way it does
+  # for skills.
   #
-  # The child workflow file is in both lists because a dispatch runs
+  # Both independent packages also watch scripts/set-version.mjs and
+  # scripts/independent-version.mjs: their publish jobs run these from main
+  # at dispatch time, so a change to either changes what gets published.
+  #
+  # The child workflow file is in every list because a dispatch runs
   # whatever definition main holds at dispatch time, not the one this
   # job read.
-  # skills additionally watches the root install inputs, and the
-  # asymmetry with the scaffolder is deliberate. Its dist/ is emitted
-  # by `tsc`, whose version bun resolves from the root lockfile, so a
-  # lockfile-only bump changes the published bytes. The scaffolder's
-  # dist/ comes from `bun build --packages external`, where the bun
-  # version is pinned by BUN_VERSION in its own (watched) workflow file
-  # and nothing from node_modules enters the bundle.
+  #
   # python-client is GENERATED from api-doc.yaml by build-python-sdk.sh,
   # so the OpenAPI spec is a published-content input exactly the way the
   # skills tree is for skills: an api-doc.yaml-only commit changes the
-  # wheel with nothing in packages/python-client/ touched. Its own bump
-  # check watches the same two paths.
+  # wheel with nothing in packages/python-client/ touched.
   case "$dir" in
-    skills) paths=("skills/" "packages/skills/" "bun.lock" "package.json") ;;
-    create-malloy-package) paths=("packages/${dir}/") ;;
+    skills) paths=("${SKILLS_CONTENT_PATHS[@]}" "scripts/set-version.mjs" "scripts/independent-version.mjs") ;;
+    create-malloy-package) paths=("packages/${dir}/" "scripts/set-version.mjs" "scripts/independent-version.mjs") ;;
     python-client) paths=("packages/${dir}/" "api-doc.yaml") ;;
     *) paths=("packages/${dir}/") ;;
   esac
@@ -729,6 +782,14 @@ publish_resolved() {
     fi
 
     relevant=""
+    # EXCLUDE (skills_diff_status's git pathspecs) is deliberately NOT
+    # applied here. This loop matches plain filenames from the GitHub
+    # compare API against $paths by prefix/equality, not git pathspecs, so
+    # honoring a glob exclusion like ':!packages/skills/src/*.spec.ts'
+    # would need real pathspec matching rather than the substring compare
+    # below. Left fail-closed: a main-moved change to an excluded file
+    # still stops the dispatch, which costs a re-run rather than a risk of
+    # publishing unverified content.
     while IFS= read -r file; do
       # Only FILE lines; the COUNT line above shares this stream.
       case "$file" in FILE\ *) file="${file#FILE }" ;; *) continue ;; esac
@@ -771,10 +832,10 @@ publish_resolved() {
   local runs_url="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/${wf}?query=branch%3Amain"
 
   # skills and create-malloy-package are told the version to publish rather
-  # than reading it from their own package.json (which is becoming a fixed
-  # placeholder). The scaffolder is additionally told which server and which
+  # than reading it from their own package.json, which never declares a real
+  # version. The scaffolder is additionally told which server and which
   # skills version to pin: the wait above proves only THIS runner's view of
-  # npm for the server, and the scaffolder no longer reads
+  # npm for the server, and the scaffolder does not read
   # packages/skills/package.json for skills at all, so both have to be
   # handed in explicitly.
   local -a inputs=()
