@@ -17,10 +17,10 @@ For the authoritative Malloy reference (semantics, supported types, scoping rule
 
 Givens are deliberately simple; the leverage is in what they enable. Jump to the application you care about:
 
-| Application                              | What it does                                                                                                                                                                                                    | Where                                   |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| **Interactive filters**                  | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI, where changing one re-runs the cells, and in the model Explorer.         | [Notebook UI](#notebook-ui), below      |
-| **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out.                                                                      | [Row-level access](row-level-access.md) |
+| Application                              | What it does                                                                                                                                                                                                                                                 | Where                                   |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| **Interactive filters**                  | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI, where changing one re-runs the cells, and in the model Explorer.                                                           | [Notebook UI](#notebook-ui), below      |
+| **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out.                                                                                                                   | [Row-level access](row-level-access.md) |
 | **Source authorization**                 | `#(authorize)` decides whether a caller may reach the source at all and refuses with a 403; `#(access_filter)` is grafted as a row filter, so a caller it matches nowhere gets a normal 200 with zero rows. A 403 also covers either gate failing to attach. | [Authorize](authorize.md)               |
 
 > **Here for access control?** Givens are just the values your gates read. Skim [Declaring Givens](#declaring-givens) for the syntax, then go to [Authorize](authorize.md) to gate a source, or [Row-level access](row-level-access.md) to scope which rows a caller sees. Both enforce policy only behind a trusted tier that sets givens from verified identity — givens are caller-asserted.
@@ -262,14 +262,14 @@ The example above ships in Publisher's default `examples` environment — open [
 
 The model Explorer shows the same Parameters panel whenever the model it opens declares givens, and sends the values with every Run, so a source gated on a given can be explored from the Console. See [Explorer: parameters](explorer.md#parameters).
 
-| Malloy type                                                | Widget                                                                                                                      |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `number`                                                   | Numeric input with × clear                                                                                                  |
-| `boolean`                                                  | Checkbox                                                                                                                    |
-| `date`, `timestamp`, `timestamptz`                         | Date picker with native clear                                                                                               |
-| `filter<date>`, `filter<timestamp>`, `filter<timestamptz>` | Time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days; a single day keeps the date picker |
-| `filter<boolean>`                                          | Dropdown of true and false; blank means no filter. Other spellings, such as `not true`, keep the text input                 |
-| `string`, `filter<…>`, anything else                       | Text input with × clear                                                                                                     |
+| Malloy type                                                | Widget                                                                                                                                                |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `number`                                                   | Numeric input with × clear                                                                                                                            |
+| `boolean`                                                  | Checkbox                                                                                                                                              |
+| `date`, `timestamp`, `timestamptz`                         | Date picker with native clear                                                                                                                         |
+| `filter<date>`, `filter<timestamp>`, `filter<timestamptz>` | Time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days; a single day keeps the date picker                           |
+| `filter<boolean>`                                          | Dropdown of true and false; blank uses the model's default, so no filter when that is `f''`. Other spellings, such as `not true`, keep the text input |
+| `string`, `filter<…>`, anything else                       | Text input with × clear                                                                                                                               |
 
 The UI can also render a two-handled range slider for a `filter<number>` and a
 single- or multi-pick dropdown for a `filter<string>`, driven by the `label`,

@@ -99,6 +99,35 @@ describe("compileSource checks filter given values", () => {
       );
    });
 
+   it("checks an edit at file scope against the edit's types, not the cached model's", async () => {
+      // The edit makes FLAG a filter<number>: a number filter the cached
+      // filter<boolean> would refuse now compiles, and `asdf` is refused with
+      // the number parser's reason.
+      const edited =
+         "##! experimental.givens\n" +
+         "given: FLAG :: filter<number> is f''\n" +
+         'source: orders is duckdb.sql("SELECT 1 as id, 3 as big") extend {\n' +
+         "  measure: c is count()\n" +
+         "  view: filtered is { where: big ~ $FLAG; aggregate: c }\n" +
+         "}\n" +
+         "run: orders -> filtered";
+      const compileEdit = (givens: Record<string, GivenValue>) =>
+         env.compileSource("pkg", "model.malloy", edited, true, givens, "file");
+
+      const { problems, sql } = await compileEdit({ FLAG: ">2" });
+      expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+      expect(sql).toBeDefined();
+
+      const error = await compileEdit({ FLAG: "asdf" }).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect((error as Error).message).toStartWith(
+         "Invalid value for given FLAG (filter<number>): ",
+      );
+   });
+
    it("denies a caller the gate refuses before judging a value", async () => {
       const compileError = await env
          .compileSource("pkg", "model.malloy", "run: gated -> filtered", true, {

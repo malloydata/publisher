@@ -472,9 +472,9 @@ export function assertFilterGivensParse(
       if (!given.name || !inner) continue;
       const value = givens[given.name];
       if (typeof value !== "string") continue;
-      const problem = FILTER_PARSERS[inner]
-         ?.parse(value)
-         .log.find((entry) => entry.severity === "error");
+      // Malloy refuses a filter on any log entry, whatever its severity, and
+      // reports the first; match it, so every value this passes compiles.
+      const problem = FILTER_PARSERS[inner]?.parse(value).log[0];
       if (problem) {
          throw new BadRequestError(
             `Invalid value for given ${given.name} (${given.type}): ` +
