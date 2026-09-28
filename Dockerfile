@@ -14,7 +14,16 @@ FROM oven/bun:1.3.13-slim AS base-deps
 # No dnsutils: nothing in the server calls dig or nslookup, and its bind9-libs
 # dependency brings liblmdb0 and libxml2, which carry CRITICAL CVEs Debian has
 # not fixed.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+#
+# APT_REFRESH exists to invalidate this layer. BuildKit caches a RUN by its
+# parent layer and its command text, so while the base tag keeps its digest the
+# upgrade would run once and its package versions would freeze in the build
+# cache. CI passes the ISO week (for example 2026-W40), so the layer, and every
+# layer after it, rebuilds at least weekly. A local build that passes nothing
+# caches as before.
+ARG APT_REFRESH=
+RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
+    apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl ca-certificates unzip git \
     openssl libcurl4 libssl3 iputils-ping file && \
     update-ca-certificates && \
@@ -67,12 +76,15 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org
 # glibc (dlopen@GLIBC_2.34), and the selftest below runs against THIS libc. A
 # final stage on a different base would pass the selftest here and fail to load
 # the shim at runtime, where only smoke-test 4b would notice. Change both or
-# neither.
+# neither -- including the `apt-get upgrade`, which is why this stage reads
+# APT_REFRESH too.
 FROM oven/bun:1.3.13-slim AS adbc-driver
 ARG ADBC_SNOWFLAKE_VERSION=1.12.0
 ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
 ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gcc libc6-dev && \
+ARG APT_REFRESH=
+RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
+    apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends curl ca-certificates gcc libc6-dev && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /out && ADBC_ARCH="$(dpkg --print-architecture)" && \

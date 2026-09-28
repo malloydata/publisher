@@ -8,8 +8,9 @@ name: Security Scan
 # - `vulns` job: scans the working tree for language-package CVEs in lockfiles
 #   (bun.lock, package-lock.json, pyproject.toml, etc.). Uploads results as SARIF
 #   to the Code Scanning UI.
-# - `config` job: scans Dockerfiles, GitHub Actions workflows, and manifests for
-#   security misconfigurations.
+# - `config` job: scans the Dockerfiles for security misconfigurations. Trivy's
+#   misconfiguration scanner has no GitHub Actions support, so the workflows are
+#   not covered here.
 # - `secret-scan` job: scans the working tree for committed secrets / keys.
 # - All three run on PR, on push to main, and on a weekly schedule (so new
 #   advisories show up against unchanged code).
@@ -18,7 +19,10 @@ name: Security Scan
 # for triage, then runs a second scan scoped to CRITICAL with `exit-code: 1` that
 # fails the build. The two steps are separate on purpose -- `format: sarif` emits
 # every severity regardless of the `severity:` input, so putting `exit-code` on the
-# SARIF step would gate on LOW/MEDIUM findings too. HIGH and below stay advisory.
+# SARIF step would gate on LOW/MEDIUM findings too. The vulnerability and config
+# gates fail on CRITICAL only; the secret gate fails on HIGH as well. Separately,
+# GitHub's Code Scanning check fails a same-repository pull request on a new HIGH
+# alert from the uploaded SARIF.
 #
 # Criticals accepted today are enumerated in .trivyignore.yaml. Anything that will be
 # fixed carries an `expired_at` so the acceptance lapses instead of becoming permanent;
@@ -83,7 +87,7 @@ jobs:
       # `permissions:` block, so a SARIF upload from one is refused. The gate step
       # below still runs on those PRs; only the Code Scanning upload is skipped.
       - name: Upload SARIF to Code Scanning
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-vulns.sarif
@@ -96,7 +100,7 @@ jobs:
       # path-scoped entry in .trivyignore.yaml with a statement -- a visible, reviewed
       # acceptance rather than a silent class-wide one.
       - name: Fail on CRITICAL vulnerabilities
-        if: always()
+        if: ${{ !cancelled() }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
@@ -113,7 +117,7 @@ jobs:
             **/build
 
   config:
-    name: Trivy config scan (Dockerfiles, Actions)
+    name: Trivy config scan (Dockerfiles)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -134,7 +138,7 @@ jobs:
             .venv
 
       - name: Upload SARIF to Code Scanning
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-config.sarif
@@ -143,7 +147,7 @@ jobs:
       # Blocking gate. `format: table` because this step's output is read by a human
       # in the job log; the machine-readable copy is the SARIF upload above.
       - name: Fail on CRITICAL misconfigurations
-        if: always()
+        if: ${{ !cancelled() }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
@@ -186,7 +190,7 @@ jobs:
             **/build
 
       - name: Upload SARIF to Code Scanning
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
           sarif_file: trivy-secrets.sarif
@@ -198,7 +202,7 @@ jobs:
       # The SARIF upload above is skipped for fork pull requests, so this step is the
       # only signal those get.
       - name: Fail on CRITICAL or HIGH secrets
-        if: always()
+        if: ${{ !cancelled() }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
