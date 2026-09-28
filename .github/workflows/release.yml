@@ -372,6 +372,10 @@ jobs:
           # checkout leaves a token carrying this job's actions: write scope in
           # .git/config for the life of the job.
           persist-credentials: false
+          # Full history, not the default shallow clone: the skills bump
+          # check needs to `git cat-file`/`git diff` against npm latest's
+          # gitHead, an arbitrary past commit a shallow checkout would not have.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

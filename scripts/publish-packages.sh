@@ -89,6 +89,11 @@ fi
 # Prints "<name> <version> <slug>" on success, nothing on failure.
 # The slug is what goes in a URL; for npm it is unused and echoes the
 # name back so both kinds print three fields.
+#
+# For skills and create-malloy-package the version this prints is no longer
+# what gets published — the decision logic below computes that at release
+# time — but the name (and, for python-client, the version too) still comes
+# from here, because the name is not something a release should be deciding.
 read_manifest() {
   local kind="$1" dir="$2"
   case "$kind" in
@@ -225,6 +230,130 @@ wait_for_server_latest() {
   return 1
 }
 
+# ---- Release-time version decisions for skills and create-malloy-package --
+#
+# Everything above this point (echo_untrusted_output, registry_has,
+# wait_for_server_latest, the watched-path and "main moved" guards inside
+# publish_pkg below) is unchanged: both packages still get dispatched through
+# the same guarded path python-client uses. What changed is where the VERSION
+# comes from. It used to be whatever packages/<dir>/package.json declared,
+# bumped ahead of time by a human PR (or, for these two, by
+# stamp-release-notes.sh's now-removed AHEAD_PKGS step). Now it is decided
+# here, at release time, by scripts/independent-version.mjs — pure decision
+# logic, unit-tested on its own — from facts this script gathers: what npm's
+# `latest` is, what commit it was published from, and whether anything
+# publishable has changed since.
+#
+# Set as globals rather than returned, because a function's stdout is the one
+# channel `$(...)` can capture, and capturing gather_*_facts as a whole would
+# also swallow echo_untrusted_output's diagnostic output (redirected to
+# stderr below for exactly this reason) and run it in a subshell where these
+# assignments would not survive back to the caller.
+G_NPM_OK=1
+G_LATEST=""
+G_GIT_HEAD=""
+G_OBJECT_PRESENT=0
+G_CHANGED="error"
+G_DIFF_STAT=""
+G_PUBLISHER_SERVER=""
+
+# Content-changed check for skills: unchanged (0), changed (1), or an error
+# (anything else) diffing npm latest's gitHead against this checkout. Fails
+# CLOSED into "error", which independent-version.mjs treats as an abort, not
+# as "unchanged" — an unreadable diff must never look like nothing changed.
+skills_diff_status() {
+  local git_head="$1"
+  local -a paths=(skills/ packages/skills/ bun.lock package.json)
+  # Kept as a single-line EXCLUDE=(...) array on purpose, mirroring
+  # skills-npm.yml's own bump check: a later task repoints
+  # packages/skills/src/workflow-exclusions.spec.ts's contract check at
+  # THIS line once skills-npm.yml's copy is retired, and that test asserts
+  # the array is exactly this shape.
+  local -a EXCLUDE=(':!skills/README.md' ':!packages/skills/src/*.spec.ts')
+  local rc
+  if git diff --quiet "$git_head" HEAD -- "${paths[@]}" "${EXCLUDE[@]}"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) echo unchanged ;;
+    1)
+      echo changed
+      git diff --stat "$git_head" HEAD -- "${paths[@]}" "${EXCLUDE[@]}" 2>&1
+      ;;
+    *) echo error ;;
+  esac
+}
+
+# Sets G_NPM_OK, G_LATEST, G_GIT_HEAD, G_OBJECT_PRESENT, G_CHANGED, G_DIFF_STAT.
+# A plain function call, not a subshell, so the globals persist to the caller.
+gather_skills_facts() {
+  G_NPM_OK=1 G_LATEST="" G_GIT_HEAD="" G_OBJECT_PRESENT=0 G_CHANGED="error" G_DIFF_STAT=""
+  local raw diff_out
+
+  if ! raw="$(npm view @malloy-publisher/skills dist-tags.latest --prefer-online 2>&1)" || [ -z "$raw" ]; then
+    echo_untrusted_output "$raw" >&2
+    G_NPM_OK=0
+    return 0
+  fi
+  G_LATEST="$(printf '%s\n' "$raw" | tail -n 1)"
+
+  # Not --prefer-online: a specific version's gitHead is immutable once
+  # published, unlike dist-tags.latest.
+  if ! raw="$(npm view "@malloy-publisher/skills@${G_LATEST}" gitHead 2>&1)"; then
+    echo_untrusted_output "$raw" >&2
+    G_NPM_OK=0
+    return 0
+  fi
+  G_GIT_HEAD="$(printf '%s\n' "$raw" | tail -n 1)"
+
+  if [[ "$G_GIT_HEAD" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${G_GIT_HEAD}^{commit}" 2>/dev/null; then
+    G_OBJECT_PRESENT=1
+  fi
+
+  if [ "$G_OBJECT_PRESENT" = 1 ]; then
+    diff_out="$(skills_diff_status "$G_GIT_HEAD")"
+    G_CHANGED="$(printf '%s\n' "$diff_out" | head -n 1)"
+    if [ "$G_CHANGED" = "changed" ]; then
+      G_DIFF_STAT="$(printf '%s\n' "$diff_out" | tail -n +2)"
+    fi
+  fi
+  return 0
+}
+
+# Sets G_NPM_OK, G_LATEST, G_PUBLISHER_SERVER.
+gather_scaffolder_facts() {
+  G_NPM_OK=1 G_LATEST="" G_PUBLISHER_SERVER=""
+  local raw
+
+  if ! raw="$(npm view @malloy-publisher/create-malloy-package dist-tags.latest --prefer-online 2>&1)" || [ -z "$raw" ]; then
+    echo_untrusted_output "$raw" >&2
+    G_NPM_OK=0
+    return 0
+  fi
+  G_LATEST="$(printf '%s\n' "$raw" | tail -n 1)"
+
+  # Empty output with exit 0 means the field is not set at all (npm view
+  # prints nothing for a field a manifest never declared); that is a real
+  # answer, not a failure, so only a non-zero exit counts as npm not
+  # answering.
+  if ! raw="$(npm view "@malloy-publisher/create-malloy-package@${G_LATEST}" publisherServer 2>&1)"; then
+    echo_untrusted_output "$raw" >&2
+    G_NPM_OK=0
+    return 0
+  fi
+  G_PUBLISHER_SERVER="$(printf '%s\n' "$raw" | tail -n 1)"
+  return 0
+}
+
+# The version skills actually published this run, or npm's latest for it when
+# skills was skipped or not reached — what the scaffolder's dispatch reports
+# as `skills_version` (it bakes the dependency range from this rather than
+# reading packages/skills/package.json, which the scaffolder's watched-path
+# list no longer includes for exactly that reason).
+SKILLS_VERSION_FOR_SCAFFOLDER=""
+
 publish_pkg() {
   local dir="$1" wf="$2" reg="$3" name version slug spec out rc
   local deadline live_sha errors
@@ -264,12 +393,183 @@ publish_pkg() {
     echo "- \`${dir}\` NOT dispatched: its manifest has no usable name or version" >> "$GITHUB_STEP_SUMMARY"
     return 1
   fi
-  # Written the way someone would paste it into the matching installer,
-  # so a summary line is directly actionable.
-  case "$reg" in
-    npm) spec="${name}@${version}" ;;
-    pypi) spec="${name}==${version}" ;;
+  spec="${name}@${version}"
+
+  # Three outcomes, and the third is why this is not a boolean:
+  # published means there is nothing to do, free means carry on, and
+  # "the registry did not answer" is NOT a green light. `|| rc=$?`
+  # rather than a bare call, because a non-zero return under set -e
+  # would kill the step before the case below could read it.
+  #
+  # Unlike publish_indep_pkg's check-free, "already published" here is a
+  # legitimate skip, not an error: this version came from a manifest a human
+  # (or a prior CI run) already committed, so finding it on npm just means
+  # there was nothing new to publish.
+  if out="$(registry_has "$reg" "$name" "$version" "$slug")"; then rc=0; else rc=$?; fi
+  case "$rc" in
+    0)
+      echo "::notice title=${name}::${spec} is already published; nothing to do"
+      echo "- \`${spec}\` was already published, skipped" >> "$GITHUB_STEP_SUMMARY"
+      return 0
+      ;;
+    1) : ;; # the version is free, carry on
+    *)
+      echo_untrusted_output "$out"
+      echo "::error title=${name}::could not ask the ${reg} registry whether ${spec} is taken"
+      echo "- \`${spec}\` NOT dispatched: the ${reg} registry did not answer whether it is already published" >> "$GITHUB_STEP_SUMMARY"
+      return 1
+      ;;
   esac
+
+  publish_resolved "$dir" "$wf" "$reg" "$name" "$version" "$slug" "$spec"
+}
+
+# skills and create-malloy-package: the name (and the watched-path/"main
+# moved" guards below) still come from the manifest, but the VERSION is
+# whatever independent-version.mjs decided, computed from npm's own state
+# rather than from packages/<dir>/package.json.
+publish_indep_pkg() {
+  local dir="$1" wf="$2" name out rc reason version spec
+
+  if ! out="$(read_manifest npm "$dir")" || [ -z "$out" ]; then
+    echo_untrusted_output "$out"
+    echo "::error title=${dir}::could not read the npm manifest for packages/${dir}, so ${wf} was not dispatched"
+    echo "- \`${dir}\` NOT dispatched: could not read its manifest" >> "$GITHUB_STEP_SUMMARY"
+    return 1
+  fi
+  read -r name _ _ <<<"$(printf '%s\n' "$out" | tail -n 1)"
+  if [ -z "$name" ] || [ "$name" = "undefined" ]; then
+    echo "::error title=${dir}::the npm manifest for packages/${dir} declares name='${name}'; refusing an unnamed package. ${wf} was not dispatched."
+    echo "- \`${dir}\` NOT dispatched: its manifest has no usable name" >> "$GITHUB_STEP_SUMMARY"
+    return 1
+  fi
+
+  case "$dir" in
+    skills)
+      gather_skills_facts
+      echo "## ${name}" >> "$GITHUB_STEP_SUMMARY"
+      echo "- npm \`latest\`: ${G_LATEST:-(unknown)}, gitHead: \`${G_GIT_HEAD:-(unknown)}\`" >> "$GITHUB_STEP_SUMMARY"
+      if [ -n "$G_DIFF_STAT" ]; then
+        {
+          echo "<details><summary>changes since that gitHead</summary>"
+          echo
+          echo '```'
+          printf '%s\n' "$G_DIFF_STAT"
+          echo '```'
+          echo "</details>"
+        } >> "$GITHUB_STEP_SUMMARY"
+      fi
+      if out="$(NPM_OK="$G_NPM_OK" LATEST="$G_LATEST" GIT_HEAD="$G_GIT_HEAD" \
+                OBJECT_PRESENT="$G_OBJECT_PRESENT" CHANGED="$G_CHANGED" \
+                node scripts/independent-version.mjs decide-skills 2>&1)"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      ;;
+    create-malloy-package)
+      gather_scaffolder_facts
+      echo "## ${name}" >> "$GITHUB_STEP_SUMMARY"
+      echo "- npm \`latest\`: ${G_LATEST:-(unknown)}, publisherServer: \`${G_PUBLISHER_SERVER:-(not set)}\`" >> "$GITHUB_STEP_SUMMARY"
+      if out="$(NPM_OK="$G_NPM_OK" LATEST="$G_LATEST" PUBLISHER_SERVER="$G_PUBLISHER_SERVER" \
+                RELEASE="$NEW_VERSION" node scripts/independent-version.mjs decide-scaffolder 2>&1)"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      ;;
+    *)
+      echo "::error title=${dir}::publish_indep_pkg does not know package ${dir}"
+      return 1
+      ;;
+  esac
+
+  # independent-version.mjs's CLI prints exactly one of "publish <version>",
+  # "skip", or "abort <reason>" as its FIRST line on stdout, with its
+  # human-readable reason on stderr (folded into $out above by 2>&1, so it
+  # rides along in the summary/log for free); "publish"/"skip" exit 0, abort
+  # exits with a distinct non-zero code the CLI documents.
+  local first_line reason_lines action arg
+  first_line="$(printf '%s\n' "$out" | head -n 1)"
+  reason_lines="$(printf '%s\n' "$out" | tail -n +2)"
+  read -r action arg <<<"$first_line"
+
+  if [ -n "$reason_lines" ]; then
+    printf '%s\n' "$reason_lines" | sed "s/^/[${name}] /"
+  fi
+
+  case "$action" in
+    abort)
+      reason="${first_line#abort }"
+      echo "::error title=${name}::${reason}. ${wf} was NOT dispatched."
+      echo "- \`${name}\` NOT dispatched: ${reason}" >> "$GITHUB_STEP_SUMMARY"
+      return 1
+      ;;
+    skip)
+      echo "::notice title=${name}::no version decided to publish this release; nothing to do"
+      echo "- \`${name}\` skipped: nothing to publish" >> "$GITHUB_STEP_SUMMARY"
+      if [ "$dir" = "skills" ]; then
+        SKILLS_VERSION_FOR_SCAFFOLDER="$G_LATEST"
+      fi
+      return 0
+      ;;
+    publish)
+      version="$arg"
+      ;;
+    *)
+      echo "::error title=${name}::independent-version.mjs printed an unrecognised decision (logged above); ${wf} was NOT dispatched."
+      echo "- \`${name}\` NOT dispatched: unrecognised version decision" >> "$GITHUB_STEP_SUMMARY"
+      return 1
+      ;;
+  esac
+
+  spec="${name}@${version}"
+  echo "- decision: publish \`${spec}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # A computed version already on npm is an ERROR here, not a skip: `latest`
+  # was just read from the same registry, so nextPatch landing on something
+  # already published means the two reads disagreed, or npm's own
+  # immutability was about to be violated. Neither is a thing to shrug past.
+  local slug="$name" status
+  if out="$(registry_has npm "$name" "$version" "$slug")"; then rc=0; else rc=$?; fi
+  case "$rc" in
+    0) status=published ;;
+    1) status=free ;;
+    *) status=unknown ;;
+  esac
+  if [ "$status" != "free" ]; then
+    echo_untrusted_output "$out"
+  fi
+  local check_out check_rc
+  if check_out="$(STATUS="$status" NAME="$name" VERSION="$version" \
+                  node scripts/independent-version.mjs check-free)"; then
+    check_rc=0
+  else
+    check_rc=$?
+  fi
+  if [ "$check_rc" != 0 ]; then
+    reason="${check_out#abort }"
+    echo "::error title=${name}::${reason}. ${wf} was NOT dispatched."
+    echo "- \`${spec}\` NOT dispatched: ${reason}" >> "$GITHUB_STEP_SUMMARY"
+    return 1
+  fi
+
+  if [ "$dir" = "skills" ]; then
+    SKILLS_VERSION_FOR_SCAFFOLDER="$version"
+  fi
+
+  publish_resolved "$dir" "$wf" npm "$name" "$version" "$slug" "$spec"
+}
+
+# Shared tail of both publish paths: the watched-path guard, the "main moved"
+# fast-forward compare, the dispatch, and the poll for the version to appear.
+# Registry-agnostic and unchanged in shape from before independent
+# versioning; only the callers above now decide $version differently.
+publish_resolved() {
+  local dir="$1" wf="$2" reg="$3" name="$4" version="$5" slug="$6" spec="$7"
+  local deadline live_sha errors
+  local changed file_count relevant file path
+  local -a paths
 
   # The paths this package's PUBLISHED content is built from, which is
   # not the same as the paths it lives in.
@@ -278,12 +578,13 @@ publish_pkg() {
   # directory, so it has both.
   #
   # create-malloy-package ships dist/ and templates/ built from its own
-  # directory, PLUS a dependency range its publish job bakes in by
-  # reading packages/skills/package.json from main at dispatch time.
-  # That file therefore belongs in its list even though its contents
-  # never enter the tarball. Scoped to the one file rather than the
-  # skills directory: a skill edit cannot change what the scaffolder
-  # publishes, only a version change can.
+  # directory. It no longer also watches packages/skills/package.json: its
+  # publish job used to bake its skills dependency range by reading that
+  # file from main at dispatch time, but it now takes the skills version as
+  # a dispatch input (`skills_version`, set below from what skills just
+  # published, or its npm latest when skills was skipped), so a bare skills
+  # version bump with no scaffolder-relevant change no longer needs to
+  # retrigger this guard.
   #
   # The child workflow file is in both lists because a dispatch runs
   # whatever definition main holds at dispatch time, not the one this
@@ -302,7 +603,7 @@ publish_pkg() {
   # check watches the same two paths.
   case "$dir" in
     skills) paths=("skills/" "packages/skills/" "bun.lock" "package.json") ;;
-    create-malloy-package) paths=("packages/${dir}/" "packages/skills/package.json") ;;
+    create-malloy-package) paths=("packages/${dir}/") ;;
     python-client) paths=("packages/${dir}/" "api-doc.yaml") ;;
     *) paths=("packages/${dir}/") ;;
   esac
@@ -323,27 +624,6 @@ publish_pkg() {
     echo "- \`${spec}\` NOT dispatched: watched path '${path}' is malformed" >> "$GITHUB_STEP_SUMMARY"
     return 1
   done
-
-  # Three outcomes, and the third is why this is not a boolean:
-  # published means there is nothing to do, free means carry on, and
-  # "the registry did not answer" is NOT a green light. `|| rc=$?`
-  # rather than a bare call, because a non-zero return under set -e
-  # would kill the step before the case below could read it.
-  out="$(registry_has "$reg" "$name" "$version" "$slug")" && rc=0 || rc=$?
-  case "$rc" in
-    0)
-      echo "::notice title=${name}::${spec} is already published; nothing to do"
-      echo "- \`${spec}\` was already published, skipped" >> "$GITHUB_STEP_SUMMARY"
-      return 0
-      ;;
-    1) : ;; # the version is free, carry on
-    *)
-      echo_untrusted_output "$out"
-      echo "::error title=${name}::could not ask the ${reg} registry whether ${spec} is taken"
-      echo "- \`${spec}\` NOT dispatched: the ${reg} registry did not answer whether it is already published" >> "$GITHUB_STEP_SUMMARY"
-      return 1
-      ;;
-  esac
 
   # Only when it will actually be dispatched, and before the main-moved
   # check below, so that check still runs right before the dispatch.
@@ -490,22 +770,31 @@ publish_pkg() {
   # run, so link the filtered workflow view rather than a wrong run.
   local runs_url="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/${wf}?query=branch%3Amain"
 
-  # The scaffolder is told which server to pin rather than reading
-  # `latest` itself. The wait above proves only THIS runner's view of
-  # npm. The registry is cached per CDN edge (max-age=300), so the
-  # child's runners can still read the previous server for a few
-  # minutes, and a stale read there would publish a scaffolder pinned
-  # to it with nothing going red.
-  local inputs=()
-  if [ "$dir" = "create-malloy-package" ]; then
-    inputs=(-f "server_version=${NEW_VERSION}")
-  fi
+  # skills and create-malloy-package are told the version to publish rather
+  # than reading it from their own package.json (which is becoming a fixed
+  # placeholder). The scaffolder is additionally told which server and which
+  # skills version to pin: the wait above proves only THIS runner's view of
+  # npm for the server, and the scaffolder no longer reads
+  # packages/skills/package.json for skills at all, so both have to be
+  # handed in explicitly.
+  local -a inputs=()
+  case "$dir" in
+    skills) inputs=(-f "version=${version}") ;;
+    create-malloy-package)
+      inputs=(
+        -f "version=${version}"
+        -f "server_version=${NEW_VERSION}"
+        -f "skills_version=${SKILLS_VERSION_FOR_SCAFFOLDER}"
+      )
+      ;;
+  esac
 
   echo "::notice title=${name}::dispatching ${wf} on main to publish ${spec} (${runs_url})"
   # Aborting here is right: polling 25 minutes for a run that was never
   # created helps nobody. But under `set -e` a bare command would exit
   # the step with only gh's stderr and the notice above to go on, which
   # is the one exit from this function with no explanation of its own.
+  local out
   if ! out="$(gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref main ${inputs[@]+"${inputs[@]}"} 2>&1)"; then
     echo_untrusted_output "$out"
     echo "::error title=${name}::could not dispatch ${wf} on main, so ${spec} was not published and nothing is waiting for it. Check that the workflow exists on main and still declares workflow_dispatch, then dispatch it yourself at ${runs_url}."
@@ -529,8 +818,9 @@ publish_pkg() {
     # package the release ends GREEN asserting a publish that never
     # happened. rc=2 is counted as "did not answer", not as a yes and
     # not as a no.
-    out="$(registry_has "$reg" "$name" "$version" "$slug")" && rc=0 || rc=$?
-    case "$rc" in
+    local poll_rc
+    if out="$(registry_has "$reg" "$name" "$version" "$slug")"; then poll_rc=0; else poll_rc=$?; fi
+    case "$poll_rc" in
       0)
         echo "::notice title=${name}::${spec} published"
         echo "- \`${spec}\` published" >> "$GITHUB_STEP_SUMMARY"
@@ -555,8 +845,9 @@ publish_pkg() {
 }
 
 # Order is not optional for the first two. create-malloy-package pins
-# its skills dependency from the monorepo and then asks the registry
-# whether that range resolves, so skills has to be ON NPM before the
+# its skills dependency from the version skills just published (or its npm
+# latest, when skills was skipped) and its server from npm `latest`, so
+# skills has to be decided and, if publishing, confirmed on npm before the
 # scaffolder is dispatched. Dispatching both at once races and fails the
 # scaffolder.
 #
@@ -564,6 +855,6 @@ publish_pkg() {
 # depends on nothing here — so it is last only because it is the one
 # whose first publish is still unproven. A failure there leaves the two
 # npm packages already published, which the job summary records.
-publish_pkg skills skills-npm.yml npm
-publish_pkg create-malloy-package create-malloy-package-npm.yml npm
+publish_indep_pkg skills skills-npm.yml
+publish_indep_pkg create-malloy-package create-malloy-package-npm.yml
 publish_pkg python-client python-sdk.yml pypi
