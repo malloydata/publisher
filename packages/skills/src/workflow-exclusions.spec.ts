@@ -2,57 +2,62 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The contract between `.github/workflows/skills-npm.yml`'s bump check and
- * `scripts/exclusions.ts`.
+ * The contract between `scripts/publish-packages.sh`'s `skills_diff_status`
+ * and `scripts/exclusions.ts`.
  *
  * exclusions.ts's own docstring states the rule this enforces: "The copy, the
  * pack audit, and the tests all have to agree exactly. When they drift, one of
- * them silently permits what another forbids." The workflow's version-bump check
- * is now a FOURTH reader of that list — it subtracts the unpublishable files
- * from its scoping diff, so that editing one does not demand a version bump for
- * a byte that never reaches the tarball — and it was the only reader with no
- * test behind it.
+ * them silently permits what another forbids." `skills_diff_status` is now a
+ * FOURTH reader of that list: at release time it diffs this checkout against
+ * npm latest's recorded gitHead, and its own `EXCLUDE=(...)` subtracts the
+ * unpublishable files from that diff, so that editing one does not make the
+ * release think published content changed when it did not — and it was the
+ * only reader with no test behind it.
  *
  * The drift that matters is not the obvious direction. If someone decides
  * `skills/README.md` SHOULD ship (drops `isSourceReadme`, or renames the file)
- * and the workflow keeps excluding it, a README-only PR then really does change
- * the tarball while the check reports "no published skills content changed". It
- * merges without a bump, and `publish-packages` finds the version already on
- * npm, skips the package, and the release stays green — the exact failure the
- * bump check exists to close, re-entering through the exclusion that check adds.
+ * and `skills_diff_status` keeps excluding it, a README-only change then really
+ * does change the tarball while the release's diff reports "unchanged". The
+ * release skips publishing, and the version already on npm silently keeps
+ * shipping stale content under the name a reader thinks is current — the exact
+ * failure this exclusion list exists to close, re-entering through the
+ * exclusion itself.
  *
- * Reading a sibling workflow from a unit test is ugly. It is also the only thing
- * that makes this contract fail loudly, and it costs one file read.
+ * Reading a sibling shell script from a unit test is ugly. It is also the only
+ * thing that makes this contract fail loudly, and it costs one file read.
  */
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isExcluded } from "../scripts/exclusions";
 
-const WORKFLOW = path.join(
+const PUBLISH_SCRIPT = path.join(
    import.meta.dir,
    "..",
    "..",
    "..",
-   ".github",
-   "workflows",
-   "skills-npm.yml",
+   "scripts",
+   "publish-packages.sh",
 );
 
 /**
- * The `:!<path>` entries of the check's `EXCLUDE=(...)` array.
+ * The `:!<path>` entries of `skills_diff_status`'s `local -a EXCLUDE=(...)`
+ * array.
  *
- * Deliberately strict about finding it. A rename of the variable, or the array
- * moving to a form this cannot read, must fail rather than quietly return an
- * empty list — an empty list would pass every assertion below and switch this
- * test off for good, which is the same failure mode the workflow's own
- * watched-path assertion exists to prevent.
+ * Deliberately strict about finding it. A rename of the variable, the function
+ * losing its `local -a` declaration, or the array moving to a form this cannot
+ * read, must fail rather than quietly return an empty list — an empty list
+ * would pass every assertion below and switch this test off for good, which is
+ * the same failure mode the script's own watched-path assertions exist to
+ * prevent.
  */
-function excludePathspecs(yaml: string): string[] {
-   const line = /^\s*EXCLUDE=\(([^)]*)\)\s*$/m.exec(yaml);
+function excludePathspecs(script: string): string[] {
+   const line = /^\s*local -a EXCLUDE=\(([^)]*)\)\s*$/m.exec(script);
    expect(
       line,
-      "skills-npm.yml no longer has a single-line EXCLUDE=(...) array; this test cannot verify the contract it exists for",
+      "scripts/publish-packages.sh no longer has a single-line " +
+         "`local -a EXCLUDE=(...)` array in skills_diff_status; this test " +
+         "cannot verify the contract it exists for",
    ).not.toBeNull();
 
    const specs = Array.from(line![1].matchAll(/'([^']*)'|"([^"]*)"/g)).map(
@@ -62,11 +67,11 @@ function excludePathspecs(yaml: string): string[] {
    return specs;
 }
 
-describe("skills-npm.yml's EXCLUDE agrees with exclusions.ts", () => {
-   const yaml = fs.readFileSync(WORKFLOW, "utf8");
+describe("publish-packages.sh's skills EXCLUDE agrees with exclusions.ts", () => {
+   const script = fs.readFileSync(PUBLISH_SCRIPT, "utf8");
 
    it("excludes only paths the packer actually refuses to ship", () => {
-      for (const spec of excludePathspecs(yaml)) {
+      for (const spec of excludePathspecs(script)) {
          // git's "exclude this pathspec" form, which is what the diff consumes.
          expect(spec.startsWith(":!"), `${spec} is not a :! pathspec`).toBe(
             true,
@@ -81,9 +86,9 @@ describe("skills-npm.yml's EXCLUDE agrees with exclusions.ts", () => {
             const relative = repoPath.slice("skills/".length);
             expect(
                isExcluded(relative),
-               `skills-npm.yml excludes ${repoPath} from its bump check, but exclusions.ts would PACK it. ` +
-                  `A change to that file reaches the published tarball while the check reports "no published skills content changed", ` +
-                  `so it merges without a version bump and the release silently skips the package.`,
+               `publish-packages.sh excludes ${repoPath} from its release-time content diff, but exclusions.ts would PACK it. ` +
+                  `A change to that file reaches the published tarball while the diff reports "unchanged since npm latest's gitHead", ` +
+                  `so the release decides there is nothing to publish and skills quietly ships stale content.`,
             ).toBe(true);
             continue;
          }
@@ -93,7 +98,7 @@ describe("skills-npm.yml's EXCLUDE agrees with exclusions.ts", () => {
             // `dist`, which tsc emits from src/ minus its own exclude list. So
             // the authority here is tsconfig.build.json, and the same drift
             // applies — start emitting specs into dist/ and this exclusion
-            // silently stops the check noticing a change that ships.
+            // silently stops the diff noticing a change that ships.
             const buildTsconfig = JSON.parse(
                fs
                   .readFileSync(
@@ -108,17 +113,17 @@ describe("skills-npm.yml's EXCLUDE agrees with exclusions.ts", () => {
             // The EXACT glob, not "some glob ending in *.spec.ts". A suffix
             // test passes on a NARROWING — `src/legacy/**/*.spec.ts` still ends
             // that way while `src/*.spec.ts` is emitted into dist/ and ships,
-            // with the workflow still excluding all of it from the bump check.
-            // Measured: under that edit this file passed 2/0 while dist/ gained
+            // with the diff still excluding all of it. Measured: under that
+            // edit this file passed 2/0 while dist/ gained
             // workflow-exclusions.spec.js. Removing the glob is the mutation
             // that is easy to imagine; narrowing it is the one someone actually
             // makes. Brittle in the fail-CLOSED direction on purpose, the same
             // trade `excludePathspecs` makes about the array's exact shape.
             expect(
                excludes,
-               `skills-npm.yml excludes ${repoPath} from its bump check because specs are not built into dist/, ` +
+               `publish-packages.sh excludes ${repoPath} from its release-time content diff because specs are not built into dist/, ` +
                   `but tsconfig.build.json's exclude no longer contains exactly "src/**/*.spec.ts" — so a spec under src/ may now be ` +
-                  `emitted into dist/ and published while the check still reports "no published skills content changed".`,
+                  `emitted into dist/ and published while the diff still reports "unchanged".`,
             ).toContain("src/**/*.spec.ts");
             continue;
          }
@@ -132,12 +137,13 @@ describe("skills-npm.yml's EXCLUDE agrees with exclusions.ts", () => {
 
    it("excludes every unpublishable file that is actually in the tree", () => {
       // The other direction, and the cheaper failure: a file the packer drops
-      // but the workflow still watches only demands a version bump nobody can
-      // justify. Scoped to the top level of skills/, because that is where a
-      // whole-file exclusion like README.md lives; `credible-*` is asserted
-      // absent from this repo elsewhere, and dotfiles are not content.
+      // but the diff still watches only makes the release re-publish content
+      // that never changed. Scoped to the top level of skills/, because that
+      // is where a whole-file exclusion like README.md lives; `credible-*` is
+      // asserted absent from this repo elsewhere, and dotfiles are not
+      // content.
       const excluded = new Set(
-         excludePathspecs(yaml).map((spec) => spec.slice(2)),
+         excludePathspecs(script).map((spec) => spec.slice(2)),
       );
       const skillsDir = path.join(import.meta.dir, "..", "..", "..", "skills");
 
@@ -146,8 +152,8 @@ describe("skills-npm.yml's EXCLUDE agrees with exclusions.ts", () => {
          if (!isExcluded(entry.name)) continue;
          expect(
             excluded.has(`skills/${entry.name}`),
-            `exclusions.ts keeps skills/${entry.name} out of the tarball, but skills-npm.yml's bump check still watches it, ` +
-               `so editing it demands a version bump for a byte that is never published.`,
+            `exclusions.ts keeps skills/${entry.name} out of the tarball, but publish-packages.sh's release-time diff still watches it, ` +
+               `so editing it looks like published content changed when it never reaches the tarball.`,
          ).toBe(true);
       }
    });

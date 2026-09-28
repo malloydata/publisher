@@ -5,21 +5,15 @@ name: create-malloy-package
 
 # create-malloy-package versions on its own line, like the skills package.
 # release.yml bumps sdk, app, and server in lockstep and is deliberately not used
-# here: a scaffolder change should not need a server release.
-
-# Publishing is on demand only. The package's tests run in cross-platform-tests.yml
-# (reached from build.yml, which is what runs on a PR) on every
-# PR, so publishing is all the dispatch path exists for and it should never
-# happen automatically on a push or a PR.
+# here: a scaffolder change should not need a server release. The published
+# version is decided here, at dispatch time (see "Resolve version to publish" in
+# the publish job), not by a bump committed to
+# packages/create-malloy-package/package.json.
 #
-# The `pull_request` trigger below does NOT change that. It runs one job,
-# `check_version`, which asks the registry a question and publishes nothing;
-# `check_pack` and `publish` are both gated to `workflow_dispatch` so the
-# dispatch path behaves exactly as it did before this trigger existed. It is
-# here because a forgotten version bump used to be invisible until release time:
-# release.yml's `publish-packages` skips a package whose version is already on
-# npm and the release stays green, so a scaffolder change merged without a bump
-# simply never shipped.
+# Publishing is on demand only: workflow_dispatch is the only trigger. The
+# package's tests run in cross-platform-tests.yml (reached from build.yml, which
+# is what runs on a PR) on every PR, so this workflow should never run on a push
+# or a PR.
 #
 # The "Release (NPM + Docker)" workflow also triggers this one, so a single
 # release publishes every package. It dispatches this file through the Actions
@@ -31,6 +25,22 @@ name: create-malloy-package
 on:
   workflow_dispatch:
     inputs:
+      # Set by release.yml's publish-packages to the version it decided
+      # (scripts/independent-version.mjs). Left empty on a hand dispatch, which
+      # publishes npm latest + 1 patch instead; see "Resolve version to
+      # publish" in the publish job.
+      version:
+        description: "Version to publish (release use; leave empty to publish npm latest + 1 patch)"
+        required: false
+        default: ""
+      # Set by release.yml's publish-packages to the skills version it just
+      # published, or to skills' npm latest when skills was skipped. Left
+      # empty on a hand dispatch, which reads npm latest for
+      # @malloy-publisher/skills itself; see "Resolve workspace:* skills dep".
+      skills_version:
+        description: "@malloy-publisher/skills version to depend on (release use; leave empty to use npm latest)"
+        required: false
+        default: ""
       # Set by release.yml's publish-packages to the version it just shipped.
       # Left empty on a hand dispatch, which pins whatever the server's
       # `latest` reads. When set, both jobs below wait for `latest` to read it
@@ -39,269 +49,12 @@ on:
         description: "Server version to pin (release use; leave empty to pin npm latest)"
         required: false
         default: ""
-  # Only for `check_version`. The paths are the ones that change what this
-  # package PUBLISHES — its own directory, and packages/skills/package.json,
-  # whose version the publish job bakes into the shipped dependency range even
-  # though no skills file enters the tarball — plus this file, so a change to the
-  # check itself is exercised by the PR that makes it.
-  pull_request:
-    paths:
-      - "packages/create-malloy-package/**"
-      - "packages/skills/package.json"
-      - ".github/workflows/create-malloy-package-npm.yml"
 
 env:
   BUN_VERSION: 1.3.13
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # See the sibling step in skills-npm.yml; this is the same check against this
-  # package's own version, and the two are kept textually parallel on purpose so
-  # they can be diffed. The differences are the package directory, the watched
-  # paths, and this being its own job rather than a step — `check_pack` below is
-  # dispatch-only, so there was no PR job to add it to.
-  check_version:
-    name: Require a version bump when the published content changes
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    # This job only asks a registry two questions. Every call it makes is
-    # --max-time bounded, but a bound per call is not a bound on the job, and
-    # without this a hung step would sit on a runner for GitHub's 6-hour default
-    # blocking a PR on a check that can neither pass nor fail.
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # The check diffs this PR against its base, which needs the merge base
-          # in the clone. The default depth-1 checkout of a pull_request is a
-          # merge commit with no parents fetched, so `origin/<base>` does not
-          # resolve and the diff cannot be computed.
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      # The question is "is the declared version ahead of npm", NOT "did this PR
-      # change the version". Between a release-prep merge and the dispatch, main
-      # legitimately carries a bumped version that no open PR touched, and a
-      # did-it-change check would redden every PR opened in that window.
-      - name: Check the version against npm
-        env:
-          # Through env rather than interpolated into the script body, as every
-          # other registry-facing step in this repo does.
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-
-          # Scoped to the paths this package's PUBLISHED content is built from,
-          # which is deliberately NARROWER than the `paths:` trigger above:
-          # almost nothing in this workflow file changes a published byte, so
-          # demanding a version bump for it would force a content-free publish and
-          # make every future edit here require a release.
-          #
-          # "Almost": BUN_VERSION at the top of this file pins the bundler that
-          # `prepack` runs to emit dist/index.js, the only JS in the tarball. So a
-          # BUN_VERSION bump does change what ships, and this check reports "no
-          # published scaffolder content changed" for it. Accepted rather than
-          # closed, because the consequence is mild and bounded — the tarball
-          # stays one bundler behind until the next real release, not broken — and
-          # watching the whole file to catch one line would demand a release for
-          # every comment edit. It is the same shape as the bun.lock gap and is
-          # recorded beside it in CONTEXT.md. Hoisting BUN_VERSION somewhere
-          # watched is what would close it properly.
-          #
-          # The file is in the trigger, so a
-          # workflow-only PR reaches this step and must be skipped here.
-          #
-          # packages/skills/package.json IS in scope, unlike the rest of the
-          # skills tree. Only its version reaches this tarball, through the range
-          # the publish job bakes in below, so a skills version bump changes what
-          # this package ships and a skill edit does not.
-          #
-          # Enumerated rather than the whole package directory, because this
-          # package declares `files: ["dist","templates"]` and `dist` is built by
-          # `bun build src/index.ts` — so `tests/`, `scripts/`, `tsconfig.json`
-          # and `eslint.config.mjs` ship in nothing. Watching the directory
-          # wholesale made a test-only PR demand a version bump, which is the
-          # same content-free publish the paragraph above refuses to force for a
-          # workflow edit. README.md and LICENSE are in scope because npm always
-          # includes them regardless of `files`.
-          PATHS=(
-            packages/create-malloy-package/src
-            packages/create-malloy-package/templates
-            packages/create-malloy-package/package.json
-            packages/create-malloy-package/README.md
-            packages/create-malloy-package/LICENSE
-            packages/skills/package.json
-          )
-
-          # Assert every entry exists, because `git diff -- does/not/exist` exits
-          # 0 with EMPTY output, which lands in the skip branch below and reports
-          # "no published content changed". So a typo or a rename does not fail
-          # this check, it silently switches it off for good while the trigger
-          # keeps firing — and this list is now enumerated, so there is more to
-          # get wrong. release.yml's publish_pkg guards its own path list the same
-          # way and for the same stated reason: an entry that cannot match
-          # silently stops guarding.
-          for p in "${PATHS[@]}"; do
-            [ -e "$p" ] && continue
-            echo "::error title=Version::watched path '${p}' does not exist in this checkout, so the scoping diff can never match it and this check would silently pass everything. Fix the PATHS list in this workflow."
-            exit 1
-          done
-
-          # Fails CLOSED: if the diff cannot be computed the check RUNS, it does
-          # not skip. A skip is the outcome that lets an unbumped change through,
-          # so it has to be reached deliberately and never by accident.
-          SCOPED=1
-          CHANGED=""
-          if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
-            echo "::warning title=Version::could not resolve origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
-            SCOPED=0
-          elif ! CHANGED="$(git diff --name-only "origin/${BASE_REF}...HEAD" -- "${PATHS[@]}")"; then
-            echo "::warning title=Version::could not diff against origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
-            SCOPED=0
-          fi
-
-          if [ "$SCOPED" = 1 ] && [ -z "$CHANGED" ]; then
-            echo "::notice title=Version::no published scaffolder content changed in this PR (checked ${PATHS[*]}); no version bump required"
-            exit 0
-          fi
-
-          MANIFEST=packages/create-malloy-package/package.json
-
-          # Read the name rather than hardcoding it, so a rename cannot leave
-          # this quietly checking a package nobody publishes — the same reason
-          # the publish job's steps read it.
-          #
-          # Read through `if !`, and then VALIDATED. Both halves matter, and
-          # release.yml's publish_pkg carries the same pair for the same reasons:
-          #
-          #  - A bare assignment under `set -e` dies with a raw Node stack trace,
-          #    no annotation and no line saying which file was unreadable.
-          #  - `node -p` prints the string "undefined" with exit 0 for a MISSING
-          #    field, which is worse than a crash because it looks like an answer.
-          #    Measured, before this guard existed: with the version field gone,
-          #    `npm view "$NAME@undefined" version` E404s (read as "free"), and
-          #    `sort -V` ranks the literal string "undefined" ABOVE every real
-          #    version — so this check passed GREEN on a manifest that npm would
-          #    refuse to publish. With the name gone it queried the npm package
-          #    literally called `undefined`, which exists at 0.1.0, and reported a
-          #    confident comparison against it.
-          if ! NAME="$(node -p "require('./${MANIFEST}').name" 2>&1)" \
-             || ! DECLARED="$(node -p "require('./${MANIFEST}').version" 2>&1)"; then
-            # :- on both. `if ! A=... || ! B=...` SHORT-CIRCUITS, so when the
-            # first read fails the second assignment never runs and DECLARED is
-            # never bound — and this body runs under `set -euo pipefail`, so an
-            # unbound expansion aborts the step here, before the annotation. That
-            # is precisely the raw-stack-trace-no-annotation failure the comment
-            # above says this block prevents. Measured: "DECLARED: unbound
-            # variable", no ::error, no [node] log.
-            printf '%s\n' "${NAME:-}${DECLARED:-}" | sed 's/^/[node] /'
-            echo "::error title=Version::could not read ${MANIFEST} (logged above)"
-            exit 1
-          fi
-          if [ -z "$NAME" ] || [ "$NAME" = "undefined" ]; then
-            echo "::error title=Version::${MANIFEST} declares no usable package name, so there is nothing to ask the registry about"
-            exit 1
-          fi
-          # A version, not merely a non-empty string. This is also what keeps a
-          # crafted value out of the `::` lines below: DECLARED is fully
-          # PR-controlled on a pull_request run, and a JSON \n escape in it would
-          # otherwise become a real newline that could forge a workflow command
-          # or emit `::stop-commands::` and suppress the genuine error. Measured
-          # before this guard: a version field could inject an `::add-mask::` and
-          # a forged `::error`, and swallow the real one.
-          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            printf '%s\n' "$DECLARED" | sed 's/^/[manifest] /'
-            echo "::error title=Version::the version in ${MANIFEST} (logged above) is not a plain major.minor.patch with an optional -prerelease or +build, so it cannot be compared with the registry"
-            exit 1
-          fi
-          SPEC="$NAME@$DECLARED"
-
-          # Named once, so the error below cannot claim this PR touched published
-          # content when the scoping diff is the very thing that failed.
-          if [ "$SCOPED" = 1 ]; then
-            WHY="this PR changes published scaffolder content"
-          else
-            WHY="this PR's changed paths could not be determined"
-          fi
-
-          # Two questions, because passing the first does not imply the second.
-          #
-          # 1. Is this exact version already on npm? This is the precise
-          #    predicate release.yml skips on, so it is the one that decides
-          #    whether the release would silently drop this package.
-          if PUBLISHED="$(npm view "$SPEC" version 2>&1)" && [ -n "$PUBLISHED" ]; then
-            echo "::error title=Version::${WHY}, and $SPEC is already on npm — so a release would SKIP this package and stay green. Bump the version in packages/create-malloy-package/package.json."
-            exit 1
-          elif [[ "$PUBLISHED" != *E404* ]]; then
-            # Registry output is untrusted text, and a line starting with "::"
-            # would otherwise be parsed as a workflow command. Prefix rather
-            # than indent: the runner trims leading whitespace before matching.
-            printf '%s\n' "$PUBLISHED" | sed 's/^/[npm] /'
-            echo "::error title=Version::could not ask npm whether $SPEC is taken; an unanswered registry is not a green light"
-            exit 1
-          fi
-
-          # 2. Is it above the current `latest`? A version that is merely FREE
-          #    can still be below `latest` — a number skipped by an explicit
-          #    dispatch, or one that was unpublished — and publishing it moves
-          #    the dist-tag `npm create` resolves BACKWARDS with nothing
-          #    failing. release.yml's `prepare` carries the long version of this
-          #    reasoning for the sdk line.
-          if ! LATEST_OUTPUT="$(npm view "$NAME" dist-tags.latest 2>&1)" || [ -z "$LATEST_OUTPUT" ]; then
-            # E404 here means the PACKAGE does not exist, not that the registry
-            # failed — so there is no `latest` to be below and the version is
-            # free. Without this branch a package that has never been published
-            # reddens every PR with "could not ask npm", which is precisely the
-            # `Adding a published package` path in CONTEXT.md, and it also breaks
-            # on a rename — the case the comment above claims reading the name
-            # from disk protects against. The PyPI sibling in python-sdk.yml has
-            # always handled this; these two now match it.
-            if [[ "$LATEST_OUTPUT" == *E404* ]]; then
-              echo "::notice title=Version::$NAME is not on npm at all, so $DECLARED is free"
-              exit 0
-            fi
-            printf '%s\n' "$LATEST_OUTPUT" | sed 's/^/[npm] /'
-            echo "::error title=Version::could not ask npm for $NAME dist-tags.latest"
-            exit 1
-          fi
-          # tail -n 1, as the server-pin step below does: the capture folds
-          # stderr in so a failure has something to show, and npm writes routine
-          # warnings there on a successful run too (unknown env config, update
-          # notices, retries). Comparing the raw capture would fail a correct PR
-          # reporting `latest is npm warn ...`.
-          LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | tail -n 1)"
-          # `sort -V` ranks a PRERELEASE ABOVE its own release: verified,
-          # `printf '0.2.0\n0.2.0-rc.1\n' | sort -V | tail -1` is `0.2.0-rc.1`.
-          # The regex above deliberately accepts a -prerelease, so without this
-          # branch a declared `0.1.7-rc.1` against a latest of `0.1.7` passes the
-          # test below and reports "free and above latest (0.1.7)" for a version
-          # semver puts BELOW it. The test is skipped rather than repaired
-          # because it is asking the wrong question of a prerelease: the npm
-          # publish jobs route a hyphenated version to the `next` dist-tag, so it
-          # cannot move `latest` backwards at all, which is the failure this test
-          # names. Implementing real semver ordering in shell to reach the same
-          # answer is not worth it.
-          if [[ "$DECLARED" == *-* ]]; then
-            echo "::notice title=Version::$SPEC is free; skipping the above-latest test because it is a prerelease, which does not move the latest dist-tag"
-            exit 0
-          fi
-          if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
-            echo "::error title=Version::packages/create-malloy-package/package.json declares $DECLARED, which is BELOW npm's latest ($LATEST). Publishing it would move the latest dist-tag backwards. Bump above $LATEST."
-            exit 1
-          fi
-
-          if [ "$SCOPED" = 0 ]; then
-            echo "::notice title=Version::$SPEC is free and above latest ($LATEST); checked unscoped because this PR's changed paths could not be determined"
-          else
-            echo "::notice title=Version::$SPEC is free and above latest ($LATEST)"
-          fi
-
   check_pack:
     name: Verify the published tarball
     # A frozen-lockfile install, a build, the package's suite, and up to three
@@ -309,19 +62,14 @@ jobs:
     # needs this job, so a hang here withholds the publish for GitHub's 6-hour
     # default and a release's poll budget expires long before that.
     timeout-minutes: 45
-    # Dispatch-only, as it was before this workflow gained a `pull_request`
-    # trigger: these steps are a full frozen-lockfile install, a build and the
-    # package's suite, and cross-platform-tests.yml already runs that suite on
-    # every PR (`Run create-malloy-package tests` at :169, plus the Linux-only
-    # e2e at :177) — reached through build.yml, which is the workflow that
-    # triggers, but NOT defined in it: grep build.yml for this package and you
-    # get nothing. Named precisely because the next person to trim
-    # cross-platform-tests.yml will otherwise check build.yml, find no reference,
-    # and conclude the coverage was never there. Only
-    # `check_version` above is new PR work. `publish` needs this job, and a
-    # skipped `needs` skips the dependent, which is correct here: `publish`
-    # carries the same dispatch guard.
-    if: github.event_name == 'workflow_dispatch'
+    # These steps are a full frozen-lockfile install, a build and the package's
+    # suite, and cross-platform-tests.yml already runs that suite on every PR
+    # (`Run create-malloy-package tests` at :169, plus the Linux-only e2e at
+    # :177) — reached through build.yml, which is the workflow that triggers,
+    # but NOT defined in it: grep build.yml for this package and you get
+    # nothing. Named precisely because the next person to trim
+    # cross-platform-tests.yml will otherwise check build.yml, find no
+    # reference, and conclude the coverage was never there.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -562,8 +310,8 @@ jobs:
 
   publish:
     name: Publish to NPM
-    # Same reasoning as check_version and check_pack above: a hung step in a job
-    # holding id-token: write should not sit on a runner for six hours.
+    # Same reasoning as check_pack above: a hung step in a job holding
+    # id-token: write should not sit on a runner for six hours.
     timeout-minutes: 30
     # workflow_dispatch offers every branch in the ref dropdown, and the
     # definition that runs is the one on the ref you pick. npm's trusted
@@ -576,7 +324,7 @@ jobs:
     # whose copy of this file drops the line. CONTEXT.md says what would
     # actually be one, and the ordering that has to be respected if anyone
     # adds it.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     needs: check_pack
     runs-on: ubuntu-latest
     permissions:
@@ -599,6 +347,69 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Decide what to publish, before "Read version" reads it back out of the
+      # manifest: the input if the dispatch named one (release.yml always
+      # does), else npm latest + 1 patch. Refuses anything at or below npm's
+      # latest, since a hand dispatch is the one path nothing else gates.
+      - name: Resolve version to publish
+        id: resolve_version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if LATEST_OUTPUT="$(npm view @malloy-publisher/create-malloy-package dist-tags.latest --prefer-online 2>&1)" && [ -n "$LATEST_OUTPUT" ]; then
+            # tail -n 1: npm writes routine warnings to the same stream on a
+            # successful run too (unknown env config, update notices, retries).
+            LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | tail -n 1)"
+          elif [[ "$LATEST_OUTPUT" == *E404* ]]; then
+            LATEST=""
+          else
+            printf '%s\n' "$LATEST_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Version::could not ask npm for @malloy-publisher/create-malloy-package dist-tags.latest"
+            exit 1
+          fi
+
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [ -n "$LATEST" ]; then
+            VERSION="$(node scripts/independent-version.mjs next "$LATEST")"
+          else
+            echo "::error title=Version::@malloy-publisher/create-malloy-package has never been published, so there is no npm latest to compute a next patch from; dispatch this workflow with version set explicitly"
+            exit 1
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            printf '%s\n' "$VERSION" | sed 's/^/[version] /'
+            echo "::error title=Version::the resolved version (logged above) is not a plain major.minor.patch with an optional -prerelease or +build"
+            exit 1
+          fi
+
+          # Moved here from the old PR-time bump check: a hand-dispatched
+          # `version` still has to clear it, since with the bump check gone
+          # this is the only thing standing between a typo'd input and moving
+          # the latest dist-tag backwards. `sort -V` ranks a PRERELEASE ABOVE
+          # its own release (verified: `printf '0.2.0\n0.2.0-rc.1\n' | sort -V
+          # | tail -1` is `0.2.0-rc.1`), so a prerelease is exempted rather
+          # than compared: it publishes under the "next" dist-tag below and
+          # cannot move "latest" backwards regardless.
+          if [ -n "$LATEST" ]; then
+            if [[ "$VERSION" == *-* ]]; then
+              echo "::notice title=Version::$VERSION is a prerelease; skipping the above-latest test because it does not move the latest dist-tag"
+            elif [ "$VERSION" != "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -1)" ]; then
+              echo "::error title=Version::$VERSION is at or below npm's latest ($LATEST); refusing to publish it"
+              exit 1
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Version::resolved create-malloy-package version to publish: $VERSION"
+
+      - name: Apply resolved version
+        env:
+          VERSION: ${{ steps.resolve_version.outputs.version }}
+        run: node scripts/set-version.mjs "$VERSION" packages/create-malloy-package/package.json
+
       - name: Read version
         id: version_step
         run: |
@@ -618,12 +429,42 @@ jobs:
       # npm ships a "workspace:*" range verbatim, and the consumer's install then
       # dies with EUNSUPPORTEDPROTOCOL. Rewriting the protocol at pack time is
       # pnpm and yarn behaviour, not npm's, so do it here: pin the skills dep to
-      # the skills package's current version, in the runner's working tree only
-      # (not committed), exactly as npm-sdk.yml de-workspaces app's sdk dep.
+      # a real published version, in the runner's working tree only (not
+      # committed), exactly as npm-sdk.yml de-workspaces app's sdk dep.
+      #
+      # Taken from the skills_version input (release.yml passes what skills
+      # just published, or its npm latest when skills was skipped) or, on a
+      # hand dispatch, from skills' own npm latest — NOT from
+      # packages/skills/package.json, which is a fixed placeholder
+      # ("0.0.0-dev") now that skills decides its version at publish time too.
       - name: Resolve workspace:* skills dep for publishing
         id: skills_dep
+        env:
+          INPUT_SKILLS_VERSION: ${{ inputs.skills_version }}
         run: |
-          SKILLS_VERSION="$(node -p "require('./packages/skills/package.json').version")"
+          set -euo pipefail
+
+          if [ -n "$INPUT_SKILLS_VERSION" ]; then
+            SKILLS_VERSION="$INPUT_SKILLS_VERSION"
+          elif SKILLS_LATEST_OUTPUT="$(npm view @malloy-publisher/skills dist-tags.latest --prefer-online 2>&1)" && [ -n "$SKILLS_LATEST_OUTPUT" ]; then
+            # tail -n 1, as elsewhere: npm writes routine warnings to the same
+            # stream on a successful run too.
+            SKILLS_VERSION="$(printf '%s\n' "$SKILLS_LATEST_OUTPUT" | tail -n 1)"
+          else
+            printf '%s\n' "$SKILLS_LATEST_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Skills dep::could not ask npm for @malloy-publisher/skills dist-tags.latest, and no skills_version input was given"
+            exit 1
+          fi
+
+          # Validated before it reaches `sed`, in a job holding id-token: write:
+          # this value is interpolated into a sed replacement below, and a
+          # crafted `|`, `&` or newline would otherwise become sed syntax.
+          if [[ ! "$SKILLS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf '%s\n' "$SKILLS_VERSION" | sed 's/^/[skills version] /'
+            echo "::error title=Skills dep::the resolved @malloy-publisher/skills version (logged above) is not a plain major.minor.patch"
+            exit 1
+          fi
+
           sed -i "s/\"@malloy-publisher\/skills\": \"workspace:\*\"/\"@malloy-publisher\/skills\": \"^${SKILLS_VERSION}\"/" packages/create-malloy-package/package.json
 
           # sed exits 0 when it matches nothing, so without this the notice below
@@ -807,6 +648,32 @@ jobs:
 
           echo "server_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "::notice title=Server pin::SERVER_VERSION ${PREVIOUS:-<unreadable>} -> ${LATEST} (npm latest), in this runner's tree only"
+
+          # Also stamp the server pin into the published manifest, as a
+          # top-level publisherServer field. independent-version.mjs's
+          # decideScaffolder reads this back (npm view ...@latest
+          # publisherServer) to tell "a previous attempt of this same release
+          # already published a scaffolder pinning this server" from "nothing
+          # has shipped for this release yet", so re-running a partially
+          # failed release does not publish twice. Runner tree only, exactly
+          # like the sed above.
+          PKG_FILE=packages/create-malloy-package/package.json
+          node -e '
+            const fs = require("fs");
+            const [file, server] = process.argv.slice(1);
+            const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+            pkg.publisherServer = server;
+            fs.writeFileSync(file, JSON.stringify(pkg, null, 3) + "\n");
+          ' "$PKG_FILE" "$LATEST"
+
+          # node -e cannot fail silently the way sed can, but read the field
+          # back anyway: the same assurance the SERVER_VERSION assertion above
+          # gives, and cheap.
+          WRITTEN="$(node -p "require('./${PKG_FILE}').publisherServer")"
+          if [ "$WRITTEN" != "$LATEST" ]; then
+            echo "::error title=Server pin::${PKG_FILE} reads publisherServer='${WRITTEN}' after the write, not ${LATEST}, so the release-time skip check would compare against the wrong value"
+            exit 1
+          fi
 
       # Kept as its own step, and it is not the tautology it looks like. The
       # substitution above writes; this READS the file back with the same
