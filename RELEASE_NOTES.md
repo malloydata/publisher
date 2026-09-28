@@ -42,6 +42,24 @@ deployments start empty and create environments over the API. It now also report
 naming the path it checked. It is set for a mistyped `--config` path too. The field is absent once
 any environment exists, and absent when a config was found but lists none.
 
+---
+
+## [Unreleased] — connection types and dialects packaged outside the server can be preloaded
+
+**`PUBLISHER_PRELOAD_MODULES` names modules the server imports before it does anything else.**
+Comma-separated: package names resolved from the server's `node_modules`, or absolute paths. A
+Malloy connection type or dialect that lives outside this repository registers with
+`@malloydata/malloy` by being imported, the same way the built-in `@malloydata/db-*` drivers do, so
+this is how one plugs in without a fork of the server. The list is imported in the main thread and
+in every package-load worker thread — each is its own realm with its own registries, and a driver
+registered only in the main thread would never be seen by the compiler. Entries import in order,
+one awaited before the next; a relative path is refused; an entry that fails to import ends the
+boot naming the module, rather than surfacing later as an unknown connection type on the first
+package that needed it. Documented in
+[docs/configuration.md](docs/configuration.md#loading-connection-types-and-dialects-packaged-outside-the-server).
+
+---
+
 ## [Unreleased] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
 
 **Reloading a package no longer costs you a lexically-ranked answer.** A reload

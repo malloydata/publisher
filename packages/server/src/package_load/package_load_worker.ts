@@ -74,6 +74,7 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { parentPort, threadId } from "node:worker_threads";
+import { preloadModulesFromEnv } from "../preload_modules";
 import recursive from "recursive-readdir";
 import { fileURLToPath, pathToFileURL } from "url";
 
@@ -1329,4 +1330,11 @@ function maybeExit(): void {
 // Announce readiness — the pool waits for this before dispatching jobs
 // to a newly-spawned worker so we don't race the worker's module-init
 // time.
+// This realm has its own @malloydata/malloy registries, so the operator's
+// preload list (PUBLISHER_PRELOAD_MODULES) is imported here as well as in
+// server.ts -- before `ready`, so no job can arrive ahead of a registration.
+// A failed import throws out of the worker; the pool reports the error and
+// the spawn fails rather than serving compiles that lack the module.
+await preloadModulesFromEnv();
+
 port.postMessage({ type: "ready" });

@@ -8,6 +8,7 @@
 // runs after each dependency's top-level code. What it does precede is
 // everything this process chooses to do.
 import { assertSupportedNodeVersion } from "./node_version_check";
+import { preloadModulesFromEnv } from "./preload_modules";
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
 import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -112,6 +113,18 @@ import {
 // healthy. Bun is exempt, or the Docker image and `start:dev` would refuse to
 // boot.
 assertSupportedNodeVersion();
+
+// Operator-named modules (PUBLISHER_PRELOAD_MODULES) go next: a connection
+// type or dialect packaged outside this server registers with
+// @malloydata/malloy by being imported, and it has to be in the registry
+// before any package that names it loads. The load workers import the same
+// list into their own realms (package_load_worker.ts). A module that cannot
+// be imported ends the boot here, naming itself, rather than surfacing as an
+// unknown connection type on the first package that needed it.
+const preloadedModules = await preloadModulesFromEnv();
+if (preloadedModules.length > 0) {
+   logger.info("Preloaded modules", { modules: preloadedModules });
+}
 
 // Parse command line arguments
 function parseArgs() {
