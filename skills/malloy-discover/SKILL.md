@@ -45,7 +45,7 @@ SPDX-License-Identifier: MIT
 
 1. Call it with no arguments to list environments and their connections, then with a `connectionName` to list its schemas.
 2. Pass a schema name exactly as it was returned, plus a `searchQuery` describing the data you need, to rank that schema's tables. DuckDB schema names are qualified (`memory.main`), so a bare `main` is rejected.
-3. Each table comes back with a `source:` line. Paste it into the model verbatim as your minimal source (step 6). Compile the whole file with `compile_model` at `scope: "file"` (the default `append` scope rejects a `connection.table(...)` line), then save and reload before previewing it.
+3. Each table comes back with a `source:` line. Paste it into the model verbatim as your minimal source (step 6). Validate the whole file, not just the new line: a check that appends text to the existing model rejects a `connection.table(...)` line. Then save it and make it queryable the way your modeling workflow does before previewing it.
 
 If the environment lists no connection, or you do not have `search_database_schema`, do NOT silently retry or proceed without data. Tell the user: "No model sources were found, and no database connection is configured to start one from. Add a connection to the package, then try again."
 
