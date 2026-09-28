@@ -84,6 +84,16 @@ jobs:
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
           tags: ${{ env.REGISTRY_IMAGE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          # Attach an SPDX SBOM and SLSA provenance to each platform image as
+          # BuildKit attestations. They are stored as attestation manifests next to
+          # the image in the per-platform index, and the merge job's
+          # `imagetools create` carries them into the published tag. Provenance is
+          # set explicitly because the action's default depends on repository
+          # visibility (max for public, min for private). SBOM has no default and is
+          # off unless requested. The build args recorded in max provenance are
+          # public values only; nothing secret is passed to this build.
+          sbom: true
+          provenance: mode=max
           cache-from: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ env.PLATFORM_PAIR }}
           cache-to: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ env.PLATFORM_PAIR }},mode=max
 
