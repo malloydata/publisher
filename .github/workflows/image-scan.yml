@@ -21,7 +21,9 @@ name: Image Scan
 #
 # Enforcement matches security-scan.yml: the full SARIF (all severities) uploads to
 # Code Scanning, then a second CRITICAL-scoped scan with `exit-code: 1` fails the
-# job. Acceptances live in the same .trivyignore.yaml as the source-tree scans.
+# job. As there, Code Scanning's own check also fails a same-repository pull
+# request on a new HIGH alert. Acceptances live in the same .trivyignore.yaml as
+# the source-tree scans.
 
 on:
   push:
@@ -51,8 +53,21 @@ concurrency:
 
 jobs:
   image:
-    name: Trivy image scan (built from source)
-    runs-on: ubuntu-latest
+    name: Trivy image scan (built from source, ${{ matrix.platform }})
+    # Both platforms the release publishes, each on a native runner (the same
+    # ones docker-image.yml uses). The per-architecture base images and prebuilt
+    # binaries differ, so a finding can exist on one platform only.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -61,7 +76,7 @@ jobs:
           submodules: "true"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # Same derivation as build.yml's docker_smoke_test and docker-image.yml, so
       # the scanned image bakes the same DuckDB CLI and extensions as a release.
@@ -70,17 +85,28 @@ jobs:
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
 
+      # The ISO week, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds weekly instead of being served from the build cache forever.
+      - name: Week for the apt refresh
+        id: week
+        run: echo "value=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ./Dockerfile
           load: true
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
+            APT_REFRESH=${{ steps.week.outputs.value }}
           tags: malloy-publisher:scan
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Read-only: build.yml's docker_smoke_test builds the same amd64 image with the
+          # same arguments and writes this cache. Writing it again here would store a
+          # second copy per PR without making either build faster. Nothing writes an
+          # arm64 cache, so the arm64 build runs uncached rather than adding one.
+          cache-from: ${{ matrix.arch == 'amd64' && 'type=gha' || '' }}
 
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -89,7 +115,7 @@ jobs:
           image-ref: malloy-publisher:scan
           scanners: vuln
           format: sarif
-          output: trivy-image.sarif
+          output: trivy-image-${{ matrix.arch }}.sarif
           severity: CRITICAL,HIGH,MEDIUM
           trivyignores: .trivyignore.yaml
 
@@ -97,14 +123,14 @@ jobs:
       # `permissions:` block, so a SARIF upload from one is refused. The gate step
       # below still runs on those PRs; only the Code Scanning upload is skipped.
       - name: Upload SARIF to Code Scanning
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
+          sarif_file: trivy-image-${{ matrix.arch }}.sarif
+          category: trivy-image-${{ matrix.arch }}
 
       - name: Fail on CRITICAL vulnerabilities
-        if: always()
+        if: ${{ !cancelled() }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
@@ -116,9 +142,21 @@ jobs:
           trivyignores: .trivyignore.yaml
 
   published-image:
-    name: Trivy image scan (published latest)
+    name: Trivy image scan (published latest, ${{ matrix.platform }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64
+            arch: arm64
+    # `latest` is a multi-platform index; without a platform Trivy scans the
+    # runner's own architecture only. TRIVY_PLATFORM is Trivy's `--platform`.
+    env:
+      TRIVY_PLATFORM: ${{ matrix.platform }}
     timeout-minutes: 30
     steps:
       # Checked out only for .trivyignore.yaml; nothing is built.
@@ -132,19 +170,19 @@ jobs:
           image-ref: ${{ env.PUBLISHED_IMAGE }}
           scanners: vuln
           format: sarif
-          output: trivy-image-published.sarif
+          output: trivy-image-published-${{ matrix.arch }}.sarif
           severity: CRITICAL,HIGH,MEDIUM
           trivyignores: .trivyignore.yaml
 
       - name: Upload SARIF to Code Scanning
-        if: always()
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
         with:
-          sarif_file: trivy-image-published.sarif
-          category: trivy-image-published
+          sarif_file: trivy-image-published-${{ matrix.arch }}.sarif
+          category: trivy-image-published-${{ matrix.arch }}
 
       - name: Fail on CRITICAL vulnerabilities
-        if: always()
+        if: ${{ !cancelled() }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image

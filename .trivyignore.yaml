@@ -23,6 +23,181 @@
 #       statement: >
 #         Package and version, how it is reached, why the vulnerable path is not
 #         exercised here, and what fix or upgrade retires the entry.
-vulnerabilities: []
+#
+# Version overrides added to clear findings. package.json cannot carry comments, so
+# each security-driven `resolutions` entry is recorded here with the condition that
+# retires it. Retiring one means deleting it, refreshing the lockfile, and re-running
+# the scans: the entry can go when the scans stay clean without it.
+#
+#   package.json  "fast-xml-parser": "^5.5.6"
+#     Forces every copy onto 5.x. Needed because @aws-sdk/xml-builder exact-pins
+#     5.2.5 inside the AWS SDK tree that snowflake-sdk 2.3.1 carries (itself exact-
+#     pinned by @malloydata/db-snowflake), and Bun has no nested overrides. Moving the
+#     server's own @aws-sdk/client-s3 does not reach that tree. Retire when
+#     @malloydata/db-snowflake moves to a snowflake-sdk whose AWS SDK uses
+#     @aws-sdk/xml-builder 3.972.31 or later, which has no fast-xml-parser dependency.
+#   package.json  "basic-ftp": "^5.3.1", "protobufjs": "^7.5.5"
+#     In range for every parent; they only move the lockfile. Retire at the next
+#     refresh that resolves those versions without them.
+#   packages/server/k6-tests/package.json  "orval": "^7.21.0", "handlebars": "^4.7.9"
+#     Retire with the orval entries below, when k6-tests moves to an
+#     @grafana/openapi-to-k6 release that supports orval 8.
+vulnerabilities:
+  # Eleven CRITICALs and one HIGH in orval 7.21.0, reached as k6-tests -> @grafana/openapi-to-k6 ->
+  # orval. The fix is 8.21.0-only (no 7.x backport), and no @grafana/openapi-to-k6
+  # release admits orval 8.x: 0.3.2 and the latest, 0.4.1, both declare `orval: ^7.5.0`.
+  # Forcing it does not work either: with orval resolved to 8.38.0, `bun run
+  # generate-clients` fails under both 0.3.2 and 0.4.1 with "Cannot read properties of
+  # undefined" and writes no files. k6-tests/package.json resolves orval to the newest
+  # 7.x, which clears the one finding (@orval/core CVE-2026-23947) that 7.x does fix.
+  # Tracking https://github.com/grafana/openapi-to-k6/pull/156, which moves
+  # @grafana/openapi-to-k6 to orval 8; these entries retire when a release carrying it
+  # ships and k6-tests moves to it.
+  #
+  # @grafana/openapi-to-k6 is the only path to orval in this repository. It generates
+  # the clients the k6 smoke and load tests use, and is not part of the Publisher
+  # server or its image.
+  #
+  # Reasons the vulnerable path is unreachable here. 2 and 3 hold for every entry; 1
+  # holds only for the generator each statement names:
+  #   1. The vulnerability is in a generator this consumer never selects.
+  #      @grafana/openapi-to-k6 0.3.2 (dist/generator/index.js) passes orval a custom
+  #      `client:` builder, sets no `mock:` option, and never references zod, so
+  #      neither the zod client generator nor the MSW mock generator runs. The two
+  #      request-URL CVEs are in orval's built-in client URL builders, which the custom
+  #      client replaces -- stated as "replaced", not "never reached", since the custom
+  #      builder's own URL handling was not audited against the same injection.
+  #   2. Every CVE needs attacker-controlled schema content. The only schema consumed
+  #      is this repository's own api-doc.yaml.
+  #   3. orval is build-time codegen only, run by `bun run generate-clients`. The one
+  #      workflow that runs it, .github/workflows/k6-tests.yml, has been disabled since
+  #      2026-08-12, so today it runs only when someone generates the clients by hand.
+  #      k6-tests has its own lockfile outside the root workspace, so it is in no
+  #      Publisher image.
+  # HIGH, accepted so the SARIF upload (which reads this file) stops reporting it:
+  # GitHub's Code Scanning check on pull requests fails on new HIGH alerts.
+  - id: CVE-2026-62680
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Generation-time SSRF and
+      remote/local file inclusion through an unrestricted `$ref`. The only input
+      schema is this repository's api-doc.yaml, and every one of its `$ref`s is a
+      local `#/...` pointer, so no remote or file reference is followed. Used only
+      to generate the k6 smoke and load test clients; not part of the Publisher
+      server or its image. Fix is 8.22.0 and no @grafana/openapi-to-k6 release
+      admits 8.x yet; tracking https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-62681
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. RCE via an unescaped request-URL template literal in orval's built-in
+      client generators, which this consumer replaces with a custom k6 client
+      builder.
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-62682
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. RCE via an unescaped request-URL template literal in orval's built-in
+      client generators, which this consumer replaces with a custom k6 client
+      builder.
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-71864
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-71865
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-71866
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-71867
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. RCE in the MSW mock generator, which this consumer never enables (no
+      `mock:` option is set).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-71868
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-71869
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-71871
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-72716
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
+  - id: CVE-2026-72717
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      orval 7.21.0, transitive via @grafana/openapi-to-k6. Import-time RCE in the zod client generator, which this consumer never
+      selects (it registers a custom k6 client).
+      Used only to generate the k6 smoke and load test clients; not part of the
+      Publisher server or its image. The only input schema is ours. Fix is
+      8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
+      https://github.com/grafana/openapi-to-k6/pull/156.
 misconfigurations: []
 secrets: []

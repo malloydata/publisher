@@ -78,6 +78,13 @@ jobs:
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
 
+      # The ISO week, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds weekly instead of being served from the build cache forever.
+      - name: Week for the apt refresh
+        id: week
+        run: echo "value=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: Build and push tag
         id: build
         uses: docker/build-push-action@v6
@@ -91,6 +98,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
+            APT_REFRESH=${{ steps.week.outputs.value }}
           tags: ${{ env.REGISTRY_IMAGE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           # Attach an SPDX SBOM and SLSA provenance to each platform image as
