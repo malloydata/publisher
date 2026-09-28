@@ -46,16 +46,19 @@ any environment exists, and absent when a config was found but lists none.
 
 ## [Unreleased] — connection types and dialects packaged outside the server can be preloaded
 
-**`PUBLISHER_PRELOAD_MODULES` names modules the server imports before it does anything else.**
-Comma-separated: package names resolved from the server's `node_modules`, or absolute paths. A
-Malloy connection type or dialect that lives outside this repository registers with
-`@malloydata/malloy` by being imported, the same way the built-in `@malloydata/db-*` drivers do, so
-this is how one plugs in without a fork of the server. The list is imported in the main thread and
-in every package-load worker thread — each is its own realm with its own registries, and a driver
-registered only in the main thread would never be seen by the compiler. Entries import in order,
-one awaited before the next; a relative path is refused; an entry that fails to import ends the
-boot naming the module, rather than surfacing later as an unknown connection type on the first
-package that needed it. Documented in
+**`PUBLISHER_PRELOAD_MODULES` names modules the server imports after its own modules have loaded
+and before it accepts work.** Comma-separated: package names resolved from the server's
+`node_modules`, or absolute paths. A Malloy connection type or dialect that lives outside this
+repository registers with `@malloydata/malloy` by being imported, the same way the built-in
+`@malloydata/db-*` drivers do, so this is how one plugs in without a fork of the server. The list is
+imported in the main thread and in every package-load worker thread — each is its own realm with its
+own registries, and a driver registered only in the main thread would never be seen by the compiler —
+so a module runs once per realm and should only register. Entries import in order, one awaited before
+the next; a relative path is refused; an entry that fails to import in the main thread ends the boot
+naming the module, rather than surfacing later as an unknown connection type on the first package
+that needed it. The boot log records the connection types each module added or replaced, and warns
+when a module registered none — the symptom of a driver that carries its own copy of the compiler,
+which is why a driver declares `@malloydata/malloy` a `peerDependency`. Documented in
 [docs/configuration.md](docs/configuration.md#loading-connection-types-and-dialects-packaged-outside-the-server).
 
 ---

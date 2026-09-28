@@ -120,10 +120,26 @@ assertSupportedNodeVersion();
 // before any package that names it loads. The load workers import the same
 // list into their own realms (package_load_worker.ts). A module that cannot
 // be imported ends the boot here, naming itself, rather than surfacing as an
-// unknown connection type on the first package that needed it.
-const preloadedModules = await preloadModulesFromEnv();
-if (preloadedModules.length > 0) {
-   logger.info("Preloaded modules", { modules: preloadedModules });
+// unknown connection type on the first package that needed it. One that
+// imports and registers nothing is logged as such: the usual cause is a
+// module bound to its own nested copy of @malloydata/malloy, whose registry
+// this server never reads.
+for (const preloaded of await preloadModulesFromEnv()) {
+   const registered =
+      preloaded.addedConnectionTypes.length +
+      preloaded.replacedConnectionTypes.length;
+   if (registered === 0) {
+      logger.warn(
+         "Preloaded module registered no connection type; if it should have, it is likely bound to its own copy of @malloydata/malloy (declare the compiler a peerDependency)",
+         { module: preloaded.spec },
+      );
+   } else {
+      logger.info("Preloaded module", {
+         module: preloaded.spec,
+         addedConnectionTypes: preloaded.addedConnectionTypes,
+         replacedConnectionTypes: preloaded.replacedConnectionTypes,
+      });
+   }
 }
 
 // Parse command line arguments

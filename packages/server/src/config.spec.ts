@@ -1674,12 +1674,21 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
    // field because picking up a config change needs --init, which wipes
    // publisher_data and the embedding cache with it -- a full paid re-embed
    // on every tuning pass, for a value meant to be tuned iteratively.
-   const saved = { ...process.env };
+   // Restored key by key, never by assigning a fresh object to process.env:
+   // a replacement object is detached from the process's real environment,
+   // and every worker_threads Worker spawned afterwards inherits the real
+   // one, so a later test that sets a variable for a worker would find the
+   // worker never sees it.
+   const TOUCHED = ["EMBEDDING_API_KEY", "EMBEDDING_MIN_SIMILARITY"] as const;
+   const saved = Object.fromEntries(TOUCHED.map((k) => [k, process.env[k]]));
    beforeEach(() => {
       process.env.EMBEDDING_API_KEY = "test-key";
    });
    afterEach(() => {
-      process.env = { ...saved };
+      for (const key of TOUCHED) {
+         if (saved[key] === undefined) delete process.env[key];
+         else process.env[key] = saved[key];
+      }
    });
 
    it("defaults to 0.20, the hosted pipeline's min_score", () => {

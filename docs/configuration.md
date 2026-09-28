@@ -88,7 +88,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the eight MCP tools (`list_packages`, `get_context`, `execute_query`, `compile_model`, `reload_package`, `get_status`, `search_malloy_docs`, `search_database_schema`) and the agent skills as MCP prompts. `list_packages` is listed first because it is where an agent starts: `get_context` requires an environment and package in its `scopes`, and those names come from there. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | _unset_ | Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes). |
-| `PUBLISHER_PRELOAD_MODULES` | — | _unset_ | Comma-separated modules the server imports before anything else, in order: package names resolved from the server's `node_modules`, or absolute paths. A relative path is refused at startup, since it would resolve against the server bundle rather than your working directory. See [Loading connection types and dialects packaged outside the server](#loading-connection-types-and-dialects-packaged-outside-the-server). |
+| `PUBLISHER_PRELOAD_MODULES` | — | _unset_ | Comma-separated modules the server imports after its own modules have loaded and before it accepts work, in order: package names resolved from the server's `node_modules`, or absolute paths. A relative path is refused at startup, since it would resolve against the server bundle rather than your working directory. See [Loading connection types and dialects packaged outside the server](#loading-connection-types-and-dialects-packaged-outside-the-server). |
 | `PUBLISHER_USE_BUNDLED_DEFAULT` | — | _unset_ | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
 | `INITIALIZE_STORAGE` | `--init` | _unset_ | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown_drain_duration_seconds <s>` | `0` | After SIGTERM, how long to keep serving in-flight and new requests (readiness reports not-ready immediately) before the server starts refusing new traffic. |
@@ -229,22 +229,36 @@ driver that lives outside this server is added by importing it in the server's p
 that names its connection type loads. `PUBLISHER_PRELOAD_MODULES` names those imports:
 
 ```sh
-PUBLISHER_PRELOAD_MODULES="@acme/malloy-db-foo,/opt/publisher/plugins/telemetry.mjs" malloy-publisher
+PUBLISHER_PRELOAD_MODULES="@acme/malloy-db-foo,@acme/malloy-dialect-bar" malloy-publisher
 ```
 
 Each entry is a package name, resolved from the server's own `node_modules`, or an absolute path to an
-ES module. A driver belongs in `node_modules` (in the Docker image, installed into `/publisher` by a
-derived image): a module's own imports resolve from where the module lives, so an absolute path
-outside `node_modules` cannot import `@malloydata/malloy` and fails at startup naming itself. An
-absolute path is for a self-contained module. Entries import in order, one awaited before the next, so
-a module can rely on an earlier one having registered. A relative path is refused at startup.
+ES module. A module's own imports resolve upward from where the module lives, so one that imports
+`@malloydata/malloy` has to sit somewhere beneath the server's install (in the Docker image, installed
+into `/publisher` by a derived image); an absolute path elsewhere serves a self-contained module, and
+one that reaches for the compiler from outside the tree fails at startup naming itself. Entries import
+in order, one awaited before the next, so a module can rely on an earlier one having registered. A
+relative path is refused at startup.
 
-Two things follow from how the registries work. Registration is per JS realm, and the server compiles
+**A driver must declare `@malloydata/malloy` as a `peerDependency`, never a `dependency`.** The server
+pins the compiler to one exact version, so a module that carries its own dependency on any other
+version is installed with a nested copy — and registers into that copy's registry, which the server
+never reads. The import succeeds and the first package that names the type still fails with an unknown
+connection type; the same break returns silently on every compiler bump. The boot log makes this
+visible: each preloaded module is logged with the connection types it added or replaced, and a module
+that registered none is logged as a warning naming this cause.
+
+Three things follow from how the registries work. Registration is per JS realm, and the server compiles
 packages in worker threads that each have their own realm, so every worker imports the same list before
 it accepts work — a module only ever imported in the main thread would register a dialect the compiler
-never sees, which is why the list is an environment variable rather than a `--preload` flag. And a
-preload runs after the built-in drivers have registered, so a module that registers an existing type
-name replaces the built-in for that name; the registries are last-writer-wins.
+never sees, which is why the list is an environment variable rather than a `--preload` flag. The
+corollary is that a module runs once per realm — the main thread, each worker, and again whenever a
+worker is respawned — so keep it to registrations: a module that starts a process-wide exporter or
+listener starts it several times over. And the imports run after the server's own modules have loaded,
+so the built-in drivers are already registered when they run; a module that registers an existing type
+name replaces the built-in for that name, since the registries are last-writer-wins. That timing also
+means this is not the place for auto-instrumentation, which has to load before the modules it patches
+(`start:instrumented` does that with a runtime `--preload`).
 
 This is a deployment setting with the authority of the command line, and it is read from the process
 environment only: whoever can set it can already choose the image, the `CMD`, or `NODE_OPTIONS`. It is
@@ -253,9 +267,14 @@ is reachable over the API unless `frozenConfig` is set, and a preload list that 
 have made that endpoint a way to load code. See
 [security-posture.md](security-posture.md#the-trust-boundary).
 
-A module that fails to import ends the boot with the module's name in the error. Left to fail quietly,
-the same mistake surfaces on the first package that needs the driver, as an unknown connection type,
-which points nowhere near the cause.
+A module that fails to import in the main thread ends the boot with the module's name in the error.
+Left to fail quietly, the same mistake surfaces on the first package that needs the driver, as an
+unknown connection type, which points nowhere near the cause. A module that imports in the main thread
+but fails in a worker — a native addon that is not context-aware, or a side effect that only works on
+the main thread — does not stop the boot: the server reaches `serving`, and each package load fails
+with that worker's error, which still names the module. Preload time counts against the worker's
+30-second spawn budget, so an import slower than that surfaces as a worker that "failed to become
+ready" rather than as a preload error.
 
 ## Semantic retrieval for get_context
 
