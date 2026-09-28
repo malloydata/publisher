@@ -41,7 +41,7 @@ package can come from its own file rather than from `build.yml`.** Know which jo
   trigger. Its `pull_request` trigger and `check_version` job are both gone.
 - `python-sdk.yml`'s `check_version` is unchanged: it still runs on PRs touching `api-doc.yaml`,
   `packages/python-client/**`, or the workflow file, and still enforces the "declared version ahead
-  of npm `latest`" rule the other two used to.
+  of PyPI" rule the other two used to enforce against npm.
 
 `python-sdk.yml` keeps its own bump check because `python-client` still versions by a committed
 `pyproject.toml` bump; skills and create-malloy-package no longer do, so they have nothing left for
@@ -547,7 +547,7 @@ dispatch-and-wait, so a bare sha comparison failed it whenever anything merged i
 including changes that could not affect it. `create-malloy-package` no longer watches
 `packages/skills/package.json`: its publish job now takes the skills version to depend on as a
 dispatch input (`skills_version`, set from what skills just published, or its npm `latest` when
-skills was skipped) rather than reading that file from `main`, so a bare skills version bump with no
+skills was skipped) rather than reading that file from `main`, so a skills publish with no
 scaffolder-relevant change no longer retriggers this guard. Every uncertain answer still aborts: an
 unanswered compare API, and a diff at that API's 300-file cap, where the list may be truncated.
 

@@ -21,7 +21,7 @@ echo "## Independently-versioned packages" >> "$GITHUB_STEP_SUMMARY"
 # skipped job still reports success, so gating it that way would make
 # a green release that published nothing completely invisible.
 if [[ "$NEW_VERSION" == *-* ]]; then
-  echo "::notice title=Independently-versioned packages::Skipped for prerelease version ${NEW_VERSION}. Publish these from an ordinary release, or dispatch skills-npm.yml, then create-malloy-package-npm.yml, then python-sdk.yml on main."
+  echo "::notice title=Independently-versioned packages::Skipped for prerelease version ${NEW_VERSION}. Publish these from an ordinary release, or dispatch skills-npm.yml, then create-malloy-package-npm.yml, on main."
   echo "Skipped for prerelease version \`${NEW_VERSION}\`. Publish these from an ordinary release, or dispatch their workflows on main." >> "$GITHUB_STEP_SUMMARY"
   exit 0
 fi
@@ -91,6 +91,45 @@ SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json)
 # packages/skills/src/exclusions.ts; workflow-exclusions.spec.ts asserts
 # the two agree.
 EXCLUDE=(':!skills/README.md' ':!packages/skills/src/*.spec.ts')
+
+# The paths @malloy-publisher/create-malloy-package's published content is
+# built from, shared between scaffolder_diff_status (below) and
+# publish_resolved's "main moved" guard, the same split SKILLS_CONTENT_PATHS
+# makes.
+SCAFFOLDER_CONTENT_PATHS=(packages/create-malloy-package/)
+
+# Whether a watched path matches its own trailing-slash convention in this
+# checkout: a directory entry (trailing slash) must be a directory, anything
+# else must be a plain file. Shared by validate_content_paths below and
+# publish_resolved's own guard over each package's full watched-path list, so
+# the one convention has only one implementation to get wrong.
+path_kind_ok() {
+  case "$1" in
+    */) [ -d "${1%/}" ] ;;
+    *) [ -f "$1" ] ;;
+  esac
+}
+
+# Fails closed, before either package's publish/skip decision is computed:
+# skills_diff_status and scaffolder_diff_status hand these paths straight to
+# `git diff`, and a pathspec that matches nothing (a typo, or a path git-mv'd
+# elsewhere) contributes nothing to the diff, which reads as "unchanged" and
+# skips silently rather than failing loudly.
+validate_content_paths() {
+  local label="$1"
+  shift
+  local path
+  for path in "$@"; do
+    path_kind_ok "$path" && continue
+    echo "::error title=Independently-versioned packages::${label}'s watched content path '${path}' does not match its kind in this checkout (a trailing slash means a directory, none means a file), so its content diff cannot be trusted. Nothing was decided."
+    echo "- nothing decided: ${label}'s watched content path '${path}' is malformed" >> "$GITHUB_STEP_SUMMARY"
+    return 1
+  done
+  return 0
+}
+
+validate_content_paths "@malloy-publisher/skills" "${SKILLS_CONTENT_PATHS[@]}" || exit 1
+validate_content_paths "@malloy-publisher/create-malloy-package" "${SCAFFOLDER_CONTENT_PATHS[@]}" || exit 1
 
 # The two registries differ in exactly two places — how a manifest is
 # read and how the registry is asked — so those are the only two things
@@ -264,6 +303,10 @@ G_OBJECT_PRESENT=0
 G_CHANGED="error"
 G_DIFF_STAT=""
 G_PUBLISHER_SERVER=""
+G_SCAFFOLDER_GIT_HEAD=""
+G_SCAFFOLDER_OBJECT_PRESENT=0
+G_SCAFFOLDER_CHANGED="error"
+G_SCAFFOLDER_DIFF_STAT=""
 
 # Content-changed check for skills: unchanged (0), changed (1), or an error
 # (anything else) diffing npm latest's gitHead against this checkout. Fails
@@ -282,6 +325,28 @@ skills_diff_status() {
     1)
       echo changed
       git diff --stat "$git_head" HEAD -- "${SKILLS_CONTENT_PATHS[@]}" "${EXCLUDE[@]}" 2>&1
+      ;;
+    *) echo error ;;
+  esac
+}
+
+# Same shape as skills_diff_status, over the scaffolder's own watched paths
+# and with no exclusions (nothing under packages/create-malloy-package/ is
+# packed-but-excluded the way skills/README.md and the skills *.spec.ts files
+# are).
+scaffolder_diff_status() {
+  local git_head="$1"
+  local rc
+  if git diff --quiet "$git_head" HEAD -- "${SCAFFOLDER_CONTENT_PATHS[@]}"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) echo unchanged ;;
+    1)
+      echo changed
+      git diff --stat "$git_head" HEAD -- "${SCAFFOLDER_CONTENT_PATHS[@]}" 2>&1
       ;;
     *) echo error ;;
   esac
@@ -315,18 +380,24 @@ gather_skills_facts() {
 
   if [ "$G_OBJECT_PRESENT" = 1 ]; then
     diff_out="$(skills_diff_status "$G_GIT_HEAD")"
-    G_CHANGED="$(printf '%s\n' "$diff_out" | head -n 1)"
+    # Parameter expansion, not a `head`/`tail` pipe: under `pipefail`, a pipe
+    # writer that exits before the reader is done (huge diff --stat output)
+    # would SIGPIPE and fail the whole substitution.
+    G_CHANGED="${diff_out%%$'\n'*}"
     if [ "$G_CHANGED" = "changed" ]; then
-      G_DIFF_STAT="$(printf '%s\n' "$diff_out" | tail -n +2)"
+      G_DIFF_STAT="${diff_out#*$'\n'}"
     fi
   fi
   return 0
 }
 
-# Sets G_NPM_OK, G_LATEST, G_PUBLISHER_SERVER.
+# Sets G_NPM_OK, G_LATEST, G_PUBLISHER_SERVER, G_SCAFFOLDER_GIT_HEAD,
+# G_SCAFFOLDER_OBJECT_PRESENT, G_SCAFFOLDER_CHANGED, G_SCAFFOLDER_DIFF_STAT.
 gather_scaffolder_facts() {
   G_NPM_OK=1 G_LATEST="" G_PUBLISHER_SERVER=""
-  local raw
+  G_SCAFFOLDER_GIT_HEAD="" G_SCAFFOLDER_OBJECT_PRESENT=0 \
+    G_SCAFFOLDER_CHANGED="error" G_SCAFFOLDER_DIFF_STAT=""
+  local raw diff_out
 
   if ! raw="$(npm view @malloy-publisher/create-malloy-package dist-tags.latest --prefer-online 2>&1)" || [ -z "$raw" ]; then
     echo_untrusted_output "$raw" >&2
@@ -345,6 +416,31 @@ gather_scaffolder_facts() {
     return 0
   fi
   G_PUBLISHER_SERVER="$(printf '%s\n' "$raw" | tail -n 1)"
+
+  # gitHead only matters to confirm a pin-matching re-run actually shipped
+  # unchanged content (see decideScaffolder). Unlike the two reads above, a
+  # failure here does NOT set G_NPM_OK=0: independent-version.mjs treats an
+  # unusable gitHead as "publish", not "abort", for the scaffolder, so this
+  # is left at its unusable default rather than aborting the whole decision
+  # over a fact that only ever narrows a skip.
+  if raw="$(npm view "@malloy-publisher/create-malloy-package@${G_LATEST}" gitHead 2>&1)"; then
+    G_SCAFFOLDER_GIT_HEAD="$(printf '%s\n' "$raw" | tail -n 1)"
+  else
+    echo_untrusted_output "$raw" >&2
+  fi
+
+  if [[ "$G_SCAFFOLDER_GIT_HEAD" =~ ^[0-9a-f]{40}$ ]] \
+     && git cat-file -e "${G_SCAFFOLDER_GIT_HEAD}^{commit}" 2>/dev/null; then
+    G_SCAFFOLDER_OBJECT_PRESENT=1
+  fi
+
+  if [ "$G_SCAFFOLDER_OBJECT_PRESENT" = 1 ]; then
+    diff_out="$(scaffolder_diff_status "$G_SCAFFOLDER_GIT_HEAD")"
+    G_SCAFFOLDER_CHANGED="${diff_out%%$'\n'*}"
+    if [ "$G_SCAFFOLDER_CHANGED" = "changed" ]; then
+      G_SCAFFOLDER_DIFF_STAT="${diff_out#*$'\n'}"
+    fi
+  fi
   return 0
 }
 
@@ -472,11 +568,23 @@ publish_indep_pkg() {
     create-malloy-package)
       gather_scaffolder_facts
       echo "## ${name}" >> "$GITHUB_STEP_SUMMARY"
-      echo "- npm \`latest\`: ${G_LATEST:-(unknown)}, publisherServer: \`${G_PUBLISHER_SERVER:-(not set)}\`" >> "$GITHUB_STEP_SUMMARY"
+      echo "- npm \`latest\`: ${G_LATEST:-(unknown)}, publisherServer: \`${G_PUBLISHER_SERVER:-(not set)}\`, gitHead: \`${G_SCAFFOLDER_GIT_HEAD:-(unknown)}\`" >> "$GITHUB_STEP_SUMMARY"
+      if [ -n "$G_SCAFFOLDER_DIFF_STAT" ]; then
+        {
+          echo "<details><summary>changes since that gitHead</summary>"
+          echo
+          echo '```'
+          printf '%s\n' "$G_SCAFFOLDER_DIFF_STAT"
+          echo '```'
+          echo "</details>"
+        } >> "$GITHUB_STEP_SUMMARY"
+      fi
       local decide_err_file
       decide_err_file="$(mktemp)"
       if out="$(NPM_OK="$G_NPM_OK" LATEST="$G_LATEST" PUBLISHER_SERVER="$G_PUBLISHER_SERVER" \
-                RELEASE="$NEW_VERSION" node scripts/independent-version.mjs decide-scaffolder 2>"$decide_err_file")"; then
+                RELEASE="$NEW_VERSION" GIT_HEAD="$G_SCAFFOLDER_GIT_HEAD" \
+                OBJECT_PRESENT="$G_SCAFFOLDER_OBJECT_PRESENT" CHANGED="$G_SCAFFOLDER_CHANGED" \
+                node scripts/independent-version.mjs decide-scaffolder 2>"$decide_err_file")"; then
         rc=0
       else
         rc=$?
@@ -656,23 +764,20 @@ publish_resolved() {
   # wheel with nothing in packages/python-client/ touched.
   case "$dir" in
     skills) paths=("${SKILLS_CONTENT_PATHS[@]}" "scripts/set-version.mjs" "scripts/independent-version.mjs") ;;
-    create-malloy-package) paths=("packages/${dir}/" "scripts/set-version.mjs" "scripts/independent-version.mjs") ;;
+    create-malloy-package) paths=("${SCAFFOLDER_CONTENT_PATHS[@]}" "scripts/set-version.mjs" "scripts/independent-version.mjs") ;;
     python-client) paths=("packages/${dir}/" "api-doc.yaml") ;;
     *) paths=("packages/${dir}/") ;;
   esac
   paths+=(".github/workflows/${wf}")
 
-  # The whole guard rests on the trailing-slash convention below, and
-  # both ways of getting it wrong disable an entry silently rather than
-  # loudly: a directory written without its slash becomes an exact-file
-  # comparison that can never fire, and a file written with one becomes
-  # a prefix that can never fire. Check the convention against the
+  # The whole guard rests on the trailing-slash convention path_kind_ok
+  # checks, and both ways of getting it wrong disable an entry silently
+  # rather than loudly: a directory written without its slash becomes an
+  # exact-file comparison that can never fire, and a file written with one
+  # becomes a prefix that can never fire. Check the convention against the
   # checkout instead of trusting whoever edits the list next.
   for path in "${paths[@]}"; do
-    case "$path" in
-      */) [ -d "${path%/}" ] && continue ;;
-      *) [ -f "$path" ] && continue ;;
-    esac
+    path_kind_ok "$path" && continue
     echo "::error title=${name}::watched path '${path}' does not match its kind in this checkout (a trailing slash means a directory, none means a file). ${wf} was NOT dispatched, because an entry that cannot match silently stops guarding."
     echo "- \`${spec}\` NOT dispatched: watched path '${path}' is malformed" >> "$GITHUB_STEP_SUMMARY"
     return 1

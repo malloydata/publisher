@@ -200,6 +200,7 @@ interface RunResult {
 function runPublishScript(
   npmConfig: NpmConfig,
   envOverrides: Record<string, string> = {},
+  scriptPath: string = SCRIPT,
 ): RunResult {
   const workDir = mkdtempSync(path.join(tmpdir(), "publish-packages-run-"));
   dirs.push(workDir);
@@ -232,7 +233,11 @@ function runPublishScript(
     ...envOverrides,
   } as Record<string, string>;
 
-  const proc = Bun.spawnSync(["bash", SCRIPT], {
+  // cwd stays REPO_ROOT even when scriptPath is a modified copy elsewhere:
+  // the script's own relative path checks (validate_content_paths, the
+  // watched-path guard) resolve against the real checkout, which is the
+  // point of running a copy rather than a fully synthetic fixture.
+  const proc = Bun.spawnSync(["bash", scriptPath], {
     cwd: REPO_ROOT,
     env,
   });
@@ -304,6 +309,11 @@ describe("publish-packages.sh", () => {
         },
         "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
           stdout: "",
+        },
+        // Unused by the decision here (the pin doesn't match, so it publishes
+        // regardless), but gather_scaffolder_facts always reads it.
+        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+          stdout: HEAD_SHA,
         },
         "@malloy-publisher/create-malloy-package@0.0.23 version": [
           { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
@@ -378,7 +388,7 @@ describe("publish-packages.sh", () => {
     );
   }, 15000);
 
-  it("scaffolder publisherServer already equals this release: skips it, dispatches nothing for it", () => {
+  it("scaffolder publisherServer already equals this release AND content unchanged: skips it, dispatches nothing for it", () => {
     const result = runPublishScript(
       baseConfig({
         "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
@@ -395,6 +405,10 @@ describe("publish-packages.sh", () => {
         "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
           stdout: "0.9.0",
         },
+        // Diffing HEAD against HEAD is always empty, so this reads "unchanged".
+        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+          stdout: HEAD_SHA,
+        },
       }),
     );
 
@@ -409,6 +423,45 @@ describe("publish-packages.sh", () => {
     // job log prefixer, not the step summary.
     expect(result.stdout).toContain(
       "latest's publisherServer already equals 0.9.0",
+    );
+  }, 15000);
+
+  it("scaffolder publisherServer already equals this release BUT content changed since npm latest's gitHead: publishes anyway", () => {
+    // A scaffolder pinning this release was already published (a hand
+    // dispatch, or an earlier attempt), and scaffolder content landed on
+    // main before this run. Skipping here would leave that new content
+    // unshipped for the whole release.
+    const result = runPublishScript(
+      baseConfig({
+        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
+        "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
+        "@malloy-publisher/create-malloy-package dist-tags.latest": {
+          stdout: "0.0.22",
+        },
+        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+          stdout: "0.9.0",
+        },
+        // OLD_SHA is an ancestor commit distinct from HEAD, so the diff
+        // against it reads "changed".
+        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+          stdout: OLD_SHA,
+        },
+        "@malloy-publisher/create-malloy-package@0.0.23 version": [
+          { exit: 1, stdout: "npm ERR! code E404" },
+          { exit: 1, stdout: "npm ERR! code E404" },
+          { stdout: "0.0.23" },
+        ],
+        "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
+      }),
+    );
+
+    const scaffolderRun = dispatchedArgs(
+      result.ghLog,
+      "create-malloy-package-npm.yml",
+    );
+    expect(scaffolderRun).not.toBeNull();
+    expect(scaffolderRun).toEqual(
+      expect.arrayContaining(["-f", "version=0.0.23"]),
     );
   }, 15000);
 
@@ -451,5 +504,57 @@ describe("publish-packages.sh", () => {
     expect(result.code).not.toBe(0);
     expect(result.summary).toContain("already on npm");
     expect(result.ghLog.length).toBe(0);
+  });
+
+  describe("watched content path validation", () => {
+    // Runs a copy of the real script with one content-path entry swapped for
+    // a path that matches nothing in this checkout, so validate_content_paths
+    // has something to reject. cwd stays REPO_ROOT (see runPublishScript), so
+    // every OTHER path in SKILLS_CONTENT_PATHS/SCAFFOLDER_CONTENT_PATHS still
+    // resolves against the real tree; only the injected one is bogus.
+    function scriptWithBadPath(search: string, replacement: string): string {
+      const original = readFileSync(SCRIPT, "utf8");
+      if (!original.includes(search)) {
+        throw new Error(`fixture setup: "${search}" not found in ${SCRIPT}`);
+      }
+      const patched = original.replace(search, replacement);
+      const dir = mkdtempSync(path.join(tmpdir(), "publish-packages-script-"));
+      dirs.push(dir);
+      const copyPath = path.join(dir, "publish-packages.sh");
+      writeFileSync(copyPath, patched);
+      chmodSync(copyPath, 0o755);
+      return copyPath;
+    }
+
+    it("a typo'd skills content path is rejected before any decision, not read as unchanged", () => {
+      const scriptPath = scriptWithBadPath(
+        "SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json)",
+        "SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json nonexistent-file-xyz)",
+      );
+      const result = runPublishScript({}, {}, scriptPath);
+      expect(result.code).not.toBe(0);
+      expect(result.summary).toContain(
+        "@malloy-publisher/skills's watched content path 'nonexistent-file-xyz' is malformed",
+      );
+      // Rejected before either package's npm/gh calls, not merely before its
+      // dispatch: a pathspec that matches nothing would otherwise read the
+      // diff as "unchanged" and skip silently instead of failing loudly.
+      expect(result.npmLog.length).toBe(0);
+      expect(result.ghLog.length).toBe(0);
+    });
+
+    it("a typo'd scaffolder content path is rejected before any decision", () => {
+      const scriptPath = scriptWithBadPath(
+        "SCAFFOLDER_CONTENT_PATHS=(packages/create-malloy-package/)",
+        "SCAFFOLDER_CONTENT_PATHS=(packages/create-malloy-package/ nonexistent-file-xyz)",
+      );
+      const result = runPublishScript({}, {}, scriptPath);
+      expect(result.code).not.toBe(0);
+      expect(result.summary).toContain(
+        "@malloy-publisher/create-malloy-package's watched content path 'nonexistent-file-xyz' is malformed",
+      );
+      expect(result.npmLog.length).toBe(0);
+      expect(result.ghLog.length).toBe(0);
+    });
   });
 });

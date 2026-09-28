@@ -89,7 +89,7 @@ it, including why the obvious command for it is destructive.
 
 **`0.MINOR.PATCH` for every published package, while pre-1.0.** It is the policy,
 not yet the state: `skills` follows it, `sdk`/`app`/`server` are still on `0.0.x`
-until `0.2.0` is cut, `create-malloy-package` is on `0.0.8`, and the Python client
+until `0.2.0` is cut, `create-malloy-package` versions on its own `0.0.x` line, computed at release time, and the Python client
 declares `0.1.0` — sharing `0.1.x` with `skills`. Nothing enforces the *shape* of
 the number for any of them — skills and create-malloy-package resolve their next
 version from npm `latest` at release time, and moving either onto a new minor
@@ -207,10 +207,10 @@ version that is not `major.minor.patch`, or a registry that answers neither 200
 nor 404.) It starts enforcing for real the moment a version is up there, so treat
 the Python version as unenforced only until then.
 
-**And the release now publishes it.** `python-client` is the third package
-`publish-packages` dispatches, so the next ordinary release is the first one
-that would upload to PyPI. Read *The first PyPI publish* in
-`.github/workflows/CONTEXT.md` before cutting it: `PYPI_TOKEN` has to be
+**Its PyPI publish is paused, though.** The `publish_pkg python-client` line at
+the end of `scripts/publish-packages.sh` is commented out, so no release
+dispatches `python-sdk.yml` today. Before restoring that line, read *The first
+PyPI publish* in `.github/workflows/CONTEXT.md`: `PYPI_TOKEN` has to be
 account-scoped for a first upload (a project-scoped token cannot exist for a
 project that does not), the name has to still be free, and `0.1.0` is what
 ships — PyPI filenames can never be reused, so move the version before that

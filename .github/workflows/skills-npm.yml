@@ -186,7 +186,7 @@ jobs:
 
       # Read the version and ask the registry BEFORE installing anything. Both
       # steps need only node, and putting them ahead of the install is the
-      # difference between failing a forgotten version bump in seconds and
+      # difference between failing a version already on npm in seconds and
       # failing it after a full frozen-lockfile install.
       - name: Read version
         id: version_step

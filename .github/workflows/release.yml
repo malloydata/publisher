@@ -292,8 +292,12 @@ jobs:
   # server, and that is not an omission to be tidied up later. malloydata/malloy
   # gets one shared number across its packages from Lerna fixed mode; these two
   # were already published on their own lines before this job existed, and npm
-  # versions are immutable, so there is no path back to a shared number. Each
-  # package is skipped when the version it resolves to is already on npm.
+  # versions are immutable, so there is no path back to a shared number. skills
+  # is skipped when its published content is unchanged since npm latest's
+  # gitHead; create-malloy-package publishes on every non-prerelease release
+  # and is skipped only on a re-run (its publisherServer already matches);
+  # python-client is paused. A computed version already on npm is an error for
+  # either, never a skip.
   #
   # They are DISPATCHED through the Actions API rather than called with
   # workflow_call, deliberately. npm allows one trusted publisher per package

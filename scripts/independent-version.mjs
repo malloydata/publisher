@@ -113,17 +113,42 @@ export function decideSkills({ npmOk, latest, gitHead, objectPresent, changed })
 
 /**
  * Decide whether to publish `@malloy-publisher/create-malloy-package` this
- * release. Unlike skills, this one is not content-diffed: it bakes the
- * server's npm `latest` into the workspaces it scaffolds, so it publishes on
- * every non-prerelease release UNLESS it is a re-run where its published
- * `publisherServer` field already equals this release's version — meaning an
- * earlier attempt of this same release already got it out.
+ * release. Unlike skills, this one bakes the server's npm `latest` into the
+ * workspaces it scaffolds, so it publishes on every non-prerelease release
+ * UNLESS it is a re-run where its published `publisherServer` field already
+ * equals this release's version — meaning an earlier attempt of this same
+ * release already got it out.
+ *
+ * The pin matching alone is not enough to skip on, though: a hand dispatch or
+ * an earlier attempt of this release can have already published a scaffolder
+ * pinned to it, and then scaffolder content can land on `main` before this
+ * run (or a retry of it). Skipping unconditionally on a pin match would ship
+ * that new content nowhere. So a pin match only skips when the scaffolder's
+ * own published content is ALSO unchanged since npm latest's `gitHead` — the
+ * same content diff skills runs, just with a different verdict on every other
+ * outcome: an extra scaffolder patch is harmless (it publishes every release
+ * anyway), so a diff that reads "changed", or a `gitHead` this checkout
+ * cannot diff against at all (empty, non-hex, or a commit not reachable
+ * here), means PUBLISH, not abort.
  *
  * - `publisherServer`: npm's `publisherServer` field on the manifest for
  *   `latest` (empty string/undefined when the field is not set at all).
  * - `release`: the version this release is stamping (`NEW_VERSION`).
+ * - `gitHead`: the gitHead npm recorded for `latest`.
+ * - `objectPresent`: whether `gitHead` is a commit reachable from this
+ *   checkout (`git cat-file -e`).
+ * - `changed`: "changed" | "unchanged" | "error", the diff of the
+ *   scaffolder's watched paths against `gitHead`.
  */
-export function decideScaffolder({ npmOk, latest, publisherServer, release }) {
+export function decideScaffolder({
+  npmOk,
+  latest,
+  publisherServer,
+  release,
+  gitHead,
+  objectPresent,
+  changed,
+}) {
   if (!npmOk) {
     return abort(
       "npm did not answer for @malloy-publisher/create-malloy-package's latest, so publish/skip cannot be decided",
@@ -135,9 +160,25 @@ export function decideScaffolder({ npmOk, latest, publisherServer, release }) {
     );
   }
   if (publisherServer && publisherServer === release) {
+    const gitHeadUsable = gitHead && GIT_HEAD.test(gitHead) && objectPresent;
+    if (gitHeadUsable && changed === "unchanged") {
+      return {
+        action: "skip",
+        reason: `latest's publisherServer already equals ${release} (a re-run of this release), and no published content changed since npm latest's gitHead ${gitHead}`,
+      };
+    }
+    let why;
+    if (!gitHeadUsable) {
+      why = `its gitHead "${sanitizeForLine(gitHead)}" cannot be diffed against (not 40 hex characters, or not present in this checkout)`;
+    } else if (changed === "changed") {
+      why = `published content changed since npm latest's gitHead ${gitHead}`;
+    } else {
+      why = `the diff against gitHead ${gitHead} errored, so whether content changed is unknown`;
+    }
     return {
-      action: "skip",
-      reason: `latest's publisherServer already equals ${release} (a re-run of this release)`,
+      action: "publish",
+      version: nextPatch(latest),
+      reason: `latest's publisherServer already equals ${release} (a re-run), but ${why}; publishing an extra patch is harmless`,
     };
   }
   return {
@@ -245,6 +286,9 @@ function main(argv) {
         latest: process.env.LATEST ?? "",
         publisherServer: process.env.PUBLISHER_SERVER ?? "",
         release: process.env.RELEASE ?? "",
+        gitHead: process.env.GIT_HEAD ?? "",
+        objectPresent: boolEnv("OBJECT_PRESENT"),
+        changed: process.env.CHANGED ?? "",
       });
       reportDecision(decision);
       return;

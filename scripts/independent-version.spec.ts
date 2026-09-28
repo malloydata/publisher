@@ -127,7 +127,15 @@ describe("decideSkills", () => {
 });
 
 describe("decideScaffolder", () => {
-  const base = { npmOk: true, latest: "0.0.22", release: "0.8.3" };
+  const gitHead = "c3e52cc157205f0c3bd21719864a2e494ac5427e";
+  const base = {
+    npmOk: true,
+    latest: "0.0.22",
+    release: "0.8.3",
+    gitHead,
+    objectPresent: true,
+    changed: "unchanged",
+  };
 
   it("publishes the next patch when publisherServer has never been set", () => {
     const decision = decideScaffolder({ ...base, publisherServer: "" });
@@ -139,9 +147,54 @@ describe("decideScaffolder", () => {
     expect(decision).toMatchObject({ action: "publish", version: "0.0.23" });
   });
 
-  it("skips when publisherServer already equals this release (a re-run)", () => {
+  it("skips when publisherServer already equals this release AND content is unchanged since npm latest's gitHead", () => {
     const decision = decideScaffolder({ ...base, publisherServer: "0.8.3" });
     expect(decision).toMatchObject({ action: "skip" });
+  });
+
+  it("publishes when the pin matches but scaffolder content changed since npm latest's gitHead", () => {
+    // A scaffolder pinning this release already published (a hand dispatch,
+    // or an earlier attempt), then scaffolder content landed on main before
+    // this run. Skipping here would ship the old content for the release.
+    const decision = decideScaffolder({ ...base, publisherServer: "0.8.3", changed: "changed" });
+    expect(decision).toMatchObject({ action: "publish", version: "0.0.23" });
+  });
+
+  it("publishes when the pin matches but the gitHead is empty (nothing to diff against)", () => {
+    const decision = decideScaffolder({
+      ...base,
+      publisherServer: "0.8.3",
+      gitHead: "",
+      objectPresent: false,
+      changed: "error",
+    });
+    expect(decision).toMatchObject({ action: "publish", version: "0.0.23" });
+  });
+
+  it("publishes when the pin matches but the gitHead is not a real commit sha", () => {
+    const decision = decideScaffolder({
+      ...base,
+      publisherServer: "0.8.3",
+      gitHead: "not-a-real-commit-sha-at-all-00000000000",
+      objectPresent: false,
+      changed: "error",
+    });
+    expect(decision).toMatchObject({ action: "publish", version: "0.0.23" });
+  });
+
+  it("publishes when the pin matches but the gitHead commit is missing from the checkout", () => {
+    const decision = decideScaffolder({
+      ...base,
+      publisherServer: "0.8.3",
+      objectPresent: false,
+      changed: "error",
+    });
+    expect(decision).toMatchObject({ action: "publish", version: "0.0.23" });
+  });
+
+  it("publishes when the pin matches but the diff errored", () => {
+    const decision = decideScaffolder({ ...base, publisherServer: "0.8.3", changed: "error" });
+    expect(decision).toMatchObject({ action: "publish", version: "0.0.23" });
   });
 
   it("aborts when npm did not answer", () => {
@@ -256,15 +309,32 @@ describe("the CLI, end to end", () => {
     expect(stdout).toBe("publish 0.0.23");
   });
 
-  it("decide-scaffolder prints 'skip' when the pin already equals this release", () => {
+  it("decide-scaffolder prints 'skip' when the pin already equals this release and content is unchanged", () => {
     const { code, stdout } = run("decide-scaffolder", {
       NPM_OK: "1",
       LATEST: "0.0.22",
       PUBLISHER_SERVER: "0.8.3",
       RELEASE: "0.8.3",
+      GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
+      OBJECT_PRESENT: "1",
+      CHANGED: "unchanged",
     });
     expect(code).toBe(0);
     expect(stdout).toBe("skip");
+  });
+
+  it("decide-scaffolder prints 'publish <version>' when the pin matches but content changed", () => {
+    const { code, stdout } = run("decide-scaffolder", {
+      NPM_OK: "1",
+      LATEST: "0.0.22",
+      PUBLISHER_SERVER: "0.8.3",
+      RELEASE: "0.8.3",
+      GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
+      OBJECT_PRESENT: "1",
+      CHANGED: "changed",
+    });
+    expect(code).toBe(0);
+    expect(stdout).toBe("publish 0.0.23");
   });
 
   it("check-free aborts on a computed version already published", () => {
