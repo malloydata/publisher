@@ -184,7 +184,7 @@ describe("the CLI, end to end", () => {
   function run(command: string, env: Record<string, string>) {
     const proc = Bun.spawnSync([
       "node",
-      new URL("./independent-version.mjs", import.meta.url).pathname,
+      path.join(import.meta.dir, "independent-version.mjs"),
       command,
     ], {
       env: { ...process.env, ...env },
@@ -199,7 +199,7 @@ describe("the CLI, end to end", () => {
   it("next prints the bumped version", () => {
     const proc = Bun.spawnSync([
       "node",
-      new URL("./independent-version.mjs", import.meta.url).pathname,
+      path.join(import.meta.dir, "independent-version.mjs"),
       "next",
       "0.1.28",
     ]);
@@ -280,7 +280,7 @@ describe("the CLI, end to end", () => {
   it("fails with a usage error, distinct from abort, on an unknown command", () => {
     const proc = Bun.spawnSync([
       "node",
-      new URL("./independent-version.mjs", import.meta.url).pathname,
+      path.join(import.meta.dir, "independent-version.mjs"),
       "not-a-real-command",
     ]);
     expect(proc.exitCode).toBe(1);
@@ -299,7 +299,7 @@ describe("the is-main guard, through a symlink", () => {
   });
 
   it("still runs the CLI when invoked through a symlink", () => {
-    const real = new URL("./independent-version.mjs", import.meta.url).pathname;
+    const real = path.join(import.meta.dir, "independent-version.mjs");
     const dir = mkdtempSync(path.join(tmpdir(), "independent-version-symlink-"));
     dirs.push(dir);
     const link = path.join(dir, "independent-version-link.mjs");
