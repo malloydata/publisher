@@ -7,9 +7,16 @@ FROM amazoncorretto:21.0.8 AS java-base
 
 FROM oven/bun:1.3.13-slim AS base-deps
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` because the Debian packages in oven/bun's layer are frozen at
+# the date that tag was published. Without it every image built from the same tag
+# ships the same package versions, including ones Debian has since patched.
+#
+# No dnsutils: nothing in the server calls dig or nslookup, and its bind9-libs
+# dependency brings liblmdb0 and libxml2, which carry CRITICAL CVEs Debian has
+# not fixed.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl ca-certificates unzip git \
-    openssl libcurl4 libssl3 dnsutils iputils-ping file && \
+    openssl libcurl4 libssl3 iputils-ping file && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
@@ -19,6 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # lockfile (the source of truth); the default below is a fallback for plain
 # `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
 # by the CI consistency check.
+#
+# The server runs under Bun and never invokes npm or npx. The nodejs package
+# bundles npm with its own copy of tar and other install-time dependencies, so
+# the last command removes it to keep an unused package manager out of the
+# runtime image.
 ARG DUCKDB_VERSION=1.5.5
 RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
     ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
@@ -26,7 +38,8 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org
     echo "Snowflake verification skipped (offline build)" && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx
 
 # ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
 # compiler never reaches the runtime image and so a broken driver/shim pair
