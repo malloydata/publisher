@@ -1,24 +1,13 @@
 ---
 name: fix-scan-finding
 description: >-
-  Fix a CRITICAL security-scan finding that is failing CI (a Trivy vulnerability, misconfiguration,
-  or secret, from .github/workflows/security-scan.yml or .github/workflows/image-scan.yml), or add,
-  review, or retire an entry in .trivyignore.yaml. Drives the decision the gate forces: fix it
-  upstream, or accept it with an expiry -- and refuses the shortcuts that look like fixes but are
-  not. A dependency CVE is almost always transitive, so the right fix is usually one move of the
-  parent or one targeted resolution, not a pile of pins; and a "Fixed Version" the scanner prints can
-  be unreachable (published only on a major no parent release admits), which makes the finding
-  unfixable rather than un-upgraded. Checks the version delta against the real consumer, gets
-  approval before any migration, and verifies against the scanner rather than the Code Scanning UI.
-  Read this BEFORE the first scanner command or dependency bump whenever the subject is a CVE, Trivy,
-  or a code-scan finding, including on an already-green gate, since a clean scan is not evidence
-  there is nothing to find (Trivy skips Node devDependencies unless --include-dev-deps is passed, and
-  a scan that covered no targets exits 0 exactly like a pass). Trigger on "CVE", "CVE-<id>", "trivy",
-  "trivyignore", ".trivyignore.yaml", "code scanning", "scan finding", "security scan",
-  "vulnerability", "critical finding", "image scan", a red `Trivy ...` check on a pull request, a
-  security-motivated bun.lock or Dockerfile change, or re-checking such a claim in a review comment.
-  NOT for choosing what CI scans (edit the workflows directly) or for routine dependency bumps with
-  no finding behind them.
+  Fix a CRITICAL Trivy finding that is failing CI in this repo (a vulnerability, misconfiguration,
+  or secret from security-scan.yml or image-scan.yml), or add, review, or retire an entry in
+  .trivyignore.yaml. Drives the decision the gate forces: fix it upstream, or accept it with an
+  expiry. Read it before the first scanner command or security-motivated dependency bump, including
+  on a gate that is already green. Trigger on "CVE", "trivy", "trivyignore", "code scanning", "scan
+  finding", "vulnerability", "image scan", or a red Trivy check on a pull request. NOT for choosing
+  what CI scans or for routine dependency bumps with no finding behind them.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -39,13 +28,16 @@ cloud credentials are needed -- everything here is local and read-only against p
 | Workflow | Job | Reads |
 |---|---|---|
 | `.github/workflows/security-scan.yml` | `Trivy filesystem scan (vulnerabilities)` | every lockfile in the tree |
-| `.github/workflows/security-scan.yml` | `Trivy config scan (Dockerfiles, Actions)` | Dockerfiles, workflows |
+| `.github/workflows/security-scan.yml` | `Trivy config scan (Dockerfiles)` | the Dockerfiles only: Trivy's misconfiguration scanner does not read GitHub Actions workflows |
 | `.github/workflows/security-scan.yml` | `Trivy secret scan` | the working tree |
-| `.github/workflows/image-scan.yml` | `Trivy image scan (built from source)` | the `Dockerfile` built `linux/amd64` from the PR |
-| `.github/workflows/image-scan.yml` | `Trivy image scan (published latest)` | `ms2data/malloy-publisher:latest`, weekly schedule and dispatch |
+| `.github/workflows/image-scan.yml` | `Trivy image scan (built from source, <platform>)` | the `Dockerfile` built from the PR, once per platform the release publishes (`linux/amd64`, `linux/arm64`) |
+| `.github/workflows/image-scan.yml` | `Trivy image scan (published latest, <platform>)` | `ms2data/malloy-publisher:latest` on both platforms, weekly schedule and dispatch |
 
 Each job uploads its full SARIF to Code Scanning, then runs a second scan scoped to CRITICAL with
-`exit-code: 1`. CRITICAL fails the job; HIGH and below are advisory. Every job reads the same
+`exit-code: 1`. CRITICAL fails the job, and the secret gate fails on HIGH as well: a committed
+credential is an incident whatever its rating. Other HIGH findings do not fail a Trivy step, but
+GitHub's Code Scanning check fails a same-repository pull request on a new HIGH alert in the
+uploaded SARIF, so a HIGH can still need a fix or an acceptance. Every job reads the same
 `.trivyignore.yaml`. On a pull request from a fork the SARIF upload is skipped (the token is
 read-only), but the gate still runs, so read the job log there.
 
@@ -87,17 +79,18 @@ jq -r '.Results[]? | .Target as $t | (.Vulnerabilities // [])[]
   `Results` key at all (what Trivy emits for a directory with no lockfiles), means nothing was scanned and `exit=0` proves nothing. Running from the wrong directory is
   the usual cause. A gate that scanned nothing is the one failure mode that looks exactly like
   success.
-- **For image findings, build what CI builds.** CI builds `linux/amd64` with the DuckDB version
-  derived from Malloy. A local arm64 build of the same commit scanned 12 CRITICALs where CI's amd64
-  build scanned 31, because per-architecture base images and prebuilt binaries differ. Reproduce:
+- **For image findings, build what CI builds.** CI builds and scans both `linux/amd64` and
+  `linux/arm64`, with the DuckDB version derived from Malloy. A local build covers only the platform
+  you ask for, and the per-architecture base images and prebuilt binaries differ enough that the two
+  report different findings. Build the platform whose job is red:
   ```bash
   docker buildx build --platform linux/amd64 --load \
     --build-arg DUCKDB_VERSION=$(node scripts/duckdb-version.js) -t publisher:scan .
   trivy image publisher:scan --scanners vuln --severity CRITICAL --ignorefile .trivyignore.yaml
   ```
 - **Run once more with `--include-dev-deps`.** Trivy skips devDependencies in Node lockfiles by
-  default, and so does the gate. On this repo the flag surfaced 4 extra CRITICALs in the root
-  `bun.lock` (`dompurify` 1.0.11, `ejs` 2.7.4, `shell-quote` 1.8.3) that the gate does not see. A
+  default, and so does the gate. On this repo the flag has surfaced CRITICALs in dev tooling in the
+  root `bun.lock` (`dompurify`, `ejs`, `shell-quote`) that the gate does not see. A
   finding that appears only with the flag is not gating, but it is real.
 
 Then group by root cause before touching anything -- see
@@ -226,8 +219,8 @@ image) -- removing an unused parent package is option 4 of the rule, and is how 
   `protobufjs`, it wrote both into the root `package.json` `dependencies` at their latest majors
   (6.2.1 and 8.8.0) instead of refreshing them in range. Use `resolutions` for a transitive package.
 - **Deleting a lockfile entry does not re-resolve just that entry.** Removing stale entries from
-  `bun.lock` and running `bun install --lockfile-only` re-resolved most of the tree (about 1,900
-  changed lines; the AWS SDK moved from 3.962 to 3.1142). That is not a targeted fix.
+  `bun.lock` and running `bun install --lockfile-only` re-resolved most of the tree,
+  moving unrelated packages such as the whole AWS SDK. That is not a targeted fix.
 - **Bun `resolutions` are top-level only.** A nested key such as `"snowflake-sdk/fast-xml-parser"`
   is accepted and silently ignored; the lockfile does not change.
 - **Build-time-only dependencies are still reported.** A CVE in codegen or test tooling
@@ -241,9 +234,9 @@ image) -- removing an unused parent package is option 4 of the rule, and is how 
 - **A production dependency's peers ship.** `@vitejs/plugin-react` in `packages/app` `dependencies`
   pulled `vite`, and through it `esbuild` (with a Go stdlib CVE in its binary), into the image
   despite `bun install --production`. `bun why <pkg>` inside the built image names the path.
-- **Your architecture is not CI's.** A local arm64 image build under-reports what the amd64 gate
-  sees (12 against 31 on the same commit). Build `--platform linux/amd64` before concluding an image
-  finding is gone.
+- **Your architecture is not the whole gate.** CI scans the image on both published platforms, and
+  a local build scans only the one you built; the other can carry findings yours does not. Build
+  the red job's `--platform` before concluding an image finding is gone.
 - **Yesterday's quiet CVE can red you today.** A newly published advisory against a version you
   already had will fail a gate that was green last week, with no change on your side. A red gate is
   not evidence your branch introduced the finding -- check the advisory date before hunting your diff.

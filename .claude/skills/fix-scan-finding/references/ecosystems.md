@@ -57,14 +57,15 @@ bun install --lockfile-only
 ```
 
 Choose the floor from the fixed version and keep it inside every consumer's declared range, so no
-consumer is moved across a major. Those two entries changed 42 lockfile lines.
+consumer is moved across a major. The lockfile diff should then touch only those packages and
+their own dependencies; if it touches more, the command did more than you asked.
 
 Two approaches that look equivalent and are not:
 
 - `bun update <transitive-pkg>` adds the package to the root `dependencies` at its latest major
   (`basic-ftp` 6.2.1, `protobufjs` 8.8.0), rather than refreshing it in range.
 - Deleting the stale entries from `bun.lock` and running `bun install --lockfile-only` re-resolves
-  most of the tree (about 1,900 changed lines; the AWS SDK moved from 3.962 to 3.1142).
+  most of the tree, moving unrelated packages such as the whole AWS SDK.
 
 Bun `resolutions` are **top-level only**. A nested key such as `"snowflake-sdk/fast-xml-parser"` is
 accepted and silently ignored; the lockfile does not change. There is no per-consumer override.
@@ -127,7 +128,8 @@ and re-scan; the same rules apply.
 
 These are misconfigurations, not CVEs -- fix the instruction rather than a version. Common criticals
 are a missing `USER`, an unpinned base tag, or added capabilities. The `Trivy config scan
-(Dockerfiles, Actions)` job also reads the GitHub Actions workflows. Re-run locally with:
+(Dockerfiles)` job covers the Dockerfiles only; Trivy's misconfiguration scanner does not read GitHub
+Actions workflows, so a workflow problem needs a different tool. Re-run locally with:
 
 ```bash
 trivy config . --severity CRITICAL --ignorefile .trivyignore.yaml
@@ -135,13 +137,16 @@ trivy config . --severity CRITICAL --ignorefile .trivyignore.yaml
 
 ## Image-layer findings
 
-Findings that exist only in the built image, not in any lockfile. Build and scan `linux/amd64` as
-CI does (SKILL.md step A) before concluding anything.
+Findings that exist only in the built image, not in any lockfile. Build and scan the platform whose
+job is red, as CI does (SKILL.md step A), before concluding anything.
 
 - **Debian packages frozen in the base layer.** The `oven/bun` base image's Debian packages lag
   behind Debian's own fixes. The fix is `apt-get upgrade` in the `Dockerfile`'s base stage
   (`base-deps`). A Trivy `Status: fixed` means an upgrade clears it (`bind9-dnsutils`,
-  `libgnutls30t64`, `perl*` here).
+  `libgnutls30t64`, `perl*` here). The upgrade only helps while its layer is rebuilt: BuildKit caches
+  a `RUN` by its parent layer and command text, so that `RUN` reads the `APT_REFRESH` build arg, and
+  the CI builds pass the ISO week. If a `fixed` package stays red after Debian ships the fix, check
+  that the build passing `APT_REFRESH` actually ran rather than hitting the cache.
 - **Unfixed Debian packages (`Status: affected`): ask what installed them before accepting.**
   Debian has no fix yet, so no upgrade helps, but the package may be there only because of a parent
   nothing uses. Inside the image:

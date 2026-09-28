@@ -46,8 +46,8 @@ still fail the filesystem gate.
 
 ## Worked example
 
-The first run of the gates on this repository (CI's amd64 image scan alone reported 31 CRITICALs)
-reduced to eight causes:
+The first run of the gates on this repository reported dozens of CRITICALs across the lockfiles and
+the image, and they reduced to eight causes:
 
 | Cause | Fix |
 |---|---|
