@@ -90,7 +90,7 @@ A given `index.malloy` leaves out fails in one of three ways, depending on how i
 | the given | what happens |
 | --- | --- |
 | has a default | the source runs on the default, and a caller who sets the given gets `400 unknown given 'REGION'. Model surfaces [...]`. Agents never learn it exists |
-| has no default | every query on the source is refused with `404 Query target is not queryable`, although the source is exported. `compile_model` on the same query shows the real cause: `references given ... which is not surfaced in this model` |
+| has no default | a query on the source answers `400 ... references given MIN_AMT ..., which is not surfaced in this model and has no default`, even when the caller sends a value. A query that joins the source in its own text gets `404 Query target is not queryable` instead, which reads like curation; `compile_model` on that query shows the real cause |
 | is read by an `#(authorize)` or `#(access_filter)` gate | the package does not load: `$GROUPS references a given named GROUPS, which is not declared in this model` |
 
 To check, fetch `index.malloy`'s model: its `givens` should list every given a published source reads.
