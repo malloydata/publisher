@@ -245,10 +245,13 @@ for p in skills create-malloy-package; do
     "$(node -p "require('./packages/$p/package.json').version")"
 done
 
-# The Python client too, since the release now publishes it. Its version is in
-# pyproject.toml, not a package.json, and PyPI answers 404 for the whole project
-# until the first upload lands — so "PyPI: 404" here is the expected reading
-# today and NOT a reason to skip the comparison next time.
+# The Python client too. Its PyPI publish is paused (work in progress): the
+# release does not dispatch python-sdk.yml until the `publish_pkg python-client`
+# line at the end of scripts/publish-packages.sh is restored, so this reading does
+# not change between releases for now. Its version is in pyproject.toml, not a
+# package.json, and PyPI answers 404 for the whole project until the first upload
+# lands -- so "PyPI: 404" here is the expected reading today and NOT a reason to
+# skip the comparison next time.
 printf 'python-client: PyPI %s, main %s\n' \
   "$(curl -sS --max-time 20 https://pypi.org/pypi/malloy-publisher-sdk/json \
      | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])' \
