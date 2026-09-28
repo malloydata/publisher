@@ -1238,6 +1238,12 @@ export class Model {
     * Malloy's own "unknown given" error, instead of being silently swallowed
     * and falling back to its declared default (over-exposure).
     *
+    * Dropping is safe only while nothing the query compiles reads the name.
+    * When something does (a same-named `where:` given declared elsewhere in
+    * the query's closure), dropping would bind that declaration's default, so
+    * a name in `queryReadNames` ({@link givenNamesReadByQuery}) is forwarded
+    * and Malloy decides: it 400s a name off the entry surface.
+    *
     * `cellDeclared` (a notebook cell's declared set) also drops a surface name
     * the cell's closure never declares, i.e. one only a later cell imports.
     * Nothing the cell runs can reference such a name, so no default can bind.
@@ -1249,6 +1255,7 @@ export class Model {
     */
    private filterGivensToModelSurface(
       givens: Record<string, GivenValue> | undefined,
+      queryReadNames: ReadonlySet<string>,
       cellDeclared?: CellDeclaredGivens,
    ): Record<string, GivenValue> | undefined {
       if (!givens) return givens;
@@ -1256,8 +1263,7 @@ export class Model {
       const filtered: Record<string, GivenValue> = {};
       for (const [name, value] of Object.entries(givens)) {
          const authorizeOnly =
-            !surfaceNames.has(name) &&
-            this.authorizeReferencedGivenNames.has(name);
+            this.isGateOnlyGivenName(name) && !queryReadNames.has(name);
          const outOfCellScope =
             cellDeclared !== undefined &&
             surfaceNames.has(name) &&
@@ -1266,6 +1272,110 @@ export class Model {
          if (!authorizeOnly && !outOfCellScope) filtered[name] = value;
       }
       return filtered;
+   }
+
+   private isGateOnlyGivenName(name: string): boolean {
+      return (
+         !(this.givens ?? []).some((g) => g.name === name) &&
+         this.authorizeReferencedGivenNames.has(name)
+      );
+   }
+
+   /**
+    * The given names `runnable`'s compiled query actually reads. Malloy's
+    * `_query.givenUsage` says which given ids the query uses (an unused field
+    * or join that reads one is not counted); the IR walk maps each id to every
+    * name it is spelled with, following name-string `structRef`s (a named
+    * query, a same-document source) through the prepared model. A given bound
+    * as a source argument is always counted. Pass the runnable BEFORE any gate
+    * graft, so a gate's own `$NAME` is not counted as a read.
+    *
+    * Two over-refusals (a 400 rather than a default) are accepted: an aliased
+    * id also spelled by an unused field counts that spelling, because
+    * `givenUsage` keeps one `at` per id and matching on it would drop a live
+    * read; and an unused join's source argument counts, as in
+    * persist_dynamic_terms.ts, because `activeJoins` misses caller joins.
+    *
+    * Only computed when a supplied given is a drop candidate, so the common
+    * request pays nothing. A `getPreparedQuery()` throw yields the empty set,
+    * i.e. today's drop: the same compilation fails at run, so no data is
+    * returned, and propagating it here would put Malloy's compile text ahead
+    * of the boundary 404 and the gate 403. A used id the walk cannot name, or
+    * IR with no `givenUsage`, forwards every candidate, since that query will
+    * still run.
+    */
+   private async givenNamesReadByQuery(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue> | undefined,
+   ): Promise<Set<string>> {
+      const candidates = Object.keys(givens ?? {}).filter((name) =>
+         this.isGateOnlyGivenName(name),
+      );
+      const names = new Set<string>();
+      if (candidates.length === 0) return names;
+      let prepared: {
+         _query?: { givenUsage?: { id: string }[] };
+         _modelDef?: ModelDef;
+      };
+      try {
+         prepared = (await runnable.getPreparedQuery()) as typeof prepared;
+      } catch {
+         return names;
+      }
+      const usage = prepared._query?.givenUsage;
+      if (!usage) {
+         for (const name of candidates) names.add(name);
+         return names;
+      }
+      const usedIds = new Set(usage.map((g) => g.id));
+      const namedIds = new Set<string>();
+      const modelDef = prepared._modelDef ?? this.modelDef;
+      // Separate visited sets: a struct seen outside a source argument must
+      // still be read again when an argument reaches it.
+      const seen = { plain: new Set<object>(), argument: new Set<object>() };
+      const worklist: Array<[unknown, boolean]> = [[prepared._query, false]];
+      while (worklist.length > 0) {
+         const [value, inArgument] = worklist.pop()!;
+         if (value === null || typeof value !== "object") continue;
+         const visited = inArgument ? seen.argument : seen.plain;
+         if (visited.has(value)) continue;
+         visited.add(value);
+         if (Array.isArray(value)) {
+            for (const item of value) worklist.push([item, inArgument]);
+            continue;
+         }
+         const node = value as Record<string, unknown>;
+         if (
+            node.node === "given" &&
+            typeof node.refName === "string" &&
+            typeof node.id === "string"
+         ) {
+            // A source argument binds while the source is built, so
+            // `givenUsage` never lists it (see persist_dynamic_terms.ts).
+            if (inArgument || usedIds.has(node.id)) names.add(node.refName);
+            namedIds.add(node.id);
+         }
+         for (const [key, child] of Object.entries(node)) {
+            const resolved =
+               key === "structRef" && typeof child === "string"
+                  ? modelDef?.contents[child]
+                  : child;
+            worklist.push([
+               resolved,
+               inArgument || key === "arguments" || key === "sourceArguments",
+            ]);
+         }
+      }
+      // A used id the walk never met is unnamed, so forward every candidate,
+      // unless the model surfaces it: a default chain's ids appear nowhere in
+      // the query IR, and a surfaced given is never a drop candidate by name.
+      for (const entry of Object.values(modelDef?.contents ?? {})) {
+         if (entry.type === "given") namedIds.add(entry.id);
+      }
+      if ([...usedIds].some((id) => !namedIds.has(id))) {
+         for (const name of candidates) names.add(name);
+      }
+      return names;
    }
 
    // The id/name OR is safe only because Malloy refuses a second given of one
@@ -6593,9 +6703,9 @@ export class Model {
       // Givens supplied only so a joined source's authorize gate could see
       // them (checked below, against the full unfiltered set) must not reach
       // the real query if this model doesn't itself surface them — see
-      // filterGivensToModelSurface. Resolved here for the same reason as
-      // `buildManifest`: the pre-aggregation probe needs them.
-      const querySurfaceGivens = this.filterGivensToModelSurface(givens);
+      // filterGivensToModelSurface. Resolved from the caller's own compiled
+      // query, before routing or any graft replaces it.
+      let querySurfaceGivens: Record<string, GivenValue> | undefined;
 
       // Query boundary FIRST (the *what* axis): reject a target that isn't in
       // the package's queryable surface with a 404, before authorize (the *who*
@@ -6804,6 +6914,10 @@ export class Model {
          // Kept so a routed query can still be answered live if the store fails
          // underneath it at RUN time (see the freshnessFallback retry below).
          liveRunnable = runnable;
+         querySurfaceGivens = this.filterGivensToModelSurface(
+            givens,
+            await this.givenNamesReadByQuery(runnable, givens),
+         );
 
          // `#(filter)` injection (above) picks the predicate's `\`dimension\``
          // by NAME, same as every other filter Malloy resolves late — a
@@ -8397,6 +8511,12 @@ export class Model {
                }
             }
 
+            // Read before the bind below grafts gates onto the runnable.
+            const cellReadGivenNames = await this.givenNamesReadByQuery(
+               runnableToExecute,
+               givens,
+            );
+
             // Authorize gate — only cells that actually run a query touch
             // data, so gate exactly those (a source-def / import cell has no
             // runnable and accesses nothing). Gates the COMPILED cell query's
@@ -8482,6 +8602,7 @@ export class Model {
             // above already saw the full unfiltered givens.
             const cellSurfaceGivens = this.filterGivensToModelSurface(
                givens,
+               cellReadGivenNames,
                this.notebookCellDeclaredGivens[cellIndex],
             );
             const preparedCell = await runnableToExecute.getPreparedResult({
