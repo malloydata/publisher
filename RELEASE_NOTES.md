@@ -42,7 +42,7 @@ same name, such as a `where:` on a source from another file that declares its ow
 request that used to return rows at the default now fails with a 400. To fix the model, import the
 given at the entry model.
 
-## [Unreleased] — the model Explorer takes givens
+## [0.8.2] — the model Explorer takes givens
 
 The Console's model Explorer now shows a **Parameters** row when the model declares givens, and
 sends the values with every Run. Before this, a source gated with `#(authorize)` on a given could
@@ -60,7 +60,7 @@ answered 403, and the Explorer showed nothing.
 No server or API change: the Explorer sends givens through the same `POST …/query` field notebooks
 and dashboards use. See [docs/explorer.md](docs/explorer.md#parameters).
 
-## [Unreleased] — notebook cells receive only the givens in their own scope
+## [0.8.2] — notebook cells receive only the givens in their own scope
 
 A notebook cell now ignores a given the notebook declares only in a later cell.
 Previously any code cell that ran before the notebook's `import` of a given 400'd
