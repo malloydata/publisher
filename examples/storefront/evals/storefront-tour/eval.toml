@@ -6,8 +6,8 @@
 environment = "examples"
 package     = "storefront"
 repo        = "../.."    # examples/storefront, the package under test
-port        = 4000
-mcp_port    = 4040
+port        = 4811    # not 4000/4040, which a Publisher started the usual way holds
+mcp_port    = 4812
 
 [truth]                  # a second Publisher, which the answerer has no route to
 environment = "truth"

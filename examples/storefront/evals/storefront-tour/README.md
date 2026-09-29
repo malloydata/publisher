@@ -75,39 +75,47 @@ declaring a field to quiet a checker changes the thing being measured.
 
 ## Run it
 
-From a clone, with Node 20+, Bun, Python 3.11+ and a Java runtime (the SDK
-build runs openapi-generator). Every command reads `eval.toml`, so none of
-them takes a server flag. Build once, then check the set:
+You need a clone of this repository with Publisher built (Node 20+, Bun, and
+a Java runtime for the SDK build), and Python 3.11+ for the eval scripts. Bun
+builds and runs Publisher; everything else here is Python. Every command reads
+`eval.toml`, so none of them takes a server flag. From the repository root:
 
 ```bash
-bun install && bun run build
-bun run eval -- check --set examples/storefront/evals/storefront-tour
+bun install && bun run build          # once: builds Publisher
+EVAL=skills/eval-loop/scripts/eval.py
+SET=examples/storefront/evals/storefront-tour
+
+python3 $EVAL check --set $SET
 ```
 
 `check` names every gap before anything starts, including a port another
-process already holds. The servers use 4000/4040 and 4881/4882; if any is
-taken, change the port in `eval.toml`, which every later step reads. A
-`--port` flag on `serve` would not reach them, so `serve` refuses one that
-disagrees with the file.
+process already holds. The two servers use 4811/4812 and 4881/4882, which a
+Publisher started the usual way (4000/4040) does not. If one is taken, change
+the port in `eval.toml`, which every later step reads. `serve` refuses a
+`--port` flag that disagrees with the file, because the later steps would not
+find that server.
 
-**1. Serve the model the answerer will query, and the truth package.** Two
-servers: the truth package holds the answer key's derivations, so it must
-never share a server with the model under test.
+**1. Start the two servers.** One serves the model the answerer queries. The
+other serves the truth package, the raw tables the answer key is derived
+from, so it must never be a server the answerer can reach.
 
 ```bash
-bun run eval -- serve model --set examples/storefront/evals/storefront-tour   # :4000 / :4040
-bun run eval -- serve truth --set examples/storefront/evals/storefront-tour   # :4881 / :4882
+export EMBEDDING_API_KEY=...          # optional; without it retrieval is keyword matching
+python3 $EVAL serve model --set $SET  # :4811 / :4812
+python3 $EVAL serve truth --set $SET  # :4881 / :4882
 ```
 
 Each returns once its server answers, and keeps it running after the shell
-exits. `--stop` stops it. Export `EMBEDDING_API_KEY` before serving the model:
-without it retrieval is lexical, and the start line says so.
+exits; `--stop` stops it. With an embedding key, `serve model` also waits for
+the retrieval index to finish building, so the run's first questions are
+ranked semantically rather than by keyword. Without a key it says the run will
+measure keyword matching.
 
 **2. Check the answer key still matches the data.** Free, and it refuses the
 run rather than spending on a drifted key.
 
 ```bash
-bun run eval -- verify --set examples/storefront/evals/storefront-tour
+python3 $EVAL verify --set $SET
 ```
 
 **3. Run the arm.** About $3 for twelve cases with sonnet answering and
@@ -118,34 +126,33 @@ and a score that cannot separate those from wrong answers is not worth much.
 `--no-coverage` skips it.
 
 ```bash
-bun run eval -- run --set examples/storefront/evals/storefront-tour \
-    --label baseline-01 --max-turns 40
+python3 $EVAL run --set $SET --label baseline-01 --max-turns 40 --parallel 4
 ```
 
 The run goes to `~/.malloy-eval/storefront-tour/runs/baseline-01`, outside
 this repository. It holds the transcripts, the verdicts and the pins, and the
 path is printed at the start.
 
-**4. Diagnose what failed.** About $0.60 and three minutes per failed case: an
+**4. Diagnose what failed.** About $0.45 and three minutes per failed case: an
 agent reads each failure's transcript, then one more clusters them. A run where
 everything passed records an empty diagnosis, so step 5 still builds.
 
 ```bash
-bun run eval -- diagnose --set examples/storefront/evals/storefront-tour \
-    --label baseline-01 --verdicts no_match,near_match
+python3 $EVAL diagnose --set $SET --label baseline-01 --verdicts no_match,near_match
 ```
 
 **5. Build the report.** It refuses a run that has not been diagnosed, then
-prints the command that registers the report and its two URLs: the case
-matrix, and the notebook of aggregate tables.
+builds the report, registers it on the truth server, and prints its two links:
+the case matrix, and the notebook of aggregate tables.
 
 ```bash
-bun run eval -- package --set examples/storefront/evals/storefront-tour \
-    --label baseline-01
+python3 $EVAL package --set $SET --label baseline-01
 ```
 
-Then write the run up per `skill:eval-report`. It is your report on your run;
-it does not belong in this directory.
+On the bundled model a run scores about 10 of 12: summer sales and customer
+count fail, as the section above says they should. Then write the run up per
+`skill:eval-report`. It is your report on your run; it does not belong in this
+directory.
 
 ## Running it on your own questions
 

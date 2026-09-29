@@ -88,7 +88,7 @@ environment = "<env>"
 package     = "<package name>"
 repo        = "<path to the model package>"   # relative to this file
 port        = 4811
-mcp_port    = 4040
+mcp_port    = 4812
 
 [truth]                  # only with a truth package; an empty [truth] takes 4881/4882
 environment = "truth"

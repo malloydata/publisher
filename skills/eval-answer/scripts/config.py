@@ -8,8 +8,8 @@ the servers and paths every step of a run needs:
     environment = "examples"
     package     = "storefront"
     repo        = "../.."      # the model package directory
-    port        = 4000         # publisher / mcp_url derive from the ports
-    mcp_port    = 4040
+    port        = 4811         # publisher / mcp_url derive from the ports
+    mcp_port    = 4812
 
     [truth]                    # the second server, serving the truth package
     environment = "truth"
@@ -65,7 +65,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
 
 BUILTIN: dict[tuple[str, str], Any] = {
     ("model", "port"): 4811,
-    ("model", "mcp_port"): 4040,
+    ("model", "mcp_port"): 4812,
     ("truth", "port"): 4881,
     ("truth", "mcp_port"): 4882,
     ("truth", "environment"): "truth",

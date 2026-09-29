@@ -40,7 +40,7 @@ class Precedence(unittest.TestCase):
     def test_ports_have_built_ins_and_urls_derive_from_them(self):
         cfg = config.load(make_set({"eval.toml": "[model]\nport = 4000\n"}))
         self.assertEqual(cfg.model_publisher(), "http://localhost:4000")
-        self.assertEqual(cfg.model_mcp_url(), "http://localhost:4040/mcp")
+        self.assertEqual(cfg.model_mcp_url(), "http://localhost:4812/mcp")
 
     def test_an_empty_truth_section_takes_the_truth_built_ins(self):
         cfg = config.load(make_set({"eval.toml": "[model]\nport = 4000\n[truth]\n"}))

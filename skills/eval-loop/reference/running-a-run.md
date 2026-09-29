@@ -19,7 +19,7 @@ environment = "<env>"
 package     = "<pkg>"
 repo        = "<path to the model package>"
 port        = 4811
-mcp_port    = 4040
+mcp_port    = 4812
 
 [truth]                  # a second Publisher, serving only the truth package
 environment = "truth"
@@ -32,9 +32,8 @@ one stops with the key to add. Runs, built packages and server roots go under
 `~/.malloy-eval/<set>/` unless `[paths] workdir` says otherwise, never inside
 the repository: a run holds a `model.malloy` snapshot and a built package is a
 Malloy package, and nested in the package under test either can put that
-package into `loadErrors`. Each command below is `skills/eval-loop/scripts/eval.py`
-(`bun run eval --` from the repository root), and any flag the underlying
-script takes passes through.
+package into `loadErrors`. Each command below is `python3 skills/eval-loop/scripts/eval.py`,
+and any flag the underlying script takes passes through.
 
 ```bash
 # 0. every gap in the set at once, before anything starts: missing files, a
@@ -145,14 +144,12 @@ Three layers, in this order, and the order is what makes it readable:
    report, so this layer is the two commands that turn it into something you
    read: `build_run_package.py` (a Malloy model over the run's CSVs,
    `eval_run.malloynb` for the aggregate tables, and an in-package HTML app for
-   the case matrix and its per-case drawer), then a `POST .../packages` that
-   registers it on a Publisher already running, with no restart.
-   `build_run_package.py` prints that command and both URLs with the run's own
-   paths filled in, and writes them into the package's README.md.
-
-   The command registers the package on the TRUTH server when the set has
-   one. The package holds the answer key, and that is the server the answerer
-   has no route to.
+   the case matrix and its per-case drawer), registered on a Publisher that
+   is already running, with no restart. `eval.py package` builds it,
+   registers it on the TRUTH server, and prints both URLs; the package holds
+   the answer key, and that is the server the answerer has no route to. The
+   registration command is also written into the package's README.md, for
+   serving it again later; `--no-register` builds without registering.
 
 Order of magnitude for planning, **calibrated on ecommerce over local duckdb**:
 a Sonnet arm over a few dozen cases costs single-digit dollars and finishes in

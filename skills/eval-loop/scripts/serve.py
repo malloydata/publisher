@@ -2,7 +2,7 @@
 """Start a Publisher that outlives the shell that started it. Stdlib only.
 
   python3 serve.py --publisher-dir <publisher>/packages/server \\
-      --server-root <scratch>/evalroot --port 4811 --mcp-port 4040 \\
+      --server-root <scratch>/evalroot --port 4811 --mcp-port 4812 \\
       [--allow-proxy] [--trace-retrieval] [--reinit] [--wait 60] \\
       [--warm-retrieval --environment <env> --package <pkg>]
 
@@ -382,6 +382,19 @@ def retrieval_note(env: dict[str, str]) -> str | None:
             "numbers are not comparable with a semantic run")
 
 
+def warm_by_default(role: str, opted_out: bool, env: dict[str, str]) -> bool:
+    """Whether `--role` warms retrieval without being asked.
+
+    The model server's first ranking call starts the embedding sync, and calls
+    during it rank lexically without saying so. With a key, a run started
+    right after `serve` would measure that for its first cases. Without one
+    there is nothing to warm: every call ranks lexically, and
+    `retrieval_note` says so.
+    """
+    return (role == "model" and not opted_out
+            and bool((env.get("EMBEDDING_API_KEY") or "").strip()))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -397,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=None, help="default 4811. With "
                     "--role it is the role's port in eval.toml, and a different "
                     "value is refused: later steps read the file")
-    ap.add_argument("--mcp-port", type=int, default=None, help="default 4040. "
+    ap.add_argument("--mcp-port", type=int, default=None, help="default 4812. "
                     "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
@@ -413,6 +426,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="after the server answers, drive one ranking call and "
                          "poll embeddingIndex.status until it settles. Requires "
                          "--environment and --package")
+    ap.add_argument("--no-warm-retrieval", action="store_true",
+                    help="with --role model: skip the warm-up that is on by "
+                         "default when EMBEDDING_API_KEY is set")
     ap.add_argument("--environment", help="environment to warm (--warm-retrieval)")
     ap.add_argument("--package", help="package to warm (--warm-retrieval)")
     ap.add_argument("--stop", action="store_true",
@@ -445,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"and drop the flag.")
         a.port = a.port or cfg.get(a.role, "port")
         a.mcp_port = a.mcp_port or cfg.get(a.role, "mcp_port")
+        a.warm_retrieval = a.warm_retrieval or warm_by_default(
+            a.role, a.no_warm_retrieval, os.environ)
         if a.role == "model" and a.warm_retrieval:
             a.environment = a.environment or cfg.get("model", "environment")
             a.package = a.package or cfg.get("model", "package")

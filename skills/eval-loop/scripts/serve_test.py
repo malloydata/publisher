@@ -372,5 +372,22 @@ class Roles(unittest.TestCase):
                       str(e.exception))
 
 
+
+class WarmByDefault(unittest.TestCase):
+    def test_the_model_role_warms_when_there_is_a_key(self):
+        self.assertTrue(serve.warm_by_default("model", False, {"EMBEDDING_API_KEY": "k"}))
+
+    def test_no_key_nothing_to_warm(self):
+        self.assertFalse(serve.warm_by_default("model", False, {}))
+        self.assertFalse(serve.warm_by_default("model", False, {"EMBEDDING_API_KEY": " "}))
+
+    def test_the_flag_opts_out(self):
+        self.assertFalse(serve.warm_by_default("model", True, {"EMBEDDING_API_KEY": "k"}))
+
+    def test_the_truth_server_is_never_warmed(self):
+        """Nothing ranks on it; the answerer never reaches it."""
+        self.assertFalse(serve.warm_by_default("truth", False, {"EMBEDDING_API_KEY": "k"}))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

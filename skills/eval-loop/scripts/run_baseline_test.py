@@ -1100,7 +1100,8 @@ class ResolveConfig(unittest.TestCase):
 
     def test_a_local_run_takes_its_servers_and_run_dir_from_the_file(self):
         d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n'
-                         'port = 4000\n[truth]\n[paths]\nworkdir = "w"\n')
+                         'port = 4000\nmcp_port = 4040\n[truth]\n[paths]\n'
+                         'workdir = "w"\n')
         a = self.ns(d)
         with mock.patch("builtins.print"):
             rb.resolve_config(a)
