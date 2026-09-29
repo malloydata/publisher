@@ -944,12 +944,37 @@ export async function buildSourceIntoStorage(params: {
       // CTAS — because the plan has to probe this destination to decide, and a
       // seed then continues below on the same session.
       if (params.incremental) {
-         const refreshed = await params.incremental.plan({
-            session,
-            sourceType,
-            handle: federated.handle,
-            quotedTablePath: target,
-         });
+         // A delta into a laid-out table is the same partitioned COPY as the
+         // seed, and its width x partitions is what decides its memory, not its
+         // row count. The threshold and the single appender reach it through
+         // the session; its statements are composed elsewhere, so the ordered
+         // read is the seed's alone (see createTableAndDescribe).
+         const partitioned = (params.partitionColumns?.length ?? 0) > 0;
+         const flushThreshold = getPartitionedWriteFlushThreshold();
+         const boundDelta = partitioned && flushThreshold !== undefined;
+         if (boundDelta) {
+            await session.runSQL(
+               `SET partitioned_write_flush_threshold = ${flushThreshold}`,
+            );
+            await session.runSQL("SET threads = 1");
+         }
+         let refreshed;
+         try {
+            refreshed = await params.incremental.plan({
+               session,
+               sourceType,
+               handle: federated.handle,
+               quotedTablePath: target,
+            });
+         } finally {
+            if (boundDelta) {
+               try {
+                  await session.runSQL("RESET threads");
+               } catch {
+                  // best-effort, as in createTableAndDescribe
+               }
+            }
+         }
          if (refreshed) {
             return {
                storageDestinationName: destinationName,
@@ -1493,19 +1518,21 @@ export async function createTableAndDescribe(
    const columns = partitionColumns
       .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
       .join(", ");
-   const bounded = options.sourceType !== undefined;
+   // `off` on the threshold turns the whole treatment off -- one switch, because
+   // the three parts only work together and a source that built fine before is
+   // better served by none of them than by the sort alone.
+   const flushThreshold = getPartitionedWriteFlushThreshold();
+   const bounded =
+      options.sourceType !== undefined && flushThreshold !== undefined;
    if (bounded) {
       // Before the transaction, and only on this path: it bounds the rows each
       // appender thread holds before flushing them to the partition files,
       // which is the term an ordered stream leaves. See
       // getPartitionedWriteFlushThreshold for the measurement; the session is
       // this build's own instance, so the setting reaches nothing else.
-      const flushThreshold = getPartitionedWriteFlushThreshold();
-      if (flushThreshold !== undefined) {
-         await session.runSQL(
-            `SET partitioned_write_flush_threshold = ${flushThreshold}`,
-         );
-      }
+      await session.runSQL(
+         `SET partitioned_write_flush_threshold = ${flushThreshold}`,
+      );
       // One appender. The ORDER BY below is DuckDB's, and a sorted result is
       // read in parallel, so with several threads each one meets every
       // partition again and the same insert fails at 768MB that completes on
@@ -1549,9 +1576,6 @@ export async function createTableAndDescribe(
       // uncommitted table, so nothing is given up by asking here.
       schema = await describeTable(session, quotedTablePath);
       await session.runSQL("COMMIT");
-      if (bounded) {
-         await session.runSQL("RESET threads");
-      }
    } catch (buildErr) {
       // Restores the previous generation rather than deleting it. Best-effort:
       // a rollback that itself fails must not replace the error that caused it.
@@ -1568,16 +1592,19 @@ export async function createTableAndDescribe(
             },
          );
       }
-      // Same best-effort footing as the rollback: the thread count is this
-      // session's, and the error being raised is the build's.
+      throw buildErr;
+   } finally {
+      // Best-effort, on both outcomes: the thread count is this session's, and
+      // neither a committed generation nor the build's own error is worth
+      // reporting differently because giving it back failed. The session is
+      // disposed with the build; a stuck setting dies with it.
       if (bounded) {
          try {
             await session.runSQL("RESET threads");
          } catch {
-            // The session is disposed with the build; a stuck setting dies with it.
+            // see above
          }
       }
-      throw buildErr;
    }
    return schema;
 }

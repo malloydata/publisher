@@ -129,16 +129,22 @@ describe("createTableAndDescribe: the flush threshold", () => {
       expect(sql[0]).toBe("SET partitioned_write_flush_threshold = 2048");
    });
 
-   it("issues nothing for `off`, leaving DuckDB's default", async () => {
+   it("`off` turns the whole treatment off: no threshold, no ordering, no single thread", async () => {
+      // One switch, because the three only work together: a source that built
+      // fine before is better served by none of them than by the sort alone.
       process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
          sourceType: "postgres",
       });
-      expect(sql[0]).toBe("SET threads = 1");
-      expect(sql.filter((q) => q.startsWith("SET partitioned_write"))).toEqual(
-         [],
-      );
+      expect(sql).toEqual([
+         "BEGIN TRANSACTION",
+         `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS}) WITH NO DATA`,
+         'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id")',
+         `INSERT INTO "lake"."t" (${ROWS})`,
+         'DESCRIBE "lake"."t"',
+         "COMMIT",
+      ]);
    });
 
    it("never reaches an unpartitioned build, nor does the ordering or the thread count", async () => {

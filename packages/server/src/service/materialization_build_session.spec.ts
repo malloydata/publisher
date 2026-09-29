@@ -382,6 +382,94 @@ describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partition
    });
 });
 
+describe("buildSourceIntoStorage bounds the incremental delta's session too", () => {
+   // A delta into a laid-out table is the same partitioned COPY as the seed, and
+   // its memory is width x partitions, not row count. The threshold and the
+   // single appender reach the delta through the session it runs on; proved by
+   // reading the settings back from INSIDE the refresh hook, on a real session.
+   function harness(partitionColumns: string[] | undefined) {
+      const seen: Record<string, string>[] = [];
+      const afterPlan: Record<string, string>[] = [];
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {},
+         }),
+         read: async () => ({
+            selectSQL: "SELECT 1 AS org_id",
+            jobId: null,
+            cost: null,
+         }),
+      };
+      const settings = async (session: DuckDBConnection) => {
+         const r = await session.runSQL(
+            "SELECT name, value FROM duckdb_settings() " +
+               "WHERE name IN ('threads', 'partitioned_write_flush_threshold')",
+         );
+         return Object.fromEntries(
+            (r.rows as { name: string; value: string }[]).map((x) => [
+               x.name,
+               String(x.value),
+            ]),
+         );
+      };
+      const dir = mkdtempSync(join(tmpdir(), "partition-delta-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+         buildSQL: "SELECT 1 AS org_id",
+         physicalTableName: "t",
+         environmentPath: dir,
+         partitionColumns,
+         incremental: {
+            plan: async ({ session }: { session: DuckDBConnection }) => {
+               seen.push(await settings(session));
+               // A delta was applied: the build returns here, before the seed.
+               return {
+                  readCost: null,
+                  refreshed: true,
+               } as never;
+            },
+            afterSeed: async () => undefined,
+         },
+         deps,
+      };
+      return { params, dir, seen, afterPlan, settings };
+   }
+
+   it("a partitioned build's delta runs on one thread at the flush threshold", async () => {
+      const h = harness(["org_id"]);
+      try {
+         // The plain-DuckDB destination has no laid-out table to describe, so
+         // the build fails after the hook -- which is the part under test.
+         await buildSourceIntoStorage(h.params).catch(() => undefined);
+         expect(h.seen).toEqual([
+            { threads: "1", partitioned_write_flush_threshold: "8192" },
+         ]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an unpartitioned build's delta sees the session as it was", async () => {
+      const h = harness(undefined);
+      try {
+         await buildSourceIntoStorage(h.params).catch(() => undefined);
+         expect(h.seen).toHaveLength(1);
+         expect(h.seen[0].threads).not.toBe("1");
+         expect(h.seen[0].partitioned_write_flush_threshold).toBe("524288");
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+});
+
 // Skipped on Windows: these tests seed the parent table via one DuckDBConnection
 // to a plain-DuckDB *file*, then buildDownstreamIntoStorage ATTACHes the SAME
 // file in the same process. On Windows, DuckDB keeps an exclusive/cached handle

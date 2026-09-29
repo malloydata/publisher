@@ -387,10 +387,13 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
 };
 
 /**
- * How many rows each appender thread buffers before a partitioned storage
- * build flushes them to the partition files (`partitioned_write_flush_threshold`,
- * `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`). Default 8192 rows; `off` leaves
- * DuckDB's own 524,288, which the setting exists to avoid.
+ * How many rows the appender buffers before a partitioned storage build flushes
+ * them to the partition files (`partitioned_write_flush_threshold`,
+ * `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`). Default 8192 rows. `off` turns
+ * the whole partitioned-insert treatment off -- this threshold, the ordered
+ * insert and the single appender thread together -- and leaves DuckDB's own
+ * behaviour, which is the one the treatment exists to avoid; it is the escape
+ * hatch for a source that built fine before, at the cost of the sort.
  *
  * A `#@ persist partition=` build is DuckDB's partitioned COPY, and that operator
  * buffers rows per partition in a column-data collection INSIDE the buffer
@@ -399,22 +402,23 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
  * against the session's own limit rather than a container kill. Two things drive
  * it. Every partition a thread meets costs it one vector per column up front, at
  * first sight, before a single row of it is flushed; and nothing is flushed
- * until the thread has appended this many rows across all its partitions. At
- * DuckDB's default a 122-column table sorted by its partition column still held
- * half a million rows before the first flush and died at 768MB; at 2,048 and at
- * 20,000 the same insert completed (14.6 s and 24.6 s, 308 partitions).
+ * until the thread has appended this many rows across all its partitions. Per
+ * THREAD, so a parallel appender multiplies it.
+ *
+ * This bounds the second term only. The first -- one vector per column for every
+ * partition in flight -- is bounded by {@link orderByPartitionColumns}: the
+ * insert reads its SELECT ordered by the partition columns, sorted by DuckDB at
+ * the top of the INSERT, on one thread, because a sorted result is read in
+ * parallel and each reader then meets every partition again. Measured on 616k
+ * rows x 122 columns into 308 partitions at 768MB, from Postgres: interleaved
+ * rows fail at any threshold, ordered rows fail at DuckDB's default, ordered
+ * rows on one thread complete at this default in 9.5 s (four threads fail); from
+ * BigQuery the same shape fails at 54 s and completes in 36 s. Neither half is
+ * sufficient alone.
  *
  * Rows rather than bytes because that is the unit DuckDB exposes; the byte-based
  * row-group bound governs the Parquet writer downstream of this buffer and does
- * not reach it. Per THREAD, so a parallel appender multiplies it.
- *
- * This bounds the second term only. The first -- one vector per column for every
- * partition in flight -- is bounded by feeding the build in partition order, which
- * {@link orderByPartitionColumns} in the build session does on the warehouse side
- * so the stream stays single-threaded. Unsorted, a 308-partition, 120-column
- * insert fails before flushing anything at any threshold; sorted at the default it
- * fails after ~0.5M rows; sorted with this bound it completes. Neither half is
- * sufficient alone.
+ * not reach it.
  */
 export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
 
@@ -513,12 +517,15 @@ export function assertDuckDBResourceConfig(): void {
       flushThreshold !== undefined &&
       flushThreshold !== "" &&
       flushThreshold.toLowerCase() !== "off" &&
-      !/^[1-9]\d*$/.test(flushThreshold)
+      !/^[1-9]\d{0,8}$/.test(flushThreshold)
    ) {
+      // At most nine digits: DuckDB takes a larger count, renders it in
+      // scientific notation and refuses it at the first partitioned build,
+      // long after the boot that should have caught it.
       throw new Error(
          `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
-            `positive row count like "8192" (or "off" to leave DuckDB's default), ` +
-            `got "${flushThreshold}"`,
+            `row count like "8192" (up to nine digits), or "off" to turn the ` +
+            `partitioned-insert bounds off, got "${flushThreshold}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();
