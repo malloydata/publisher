@@ -17,3 +17,7 @@ run: gated -> { aggregate: n }
 run: filtered -> { aggregate: n }
 
 run: orders -> { where: region ~ $REGION; aggregate: order_count }
+
+query: hidden_q is hidden -> { aggregate: secret_total }
+
+run: hidden_q

@@ -342,6 +342,40 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
    });
 
    describe("a package with a surface", () => {
+      /** The column names the notebook GET's model info describes for its runs. */
+      const describedRuns = async (notebook: string) => {
+         const { status, body } = await getJson<{ modelInfo?: string }>(
+            pkgUrl(SURFACE, `/notebooks/${notebook}`),
+         );
+         expect(status).toBe(200);
+         const info = JSON.parse(body.modelInfo ?? "{}") as {
+            anonymous_queries?: { schema?: { fields?: { name: string }[] } }[];
+         };
+         return {
+            modelInfo: body.modelInfo ?? "",
+            columns: (info.anonymous_queries ?? []).flatMap((q) =>
+               (q.schema?.fields ?? []).map((f) => f.name),
+            ),
+         };
+      };
+
+      it("applies the cells' surface filter to a served notebook GET's model info", async () => {
+         const { modelInfo, columns } = await describedRuns(CELLS);
+         // Positive control: a run over a curated source is still described.
+         expect(columns).toContain("order_count");
+         expect(modelInfo).not.toContain("secret_total");
+      });
+
+      it("applies the cells' surface filter to a .malloynb GET's model info", async () => {
+         expect(
+            (await describedRuns("notebooks/legacy.malloynb")).modelInfo,
+         ).not.toContain("secret_total");
+         // Positive control: a last cell over a curated source is still described.
+         const open = await describedRuns("notebooks/legacy_open.malloynb");
+         expect(open.columns).toEqual(["order_count"]);
+         expect(open.modelInfo).not.toContain("secret_total");
+      });
+
       it("runs a cell over a curated source", async () => {
          const { status, body } = await runCell(SURFACE, CELLS, 5);
          expect(status).toBe(200);

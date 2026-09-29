@@ -8433,20 +8433,55 @@ export class Model {
       }
    }
 
+   /**
+    * Which of `modelInfo.anonymous_queries` a cell whose `queryInfo` is shown
+    * describes. A served notebook's query cell names its run; a `.malloynb`'s
+    * model info is its last code cell's compile, whose final run is that cell's
+    * `queryInfo`. A run no shown cell describes is withheld.
+    */
+   private shownRunIndexes(
+      cells: readonly RunnableNotebookCell[],
+      shownCells: ReadonlySet<number>,
+   ): Set<number> {
+      const shown = new Set<number>();
+      if (this.notebookFormat() === "malloy") {
+         cells.forEach((cell, index) => {
+            if (cell.queryIndex !== undefined && shownCells.has(index))
+               shown.add(cell.queryIndex);
+         });
+         return shown;
+      }
+      const last = cells.findLastIndex(
+         (cell) => cell.type === "code" && cell.modelDef !== undefined,
+      );
+      const runs = cells[last]?.modelDef?.queryList.length ?? 0;
+      if (
+         last >= 0 &&
+         shownCells.has(last) &&
+         runs > 0 &&
+         runs === (this.modelInfo?.anonymous_queries?.length ?? 0)
+      ) {
+         shown.add(runs - 1);
+      }
+      return shown;
+   }
+
    private async getNotebookModel(): Promise<ApiRawNotebook> {
       // Return raw cell contents without executing them
       const cells = this.runnableNotebookCells ?? [];
       const notebookCells: ApiNotebookCell[] = [];
+      const shownCells = new Set<number>();
       for (const [index, cell] of cells.entries()) {
+         const shown =
+            cell.queryInfo !== undefined &&
+            (await this.showsCellQueryInfo(index, cell));
+         if (shown) shownCells.add(index);
          notebookCells.push({
             type: cell.type,
             kind: cell.kind,
             text: cell.text,
             newSources: this.serializeNewSources(cell.newSources, index),
-            queryInfo:
-               cell.queryInfo && (await this.showsCellQueryInfo(index, cell))
-                  ? JSON.stringify(cell.queryInfo)
-                  : undefined,
+            queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
          } as ApiNotebookCell);
       }
 
@@ -8483,6 +8518,9 @@ export class Model {
       const readable = this.notebookReadable(notebookCells.length - 1);
       const shownSource = (name: string | undefined) =>
          !readable || (name !== undefined && readable(name));
+      const shownRuns = readable
+         ? this.shownRunIndexes(cells, shownCells)
+         : undefined;
       const notebook: ApiRawNotebook = {
          type: "notebook",
          format: this.notebookFormat(),
@@ -8496,6 +8534,12 @@ export class Model {
                     entries: this.modelInfo.entries?.filter((entry) =>
                        entry.kind === "source" ? shownSource(entry.name) : true,
                     ),
+                    // The same surface filter each cell's `queryInfo` gets.
+                    anonymous_queries: shownRuns
+                       ? this.modelInfo.anonymous_queries?.filter((_, k) =>
+                            shownRuns.has(k),
+                         )
+                       : this.modelInfo.anonymous_queries,
                  }
                : {},
          ),
