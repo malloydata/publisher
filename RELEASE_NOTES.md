@@ -124,7 +124,11 @@ those answers 403 on every query, even when the new definition is equivalent
 (`rename: raw_id is id; dimension: id is raw_id`), as a redefinition of the gated column itself
 already did. If an extension of a gated source needs a reshaped join key, give the new dimension a
 new name. A caller who re-joins exactly the joined source the author declared, with the same `ON`,
-is now served rather than refused.
+is now served rather than refused. **Fixes a pre-existing gap, present since 0.8.2 or earlier:** a
+gate reading into a record-literal field named `location` (`dimension: x is { location is … }`)
+was comparable-as-equal regardless of value, because the field-identity check stripped any key
+named `location` by name rather than by shape; a caller could redefine that field and see rows the
+gate should have hidden.
 
 ## [0.8.2] — the model Explorer takes givens
 
