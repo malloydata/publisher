@@ -123,7 +123,7 @@ import {
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
-import { artifactNoteLine, docNotesAboveArtifact } from "./notebook";
+import { docNotesAboveArtifact, isArtifactNoteText } from "./notebook";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -4251,20 +4251,19 @@ export class Model {
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
-      const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(
-            packagePath,
-            modelPath,
-            malloyConfig,
-            options,
-         );
-
-      // Read before the lazy compile so the recorded text is the one it saw.
-      const compiledText = modelPath.endsWith(MODEL_FILE_SUFFIX)
-         ? await fs
-              .readFile(path.join(packagePath, modelPath), "utf8")
-              .catch(() => undefined)
-         : undefined;
+      const {
+         runtime,
+         modelURL,
+         importBaseURL,
+         dataStyles,
+         modelType,
+         compiledTextFor,
+      } = await Model.getModelRuntime(
+         packagePath,
+         modelPath,
+         malloyConfig,
+         options,
+      );
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -4429,7 +4428,7 @@ export class Model {
          // internal Malloy method this file's public `Runtime` import doesn't
          // declare, but it is the same underlying `Runtime` instance either way.
          model.setGateRuntime(runtime as HydrationRuntime);
-         model.compiledSourceText = compiledText;
+         model.compiledSourceText = compiledTextFor(modelURL);
          return model;
       } catch (error) {
          let computedError = error;
@@ -5452,7 +5451,9 @@ export class Model {
    public carriesNotebookArtifactNote(): boolean {
       return (
          this.modelDef !== undefined &&
-         artifactNoteLine(ownModelNoteObjects(this.modelDef)) !== undefined
+         ownModelNoteObjects(this.modelDef).some((note) =>
+            isArtifactNoteText(note.text),
+         )
       );
    }
 
@@ -8315,7 +8316,7 @@ export class Model {
 
    private async getNotebookModel(): Promise<ApiRawNotebook> {
       // Return raw cell contents without executing them
-      const cells = this.runnableNotebookCells as RunnableNotebookCell[];
+      const cells = this.runnableNotebookCells ?? [];
       const notebookCells: ApiNotebookCell[] = [];
       for (const [index, cell] of cells.entries()) {
          notebookCells.push({
@@ -8876,6 +8877,9 @@ export class Model {
       importBaseURL: URL;
       dataStyles: DataStyles;
       modelType: ModelType;
+      /** The bytes the compiler read for `url`, first read winning; undefined
+       *  until a compile has read it. */
+      compiledTextFor: (url: URL) => string | undefined;
    }> {
       // Contain the caller-supplied model path inside the package directory;
       // a path that resolves outside it is reported as a missing model, which
@@ -8909,14 +8913,26 @@ export class Model {
       const baseUrl = new URL(".", modelURL);
       const importBaseURL = baseUrl;
       const overlay = options?.overlay;
-      const urlReader = new HackyDataStylesAccumulator(
+      const inner =
          overlay && overlay.size > 0
             ? {
                  readURL: async (url: URL) =>
                     overlay.get(url.href) ?? (await URL_READER.readURL(url)),
               }
-            : URL_READER,
-      );
+            : URL_READER;
+      const readTexts = new Map<string, string>();
+      const urlReader = new HackyDataStylesAccumulator({
+         readURL: async (url: URL) => {
+            const contents = await inner.readURL(url);
+            if (!readTexts.has(url.toString())) {
+               readTexts.set(
+                  url.toString(),
+                  typeof contents === "string" ? contents : contents.contents,
+               );
+            }
+            return contents;
+         },
+      });
 
       // Request runtimes borrow the cached package MalloyConfig. The package
       // owns release; callers must not release this runtime per request.
@@ -8928,7 +8944,14 @@ export class Model {
             : undefined,
       });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
-      return { runtime, modelURL, importBaseURL, dataStyles, modelType };
+      return {
+         runtime,
+         modelURL,
+         importBaseURL,
+         dataStyles,
+         modelType,
+         compiledTextFor: (url: URL) => readTexts.get(url.toString()),
+      };
    }
 
    private static toMalloyConfig(input: ModelConnectionInput): MalloyConfig {

@@ -400,8 +400,9 @@ export interface DashboardModelFacts {
    /** Model-level (`##`) annotation texts, folded across the import lineage. */
    modelAnnotations: string[];
    /**
-    * The `"`-route notes above the artifact line, which are the description:
-    * one below it is a notebook's prose. Absent means all of `modelAnnotations`.
+    * The own notes above the artifact line, of every route; the doc-comment
+    * reader keeps the `"` ones as the description, since one below the line is
+    * a notebook's prose. Absent means all of `modelAnnotations`.
     */
    descriptionNotes?: string[];
    /**

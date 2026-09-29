@@ -33,8 +33,10 @@ export function artifactNoteLine(
 }
 
 /**
- * The `"`-route notes above the artifact line, in file order; all of them when
- * the file has no artifact note.
+ * The texts of the own notes above the artifact line, of every route, in the
+ * order `ownLevelNotes` yields them (block notes first); all of them when the
+ * file has no artifact note. The doc-comment reader that consumes them keeps
+ * only the `"` route.
  */
 export function docNotesAboveArtifact(
    notes: readonly AnnotationNote[],

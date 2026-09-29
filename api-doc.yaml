@@ -4594,7 +4594,7 @@ components:
           enum: ["markdown", "query", "definition"]
           description:
             What a cell is, on a `.malloy` notebook. A definition cell
-            (`source:`, `import`, `query:`, `given:`, `export`) has type `code`
+            (`source:`, `import`, `query:`, `given:`, `type:`, `export`) has type `code`
             and produces no result. Absent on a `.malloynb`.
         text:
           type: string

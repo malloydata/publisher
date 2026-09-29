@@ -591,8 +591,8 @@ export class Package {
     * The compiled text of each served notebook, keyed by file: a `.malloy`
     * directly under `notebooks/` with a model-level `## artifact` note. Filled
     * by {@link discoverDashboards} in the same pass and before the same
-    * boundary re-application as the dashboards, so the model's `notebook` flag
-    * is set before any request is served.
+    * boundary re-application as the dashboards. A reloaded model carries the
+    * flag from the previous map until that discovery pass replaces it.
     */
    private notebookFileText = new Map<string, string>();
 

@@ -194,12 +194,59 @@ describe("served notebooks (worker path)", () => {
       });
    });
 
-   it("sets the notebook flag again after a reload", async () => {
+   it("re-discovers on reload: gaining or losing the artifact note flips the flag", async () => {
+      manifest();
+      write("notebooks/gains.malloy", BASE);
+      write("notebooks/loses.malloy", `## artifact {}\n${BASE}`);
+      await withPackage(async (pkg) => {
+         expect(pkg.getModel("notebooks/gains.malloy")!.isNotebook()).toBe(
+            false,
+         );
+         expect(pkg.getModel("notebooks/loses.malloy")!.isNotebook()).toBe(
+            true,
+         );
+         write("notebooks/gains.malloy", `## artifact {}\n${BASE}`);
+         write("notebooks/loses.malloy", BASE);
+         await pkg.reloadAllModels({});
+         expect(pkg.getModel("notebooks/gains.malloy")!.isNotebook()).toBe(
+            true,
+         );
+         expect(pkg.getModel("notebooks/loses.malloy")!.isNotebook()).toBe(
+            false,
+         );
+      });
+   });
+
+   it("answers the notebook GET for a served notebook that has no cells yet", async () => {
       manifest();
       write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
       await withPackage(async (pkg) => {
+         const raw = await pkg.getModel("notebooks/nb.malloy")!.getNotebook();
+         expect(raw).toMatchObject({
+            type: "notebook",
+            format: "malloy",
+            notebookCells: [],
+         });
+      });
+   });
+
+   it("does not take an artifact line inside a block body for a dashboard", async () => {
+      manifest();
+      write(
+         "dashboards/x.malloy",
+         `## artifact { tiles=["base -> v"] }\n` +
+            `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
+      );
+      await withPackage(async (pkg) => {
+         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+            "dashboards/x.malloy",
+         ]);
+         write(
+            "dashboards/x.malloy",
+            `##|"\n## artifact kinds\n|##\nsource: oops is\n`,
+         );
          await pkg.reloadAllModels({});
-         expect(pkg.getModel("notebooks/nb.malloy")!.isNotebook()).toBe(true);
+         expect(pkg.listDashboards()).toEqual([]);
       });
    });
 
@@ -315,6 +362,16 @@ describe("served notebooks (worker path)", () => {
             malloyConfig,
          );
          expect(model.getCompiledSourceText()).toBe(text);
+         model.setQueryBoundary({
+            mode: "all",
+            exploresDeclared: false,
+            isQueryEntryPoint: true,
+            notebook: true,
+         });
+         expect(await model.getNotebook()).toMatchObject({
+            format: "malloy",
+            notebookCells: [],
+         });
       } finally {
          await duckdb.close();
       }
