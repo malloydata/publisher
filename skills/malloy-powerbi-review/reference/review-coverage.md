@@ -26,7 +26,7 @@ Group by what the router in `translate-measures.md` emits and report counts firs
 | DIRECT (translates directly) | | | | |
 | Recipe - divergent | | | | |
 | Recipe - stopgap | | | | |
-| Did not translate | | | | |
+| No recipe (`NR`: `EARLIER` / `EARLIEST`) | | | | |
 
 Then a row per measure that is not a clean DIRECT translation. A DIRECT measure that matched on validation needs no individual line; the count carries it.
 
@@ -67,7 +67,7 @@ Three things this section must state rather than imply, because each is a protec
 
 Close with what the Malloy model does **not** do that the Power BI model did, stated plainly:
 
-- Untranslatable measures, by intent rather than by function name
+- Measures with no recipe, by intent rather than by function name
 - Report-layer behavior that has no model equivalent
 - Anything depending on the refresh, if the data was lifted from a snapshot
 - Roles that did not translate

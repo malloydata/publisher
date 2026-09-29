@@ -144,12 +144,12 @@ column above, summing to 1.000000).
 
 **What it costs** Nothing. **This is an exact match**, and it is the single most
 valuable line in this file. `all()` keeps the query's filters and drops the
-grouping, which is `ALLSELECTED` semantics precisely. Earlier revisions of this
-skill called `ALLSELECTED` "no equivalent" and gave `ALL` the clean mapping; that
-was backwards, and it is why `ALLSELECTED` measures were being written off.
+grouping, which is `ALLSELECTED` semantics precisely. `ALLSELECTED` is the exact
+match and `ALL` (FC2) is the divergent one; do not write `ALLSELECTED` measures off
+as having no equivalent.
 
 The practical consequence for sizing a migration: `ALLSELECTED` appears in **25 of
-`PBIASEngine`'s 126 measures**, and none of them is untranslatable.
+`PBIASEngine`'s 126 measures**, and none of them lacks a recipe.
 
 **Read the argument before reaching for `all()`.** Bare `ALLSELECTED()` is the exact
 match above. `ALLSELECTED(Table[Column])` restores only *that* column's filter, so in
@@ -162,6 +162,13 @@ FC5's shape with FC3's filter semantics. Both spellings occur in `PBIASEngine`:
 | `ALLSELECTED()` | `all(expr)` | everything the user can see |
 | `ALLSELECTED(Table)` | `all(expr)` | that table's grouping removed |
 | `ALLSELECTED(Table[Column])` | `exclude(expr, column)` | one level up, not the top |
+
+The classifier routes `ALLSELECTED(Table[Column])` as a `CALCULATE` filter argument to
+FC5 and FC3 together, because it is `exclude()` and carries FC5's divergence. Bare
+`ALLSELECTED()` stays FC3, and `RANKX(ALLSELECTED(col), ...)` stays FC3 with FC7,
+because its argument is a ranking scope and not a filter. In `PBIASEngine` FC5 is 12
+measures, seven of them the FC6 rankings, whose `ALLSELECTED(cols)` sits in a
+`CALCULATETABLE` filter.
 
 **The one real difference** is what "visible" means. In Power BI the scope is the
 visual's, set by the report. In Malloy the scope is the query's `where:`. Those
@@ -272,7 +279,7 @@ IF (
 )
 ```
 
-Abridged from Microsoft Corporation's `PBIASEngine` sample model (`Top N Selector.tmdl`, `microsoft/Analysis-Services`), MIT licensed.
+Abridged from Microsoft Corporation's `PBIASEngine` sample model (`PBIASEngine/src/SemanticModel/definition/tables/Top N Selector.tmdl` in `microsoft/PowerBI-LogAnalytics-Template-Reports`, commit `787064bfc54f26c0af32e7f16b8de504effb8228`), MIT licensed.
 
 **What it means** Rank the visible groups by a measure, and return 1 for the top N,
 where N comes from a disconnected slicer table the user drives. It is used as a
@@ -311,10 +318,9 @@ Malloy query always does. Drop it.
 The `<= N` comparison must move to a **second stage** - a `calculate:` field cannot
 be filtered or ordered on in the stage that defines it.
 
-**This recipe is the one that changes a migration estimate.** Every measure this
-skill previously called untranslatable in `PBIASEngine` was `ALLSELECTED`-triggered,
-and 8 of them were this exact shape. Seven route here, one to FC7. None of them
-exercises a real gap.
+**This recipe is the one that changes a migration estimate.** Twelve `PBIASEngine`
+measures are `ALLSELECTED`-triggered and 8 of them are this exact shape: seven route
+here, one to FC7. None of them exercises a real gap.
 
 ---
 
@@ -348,8 +354,8 @@ run: sales -> {
 
 The rows come back alphabetically while the ranks are by sales. **`rank()` orders by
 whatever you give it, independently of the query's own ordering.** A `TODO` in the
-compiler source asks whether anyone would ever want that; they would, it already
-works, and an earlier revision of this skill wrongly published the opposite.
+compiler source asks whether anyone would ever want that; they would, and it works.
+Do not report it as a gap.
 
 Ranking within a group adds `partition_by:`:
 

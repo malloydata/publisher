@@ -8,8 +8,7 @@ SPDX-License-Identifier: MIT
 > `scripts/classify_measures.py` routes DAX at scale. Everything it does not read
 > is a place its counts are silently incomplete rather than wrong, and a count
 > that is silently incomplete is the failure mode this whole skill exists to
-> avoid. This file is the one inventory; the notes below used to be scattered
-> across three files or absent.
+> avoid. This file is the one inventory.
 
 ## What it reads
 
@@ -35,7 +34,8 @@ swamp every real number in the file.
 
 **Each kind is counted separately.** A user-defined function and a calculation
 item are DAX, and they are not measures. Summing them under one "measures"
-heading published 1,622 measures for a corpus that held 1,406.
+heading overstates the job: the 50-model corpus holds 1,881 measures and 363 other
+DAX definitions.
 
 ## What it does not read
 
@@ -47,7 +47,7 @@ Each of these is a decision, not an oversight:
 | `partition X = m` / `= entity` | Same: M and Direct Lake bindings. Their `source` blocks are consumed so no line inside one is mistaken for a declaration, then discarded. |
 | `model.tmdl`, `database.tmdl` | No DAX. `model.tmdl` is the only authoritative table roster, so read it by hand if the table list ever disagrees with `tables/`. |
 | `cultures/`, `perspectives/` | No DAX. Locale affects date and decimal parsing on anything lifted out of the file (`discover.md`); perspectives are visibility (`rls-roles.md`). |
-| `roles/*.tmdl` → `columnPermission`, `metadataPermission` | Object-level security, not a row filter. A different control with a different answer; `rls-roles.md` covers it, and `review-coverage.md` §5 requires it be reported separately. |
+| `roles/*.tmdl` → `columnPermission`, `metadataPermission` | Object-level security, not a row filter. A different control with a different answer; `rls-roles.md` covers it, and `review-coverage.md` §5 requires it be reported separately. A role that carries object-level security and no row filter yields no row, so the report prints a **Not parsed** line naming it: read those role files by hand. |
 | `DAXQueries/*.dax`, `TMDLScripts/*.tmdl` | Outside `definition/`. Authoring scratch, not part of the model. |
 | `report.json`, `*.Report/` | The reason the routing is **a priority order, not a verdict**: whether a report ever filters an overwritten column is decided here, so the script cannot prove a measure safe. |
 
@@ -56,8 +56,10 @@ Each of these is a decision, not an oversight:
 Two TMDL shapes are read wrongly rather than skipped. Neither is produced by
 Microsoft's own TMDL writer, which is why they are accepted rather than fixed:
 
-- **A body line at exactly the property indent** (`base + 1`) ends the body
-  there, so the measure is routed on the part above it.
+- **A body line at exactly the property indent** ends the body there, so the
+  measure is routed on the part above it. The property indent is one indent unit
+  below the body and the unit is read from each file (a tab, or the narrowest space
+  indent), so 2-space and 4-space exports both parse.
 - **`T [Col]`, spaced**, reads as a measure reference rather than a column.
   The rule is deliberate and runs the other way round: whitespace before `[`
   means a measure reference, because `AND [Gross]` was reading as a column of a
@@ -88,15 +90,39 @@ deciding it needs the join direction *and* which side the aggregate sits on, and
 routing is per measure rather than per query. **38 measures across 12 of the 50 corpus
 models are this shape**, so check it by hand wherever a count names a dimension table.
 
+## Routes the counts can mislead on
+
+**`T1` to `T3` under a date slicer.** These three are not in `DIVERGENT_ROUTES`,
+and that is a standing caveat rather than a clean result. A window shares its stage
+with the query's `where:`, so under a date slicer the one-stage Malloy restarts a
+running total at the first visible period and returns a different number with no
+error. The two-stage query shape restores parity (March `ytd` 4,095, where the
+one-stage form gives 2,265; `cookbook-time.md#t1`), which is why the routes stay
+out of the divergent count. That holds only for a query written that way: a layer
+that injects a date filter into stage 1 reintroduces the restart, and the script
+cannot see the report's slicers. On the DAX side, `DATESYTD` and `DATEADD` replace
+the slicer's filter on `Date[Date]` and leave a slicer on another date-table column
+applied; that is `semantics-cited`, unverified.
+
+**Semi-additive functions are routed by position.** `LASTNONBLANK`, `FIRSTNONBLANK`,
+`LASTDATE`, `FIRSTDATE`, `ENDOF*` and `STARTOF*` route to `T5` only as the leading
+call of a `CALCULATE` or `CALCULATETABLE` filter argument. The same function
+elsewhere, such as a `DATESINPERIOD` anchor, is a period bound and does not. Read
+any other use by hand.
+
+**`NR` is a third outcome.** `EARLIER` / `EARLIEST` route to `NR` (no recipe), which
+is in neither `DIVERGENT_ROUTES` nor `STOPGAP_ROUTES`. The report counts it in its
+own "No recipe" column, apart from "Needs a recipe", and a definition that reaches
+one through a dependency counts too.
+
 ## Routes with no trigger
 
 `T4` (date spine) and `FC8` (escaping a query-level filter) are **teaching
 recipes**: no DAX function requests either, so no code path emits them. Their
 zero is guaranteed by construction and must never be published as a measured
-result - `T4` was, once, inside a "fires zero times across 1,622 measures"
-claim that was vacuous for exactly that one route. They are declared in
-`TEACHING_ONLY`, and a test asserts against the module's own source that every
-other recipe is reachable.
+result: a "fires zero times" claim that includes either route is vacuous for
+exactly that route. They are declared in `TEACHING_ONLY`, and a test asserts
+against the module's own source that every other recipe is reachable.
 
 `S7` (auto date tables) is a **model-level** route. It is emitted once per
 model, with a count, and never appears in the per-measure recipe totals.

@@ -22,7 +22,8 @@ The recipes are in three companion files, and they are the deliverable:
 **"Untranslatable" does nothing for the customer.** "Here is the Malloy, and here is
 what you lose" has done the migration. Route to a recipe; only the four constructs
 marked STOPGAP in the cookbook are genuinely short of a first-class answer, and even
-those ship working Malloy.
+those ship working Malloy. The one construct with **no recipe** is `EARLIER` /
+`EARLIEST` (route `NR`): ask what the number means and rewrite the intent.
 
 ## The Rule That Makes Migrations Wrong
 
@@ -184,15 +185,24 @@ become Malloy at all, so they are the fastest part of the estimate to retire.
 | report-layer (return a label) | 42 |
 | translate directly | 32 |
 | need a recipe | 52 |
-| of those, can return a different number silently | 43 |
+| of those, can return a different number silently | 48 |
 | of those, land on a stopgap recipe | 0 |
+| have no recipe | 0 |
 
 **Name the model when you quote a number**, because the profile is not portable.
 The same repository holds `FabricASEngineAnalytics` (117 measures): 4
 report-layer, 2 direct, and 111 gated on bidirectional cross-filtering. Same
-publisher, same domain, opposite shape. Across fifty public models the
-untranslatable count stays at zero and the stopgap count stays at zero; that is
-the claim worth making to a customer, not any particular ratio.
+publisher, same domain, opposite shape.
+
+Across the fifty public models in `corpus.md`, measures only: 1,881 measures, of
+which 217 are report-layer, 605 translate directly and 1,059 need a recipe; 939 of
+those can return a different number silently and **1 lands on a stopgap recipe**
+(`Latest Total Assets` in `chuahengli/Stock-Portfolio-project`, which uses
+`LASTNONBLANK` as a `CALCULATE` filter). **No measure lacks a recipe.** The one
+definition that does is a calculated column, `MonthIndex` in
+`FabricTools/pbir-samples` "Competitive Marketing Analysis", which uses `EARLIER`.
+A near-zero stopgap and no-recipe count is the claim worth making to a customer,
+not any particular ratio, and not a promise of zero.
 
 Four things worth knowing before you quote an estimate:
 
@@ -205,39 +215,48 @@ Four things worth knowing before you quote an estimate:
   partition, calculation groups carry a model's time intelligence, and RLS
   predicates live in `roles/*.tmdl`. Match only `measure` declarations and you
   will report a model as having no calculation groups, no date spine and no RLS.
-- **`ALLSELECTED` is common and costs nothing.** It is among the most frequent
-  functions by measures containing it, and it maps exactly. Do not budget for it.
+- **`ALLSELECTED` is common and mostly costs nothing.** It is among the most
+  frequent functions by measures containing it, and bare `ALLSELECTED()` maps
+  exactly. The column form as a `CALCULATE` filter, `ALLSELECTED(T[c])`, restores
+  only that column's filter and routes to `FC5` and `FC3`: it is `exclude()`, and
+  it carries FC5's divergence. Budget for the column form, not for the bare one.
 - **Many-to-many, parent-child hierarchies and semi-additive measures are real
-  but rare** - zero occurrences across the fifty-model sample. Do not lead a
-  customer conversation with them.
+  but rare.** Across the fifty-model sample the semi-additive family occurs
+  sparingly: `LASTDATE` once (a `DATESINPERIOD` anchor, correctly not `T5`),
+  `LASTNONBLANK` once (the stopgap above), `STARTOFMONTH` once (in a calculated
+  column) and `FIRSTNONBLANK` 16 times, all in `PBIASEngine` (`Calendar.tmdl` and
+  `Report Measures.tmdl`), none routed `T5`. No `FIRSTDATE`, `ENDOF*`,
+  `CLOSINGBALANCE*` or `OPENINGBALANCE*`. Do not lead a customer conversation
+  with them.
 
 `T4` and `FC8` are **teaching recipes with no trigger**: no DAX function requests
 either, so the router cannot emit them. Their zero says nothing, and it should
 never be reported among measured results. `reference/limitations.md` is the full
 inventory of what the router can and cannot decide.
 
-**Three ways earlier revisions of this skill got its own numbers wrong**, all worth
-avoiding in yours:
+**Three ways a count of this model goes wrong**, all worth avoiding in yours:
 
-- A substring match on `CALCULATE` also matched the column name
+- A substring match on `CALCULATE` also matches the column name
   `CPUTime (calculated)`, inflating the count. Match `\bCALCULATE\s*\(` against a
-  body with bracketed column references blanked out - and note the same pattern
-  correctly does *not* match `CALCULATETABLE(`.
-- A report-layer test that required a `"` in the body filed `Selected page` as
+  body with bracketed column references blanked out. The same pattern correctly does
+  *not* match `CALCULATETABLE(`, which is counted apart: a `CALCULATETABLE` with a
+  Boolean filter argument overwrites that column's filter just as `CALCULATE` does,
+  and routes to `FC1`.
+- A report-layer test that requires a `"` in the body files `Selected page` as
   translatable, though this file uses it as *the* report-layer example. See step 1.
-- A report-layer test that read a string anywhere in the body, rather than the
-  value the measure returns, filed numbers as labels. The tells are a column
+- A report-layer test that reads a string anywhere in the body, rather than the
+  value the measure returns, files numbers as labels. The tells are a column
   *name* argument to `ADDCOLUMNS`/`SUMMARIZE`/`SELECTCOLUMNS`/`ROW`; a text column
   named only to tell an iterator which table to walk; a `VAR` the `RETURN` never
   reaches; and a `//` inside a string literal, which is not a comment - the one in
-  an SVG measure's `http://www.w3.org/2000/svg` left the literal unterminated and
-  typed five sparklines as numbers. **DAX types on the `RETURN`.**
+  an SVG measure's `http://www.w3.org/2000/svg` leaves the literal unterminated and
+  types five sparklines as numbers. **DAX types on the `RETURN`.**
 
-**If your run produces a large untranslatable bucket, suspect your run.** Twelve
-`PBIASEngine` measures were once reported untranslatable; all twelve were
-`ALLSELECTED`-triggered, eight of them rankings, and not one exercised a real gap.
-`ALLSELECTED` maps exactly and `RANKX` maps to `calculate: rank()`. Check those two
-mappings before reporting a gap to a customer.
+**If your run produces a large bucket of measures with no answer, suspect your run.**
+Twelve `PBIASEngine` measures are `ALLSELECTED`-triggered, eight of them rankings,
+and not one exercises a real gap. `ALLSELECTED` maps exactly (bare, or as a ranking
+scope) and `RANKX` maps to `calculate: rank()`. Check those two mappings before
+reporting a gap to a customer.
 
 ## Translation Notes That Still Bite
 
@@ -246,7 +265,10 @@ mappings before reporting a gap to a customer.
 **The `BLANK()` caveat.** DAX treats blank as zero in addition: `BLANK() + 1` is `1`. Malloy and SQL propagate null: `null + 1` is `null`. Any measure that sums or subtracts other measures can diverge wherever one side is empty. Wrap with `??` where the DAX relied on it, and validate a filter context where one term has no rows. The idiom `[Some Measure] + 0`, common in real models, is exactly this reliance written out.
 
 **`EARLIER` / `EARLIEST`** are row-context constructs with no equivalent. These are
-the one shape with no recipe: ask what the number means and rewrite the intent.
+the one shape with no recipe, routed `NR` and shown in the classifier's "No recipe"
+column, in neither the divergent nor the stopgap count. Across the fifty-model corpus
+it is 0 measures and 1 calculated column. Ask what the number means and rewrite the
+intent.
 
 ## Reporting
 
@@ -274,7 +296,8 @@ python3 scripts/classify_measures.py <model>/definition --functions
 python3 scripts/classify_measures.py --json measures.json      # the .pbix path
 ```
 
-The script needs `definition/tables/*.tmdl` **and** `definition/relationships.tmdl`.
+The script needs `definition/tables/*.tmdl`. `definition/relationships.tmdl` is
+optional, but without it step 0's relationship flags are skipped and the script says so.
 On the `.pbix` path there is no TMDL at all, so `--json` takes extracted records;
 supply `columns[]` with their `dataType` or step 1 under-detects labels, and
 `relationships[]` or step 0 is skipped entirely. The script reports which of those

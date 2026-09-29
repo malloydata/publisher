@@ -41,7 +41,7 @@ From `definition/model.tmdl` (or the BIM equivalent):
 
 The **marked date table** is a table property rather than a model one: look for `dataCategory: Time` under `tables/`. Time intelligence measures depend on it existing.
 
-**Inventory calculation groups here, under `tables/` with a `calculationGroup` block.** One of them rewrites every measure it applies to at query time, so a model that has them is a different scoping conversation than one that does not. They are untranslatable (see `translate-measures.md`), and finding that out after translating measures individually wastes the effort.
+**Inventory calculation groups here, under `tables/` with a `calculationGroup` block.** One of them rewrites every measure it applies to at query time, so a model that has them is a different scoping conversation than one that does not. They route to `S5` (`cookbook-structure.md#s5`), a stopgap: working Malloy at a stated cost, decided per group rather than per measure, and finding that out after translating measures individually wastes the effort. `classify_measures.py <model>/definition --functions` lists every DAX function used with counts, so `SELECTEDMEASURE` in that output is a quick check for whether a model has any.
 
 From `definition/relationships.tmdl`, capture every relationship. This is the whole join graph in one file and it is the highest-value thing in the export. For each: from column, to column, cardinality both sides, `crossFilteringBehavior`, and `isActive`.
 

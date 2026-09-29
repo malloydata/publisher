@@ -140,6 +140,8 @@ role Restricted
 
 `metadataPermission` / `columnPermission` set to `none` is a real restriction, unlike `isHidden`. **That** is what maps to `private:` / `internal:`. A role reader that only looks at `tablePermission` filter expressions drops OLS silently, which is a permission removed without anyone deciding to remove it.
 
+`classify_measures.py` parses row filters only. A role that carries object-level security and no row filter appears in its report as a **Not parsed** line rather than as a row, and a role that carries both is listed for its row filter alone, so read every role file for OLS yourself.
+
 A column hidden merely with `isHidden` and no OLS was never actually protected in Power BI. The migration is when someone should hear that.
 
 **Perspectives** are a curated subset of the model someone already thought about. They are the best available evidence for what each audience needs and are worth reading before proposing access modifiers.

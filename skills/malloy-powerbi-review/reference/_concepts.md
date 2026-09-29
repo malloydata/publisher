@@ -99,7 +99,7 @@ A Power BI relationship is declared once at model level, not on either table. `f
 | `USERELATIONSHIP(...)` | a second join path | Not a gap: name every role instead of switching between them. `cookbook-structure.md#s1` |
 | `CROSSFILTER(..., BOTH)` | **flag** | Sets filter direction inside one measure, so it leaves no trace in `relationships.tmdl`. `cookbook-structure.md#s3` |
 | `FILTER(T, cond)` as a `CALCULATE` argument | depends | A table filter, not a column filter; see `translate-measures.md` |
-| `EARLIER` / `EARLIEST` | **flag** | Row-context construct with no equivalent |
+| `EARLIER` / `EARLIEST` | **no recipe** (`NR`) | Row-context construct with no equivalent; ask what the number means and rewrite the intent |
 | `RANKX`, `TOPN` | `calculate: rank()` in a query | Not a measure, but not a gap either. `rank()` orders by any expression, independently of the query's own ordering. `cookbook-filter-context.md#fc6` |
 | `SUMX(FILTER(T, cond), expr)` | `sum(expr) { where: cond }`, with the `FILTER` caveat | Only a context transition if a measure reference appears inside; see `translate-measures.md` |
 | `GENERATESERIES` parameter table + `SELECTEDVALUE` | `given:` | A disconnected what-if slicer is a runtime value. `cookbook-structure.md#s4` |
@@ -129,7 +129,7 @@ Every one of these is a **rewrite, not a transcription**. They depend on a table
 | `SAMEPERIODLASTYEAR(Date[Date])` | a filtered aggregate per side, over named ranges | `cookbook-time.md#t2` |
 | `DATEADD(Date[Date], -1, MONTH)`, `PREVIOUSMONTH`, `PARALLELPERIOD` | `lag()` **where every period is present**; named ranges where not | `lag()` is positional, so it silently compares across a gap. `cookbook-time.md#t3` |
 | `CALENDAR()`, `CALENDARAUTO()` | a generated date source | `cookbook-time.md#t6` |
-| `CLOSINGBALANCEMONTH` and the semi-additive family | **STOPGAP** - a multi-stage pipeline | `last_value` cannot be a measure. `cookbook-time.md#t5` |
+| `CLOSINGBALANCEMONTH` and the semi-additive family (`LASTNONBLANK`, `LASTDATE` and the rest, as a `CALCULATE` filter) | **STOPGAP** - a multi-stage pipeline | `last_value` cannot be a measure. `cookbook-time.md#t5` |
 | densifying a sparse period series | **STOPGAP** - a generated spine plus a join | Nothing in Malloy densifies. `cookbook-time.md#t4` |
 
 ## Functions With No Mapping Yet
@@ -138,7 +138,8 @@ Found in real Microsoft-published TMDL and not covered by any table above. Count
 
 | DAX | Measures | What to do |
 |--------|---:|-------|
-| `FIRSTNONBLANK` / `LASTNONBLANK` | 16 | The semi-additive shape. `cookbook-time.md#t5` |
+| `FIRSTNONBLANK` / `LASTNONBLANK` | 16 | The semi-additive shape when it is a `CALCULATE` filter (`cookbook-time.md#t5`). None of the 16 is one, so none routes to T5 |
+| `LASTDATE` / `FIRSTDATE` / `ENDOFMONTH` / `STARTOFMONTH` (and the `ENDOF*` / `STARTOF*` family) | 0 | Return a date, not a measure, and the semi-additive use, `CALCULATE([m], LASTDATE(...))`, needs the value as at that date. Malloy has no measure-level equivalent (`last_value` and `first_value` are window functions, legal only in `calculate:`), so it is a multi-stage query, over the T4 spine for the calendar reading. `cookbook-time.md#t5`. As a `DATESINPERIOD` anchor, `LASTDATE` is a period bound and does not route to T5 |
 | `INT` | 15 | `floor()`, or drop it where it only exists to coerce a Boolean to 1/0 |
 | `DATEDIFF` | 11 | `days(a to b)`, `months(a to b)`, and so on. **Not `date_diff`** - that is not a Malloy function (`Unknown function 'date_diff'`), and `(a - b)` on timestamps is not the idiom either |
 | `ISFILTERED` | 11 | Report-layer. The query knows what it grouped by; the measure does not need to |
@@ -147,7 +148,7 @@ Found in real Microsoft-published TMDL and not covered by any table above. Count
 | `HASONEFILTER` / `HASONEVALUE` | 9 / 2 | Report-layer, almost always guarding a label |
 | `ISBLANK` | 8 | `is null`, but check the `BLANK()`-as-zero caveat below |
 | `ISINSCOPE` | 7 | Report-layer. Drop it - see `cookbook-filter-context.md#fc6` |
-| `CALCULATETABLE` | 7 | A filtered table expression; usually collapses into the surrounding query's `where:` |
+| `CALCULATETABLE` | 7 | A filtered table expression; usually collapses into the surrounding query's `where:`. With a Boolean filter argument it overwrites the column's filter like `CALCULATE` does, and routes to `FC1` |
 | `GROUPBY` | 7 | A `group_by:` stage |
 | `VALUES` | 5 | The distinct values of a column; `group_by:` or `count(c)` depending on use |
 | `PERCENTILE.INC` | 5 | No direct equivalent; use the dialect's percentile via `fn!()` |

@@ -82,6 +82,49 @@ the running total just repeats `monthly`.
 `sum_cumulative`, `partition_by` and `order_by` all work with **no experiment
 flag**, despite the upstream docs listing the latter two as experimental.
 
+**Under a date slicer.** A window sees only the rows its stage keeps, so a `where:`
+in the same stage as `sum_cumulative` restarts the running total at the first
+visible period. DAX does not restart: `DATESYTD` and `DATEADD` replace the filter
+on `'Date'[Date]`, so a YTD ignores a slicer on that column, while a slicer on
+another date-table column such as Month or Year stays applied
+(`semantics-cited`, unverified). The fix is a query shape: compute the window over
+the unfiltered source and apply the visible range in a later stage.
+
+```malloy
+run: s -> {
+  group_by: yr, m
+  aggregate: monthly is total
+  calculate:
+    ytd is sum_cumulative(total) { partition_by: yr, order_by: m }
+    prev is lag(total)
+} -> {
+  where: m >= @2024-03-01 and m < @2024-07-01
+  select: yr, m, monthly, ytd, prev
+}
+```
+
+**Verified:** `executed` on Malloy 0.0.427 over DuckDB, where `total` is
+`sum(amount)` on a `daily` table with `amount` equal to the day of the year and
+2024-03-31 and 2024-06-30 missing, under a March to June slicer. For March:
+
+| Shape | `ytd` | `prev` |
+|---|---:|---:|
+| `where:` in the window's stage | 2,265 | null |
+| window first, `where:` in a later stage | 4,095 | 1,334 |
+
+4,095 is the hand arithmetic: January 496 + February 1,334 + March 2,265, and 1,334
+is February's total.
+
+Three limits on the two-stage form:
+
+- Filters on **other** dimensions still belong in the first stage: they narrow what
+  the running total sums, and only the visible-range filter moves out.
+- It is a query shape, not a publishable measure: windows are legal only in
+  `calculate:`. Any layer that injects a date filter into stage 1, such as a host that
+  appends `+ { where: ... }` to a tile, reintroduces the restart.
+- `lag()` is positional, so T3's sparse-period warning still applies; T4's spine is
+  the fix.
+
 ---
 
 ## T2 - Same period last year
@@ -171,6 +214,12 @@ the month *after* it. No error, and the numbers still look like growth rates.
 **What it costs** Correctness the moment a period is missing. `lag()` is positional:
 it reads the previous *row*, and a row only exists where there were sales. Where the
 series can be sparse, use T4 or name the ranges explicitly as in T2.
+
+**Under a date slicer.** Growth needs the period before the first visible one, and
+a `where:` in the window's stage removes it: the first visible row's `lag()` is null.
+Compute `lag()` in a first stage over the unfiltered source and filter to the visible
+range in a later one, as in T1. On the T1 data, March's `prev` is 1,334 (February's
+total) that way and null the other way. The same limits apply.
 
 ---
 
@@ -344,6 +393,22 @@ run: s -> {
 
 October and December are **absent rather than blank** - the `LASTNONBLANK` reading
 again. `CLOSINGBALANCEMONTH` would return a row with BLANK.
+
+**The family, by reading.** The classifier routes these to T5 when one is the
+leading call of a `CALCULATE` filter argument. Anywhere else it is not a closing
+balance: `LASTDATE` as a `DATESINPERIOD` anchor, for instance, is a period bound.
+
+| DAX | Reading | Malloy |
+|---|---|---|
+| `LASTNONBLANK`, `FIRSTNONBLANK` | the last or first date that has a value | the `row_number()` form above (`desc` for last, `asc` for first) |
+| `LASTDATE`, `FIRSTDATE`, `ENDOFMONTH`/`QUARTER`/`YEAR`, `STARTOFMONTH`/`QUARTER`/`YEAR` | the calendar's last or first date, whether or not it has rows | the same form over the T4 spine |
+
+**Verified:** `executed` on Malloy 0.0.427 over DuckDB, on a `daily` table missing
+2024-03-31 and 2024-06-30 with `amount` equal to the day of the year. The
+`row_number()` form partitioned by month returns March 30 and June 29, the
+`LASTNONBLANK` reading. On the spine, March 31 and June 30 come back with balance 0
+where DAX returns BLANK: Malloy's `sum` over the missing joined row is 0. State that gap
+wherever the calendar reading is what the business wants.
 
 **What it costs** Three stages instead of one measure, and the result is a *query*,
 not something the model can publish and every downstream query reuse. Any dashboard

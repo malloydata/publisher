@@ -17,13 +17,15 @@ SPDX-License-Identifier: MIT
 
 ## The migration, end to end
 
-1. **Get the model in text.** Ask for TMDL or PBIP before accepting a `.pbix` (see below). `reference/discover.md` inventories it.
-2. **Carry across what the business already agreed on** - tables, relationships, names, descriptions, visibility. `reference/propose-fields.md`.
-3. **Route every measure, then transpile it from a recipe.** `reference/translate-measures.md` decides where each one goes; the three `cookbook-*.md` files have the worked Malloy. A routing table is not a migration - the recipe is the deliverable.
-4. **Prove the numbers.** Parity at more than one filter context, below. This is what makes the switch safe to recommend rather than merely done.
-5. **Say what changed.** Every divergent measure, every stopgap and its cost, every RLS role that came across weaker. `reference/review-coverage.md` checks nothing was dropped.
+1. **Get the model in text.** Ask for TMDL or PBIP before accepting a `.pbix` (see below). `reference/discover.md` inventories it. *(Workflow Step 1, DISCOVER.)*
+2. **Carry across what the business already agreed on** - tables, relationships, names, descriptions, visibility. `reference/propose-fields.md`. *(Step 4, DEFINE.)*
+3. **Route every measure, then transpile it from a recipe.** `reference/translate-measures.md` decides where each one goes; the three `cookbook-*.md` files have the worked Malloy. A routing table is not a migration - the recipe is the deliverable. *(Step 5, BUILD.)*
+4. **Prove the numbers.** Parity at more than one filter context, below. This is what makes the switch safe to recommend rather than merely done. *(Steps 5 and 7.)*
+5. **Say what changed.** Every divergent measure, every stopgap and its cost, every RLS role that came across weaker. `reference/review-coverage.md` checks nothing was dropped; `rls-roles.md` and `document.md` finish the job. *(Steps 7 to 9.)*
 
-The user's question is "can I move off Power BI and still trust my numbers?" Steps 3 and 4 are the answer; the rest is bookkeeping.
+`Step N` here and in the reference files is the numbering of the shared modeling workflow (`malloy-modeling`); the five items above are where this migration's stages land in it.
+
+The user's question is "can I move off Power BI and still trust my numbers?" Items 3 and 4 are the answer; the rest is bookkeeping.
 
 ## When to Use
 
@@ -147,13 +149,14 @@ This is why a migration is fast: the customer is not re-deciding any of it.
 ## What to Flag for User Decision
 
 - **Any measure routed to a divergent recipe.** This is the flag that matters most and it must reach the user, never be resolved quietly. Say which filter context makes it diverge.
+- **Any measure with no recipe** (`EARLIER` / `EARLIEST`, route `NR`). It is neither divergent nor a stopgap, and it gets no Malloy from this skill: ask what the number means and rewrite the intent with the user.
 - **Storage mode.** DirectQuery and live-connection models contain no data; the model still translates but nothing can be validated locally.
 - **Bidirectional cross-filtering** (`crossFilteringBehavior: bothDirections`, or `CROSSFILTER(..., BOTH)` inside a measure). It is a model-level switch with a model-wide blast radius - it reaches 111 of the 117 measures in Microsoft's `FabricASEngineAnalytics`, and it is the construct most likely to change a number in a migration - and it is invisible in every measure's DAX. Ask what it was for; `reference/cookbook-structure.md#s3` has the divergence worked out.
 - **Many-to-many relationships**: model the bridge the grain actually has, and name the fan-out out loud (`#s2`).
 - **Inactive relationships** (`isActive: false`): they exist to be switched on by `USERELATIONSHIP` inside a measure. In Malloy they become named join paths (`#s1`), which changes every call site - the measure disappears rather than translating.
 - **Calculated columns and calculated tables**: DAX evaluated at refresh. Decide per object whether it becomes a Malloy dimension, a computed source, or work pushed upstream.
 - **RLS roles that do not fit the gate grammar**: most will not, and a translated role is usually *weaker* than the original unless it sits behind a trusted tier. See `reference/rls-roles.md`.
-- **The four stopgaps**: date spines (`cookbook-time.md#t4`), semi-additive measures (`#t5`), calculation groups (`cookbook-structure.md#s5`) and parent-child hierarchies (`#s6`). All four ship working Malloy at a cost worth stating before the customer discovers it. The router flags the last three; **no DAX function asks for a date spine**, so `#t4` is one you have to recognize yourself, from a report that shows periods with no rows.
+- **The four stopgaps**: date spines (`cookbook-time.md#t4`), semi-additive measures (`#t5`), calculation groups (`cookbook-structure.md#s5`) and parent-child hierarchies (`#s6`). All four ship working Malloy at a cost worth stating before the customer discovers it. The router flags the last three (`#t5` when a semi-additive function is a `CALCULATE` filter); **no DAX function asks for a date spine**, so `#t4` is one you have to recognize yourself, from a report that shows periods with no rows.
 - **Where next month's data comes from**, if the user is lifting data out of a `.pbix`. A snapshot answers today's question and goes stale.
 
 > Power BI, Microsoft and Fabric are trademarks of Microsoft Corporation. This skill is not affiliated with or endorsed by Microsoft.

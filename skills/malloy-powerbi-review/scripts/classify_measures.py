@@ -937,8 +937,8 @@ def overwriting_filter_args(dax: str) -> list:
 
     A Boolean filter argument is shorthand for `FILTER(ALL(col), …)`, so it
     replaces whatever filter the report had on that column. Decided by what the
-    argument is *not*: an earlier version looked for a comparison operator, and
-    so read `NOT ISBLANK(T[c])` and `TREATAS(…)` as harmless.
+    argument is *not*, since a comparison-operator test reads `NOT ISBLANK(T[c])`
+    and `TREATAS(…)` as harmless.
     """
     out = []
     for arg in _filter_args(dax):
@@ -1229,10 +1229,8 @@ def local_routes(m, coltypes, flags, resolve=None):
         add("S6", "parent-child hierarchy")
 
     # A disconnected parameter table read with MAX/MIN/SELECTEDVALUE is a
-    # what-if slicer: a `given:`, not a filter-context problem. The code used to
-    # check only `GENERATESERIES`, which is how the table is *built* - so a
-    # model whose parameter tables are imported rather than generated reported
-    # no what-if parameters at all, though they drove half its measures.
+    # what-if slicer (a `given:`, not a filter-context problem), even when it is
+    # imported rather than built with `GENERATESERIES`.
     if "GENERATESERIES" in fns:
         add("S4", "what-if parameter table")
     elif flags.get("disconnected"):
@@ -1401,9 +1399,7 @@ def classify(measures, coltypes, flags):
 # Report
 # --------------------------------------------------------------------------
 
-# What to call each `kind` in the report. Summing them under one "measures"
-# heading published 1,622 measures for a corpus that held 1,406 - a number a
-# reader has no way to take apart again.
+# Each `kind` gets its own label; one "measures" heading over all kinds inflates the count.
 KIND_LABELS = [
     ("measure", "measures"),
     ("calculation_item", "calculation items"),

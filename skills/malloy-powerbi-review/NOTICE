@@ -9,9 +9,11 @@ Third-party content
 `reference/cookbook-filter-context.md`, section "FC6 - Dynamic top-N driven by a
 slicer", quotes an abridged DAX excerpt of the `Rank_By_Duration` measure from the
 `Top N Selector` table, taken from `Top N Selector.tmdl` in Microsoft's published
-`PBIASEngine` sample model (repository `microsoft/Analysis-Services`).
+`PBIASEngine` sample model (repository
+`microsoft/PowerBI-LogAnalytics-Template-Reports`, commit
+`787064bfc54f26c0af32e7f16b8de504effb8228`).
 
-  File:        Top N Selector.tmdl
+  File:        PBIASEngine/src/SemanticModel/definition/tables/Top N Selector.tmdl
   License:     MIT
   Copyright:   Microsoft Corporation
   Appears in:  reference/cookbook-filter-context.md, FC6

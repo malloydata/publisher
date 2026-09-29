@@ -14,18 +14,18 @@ Four gates, in this order. Each one is a filter on the previous, so the counts b
 1. **Discovery.** GitHub code search for `filename:relationships.tmdl`, `filename:model.tmdl` and `filename:database.tmdl` - three axes rather than one, so a single relevance ranking does not decide the corpus. Union: **1,166 distinct repositories**.
 2. **License, before cloning.** Kept only MIT, Apache-2.0, BSD, ISC, 0BSD, CC0 and Unlicense. Dropped everything else, including every repository with no license file at all - no license means all rights reserved, not permission by default. **923 of the 1,166 dropped here**: 858 with no license file, 40 NOASSERTION, 15 GPL-3.0, 2 AGPL-3.0, and 8 over a 400MB size cap. The unlicensed long tail is most of what a code search returns, and it is the single reason the published number rests on 50 models rather than several hundred.
 3. **Distinctness.** 100 of the 243 surviving repositories were cloned, which was already more distinct models than the target needed. Deduplicating on the SHA-256 of each model's concatenated `tables/*.tmdl` collapsed **52** models that community template repositories republish from each other, leaving 219.
-4. **Substance, then spread.** At least 10 **measures**, counted as measures - not user-defined functions, calculation items or calculated columns, which are DAX but are not measures and were once silently summed with them. 82 of the 219 clear that bar. Those are then capped at **3 models per repository**, so no single author sets the shape of the result, and taken round-robin across repositories in sorted order - deterministic, and it spreads authorship rather than alphabetical luck.
+4. **Substance, then spread.** At least 10 **measures**, counted as measures - not user-defined functions, calculation items or calculated columns, which are DAX but are not measures and must not be summed with them. 82 of the 219 clear that bar. Those are then capped at **3 models per repository**, so no single author sets the shape of the result, and taken round-robin across repositories in sorted order - deterministic, and it spreads authorship rather than alphabetical luck.
 
 **Result: 50 models from 49 repositories** - 47 MIT, 3 Apache-2.0.
 
 ## Re-running it
 
 ```
-git clone --depth 1 https://github.com/<repo> && git -C <repo> checkout <sha>
+git clone --filter=blob:none --no-checkout https://github.com/<repo> && git -C <repo> checkout <sha>
 python3 scripts/classify_measures.py <repo>/<path-to>/definition
 ```
 
-The SHA is the commit each model was read at. A later commit may hold a different model; that is the point of pinning it.
+The SHA is the commit each model was read at. A later commit may hold a different model; that is the point of pinning it. A blobless clone keeps full history, so `checkout` reaches a commit that is not a branch tip, which a `--depth 1` clone cannot. The table gives a 10-character abbreviation: `gh api repos/<repo>/commits/<abbrev> --jq .sha` resolves it to the full SHA, and `git -C <repo> fetch origin <full-sha>` fetches a commit the clone does not have.
 
 ## The models
 
@@ -83,6 +83,17 @@ The SHA is the commit each model was read at. A later commit may hold a differen
 | `InsightfulAnalytics/Deneb` | MIT | `32d6c5a127` | Deneb Template Showcase.SemanticModel | 85 | 27 |
 | `jaquelinesfernandes/JSTechStore` | MIT | `404184ca20` | JSTechStoreBrasil.SemanticModel | 19 | 0 |
 | `JaswanthRamN/Sales-Performance-Revenue-Analytics-Dashboard` | MIT | `a065b13eb0` | SalesPerformance.SemanticModel | 34 | 1 |
+
+## The Microsoft calibration models
+
+`PBIASEngine` and `FabricASEngineAnalytics`, the two models `translate-measures.md` quotes by name, are not among the 50: they are the worked calibration. Both live in `microsoft/PowerBI-LogAnalytics-Template-Reports` (MIT), read at commit `787064bfc54f26c0af32e7f16b8de504effb8228` (2024-06-13):
+
+| Model | Path |
+|---|---|
+| `PBIASEngine` | `PBIASEngine/src/SemanticModel/definition` |
+| `FabricASEngineAnalytics` | `FabricASEngineAnalytics/src/SemanticModel/definition` |
+
+`Top N Selector.tmdl`, the source of the DAX excerpt in `cookbook-filter-context.md#fc6`, is `PBIASEngine/src/SemanticModel/definition/tables/Top N Selector.tmdl`.
 
 ## What the corpus is not
 

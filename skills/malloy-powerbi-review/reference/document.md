@@ -41,9 +41,9 @@ Where a description makes a checkable claim and a connection exists, check it. A
 
 Do not silently carry across a description you have reason to doubt. Flag it.
 
-## 4. Descriptions on Untranslated Objects
+## 4. Descriptions on Objects With No Recipe
 
-A measure that did not translate - rare; `EARLIER`/`EARLIEST` is the one shape with no recipe - still has a description explaining what the business wanted. That text is the specification for whatever replaces it. Keep it with the intent list from `translate-measures.md` rather than dropping it with the measure.
+A measure with no recipe (route `NR`; `EARLIER`/`EARLIEST` is the one shape, and it is rare) still has a description explaining what the business wanted. That text is the specification for whatever replaces it. Keep it with the intent list from `translate-measures.md` rather than dropping it with the measure.
 
 ## 5. Output
 
