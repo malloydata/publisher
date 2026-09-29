@@ -383,6 +383,7 @@ describe("GivenInput: the whole type x control matrix", () => {
    // through every branch and renders nothing at all.
    const widget = () => {
       if (screen.queryAllByTestId("time-range").length) return "timerange";
+      if (screen.queryAllByTestId("boolean-filter").length) return "boolfilter";
       if (screen.queryAllByRole("combobox").length) return "picker";
       if (screen.queryAllByRole("slider").length) return "slider";
       if (screen.queryAllByRole("checkbox").length) return "checkbox";
@@ -432,6 +433,7 @@ describe("GivenInput: the whole type x control matrix", () => {
          "timestamptz",
          "filter<number>",
          "filter<date>",
+         "filter<boolean>",
       ]) {
          expect(show(type, "select")).not.toBe("picker");
       }
@@ -503,6 +505,7 @@ describe("GivenInput: the whole type x control matrix", () => {
       "filter<number>",
       "filter<date>",
       "filter<timestamp>",
+      "filter<boolean>",
       "array<string>",
       "record",
       undefined,
@@ -761,6 +764,69 @@ describe("GivenInput: a date renders its UTC day, whatever zone the runner is in
          );
       },
    );
+});
+
+describe("GivenInput: the true/false dropdown for a boolean filter", () => {
+   const given: Given = { name: "FLAG", type: "filter<boolean>" };
+   const dropdown = () =>
+      screen
+         .getAllByRole("combobox")
+         .find((el) => el.tagName !== "INPUT") as HTMLElement;
+   const widget = (value: GivenValue | undefined) => {
+      cleanup();
+      render(<GivenInput given={given} value={value} onChange={() => {}} />);
+      return screen.queryAllByTestId("boolean-filter").length
+         ? "dropdown"
+         : "text";
+   };
+
+   it("offers true and false, and commits the one picked", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput given={given} value={undefined} onChange={onChange} />,
+      );
+      fireEvent.mouseDown(dropdown());
+      expect(
+         screen.getAllByRole("option").map((option) => option.textContent),
+      ).toEqual(["true", "false"]);
+      fireEvent.click(screen.getByRole("option", { name: "false" }));
+      expect(onChange).toHaveBeenCalledWith("false");
+   });
+
+   it("shows an unset given as its default, with no revert", () => {
+      render(
+         <GivenInput
+            given={{ ...given, default: "f'true'" }}
+            value={undefined}
+            onChange={() => {}}
+         />,
+      );
+      expect(dropdown().textContent).toBe("true");
+      expect(clearButtons()).toHaveLength(0);
+   });
+
+   it("shows a picked value, however it is spelled, and reverts it", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<GivenInput given={given} value=" TRUE " onChange={onChange} />);
+      expect(dropdown().textContent).toBe("true");
+      fireEvent.click(clearButtons()[0]);
+      expect(onChange).toHaveBeenCalledWith(null);
+   });
+
+   it("shows the empty filter as Any, an override it can revert", () => {
+      render(<GivenInput given={given} value="" onChange={() => {}} />);
+      expect(dropdown().textContent).toBe("Any");
+      expect(clearButtons()).toHaveLength(1);
+   });
+
+   it("leaves any other filter in the text box, as written", () => {
+      // `=false` leaves null rows out and `false` keeps them, so showing it as
+      // "false" would claim a filter that is not running.
+      for (const value of ["=false", "not true", "null", "asdf"]) {
+         expect(widget(value)).toBe("text");
+      }
+      expect(widget("false")).toBe("dropdown");
+   });
 });
 
 describe("GivenInput: the time-range control for a date filter", () => {
