@@ -309,6 +309,17 @@ That asymmetry is the argument for one shared artifact over one per tenant. Both
 cost; the per-tenant arrangement also has one build, one schedule and one freshness story *per
 tenant*, all of which can drift apart.
 
+**Build memory follows the table's width times the partitions in flight, not its row count.** The
+build is DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager and
+charges each appender one vector per column for every partition it has met. So the publisher asks the
+warehouse to return the rows **in partition order** (the compiled SELECT is wrapped in
+`SELECT * FROM (...) ORDER BY <partition columns>`, sorted by the warehouse rather than by DuckDB so
+the read stays one stream), and sets `partitioned_write_flush_threshold` on the build session
+(`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`, default 8192 rows) so a thread flushes long before
+DuckDB's own half-million-row default. Without both, a 308-partition, 120-column source fails against a
+768MB `memory_limit` before or shortly after its first rows; with both it builds in seconds. The sort is
+the warehouse's cost: on a large source it is one more pass over the result, on the partition columns.
+
 `partition=` is part of the source's content address, so changing it rebuilds the table. A source
 that declares none addresses exactly as it did before the key existed, so nothing already
 materialized is disturbed by this feature.

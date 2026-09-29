@@ -31,6 +31,27 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
+
+A `#@ persist partition=` build of a wide source with many partition values failed against the
+build session's `memory_limit` — `Out of Memory Error: failed to pin block of size 256.0 KiB` —
+before or shortly after its first rows, where the same source built unpartitioned. The build is
+DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager, charges each
+appender one vector per column for every partition it has met, and flushes nothing until it has
+appended 524,288 rows. Rows arriving interleaved across partitions brought every partition into
+that set at once.
+
+Two changes, and both are needed. The passthrough SELECT of a partitioned build is now wrapped in
+`SELECT * FROM (...) ORDER BY <partition columns>`, so the **warehouse** returns the rows in
+partition order and the build holds one or two partitions at a time; sorted there rather than in
+DuckDB so the read stays one stream. And the build session sets
+`partitioned_write_flush_threshold`, new `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD` (rows,
+default `8192`, `off` to leave DuckDB's default). Measured on a 122-column, 616k-row Postgres
+source into 308 partitions at `768MB`: unsorted fails at any threshold, sorted fails at DuckDB's
+default, sorted with the bound completes in 11 s. An unpartitioned build is byte-identical to what
+it was; a partitioned build's read now carries the ORDER BY, which on a large source is one more
+pass on the warehouse.
+
 ## [Unreleased] — /status names the server version, and says why it is empty
 
 `GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and

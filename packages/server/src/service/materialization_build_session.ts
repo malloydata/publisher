@@ -14,6 +14,7 @@ import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError, MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import { getPartitionedWriteFlushThreshold } from "../config";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
@@ -116,6 +117,56 @@ export function wrapPassthrough(
          );
       }
    }
+}
+
+/**
+ * Feed a partitioned build in partition order, sorted by the WAREHOUSE.
+ *
+ * DuckDB's partitioned COPY -- which is what a DuckLake insert into a laid-out
+ * table plans -- charges each appender thread one vector per column for every
+ * partition it has met, at first sight, before any row of it is flushed. Rows
+ * that arrive in partition order keep that set at one or two partitions; rows
+ * that arrive interleaved bring every partition into it within the first few
+ * chunks, and a 308-partition, 120-column insert then fails against the session's
+ * `memory_limit` before it has flushed anything, at any flush threshold.
+ *
+ * Sorted on the warehouse, NOT here, because a DuckDB-side ORDER BY makes the
+ * insert parallel -- a sorted result is read by every thread -- and each of those
+ * threads then meets every partition again. The passthrough read is one stream,
+ * so an ordered stream stays ordered into the sink. Wrapped as a subselect so the
+ * compiled SELECT is not parsed: whatever it is, `SELECT * FROM (...) t ORDER BY`
+ * is a statement every supported warehouse accepts.
+ *
+ * Quoted for the SOURCE dialect, which is not the storage target's: the columns
+ * are the source's public projection names, which the compiled SELECT already
+ * emits under the warehouse's own quoting. Only BigQuery differs (backticks).
+ */
+export function orderByPartitionColumns(
+   buildSQL: string,
+   partitionColumns: readonly string[],
+   dialect: string,
+): string {
+   if (partitionColumns.length === 0) {
+      return buildSQL;
+   }
+   const order = partitionColumns
+      .map((name) => quoteIdentifier(name, dialect))
+      .join(", ");
+   // A compiled SELECT carries no terminator, but one would end the subselect
+   // early, so it is not left to chance.
+   const inner = buildSQL.replace(/[\s;]+$/, "");
+   return `SELECT * FROM (${inner}) AS partitioned_build ORDER BY ${order}`;
+}
+
+/**
+ * The identifier-quoting dialect of a passthrough source, keyed the way
+ * {@link quoteIdentifier} expects (Malloy dialect names): only BigQuery
+ * backticks; Postgres and Snowflake double-quote.
+ */
+export function passthroughQuotingDialect(
+   sourceType: FederatedSourceType,
+): string {
+   return sourceType === "bigquery" ? "standardsql" : sourceType;
 }
 
 /**
@@ -932,7 +983,11 @@ export async function buildSourceIntoStorage(params: {
          session,
          sourceType,
          federated.handle,
-         buildSQL,
+         orderByPartitionColumns(
+            buildSQL,
+            params.partitionColumns ?? [],
+            passthroughQuotingDialect(sourceType),
+         ),
          queryMetadata,
       );
 
@@ -1142,10 +1197,19 @@ export async function buildDownstreamIntoStorage(params: {
          `${destinationName}.${physicalTableName}`,
          STORAGE_TARGET_DIALECT,
       );
+      // Ordered here, in DuckDB, because the parent IS DuckDB-side: there is no
+      // warehouse to sort on. A sorted result is read in parallel, so each
+      // appender still meets every partition once per flush interval -- narrower
+      // than the interleaved case by the flush threshold, not by the partition
+      // count, and the residual a wide chained source is left with.
       const schema = await createTableAndDescribe(
          session,
          target,
-         sql,
+         orderByPartitionColumns(
+            sql,
+            params.partitionColumns ?? [],
+            STORAGE_TARGET_DIALECT,
+         ),
          params.partitionColumns ?? [],
       );
 
@@ -1440,6 +1504,17 @@ export async function createTableAndDescribe(
    const columns = partitionColumns
       .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
       .join(", ");
+   // Before the transaction, and only on this path: it bounds the rows each
+   // appender thread holds before flushing them to the partition files, which
+   // is the term an ordered stream leaves. See getPartitionedWriteFlushThreshold
+   // for the measurement; the session is this build's own instance, so the
+   // setting reaches nothing else.
+   const flushThreshold = getPartitionedWriteFlushThreshold();
+   if (flushThreshold !== undefined) {
+      await session.runSQL(
+         `SET partitioned_write_flush_threshold = ${flushThreshold}`,
+      );
+   }
    let schema: WireColumn[];
    await session.runSQL("BEGIN TRANSACTION");
    try {

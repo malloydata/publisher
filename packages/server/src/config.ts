@@ -387,6 +387,49 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
 };
 
 /**
+ * How many rows each appender thread buffers before a partitioned storage
+ * build flushes them to the partition files (`partitioned_write_flush_threshold`,
+ * `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`). Default 8192 rows; `off` leaves
+ * DuckDB's own 524,288, which the setting exists to avoid.
+ *
+ * A `#@ persist partition=` build is DuckDB's partitioned COPY, and that operator
+ * buffers rows per partition in a column-data collection INSIDE the buffer
+ * manager -- so unlike the two DuckLake bounds above, `memory_limit` does see
+ * this term, and the failure reads `Out of Memory Error: failed to pin block`
+ * against the session's own limit rather than a container kill. Two things drive
+ * it. Every partition a thread meets costs it one vector per column up front, at
+ * first sight, before a single row of it is flushed; and nothing is flushed
+ * until the thread has appended this many rows across all its partitions. At
+ * DuckDB's default a 122-column table sorted by its partition column still held
+ * half a million rows before the first flush and died at 768MB; at 2,048 and at
+ * 20,000 the same insert completed (14.6 s and 24.6 s, 308 partitions).
+ *
+ * Rows rather than bytes because that is the unit DuckDB exposes; the byte-based
+ * row-group bound governs the Parquet writer downstream of this buffer and does
+ * not reach it. Per THREAD, so a parallel appender multiplies it.
+ *
+ * This bounds the second term only. The first -- one vector per column for every
+ * partition in flight -- is bounded by feeding the build in partition order, which
+ * {@link orderByPartitionColumns} in the build session does on the warehouse side
+ * so the stream stays single-threaded. Unsorted, a 308-partition, 120-column
+ * insert fails before flushing anything at any threshold; sorted at the default it
+ * fails after ~0.5M rows; sorted with this bound it completes. Neither half is
+ * sufficient alone.
+ */
+export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
+
+export const getPartitionedWriteFlushThreshold = (): number | undefined => {
+   const raw = process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
+   if (raw === undefined || raw === "") {
+      return DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD;
+   }
+   if (raw.toLowerCase() === "off") {
+      return undefined;
+   }
+   return Number(raw);
+};
+
+/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -462,6 +505,20 @@ export function assertDuckDBResourceConfig(): void {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +
             `size like "256MB", got "${targetFileSizeBytes}"`,
+      );
+   }
+   const flushThreshold =
+      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
+   if (
+      flushThreshold !== undefined &&
+      flushThreshold !== "" &&
+      flushThreshold.toLowerCase() !== "off" &&
+      !/^[1-9]\d*$/.test(flushThreshold)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
+            `positive row count like "8192" (or "off" to leave DuckDB's default), ` +
+            `got "${flushThreshold}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();

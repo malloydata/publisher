@@ -320,6 +320,71 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
    });
 });
 
+describe("buildSourceIntoStorage feeds a partitioned build in partition order", () => {
+   // The ordering is the warehouse's job, so it has to reach the passthrough
+   // read as part of the SQL the warehouse runs — not be applied on the DuckDB
+   // side, where a sort makes the insert parallel and every thread meets every
+   // partition again. Proved on the SQL the read receives; the memory effect is
+   // pinned against a real DuckLake in materialization_partitioned_build.spec.
+   function harness(partitionColumns: string[] | undefined) {
+      const received: string[] = [];
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {},
+         }),
+         read: async (_session, _type, _handle, buildSQL) => {
+            received.push(buildSQL);
+            return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
+         },
+      };
+      const dir = mkdtempSync(join(tmpdir(), "partition-order-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+         buildSQL: "SELECT 1 AS org_id",
+         physicalTableName: "t",
+         environmentPath: dir,
+         partitionColumns,
+         deps,
+      };
+      return { params, dir, received };
+   }
+
+   it("orders the warehouse read by the partition columns", async () => {
+      const h = harness(["org_id"]);
+      try {
+         // The plain-DuckDB file destination cannot take a layout, so the build
+         // fails at the ALTER — after the read has been issued, which is the
+         // statement this test is about.
+         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
+            /PARTITIONED BY/,
+         );
+         expect(h.received).toEqual([
+            'SELECT * FROM (SELECT 1 AS org_id) AS partitioned_build ORDER BY "org_id"',
+         ]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("hands an unpartitioned build's SQL through verbatim", async () => {
+      const h = harness(undefined);
+      try {
+         await buildSourceIntoStorage(h.params);
+         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+});
+
 // Skipped on Windows: these tests seed the parent table via one DuckDBConnection
 // to a plain-DuckDB *file*, then buildDownstreamIntoStorage ATTACHes the SAME
 // file in the same process. On Windows, DuckDB keeps an exclusive/cached handle

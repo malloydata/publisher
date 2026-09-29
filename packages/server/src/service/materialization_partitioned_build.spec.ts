@@ -8,11 +8,15 @@
 // lives, and against a real DuckLake, which is the only thing that can show the
 // files actually separated.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createTableAndDescribe } from "./materialization_build_session";
+import {
+   createIsolatedBuildSession,
+   createTableAndDescribe,
+   orderByPartitionColumns,
+} from "./materialization_build_session";
 
 const ROWS = `SELECT * FROM (VALUES (1,7,'a'),(2,9,'b'),(1,8,'c')) AS t(org_id, user_id, s)`;
 
@@ -45,6 +49,10 @@ describe("createTableAndDescribe: statements issued", () => {
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
       expect(sql).toEqual([
+         // Before the transaction, on this path only: the rows each appender
+         // thread holds before flushing to the partition files. DuckDB's own
+         // 524,288 is what a wide, many-partition insert dies on.
+         "SET partitioned_write_flush_threshold = 8192",
          "BEGIN TRANSACTION",
          `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS}) WITH NO DATA`,
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id")',
@@ -60,7 +68,7 @@ describe("createTableAndDescribe: statements issued", () => {
    it("keeps the author's column order, which is the directory nesting", async () => {
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id", "s"]);
-      expect(sql[2]).toBe(
+      expect(sql[3]).toBe(
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id", "s")',
       );
    });
@@ -88,6 +96,171 @@ describe("createTableAndDescribe: statements issued", () => {
       expect(issued.filter((q) => q.startsWith("DROP"))).toEqual([]);
       expect(issued.filter((q) => q.startsWith("INSERT"))).toEqual([]);
    });
+});
+
+describe("createTableAndDescribe: the flush threshold", () => {
+   afterEach(() => {
+      delete process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD;
+   });
+
+   it("issues the configured value", async () => {
+      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "2048";
+      const { conn, sql } = recorder();
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
+      expect(sql[0]).toBe("SET partitioned_write_flush_threshold = 2048");
+   });
+
+   it("issues nothing for `off`, leaving DuckDB's default", async () => {
+      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
+      const { conn, sql } = recorder();
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
+      expect(sql[0]).toBe("BEGIN TRANSACTION");
+      expect(sql.filter((q) => q.startsWith("SET"))).toEqual([]);
+   });
+
+   it("never reaches an unpartitioned build", async () => {
+      // The setting only governs a partitioned COPY, and the unpartitioned
+      // CTAS is promised byte-identical to what it was.
+      const { conn, sql } = recorder();
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS);
+      expect(sql.filter((q) => q.startsWith("SET"))).toEqual([]);
+   });
+});
+
+describe("orderByPartitionColumns: the warehouse feeds the build in partition order", () => {
+   it("leaves an unpartitioned build's SQL untouched", () => {
+      expect(orderByPartitionColumns("SELECT 1", [], "postgres")).toBe(
+         "SELECT 1",
+      );
+   });
+
+   it("wraps rather than parses, ordered by the columns in the author's order", () => {
+      expect(
+         orderByPartitionColumns(
+            "SELECT a, b FROM t",
+            ["org_id", "day"],
+            "postgres",
+         ),
+      ).toBe(
+         'SELECT * FROM (SELECT a, b FROM t) AS partitioned_build ORDER BY "org_id", "day"',
+      );
+   });
+
+   it("quotes for the given dialect: backticks on BigQuery, double quotes elsewhere", () => {
+      expect(
+         orderByPartitionColumns("SELECT 1", ["org_id"], "standardsql"),
+      ).toBe("SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY `org_id`");
+      expect(orderByPartitionColumns("SELECT 1", ["org_id"], "snowflake")).toBe(
+         'SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY "org_id"',
+      );
+   });
+
+   it("drops a trailing terminator, which would end the subselect early", () => {
+      expect(orderByPartitionColumns("SELECT 1;\n", ["org_id"], "duckdb")).toBe(
+         'SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY "org_id"',
+      );
+   });
+
+   it("escapes a quote inside a column name rather than breaking the statement", () => {
+      expect(orderByPartitionColumns("SELECT 1", ['a"b'], "postgres")).toBe(
+         'SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY "a""b"',
+      );
+   });
+});
+
+describe("a wide, many-partition insert at a low memory limit", () => {
+   // The failure this change exists for, reproduced on a real DuckLake at a
+   // memory limit small enough to fail in seconds: DuckDB's partitioned COPY
+   // charges each appender thread one vector per column for every partition it
+   // has met, at first sight, and flushes nothing until it has appended
+   // partitioned_write_flush_threshold rows. Each assertion below fails on the
+   // behaviour before this change: unsorted input dies before a row is flushed
+   // at ANY threshold, and sorted input dies at DuckDB's default threshold.
+   const PARTITIONS = 300;
+   const ROWS_PER_PARTITION = 2000;
+   const COLUMNS = 40;
+   const columns = Array.from({ length: COLUMNS }, (_, i) =>
+      i % 2 === 0
+         ? `md5((r + ${i})::VARCHAR) AS c${i}`
+         : `(r * ${i + 1})::BIGINT AS c${i}`,
+   ).join(", ");
+   const unsorted =
+      `SELECT (r % ${PARTITIONS})::BIGINT AS org_id, ${columns} ` +
+      `FROM range(${PARTITIONS * ROWS_PER_PARTITION}) t(r)`;
+   const sorted = `${unsorted} ORDER BY org_id`;
+
+   // Each case on its OWN instance, as a production build is: the memory limit
+   // and thread count below must not leak into the pooled in-memory instance the
+   // other suites share, and the lake alias must not collide with theirs.
+   async function lake(): Promise<{
+      conn: DuckDBConnection;
+      dispose: () => Promise<void>;
+   }> {
+      const dir = mkdtempSync(join(tmpdir(), "ducklake-partition-memory-"));
+      const { session: conn, dispose } = createIsolatedBuildSession(
+         "partition_memory_test",
+      );
+      await conn.runSQL("INSTALL ducklake");
+      await conn.runSQL("LOAD ducklake");
+      await conn.runSQL(
+         `ATTACH 'ducklake:${join(dir, "catalog.ducklake")}' AS lake ` +
+            `(DATA_PATH '${join(dir, "data")}/')`,
+      );
+      await conn.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+      await conn.runSQL("SET preserve_insertion_order=false");
+      // One appender, as the production passthrough read is one stream.
+      await conn.runSQL("SET threads=1");
+      await conn.runSQL("SET memory_limit='192MB'");
+      return { conn, dispose };
+   }
+
+   afterEach(() => {
+      delete process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD;
+   });
+
+   it("unsorted input fails before a row is flushed, whatever the threshold", async () => {
+      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "2048";
+      const { conn, dispose } = await lake();
+      try {
+         await expect(
+            createTableAndDescribe(conn, "lake.t", unsorted, ["org_id"]),
+         ).rejects.toThrow(/Out of Memory/);
+      } finally {
+         await dispose();
+      }
+   }, 120000);
+
+   it("sorted input fails at DuckDB's own threshold", async () => {
+      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
+      const { conn, dispose } = await lake();
+      try {
+         await expect(
+            createTableAndDescribe(conn, "lake.t", sorted, ["org_id"]),
+         ).rejects.toThrow(/Out of Memory/);
+      } finally {
+         await dispose();
+      }
+   }, 120000);
+
+   it("sorted input with the bound completes, one directory per partition", async () => {
+      const { conn, dispose } = await lake();
+      try {
+         const schema = await createTableAndDescribe(conn, "lake.t", sorted, [
+            "org_id",
+         ]);
+         expect(schema).toHaveLength(COLUMNS + 1);
+         const count = await conn.runSQL(`SELECT count(*) AS n FROM lake.t`);
+         expect(Number((count.rows as { n: unknown }[])[0].n)).toBe(
+            PARTITIONS * ROWS_PER_PARTITION,
+         );
+         const files = await conn.runSQL(
+            `SELECT count(DISTINCT data_file) AS n FROM ducklake_list_files('lake', 't')`,
+         );
+         expect(Number((files.rows as { n: unknown }[])[0].n)).toBe(PARTITIONS);
+      } finally {
+         await dispose();
+      }
+   }, 120000);
 });
 
 describe("createTableAndDescribe: against a real DuckLake", () => {
@@ -169,9 +342,12 @@ describe("createTableAndDescribe: against a real DuckLake", () => {
       // and a failed `CREATE OR REPLACE` leaves the old table alone whether or
       // not there is a transaction — so it would assert nothing. This one types
       // cleanly and raises a conversion error partway through, once the INSERT
-      // has already written files.
+      // has already written files. A few partition values rather than one per
+      // row: the build flushes every partitioned_write_flush_threshold rows, and
+      // a partition per row turns each flush into thousands of file opens, which
+      // is the many-small-files layout the docs warn off, not this test's point.
       const FAILS_MIDWAY =
-         "SELECT i AS org_id, " +
+         "SELECT i % 3 AS org_id, " +
          "CASE WHEN i < 900000 THEN 'a' ELSE CAST(CAST('zz' AS INT) AS VARCHAR) END AS s " +
          "FROM range(1000000) t(i)";
       await expect(
