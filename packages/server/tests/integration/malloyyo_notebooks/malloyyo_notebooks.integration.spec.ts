@@ -330,6 +330,39 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
             expect(problems.filter((p) => p.severity === "error")).toEqual([]);
          });
 
+         it("reads the appended text at append scope, so a fragment onto a refused notebook still fails", async () => {
+            const append = async (notebook: string) => {
+               const res = await fetch(
+                  pkgUrl(PLAIN, `/models/${notebook}/compile`),
+                  {
+                     method: "POST",
+                     headers: { "Content-Type": "application/json" },
+                     body: JSON.stringify({
+                        source: "run: orders -> kpis",
+                        scope: "append",
+                     }),
+                  },
+               );
+               expect(res.status).toBe(200);
+               return (
+                  (await res.json()) as {
+                     problems: {
+                        severity: string;
+                        message: string;
+                        model?: string;
+                     }[];
+                  }
+               ).problems.filter((p) => p.severity === "error");
+            };
+            expect(await append("notebooks/revenue_review.malloy")).toEqual([]);
+            expect(await append(REFUSED)).toEqual([
+               expect.objectContaining({
+                  model: REFUSED,
+                  message: expect.stringContaining("Line 7:"),
+               }),
+            ]);
+         });
+
          it("is counted at discovery as refused", async () => {
             expect(
                await harness.collectCounter(
@@ -420,6 +453,42 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
             body: JSON.stringify({ queryName: "own_cells_query" }),
          });
          expect(res.status).toBe(404);
+      });
+
+      it("refuses a cell over its own named query over a hidden source, and withholds its queryInfo", async () => {
+         expect((await runCell(SURFACE, CELLS, 11)).status).toBe(404);
+         const { body } = await getJson<{ notebookCells?: Cell[] }>(
+            pkgUrl(SURFACE, `/notebooks/${CELLS}`),
+         );
+         expect(body.notebookCells?.[11]).toMatchObject({
+            kind: "query",
+            text: "run: hidden_q",
+         });
+         expect(body.notebookCells?.[11].queryInfo).toBeUndefined();
+         // Positive control: the cell over a curated source keeps its queryInfo.
+         expect(body.notebookCells?.[5].queryInfo).toBeDefined();
+      });
+
+      it("answers 403 on a locked cell without the role, and runs it with the role", async () => {
+         expect((await runCell(SURFACE, CELLS, 13)).status).toBe(403);
+         expect(
+            (
+               await runCell(SURFACE, CELLS, 13, {
+                  givens: { ROLES: ["viewer"] },
+               })
+            ).status,
+         ).toBe(403);
+         const allowed = await runCell(SURFACE, CELLS, 13, {
+            givens: { ROLES: ["admin"] },
+         });
+         expect(allowed.status).toBe(200);
+         expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
+         expect(
+            await harness.collectCounter(
+               "publisher_notebook_cell_executions_total",
+               { format: "malloy", kind: "query", outcome: "denied" },
+            ),
+         ).toBeGreaterThanOrEqual(2);
       });
    });
 });

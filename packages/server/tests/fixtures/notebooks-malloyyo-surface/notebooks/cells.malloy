@@ -21,3 +21,7 @@ run: orders -> { where: region ~ $REGION; aggregate: order_count }
 query: hidden_q is hidden -> { aggregate: secret_total }
 
 run: hidden_q
+
+import "../models/locked.malloy"
+
+run: locked -> { aggregate: n }

@@ -124,6 +124,18 @@ describe("served notebook cells", () => {
       ).toEqual(["order_month", "total_amount"]);
    });
 
+   it("gives each of several query cells the schema of its own run", async () => {
+      const raw = await model("notebooks/tagged_runs.malloy").getNotebook();
+      const columns = (index: number) =>
+         (
+            JSON.parse(raw.notebookCells?.[index].queryInfo ?? "{}") as {
+               schema?: { fields?: { name: string }[] };
+            }
+         ).schema?.fields?.map((f) => f.name);
+      expect(columns(1)).toEqual(["order_month", "total_amount"]);
+      expect(columns(2)).toEqual(["order_count", "total_amount"]);
+   });
+
    it("reads autorun and starting givens off the artifact tag", async () => {
       const raw = await model(SETTINGS).getNotebook();
       expect(raw.autorun).toBe(false);
