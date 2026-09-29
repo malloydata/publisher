@@ -1,8 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   MalloyTranslator,
+   type LogMessage,
+   type ModelDef,
+} from "@malloydata/malloy";
 import { MODEL_FILE_SUFFIX } from "../constants";
-import type { AnnotationNote } from "./annotations";
+import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
 
 /** The package-relative directory a served notebook must live in. */
 export const NOTEBOOKS_DIR = "notebooks";
@@ -76,4 +81,474 @@ export function hasArtifactLineOutsideBlocks(
 
 export function claimsToBeANotebook(source: string): boolean {
    return hasArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+}
+
+/* ------------------------------------------------------------------ */
+/* The cell reader                                                     */
+/* ------------------------------------------------------------------ */
+
+export type NotebookCellKind = "markdown" | "query" | "definition";
+
+/** One cell of a served notebook, as the reader sliced it from the file. */
+export interface NotebookCellSpan {
+   kind: NotebookCellKind;
+   type: "markdown" | "code";
+   /** Markdown: the prose without sigils. Code: the statement verbatim, from its first tag line. */
+   text: string;
+   /** 1-based and inclusive. */
+   startLine: number;
+   endLine: number;
+   /** A query cell's index into `modelDef.queryList` and `modelInfo.anonymous_queries`. */
+   queryIndex?: number;
+}
+
+/** Why the reader refused a notebook: the 1-based line, and a message that names the fix. */
+export interface NotebookReaderError {
+   line: number;
+   message: string;
+}
+
+export interface NotebookReadResult {
+   /** Empty whenever `error` is set: a notebook is never served with part of its cells. */
+   cells: NotebookCellSpan[];
+   /**
+    * Every own note that is not on the `"` route, plus the `"` notes above the
+    * artifact tag, each once, in file order.
+    */
+   annotations: string[];
+   error?: NotebookReaderError;
+}
+
+/** Malloy's parse of one file: its tree and the lexer's token stream. */
+export interface NotebookParse {
+   root: unknown;
+   tokenStream: unknown;
+}
+
+interface ParseToken {
+   type: number;
+   channel: number;
+   startIndex: number;
+   stopIndex: number;
+   line: number;
+}
+
+interface TokenStreamShape {
+   tokenSource?: {
+      vocabulary?: { getSymbolicName(type: number): string | undefined };
+   };
+   getTokens?(): ParseToken[];
+}
+
+type ParseNode = Record<string, unknown> & {
+   ruleIndex?: number;
+   childCount?: number;
+   getChild(i: number): ParseNode;
+   start?: { startIndex: number };
+   stop?: { stopIndex: number };
+   symbol?: ParseToken;
+};
+
+const isRuleNode = (node: ParseNode | undefined): boolean =>
+   node !== undefined &&
+   node.ruleIndex !== undefined &&
+   (node.childCount ?? 0) > 0;
+
+// By accessor, never by class name: a minifying bundler renames classes.
+const callAccessor = (node: ParseNode, name: string): unknown => {
+   const accessor = node[name];
+   return typeof accessor === "function" ? accessor.call(node) : undefined;
+};
+
+/** `malloyStatement` accessors the reader recognizes, and what each one is. */
+const STATEMENT_ACCESSORS: readonly [string, "run" | "notes" | "definition"][] =
+   [
+      ["runStatement", "run"],
+      ["docAnnotations", "notes"],
+      ["importStatement", "definition"],
+      ["defineSourceStatement", "definition"],
+      ["defineQuery", "definition"],
+      ["defineGivenStatement", "definition"],
+      ["defineUserTypeStatement", "definition"],
+      ["exportStatement", "definition"],
+   ];
+
+const PROSE_NOTE = /^##\|?"/;
+
+const NOTEBOOK_PARSE_URL = "file:///publisher-notebook-reader/notebook.malloy";
+
+/**
+ * Parse `text` with Malloy's own translator, stopping at the parse step, or
+ * refuse. Imports are never fetched: the parse is all the reader needs.
+ */
+export function parseNotebookText(
+   text: string,
+): NotebookParse | NotebookReaderError {
+   try {
+      const translator = new MalloyTranslator(NOTEBOOK_PARSE_URL, null, {
+         urls: { [NOTEBOOK_PARSE_URL]: text },
+      });
+      const syntax = (translator.translate().problems ?? []).find(
+         (problem) =>
+            problem.code === "syntax-error" && problem.severity === "error",
+      );
+      if (syntax) {
+         const line = (syntax.at?.range.start.line ?? 0) + 1;
+         return {
+            line,
+            message: `Line ${line}: Malloy could not parse this notebook (${syntax.message}). Fix: correct the syntax on that line.`,
+         };
+      }
+      const parse = translator.parseStep.response?.parse;
+      if (!parse) return unreadableParse();
+      return { root: parse.root, tokenStream: parse.tokenStream };
+   } catch (error) {
+      return {
+         line: 1,
+         message: `Line 1: Malloy could not parse this notebook (${error instanceof Error ? error.message : String(error)}). Fix: correct the file so it compiles.`,
+      };
+   }
+}
+
+export function isNotebookReaderError(
+   value: NotebookParse | NotebookReaderError,
+): value is NotebookReaderError {
+   return "message" in value;
+}
+
+function unreadableParse(): NotebookReaderError {
+   return {
+      line: 1,
+      message:
+         "Line 1: this build of Malloy does not expose a parse tree and token stream the notebook reader can read, so no cell can be shown. Fix: serve it from a Publisher built against a supported Malloy version.",
+   };
+}
+
+/** ANTLR indexes code points; JavaScript strings index UTF-16 units. */
+function codePointMap(text: string): Int32Array {
+   const map = new Int32Array([...text].length + 1);
+   let cp = 0;
+   for (let i = 0; i < text.length; ) {
+      map[cp++] = i;
+      i += (text.codePointAt(i) as number) > 0xffff ? 2 : 1;
+   }
+   map[cp] = text.length;
+   return map;
+}
+
+interface ReaderNote {
+   text: string;
+   prose: boolean;
+   /** The prose without sigils; set only on a `"` note. */
+   body?: string;
+   block: boolean;
+   startLine: number;
+   endLine: number;
+}
+
+type ReaderItem =
+   | {
+        kind: "statement";
+        run: boolean;
+        text: string;
+        startLine: number;
+        endLine: number;
+     }
+   | { kind: "note"; note: ReaderNote };
+
+/**
+ * A served notebook's cells, read off Malloy's parse tree and token stream.
+ * Pure over its inputs. `modelDef` is the compile of the same `text`, used only
+ * to check that every `run:` the reader found is one Malloy compiled, so the
+ * k-th query cell is `queryList[k]`.
+ *
+ * All-or-nothing: a top-level construct the reader cannot classify, or a
+ * default-channel token outside every recognized statement and note, refuses
+ * the whole notebook with the line and the fix. Comments are hidden-channel
+ * tokens and never structure.
+ */
+export function readNotebookCells(
+   parse: NotebookParse,
+   modelDef: Pick<ModelDef, "queryList">,
+   text: string,
+): NotebookReadResult {
+   const refuse = (error: NotebookReaderError): NotebookReadResult => ({
+      cells: [],
+      annotations: [],
+      error,
+   });
+   const root = parse.root as ParseNode | undefined;
+   const stream = parse.tokenStream as TokenStreamShape | undefined;
+   const vocabulary = stream?.tokenSource?.vocabulary;
+   const tokens =
+      typeof stream?.getTokens === "function" ? stream.getTokens() : undefined;
+   if (
+      !root ||
+      typeof root.getChild !== "function" ||
+      !tokens ||
+      !vocabulary ||
+      typeof vocabulary.getSymbolicName !== "function" ||
+      (tokens.length === 0 && text.trim() !== "")
+   ) {
+      return refuse(unreadableParse());
+   }
+   const symbolOf = (token: ParseToken) =>
+      vocabulary.getSymbolicName(token.type);
+
+   const map = codePointMap(text);
+   const lineStarts = [0];
+   for (let i = 0; i < text.length; i++)
+      if (text[i] === "\n") lineStarts.push(i + 1);
+   const lineOf = (offset: number): number => {
+      let lo = 0;
+      let hi = lineStarts.length - 1;
+      while (lo < hi) {
+         const mid = (lo + hi + 1) >> 1;
+         if (lineStarts[mid] <= offset) lo = mid;
+         else hi = mid - 1;
+      }
+      return lo + 1;
+   };
+   const spanOf = (node: ParseNode) => {
+      const startCp = node.start?.startIndex;
+      const stopCp = node.stop?.stopIndex;
+      if (startCp === undefined || stopCp === undefined) return undefined;
+      const start = map[startCp];
+      const end = map[stopCp + 1];
+      if (start === undefined || end === undefined || end < start)
+         return undefined;
+      // A note's token carries its newline; its last line is the one before it.
+      let last = end;
+      while (
+         last > start &&
+         (text[last - 1] === "\n" || text[last - 1] === "\r")
+      )
+         last--;
+      return {
+         startCp,
+         stopCp,
+         start,
+         end,
+         startLine: lineOf(start),
+         endLine: lineOf(Math.max(start, last - 1)),
+      };
+   };
+   const tokenText = (token: ParseToken) =>
+      text.slice(map[token.startIndex], map[token.stopIndex + 1]);
+
+   const covered: [number, number][] = [];
+   const items: ReaderItem[] = [];
+   const unclassifiable = (line: number, what: string): NotebookReadResult =>
+      refuse({
+         line,
+         message: `Line ${line}: ${what}, which no notebook cell can hold, so the notebook is not shown. Fix: remove it, or rewrite it as an import, source:, query:, given:, type: or export statement, a run:, or a ##" / ##|" prose note.`,
+      });
+
+   for (let i = 0; i < (root.childCount ?? 0); i++) {
+      const child = root.getChild(i);
+      if (!isRuleNode(child)) {
+         const token = child?.symbol;
+         const name = token ? symbolOf(token) : undefined;
+         if (token && name === "EOF") continue;
+         if (token && name === "SEMI") {
+            covered.push([token.startIndex, token.stopIndex]);
+            continue;
+         }
+         return unclassifiable(
+            token?.line ?? 1,
+            "a token outside any statement",
+         );
+      }
+      const span = spanOf(child);
+      if (!span) return unclassifiable(1, "a statement with no readable range");
+      const match = STATEMENT_ACCESSORS.find(
+         ([accessor]) => callAccessor(child, accessor) !== undefined,
+      );
+      if (!match) {
+         const firstLine = text
+            .slice(span.start, span.end)
+            .split("\n")[0]
+            .trim();
+         return unclassifiable(
+            span.startLine,
+            `\`${firstLine}\` is a statement the notebook reader does not recognize`,
+         );
+      }
+      covered.push([span.startCp, span.stopCp]);
+      const [accessor, kind] = match;
+      if (kind !== "notes") {
+         items.push({
+            kind: "statement",
+            run: kind === "run",
+            text: text.slice(span.start, span.end),
+            startLine: span.startLine,
+            endLine: span.endLine,
+         });
+         continue;
+      }
+      const group = callAccessor(child, accessor) as ParseNode;
+      const notes = (callAccessor(group, "docAnnotation") ?? []) as ParseNode[];
+      for (const noteNode of notes) {
+         const noteSpan = spanOf(noteNode);
+         if (!noteSpan) {
+            return unclassifiable(
+               span.startLine,
+               "a note with no readable range",
+            );
+         }
+         const noteText = text.slice(noteSpan.start, noteSpan.end);
+         const block =
+            callAccessor(noteNode, "docBlockAnnotation") !== undefined;
+         const prose = PROSE_NOTE.test(noteText);
+         let body: string | undefined;
+         if (prose && block) {
+            // The body is the lexer's text tokens, so the opener line (and a block's name) never is.
+            body = tokens
+               .filter(
+                  (t) =>
+                     t.startIndex >= noteSpan.startCp &&
+                     t.stopIndex <= noteSpan.stopCp &&
+                     symbolOf(t) === "BLOCK_ANNOTATION_TEXT",
+               )
+               .map(tokenText)
+               .join("")
+               .replace(/\r?\n$/, "");
+         } else if (prose) {
+            body = noteText.replace(/^##" ?/, "").replace(/\r?\n$/, "");
+         }
+         items.push({
+            kind: "note",
+            note: {
+               text: noteText,
+               prose,
+               body,
+               block,
+               startLine: noteSpan.startLine,
+               endLine: noteSpan.endLine,
+            },
+         });
+      }
+   }
+
+   // Both lists are in file order, so one forward sweep checks every token.
+   let range = 0;
+   for (const token of tokens) {
+      // EOF spans nothing (its stop precedes its start), so no range can hold it.
+      if (token.channel !== 0 || symbolOf(token) === "EOF") continue;
+      while (range < covered.length && covered[range][1] < token.startIndex)
+         range++;
+      const [from, to] = covered[range] ?? [Infinity, -Infinity];
+      if (token.startIndex < from || token.stopIndex > to) {
+         return unclassifiable(token.line, "a token outside any statement");
+      }
+   }
+
+   const artifactAt = items.findIndex(
+      (item) => item.kind === "note" && isArtifactNoteText(item.note.text),
+   );
+   if (artifactAt < 0) {
+      return refuse({
+         line: 1,
+         message:
+            "Line 1: this notebook has no ## artifact note, so its header cannot be told from its cells. Fix: add `## artifact { kind=notebook }` after the ##! line.",
+      });
+   }
+
+   const runCount = items.filter(
+      (item) => item.kind === "statement" && item.run,
+   ).length;
+   if (runCount !== modelDef.queryList.length) {
+      return refuse({
+         line: 1,
+         message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,
+      });
+   }
+
+   const cells: NotebookCellSpan[] = [];
+   const annotations: string[] = [];
+   // The markdown cell a contiguous `##"` run is building, which the next adjacent line joins.
+   let lineRun: NotebookCellSpan | undefined;
+   let runsSeen = 0;
+   items.forEach((item, index) => {
+      const belowTag = index > artifactAt;
+      if (item.kind === "statement") {
+         lineRun = undefined;
+         const queryIndex = item.run ? runsSeen++ : undefined;
+         // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
+         cells.push(
+            item.run && belowTag
+               ? {
+                    kind: "query",
+                    type: "code",
+                    text: item.text,
+                    startLine: item.startLine,
+                    endLine: item.endLine,
+                    queryIndex,
+                 }
+               : {
+                    kind: "definition",
+                    type: "code",
+                    text: item.text,
+                    startLine: item.startLine,
+                    endLine: item.endLine,
+                 },
+         );
+         return;
+      }
+      const { note } = item;
+      if (!note.prose || !belowTag) annotations.push(note.text);
+      if (!note.prose || !belowTag || note.body === undefined) {
+         lineRun = undefined;
+         return;
+      }
+      if (!note.block && lineRun && lineRun.endLine + 1 === note.startLine) {
+         lineRun.text += `\n${note.body}`;
+         lineRun.endLine = note.endLine;
+         return;
+      }
+      const cell: NotebookCellSpan = {
+         kind: "markdown",
+         type: "markdown",
+         text: note.body,
+         startLine: note.startLine,
+         endLine: note.endLine,
+      };
+      cells.push(cell);
+      lineRun = note.block ? undefined : cell;
+   });
+   return { cells, annotations };
+}
+
+/**
+ * The compile problem for a served notebook the reader would refuse, so a
+ * compile check (an agent's, or the builder's save gate) fails on a notebook
+ * that would not open. Undefined for anything that is not a served notebook.
+ */
+export function notebookReaderProblem(
+   modelPath: string,
+   text: string,
+   modelDef: ModelDef,
+   url: string,
+): LogMessage | undefined {
+   if (!isNotebookModelPath(modelPath)) return undefined;
+   if (artifactNoteLine(ownModelNoteObjects(modelDef)) === undefined)
+      return undefined;
+   const parse = parseNotebookText(text);
+   const error = isNotebookReaderError(parse)
+      ? parse
+      : readNotebookCells(parse, modelDef, text).error;
+   if (!error) return undefined;
+   const line = error.line - 1;
+   return {
+      code: "notebook-cells-unreadable",
+      severity: "error",
+      message: error.message,
+      at: {
+         url,
+         range: {
+            start: { line, character: 0 },
+            end: { line, character: 0 },
+         },
+      },
+   };
 }

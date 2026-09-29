@@ -5,8 +5,10 @@ import type {
    GivenValue,
    LogMessage,
    Model as MalloyModel,
+   ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
+import { notebookReaderProblem } from "./notebook";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -954,6 +956,18 @@ export class Environment {
                      compiled.modelPath,
                   );
                }
+               const readerProblem =
+                  compiled.modelDef && compiled.modelSourceText !== undefined
+                     ? notebookReaderProblem(
+                          compiled.modelPath,
+                          compiled.modelSourceText,
+                          compiled.modelDef as ModelDef,
+                          pathToFileURL(
+                             path.join(packagePath, compiled.modelPath),
+                          ).toString(),
+                       )
+                     : undefined;
+               if (readerProblem) collect([readerProblem], compiled.modelPath);
                if (compiled.compilationError) {
                   const compilerProblems =
                      compiled.compilationError.malloyProblems;
@@ -1229,7 +1243,20 @@ export class Environment {
             }
 
             // If successful, return any non-fatal warnings
-            return { problems: tagProblems(model.problems), sql };
+            const readerProblem = notebookReaderProblem(
+               modelName,
+               fullSource,
+               model._modelDef,
+               virtualUri,
+            );
+            return {
+               problems: tagProblems(
+                  readerProblem
+                     ? [...model.problems, readerProblem]
+                     : model.problems,
+               ),
+               sql,
+            };
          } catch (error) {
             // If parsing/compilation fails, return the errors
             if (error instanceof MalloyError) {

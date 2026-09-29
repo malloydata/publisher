@@ -38,6 +38,7 @@ import {
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
+import { recordNotebookDiscovery } from "../notebook_metrics";
 import {
    recordBuildPlanComputeDuration,
    recordBuildPlanComputeFailed,
@@ -279,6 +280,8 @@ export class Package {
    // Load-time dashboard lint findings, on the same read-only warnings surface
    // as the render-tag ones. Refreshed with the dashboards on load and reload.
    private dashboardWarnings: ApiPackageWarning[] = [];
+   /** Served notebooks whose cells the reader refused; set by {@link discoverDashboards}. */
+   private notebookWarnings: ApiPackageWarning[] = [];
    // Dashboards discovered in `dashboards/`, keyed by slug, in path order.
    // Computed once per load/reload rather than per request: the artifact tag is
    // a property of the compiled model, so it can only change when the models do.
@@ -1287,6 +1290,7 @@ export class Package {
       const allWarnings = [
          ...this.renderTagWarnings,
          ...this.dashboardWarnings,
+         ...this.notebookWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A `#@ persist` the compile-time gate refused. Without this the
@@ -3050,6 +3054,7 @@ export class Package {
       }
       this.notebookFileText = notebookFileText;
       this.applyQueryBoundaryToModels();
+      this.notebookWarnings = this.attachNotebookCells();
       this.lintInputs = {
          factsByPath,
          allFacts,
@@ -3058,6 +3063,42 @@ export class Package {
          droppedByError,
       };
       await this.relintDashboards();
+   }
+
+   /**
+    * Read every served notebook's cells and count every notebook, both formats.
+    * A reader refusal is the notebook's error; it is returned as a finding and
+    * logged, because the model still compiles and nothing else would say so.
+    */
+   private attachNotebookCells(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            recordNotebookDiscovery(
+               "malloynb",
+               model.getCompilationError() ? "broken" : "ok",
+            );
+            continue;
+         }
+         const text = this.notebookFileText.get(modelPath);
+         if (text === undefined) continue;
+         const outcome = model.attachServedNotebookCells(text);
+         recordNotebookDiscovery("malloy", outcome);
+         const refusal = model.getNotebookReaderRefusal();
+         if (outcome !== "refused" || !refusal) continue;
+         logger.warn("Notebook cells could not be read", {
+            packageName: this.packageName,
+            modelPath,
+            line: refusal.line,
+            detail: refusal.message,
+         });
+         warnings.push({
+            model: modelPath,
+            message: refusal.message,
+            severity: "error",
+         });
+      }
+      return warnings;
    }
 
    /** What {@link discoverDashboards} found, kept so the lint can re-run

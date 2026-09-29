@@ -545,8 +545,8 @@ function listFiles(files: readonly string[]): string {
  * The deprecation for a non-empty `explores`, with the edit that replaces it.
  * Entries for index.malloy, for dashboards and for notebooks need no
  * replacement: the file is the surface, and every dashboard and notebook is
- * served. Dashboards and notebooks are recognized by path alone here. What is left is what index.malloy
- * has to import.
+ * served. Dashboards and notebooks are recognized by path alone here. What is
+ * left is what index.malloy has to import.
  */
 function exploresDeprecation(
    declared: readonly string[],
