@@ -34,7 +34,16 @@ import ResultContainer from "../RenderedResult/ResultContainer";
 import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard } from "../styles";
+import { cellCaption } from "./cellKind";
 import { EnhancedNotebookCell } from "./types";
+
+/** First statement line of a definition, past its tag lines, so the card says what it defines. */
+function definitionSummary(text: string | undefined): string {
+   const lines = (text ?? "").split("\n");
+   return (
+      lines.find((line) => line.trim() && !line.trim().startsWith("#")) ?? ""
+   );
+}
 
 interface NotebookCellProps {
    cell: EnhancedNotebookCell;
@@ -254,6 +263,8 @@ export function NotebookCell({
       });
    }, [queryResultCodeSnippet, mode]);
 
+   const caption = cell.kind === "query" ? cellCaption(cell.text) : undefined;
+
    const copyToClipboard = () => {
       const url = window.location.href;
       navigator.clipboard
@@ -261,6 +272,57 @@ export function NotebookCell({
          .then(() => setCopyMessage("URL copied to clipboard!"))
          .catch(() => setCopyMessage("Failed to copy URL"));
    };
+
+   const codeDialog = (
+      <Dialog
+         open={codeDialogOpen}
+         onClose={() => setCodeDialogOpen(false)}
+         maxWidth="lg"
+         fullWidth
+      >
+         <DialogTitle
+            sx={{
+               display: "flex",
+               justifyContent: "space-between",
+               alignItems: "center",
+            }}
+         >
+            Malloy Code
+            <IconButton
+               onClick={() => setCodeDialogOpen(false)}
+               sx={{ color: "text.secondary" }}
+            >
+               <CloseIcon />
+            </IconButton>
+         </DialogTitle>
+         <DialogContent>
+            <Box
+               sx={(theme) => ({
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: "8px",
+                  padding: "16px",
+                  fontFamily: "monospace",
+                  fontSize: "14px",
+                  lineHeight: "1.5",
+                  overflow: "auto",
+                  maxHeight: "70vh",
+                  backgroundColor: theme.palette.background.paper,
+                  color: theme.palette.text.primary,
+               })}
+            >
+               <pre
+                  className="code-display"
+                  style={{
+                     margin: 0,
+                  }}
+                  dangerouslySetInnerHTML={{
+                     __html: highlightedMalloyCode,
+                  }}
+               />
+            </Box>
+         </DialogContent>
+      </Dialog>
+   );
 
    return (
       (cell.type === "markdown" && (
@@ -301,8 +363,45 @@ export function NotebookCell({
             </Box>
          </Box>
       )) ||
+      (cell.kind === "definition" && (
+         <Box>
+            <CleanMetricCard
+               sx={{ position: "relative", padding: "12px 24px" }}
+            >
+               <Typography
+                  component="pre"
+                  sx={{
+                     m: 0,
+                     pr: 5,
+                     fontFamily: "monospace",
+                     fontSize: "14px",
+                     color: "text.secondary",
+                     whiteSpace: "pre-wrap",
+                  }}
+               >
+                  {definitionSummary(cell.text)}
+               </Typography>
+               <FloatingIconButton
+                  aria-label="Malloy code"
+                  sx={{ position: "absolute", top: "8px", right: "8px" }}
+                  onClick={() => setCodeDialogOpen(true)}
+               >
+                  <CodeIcon />
+               </FloatingIconButton>
+            </CleanMetricCard>
+            {codeDialog}
+         </Box>
+      )) ||
       (cell.type === "code" && (
          <Box>
+            {caption && (
+               <Typography
+                  variant="body2"
+                  sx={{ color: "text.secondary", mb: 1 }}
+               >
+                  {caption}
+               </Typography>
+            )}
             {(!hideCodeCellIcon ||
                (!hideEmbeddingIcon && cell.result) ||
                (cell.newSources && cell.newSources.length > 0)) && (
@@ -370,56 +469,7 @@ export function NotebookCell({
                startingGivens={givens}
             />
 
-            {/* Code Dialog */}
-            <Dialog
-               open={codeDialogOpen}
-               onClose={() => setCodeDialogOpen(false)}
-               maxWidth="lg"
-               fullWidth
-            >
-               <DialogTitle
-                  sx={{
-                     display: "flex",
-                     justifyContent: "space-between",
-                     alignItems: "center",
-                  }}
-               >
-                  Malloy Code
-                  <IconButton
-                     onClick={() => setCodeDialogOpen(false)}
-                     sx={{ color: "text.secondary" }}
-                  >
-                     <CloseIcon />
-                  </IconButton>
-               </DialogTitle>
-               <DialogContent>
-                  <Box
-                     sx={(theme) => ({
-                        border: `1px solid ${theme.palette.divider}`,
-                        borderRadius: "8px",
-                        padding: "16px",
-                        fontFamily: "monospace",
-                        fontSize: "14px",
-                        lineHeight: "1.5",
-                        overflow: "auto",
-                        maxHeight: "70vh",
-                        backgroundColor: theme.palette.background.paper,
-                        color: theme.palette.text.primary,
-                     })}
-                  >
-                     <pre
-                        className="code-display"
-                        style={{
-                           margin: 0,
-                        }}
-                        dangerouslySetInnerHTML={{
-                           __html: highlightedMalloyCode,
-                        }}
-                     />
-                  </Box>
-               </DialogContent>
-            </Dialog>
-
+            {codeDialog}
             {/* Embedding Dialog */}
             <Dialog
                open={embeddingDialogOpen}

@@ -19,6 +19,7 @@ import { givensToParams, givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
+import { cellRuns } from "./cellKind";
 import { NotebookCell } from "./NotebookCell";
 import { EnhancedNotebookCell } from "./types";
 
@@ -303,8 +304,8 @@ export default function Notebook({
             for (let i = 0; i < notebook.notebookCells.length; i++) {
                const rawCell = notebook.notebookCells[i];
 
-               // Markdown cells don't need execution
-               if (rawCell.type === "markdown") continue;
+               // Prose and definitions have nothing to run.
+               if (!cellRuns(rawCell)) continue;
 
                // Capture cell index for closure
                const cellIndex = i;

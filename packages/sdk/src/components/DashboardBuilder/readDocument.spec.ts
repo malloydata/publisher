@@ -630,7 +630,8 @@ describe("every composite dashboard in the repository opens", () => {
       const name = path.relative(REPO, file);
       // The lint fixtures exist to BE broken; they are exercised by the refusal
       // tests above rather than expected to open.
-      const expectBroken = name.includes("dashboards-lint");
+      const expectBroken =
+         name.includes("dashboards-lint") || name.includes("notebooks-lint");
       it(`${expectBroken ? "refuses" : "opens"} ${name}`, async () => {
          const result = await readDashboardDocument(
             fs.readFileSync(file, "utf8"),

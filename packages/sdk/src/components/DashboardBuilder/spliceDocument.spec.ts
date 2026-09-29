@@ -1343,7 +1343,8 @@ describe("every composite dashboard survives an edit", () => {
       const text = fs.readFileSync(f, "utf8");
       return (
          /##\s*artifact[\s\S]*tiles\s*=/.test(text) &&
-         !f.includes("dashboards-lint")
+         !f.includes("dashboards-lint") &&
+         !f.includes("notebooks-lint")
       );
    });
 
