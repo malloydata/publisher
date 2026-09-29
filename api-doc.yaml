@@ -2851,10 +2851,12 @@ components:
           readOnly: true
           description:
             Present only when the server has no environments because no
-            publisher.config.json was found at startup. It names the path that
-            was checked and how to fix it. A server in this state still reports
-            serving, so check this before treating an empty environments list as
-            intended. Absent once any environment exists, including one created
+            publisher.config.json was found at startup, or because the --config
+            path it was given does not exist. It names the path that was checked
+            and how to fix it. It describes startup, so a config written while
+            the server runs is not read until a restart. A server in this state
+            still reports serving, so check this before treating an empty
+            environments list as intended. Absent once any environment exists, including one created
             at runtime through the API, and absent when a config was found but
             lists no environments.
         loadErrors:

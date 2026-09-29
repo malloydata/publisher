@@ -39,8 +39,8 @@ now visible from outside the process.
 
 A server that found no `publisher.config.json` still reports `serving`, which is deliberate: some
 deployments start empty and create environments over the API. It now also reports `emptyReason`,
-naming the path it checked. The field is absent once any environment exists, and absent when a
-config was found but lists none.
+naming the path it checked. It is set for a mistyped `--config` path too. The field is absent once
+any environment exists, and absent when a config was found but lists none.
 
 ## [Unreleased] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
 

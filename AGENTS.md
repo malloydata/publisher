@@ -262,7 +262,7 @@ curl -s -X POST \
 
 The map:
 
-- `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded, and the REST equivalent of `get_status`). An `emptyReason` means the server found no `publisher.config.json` and is serving nothing; it names the path it checked. `version` is the server release. Re-check it after every edit-and-reload: an entry with `stale: true` names a package that is still answering, from the model it compiled before your last save.
+- `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded, and the REST equivalent of `get_status`). Re-check `loadErrors` after every edit-and-reload: an entry with `stale: true` names a package that is still answering, from the model it compiled before your last save. An `emptyReason` means the server found no config at startup (or the `--config` path was missing) and is serving nothing; it names the path it checked. `version` is the server release.
 - `GET /api/v0/environments`: the environment names every other path needs (the bundled one is `examples`).
 - `GET /api/v0/environments/{env}/packages`, then `…/packages/{pkg}/models`: what exists.
 - `GET …/models/{path}`: the discovery step. The response's `sources` (each with its `views`), `queries`, and `givens` are the names you can run. Use them verbatim; never guess.

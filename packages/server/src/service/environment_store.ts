@@ -451,11 +451,13 @@ export class EnvironmentStore {
     */
    private failedEnvironments = new Map<string, string>();
    /**
-    * Why this server booted empty, when it did because no config was found.
-    * Set by logUnconfiguredNotice, so it carries that method's gate: an
-    * environment the database held but could not load does not set it.
-    * Reported on getStatus as `emptyReason` only while no environment exists,
-    * so it disappears once one is created at runtime.
+    * Why this server booted empty, when it did because no config was found
+    * (or the --config path was missing). Set by logUnconfiguredNotice, so it
+    * carries that method's gate: an environment the database held but could
+    * not load does not set it. Reported on getStatus as `emptyReason` only
+    * while no environment exists, so it disappears once one is created at
+    * runtime. It is a startup snapshot, which is why its text says so: a
+    * config written later is not read until a restart.
     */
    private unconfiguredNotice: string | null = null;
    private environmentMutexes = new Map<string, Mutex>();
@@ -888,13 +890,21 @@ export class EnvironmentStore {
       if (declaredEnvironments > 0) {
          return;
       }
-      const checkedPath = getUnresolvedPublisherConfigPath(this.serverRootPath);
-      if (!checkedPath) {
+      const checked = getUnresolvedPublisherConfigPath(this.serverRootPath);
+      if (!checked) {
+         return;
+      }
+      if (checked.explicit) {
+         // getPublisherConfig already logged this at error, so only /status
+         // needs the sentence.
+         this.unconfiguredNotice =
+            `Serving with no environments: the --config path ${checked.path} was not found when the server started. ` +
+            `Fix the path and restart. Environments can also be created at runtime through the API.`;
          return;
       }
       this.unconfiguredNotice =
-         `Serving with no environments: no ${PUBLISHER_CONFIG_NAME} was found at ${checkedPath}. ` +
-         `Create one there (in Docker, mount it at that path) or pass --config <path>. ` +
+         `Serving with no environments: no ${PUBLISHER_CONFIG_NAME} was found at ${checked.path} when the server started. ` +
+         `Create one there (in Docker, mount it at that path) and restart, or pass --config <path>. ` +
          `Environments can also be created at runtime through the API.`;
       logger.info(this.unconfiguredNotice);
    }
