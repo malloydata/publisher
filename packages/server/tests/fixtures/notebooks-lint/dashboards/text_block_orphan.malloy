@@ -1,0 +1,6 @@
+## artifact { title="Orphan text block" tiles=["a -> v"] }
+source: a is duckdb.sql("select 1 as x") extend { view: v is { select: x } }
+
+##|(text) unused
+Nothing lists this block in tiles.
+|##

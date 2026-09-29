@@ -310,9 +310,13 @@ const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
    "autorun",
    // Not read here: notebook_lint.ts judges `kind` on a model-level `## artifact`; this lint only stays quiet about it.
    "kind",
+   // Deprecated spelling of `dashboard { columns }`, read below; notebook_lint.ts reports it.
+   "dashboard_columns",
 ];
 const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
-   COMPOSITE_ARTIFACT_PROPERTIES.filter((property) => property !== "tiles");
+   COMPOSITE_ARTIFACT_PROPERTIES.filter(
+      (property) => property !== "tiles" && property !== "dashboard_columns",
+   );
 
 /**
  * Properties that reach the artifact tag by mistake, and what to write instead.
@@ -323,7 +327,7 @@ const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
  */
 const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
    dashboard_columns:
-      "Write the grid width as `# dashboard { columns=N }` beside the artifact tag.",
+      "A single query has no grid; a composite's width is `dashboard { columns=N }` beside its artifact tag.",
    dashboard:
       "The grid width is a sibling of the artifact tag, not a property of it: " +
       "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
@@ -365,9 +369,11 @@ function readArtifactTag(
       // null against a field the spec declares an integer. That put a value on
       // the wire in the very case the lint was reporting as dropped, so the two
       // disagreed about the same tag.
-      dashboardColumns: positiveInteger(
-         tagNumeric(tag.tag("dashboard"), "columns"),
-      ),
+      dashboardColumns:
+         positiveInteger(tagNumeric(tag.tag("dashboard"), "columns")) ??
+         (artifact.array("tiles")
+            ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
+            : undefined),
       givens,
       autorun,
    };
@@ -1099,8 +1105,7 @@ export function lintDashboard(
    // Every property `readArtifactTag` does not read, named. The reader looks up
    // sub-paths by name, so a misspelling or a property on the wrong form is not
    // an error there — it is simply never asked for, and the dashboard serves as
-   // if the author had not written it. `dashboard_columns`, which this grammar
-   // no longer has, is the case that made it worth enumerating.
+   // if the author had not written it.
    //
    // Top level only, and `givens` is opaque: its keys are the author's own given
    // names, so descending into it would warn about every control on the page.
@@ -1136,7 +1141,11 @@ export function lintDashboard(
    // failure as an `# artifact` on a view, which is silently a shared include
    // and got its own finding for the same reason.
    for (const entry of artifactTag?.array("tiles") ?? []) {
-      const carried = Object.keys(entry.dict ?? {});
+      // `kind=query` is what a tile already is, so it says nothing new.
+      const carried = Object.keys(entry.dict ?? {}).filter(
+         (property) =>
+            !(property === "kind" && tagText(entry, "kind") === "query"),
+      );
       if (carried.length === 0) continue;
       const named = carried.map((property) => `\`${property}\``).join(", ");
       add(

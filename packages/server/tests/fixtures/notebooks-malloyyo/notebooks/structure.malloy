@@ -1,12 +1,13 @@
 ##! experimental.givens
-import "../models/orders.malloy"
 ## artifact { kind=notebook title="Structure" }
 ## title="A non-prose note after the tag"
 ##(filters) ["orders.region"]
 
-##|" intro
-# Named block
-The name on the opener line is not prose.
+import "../models/orders.malloy"
+
+##|"
+# Not a name
+The first line under the opener is prose, whatever it holds.
 |##
 
 /* A two-line comment

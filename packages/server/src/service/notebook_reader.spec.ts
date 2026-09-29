@@ -17,6 +17,7 @@ import {
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
+   readTextBlocks,
    type NotebookCellSpan,
    type NotebookReadResult,
 } from "./notebook";
@@ -164,15 +165,19 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
    },
    "notebooks/structure.malloy": {
       cells: [
-         def(2, 2, IMPORT),
-         md(7, 10, "# Named block\nThe name on the opener line is not prose."),
+         def(6, 6, IMPORT),
+         md(
+            8,
+            11,
+            "# Not a name\nThe first line under the opener is prose, whatever it holds.",
+         ),
          def(
-            14,
-            14,
+            15,
+            15,
             "source: us_orders is orders extend { where: region = 'US' }",
          ),
-         def(16, 16, "export { us_orders }"),
-         query(18, 18, "run: us_orders -> kpis", 0),
+         def(17, 17, "export { us_orders }"),
+         query(19, 19, "run: us_orders -> kpis", 0),
       ],
       annotations: [
          "##! experimental.givens\n",
@@ -289,6 +294,97 @@ describe("readNotebookCells over the fixture notebooks", () => {
 });
 
 describe("readNotebookCells on inline text", () => {
+   it('never strips or names the first line of a ##|" block, whatever it holds', () => {
+      const onOpener = readText(
+         '## artifact {}\n##|" intro\nbody\n|##\nrun: a -> b\n',
+         1,
+      );
+      expect(onOpener.cells[0]).toEqual(
+         md(2, 4, "intro\nbody") as NotebookCellSpan,
+      );
+      const below = readText(
+         '## artifact {}\n##|"\nintro\nbody\n|##\nrun: a -> b\n',
+         1,
+      );
+      expect(below.cells[0]).toEqual(
+         md(2, 5, "intro\nbody") as NotebookCellSpan,
+      );
+   });
+
+   it('joins ##" lines that touch into one cell, and splits at a blank line, a comment or a block', () => {
+      const result = readText(
+         [
+            "## artifact {}",
+            '##" one',
+            '##" two',
+            "",
+            '##" three',
+            "// a comment",
+            '##" four',
+            '##|"',
+            "block",
+            "|##",
+            '##" five',
+            "run: a -> b",
+            "",
+         ].join("\n"),
+         1,
+      );
+      expect(
+         result.cells.map((cell) => [cell.startLine, cell.endLine, cell.text]),
+      ).toEqual([
+         [2, 3, "one\ntwo"],
+         [5, 5, "three"],
+         [7, 7, "four"],
+         [8, 10, "block"],
+         [11, 11, "five"],
+         [12, 12, "run: a -> b"],
+      ]);
+   });
+
+   it("leaves a (text) block out of a notebook's cells, as a note that is not prose", () => {
+      const result = readText(
+         "## artifact {}\n##|(text) intro\nbody\n|##\nrun: a -> b\n",
+         1,
+      );
+      expect(result.cells.map((cell) => cell.kind)).toEqual(["query"]);
+      expect(result.annotations).toContain("##|(text) intro\nbody");
+   });
+
+   it("strips a (text) block's opener and reads its name, leaving the body as the tile's markdown", () => {
+      const text =
+         '##" d\n## artifact { tiles=[intro] }\n##|(text) intro\n## Heading\nBody\n|##\n##|(text) _b2\nMore\n|##\n';
+      const parse = parseNotebookText(text);
+      if (isNotebookReaderError(parse)) throw new Error(parse.message);
+      expect(readTextBlocks(parse, text)).toEqual([
+         { name: "intro", body: "## Heading\nBody", line: 3, endLine: 6 },
+         { name: "_b2", body: "More", line: 7, endLine: 9 },
+      ]);
+   });
+
+   it.each([
+      ["##|(text)", undefined],
+      ["##|(text)   ", undefined],
+      ["##|(text) two words", undefined],
+      ["##|(text) 9lives", undefined],
+      ["##|(text) has-dash", undefined],
+      ["##|(text) ok_1", "ok_1"],
+   ])("reads the name of %j as %j", (opener, name) => {
+      const text = `${opener}\nbody\n|##\n`;
+      const parse = parseNotebookText(text);
+      if (isNotebookReaderError(parse)) throw new Error(parse.message);
+      expect(readTextBlocks(parse, text).map((block) => block.name)).toEqual([
+         name,
+      ]);
+   });
+
+   it('does not read ##|" or ##|(filters) blocks as text blocks', () => {
+      const text = '##|"\nprose\n|##\n##|(filters)\n["a"]\n|##\n';
+      const parse = parseNotebookText(text);
+      if (isNotebookReaderError(parse)) throw new Error(parse.message);
+      expect(readTextBlocks(parse, text)).toEqual([]);
+   });
+
    it("gives a tag block after the artifact tag Malloy's own note text, which MOTLY can read", () => {
       const text =
          '## artifact {}\n##|\nautorun=false\n|##\n##" prose\nrun: a -> b\n';

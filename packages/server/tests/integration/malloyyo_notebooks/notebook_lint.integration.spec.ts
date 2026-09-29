@@ -133,6 +133,36 @@ describe("notebook lint through the real server (E2E)", () => {
          ).toEqual([]);
       });
 
+      it("carries a header statement, a column conflict and a bad text block as errors, and the alias and orphan block as warns", () => {
+         const severityOf = (model: string) =>
+            warnings
+               .filter((w) => w.model === model && /^Line \d+:/.test(w.message))
+               .map((w) => [w.severity, w.message.split(":")[0]]);
+         expect(severityOf("notebooks/header_statement.malloy")).toEqual([
+            ["error", "Line 1"],
+         ]);
+         expect(severityOf("dashboards/columns_conflict.malloy")).toEqual([
+            ["error", "Line 1"],
+         ]);
+         expect(severityOf("dashboards/columns_alias.malloy")).toEqual([
+            ["warn", "Line 1"],
+         ]);
+         expect(severityOf("dashboards/text_block_orphan.malloy")).toEqual([
+            ["warn", "Line 4"],
+         ]);
+      });
+
+      it("serves the alias's width and, on a conflict, the canonical one", async () => {
+         const width = async (name: string) =>
+            (
+               (await (await fetch(pkgUrl(`/dashboards/${name}`))).json()) as {
+                  dashboardColumns?: number;
+               }
+            ).dashboardColumns;
+         expect(await width("columns_alias")).toBe(8);
+         expect(await width("columns_conflict")).toBe(12);
+      });
+
       it("does not read kind as an unknown dashboard property", () => {
          expect(
             warnings.filter((w) =>
@@ -160,7 +190,19 @@ describe("notebook lint through the real server (E2E)", () => {
 
       it("returns them at package scope too", async () => {
          const { status, problems } = await compile(LINTY, "package");
-         expect(status).toBe("success");
+         // The package holds files whose findings are errors, and an error fails the compile.
+         expect(status).toBe("error");
+         expect(
+            problems
+               .filter((p) => p.severity === "error")
+               .map((p) => [p.model, p.code]),
+         ).toEqual([
+            ["dashboards/columns_conflict.malloy", "notebook-columns-conflict"],
+            [
+               "notebooks/header_statement.malloy",
+               "notebook-statement-above-artifact",
+            ],
+         ]);
          expect(lintOf(problems, LINTY).map((p) => p.code)).toEqual([
             "notebook-kind-missing",
             "notebook-markdown-opener",
@@ -169,6 +211,17 @@ describe("notebook lint through the real server (E2E)", () => {
          expect(lintOf(problems, WRONG_KIND).map((p) => p.code)).toEqual([
             "notebook-kind-under-dashboards",
          ]);
+      });
+
+      it("fails the compile of a notebook with a statement above its artifact tag, at that line", async () => {
+         const model = "notebooks/header_statement.malloy";
+         const { status, problems } = await compile(model, "file");
+         expect(status).toBe("error");
+         expect(
+            problems
+               .filter((p) => p.model === model && p.severity === "error")
+               .map((p) => [p.code, p.at?.range.start.line]),
+         ).toEqual([["notebook-statement-above-artifact", 0]]);
       });
 
       it("returns nothing for a clean notebook", async () => {

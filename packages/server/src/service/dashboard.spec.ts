@@ -2047,20 +2047,54 @@ describe("service/dashboard grid width and hostile literals", () => {
       ).toEqual([]);
    });
 
-   // The spelling this grammar dropped. Nothing reads it, so without the
-   // enumeration lint a package carrying it serves a default-width grid and says
-   // nothing — the exact failure that made two spellings worth collapsing.
-   it("names dashboard_columns as doing nothing, and what to write instead", () => {
+   it("reads dashboard_columns as the grid width when dashboard { columns } is absent, and leaves reporting it to the notebook lint", () => {
       const f = composite(
          '## artifact { tiles=["orders -> totals"] dashboard_columns=4 }\n',
       );
+      expect(build(f)?.dashboardColumns).toBe(4);
+      expect(lintOf(f)).toEqual([]);
+   });
+
+   it("prefers dashboard { columns } over the dashboard_columns alias", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=6 }\n',
+      );
+      expect(build(f)?.dashboardColumns).toBe(6);
+   });
+
+   it("ignores an alias that is not a positive integer", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] dashboard_columns=0 }\n',
+      );
       expect(build(f)?.dashboardColumns).toBeUndefined();
-      expect(lintOf(f)).toEqual([
+   });
+
+   it("names dashboard_columns on a single query as doing nothing", () => {
+      const findings = lintOf(
+         singleQuery("# artifact { dashboard_columns=4 }\n"),
+      );
+      expect(findings).toEqual([
          expect.stringContaining(
             "`dashboard_columns` in the artifact tag does nothing in Publisher",
          ),
       ]);
-      expect(lintOf(f)[0]).toContain("# dashboard { columns=N }");
+   });
+
+   it("says nothing about a tile entry that carries only kind=query", () => {
+      const f = composite(
+         "## artifact { tiles=[orders_totals { kind=query }] }\n",
+      );
+      expect(
+         lintOf(f).find((finding) => finding.includes("carries")),
+      ).toBeUndefined();
+      const withMore = composite(
+         "## artifact { tiles=[orders_totals { kind=query colspan=3 }] }\n",
+      );
+      expect(
+         lintOf(withMore).find((finding) =>
+            finding.includes("carries `colspan`"),
+         ),
+      ).toBeDefined();
    });
 
    it("does not call kind unknown, since the notebook lint judges its value", () => {

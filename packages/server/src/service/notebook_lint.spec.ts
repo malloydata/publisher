@@ -58,35 +58,152 @@ describe("notebook lint", () => {
       },
    );
 
-   it("names the line of a multi-word opener", () => {
-      expect(lint(`${HEADER}##|" two words\nhi\n|##\n`)).toEqual([
+   it.each(['##|" intro', '##|" two words'])(
+      'leaves text on a ##|" opener alone, since it is prose: %s',
+      (opener) => {
+         expect(lint(`${HEADER}${opener}\nhi\n|##\n`)).toEqual([]);
+      },
+   );
+
+   it("says a (text) block in a notebook is a dashboard text tile", () => {
+      expect(lint(`${HEADER}##|(text) intro\nhi\n|##\n`)).toEqual([
          {
             line: 2,
-            code: "notebook-multiword-opener",
+            code: "notebook-text-block",
             message:
-               "Line 2: a `##|\"` opener takes at most one word, the block's name, but this one has `two words`, and text on the opener line is not shown. Fix: put the prose on the lines below the opener.",
+               'Line 2: a `(text)` block is a dashboard text tile, and a notebook does not show it. Fix: write `##|"` to make it a markdown cell, or move the file to dashboards/.',
          },
       ]);
    });
 
-   it("says a named block's name is ignored in a notebook", () => {
-      expect(lint(`${HEADER}##|" intro\nhi\n|##\n`)).toEqual([
-         {
-            line: 2,
-            code: "notebook-named-block",
-            message:
-               "Line 2: this block is named `intro`, and names are for dashboard text tiles; a notebook ignores it. Fix: remove the name from the opener.",
-         },
-      ]);
-   });
-
-   it("leaves a named block alone in a dashboard", () => {
+   it("errors on a (text) block with no name", () => {
       expect(
          lint(
-            `## artifact { tiles=[a] }\n##|" intro\nhi\n|##\n${SOURCE}`,
+            `## artifact { tiles=[a] }\n##|(text)\nhi\n|##\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([
+         {
+            line: 2,
+            code: "notebook-text-block-name",
+            message:
+               "Line 2: a `(text)` block needs a name, the tile's entry in `tiles=[…]`. Fix: write `##|(text) name`, where the name is a bare word of letters, digits and underscores.",
+         },
+      ]);
+   });
+
+   it.each(["two words", "9lives", "has-dash", "in.tile"])(
+      "errors on the invalid (text) block name %j",
+      (name) => {
+         expect(
+            lint(
+               `## artifact { tiles=[a] }\n##|(text) ${name}\nhi\n|##\n${SOURCE}`,
+               "dashboards/d.malloy",
+            ),
+         ).toEqual([
+            {
+               line: 2,
+               code: "notebook-text-block-name",
+               message: `Line 2: \`${name}\` is not a valid name for a \`(text)\` block, which takes exactly one bare word. Fix: write \`##|(text) name\`, where the name is letters, digits and underscores and does not start with a digit.`,
+            },
+         ]);
+      },
+   );
+
+   it.each([
+      ['##|"intro', '##|"intro'],
+      ["##|(text)intro", "##|(text)intro"],
+   ])("says how to space %s", (opener, shown) => {
+      expect(lint(`${HEADER}${opener}\nhi\n|##\n`)).toEqual([
+         {
+            line: 2,
+            code: "notebook-block-opener-spacing",
+            message: `Line 2: \`${shown}\` has no space after the route, so Malloy drops the note. Did you mean \`##|(text) name\` or \`##|"\`?`,
+         },
+      ]);
+   });
+
+   it("leaves a named (text) block alone in a dashboard that lists it as a tile", () => {
+      expect(
+         lint(
+            `## artifact { tiles=[intro { kind=text }] }\n##|(text) intro\nhi\n|##\n${SOURCE}`,
             "dashboards/d.malloy",
          ),
       ).toEqual([]);
+   });
+
+   it("warns about a (text) block no tiles entry names", () => {
+      expect(
+         lint(
+            `## artifact { tiles=["a -> v", other { kind=text }] }\n${SOURCE}##|(text) intro\nhi\n|##\n`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([
+         {
+            line: 3,
+            code: "notebook-text-block-unreferenced",
+            message:
+               "Line 3: the `(text)` block `intro` is not named by any entry in `tiles=[…]`, so no tile shows it. Fix: add `intro { kind=text }` to `tiles`, or delete the block.",
+         },
+      ]);
+   });
+
+   it("reads a text tile entry with kind=query, and a dashboard with kind=dashboard, as clean", () => {
+      expect(
+         lint(
+            `## artifact { kind=dashboard tiles=[q { kind=query }] }\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([]);
+   });
+
+   it("points a ## heading line at the prose notation", () => {
+      expect(
+         lint(
+            `${HEADER}## How to read this page\n${SOURCE}`,
+            "notebooks/n.malloy",
+         ),
+      ).toEqual([
+         {
+            line: 2,
+            code: "notebook-heading-line",
+            message:
+               'Line 2: `## How to read this page` is read as model tags, not shown as prose. Did you mean `##"`?',
+         },
+      ]);
+      expect(
+         lint(
+            `## artifact { tiles=[a] }\n## A heading\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ).map((f) => f.code),
+      ).toEqual(["notebook-heading-line"]);
+   });
+
+   it.each([
+      '## title="A non-prose note"',
+      "## autorun=false",
+      "## artifact { kind=notebook }",
+      '##(filters) ["a"]',
+      "## experimental",
+   ])("leaves the tag line %s alone", (line) => {
+      expect(lint(`${HEADER}${line}\n${SOURCE}`)).toEqual([]);
+   });
+
+   it("errors when the artifact tag does not parse, naming the tag and the parser's message", () => {
+      const found = lintNotebookText(
+         "notebooks/n.malloy",
+         `## artifact { kind: text }\n${SOURCE}`,
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatchObject({
+         line: 1,
+         code: "notebook-artifact-unparsed",
+         severity: "error",
+      });
+      expect(found[0].message).toStartWith(
+         "Line 1: the `## artifact` tag does not parse (",
+      );
+      expect(found[0].message).toContain("Fix: write");
    });
 
    it("adds the experimental line a given needs", () => {
@@ -211,7 +328,7 @@ describe("notebook lint", () => {
             line: 1,
             code: "notebook-kind-unknown",
             message:
-               "Line 1: `kind=report` is not a kind Publisher knows (notebook). Fix: write `## artifact { kind=notebook }`.",
+               "Line 1: `kind=report` is not a kind Publisher knows (dashboard, notebook). Fix: write `## artifact { kind=notebook }`.",
          },
       ]);
    });
@@ -256,27 +373,133 @@ describe("notebook lint", () => {
             line: 1,
             code: "notebook-kind-unknown",
             message:
-               "Line 1: `kind=report` is not a kind Publisher knows (notebook). Fix: remove `kind`.",
+               "Line 1: `kind=report` is not a kind Publisher knows (dashboard, notebook). Fix: remove `kind`.",
          },
       ]);
    });
 
-   it("warns that a run above the artifact tag is a definition cell", () => {
-      expect(lint(`${SOURCE}${RUN}${HEADER}`)).toEqual([
-         {
-            line: 2,
-            code: "notebook-run-above-artifact",
-            message:
-               "Line 2: this run: sits above the `## artifact` tag, so it is a definition cell, not a query cell. Fix: move the run: below the artifact tag; the header above it is not cells.",
-         },
-      ]);
-   });
+   it.each([
+      ['import "../models/orders.malloy"', 'import "../models/orders.malloy"'],
+      [SOURCE.trim(), SOURCE.trim()],
+      [RUN.trim(), RUN.trim()],
+      ["given: G :: string is 'a'", "given: G :: string is 'a'"],
+      ["query: q is a -> { select: x }", "query: q is a -> { select: x }"],
+   ])(
+      "errors on the statement %s above the artifact tag",
+      (statement, shown) => {
+         const found = lintNotebookText(
+            "notebooks/n.malloy",
+            `##! experimental.givens\n${statement}\n${HEADER}`,
+         ).filter((f) => f.code !== "notebook-givens-not-enabled");
+         expect(found).toEqual([
+            {
+               line: 2,
+               code: "notebook-statement-above-artifact",
+               severity: "error",
+               message: `Line 2: \`${shown}\` sits above the \`## artifact\` tag, and only \`##!\` flags, \`//\` comments and \`"\` notes may. Fix: move it below the artifact tag.`,
+            },
+         ]);
+      },
+   );
 
-   it("puts the run-above finding on the run: keyword, below its tag lines", () => {
+   it("puts the statement finding on the keyword line, below its tag lines", () => {
       const found = lint(`${SOURCE}# bar_chart\n${RUN}${HEADER}`);
       expect(found.map((f) => [f.line, f.code])).toEqual([
-         [3, "notebook-run-above-artifact"],
+         [1, "notebook-statement-above-artifact"],
+         [3, "notebook-statement-above-artifact"],
       ]);
+   });
+
+   it.each([
+      ['## title="x"', '## title="x"'],
+      ['##(filters) ["a"]', '##(filters) ["a"]'],
+      ["##| tags\nautorun=false\n|##", "##| tags"],
+   ])("errors on the tag %j above the artifact tag", (tagText, shown) => {
+      const found = lintNotebookText(
+         "notebooks/n.malloy",
+         `${tagText}\n${HEADER}`,
+      );
+      expect(
+         found.map(({ code, severity, message }) => [code, severity, message]),
+      ).toEqual([
+         [
+            "notebook-tag-above-artifact",
+            "error",
+            `Line 1: \`${shown}\` sits above the \`## artifact\` tag, and only \`##!\` flags, \`//\` comments and \`"\` notes may. Fix: move it below the artifact tag.`,
+         ],
+      ]);
+   });
+
+   it('allows ##! flags, // comments and unnamed " notes above the artifact tag', () => {
+      const header =
+         '##! experimental.givens\n// a comment\n##" a description\n##|"\nmore description\n|##\n';
+      expect(lint(`${header}${HEADER}${SOURCE}`)).toEqual([]);
+   });
+
+   it("leaves statements above the tag alone in a dashboard", () => {
+      expect(
+         lint(
+            `${SOURCE}## artifact { tiles=["a -> v"] }\n`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([]);
+   });
+
+   it("errors when dashboard_columns and dashboard { columns } disagree, naming both values", () => {
+      const found = lintNotebookText(
+         "dashboards/d.malloy",
+         `## artifact { tiles=[a] dashboard_columns=8 } dashboard { columns=12 }\n${SOURCE}`,
+      );
+      expect(found).toEqual([
+         {
+            line: 1,
+            code: "notebook-columns-conflict",
+            severity: "error",
+            message:
+               "Line 1: `dashboard_columns=8` in the artifact tag and `dashboard { columns=12 }` disagree about the grid width. Fix: keep `dashboard { columns=… }` and remove `dashboard_columns`.",
+         },
+      ]);
+   });
+
+   it("finds the conflict when dashboard { columns } is its own ## line", () => {
+      const found = lint(
+         `## artifact { tiles=[a] dashboard_columns=8 }\n## dashboard { columns=12 }\n${SOURCE}`,
+         "dashboards/d.malloy",
+      );
+      expect(found.map((f) => f.code)).toEqual(["notebook-columns-conflict"]);
+   });
+
+   it("warns, and only warns, that dashboard_columns alone is deprecated", () => {
+      const found = lintNotebookText(
+         "dashboards/d.malloy",
+         `## artifact { tiles=[a] dashboard_columns=8 }\n${SOURCE}`,
+      );
+      expect(found).toEqual([
+         {
+            line: 1,
+            code: "notebook-columns-alias",
+            severity: "warn",
+            message:
+               "Line 1: `dashboard_columns=8` is a deprecated spelling of the grid width. Fix: write `dashboard { columns=8 }` instead.",
+         },
+      ]);
+   });
+
+   it("warns about the alias even when dashboard { columns } agrees with it", () => {
+      const found = lint(
+         `## artifact { tiles=[a] dashboard_columns=12 } dashboard { columns=12 }\n${SOURCE}`,
+         "dashboards/d.malloy",
+      );
+      expect(found.map((f) => f.code)).toEqual(["notebook-columns-alias"]);
+   });
+
+   it("says nothing about dashboard { columns } alone", () => {
+      expect(
+         lint(
+            `## artifact { tiles=[a] } dashboard { columns=12 }\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([]);
    });
 
    it("says nothing about a helper model in notebooks/ that has no artifact note", () => {
@@ -355,16 +578,53 @@ describe("notebook lint", () => {
       expect(lint(read("adjacent_blocks.malloy"))).toEqual([]);
       expect(
          lint(read("structure.malloy")).map((f) => [f.line, f.code]),
-      ).toEqual([
-         [7, "notebook-named-block"],
-         [12, "notebook-comment-not-shown"],
-      ]);
+      ).toEqual([[13, "notebook-comment-not-shown"]]);
+   });
+
+   it("finds nothing in any example or fixture dashboard, the lint fixtures aside", () => {
+      const roots = [path.resolve(__dirname, "../../../../examples"), FIXTURES];
+      const found: string[] = [];
+      const walk = (dir: string, base: string) => {
+         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (
+               entry.name === "node_modules" ||
+               entry.name === "notebooks-lint"
+            )
+               continue;
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) walk(full, base);
+            else if (/\/dashboards\/[^/]+\.malloy$/.test(full)) {
+               const rel = full.slice(full.lastIndexOf("/dashboards/") + 1);
+               for (const f of lintNotebookText(
+                  rel,
+                  fs.readFileSync(full, "utf8"),
+               ))
+                  found.push(`${path.relative(base, full)} ${f.code}`);
+            }
+         }
+      };
+      for (const root of roots) walk(root, root);
+      expect(found).toEqual([]);
    });
 
    it("ignores a file outside notebooks and dashboards", () => {
       expect(
          lint(`${HEADER}##| markdown\nhi\n|##\n`, "models/m.malloy"),
       ).toEqual([]);
+   });
+
+   it("carries an error finding's severity into its compile problem", () => {
+      const problems = notebookLintProblems(
+         "notebooks/n.malloy",
+         `${SOURCE}${HEADER}`,
+         "file:///p/notebooks/n.malloy",
+      );
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatchObject({
+         code: "notebook-statement-above-artifact",
+         severity: "error",
+         at: { range: { start: { line: 0 } } },
+      });
    });
 
    it("turns findings into warn problems at their 0-based line", () => {

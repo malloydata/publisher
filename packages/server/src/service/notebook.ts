@@ -445,9 +445,12 @@ export function readNotebookCells(
          const prose = PROSE_NOTE.test(noteText);
          let body: string | undefined;
          if (prose && block) {
-            // The body is the lexer's text tokens, so the opener line (and a block's name) never is.
+            // Text on the opener line is prose too; only a `(text)` opener carries a name.
+            const onOpener = noteText.split("\n", 1)[0].replace(/^##\|" ?/, "");
             body = normalizeNewlines(
-               bodyTokens.map(tokenText).join(""),
+               [onOpener && `${onOpener}\n`, ...bodyTokens.map(tokenText)].join(
+                  "",
+               ),
             ).replace(/\n$/, "");
          } else if (prose) {
             body = noteText.replace(/^##" ?/, "").replace(/\n$/, "");
@@ -553,6 +556,80 @@ export function readNotebookCells(
       lineRun = note.block ? undefined : cell;
    });
    return { cells, annotations };
+}
+
+/** A dashboard text tile's name: a MOTLY bare word, as `tiles=[…]` spells its entries. */
+export const TEXT_BLOCK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** What follows `##|(text)` on a `(text)` block's opener, and the name when it is a lone bare word; undefined when the opener is not a `(text)` one. */
+export function parseTextOpener(
+   opener: string,
+): { rest: string; name?: string } | undefined {
+   const match = /^##\|\(text\)(?=[ \t\r]|$)(.*)$/.exec(
+      opener.replace(/\r?\n$/, ""),
+   );
+   if (!match) return undefined;
+   const rest = match[1].trim();
+   return { rest, name: TEXT_BLOCK_NAME.test(rest) ? rest : undefined };
+}
+
+/** A `##|(text) name` … `|##` block: a dashboard text tile, whose body is its markdown. */
+export interface NotebookTextBlock {
+   /** Undefined when the opener has no name or more than one bare word. */
+   name?: string;
+   body: string;
+   /** 1-based opener line and closer line (the last body line when unclosed). */
+   line: number;
+   endLine: number;
+}
+
+/** The `(text)` blocks of a parsed file, in file order, with the opener line stripped from each body. */
+export function readTextBlocks(
+   parse: NotebookParse,
+   text: string,
+): NotebookTextBlock[] {
+   const stream = parse.tokenStream as TokenStreamShape | undefined;
+   const vocabulary = stream?.tokenSource?.vocabulary;
+   const tokens =
+      typeof stream?.getTokens === "function" ? stream.getTokens() : undefined;
+   if (!tokens || !vocabulary) return [];
+   const map = codePointMap(text);
+   const tokenText = (token: ParseToken) =>
+      text.slice(map[token.startIndex], map[token.stopIndex + 1]);
+   const blocks: NotebookTextBlock[] = [];
+   for (let i = 0; i < tokens.length; i++) {
+      if (
+         vocabulary.getSymbolicName(tokens[i].type) !==
+         "DOC_BLOCK_ANNOTATION_BEGIN"
+      )
+         continue;
+      const opener = parseTextOpener(tokenText(tokens[i]));
+      if (!opener) continue;
+      const body: string[] = [];
+      let endLine = tokens[i].line;
+      for (
+         let j = i + 1;
+         j < tokens.length &&
+         vocabulary.getSymbolicName(tokens[j].type) === "BLOCK_ANNOTATION_TEXT";
+         j++
+      ) {
+         body.push(tokenText(tokens[j]));
+         endLine = tokens[j].line;
+      }
+      const closer = tokens[i + 1 + body.length];
+      if (
+         closer &&
+         vocabulary.getSymbolicName(closer.type) === "BLOCK_ANNOTATION_END"
+      )
+         endLine = closer.line;
+      blocks.push({
+         name: opener.name,
+         body: normalizeNewlines(body.join("")).replace(/\n$/, ""),
+         line: tokens[i].line,
+         endLine,
+      });
+   }
+   return blocks;
 }
 
 /**

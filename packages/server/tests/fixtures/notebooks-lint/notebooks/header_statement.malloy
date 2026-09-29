@@ -1,0 +1,4 @@
+source: a is duckdb.sql("select 1 as x")
+## artifact { kind=notebook title="Header statement" }
+
+run: a -> { select: x }

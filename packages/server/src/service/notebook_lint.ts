@@ -10,12 +10,14 @@ import {
    isNotebookModelPath,
    isRuleNode,
    NOTEBOOKS_DIR,
+   parseTextOpener,
+   readTextBlocks,
    translateToParse,
    type ParseNode,
    type ParseToken,
    type TokenStreamShape,
 } from "./notebook";
-import { motlyTag, tagText } from "./motly";
+import { motlyParseErrors, motlyTag, tagNumeric, tagText } from "./motly";
 
 /** One finding on a file under `notebooks/` or `dashboards/`. */
 export interface NotebookLintFinding {
@@ -24,12 +26,17 @@ export interface NotebookLintFinding {
    code: string;
    /** Starts with `Line N:` and ends with the fix. */
    message: string;
+   /** An error is a file that cannot do what it says; a warn is one that does something other than it reads as. */
+   severity: "warn" | "error";
 }
 
 /** `text` is reserved for the dashboard text tile; it is not an unknown kind. */
-const KNOWN_KINDS = ["notebook", "text"];
+const KNOWN_KINDS = ["notebook", "dashboard", "text"];
 
 const ARTIFACT_KIND_FIX = "Fix: write `## artifact { kind=notebook }`.";
+
+/** The first `max` characters of a line, for quoting it in a message. */
+const quoted = (line: string, max = 60) => line.trim().slice(0, max);
 
 /**
  * Findings that explain why a notebook or dashboard file will not show what its
@@ -54,9 +61,16 @@ export function lintNotebookText(
    const vocabulary = stream?.tokenSource?.vocabulary;
    const tokens =
       typeof stream?.getTokens === "function" ? stream.getTokens() : undefined;
-   if (!root || typeof root.getChild !== "function" || !tokens || !vocabulary) {
+   if (
+      !parse ||
+      !root ||
+      typeof root.getChild !== "function" ||
+      !tokens ||
+      !vocabulary
+   ) {
       return [];
    }
+   const notebookParse = parse;
    const symbolOf = (token: ParseToken) =>
       vocabulary.getSymbolicName(token.type);
    const map = codePointMap(text);
@@ -69,10 +83,21 @@ export function lintNotebookText(
    const lineOfNode = (node: ParseNode) =>
       (node.start as { line?: number } | undefined)?.line ?? 1;
    const findings: NotebookLintFinding[] = [];
-   const add = (line: number, code: string, message: string) =>
-      findings.push({ line, code, message: `Line ${line}: ${message}` });
+   const add = (
+      line: number,
+      code: string,
+      message: string,
+      severity: "warn" | "error" = "warn",
+   ) =>
+      findings.push({
+         line,
+         code,
+         severity,
+         message: `Line ${line}: ${message}`,
+      });
 
    lintBlocks();
+   lintHeadings();
 
    // The statements, in file order.
    const children: ParseNode[] = [];
@@ -84,7 +109,9 @@ export function lintNotebookText(
    let firstGiven: number | undefined;
    const spans: [number, number][] = [];
    let closerLine: number | undefined;
-   const runsAbove: number[] = [];
+   // What sits above the artifact tag that only the header may hold, judged once the tag is found.
+   const aboveArtifact: { line: number; code: string; what: string }[] = [];
+   const modelNotes: string[] = [];
    children.forEach((child, index) => {
       if (!isRuleNode(child)) {
          const token = child?.symbol;
@@ -111,6 +138,7 @@ export function lintNotebookText(
             []) as ParseNode[];
          for (const note of notes) {
             const noteText = nodeText(note);
+            modelNotes.push(noteText);
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
             if (!artifact && note.start && isArtifactNoteText(noteText)) {
@@ -119,6 +147,20 @@ export function lintNotebookText(
                   line: lineOfNode(note),
                   startIndex: note.start.startIndex,
                };
+            } else if (!artifact && inNotebooks) {
+               const first = noteText.split("\n", 1)[0];
+               // Flags, the `"` route (a description) and `(text)` blocks (found on their own) may sit in the header.
+               if (
+                  !/^##!/.test(noteText) &&
+                  !/^#{1,2}\|?"/.test(noteText) &&
+                  !parseTextOpener(first)
+               ) {
+                  aboveArtifact.push({
+                     line: lineOfNode(note),
+                     code: "notebook-tag-above-artifact",
+                     what: quoted(first),
+                  });
+               }
             }
          }
          const last = notes[notes.length - 1];
@@ -130,9 +172,6 @@ export function lintNotebookText(
       if (callAccessor(child, "defineGivenStatement")) {
          firstGiven ??= keywordLine(child, "GIVEN");
       }
-      if (inNotebooks && callAccessor(child, "runStatement") && !artifact) {
-         runsAbove.push(keywordLine(child, "RUN"));
-      }
       if (inNotebooks && callAccessor(child, "ignoredObjectAnnotations")) {
          const next = children[index + 1];
          const nextRun = children
@@ -143,16 +182,28 @@ export function lintNotebookText(
             "notebook-orphaned-tag",
             `this # tag is followed by ${describeNext(next)}, not by a run:, so it annotates nothing. Render tags sit directly above their run:. Fix: move the tag, and any #" caption, directly above ${nextRun ? `the run: on line ${keywordLine(nextRun, "RUN")}` : "its run:"}.`,
          );
+      } else if (inNotebooks && !artifact) {
+         const first = firstCodeToken(child);
+         aboveArtifact.push({
+            line: first?.line ?? lineOfNode(child),
+            code: "notebook-statement-above-artifact",
+            what: quoted(
+               first
+                  ? text.slice(map[first.startIndex]).split(/\r?\n/, 1)[0]
+                  : nodeText(child).split("\n", 1)[0],
+            ),
+         });
       }
    });
 
    // Without an artifact note the file is a helper model, not a served notebook.
    if (inNotebooks && !artifact) return [];
-   for (const line of runsAbove) {
+   for (const { line, code, what } of aboveArtifact) {
       add(
          line,
-         "notebook-run-above-artifact",
-         "this run: sits above the `## artifact` tag, so it is a definition cell, not a query cell. Fix: move the run: below the artifact tag; the header above it is not cells.",
+         code,
+         `\`${what}\` sits above the \`## artifact\` tag, and only \`##!\` flags, \`//\` comments and \`"\` notes may. Fix: move it below the artifact tag.`,
+         "error",
       );
    }
 
@@ -165,6 +216,7 @@ export function lintNotebookText(
    }
 
    if (artifact) lintArtifact(artifact);
+   if (artifact && !inNotebooks) lintUnreferencedTextBlocks(artifact);
 
    if (inNotebooks && artifact) lintComments(artifact.startIndex);
 
@@ -231,6 +283,19 @@ export function lintNotebookText(
       return `\`${first}\``;
    }
 
+   /** The first token of a statement that is code, not one of the tag lines above it. */
+   function firstCodeToken(node: ParseNode): ParseToken | undefined {
+      const from = node.start?.startIndex ?? 0;
+      const to = node.stop?.stopIndex ?? -1;
+      return tokens?.find(
+         (t) =>
+            t.channel === 0 &&
+            t.startIndex >= from &&
+            t.stopIndex <= to &&
+            !/ANNOTATION/.test(symbolOf(t) ?? ""),
+      );
+   }
+
    /** The line of a statement's keyword, which is below its tag lines. */
    function keywordLine(node: ParseNode, keyword: string): number {
       const from = node.start?.startIndex ?? 0;
@@ -245,6 +310,26 @@ export function lintNotebookText(
       return token?.line ?? lineOfNode(node);
    }
 
+   /** A `##` line that reads as a heading or a sentence is model tags to Malloy, and is never shown. */
+   function lintHeadings(): void {
+      for (const token of tokens as ParseToken[]) {
+         if (symbolOf(token) !== "DOC_ANNOTATION") continue;
+         const line = tokenText(token).replace(/\r?\n$/, "");
+         const content = /^##[ \t]+(\S.*)$/.exec(line)?.[1];
+         if (
+            content &&
+            /^[A-Za-z_]\w*[ \t]+[A-Za-z0-9_]/.test(content) &&
+            !/[={]/.test(content)
+         ) {
+            add(
+               token.line,
+               "notebook-heading-line",
+               `\`${quoted(line)}\` is read as model tags, not shown as prose. Did you mean \`##"\`?`,
+            );
+         }
+      }
+   }
+
    function lintBlocks(): void {
       const list = tokens as ParseToken[];
       for (let i = 0; i < list.length; i++) {
@@ -253,19 +338,29 @@ export function lintNotebookText(
          if (!opener.startsWith("##|")) continue;
          const line = list[i].line;
          const rest = opener.slice(3);
-         if (rest.startsWith('"')) {
-            const words = rest.slice(1).trim().split(/\s+/).filter(Boolean);
-            if (words.length > 1) {
+         const textOpener = parseTextOpener(opener);
+         if (/^("|\(text\))\S/.test(rest)) {
+            add(
+               line,
+               "notebook-block-opener-spacing",
+               `\`${quoted(opener)}\` has no space after the route, so Malloy drops the note. Did you mean \`##|(text) name\` or \`##|"\`?`,
+            );
+         } else if (textOpener) {
+            if (inNotebooks) {
                add(
                   line,
-                  "notebook-multiword-opener",
-                  `a \`##|"\` opener takes at most one word, the block's name, but this one has \`${words.join(" ")}\`, and text on the opener line is not shown. Fix: put the prose on the lines below the opener.`,
+                  "notebook-text-block",
+                  `a \`(text)\` block is a dashboard text tile, and a notebook does not show it. Fix: write \`##|"\` to make it a markdown cell, or move the file to ${DASHBOARDS_DIR}/.`,
                );
-            } else if (words.length === 1 && inNotebooks) {
+            }
+            if (textOpener.name === undefined) {
                add(
                   line,
-                  "notebook-named-block",
-                  `this block is named \`${words[0]}\`, and names are for dashboard text tiles; a notebook ignores it. Fix: remove the name from the opener.`,
+                  "notebook-text-block-name",
+                  textOpener.rest === ""
+                     ? "a `(text)` block needs a name, the tile's entry in `tiles=[…]`. Fix: write `##|(text) name`, where the name is a bare word of letters, digits and underscores."
+                     : `\`${quoted(textOpener.rest)}\` is not a valid name for a \`(text)\` block, which takes exactly one bare word. Fix: write \`##|(text) name\`, where the name is letters, digits and underscores and does not start with a digit.`,
+                  "error",
                );
             }
          } else if (rest.replace(/[\s()]/g, "").toLowerCase() === "markdown") {
@@ -321,7 +416,35 @@ export function lintNotebookText(
       }
    }
 
+   /** A `(text)` block is a tile only when `tiles` names it. */
+   function lintUnreferencedTextBlocks(tagNote: { text: string }): void {
+      const tiles = motlyTag([tagNote.text])
+         ?.tag("artifact")
+         ?.array("tiles")
+         ?.map((tile) => tagText(tile));
+      for (const block of readTextBlocks(notebookParse, text)) {
+         if (block.name === undefined || tiles?.includes(block.name)) continue;
+         add(
+            block.line,
+            "notebook-text-block-unreferenced",
+            `the \`(text)\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so no tile shows it. Fix: add \`${block.name} { kind=text }\` to \`tiles\`, or delete the block.`,
+         );
+      }
+   }
+
    function lintArtifact(tagNote: { text: string; line: number }): void {
+      if (inNotebooks) {
+         const [parseError] = motlyParseErrors([tagNote.text]);
+         if (parseError !== undefined) {
+            add(
+               tagNote.line,
+               "notebook-artifact-unparsed",
+               `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${ARTIFACT_KIND_FIX}`,
+               "error",
+            );
+            return;
+         }
+      }
       const tag = motlyTag([tagNote.text])?.tag("artifact");
       if (!tag) return;
       const kind = tagText(tag, "kind");
@@ -339,7 +462,7 @@ export function lintNotebookText(
                "notebook-kind-unknown",
                KNOWN_KINDS.includes(kind)
                   ? `\`kind=${kind}\` is not a notebook kind. ${ARTIFACT_KIND_FIX}`
-                  : `\`kind=${kind}\` is not a kind Publisher knows (notebook). ${ARTIFACT_KIND_FIX}`,
+                  : `\`kind=${kind}\` is not a kind Publisher knows (dashboard, notebook). ${ARTIFACT_KIND_FIX}`,
             );
          }
          if (properties.includes("tiles")) {
@@ -361,8 +484,32 @@ export function lintNotebookText(
          add(
             tagNote.line,
             "notebook-kind-unknown",
-            `\`kind=${kind}\` is not a kind Publisher knows (notebook). Fix: remove \`kind\`.`,
+            `\`kind=${kind}\` is not a kind Publisher knows (dashboard, notebook). Fix: remove \`kind\`.`,
          );
+      }
+      if (properties.includes("dashboard_columns")) {
+         const alias = tagText(tag, "dashboard_columns") ?? "";
+         const canonical = tagNumeric(
+            motlyTag(modelNotes)?.tag("dashboard"),
+            "columns",
+         );
+         if (
+            canonical !== undefined &&
+            tagNumeric(tag, "dashboard_columns") !== canonical
+         ) {
+            add(
+               tagNote.line,
+               "notebook-columns-conflict",
+               `\`dashboard_columns=${alias}\` in the artifact tag and \`dashboard { columns=${canonical} }\` disagree about the grid width. Fix: keep \`dashboard { columns=… }\` and remove \`dashboard_columns\`.`,
+               "error",
+            );
+         } else {
+            add(
+               tagNote.line,
+               "notebook-columns-alias",
+               `\`dashboard_columns=${alias}\` is a deprecated spelling of the grid width. Fix: write \`dashboard { columns=${alias} }\` instead.`,
+            );
+         }
       }
    }
 }
@@ -377,7 +524,7 @@ export function notebookLintProblems(
       const line = finding.line - 1;
       return {
          code: finding.code,
-         severity: "warn",
+         severity: finding.severity,
          message: finding.message,
          at: {
             url,

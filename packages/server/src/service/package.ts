@@ -3139,7 +3139,7 @@ export class Package {
             warnings.push({
                model: modelPath,
                message: finding.message,
-               severity: "warn",
+               severity: finding.severity,
             });
          }
       }
