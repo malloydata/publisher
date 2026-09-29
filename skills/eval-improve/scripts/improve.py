@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Spawn one modeling agent per diagnosed cluster to edit the model. Stdlib only.
 
-  python improve.py --run results/2026-08-30-sonnet --set evals/ecommerce \
-      --model-dir ../malloy-samples/ecommerce --watch-mode
+  python improve.py --run <workdir>/runs/<label> --set <set-dir> --watch-mode
+  # the model directory comes from [model] repo in the set's eval.toml
 
 One agent per `owner: model` cluster, each holding `skill:eval-improve`, each
 producing at most one smallest edit with probe receipts. Appends one `candidate`

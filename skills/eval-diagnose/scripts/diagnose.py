@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Diagnose a run's failures with agents, in two tiers. Stdlib only.
 
-  python diagnose.py --run results/2026-08-30-sonnet --set evals/ecommerce \
-      --model-dir ../malloy-samples/ecommerce
+  python diagnose.py --run <workdir>/runs/<label> --set <set-dir>
+  # the model directory comes from [model] repo in the set's eval.toml
 
 Tier 1 spawns one agent per failed case. Tier 2 spawns one agent over all of
 tier 1's diagnoses to cluster them. Both load `skill:eval-diagnose` natively and

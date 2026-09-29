@@ -29,20 +29,28 @@ grandfathered unknown fields on old runs.
 ## Layout
 
 ```
-evals/<set>/
+evals/<set>/                # the set, in the model's repository
   set.json                  # set metadata (below)
+  eval.toml                 # servers and paths for eval.py (config.py)
   cases.jsonl               # one case per line
   judge-regressions.jsonl   # judge verdicts a human overruled
+
+<workdir>/                  # [paths] workdir, default ~/.malloy-eval/<set>/
   runs/<runId>/
     run.json                # run config, the attribution pins
     events.jsonl            # append-only event lines
     artifacts/              # prediction CSVs, judge outputs, transcripts
+  packages/                 # built report packages
+  servers/<role>/           # server roots for eval.py serve
 ```
 
 The set directory lives in the SAME git repository as the model it evaluates,
-so a checkpoint (a git commit) pins the model and the ledger together. Never
-place `evals/` inside the directory tree the answerer's package serves: gold
-in the served tree is a contamination path.
+so a checkpoint (a git commit) pins the model and the answer key together.
+The workdir is never inside the model package: a run holds a `model.malloy`
+snapshot and a report is a Malloy package, and either one nested there puts
+the package into `loadErrors`. For a checkpoint to pin the ledger as well,
+point the workdir at a directory in the repository outside the package, and
+gitignore its `servers/` and `packages/`.
 
 Rules that make the ledger trustworthy:
 

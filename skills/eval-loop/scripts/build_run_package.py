@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Turn one or more runs into a Malloy package you can serve. Stdlib only.
 
-  python build_run_package.py --run results/sonnet --run results/opus \
-      --set evals/ecommerce --out /tmp/evalpkg
+  python build_run_package.py --run <workdir>/runs/sonnet --run <workdir>/runs/opus \
+      --set <set-dir>      # --out defaults to <workdir>/packages/eval-<run>
 
 Writes CSVs, a Malloy model over them, a notebook for the analytical tables and
 an in-package HTML app for the case matrix.

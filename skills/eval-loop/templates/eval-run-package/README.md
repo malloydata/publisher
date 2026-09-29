@@ -5,12 +5,14 @@ A finished run as a Malloy package you can open: the semantic model in
 `public/`, and CSV under `data/` written by `../../scripts/build_run_package.py`.
 
 ```bash
-python skills/eval-loop/scripts/build_run_package.py \
-  --run results/2026-08-30-sonnet \
-  --run results/2026-08-30-opus \
-  --set evals/ecommerce \
-  --out target/eval-run
+python3 skills/eval-loop/scripts/eval.py package --set <set-dir> --label <label>
+# an A/B: name each run
+python3 skills/eval-loop/scripts/build_run_package.py --set <set-dir> \
+  --run <workdir>/runs/sonnet-01 --run <workdir>/runs/opus-01
 ```
+
+The package's own README (written by the builder) holds the exact `curl`
+that registers it, and on which server.
 
 Two `--run` flags build both arms into one package, which is what makes an A/B a
 `group_by` rather than a diff of two reports.
@@ -117,6 +119,10 @@ hole -- that exact bug is why the tables are cross-checked rather than trusted.
 `needs_human` is neither a pass nor a failure and is attributed to nothing.
 
 ## Serving it
+
+`eval.py package` prints the `curl` that registers this package on a
+server that is already running (the truth server when the set has one). The
+rest of this section is for serving it on a Publisher of its own.
 
 ```bash
 publisher --server_root <parent-of-package> --mcp_port 4049

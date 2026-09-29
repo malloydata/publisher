@@ -57,9 +57,11 @@ python3 skills/eval-loop/scripts/eval.py package --set <set-dir> --label <label>
 
 That builds a Malloy package over the run's own CSVs and prints the `curl` that
 registers it with no restart, and the two URLs below. Run the printed `curl` as
-it is. It registers on the TRUTH server when the set has one, because the
-package holds the answer key and the answerer must not reach it; on the model
-server it prints a warning to remove it before the next run.
+it is. It registers on the TRUTH server, because the package holds the answer
+key and the answerer must not reach it. A set with no truth server gets no
+`curl`: the only Publisher is the answerer's. Add a `[truth]` section and
+`eval.py serve truth`, or pass `--on-model-server`, which prints the `curl`
+and the `DELETE` to run before the next run.
 
 It refuses a run with no diagnosis, since the report's cluster views would be
 empty. Run `eval.py diagnose` first; when this run skipped diagnosis on purpose,

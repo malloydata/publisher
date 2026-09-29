@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Re-derive every golden from the truth package and report what no longer holds.
 
-  python3 verify_goldens.py --set evals/ecommerce --publisher http://localhost:4811
+  python3 verify_goldens.py --set <set-dir>   # truth server from the set's eval.toml
   python3 verify_goldens.py --set ... --qid ecom_profit          # one case
   python3 verify_goldens.py --set ... --refresh                  # rewrite drifted values
   python3 verify_goldens.py --set ... --promote                  # provisional -> verified
