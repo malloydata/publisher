@@ -13,6 +13,7 @@ import {
 } from "./spliceDocument";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
 import { whatMoved } from "./__test__/inventory";
+import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -1067,6 +1068,81 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       expect(
          out.startsWith('##" Now with prose.\n## artifact { title="T"'),
       ).toBe(true);
+   });
+
+   // The saved file is what the server lints, so it is linted here rather than re-read.
+   const lintCodes = (source: string) =>
+      lintNotebookText("dashboards/d.malloy", source).map((f) => f.code);
+   const TAIL = `import "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
+
+   describe("a width change against the deprecated alias", () => {
+      it("removes the alias whatever spacing surrounds its =", async () => {
+         const source = `## artifact { title="T" tiles=["a -> x"] dashboard_columns = 3 }\n${TAIL}`;
+         const out = await spliced(source, (d) => {
+            d.columns = 6;
+         });
+         expect(out).not.toContain("dashboard_columns");
+         expect(out).toContain("dashboard { columns=6 }");
+         expect(lintCodes(out)).toEqual([]);
+      });
+
+      it("removes the alias, not the same words inside a quoted title", async () => {
+         const source = `## artifact { title="a dashboard_columns=2 b" tiles=["a -> x"] dashboard_columns=3 }\n${TAIL}`;
+         const out = await spliced(source, (d) => {
+            d.columns = 6;
+         });
+         expect(out).toContain('title="a dashboard_columns=2 b"');
+         expect(out.match(/dashboard_columns/g)).toHaveLength(1);
+         expect(lintCodes(out)).toEqual([]);
+      });
+   });
+
+   describe("the description's place", () => {
+      const artifact = '## artifact { title="T" tiles=["a -> x"] }';
+
+      it("moves a description read from below the tag above it", async () => {
+         const source = `${artifact}\n##" Legacy\n##" text\n${TAIL}`;
+         expect(lintCodes(source)).toEqual([
+            "notebook-description-below-artifact",
+         ]);
+         const out = await spliced(source, (d) => {
+            d.description = "Edited\ntext";
+         });
+         expect(out.startsWith(`##" Edited\n##" text\n${artifact}\n`)).toBe(
+            true,
+         );
+         expect(out).not.toContain("Legacy");
+         expect(lintCodes(out)).toEqual([]);
+         expect((await openDocument(out)).description).toBe("Edited\ntext");
+      });
+
+      it("clears the prose-less notes above when it moves one from below", async () => {
+         const out = await spliced(
+            `##"\n${artifact}\n##" Legacy\n${TAIL}`,
+            (d) => {
+               d.description = "Edited";
+            },
+         );
+         expect(out.startsWith(`##" Edited\n${artifact}\n`)).toBe(true);
+         expect(lintCodes(out)).toEqual([]);
+      });
+
+      it("removes a description read from below, and only that", async () => {
+         const out = await spliced(`${artifact}\n##" Legacy\n${TAIL}`, (d) => {
+            delete d.description;
+         });
+         expect(out).toBe(`${artifact}\n${TAIL}`);
+      });
+
+      it("edits the notes above and leaves the ones below, which the server ignores", async () => {
+         const out = await spliced(
+            `##" Above\n${artifact}\n##" Ignored\n${TAIL}`,
+            (d) => {
+               d.description = "New";
+            },
+         );
+         expect(out).toBe(`##" New\n${artifact}\n##" Ignored\n${TAIL}`);
+      });
    });
 
    it("retitles and reorders in one write, on the same line", async () => {

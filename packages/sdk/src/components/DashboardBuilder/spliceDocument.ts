@@ -8,7 +8,7 @@ import type {
    DashboardTile,
 } from "./document";
 import type { LocalGiven } from "./document";
-import { artifactLine } from "./malloyText";
+import { artifactLine, descriptionNotes } from "./malloyText";
 import {
    parseMalloy,
    parseRefused,
@@ -444,6 +444,52 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
    return undefined;
 }
 
+/**
+ * `line` without one property of the artifact tag's own braces: spelled with
+ * any spacing round the `=`, and never matched inside a quoted string or a
+ * nested block.
+ */
+function removeArtifactProperty(line: string, key: string): string {
+   let depth = 0;
+   let groups = 0;
+   for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+         i = endOfString(line, i);
+      } else if (c === "{" || c === "[") {
+         if (depth++ === 0) groups++;
+      } else if (c === "}" || c === "]") {
+         depth--;
+      } else if (
+         groups === 1 &&
+         depth === 1 &&
+         line.startsWith(key, i) &&
+         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
+      ) {
+         const eq = /^\s*=\s*/.exec(line.slice(i + key.length));
+         if (!eq) continue;
+         const valueAt = i + key.length + eq[0].length;
+         const valueEnd =
+            line[valueAt] === '"'
+               ? endOfString(line, valueAt) + 1
+               : valueAt +
+                 (/^[^\s}]*/.exec(line.slice(valueAt))?.[0].length ?? 0);
+         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
+         return line.slice(0, from) + line.slice(valueEnd);
+      }
+   }
+   return line;
+}
+
+/** The index of the quote closing the string that opens at `open`. */
+function endOfString(line: string, open: number): number {
+   for (let i = open + 1; i < line.length; i++) {
+      if (line[i] === "\\") i++;
+      else if (line[i] === '"') return i;
+   }
+   return line.length;
+}
+
 function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, current, next, edits } = ctx;
    // THE PAGE'S OWN SETTINGS. Title, autorun and starting values are
@@ -524,10 +570,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
       if (current.columns !== next.columns) {
          // The deprecated alias would otherwise sit beside the new width and conflict with it.
-         line = line.replace(
-            /\s*\bdashboard_columns=(?:"(?:[^"\\]|\\.)*"|[^\s}]+)/,
-            "",
-         );
+         line = removeArtifactProperty(line, "dashboard_columns");
          line = line.replace(/\s*dashboard\s*\{[^}]*\}/, "");
          if (next.columns !== undefined)
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
@@ -536,25 +579,23 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       else edits.push({ ...wholeLine(artifactAt), text: `${line}\n` });
    }
    if (current.description !== next.description) {
-      // The run of `##"` lines, wherever it is; a new one goes above the tag.
-      const docLines = lines
-         .map((l, i) => (l.trim().startsWith('##"') ? i : -1))
-         .filter((i) => i >= 0);
+      // Written above the tag, where the server reads it. A description read
+      // from below (the legacy spot) moves there, and the lines it came from go.
+      const { read, blankAbove } = descriptionNotes(lines);
       const text = (next.description ?? "")
          .split("\n")
          .map((para) => (para.trim() === "" ? '##"' : `##" ${para.trim()}`))
          .join("\n");
-      if (docLines.length > 0) {
-         const first = docLines[0];
-         const last = docLines[docLines.length - 1];
+      const above = read.length > 0 && read[0] < artifactLine(lines);
+      const removed = above ? read.slice(1) : [...read, ...blankAbove];
+      for (const at of removed) edits.push({ ...wholeLine(at), text: "" });
+      if (above) {
          edits.push({
-            start: wholeLine(first).start,
-            end: wholeLine(last).end,
+            ...wholeLine(read[0]),
             text: next.description === undefined ? "" : `${text}\n`,
          });
       } else if (next.description !== undefined) {
-         const artifactAt = artifactLine(lines);
-         const at = wholeLine(artifactAt).start;
+         const at = wholeLine(artifactLine(lines)).start;
          edits.push({ start: at, end: at, text: `${text}\n` });
       }
    }

@@ -144,6 +144,60 @@ describe("readDashboardDocument", () => {
       expect(doc.columns).toBe(8);
    });
 
+   describe("a width written badly", () => {
+      const withTag = (tagLine: string) =>
+         SIMPLE.replace(/^## artifact.*$/m, tagLine);
+
+      it("lets a written columns win even when it is not a width", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8 } dashboard { columns=1.5 }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+
+      it("reads the alias, spaced round its =, when no columns is written", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns = 8 }',
+            ),
+         );
+         expect(doc.columns).toBe(8);
+      });
+
+      it("takes text that only begins with digits as no width", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8px }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+   });
+
+   describe("the description, by the server's rule", () => {
+      const rest = SIMPLE.split("\n").slice(5).join("\n");
+      const ARTIFACT = '## artifact { title="Probe" tiles=["a -> by_cat"] }';
+
+      it("reads the notes above the tag and ignores those below", async () => {
+         const doc = await read(`##" Above\n${ARTIFACT}\n##" Below\n${rest}`);
+         expect(doc.description).toBe("Above");
+      });
+
+      it("falls back to the notes below the tag when nothing above has prose", async () => {
+         const doc = await read(
+            `##"\n${ARTIFACT}\n##" Legacy\n##" text\n${rest}`,
+         );
+         expect(doc.description).toBe("Legacy\ntext");
+      });
+
+      it("has no description when the only note is a malformed route", async () => {
+         const doc = await read(`##"word\n${ARTIFACT}\n${rest}`);
+         expect(doc.description).toBeUndefined();
+      });
+   });
+
    it("reads the whole shape", async () => {
       const doc = await read(SIMPLE);
       expect(doc.title).toBe("Probe");

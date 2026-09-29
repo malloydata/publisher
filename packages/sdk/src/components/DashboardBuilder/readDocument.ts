@@ -16,7 +16,7 @@ import {
    type TreeStage,
    type TreeView,
 } from "./malloyTree";
-import { tileSteps } from "./malloyText";
+import { descriptionNotes, tileSteps } from "./malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -121,18 +121,17 @@ function modelLines(lines: string[]): {
    description?: string;
    artifact: string[];
 } {
-   const doc: string[] = [];
    const artifact: string[] = [];
    for (const raw of lines) {
       const text = raw.trim();
-      if (text.startsWith('##"')) doc.push(text.slice(3).trim());
-      else if (text.startsWith("##!")) continue;
-      else if (text.startsWith("##")) artifact.push(text);
+      if (
+         text.startsWith("##") &&
+         !text.startsWith('##"') &&
+         !text.startsWith("##!")
+      )
+         artifact.push(text);
    }
-   return {
-      description: doc.length > 0 ? doc.join("\n") : undefined,
-      artifact,
-   };
+   return { description: descriptionNotes(lines).text, artifact };
 }
 
 /**
@@ -233,6 +232,21 @@ function readControlTags(tag: TagLike | null | undefined): Partial<LocalGiven> {
       ...(rangeMin === undefined ? {} : { rangeMin }),
       ...(rangeMax === undefined ? {} : { rangeMax }),
    };
+}
+
+/** A grid width: a plain decimal positive integer, else undefined. */
+function gridWidth(
+   tag: { text(key: string): string | undefined } | undefined,
+   key: string,
+): number | undefined {
+   const raw = tag?.text(key)?.trim();
+   if (
+      raw === undefined ||
+      !/^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/.test(raw)
+   )
+      return undefined;
+   const value = Number(raw);
+   return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
 /** The `tiles=[…]` entries, in order, as written. */
@@ -424,9 +438,14 @@ export async function readDashboardDocument(
       if (value !== undefined) startingGivens[key] = value;
    }
 
-   const columnsTag =
-      tag?.tag("dashboard")?.numeric("columns") ??
-      artifactTag?.numeric("dashboard_columns");
+   // The server's rule: a written `dashboard { columns }` wins even when it is
+   // not a width (the default width then applies), and the alias only counts
+   // beside `tiles`.
+   const columnsTag = tag?.tag("dashboard")?.has("columns")
+      ? gridWidth(tag.tag("dashboard"), "columns")
+      : artifactTag?.array("tiles")
+        ? gridWidth(artifactTag, "dashboard_columns")
+        : undefined;
 
    return {
       ok: true,

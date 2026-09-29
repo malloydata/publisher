@@ -90,6 +90,10 @@ it("folds a definition cell to a one-line summary and expands it to the code", a
 
    expect(toggle.getAttribute("aria-expanded")).toBe("true");
    await waitFor(() => expect(container.textContent).toContain("year = 2025"));
+   const region = container.querySelector(
+      `[id="${toggle.getAttribute("aria-controls")}"]`,
+   );
+   expect(region?.textContent).toContain("year = 2025");
 });
 
 it("puts the copy-link icon on the first markdown cell, not on a leading definition", async () => {

@@ -21,7 +21,7 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useId, useState } from "react";
 import type { Given } from "../../client";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
@@ -126,6 +126,7 @@ export function NotebookCell({
       React.useState<boolean>(false);
 
    const [definitionOpen, setDefinitionOpen] = useState(false);
+   const definitionRegionId = useId();
    const [copyMessage, setCopyMessage] = useState("");
 
    const { environmentName, packageName, modelPath } =
@@ -365,6 +366,7 @@ export function NotebookCell({
                component="button"
                type="button"
                aria-expanded={definitionOpen}
+               aria-controls={definitionRegionId}
                onClick={() => setDefinitionOpen((open) => !open)}
                sx={{
                   display: "flex",
@@ -387,7 +389,10 @@ export function NotebookCell({
                {definitionSummary(cell.text)}
             </Box>
             {definitionOpen && (
-               <CleanMetricCard sx={{ mt: 1, padding: "12px 24px" }}>
+               <CleanMetricCard
+                  id={definitionRegionId}
+                  sx={{ mt: 1, padding: "12px 24px" }}
+               >
                   <pre
                      className="code-display"
                      style={{ margin: 0, overflow: "auto" }}

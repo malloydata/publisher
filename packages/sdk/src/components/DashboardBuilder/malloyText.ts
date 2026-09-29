@@ -18,6 +18,37 @@ export const artifactLine = (lines: string[]) =>
       (l) => l.trimStart().startsWith("##") && l.includes("artifact"),
    );
 
+/** An unnamed `"` note line; `##"word` is a malformed route Malloy drops. */
+const DOC_NOTE = /^##"([ \t]|$)/;
+
+/**
+ * The lines a dashboard's description is read from, by the server's rule: the
+ * `##"` notes above the artifact tag, or, when those carry no prose, the ones
+ * below it. `blankAbove` are the prose-less notes above when the text is read
+ * from below, which a rewrite has to clear so the new text is what sits above.
+ */
+export function descriptionNotes(lines: string[]): {
+   read: number[];
+   blankAbove: number[];
+   text?: string;
+} {
+   const artifactAt = artifactLine(lines);
+   const notes = lines
+      .map((l, i) => (DOC_NOTE.test(l.trim()) ? i : -1))
+      .filter((i) => i >= 0);
+   const textOf = (idx: number[]) =>
+      idx.map((i) => lines[i].trim().slice(3).trim()).join("\n");
+   const above = notes.filter((i) => artifactAt < 0 || i < artifactAt);
+   const below = notes.filter((i) => artifactAt >= 0 && i > artifactAt);
+   const read = textOf(above).trim() ? above : below;
+   const text = textOf(read);
+   return {
+      read,
+      blankAbove: read === above ? [] : above,
+      ...(text.trim() ? { text } : {}),
+   };
+}
+
 /** A tile expression's steps: `orders -> by_brand + { limit: 2 }`. */
 export interface TileSteps {
    source: string;
