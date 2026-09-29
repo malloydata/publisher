@@ -308,6 +308,8 @@ const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
    "tiles",
    "givens",
    "autorun",
+   // Not read here: notebook_lint.ts judges the value, so this lint only stays quiet about it.
+   "kind",
 ];
 const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
    COMPOSITE_ARTIFACT_PROPERTIES.filter((property) => property !== "tiles");

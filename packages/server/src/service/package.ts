@@ -101,6 +101,7 @@ import {
    hasArtifactLineOutsideBlocks,
    isNotebookModelPath,
 } from "./notebook";
+import { lintNotebookText } from "./notebook_lint";
 import {
    buildDashboardManifest,
    COMPONENT_FILE_SUFFIXES,
@@ -3054,7 +3055,10 @@ export class Package {
       }
       this.notebookFileText = notebookFileText;
       this.applyQueryBoundaryToModels();
-      this.notebookWarnings = this.attachNotebookCells();
+      this.notebookWarnings = [
+         ...this.attachNotebookCells(),
+         ...(await this.lintNotebookFiles()),
+      ];
       this.lintInputs = {
          factsByPath,
          allFacts,
@@ -3097,6 +3101,47 @@ export class Package {
             message: refusal.message,
             severity: "error",
          });
+      }
+      return warnings;
+   }
+
+   /**
+    * Lint every served notebook and every file under `dashboards/`, including
+    * one that failed to compile, since its fix-it is the part that explains the
+    * compile error. Read from the compiled text when the loader recorded it.
+    */
+   private async lintNotebookFiles(): Promise<ApiPackageWarning[]> {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of Array.from(this.models).sort(
+         ([a], [b]) => (a < b ? -1 : 1),
+      )) {
+         if (
+            !this.isServedNotebook(modelPath) &&
+            !isDashboardModelPath(modelPath)
+         )
+            continue;
+         let text = this.notebookFileText.get(modelPath);
+         if (text === undefined) {
+            try {
+               text =
+                  model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath));
+            } catch {
+               continue;
+            }
+         }
+         for (const finding of lintNotebookText(modelPath, text)) {
+            logger.warn("Notebook lint", {
+               packageName: this.packageName,
+               model: modelPath,
+               detail: finding.message,
+            });
+            warnings.push({
+               model: modelPath,
+               message: finding.message,
+               severity: "warn",
+            });
+         }
       }
       return warnings;
    }

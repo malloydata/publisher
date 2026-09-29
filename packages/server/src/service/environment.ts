@@ -8,7 +8,9 @@ import type {
    ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import { notebookReaderProblem } from "./notebook";
+import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
+import { isDashboardModelPath } from "./dashboard";
+import { notebookLintProblems } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -968,6 +970,33 @@ export class Environment {
                        )
                      : undefined;
                if (readerProblem) collect([readerProblem], compiled.modelPath);
+               // A file that did not compile carries no text back, so it is read as saved (or as replaced).
+               const lintText = !(
+                  isNotebookModelPath(compiled.modelPath) ||
+                  isDashboardModelPath(compiled.modelPath)
+               )
+                  ? undefined
+                  : (compiled.modelSourceText ??
+                    (compiled.modelPath === modelName && source !== undefined
+                       ? source
+                       : await fs.promises
+                            .readFile(
+                               path.join(packagePath, compiled.modelPath),
+                               "utf8",
+                            )
+                            .catch(() => undefined)));
+               if (lintText !== undefined) {
+                  collect(
+                     notebookLintProblems(
+                        compiled.modelPath,
+                        lintText,
+                        pathToFileURL(
+                           path.join(packagePath, compiled.modelPath),
+                        ).toString(),
+                     ),
+                     compiled.modelPath,
+                  );
+               }
                if (compiled.compilationError) {
                   const compilerProblems =
                      compiled.compilationError.malloyProblems;
@@ -1249,18 +1278,34 @@ export class Environment {
                model._modelDef,
                virtualUri,
             );
+            // Its positions are in the concatenated file at "append", so the lint is for a whole file only.
+            const lintProblems =
+               scope === "append"
+                  ? []
+                  : notebookLintProblems(modelName, fullSource, virtualUri);
             return {
-               problems: tagProblems(
-                  readerProblem
-                     ? [...model.problems, readerProblem]
-                     : model.problems,
-               ),
+               problems: tagProblems([
+                  ...model.problems,
+                  ...(readerProblem ? [readerProblem] : []),
+                  ...lintProblems,
+               ]),
                sql,
             };
          } catch (error) {
             // If parsing/compilation fails, return the errors
             if (error instanceof MalloyError) {
-               return { problems: tagProblems(error.problems) };
+               return {
+                  problems: tagProblems([
+                     ...error.problems,
+                     ...(scope === "append"
+                        ? []
+                        : notebookLintProblems(
+                             modelName,
+                             fullSource,
+                             virtualUri,
+                          )),
+                  ]),
+               };
             }
             // If it's a system error (e.g. file not found), throw it up
             throw error;

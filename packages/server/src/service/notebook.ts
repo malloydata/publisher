@@ -125,7 +125,7 @@ export interface NotebookParse {
    tokenStream: unknown;
 }
 
-interface ParseToken {
+export interface ParseToken {
    type: number;
    channel: number;
    startIndex: number;
@@ -133,14 +133,14 @@ interface ParseToken {
    line: number;
 }
 
-interface TokenStreamShape {
+export interface TokenStreamShape {
    tokenSource?: {
       vocabulary?: { getSymbolicName(type: number): string | undefined };
    };
    getTokens?(): ParseToken[];
 }
 
-type ParseNode = Record<string, unknown> & {
+export type ParseNode = Record<string, unknown> & {
    ruleIndex?: number;
    childCount?: number;
    getChild(i: number): ParseNode;
@@ -149,13 +149,13 @@ type ParseNode = Record<string, unknown> & {
    symbol?: ParseToken;
 };
 
-const isRuleNode = (node: ParseNode | undefined): boolean =>
+export const isRuleNode = (node: ParseNode | undefined): boolean =>
    node !== undefined &&
    node.ruleIndex !== undefined &&
    (node.childCount ?? 0) > 0;
 
 // By accessor, never by class name: a minifying bundler renames classes.
-const callAccessor = (node: ParseNode, name: string): unknown => {
+export const callAccessor = (node: ParseNode, name: string): unknown => {
    const accessor = node[name];
    return typeof accessor === "function" ? accessor.call(node) : undefined;
 };
@@ -185,10 +185,8 @@ export function parseNotebookText(
    text: string,
 ): NotebookParse | NotebookReaderError {
    try {
-      const translator = new MalloyTranslator(NOTEBOOK_PARSE_URL, null, {
-         urls: { [NOTEBOOK_PARSE_URL]: text },
-      });
-      const syntax = (translator.translate().problems ?? []).find(
+      const { problems, parse } = translateToParse(text);
+      const syntax = problems.find(
          (problem) =>
             problem.code === "syntax-error" && problem.severity === "error",
       );
@@ -199,15 +197,30 @@ export function parseNotebookText(
             message: `Line ${line}: Malloy could not parse this notebook (${syntax.message}). Fix: correct the syntax on that line.`,
          };
       }
-      const parse = translator.parseStep.response?.parse;
       if (!parse) return unreadableParse();
-      return { root: parse.root, tokenStream: parse.tokenStream };
+      return parse;
    } catch (error) {
       return {
          line: 1,
          message: `Line 1: Malloy could not parse this notebook (${error instanceof Error ? error.message : String(error)}). Fix: correct the file so it compiles.`,
       };
    }
+}
+
+/** The parse step's tree and tokens, kept even when the text has syntax errors, so a lint can still read a broken file. */
+export function translateToParse(text: string): {
+   problems: LogMessage[];
+   parse?: NotebookParse;
+} {
+   const translator = new MalloyTranslator(NOTEBOOK_PARSE_URL, null, {
+      urls: { [NOTEBOOK_PARSE_URL]: text },
+   });
+   const problems = translator.translate().problems ?? [];
+   const parse = translator.parseStep.response?.parse;
+   return {
+      problems,
+      parse: parse && { root: parse.root, tokenStream: parse.tokenStream },
+   };
 }
 
 export function isNotebookReaderError(
@@ -230,7 +243,7 @@ function normalizeNewlines(text: string): string {
 }
 
 /** ANTLR indexes code points; JavaScript strings index UTF-16 units. */
-function codePointMap(text: string): Int32Array {
+export function codePointMap(text: string): Int32Array {
    const map = new Int32Array([...text].length + 1);
    let cp = 0;
    for (let i = 0; i < text.length; ) {
