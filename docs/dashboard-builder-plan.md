@@ -163,9 +163,9 @@ Decided 2026-09-13 and reaffirmed since: **the builder makes no change to
 Why:
 
 - Every grammar extension widens G6 unless the grammar has one home. The shared
-  grammar package with Malloyyo is decided but not started, and the conversation
-  with its maintainers is not happening yet. An extension shipped first in
-  Publisher is a third dialect.
+  grammar package with Malloyyo is decided but not started, and apart from the
+  two items lifted below, the conversation with its maintainers is not
+  happening yet. An extension shipped first in Publisher is a third dialect.
 - Renderer asks (chart types, sorting, conditional formatting, reference lines,
   KPI comparison) are upstream work with its own cadence. Both projects tried and
   cut a JavaScript escape hatch for bespoke charts, so a second charting layer in
@@ -190,8 +190,9 @@ What that parks, explicitly (and what it does **not** block; see §5):
 **Lifted for two items on 2026-09-29** (Kyle): the notebook artifact (§7) and
 dashboard text tiles (the `kind=text` half of item 2). Neither creates a third
 dialect, because both are spelled on the `"` doc-string route Malloy already
-has, with no grammar extension, and the spelling is proposed to Malloyyo the
-same day. Items 1, 3 and 4, and tabs, stay parked.
+has, with no grammar extension. The spelling is proposed to Malloyyo as its
+own issue, ahead of the combined grammar proposal. Items 1, 3 and 4, and tabs,
+stay parked.
 
 ## 5. What could be done with no Malloy, renderer or Malloyyo change
 
@@ -358,7 +359,9 @@ change to the Malloy language. The fixtures in
 `packages/server/tests/fixtures/notebooks-malloyyo/` hold both examples below,
 adapted to an `orders` model, and
 `packages/server/src/service/notebook_format.spec.ts` pins the compiler behavior
-the format rests on, so a Malloy upgrade that changes it fails CI.
+the format rests on: where each note lands, what an import contributes, how
+tiles parse, and which malformed spellings compile. A Malloy upgrade that
+changes it fails CI.
 
 ```malloy
 ##! experimental.givens
@@ -395,16 +398,18 @@ A dashboard text tile is the same block, named, and referenced from `tiles=`:
   file is a shared include. `kind=notebook` is checked by lint: a notebook tag
   under `dashboards/` is a finding, and so are `tiles=` under `notebooks/`.
 - **Cells**, in file order, from the file's own notes only, never imported
-  ones. Each `"`-route note after the artifact tag is a markdown cell. Each
-  `run:` together with its contiguous `#` tag block is a query cell; a `#"`
-  directly above the run is its caption, a chart is a render tag on it
-  (`# bar_chart`), and `# label` titles it. Each other run of statements
-  (`import`, `source:`, `view:`, `given:`) is a definition cell, shown as code
-  or folded and read by every cell below it. A fixed **header** (`##!`,
-  `## artifact`, and the doc block above it) is not a cell.
+  ones. Each `"`-route note after the artifact tag is a markdown cell, except
+  that contiguous `##"` lines (no blank line between them) form one cell; a
+  `##|"` block is always its own cell. Each `run:` together with its contiguous
+  `#` tag block is a query cell; a `#"` directly above the run is its caption, a
+  chart is a render tag on it (`# bar_chart`), and `# label` titles it. Each
+  other run of statements (`import`, `source:`, `view:`, `given:`) is a
+  definition cell, shown as code or folded and read by every cell below it. A
+  fixed **header** (`##!`, `## artifact`, and the doc block above it) is not a
+  cell.
 - **Description**: the file's unnamed `"` notes above the artifact tag, for
-  both notebooks and dashboards. Today's dashboards are unchanged, because that is
-  where their description already sits.
+  both notebooks and dashboards. Today's dashboards are unchanged, because that
+  is where their description already sits.
 - **Named blocks.** A `##|"` whose opener holds exactly one identifier is a
   named block: a text tile. The reader strips the name line. A block that no
   tile references is a lint finding, and so is an opener with more than one
@@ -430,10 +435,10 @@ the end of a file there is none, so Malloy refuses it as
 `orphaned-object-annotation`.
 
 **What the format guarantees.** The load-time lint, which follows this
-decision, reports each of these with a fix-it: `##| markdown` or `##|markdown` ("did you mean `##|"`"); a missing
-`##!` flag, printing the exact line to add; a `|##` body line, and trailing
-text on a closer; a tag separated from its `run:`; an unknown `kind`; an orphan
-named block; a multi-word block opener.
+decision, reports each of these with a fix-it: `##| markdown` or `##|markdown`
+("did you mean `##|"`"); a missing `##!` flag, printing the exact line to add;
+a `|##` body line, and trailing text on a closer; a tag separated from its
+`run:`; an unknown `kind`; an orphan named block; a multi-word block opener.
 
 **What authors lose.** `.malloy` has no VS Code notebook UI the way `.malloynb`
 does. The Console notebook builder and the agent replace it.
@@ -484,12 +489,13 @@ the format above, spelled on the existing `"` doc-string route with no grammar
 extension; text tiles as named blocks referenced by a `kind=text` tile entry;
 the description as the notes above the artifact tag, for both surfaces; and
 `.malloynb` files converted per file, on demand. The spelling is proposed to
-Malloyyo the same day. [choosing-a-surface.md](choosing-a-surface.md) is
+Malloyyo as its own issue, ahead of the combined grammar proposal.
+[choosing-a-surface.md](choosing-a-surface.md) is
 revised when the reader ships, so that "notebook" there means this one.
 
-**Steps.** (1) Done 2026-09-29: the format is decided on the `"` route and
-proposed to Malloyyo with the text tile; G1, tabs, G3 and G6 remain for the
-grammar package proposal (§8). (2) Generalise the editor
+**Steps.** (1) Done 2026-09-29: the format is decided on the `"` route. It is
+proposed to Malloyyo with the text tile as its own issue; G1, tabs, G3 and G6
+remain for the grammar package proposal (§8). (2) Generalize the editor
 core and the host flow out of the dashboard builder (no behaviour change; the
 dashboard specs are the guard) — the one step that needs no agreement and can
 start now. (3) The notebook reader and load-time lint on the server, against
@@ -506,7 +512,8 @@ host, one browser spec on the page.
 
 Each step names the extension, who has to agree, and the Publisher work that
 follows. The venue for every grammar item is the shared grammar package with
-Malloyyo; the proposals go there together, since they interact.
+Malloyyo. The notebook artifact and `kind=text` go first, on their own; the
+rest go together, since they interact.
 
 ### G1 · Positional layout and tile heights
 
@@ -531,14 +538,14 @@ kind whose cells are the file's statements in order, and tabs as a grouping over
 tiles. The block's spelling is decided (2026-09-29): it is the `"` doc-string
 route Malloy already has, a `##|"` … `|##` block named by one identifier on its
 opener when a tile references it, so it is not a grammar extension. `kind=text`
-and the notebook artifact are proposed 2026-09-29; tabs are not yet. _Who
+and the notebook artifact are proposed on their own, ahead of tabs. _Who
 agrees:_ Malloyyo, same venue. _Renderer:_ none for text; a `button` or `image`
-kind is Publisher UI. _Steps:_ (1) decide the block's spelling (done
-2026-09-29); (2) propose `kind=text` and the notebook artifact (done
-2026-09-29), and `tab=` with G1; (3) Publisher
-renders markdown blocks through the same path as the page description, in a
-grid as a text tile and in a notebook as a cell; (4) the dashboard builder gets
-an "Add text" action and tab management, and the notebook builder of §7 follows;
+kind is Publisher UI. _Steps:_ (1) decide the block's spelling (decided
+2026-09-29); (2) propose `kind=text` and the notebook artifact as their own
+issue, and `tab=` with G1; (3) Publisher renders markdown blocks through the
+same path as the page description, in a grid as a text tile and in a notebook
+as a cell; (4) the dashboard builder gets an "Add text" action and tab
+management, and the notebook builder of §7 follows;
 (5) revise [choosing-a-surface.md](choosing-a-surface.md) so "notebook" means
 the Malloyyo-style one and `.malloynb` is the import.
 
@@ -602,10 +609,10 @@ splice approach no longer needs one.
 
 1. Land PR #1158; keep the round-trip suite green over every dashboard in the
    repository. _Done except the merge._
-2. The notebook artifact and `kind=text` were proposed to Malloyyo on
-   2026-09-29, on the existing `"` route. Open the rest of the grammar
-   conversation with G1, tabs, G3 and G6 as one proposal, with the control-tag
-   names alongside.
+2. Propose the notebook artifact and `kind=text` to Malloyyo as their own
+   issue, on the existing `"` route, ahead of the combined grammar proposal.
+   Then open the rest of the grammar conversation with G1, tabs, G3 and G6 as
+   one proposal, with the control-tag names alongside.
 3. The control tags and settings that ride on the `Given` schema (§8), now
    that API changes are in scope again — the write path (§5.2) has landed.
 4. The notebook (§7): the format is decided (2026-09-29), and nothing in it
