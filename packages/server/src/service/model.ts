@@ -8435,7 +8435,8 @@ export class Model {
       cellIndex: number,
       cell: RunnableNotebookCell,
    ): Promise<boolean> {
-      if (!cell.runnable) return true;
+      // Nothing to check an unhydrated cell against, so under a surface it shows nothing.
+      if (!cell.runnable) return this.notebookReadable(cellIndex) === undefined;
       try {
          await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
          return true;
