@@ -368,14 +368,14 @@ describe("readNotebookCells on inline text", () => {
       expect(result.annotations).toContain("##|(text) intro\nbody");
    });
 
-   it("strips a (text) block's opener and reads its name, leaving the body as the tile's markdown", () => {
+   it("reads a (text) block's name and the lines it spans", () => {
       const text =
          '##" d\n## artifact { tiles=[intro] }\n##|(text) intro\n## Heading\nBody\n|##\n##|(text) _b2\nMore\n|##\n';
       const parse = parseNotebookText(text);
       if (isNotebookReaderError(parse)) throw new Error(parse.message);
       expect(readTextBlocks(parse, text)).toEqual([
-         { name: "intro", body: "## Heading\nBody", line: 3, endLine: 6 },
-         { name: "_b2", body: "More", line: 7, endLine: 9 },
+         { name: "intro", line: 3, endLine: 6 },
+         { name: "_b2", line: 7, endLine: 9 },
       ]);
    });
 

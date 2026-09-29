@@ -197,8 +197,8 @@ export function lintNotebookText(
       }
    });
 
-   // Without an artifact note the file is a helper model, not a served notebook.
-   if (inNotebooks && !artifact) return [];
+   // Without an artifact note the file is a helper model, and quoting its lines would only be noise.
+   if (!artifact) return [];
    for (const { line, code, what } of aboveArtifact) {
       add(
          line,
@@ -482,7 +482,13 @@ export function lintNotebookText(
          }
          return;
       }
-      if (kind === "notebook") {
+      if (kind === "text") {
+         add(
+            tagNote.line,
+            "notebook-kind-text-on-dashboard",
+            "`kind=text` marks a tile entry, so it does not mark this dashboard. Fix: remove `kind`, or write `kind=dashboard`.",
+         );
+      } else if (kind === "notebook") {
          add(
             tagNote.line,
             "notebook-kind-under-dashboards",
@@ -495,7 +501,8 @@ export function lintNotebookText(
             `\`kind=${kind}\` is not a kind Publisher knows (dashboard, notebook). Fix: remove \`kind\`.`,
          );
       }
-      if (properties.includes("dashboard_columns")) {
+      // A single query has no grid, and dashboard.ts already says so.
+      if (properties.includes("dashboard_columns") && properties.includes("tiles")) {
          const alias = tagText(tag, "dashboard_columns") ?? "";
          const dashboardTag = motlyTag(modelNotes)?.tag("dashboard");
          const canonical = dashboardTag?.has("columns")

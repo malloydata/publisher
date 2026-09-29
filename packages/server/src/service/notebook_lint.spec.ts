@@ -362,10 +362,17 @@ describe("notebook lint", () => {
       ]);
    });
 
-   it("flags an unknown kind under dashboards but not the reserved text kind", () => {
+   it("flags an unknown kind under dashboards, and the tile kind text on the dashboard itself", () => {
       expect(
          lint(`## artifact { kind=text }\n${SOURCE}`, "dashboards/d.malloy"),
-      ).toEqual([]);
+      ).toEqual([
+         {
+            line: 1,
+            code: "notebook-kind-text-on-dashboard",
+            message:
+               "Line 1: `kind=text` marks a tile entry, so it does not mark this dashboard. Fix: remove `kind`, or write `kind=dashboard`.",
+         },
+      ]);
       expect(
          lint(`## artifact { kind=report }\n${SOURCE}`, "dashboards/d.malloy"),
       ).toEqual([
@@ -506,6 +513,24 @@ describe("notebook lint", () => {
       expect(
          lint(
             `${SOURCE}${RUN}##| markdown\nhi\n|##\n// stray\n${RUN}given: G :: string is 'a'\n`,
+         ),
+      ).toEqual([]);
+   });
+
+   it("says nothing about an untagged helper file under dashboards/", () => {
+      expect(
+         lint(
+            `## Internal notes for maintainers\n${SOURCE}${RUN}`,
+            "dashboards/helper.malloy",
+         ),
+      ).toEqual([]);
+   });
+
+   it("leaves the dashboard_columns alias out of a single-query artifact, which has no grid", () => {
+      expect(
+         lint(
+            `## artifact { dashboard_columns=8 }\n${SOURCE}`,
+            "dashboards/d.malloy",
          ),
       ).toEqual([]);
    });

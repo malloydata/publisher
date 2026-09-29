@@ -577,17 +577,16 @@ export function parseTextOpener(
    return { rest, name: TEXT_BLOCK_NAME.test(rest) ? rest : undefined };
 }
 
-/** A `##|(text) name` … `|##` block: a dashboard text tile, whose body is its markdown. */
+/** A `##|(text) name` … `|##` block: a dashboard text tile. */
 export interface NotebookTextBlock {
    /** Undefined when the opener has no name or more than one bare word. */
    name?: string;
-   body: string;
    /** 1-based opener line and closer line (the last body line when unclosed). */
    line: number;
    endLine: number;
 }
 
-/** The `(text)` blocks of a parsed file, in file order, with the opener line stripped from each body. */
+/** The `(text)` blocks of a parsed file, in file order. */
 export function readTextBlocks(
    parse: NotebookParse,
    text: string,
@@ -628,7 +627,6 @@ export function readTextBlocks(
          endLine = closer.line;
       blocks.push({
          name: opener.name,
-         body: normalizeNewlines(body.join("")).replace(/\n$/, ""),
          line: tokens[i].line,
          endLine,
       });
