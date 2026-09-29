@@ -21,14 +21,18 @@ import csv
 import json
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE / "build_run_package.py"
+sys.path.insert(0, str(HERE))
+import build_run_package  # noqa: E402
 MALLOY = (HERE.parent / "templates" / "eval-run-package" / "eval_run.malloy")
 
 # `source: <name> is duckdb.table('data/<file>.csv')` then an `include { ... }`
@@ -216,17 +220,43 @@ class RefusalsAndServing(unittest.TestCase):
             self.assertIn(line, p.stdout)
             self.assertIn(line, (out / "README.md").read_text())
 
-    def test_with_no_truth_section_it_warns_it_is_the_model_server(self):
-        # Not a guessed truth port: the model server, said out loud, because
-        # the package holds the answer key.
+    def test_with_no_truth_section_it_registers_nowhere(self):
+        # Not a guessed truth port, and not the model server: the package
+        # holds the answer key, and the model server is the answerer's.
         (self.run / "clusters.jsonl").write_text("")
         (self.sset / "eval.toml").write_text("[model]\nport = 4000\n")
         p = self.build("--out", str(self.tmp / "pkg"))
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("# this is the MODEL server: the package holds the answer key",
-                      p.stdout)
+        self.assertIn("# not registered: ", p.stdout)
+        self.assertIn("--on-model-server", p.stdout)
+        self.assertNotIn("curl", p.stdout)
         self.assertNotIn("4881", p.stdout)
 
+    def test_on_model_server_prints_the_delete_that_must_follow(self):
+        (self.run / "clusters.jsonl").write_text("")
+        (self.run / "run.json").write_text(json.dumps(
+            {"publisher": "http://localhost:4000", "environment": "examples"}))
+        (self.sset / "eval.toml").write_text("[model]\nport = 4000\n")
+        p = self.build("--out", str(self.tmp / "pkg"), "--on-model-server")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("# this is the MODEL server: the package holds the answer key",
+                      p.stdout)
+        self.assertIn("curl -sS -X POST http://localhost:4000/api/v0/environments/"
+                      "examples/packages", p.stdout)
+        self.assertIn("curl -sS -X DELETE http://localhost:4000/api/v0/"
+                      "environments/examples/packages/pkg", p.stdout)
+
+    def test_the_registration_body_survives_a_quote_in_the_path(self):
+        cfg = mock.Mock()
+        cfg.truth_publisher.return_value = "http://localhost:4881"
+        cfg.get.return_value = "truth"
+        run = self.tmp / "r"
+        run.mkdir()
+        (run / "run.json").write_text("{}")
+        out = self.tmp / "o'brien" / "pkg"
+        lines = build_run_package.serving_lines(cfg, [run], out)
+        body = shlex.split(lines[1].strip())[-1]
+        self.assertEqual(json.loads(body)["location"], str(out.resolve()))
 
 if __name__ == "__main__":
     unittest.main()
