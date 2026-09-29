@@ -5,4 +5,5 @@ source: a is duckdb.sql("select 1 as x")
 Prose in a well-formed block.
 |##
 
+# bar_chart
 run: a -> { select: x }

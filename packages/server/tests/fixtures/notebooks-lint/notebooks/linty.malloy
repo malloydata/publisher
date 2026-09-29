@@ -5,5 +5,15 @@ source: a is duckdb.sql("select 1 as x")
 Prose under a mistyped opener.
 |##
 
-// A comment between cells.
+// A comment directly above a cell.
 run: a -> { select: x }
+
+source: b is a extend {
+   view: kpis is { select: x }
+   # dashboard { columns=2 }
+   view: v is {
+      nest:
+         # colspan=abc
+         kpis
+   }
+}

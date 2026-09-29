@@ -970,6 +970,26 @@ export class Environment {
                        )
                      : undefined;
                if (readerProblem) collect([readerProblem], compiled.modelPath);
+               if (compiled.compilationError) {
+                  const compilerProblems =
+                     compiled.compilationError.malloyProblems;
+                  if (compilerProblems) {
+                     collect(
+                        compilerProblems as LogMessage[],
+                        compiled.modelPath,
+                     );
+                  } else {
+                     collect(
+                        [
+                           {
+                              severity: "error",
+                              message: compiled.compilationError.message,
+                           } as LogMessage,
+                        ],
+                        compiled.modelPath,
+                     );
+                  }
+               }
                // A file that did not compile carries no text back, so it is read as saved (or as replaced).
                const lintText = !(
                   isNotebookModelPath(compiled.modelPath) ||
@@ -996,26 +1016,6 @@ export class Environment {
                      ),
                      compiled.modelPath,
                   );
-               }
-               if (compiled.compilationError) {
-                  const compilerProblems =
-                     compiled.compilationError.malloyProblems;
-                  if (compilerProblems) {
-                     collect(
-                        compilerProblems as LogMessage[],
-                        compiled.modelPath,
-                     );
-                  } else {
-                     collect(
-                        [
-                           {
-                              severity: "error",
-                              message: compiled.compilationError.message,
-                           } as LogMessage,
-                        ],
-                        compiled.modelPath,
-                     );
-                  }
                }
             }
             if (

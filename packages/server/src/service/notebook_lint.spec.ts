@@ -24,6 +24,7 @@ describe("notebook lint", () => {
       ["##| markdown", "##| markdown"],
       ["##|markdown", "##|markdown"],
       ["##|(markdown)", "##|(markdown)"],
+      ["##|(Markdown)", "##|(Markdown)"],
    ])("suggests the prose opener for %s", (opener, shown) => {
       expect(lint(`${HEADER}${opener}\nhi\n|##\n`)).toEqual([
          {
@@ -33,6 +34,29 @@ describe("notebook lint", () => {
          },
       ]);
    });
+
+   it("says text tile, not markdown cell, for the opener on a dashboard", () => {
+      expect(
+         lint(
+            `## artifact { tiles=[a] }\n##| markdown\nhi\n|##\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([
+         {
+            line: 2,
+            code: "notebook-markdown-opener",
+            message:
+               'Line 2: `##| markdown` opens a block that is not a prose block, so its body is not a text tile. Did you mean `##|"`?',
+         },
+      ]);
+   });
+
+   it.each(["##|", "##|(filters)", "##| filters"])(
+      "leaves the %s block, a tag or route block, alone",
+      (opener) => {
+         expect(lint(`${HEADER}${opener}\nsome=tag\n|##\n`)).toEqual([]);
+      },
+   );
 
    it("names the line of a multi-word opener", () => {
       expect(lint(`${HEADER}##|" two words\nhi\n|##\n`)).toEqual([
@@ -118,15 +142,21 @@ describe("notebook lint", () => {
       ]);
    });
 
-   it("says where a block that swallows a run actually ends", () => {
-      expect(lint(`${HEADER}##|"\nhi\n${SOURCE}${RUN}|##\n`)).toEqual([
+   it("says where a block that swallows another opener actually ends", () => {
+      expect(lint(`${HEADER}##|"\nhi\n##|"\nsecond\n|##\n`)).toEqual([
          {
             line: 2,
             code: "notebook-block-swallows-run",
             message:
-               "Line 2: this block runs to the `|##` on line 6, including the run: on line 5, which is prose here and never runs. Fix: close the block with `|##` before the run:.",
+               "Line 2: this block runs to the `|##` on line 6, and line 4 inside it opens another block, so a `|##` was probably missed before it. Fix: add `|##` before line 4.",
          },
       ]);
+   });
+
+   it("leaves a fenced example or an indented run: inside prose alone", () => {
+      const body =
+         "Try it:\n```malloy\nrun: a -> { select: x }\n```\n  run: a -> { select: x }\n";
+      expect(lint(`${HEADER}##|"\n${body}|##\n`)).toEqual([]);
    });
 
    it("says render tags sit directly above the run they annotate", () => {
@@ -151,6 +181,12 @@ describe("notebook lint", () => {
                'Line 3: this # tag is followed by the end of the file, not by a run:, so it annotates nothing. Render tags sit directly above their run:. Fix: move the tag, and any #" caption, directly above its run:.',
          },
       ]);
+   });
+
+   it("names the token that follows a tag, not the end of the file, when text follows it", () => {
+      const found = lint(`${HEADER}##|"\nhi\n|##\n# Heading\nmore words\n`);
+      const orphan = found.find((f) => f.code === "notebook-orphaned-tag");
+      expect(orphan?.message).toContain("is followed by `more`");
    });
 
    it("asks a notebook with no kind to add kind=notebook", () => {
@@ -231,16 +267,42 @@ describe("notebook lint", () => {
       ]);
    });
 
-   it("warns about a comment no cell holds, and only those", () => {
-      const text = `${HEADER}${SOURCE}// between statements\n/* also\nbetween */\n// inside\n${RUN}${"-- after run\n"}`;
-      const found = lint(text.replace("// inside\n", ""));
-      expect(found.map((f) => f.line)).toEqual([3, 4, 7]);
-      expect(found[0]).toEqual({
-         line: 3,
-         code: "notebook-comment-not-shown",
-         message:
-            'Line 3: this comment is not part of any cell, so the notebook does not show it. Fix: write it as a `##"` prose note, or move it inside the statement it describes.',
-      });
+   it("puts the run-above finding on the run: keyword, below its tag lines", () => {
+      const found = lint(`${SOURCE}# bar_chart\n${RUN}${HEADER}`);
+      expect(found.map((f) => [f.line, f.code])).toEqual([
+         [3, "notebook-run-above-artifact"],
+      ]);
+   });
+
+   it("says nothing about a helper model in notebooks/ that has no artifact note", () => {
+      expect(
+         lint(
+            `${SOURCE}${RUN}##| markdown\nhi\n|##\n// stray\n${RUN}given: G :: string is 'a'\n`,
+         ),
+      ).toEqual([]);
+   });
+
+   it("warns about a comment attached to the statement below it", () => {
+      expect(lint(`${HEADER}${SOURCE}\n// about the run\n${RUN}`)).toEqual([
+         {
+            line: 4,
+            code: "notebook-comment-not-shown",
+            message:
+               'Line 4: this comment sits directly above a cell but is not part of it, so the notebook does not show it. Fix: write it as a `##"` prose note, or move it inside the statement it describes.',
+         },
+      ]);
+   });
+
+   it("warns about every line of a comment block attached to the statement", () => {
+      const found = lint(
+         `${HEADER}${SOURCE}\n/* two\nlines */\n// and one\n${RUN}`,
+      );
+      expect(found.map((f) => f.line)).toEqual([4, 6]);
+   });
+
+   it("leaves a comment set apart by a blank line, or trailing a statement, alone", () => {
+      expect(lint(`${HEADER}${SOURCE}\n// set apart\n\n${RUN}`)).toEqual([]);
+      expect(lint(`${HEADER}${SOURCE.trim()} // trailing\n${RUN}`)).toEqual([]);
    });
 
    it("keeps a comment inside a statement, above the artifact tag, or in a block quiet", () => {
@@ -285,9 +347,7 @@ describe("notebook lint", () => {
             path.join(FIXTURES, "notebooks-malloyyo/notebooks", file),
             "utf8",
          );
-      expect(
-         lint(read("adjacent_blocks.malloy")).map((f) => [f.line, f.code]),
-      ).toEqual([[5, "notebook-comment-not-shown"]]);
+      expect(lint(read("adjacent_blocks.malloy"))).toEqual([]);
       expect(
          lint(read("structure.malloy")).map((f) => [f.line, f.code]),
       ).toEqual([

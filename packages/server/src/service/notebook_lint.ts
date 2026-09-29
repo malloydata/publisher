@@ -84,6 +84,7 @@ export function lintNotebookText(
    let firstGiven: number | undefined;
    const spans: [number, number][] = [];
    let closerLine: number | undefined;
+   const runsAbove: number[] = [];
    children.forEach((child, index) => {
       if (!isRuleNode(child)) {
          const token = child?.symbol;
@@ -130,11 +131,7 @@ export function lintNotebookText(
          firstGiven ??= keywordLine(child, "GIVEN");
       }
       if (inNotebooks && callAccessor(child, "runStatement") && !artifact) {
-         add(
-            keywordLine(child, "RUN"),
-            "notebook-run-above-artifact",
-            "this run: sits above the `## artifact` tag, so it is a definition cell, not a query cell. Fix: move the run: below the artifact tag; the header above it is not cells.",
-         );
+         runsAbove.push(keywordLine(child, "RUN"));
       }
       if (inNotebooks && callAccessor(child, "ignoredObjectAnnotations")) {
          const next = children[index + 1];
@@ -149,6 +146,16 @@ export function lintNotebookText(
       }
    });
 
+   // Without an artifact note the file is a helper model, not a served notebook.
+   if (inNotebooks && !artifact) return [];
+   for (const line of runsAbove) {
+      add(
+         line,
+         "notebook-run-above-artifact",
+         "this run: sits above the `## artifact` tag, so it is a definition cell, not a query cell. Fix: move the run: below the artifact tag; the header above it is not cells.",
+      );
+   }
+
    if (firstGiven !== undefined && !givensEnabled) {
       add(
          firstGiven,
@@ -159,33 +166,66 @@ export function lintNotebookText(
 
    if (artifact) lintArtifact(artifact);
 
-   if (inNotebooks && artifact) {
-      for (const token of tokens) {
-         if (
-            token.channel === 0 ||
-            !/COMMENT/.test(symbolOf(token) ?? "") ||
-            token.startIndex < artifact.startIndex
-         )
-            continue;
-         if (
-            spans.some(
-               ([from, to]) =>
-                  token.startIndex >= from && token.stopIndex <= to,
-            )
-         )
-            continue;
-         add(
-            token.line,
-            "notebook-comment-not-shown",
-            'this comment is not part of any cell, so the notebook does not show it. Fix: write it as a `##"` prose note, or move it inside the statement it describes.',
-         );
-      }
-   }
+   if (inNotebooks && artifact) lintComments(artifact.startIndex);
 
    return findings.sort((a, b) => a.line - b.line);
 
+   /** Comments no cell holds, when they sit directly above the cell they read as describing. */
+   function lintComments(from: number): void {
+      const all = tokens as ParseToken[];
+      const isComment = (t: ParseToken) =>
+         t.channel !== 0 && /COMMENT/.test(symbolOf(t) ?? "");
+      const endLine = (t: ParseToken) =>
+         t.line +
+         (tokenText(t)
+            .replace(/[\r\n]+$/, "")
+            .match(/\n/g)?.length ?? 0);
+      // A prose note is a cell of its own, so a comment above one is not describing a statement or tag.
+      const isNoteToken = (t: ParseToken) =>
+         children.some(
+            (c) =>
+               c.start !== undefined &&
+               c.stop !== undefined &&
+               t.startIndex >= c.start.startIndex &&
+               t.stopIndex <= c.stop.stopIndex &&
+               callAccessor(c, "docAnnotations") !== undefined,
+         );
+      const attached: boolean[] = [];
+      for (let i = all.length - 1; i >= 0; i--) {
+         const next = all[i + 1];
+         attached[i] =
+            next !== undefined &&
+            symbolOf(next) !== "EOF" &&
+            next.line === endLine(all[i]) + 1 &&
+            (isComment(next) ? attached[i + 1] : !isNoteToken(next));
+      }
+      all.forEach((token, i) => {
+         if (!isComment(token) || token.startIndex < from) return;
+         if (!attached[i]) return;
+         const before = all[i - 1];
+         if (before && endLine(before) === token.line) return;
+         if (
+            spans.some(
+               ([lo, hi]) => token.startIndex >= lo && token.stopIndex <= hi,
+            )
+         )
+            return;
+         add(
+            token.line,
+            "notebook-comment-not-shown",
+            'this comment sits directly above a cell but is not part of it, so the notebook does not show it. Fix: write it as a `##"` prose note, or move it inside the statement it describes.',
+         );
+      });
+   }
+
    function describeNext(next: ParseNode | undefined): string {
-      if (!next || !isRuleNode(next)) return "the end of the file";
+      if (!next) return "the end of the file";
+      if (!isRuleNode(next)) {
+         const token = next.symbol;
+         return !token || symbolOf(token) === "EOF"
+            ? "the end of the file"
+            : `\`${tokenText(token)}\``;
+      }
       if (callAccessor(next, "docAnnotations")) return "a note";
       const first = nodeText(next).trim().split("\n")[0].slice(0, 40);
       return `\`${first}\``;
@@ -228,21 +268,24 @@ export function lintNotebookText(
                   `this block is named \`${words[0]}\`, and names are for dashboard text tiles; a notebook ignores it. Fix: remove the name from the opener.`,
                );
             }
-         } else {
+         } else if (rest.replace(/[\s()]/g, "").toLowerCase() === "markdown") {
             add(
                line,
                "notebook-markdown-opener",
-               `\`${opener.trim()}\` opens a block that is not a prose block, so its body is not a markdown cell. Did you mean \`##|"\`?`,
+               `\`${opener.trim()}\` opens a block that is not a prose block, so its body is not a ${inNotebooks ? "markdown cell" : "text tile"}. Did you mean \`##|"\`?`,
             );
          }
          let j = i + 1;
          let firstRun: ParseToken | undefined;
+         let nested: ParseToken | undefined;
          while (
             j < list.length &&
             symbolOf(list[j]) === "BLOCK_ANNOTATION_TEXT"
          ) {
             if (!firstRun && /^\s*run\s*:/.test(tokenText(list[j])))
                firstRun = list[j];
+            if (!nested && /^\s*##\|/.test(tokenText(list[j])))
+               nested = list[j];
             j++;
          }
          const end =
@@ -260,11 +303,11 @@ export function lintNotebookText(
             );
             continue;
          }
-         if (firstRun) {
+         if (nested) {
             add(
                line,
                "notebook-block-swallows-run",
-               `this block runs to the \`|##\` on line ${end.line}${swallowed}. Fix: close the block with \`|##\` before the run:.`,
+               `this block runs to the \`|##\` on line ${end.line}, and line ${nested.line} inside it opens another block, so a \`|##\` was probably missed before it. Fix: add \`|##\` before line ${nested.line}.`,
             );
          }
          const trailing = tokenText(end).replace(/^\|##/, "").trim();

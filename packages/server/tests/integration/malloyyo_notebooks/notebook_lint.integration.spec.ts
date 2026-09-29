@@ -124,6 +124,10 @@ describe("notebook lint through the real server (E2E)", () => {
 
       it("says nothing about a clean notebook, and no notebook or dashboard draws an unknown-render-tag warning", () => {
          expect(warnings.filter((w) => w.model === CLEAN)).toEqual([]);
+         // The malformed colspan in linty proves the validator visits these files at all.
+         expect(
+            warnings.filter((w) => /Invalid # colspan/.test(w.message)),
+         ).toHaveLength(1);
          expect(
             warnings.filter((w) => /unknown render tag/i.test(w.message)),
          ).toEqual([]);

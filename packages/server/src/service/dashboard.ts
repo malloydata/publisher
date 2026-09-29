@@ -308,7 +308,7 @@ const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
    "tiles",
    "givens",
    "autorun",
-   // Not read here: notebook_lint.ts judges the value, so this lint only stays quiet about it.
+   // Not read here: notebook_lint.ts judges `kind` on a model-level `## artifact`; this lint only stays quiet about it.
    "kind",
 ];
 const QUERY_ARTIFACT_PROPERTIES: readonly string[] =

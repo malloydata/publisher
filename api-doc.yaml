@@ -3227,6 +3227,11 @@ components:
             file with an `## artifact` note whose cells could not be read, which
             names the line and the fix and is reported with severity `error`,
             because the notebook is served with that error instead of opening.
+            The same family carries `warn` findings on files under `notebooks/`
+            and `dashboards/` (a mistyped prose-block opener, a missing
+            `kind=notebook`, a block that never closes, and similar), each
+            naming its line and the fix; they are computed at discovery and are
+            also returned by `/compile` at file and package scope.
             Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
