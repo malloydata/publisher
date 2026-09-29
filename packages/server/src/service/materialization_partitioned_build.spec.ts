@@ -47,7 +47,9 @@ describe("createTableAndDescribe: statements issued", () => {
 
    it("lays the table out before inserting, never after", async () => {
       const { conn, sql } = recorder();
-      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
+         sourceType: "postgres",
+      });
       expect(sql).toEqual([
          // Before the transaction, on this path only: the rows each appender
          // thread holds before flushing to the partition files. DuckDB's own
@@ -73,7 +75,9 @@ describe("createTableAndDescribe: statements issued", () => {
 
    it("keeps the author's column order, which is the directory nesting", async () => {
       const { conn, sql } = recorder();
-      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id", "s"]);
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id", "s"], {
+         sourceType: "postgres",
+      });
       expect(sql[4]).toBe(
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id", "s")',
       );
@@ -98,7 +102,9 @@ describe("createTableAndDescribe: statements issued", () => {
       } as unknown as DuckDBConnection;
 
       await expect(
-         createTableAndDescribe(conn, '"lake"."t"', ROWS, ["nope"]),
+         createTableAndDescribe(conn, '"lake"."t"', ROWS, ["nope"], {
+            sourceType: "postgres",
+         }),
       ).rejects.toThrow("no such column");
       expect(issued).toContain("ROLLBACK");
       // And the thread count is given back on this path too.
@@ -117,14 +123,18 @@ describe("createTableAndDescribe: the flush threshold", () => {
    it("issues the configured value", async () => {
       process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "2048";
       const { conn, sql } = recorder();
-      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
+         sourceType: "postgres",
+      });
       expect(sql[0]).toBe("SET partitioned_write_flush_threshold = 2048");
    });
 
    it("issues nothing for `off`, leaving DuckDB's default", async () => {
       process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
       const { conn, sql } = recorder();
-      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
+         sourceType: "postgres",
+      });
       expect(sql[0]).toBe("SET threads = 1");
       expect(sql.filter((q) => q.startsWith("SET partitioned_write"))).toEqual(
          [],
@@ -135,11 +145,57 @@ describe("createTableAndDescribe: the flush threshold", () => {
       // The setting only governs a partitioned COPY, and the unpartitioned
       // CTAS is promised byte-identical to what it was.
       const { conn, sql } = recorder();
-      await createTableAndDescribe(conn, '"lake"."t"', ROWS);
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, [], {
+         sourceType: "postgres",
+      });
       expect(sql).toEqual([
          `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS})`,
          'DESCRIBE "lake"."t"',
       ]);
+   });
+
+   it("reaches every passthrough source, and a chained build keeps the insert it had", async () => {
+      // The failure is the writer's, measured on Postgres and BigQuery alike,
+      // so every passthrough source is bounded the same way; a chained build
+      // issues exactly the sequence it did before any of this existed.
+      for (const sourceType of ["bigquery", "snowflake"] as const) {
+         const { conn, sql } = recorder();
+         await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
+            sourceType,
+         });
+         expect(sql[0]).toBe("SET partitioned_write_flush_threshold = 8192");
+         expect(sql[1]).toBe("SET threads = 1");
+         expect(sql[5]).toBe(
+            `INSERT INTO "lake"."t" (SELECT * FROM (${ROWS}) AS partitioned_build ORDER BY "org_id")`,
+         );
+         expect(sql.at(-1)).toBe("RESET threads");
+      }
+      const before = [
+         "BEGIN TRANSACTION",
+         `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS}) WITH NO DATA`,
+         'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id")',
+         `INSERT INTO "lake"."t" (${ROWS})`,
+         'DESCRIBE "lake"."t"',
+         "COMMIT",
+      ];
+      const { conn, sql } = recorder();
+      await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
+      expect(sql).toEqual(before);
+   });
+
+   it("gives nothing back on the failure path of a build it never bounded", async () => {
+      const issued: string[] = [];
+      const conn = {
+         runSQL: async (q: string) => {
+            issued.push(q);
+            if (q.startsWith("ALTER TABLE")) throw new Error("no such column");
+            return { rows: [], totalRows: 0 };
+         },
+      } as unknown as DuckDBConnection;
+      await expect(
+         createTableAndDescribe(conn, '"lake"."t"', ROWS, ["nope"]),
+      ).rejects.toThrow("no such column");
+      expect(issued.at(-1)).toBe("ROLLBACK");
    });
 });
 
@@ -257,7 +313,9 @@ describe("a wide, many-partition insert at a low memory limit", () => {
       const { conn, dispose } = await lake();
       try {
          await expect(
-            createTableAndDescribe(conn, "lake.t", interleaved, ["org_id"]),
+            createTableAndDescribe(conn, "lake.t", interleaved, ["org_id"], {
+               sourceType: "postgres",
+            }),
          ).rejects.toThrow(/Out of Memory/);
       } finally {
          await dispose();
@@ -272,6 +330,7 @@ describe("a wide, many-partition insert at a low memory limit", () => {
             "lake.t",
             interleaved,
             ["org_id"],
+            { sourceType: "postgres" },
          );
          expect(schema).toHaveLength(COLUMNS + 1);
          const count = await conn.runSQL(`SELECT count(*) AS n FROM lake.t`);
