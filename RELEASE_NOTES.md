@@ -114,6 +114,22 @@ same name, such as a `where:` on a source from another file that declares its ow
 request that used to return rows at the default now fails with a 400. To fix the model, import the
 given at the entry model.
 
+## [Unreleased] — a gate on a joined field checks what the join reads
+
+The filter-binding check introduced in 0.8.1 now also compares, for a gate on a joined field such
+as `#(access_filter) child.org_id in $GROUPS`, what decides which joined row each row reaches. That
+covers the columns the join's `ON` or `with` reads, and the joined source's own `where:`,
+parameters and arguments. **Behavior change:** a query or a model extension that redefines one of
+those answers 403 on every query, even when the new definition is equivalent
+(`rename: raw_id is id; dimension: id is raw_id`), as a redefinition of the gated column itself
+already did. If an extension of a gated source needs a reshaped join key, give the new dimension a
+new name. A caller who re-joins exactly the joined source the author declared, with the same `ON`,
+is now served rather than refused. **Fixes a pre-existing gap, present since 0.8.2 or earlier:** a
+gate reading into a record-literal field named `location` (`dimension: x is { location is … }`)
+was comparable-as-equal regardless of value, because the field-identity check stripped any key
+named `location` by name rather than by shape; a caller could redefine that field and see rows the
+gate should have hidden.
+
 ## [0.8.2] — the model Explorer takes givens
 
 The Console's model Explorer now shows a **Parameters** row when the model declares givens, and
