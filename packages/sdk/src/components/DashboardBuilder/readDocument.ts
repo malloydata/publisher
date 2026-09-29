@@ -16,7 +16,7 @@ import {
    type TreeStage,
    type TreeView,
 } from "./malloyTree";
-import { descriptionNotes, tileSteps } from "./malloyText";
+import { ARTIFACT_LINE, descriptionNotes, tileSteps } from "./malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -276,7 +276,7 @@ export async function readDashboardDocument(
    const parsed = parse.parsed;
 
    const { description, artifact } = modelLines(lines);
-   const artifactLine = artifact.find((l) => l.includes("artifact"));
+   const artifactLine = artifact.find((l) => ARTIFACT_LINE.test(l));
    if (artifactLine === undefined) {
       return {
          ok: false,

@@ -192,6 +192,26 @@ describe("readDashboardDocument", () => {
          expect(doc.description).toBe("Legacy\ntext");
       });
 
+      it("finds the tag past a note whose prose says artifact", async () => {
+         const doc = await read(
+            `##" This artifact shows revenue\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBe("This artifact shows revenue");
+         expect(doc.title).toBe("Probe");
+      });
+
+      it('reads a ##|" block above the tag, not the note below it', async () => {
+         const doc = await read(
+            `##|"\nBlock prose\n|##\n${ARTIFACT}\n##" Legacy\n${rest}`,
+         );
+         expect(doc.description).toBe("Block prose");
+      });
+
+      it('does not count an empty ##|" block above the tag as prose', async () => {
+         const doc = await read(`##|"\n|##\n${ARTIFACT}\n##" Legacy\n${rest}`);
+         expect(doc.description).toBe("Legacy");
+      });
+
       it("has no description when the only note is a malformed route", async () => {
          const doc = await read(`##"word\n${ARTIFACT}\n${rest}`);
          expect(doc.description).toBeUndefined();

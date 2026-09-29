@@ -164,6 +164,15 @@ describe("notebook lint", () => {
       ]);
    });
 
+   it('does not take an empty ##|" block above the tag for a description', () => {
+      expect(
+         lint(
+            `##|"\n|##\n## artifact { tiles=["a -> v"] }\n##" Legacy\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ).map((f) => f.code),
+      ).toEqual(["notebook-description-below-artifact"]);
+   });
+
    it("is quiet about a description above the tag, even with a note below it", () => {
       expect(
          lint(

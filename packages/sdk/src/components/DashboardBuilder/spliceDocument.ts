@@ -481,6 +481,35 @@ function removeArtifactProperty(line: string, key: string): string {
    return line;
 }
 
+/** `line` without its `dashboard { … }` block: outside the artifact braces and never inside a string. */
+function removeDashboardBlock(line: string): string {
+   let depth = 0;
+   for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') i = endOfString(line, i);
+      else if (c === "{" || c === "[") depth++;
+      else if (c === "}" || c === "]") depth--;
+      else if (
+         depth === 0 &&
+         line.startsWith("dashboard", i) &&
+         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
+      ) {
+         const open = /^dashboard\s*\{/.exec(line.slice(i));
+         if (!open) continue;
+         let inner = 1;
+         let j = i + open[0].length;
+         for (; j < line.length && inner > 0; j++) {
+            if (line[j] === '"') j = endOfString(line, j);
+            else if (line[j] === "{") inner++;
+            else if (line[j] === "}") inner--;
+         }
+         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
+         return line.slice(0, from) + line.slice(j);
+      }
+   }
+   return line;
+}
+
 /** The index of the quote closing the string that opens at `open`. */
 function endOfString(line: string, open: number): number {
    for (let i = open + 1; i < line.length; i++) {
@@ -571,7 +600,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       if (current.columns !== next.columns) {
          // The deprecated alias would otherwise sit beside the new width and conflict with it.
          line = removeArtifactProperty(line, "dashboard_columns");
-         line = line.replace(/\s*dashboard\s*\{[^}]*\}/, "");
+         line = removeDashboardBlock(line);
          if (next.columns !== undefined)
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
       }
@@ -581,13 +610,24 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
    if (current.description !== next.description) {
       // Written above the tag, where the server reads it. A description read
       // from below (the legacy spot) moves there, and the lines it came from go.
-      const { read, blankAbove } = descriptionNotes(lines);
+      const { read, blankAbove, below, inBlock } = descriptionNotes(lines);
+      if (inBlock) {
+         return {
+            ok: false,
+            reason:
+               "The description is written in a `##|\"` block, which the builder cannot edit in place. Change it in the file's text.",
+         };
+      }
       const text = (next.description ?? "")
          .split("\n")
          .map((para) => (para.trim() === "" ? '##"' : `##" ${para.trim()}`))
          .join("\n");
       const above = read.length > 0 && read[0] < artifactLine(lines);
-      const removed = above ? read.slice(1) : [...read, ...blankAbove];
+      // Clearing it must not let the server fall back to notes left below the tag.
+      const clearing = next.description === undefined;
+      const removed = above
+         ? [...read.slice(1), ...(clearing ? below : [])]
+         : [...read, ...blankAbove];
       for (const at of removed) edits.push({ ...wholeLine(at), text: "" });
       if (above) {
          edits.push({

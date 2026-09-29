@@ -85,9 +85,12 @@ export function hasArtifactLineOutsideBlocks(
       if (opener) {
          const wanted = `|${opener[1]}`;
          if (trimmed.includes(wanted, opener[0].length)) continue;
-         const end = lines.findIndex(
-            (line, at) => at > i && line.trimStart().startsWith(wanted),
-         );
+         let end = -1;
+         for (let at = i + 1; at < lines.length; at++)
+            if (lines[at].trimStart().startsWith(wanted)) {
+               end = at;
+               break;
+            }
          // An unclosed opener holds no block, so it must not hide the rest of the file.
          if (end !== -1) {
             i = end;

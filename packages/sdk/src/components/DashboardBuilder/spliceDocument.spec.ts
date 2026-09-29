@@ -1097,6 +1097,21 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       });
    });
 
+   it("changes the width of a file whose title holds dashboard { }", async () => {
+      const source = `## artifact { title="my dashboard {x}" tiles=["a -> x"] } dashboard { columns=4 }\n${TAIL}`;
+      const out = await spliced(source, (d) => {
+         d.columns = 6;
+      });
+      expect(out).toContain('title="my dashboard {x}"');
+      expect(out).toContain("dashboard { columns=6 }");
+      expect(out.match(/dashboard \{ columns/g)).toHaveLength(1);
+      const removed = await spliced(source, (d) => {
+         delete d.columns;
+      });
+      expect(removed).toContain('title="my dashboard {x}"');
+      expect(removed).not.toContain("columns=");
+   });
+
    describe("the description's place", () => {
       const artifact = '## artifact { title="T" tiles=["a -> x"] }';
 
@@ -1131,6 +1146,46 @@ describe("spliceDashboardDocument: the page's own settings", () => {
          const out = await spliced(`${artifact}\n##" Legacy\n${TAIL}`, (d) => {
             delete d.description;
          });
+         expect(out).toBe(`${artifact}\n${TAIL}`);
+      });
+
+      it("edits the description and the title on a file whose prose says artifact", async () => {
+         const source = `##" This artifact shows revenue\n${artifact}\n${TAIL}`;
+         const edited = await spliced(source, (d) => {
+            d.description = "New";
+         });
+         expect(edited).toBe(`##" New\n${artifact}\n${TAIL}`);
+         const retitled = await spliced(source, (d) => {
+            d.title = "Renamed";
+         });
+         expect(retitled).toContain('title="Renamed"');
+         expect(retitled).toContain(`##" This artifact shows revenue\n`);
+      });
+
+      it('refuses to edit a description held in a ##|" block, and touches nothing', async () => {
+         const source = `##|"\nBlock prose\n|##\n${artifact}\n##" Legacy\n${TAIL}`;
+         const reason = await refused(source, (d) => {
+            d.description = "New";
+         });
+         expect(reason).toContain("block");
+         expect(reason).toContain("##|");
+         await refused(source, (d) => {
+            delete d.description;
+         });
+         const out = await spliced(source, (d) => {
+            d.title = "Renamed";
+         });
+         expect(out).toContain('##|"\nBlock prose\n|##\n');
+         expect(out).toContain('##" Legacy\n');
+      });
+
+      it("clears the notes below the tag too when it clears one above", async () => {
+         const out = await spliced(
+            `##" Above\n${artifact}\n##" Ignored\n${TAIL}`,
+            (d) => {
+               delete d.description;
+            },
+         );
          expect(out).toBe(`${artifact}\n${TAIL}`);
       });
 

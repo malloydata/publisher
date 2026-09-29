@@ -1624,8 +1624,8 @@ paths:
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
         that surface answers 404 with the same message a query to it gets. Dashboard files and
-        served notebooks (`notebooks/*.malloy` with an `## artifact` note) are always returned. A package with no surface, or with `queryableSources: "all"`, returns
-        every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
+        served notebooks (`notebooks/*.malloy` with an `## artifact` note) are always returned.
+        A package with no surface, or with `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. A join to a hidden source
         keeps only its name and the names and types of its fields. `sourceText` is left out

@@ -146,10 +146,11 @@ export function lintNotebookText(
          for (const note of notes) {
             const noteText = nodeText(note);
             // A block note ends at its closer, which is not part of the tag text.
-            modelNotes.push(noteText.replace(/\r?\n\|##[^\n]*\n?$/, ""));
+            const bodyText = noteText.replace(/\r?\n\|##[^\n]*\n?$/, "");
+            modelNotes.push(bodyText);
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
-            docNotes.push({ line: lineOfNode(note), text: noteText });
+            docNotes.push({ line: lineOfNode(note), text: bodyText });
             if (!artifact && note.start && isArtifactNoteText(noteText)) {
                artifact = {
                   text: noteText,
