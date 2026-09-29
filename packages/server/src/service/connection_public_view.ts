@@ -1,3 +1,4 @@
+import { publicPluginConnectionFields } from "./plugin_connection";
 import { components } from "../api";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -192,7 +193,27 @@ const PUBLIC_CONNECTION: PublicShape = {
    motherduckConnection: MOTHERDUCK,
    ducklakeConnection: DUCKLAKE,
    publisherConnection: PUBLISHER,
+   // No `pluginConnection` here: its shape is decided per connection by
+   // `shapeFor`, and a bag for a type this server has not registered is
+   // withheld whole by being absent from the shape.
 };
+
+/**
+ * The shape for one connection. Every built-in field is static; the plugin
+ * bag's fields come from the registry, so a type that declares a credential
+ * withholds it without anyone editing this file.
+ */
+function shapeFor(connection: unknown): PublicShape {
+   const type = isPlainObject(connection)
+      ? (connection["type"] as string | undefined)
+      : undefined;
+   const fields = publicPluginConnectionFields(type);
+   if (!fields) return PUBLIC_CONNECTION;
+   return {
+      ...PUBLIC_CONNECTION,
+      pluginConnection: Object.fromEntries(fields.map((f) => [f, "any"])),
+   };
+}
 
 /**
  * The allowlist keyed by the OpenAPI schema each shape mirrors. Exported so the
@@ -203,7 +224,7 @@ const PUBLIC_CONNECTION: PublicShape = {
 export const PUBLIC_FIELDS_BY_SCHEMA: Readonly<
    Record<string, readonly string[]>
 > = {
-   Connection: Object.keys(PUBLIC_CONNECTION),
+   Connection: [...Object.keys(PUBLIC_CONNECTION), "pluginConnection"],
    PostgresConnection: Object.keys(POSTGRES),
    BigqueryConnection: Object.keys(BIGQUERY),
    SnowflakeConnection: Object.keys(SNOWFLAKE),
@@ -336,12 +357,12 @@ export function toPublicConnection(connection: ApiConnection): ApiConnection {
    // Server-computed, so a stored copy of it (from a client that sent one) is
    // dropped rather than trusted or reported as withheld.
    const stored = withoutWithheldFields(connection);
-   const view = (projectShape(stored, PUBLIC_CONNECTION) ?? {}) as Record<
+   const view = (projectShape(stored, shapeFor(stored)) ?? {}) as Record<
       string,
       unknown
    >;
    const withheld: string[] = [];
-   flattenWithheld(hiddenFields(stored, PUBLIC_CONNECTION) ?? {}, "", withheld);
+   flattenWithheld(hiddenFields(stored, shapeFor(stored)) ?? {}, "", withheld);
    if (withheld.length > 0) view.withheldFields = withheld.sort();
    return view as ApiConnection;
 }
@@ -640,7 +661,7 @@ export function mergeConnectionUpdate(
    if (isPlainObject(patch) && !Object.hasOwn(patch, "configEtag")) {
       delete shallow["configEtag"];
    }
-   const hidden = hiddenFields(current, PUBLIC_CONNECTION);
+   const hidden = hiddenFields(current, shapeFor(current));
    if (!hidden || Object.keys(hidden).length === 0) {
       return shallow as ApiConnection;
    }

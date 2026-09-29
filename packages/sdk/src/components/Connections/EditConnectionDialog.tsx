@@ -19,7 +19,7 @@ import {
    AttachedDatabase,
    AttachedDatabaseTypeEnum,
    Connection,
-   ConnectionTypeEnum,
+   BuiltInConnectionType,
    DucklakeConnection,
 } from "../../client/api";
 import {
@@ -141,7 +141,7 @@ export default function EditConnectionDialog({
 
       const formData = new FormData(event.currentTarget);
       const name = formData.get("name")?.toString();
-      const type = formData.get("type")?.toString() as ConnectionTypeEnum;
+      const type = formData.get("type")?.toString() as BuiltInConnectionType;
       const fields = connectionFieldsByType[type];
       if (!name) {
          throw new Error("Name is required");
@@ -568,7 +568,7 @@ export default function EditConnectionDialog({
                      value={type}
                      select
                      onChange={(event) =>
-                        setType(event.target.value as ConnectionTypeEnum)
+                        setType(event.target.value as BuiltInConnectionType)
                      }
                   >
                      {uiCreatableConnectionTypes.map((type) => (

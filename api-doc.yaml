@@ -4928,20 +4928,15 @@ components:
             connection something else (e.g. `shared_duckdb`).
         type:
           type: string
-          description: Type of database connection
-          enum:
-            [
-              postgres,
-              bigquery,
-              snowflake,
-              trino,
-              databricks,
-              mysql,
-              duckdb,
-              motherduck,
-              ducklake,
-              publisher,
-            ]
+          description: >
+            Type of database connection. One of the built-in types (the
+            `BuiltInConnectionType` list: postgres, bigquery, snowflake, trino,
+            databricks, mysql, duckdb, motherduck, ducklake, publisher), each
+            configured through its own object below;
+            or the name of a connection type a preloaded module registered
+            with the server (`PUBLISHER_PRELOAD_MODULES`), configured through
+            `pluginConnection`. A type this server has not registered fails the
+            environment at load, naming the types it does have.
         withheldFields:
           type: array
           items:
@@ -5076,6 +5071,44 @@ components:
           $ref: "#/components/schemas/DucklakeConnection"
         publisherConnection:
           $ref: "#/components/schemas/PublisherConnection"
+        pluginConnection:
+          $ref: "#/components/schemas/PluginConnection"
+
+    BuiltInConnectionType:
+      type: string
+      description: >
+        The connection types the server ships with a typed configuration
+        object and its own schema-browsing probe. `Connection.type` is not
+        limited to these — a preloaded module can register another — but a
+        client offering a choice of built-ins reads the list here rather than
+        restating it.
+      enum:
+        [
+          postgres,
+          bigquery,
+          snowflake,
+          trino,
+          databricks,
+          mysql,
+          duckdb,
+          motherduck,
+          ducklake,
+          publisher,
+        ]
+
+    PluginConnection:
+      type: object
+      description: >
+        Configuration for a connection type a preloaded module registered,
+        keyed by the property names that type declared when it registered.
+        The server checks the keys against those declarations: an undeclared
+        key, a missing required property, or a value for a property the type
+        only takes from a host overlay is a config error at load. Properties
+        the type declared as credentials (`password`, `secret`, `opaque`) are
+        write-only like every other credential on this schema — withheld from
+        reads and listed in `withheldFields` — and the whole object is withheld
+        when the server that answers has not registered the type.
+      additionalProperties: true
 
     ConnectionProxy:
       type: object

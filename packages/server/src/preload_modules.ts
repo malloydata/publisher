@@ -89,6 +89,8 @@ export interface PreloadedModule {
    addedConnectionTypes: string[];
    /** Connection type names whose definition this import replaced. */
    replacedConnectionTypes: string[];
+   /** The same specifier appeared earlier in the list; this import was a no-op. */
+   repeated: boolean;
 }
 
 /** A snapshot of this realm's connection-type registry, by definition identity. */
@@ -117,8 +119,11 @@ export async function preloadModules(
    importer: ModuleImporter = (spec) => import(spec),
 ): Promise<PreloadedModule[]> {
    const loaded: PreloadedModule[] = [];
+   const seen = new Set<string>();
    for (const spec of specs) {
       const resolved = resolvePreloadSpecifier(spec);
+      const repeated = seen.has(resolved);
+      seen.add(resolved);
       const before = connectionTypeSnapshot();
       try {
          await importer(resolved);
@@ -134,7 +139,12 @@ export async function preloadModules(
          if (!before.has(name)) addedConnectionTypes.push(name);
          else if (before.get(name) !== def) replacedConnectionTypes.push(name);
       }
-      loaded.push({ spec, addedConnectionTypes, replacedConnectionTypes });
+      loaded.push({
+         spec,
+         addedConnectionTypes,
+         replacedConnectionTypes,
+         repeated,
+      });
    }
    return loaded;
 }

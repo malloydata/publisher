@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { HTMLInputTypeAttribute } from "react";
-import { ConnectionTypeEnum } from "../../client/api";
+import { BuiltInConnectionType } from "../../client/api";
 import type {
    AzureConnection,
    BigqueryConnection,
@@ -37,7 +37,7 @@ type ConnectionField = {
 };
 
 export const connectionFieldsByType: Record<
-   ConnectionTypeEnum,
+   BuiltInConnectionType,
    Array<ConnectionField>
 > = {
    postgres: [
@@ -321,7 +321,7 @@ export const connectionFieldsByType: Record<
    publisher: [],
 };
 
-export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
+export const attributesFieldName: Record<BuiltInConnectionType, string> = {
    postgres: "postgresConnection",
    bigquery: "bigqueryConnection",
    snowflake: "snowflakeConnection",
@@ -337,11 +337,11 @@ export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
 /**
  * Connection types the Add/Edit dialogs offer as creatable. `publisher` proxy
  * connections are configured in publisher.config.json rather than through the
- * UI, so they are a valid ConnectionTypeEnum but not a form choice.
+ * UI, so they are a valid BuiltInConnectionType but not a form choice.
  */
 export const uiCreatableConnectionTypes = Object.values(
-   ConnectionTypeEnum,
-).filter((type) => type !== ConnectionTypeEnum.Publisher);
+   BuiltInConnectionType,
+).filter((type) => type !== BuiltInConnectionType.Publisher);
 
 // Mapping for attached database types to their connection field names
 export const attachedDatabaseConnectionFieldName: Record<string, string> = {
@@ -491,13 +491,13 @@ export const azureAttachedDatabaseFields: Array<ConnectionField> = [
 export function getAttachedDatabaseFields(
    dbType: string,
 ): Array<ConnectionField> {
-   // For types that exist in ConnectionTypeEnum, use connectionFieldsByType
+   // For types that exist in BuiltInConnectionType, use connectionFieldsByType
    if (
       dbType === "postgres" ||
       dbType === "bigquery" ||
       dbType === "snowflake"
    ) {
-      return connectionFieldsByType[dbType as ConnectionTypeEnum] || [];
+      return connectionFieldsByType[dbType as BuiltInConnectionType] || [];
    }
    // For S3
    if (dbType === "s3") {

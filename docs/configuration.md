@@ -226,7 +226,8 @@ The Docker image sets `PUBLISHER_NO_MCP_CONFIG=1`, since no agent session starts
 `@malloydata/malloy` keeps a process-wide registry of connection types and one of dialects, and each
 `@malloydata/db-*` package registers itself when it is imported. That is the whole plug-in seam: a
 driver that lives outside this server is added by importing it in the server's process before a package
-that names its connection type loads. `PUBLISHER_PRELOAD_MODULES` names those imports:
+that names its connection type loads. `PUBLISHER_PRELOAD_MODULES` names those imports, and a
+connection of a type registered that way is configured through `pluginConnection`:
 
 ```sh
 PUBLISHER_PRELOAD_MODULES="@acme/malloy-db-foo,@acme/malloy-dialect-bar" malloy-publisher
@@ -240,13 +241,38 @@ one that reaches for the compiler from outside the tree fails at startup naming 
 in order, one awaited before the next, so a module can rely on an earlier one having registered. A
 relative path is refused at startup.
 
+```json
+{
+  "name": "warehouse",
+  "type": "foo",
+  "pluginConnection": { "host": "foo.internal", "token": "…" }
+}
+```
+
+`type` is the name the module registered, and the keys of `pluginConnection` are the properties it
+declared when it registered — the same declarations the built-in drivers make. The server checks the
+bag against them at load: a key the type never declared, a required property left out, or a value for
+a property the type only accepts from a host overlay fails the environment with the key named.
+Properties the type declared as credentials (`password`, `secret`, `opaque`) are withheld from every
+read and listed in `withheldFields`, so a driver's secret is handled the way `postgresConnection.password`
+is without anyone editing the server. When a server that has **not** registered the type answers, the
+whole bag is withheld rather than published on the guess that none of it is a credential. A type
+nobody registered fails the environment at load, naming the types preloaded modules did register.
+
+Two things the built-ins have that a registered type does not: schema browsing (the connection's
+`/schemas` routes answer `501`, saying so — browsing needs a probe written for the warehouse, and
+packages compile and query regardless) and static `attributes` before first use (`dialectName`,
+`canPersist`, …), which the registry does not declare; the built-in types carry them by name.
+
 **A driver must declare `@malloydata/malloy` as a `peerDependency`, never a `dependency`.** The server
 pins the compiler to one exact version, so a module that carries its own dependency on any other
 version is installed with a nested copy — and registers into that copy's registry, which the server
 never reads. The import succeeds and the first package that names the type still fails with an unknown
 connection type; the same break returns silently on every compiler bump. The boot log makes this
-visible: each preloaded module is logged with the connection types it added or replaced, and a module
-that registered none is logged as a warning naming this cause.
+visible: each preloaded module is logged with the connection types it added or replaced. A module that
+registered none is logged too, as information rather than a warning, because only connection types are
+visible there — a module that registers a dialect, or a repeated entry, reads the same way. A *driver*
+that reads that way is the nested-copy case.
 
 Three things follow from how the registries work. Registration is per JS realm, and the server compiles
 packages in worker threads that each have their own realm, so every worker imports the same list before

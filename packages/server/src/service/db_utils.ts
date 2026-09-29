@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { NotImplementedError } from "../errors";
+import { pluginConnectionProperties } from "./plugin_connection";
 import { ClientSecretCredential } from "@azure/identity";
 import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
@@ -1012,6 +1014,23 @@ async function listTablesForPublisher(
    });
 }
 
+/**
+ * Schema browsing needs a probe written for the warehouse (information_schema
+ * here, a catalog API there), which a type a preloaded module registered does
+ * not bring. Its packages still compile and query; only the browser is blank,
+ * and the error says which of the two this is.
+ */
+function unsupportedForBrowsing(connection: ApiConnection): Error {
+   if (pluginConnectionProperties(connection.type)) {
+      return new NotImplementedError(
+         `Schema browsing is not available for connection type '${connection.type}': ` +
+            "it was registered by a preloaded module, and browsing needs a per-type probe. " +
+            "Queries against the connection are unaffected.",
+      );
+   }
+   return new Error(`Unsupported connection type: ${connection.type}`);
+}
+
 export async function getSchemasForConnection(
    connection: ApiConnection,
    malloyConnection: Connection,
@@ -1038,7 +1057,7 @@ export async function getSchemasForConnection(
       case "publisher":
          return getSchemasForPublisher(connection);
       default:
-         throw new Error(`Unsupported connection type: ${connection.type}`);
+         throw unsupportedForBrowsing(connection);
    }
 }
 
@@ -1365,7 +1384,7 @@ export async function listTablesForSchema(
       case "publisher":
          return listTablesForPublisher(connection, schemaName, tableNames);
       default:
-         throw new Error(`Unsupported connection type: ${connection.type}`);
+         throw unsupportedForBrowsing(connection);
    }
 }
 

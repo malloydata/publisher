@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { pluginConnectionEntry } from "./plugin_connection";
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
@@ -1318,7 +1319,11 @@ export function assembleEnvironmentConnections(
          }
 
          default: {
-            throw new Error(`Unsupported connection type: ${connection.type}`);
+            // A type a preloaded module registered: its config is the bag,
+            // checked against the properties the type declared, and the
+            // factory is core's. Anything else is the error it always was.
+            pojo.connections[connection.name] =
+               pluginConnectionEntry(connection);
          }
       }
 

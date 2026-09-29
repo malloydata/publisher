@@ -58,7 +58,17 @@ the next; a relative path is refused; an entry that fails to import in the main 
 naming the module, rather than surfacing later as an unknown connection type on the first package
 that needed it. The boot log records the connection types each module added or replaced, and warns
 when a module registered none — the symptom of a driver that carries its own copy of the compiler,
-which is why a driver declares `@malloydata/malloy` a `peerDependency`. Documented in
+which is why a driver declares `@malloydata/malloy` a `peerDependency`.
+
+**A connection's `type` is no longer limited to the built-ins.** A type a preloaded module registered
+is configured through a new `pluginConnection` object, keyed by the properties the type declared
+when it registered; the server checks the keys against those declarations at load, forwards the
+bag to the type's factory, and withholds the properties the type declared as credentials from every
+read, listing them in `withheldFields` like any other. The API contract's `type` is now a string that
+names the built-ins in its description rather than an enum, so a generated client accepts a
+registered type; a type this server has not registered still fails the environment at load, naming
+the ones it has. Schema browsing for such a connection answers `501` rather than a bare error.
+Documented in
 [docs/configuration.md](docs/configuration.md#loading-connection-types-and-dialects-packaged-outside-the-server).
 
 ---

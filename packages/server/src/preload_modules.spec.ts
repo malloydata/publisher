@@ -91,13 +91,18 @@ describe("preloadModules", () => {
             throw new Error("probe");
          },
       };
+      // Evaluates each module once, as a real import does: a repeated
+      // specifier is served from the module cache and registers nothing.
+      const executed = new Set<string>();
       const importer = async (spec: string) => {
+         if (executed.has(spec)) return;
+         executed.add(spec);
          if (spec === "adds") registerConnectionType("preload_spec_probe", def);
          if (spec === "replaces")
             registerConnectionType("preload_spec_probe", { ...def });
       };
       const loaded = await preloadModules(
-         ["adds", "replaces", "nothing"],
+         ["adds", "replaces", "nothing", "adds"],
          importer,
       );
       expect(loaded).toEqual([
@@ -105,16 +110,27 @@ describe("preloadModules", () => {
             spec: "adds",
             addedConnectionTypes: ["preload_spec_probe"],
             replacedConnectionTypes: [],
+            repeated: false,
          },
          {
             spec: "replaces",
             addedConnectionTypes: [],
             replacedConnectionTypes: ["preload_spec_probe"],
+            repeated: false,
          },
          {
             spec: "nothing",
             addedConnectionTypes: [],
             replacedConnectionTypes: [],
+            repeated: false,
+         },
+         // The second "adds" is served from the module cache: nothing is
+         // registered, and the entry is flagged as the repeat it is.
+         {
+            spec: "adds",
+            addedConnectionTypes: [],
+            replacedConnectionTypes: [],
+            repeated: true,
          },
       ]);
    });

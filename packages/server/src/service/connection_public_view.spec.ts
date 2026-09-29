@@ -10,6 +10,8 @@ import {
    toPublicConnection,
    toPublicConnections,
 } from "./connection_public_view";
+import { registerConnectionType } from "@malloydata/malloy";
+import { BUILT_IN_CONNECTION_TYPES } from "./plugin_connection";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -203,7 +205,13 @@ describe("connection public view: contract parity", () => {
       // QueryMetadata is a free-form string bag the contract documents as
       // non-secret and round-trips verbatim, so it is mapped to "any" rather
       // than field-by-field and has no allowlist to hold against the contract.
-      const notAConnectionConfig = new Set(["QueryMetadata"]);
+      // PluginConnection declares no properties of its own: its fields are
+      // whatever the registered type declared, and the view reads them from
+      // the registry per connection (see the plugin type tests below).
+      const notAConnectionConfig = new Set([
+         "QueryMetadata",
+         "PluginConnection",
+      ]);
       const unregistered = [...seen].filter(
          (name) =>
             !Object.hasOwn(PUBLIC_FIELDS_BY_SCHEMA, name) &&
@@ -212,29 +220,30 @@ describe("connection public view: contract parity", () => {
       expect(unregistered).toEqual([]);
    });
 
-   it("has a shape for every connection type in the contract enum", () => {
-      // A new connection type has to be given a shape, or its whole config
+   it("has a shape for every built-in connection type, and the contract leaves the type open", () => {
+      // A new built-in type has to be given a shape, or its whole config
       // (credentials included) would be dropped silently rather than served.
+      // The contract no longer enumerates the types -- a preloaded module can
+      // register one -- so the server's own list is the source, and the
+      // contract is held to naming each of them and to carrying no enum.
       const connectionBlock = apiDoc.slice(apiDoc.indexOf("\n    Connection:"));
-      const enumStart = connectionBlock.indexOf("enum:");
-      const enumBlock = connectionBlock.slice(
-         enumStart,
-         connectionBlock.indexOf("]", enumStart),
+      const typeBlock = connectionBlock.slice(
+         connectionBlock.indexOf("\n        type:\n"),
+         connectionBlock.indexOf("\n        withheldFields:\n"),
       );
-      const types = [...enumBlock.matchAll(/\n\s+([a-z]+),?/g)].map(
-         (m) => m[1],
-      );
-      expect(types).toContain("postgres");
-      expect(types.length).toBeGreaterThanOrEqual(10);
+      expect(typeBlock).not.toContain("enum:");
+      expect(BUILT_IN_CONNECTION_TYPES.size).toBeGreaterThanOrEqual(10);
 
       const publicTop = new Set(PUBLIC_FIELDS_BY_SCHEMA.Connection);
-      for (const type of types) {
+      for (const type of BUILT_IN_CONNECTION_TYPES) {
+         expect(typeBlock).toContain(type);
          const field =
             type === "motherduck"
                ? "motherduckConnection"
                : `${type}Connection`;
          expect(publicTop.has(field)).toBe(true);
       }
+      expect(publicTop.has("pluginConnection")).toBe(true);
    });
 });
 
@@ -1406,5 +1415,63 @@ describe("mergeConnectionUpdate", () => {
          userName: "writer",
          password: "stored-secret",
       });
+   });
+});
+
+describe("a connection type a preloaded module registered", () => {
+   // The view has no hand-written shape for such a type. Its public fields are
+   // the properties it declared as non-credentials, read from the registry.
+   const PROBE_TYPE = "public_view_probe";
+   registerConnectionType(PROBE_TYPE, {
+      displayName: "Probe",
+      properties: [
+         { name: "host", displayName: "Host", type: "string" },
+         { name: "token", displayName: "Token", type: "password" },
+         { name: "key", displayName: "Key", type: "secret", optional: true },
+      ],
+      factory: async () => {
+         throw new Error("never constructed here");
+      },
+   });
+   const stored = {
+      name: "probe",
+      type: PROBE_TYPE,
+      pluginConnection: { host: "db.internal", token: SENTINEL, key: SENTINEL },
+   } as ApiConnection;
+
+   it("returns the declared non-credential fields and withholds the credentials by name", () => {
+      const view = toPublicConnection(stored);
+      expect(JSON.stringify(view)).not.toContain(SENTINEL);
+      expect(view).toEqual({
+         name: "probe",
+         type: PROBE_TYPE,
+         pluginConnection: { host: "db.internal" },
+         withheldFields: ["pluginConnection.key", "pluginConnection.token"],
+      } as ApiConnection);
+   });
+
+   it("keeps a withheld credential across an update that could not read it", () => {
+      const merged = mergeConnectionUpdate(stored, {
+         pluginConnection: { host: "db2.internal" },
+      } as Partial<ApiConnection>);
+      expect(merged.pluginConnection).toEqual({
+         host: "db2.internal",
+         token: SENTINEL,
+         key: SENTINEL,
+      });
+   });
+
+   it("withholds the whole bag for a type this server has not registered", () => {
+      const view = toPublicConnection({
+         ...stored,
+         type: "not_registered_here",
+      } as ApiConnection);
+      expect(JSON.stringify(view)).not.toContain(SENTINEL);
+      expect(view.pluginConnection).toBeUndefined();
+      expect(view.withheldFields).toEqual([
+         "pluginConnection.host",
+         "pluginConnection.key",
+         "pluginConnection.token",
+      ]);
    });
 });

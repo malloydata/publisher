@@ -1513,7 +1513,7 @@ describe("an unclassified dialect fails loudly", () => {
    // would inherit quote-doubling silently and nobody would be checking. Read
    // the enum rather than restating it, so the two cannot drift. Behavioural on
    // purpose, so it needs no new exports from the module under test.
-   it("classifies every connection type in the api-doc enum", async () => {
+   it("classifies every built-in connection type in the api-doc enum", async () => {
       const { sqlLiteral } = await import("./db_utils");
       const { readFileSync } = await import("node:fs");
       const { resolve } = await import("node:path");
@@ -1528,7 +1528,7 @@ describe("an unclassified dialect fails loudly", () => {
       ).replace(/\r\n/g, "\n");
       // Anchor on the schema key rather than its description prose, which is
       // free text and has been reworded under this test.
-      const start = apiDoc.indexOf("\n    Connection:\n");
+      const start = apiDoc.indexOf("\n    BuiltInConnectionType:\n");
       expect(start).toBeGreaterThan(-1);
       const enumAt = apiDoc.indexOf("enum:", start);
       const types = [
