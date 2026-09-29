@@ -189,8 +189,10 @@ What that parks, explicitly (and what it does **not** block; see §5):
 
 **Lifted for two items on 2026-09-29** (Kyle): the notebook artifact (§7) and
 dashboard text tiles (the `kind=text` half of item 2). Neither creates a third
-dialect, because both are spelled on the `"` doc-string route Malloy already
-has, with no grammar extension. The spelling is agreed with the Malloyyo
+dialect: a notebook's prose is on the `"` doc-string route Malloy already has,
+and a text tile is a `##|(text)` block, a route of its own, so neither needs a
+grammar extension. Text tiles are format decided, not rendered yet. The
+spelling is agreed with the Malloyyo
 project (its side notes a P0 sign-off as pending). Items 1, 3 and 4, and tabs,
 stay parked.
 
@@ -282,9 +284,12 @@ change lands in the right place.
   `tileKey` for the grid, the drag and the history.
 - `malloyTree.ts` — the one reading of a file the reader and writer share, taken
   from Malloy's own parse tree and token stream: declarations under a source,
-  `given:` in both spellings, the artifact line, a tile expression's steps, and
-  the comment index every guard asks before it deletes a range. It refuses
+  `given:` in both spellings, and the comment index every guard asks before it
+  deletes a range. It refuses
   rather than guessing when the tree is not the shape it was written against.
+- `malloyText.ts` — the small grammars that are not Malloy's: the artifact
+  line, a tile expression's steps, and the description notes and block spans
+  the reader and writer share.
 - `readDocument.ts` — the tree for structure, spans for content; refuses with a
   reason and a line.
 - `spliceDocument.ts` — `checkShape` (what comes and goes, and whether that is
@@ -385,7 +390,8 @@ run: sales -> by_month + { where: region ~ $REGION }
 ```
 
 A dashboard text tile is a `(text)` block, named by one bare word on its opener
-and referenced from `tiles=`:
+and referenced from `tiles=`. The format is decided; Publisher does not render
+text tiles yet, so the lint says an entry is left out of the page:
 
 ```malloy
 ## artifact { title="Storefront" tiles=[intro { kind=text colspan=12 }, "overview -> kpis"] } dashboard { columns=12 }
@@ -395,8 +401,9 @@ and referenced from `tiles=`:
 ```
 
 - **Identity.** The directory decides: `notebooks/*.malloy` is a notebook and
-  `dashboards/*.malloy` a dashboard, with `## artifact` present. An untagged
-  file is a shared include. `kind=notebook` is checked by lint: a notebook tag
+  `dashboards/*.malloy` a dashboard, with `## artifact` present. A dashboard
+  file with only a query-level `# artifact` is also a dashboard, of that one
+  query. An untagged file is a shared include. `kind=notebook` is checked by lint: a notebook tag
   under `dashboards/` is a finding, and so are `tiles=` under `notebooks/`.
 - **Cells**, in file order, from the file's own notes only, never imported
   ones. Each `"`-route note after the artifact tag is a markdown cell, except
@@ -410,16 +417,21 @@ and referenced from `tiles=`:
   folded and read by every cell below it. Cell index is a wire contract, so
   statements are never merged into a run. The
   **header** is not a cell, and in a notebook it holds only `##!` flags, `//`
-  comments and unnamed `"` notes above `## artifact`. Any statement (import,
-  source, given, query, run, sql) or other tag above the artifact tag is an
-  error finding. A dashboard may still put statements above its tag.
+  comments and unnamed `"` notes above `## artifact`. A statement above the
+  tag (import, source, given, query, run) is an error finding. A `# tag` above
+  it is a warning (`notebook-orphaned-tag`), and the reader then refuses the
+  file; a `##|(text)` block above it is a warning (`notebook-text-block`). A
+  dashboard may still put statements above its tag.
 - **Description**: the file's unnamed `"` notes above the artifact tag, for
   both notebooks and dashboards. A dashboard with none above its tag still reads
   the ones below it, as it did before, and the lint asks for them to move above.
+  With no `title=`, the description's first non-empty line is the title and the
+  rest is the description.
 - **Text blocks.** `##|(text) name` … `|##` is a dashboard text tile. The name
   is the sole token after `(text)` on the opener, a bare word
-  (`[A-Za-z_][A-Za-z0-9_]*`), and the reader strips that opener; the body is the
-  tile's markdown. `##|"` is always unnamed prose. A `(text)` block with a
+  (`[A-Za-z_][A-Za-z0-9_]*`). Planned for the follow-up that renders text tiles:
+  the reader strips that opener and the body is the tile's markdown. Today the
+  block is left out of the page. `##|"` is always unnamed prose. A `(text)` block with a
   missing or invalid name is an error in a dashboard and a warning in a
   notebook, which ignores the block either way. One that no `tiles` entry
   references is a finding, and a `(text)` block in a notebook is a finding. Written without the
@@ -443,14 +455,20 @@ and referenced from `tiles=`:
 1. The header is `##!` flags, `//` comments and unnamed `"` notes, then
    `## artifact { kind=notebook … }`. Nothing else goes above the tag.
 2. Prose is `##"` or `##|"` … `|##`, with the closer at the opener's column. No
-   body line starts with `|##`. A `## Heading` line is model tags, not prose.
+   body line starts with `|##`. A `## Heading` line is model tags, not prose;
+   the lint flags one whose text starts with a letter and has a second word
+   and no `=` or `{`, and does not flag a single word or a line starting with
+   a digit.
    (Generators leave a blank line after a closer as style; the compiler does not
    require it.)
 3. No statement and no `##` line between a run's tags and its `run:`. A blank
-   line or a `//` comment there is fine. A `#"` or `# tag` above a `given:`
+   line or a `//` comment between them is fine. A `//` or `/* */` comment
+   directly above a cell, outside the statement, is not shown and warns
+   (`notebook-comment-not-shown`). A `#"` or `# tag` above a `given:`
    attaches to the given, not to the next run.
 4. `given:` uses `NAME :: filter<T> is f''`, bound with `~`, declared before
-   first use. This is identical to the dashboard skill.
+   first use. This is identical to the dashboard skill, and the compiler, not
+   the lint, enforces it.
 5. Trailing prose is `##"`, never `#"`.
 
 Rule 5 has a compiler reason: a `#"` belongs to the statement below it, and at
@@ -463,9 +481,11 @@ decision, reports each of these with a fix-it: `##| markdown` or `##|markdown`
 a `|##` body line, and trailing text on a closer; a tag separated from its
 `run:`; an unknown `kind`; a statement or tag above `## artifact`; a `(text)`
 block with a bad name (an error in a dashboard, a warning in a notebook), in a
-notebook, or that no tile references; a `## `
-heading line; an `## artifact { … }` that does not parse; a route glued to its
-word (`##|"name`); and a grid width given two ways.
+notebook, or that no tile references; a multi-word `## ` heading line; a `//`
+or `/* */` comment directly above a cell (`notebook-comment-not-shown`); a
+notebook artifact tag with no `kind` (`notebook-kind-missing`); an
+`## artifact { … }` that does not parse; a route glued to its word
+(`##|"name`); and a grid width given two ways.
 
 **What authors lose.** `.malloy` has no VS Code notebook UI the way `.malloynb`
 does. The Console notebook builder and the agent replace it.
@@ -564,9 +584,10 @@ _Extension:_ a markdown block that can sit between statements (the one element
 §7's notebook and a dashboard's text tile both need), `kind=` on a tile entry
 with `text` first (`tiles=[intro { kind=text }, kpis]`), a notebook artifact
 kind whose cells are the file's statements in order, and tabs as a grouping over
-tiles. The block's spelling is decided (2026-09-29): it is the `"` doc-string
-route Malloy already has, and a text tile is a `##|(text) name` … `|##` block
-that a tile references by name, so it is not a grammar extension. `kind=text`
+tiles. The block's spelling is decided (2026-09-29): a notebook's prose is the `"`
+doc-string route Malloy already has, and a text tile is a `##|(text) name` …
+`|##` block, a route of its own, that a tile references by name, so neither is
+a grammar extension. Text tiles are format decided, not rendered yet. `kind=text`
 and the notebook artifact are proposed on their own, ahead of tabs. _Who
 agrees:_ Malloyyo, same venue. _Renderer:_ none for text; a `button` or `image`
 kind is Publisher UI. _Steps:_ (1) decide the block's spelling (decided
@@ -586,8 +607,9 @@ backward compatible. _Who agrees:_ Malloyyo. _Steps:_ (1) propose alongside G1;
 (2) Publisher's manifest merges entry over view; (3) the builder writes layout on
 the entry for tiles whose view it does not own, which makes inherited tiles
 resizable and lets one view sit at two widths on two pages.
-Pulled forward for text tiles only (2026-09-29): `colspan` and `break` are read
-off a `kind=text` entry, since a block has no view to tag. For query tiles,
+Planned for text tiles first, in the follow-up that renders them: `colspan` and
+`break` read off a `kind=text` entry, since a block has no view to tag. Nothing
+reads them yet, and the entry is left out of the page. For query tiles,
 entry-level layout stays as proposed here.
 
 ### G6 · One grammar
