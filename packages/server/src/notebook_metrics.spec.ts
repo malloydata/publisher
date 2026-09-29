@@ -27,7 +27,7 @@ describe("notebook_metrics", () => {
       await harness.shutdown();
    });
 
-   it("counts each discovered notebook once, by format and outcome", async () => {
+   it("counts one per recorded discovery, labelled by format and outcome", async () => {
       const outcomes: NotebookDiscoveryOutcome[] = ["ok", "refused", "broken"];
       for (const outcome of outcomes)
          recordNotebookDiscovery("malloy", outcome);
@@ -70,5 +70,7 @@ describe("notebook_metrics", () => {
       );
       expect(ok.count).toBe(2);
       expect(ok.sum).toBe(102);
+      // A slow warehouse query must land in a bucket, not in +Inf past 10s.
+      expect(ok.boundaries).toContain(60000);
    });
 });

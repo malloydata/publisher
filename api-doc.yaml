@@ -4100,24 +4100,27 @@ components:
             Array of file-level (##) annotations attached to the notebook. For
             a `.malloy` notebook, every own note that is not on the `"` prose
             route, wherever it sits, plus the `"` notes above the `## artifact`
-            line.
+            line, in file order, each note once.
           items:
             type: string
         startingGivens:
           allOf:
             - $ref: "#/components/schemas/EncodedGivenValues"
           description:
-            Starting values for the notebook's controls, declared at its file
-            level. URL parameters override these, which is why the two share a
-            shape. Omitted when the notebook declares none.
+            Starting values for the notebook's controls. A `.malloy` notebook
+            declares them in its artifact tag (`## artifact { givens { … } }`),
+            a `.malloynb` in its file-level tags (`## givens { … }`). URL
+            parameters override these, which is why the two share a shape.
+            Omitted when the notebook declares none.
         autorun:
           type: boolean
           description:
             False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true. The same flag, with
-            the same default, that `DashboardManifest.autorun` carries, so a
-            notebook's `## autorun=false` and a dashboard's
-            `# artifact { autorun=false }` arrive identically.
+            re-running on every change. Defaults to true. A `.malloy` notebook
+            reads it from its artifact tag (`## artifact { autorun=false }`), a
+            `.malloynb` from its file-level tags (`## autorun=false`). The same
+            flag, with the same default, that `DashboardManifest.autorun`
+            carries.
         sources:
           type: array
           description: Sources defined in the notebook's model

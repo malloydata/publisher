@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { Model } from "./model";
+import { motlyTag } from "./motly";
 import {
    isNotebookReaderError,
    parseNotebookText,
@@ -266,9 +267,48 @@ describe("readNotebookCells over the fixture notebooks", () => {
       );
       expect(texts.join("\n")).not.toContain("Shared orders model");
    });
+
+   it("serves the same prose and annotations from a CRLF checkout, and code cells byte-exact", () => {
+      for (const [modelPath, expected] of Object.entries(EXPECTED)) {
+         const { modelDef, text } = compiled.get(modelPath)!;
+         const crlf = text.replace(/\n/g, "\r\n");
+         const parse = parseNotebookText(crlf);
+         if (isNotebookReaderError(parse)) throw new Error(parse.message);
+         const result = readNotebookCells(parse, modelDef, crlf);
+         expect(result.error).toBeUndefined();
+         expect(result.annotations).toEqual(expected.annotations);
+         expect(result.cells).toEqual(
+            (expected.cells as NotebookCellSpan[]).map((cell) =>
+               cell.type === "code"
+                  ? { ...cell, text: cell.text.replace(/\n/g, "\r\n") }
+                  : cell,
+            ),
+         );
+      }
+   });
 });
 
 describe("readNotebookCells on inline text", () => {
+   it("gives a tag block after the artifact tag Malloy's own note text, which MOTLY can read", () => {
+      const text =
+         '## artifact {}\n##|\nautorun=false\n|##\n##" prose\nrun: a -> b\n';
+      const result = readText(text, 1);
+      expect(result.annotations).toEqual([
+         "## artifact {}\n",
+         "##|\nautorun=false",
+      ]);
+      expect(motlyTag(result.annotations)?.text("autorun")).toBe("false");
+   });
+
+   it("refuses a # tag that annotates nothing, naming its line and the move", () => {
+      const result = readText('## artifact {}\nrun: a -> b\n#" trailing\n', 1);
+      expect(result.cells).toEqual([]);
+      expect(result.error?.line).toBe(3);
+      expect(result.error?.message).toContain(
+         "move the tag directly above its run:",
+      );
+   });
+
    const readText = (text: string, runs: number): NotebookReadResult => {
       const parse = parseNotebookText(text);
       if (isNotebookReaderError(parse)) throw new Error(parse.message);

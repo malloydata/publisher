@@ -322,8 +322,14 @@ describe("served notebook cells", () => {
       expect(
          await harness.collectCounter(
             "publisher_notebook_cell_executions_total",
-            { format: "malloy", outcome: "error" },
+            { format: "malloy", kind: "none", outcome: "error" },
          ),
       ).toBeGreaterThan(0);
+      expect(
+         await harness.collectCounter(
+            "publisher_notebook_cell_executions_total",
+            { format: "malloy", kind: "code" },
+         ),
+      ).toBe(0);
    });
 });

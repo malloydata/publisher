@@ -224,6 +224,11 @@ function unreadableParse(): NotebookReaderError {
    };
 }
 
+/** Served prose must not depend on the line endings the package was checked out with. */
+function normalizeNewlines(text: string): string {
+   return text.replace(/\r\n?/g, "\n");
+}
+
 /** ANTLR indexes code points; JavaScript strings index UTF-16 units. */
 function codePointMap(text: string): Int32Array {
    const map = new Int32Array([...text].length + 1);
@@ -266,6 +271,9 @@ type ReaderItem =
  * default-channel token outside every recognized statement and note, refuses
  * the whole notebook with the line and the fix. Comments are hidden-channel
  * tokens and never structure.
+ *
+ * Markdown and annotation text is LF-normalized; code cell text is the exact
+ * compiled slice. The cells are a view, never a source to write the file back from.
  */
 export function readNotebookCells(
    parse: NotebookParse,
@@ -364,6 +372,12 @@ export function readNotebookCells(
       const match = STATEMENT_ACCESSORS.find(
          ([accessor]) => callAccessor(child, accessor) !== undefined,
       );
+      if (!match && callAccessor(child, "ignoredObjectAnnotations")) {
+         return refuse({
+            line: span.startLine,
+            message: `Line ${span.startLine}: a # tag that annotates no statement, so the notebook is not shown. Fix: move the tag directly above its run:, or make trailing prose a ##" note.`,
+         });
+      }
       if (!match) {
          const firstLine = text
             .slice(span.start, span.end)
@@ -396,25 +410,34 @@ export function readNotebookCells(
                "a note with no readable range",
             );
          }
-         const noteText = text.slice(noteSpan.start, noteSpan.end);
          const block =
             callAccessor(noteNode, "docBlockAnnotation") !== undefined;
+         const own = tokens.filter(
+            (t) =>
+               t.startIndex >= noteSpan.startCp &&
+               t.stopIndex <= noteSpan.stopCp,
+         );
+         const bodyTokens = own.filter(
+            (t) => symbolOf(t) === "BLOCK_ANNOTATION_TEXT",
+         );
+         // A block's text ends with its body, as Malloy's own note text does: with the closer, MOTLY drops the tag.
+         const lastBody = bodyTokens[bodyTokens.length - 1] ?? own[0];
+         const noteText = normalizeNewlines(
+            block && lastBody
+               ? text
+                    .slice(noteSpan.start, map[lastBody.stopIndex + 1])
+                    .replace(/\r?\n$/, "")
+               : text.slice(noteSpan.start, noteSpan.end),
+         );
          const prose = PROSE_NOTE.test(noteText);
          let body: string | undefined;
          if (prose && block) {
             // The body is the lexer's text tokens, so the opener line (and a block's name) never is.
-            body = tokens
-               .filter(
-                  (t) =>
-                     t.startIndex >= noteSpan.startCp &&
-                     t.stopIndex <= noteSpan.stopCp &&
-                     symbolOf(t) === "BLOCK_ANNOTATION_TEXT",
-               )
-               .map(tokenText)
-               .join("")
-               .replace(/\r?\n$/, "");
+            body = normalizeNewlines(
+               bodyTokens.map(tokenText).join(""),
+            ).replace(/\n$/, "");
          } else if (prose) {
-            body = noteText.replace(/^##" ?/, "").replace(/\r?\n$/, "");
+            body = noteText.replace(/^##" ?/, "").replace(/\n$/, "");
          }
          items.push({
             kind: "note",

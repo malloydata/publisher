@@ -8,6 +8,7 @@ import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
+import type { NotebookCellRunResult } from "../service/model";
 import type { GivenValue } from "@malloydata/malloy";
 
 type ApiNotebook = components["schemas"]["Notebook"];
@@ -138,13 +139,7 @@ export class ModelController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
-   ): Promise<{
-      type: "code" | "markdown";
-      text: string;
-      queryName?: string;
-      result?: string;
-      newSources?: string[];
-   }> {
+   ): Promise<NotebookCellRunResult> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,

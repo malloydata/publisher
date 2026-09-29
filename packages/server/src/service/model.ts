@@ -413,6 +413,8 @@ export interface RunnableNotebookCell {
    /** Set on a served notebook's cells; a `.malloynb` cell has none. */
    kind?: NotebookCellKind;
    text: string;
+   /** A served query cell's index into `modelInfo.anonymous_queries`. */
+   queryIndex?: number;
    runnable?: QueryMaterializer;
    /** Retained so we can rebuild the query with filter refinements at execution time. */
    modelMaterializer?: ModelMaterializer;
@@ -5967,7 +5969,6 @@ export class Model {
             if (cell.kind === "markdown") {
                return { type: "markdown", kind: "markdown", text: cell.text };
             }
-            // Whole-file given scope: 0.0.432 refuses a forward `$GIVEN`, so no cell reads a later one.
             if (cell.kind === "definition") {
                return {
                   type: "code",
@@ -5983,8 +5984,10 @@ export class Model {
                type: "code",
                kind: "query",
                text: cell.text,
+               queryIndex: cell.queryIndex,
                runnable: materializer.loadQuery(cell.text),
                modelMaterializer: materializer,
+               // Whole-file given scope: 0.0.432 refuses a forward `$GIVEN`, so no cell reads a later one.
                modelDef,
                queryInfo: anonymous && {
                   ...anonymous,
@@ -8544,9 +8547,13 @@ export class Model {
    ): Promise<NotebookCellRunResult> {
       const started = performance.now();
       const cell = this.runnableNotebookCells?.[cellIndex];
-      const kind = cell
-         ? (cell.kind ?? (cell.type === "code" ? "code" : "markdown"))
-         : "code";
+      // A served run that names no cell (out of range, or refused by the reader) is `none`, never `.malloynb`'s `code`.
+      const kind =
+         this.notebookFormat() === "malloy"
+            ? (cell?.kind ?? "none")
+            : cell?.type === "markdown"
+              ? "markdown"
+              : "code";
       try {
          const result = await this.runNotebookCell(
             cellIndex,

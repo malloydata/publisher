@@ -31,6 +31,7 @@ function lazyHistogram(
    name: string,
    description: string,
    unit: string,
+   buckets: number[],
 ): () => Histogram {
    let instrument: Histogram | null = null;
    resetHooks.push(() => (instrument = null));
@@ -38,8 +39,14 @@ function lazyHistogram(
       (instrument ??= publisherMeter().createHistogram(name, {
          description,
          unit,
+         advice: { explicitBucketBoundaries: buckets },
       }));
 }
+
+// The HTTP request histogram's set, since a cell run is one request; the default buckets stop at 10s.
+const CELL_DURATION_BUCKETS_MS = [
+   5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 60000,
+];
 
 /** `malloynb` is the legacy cell format; `malloy` is a served `notebooks/*.malloy`. */
 export type NotebookFormat = "malloynb" | "malloy";
@@ -51,12 +58,16 @@ export type NotebookFormat = "malloynb" | "malloy";
  */
 export type NotebookDiscoveryOutcome = "ok" | "refused" | "broken";
 
-/** `code` is a `.malloynb` code cell, which carries no finer kind. */
+/**
+ * `code` is a `.malloynb` code cell, which carries no finer kind; `none` is a
+ * served notebook's run that names no cell (out of range, or refused cells).
+ */
 export type NotebookCellExecutionKind =
    | "markdown"
    | "query"
    | "definition"
-   | "code";
+   | "code"
+   | "none";
 
 /**
  * - `ok` — answered, with a result for a query cell.
@@ -74,18 +85,19 @@ export type NotebookCellExecutionOutcome =
 
 const discoveryCounter = lazyCounter(
    "publisher_notebook_discovery_total",
-   "Notebooks read at package discovery. Labels: format ('malloynb'|'malloy'), outcome ('ok'|'refused'|'broken').",
+   "Notebooks read at package discovery, once per discovery pass; a reload counts again. Labels: format ('malloynb'|'malloy'), outcome ('ok'|'refused'|'broken').",
 );
 
 const cellExecutionCounter = lazyCounter(
    "publisher_notebook_cell_executions_total",
-   "Notebook cell runs. Labels: format ('malloynb'|'malloy'), kind ('markdown'|'query'|'definition'|'code'), outcome ('ok'|'denied'|'not_queryable'|'bad_request'|'error').",
+   "Notebook cell runs. Labels: format ('malloynb'|'malloy'), kind ('markdown'|'query'|'definition'|'code'|'none'), outcome ('ok'|'denied'|'not_queryable'|'bad_request'|'error').",
 );
 
 const cellExecutionDuration = lazyHistogram(
    "publisher_notebook_cell_execution_duration_ms",
    "Wall-clock duration of a notebook cell run. Labels: format, outcome.",
    "ms",
+   CELL_DURATION_BUCKETS_MS,
 );
 
 /** One notebook was read (or not) by a discovery pass. */
