@@ -31,6 +31,20 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — `dashboard_columns` is read again, as a deprecated alias
+
+The 0.8.x note that said `dashboard_columns` is gone is superseded. Agreed with Malloyyo,
+`dashboard { columns=N }` beside the artifact tag stays the canonical grid width, and
+`dashboard_columns=N` inside the artifact tag is a deprecated alias that Publisher reads when
+`columns` is absent. It draws a warning, and when the two disagree it is an error naming both values
+and `columns` is what is served. A package that spelled the alias and got the default width now gets
+the width it wrote.
+
+`kind=dashboard` on a `dashboards/` file's artifact tag and `kind=query` on a tile entry are accepted
+as the explicit defaults. A text tile is a `##|(text) name` block, which replaces the one-word
+`##|" name` opener: `##|"` is always unnamed prose. Statements and tags above `## artifact` in a
+served notebook are error findings, so `/compile` fails on them.
+
 ## [Unreleased] — /status names the server version, and says why it is empty
 
 `GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and

@@ -190,8 +190,8 @@ What that parks, explicitly (and what it does **not** block; see §5):
 **Lifted for two items on 2026-09-29** (Kyle): the notebook artifact (§7) and
 dashboard text tiles (the `kind=text` half of item 2). Neither creates a third
 dialect, because both are spelled on the `"` doc-string route Malloy already
-has, with no grammar extension. The spelling is proposed to Malloyyo as its
-own issue, ahead of the combined grammar proposal. Items 1, 3 and 4, and tabs,
+has, with no grammar extension. The spelling is agreed with the Malloyyo
+project (its side notes a P0 sign-off as pending). Items 1, 3 and 4, and tabs,
 stay parked.
 
 ## 5. What could be done with no Malloy, renderer or Malloyyo change
@@ -384,11 +384,12 @@ given: REGION :: filter<string> is f''
 run: sales -> by_month + { where: region ~ $REGION }
 ```
 
-A dashboard text tile is the same block, named, and referenced from `tiles=`:
+A dashboard text tile is a `(text)` block, named by one bare word on its opener
+and referenced from `tiles=`:
 
 ```malloy
 ## artifact { title="Storefront" tiles=[intro { kind=text colspan=12 }, "overview -> kpis"] } dashboard { columns=12 }
-##|" intro
+##|(text) intro
 ## How to read this page
 |##
 ```
@@ -399,21 +400,35 @@ A dashboard text tile is the same block, named, and referenced from `tiles=`:
   under `dashboards/` is a finding, and so are `tiles=` under `notebooks/`.
 - **Cells**, in file order, from the file's own notes only, never imported
   ones. Each `"`-route note after the artifact tag is a markdown cell, except
-  that contiguous `##"` lines (no blank line between them) form one cell; a
-  `##|"` block is always its own cell. Each `run:` together with its contiguous
+  that contiguous `##"` lines (no blank line or other line between them) form
+  one cell, joined with `\n`; a `##|"` block is always its own cell, and text on
+  its opener line is prose like the rest. Each `run:` together with its contiguous
   `#` tag block is a query cell; a `#"` directly above the run is its caption, a
   chart is a render tag on it (`# bar_chart`), and `# label` titles it. Each
   other run of statements (`import`, `source:`, `view:`, `given:`) is a
-  definition cell, shown as code or folded and read by every cell below it. A
-  fixed **header** (`##!`, `## artifact`, and the doc block above it) is not a
-  cell.
+  definition cell, shown as code or folded and read by every cell below it. The
+  **header** is not a cell, and in a notebook it holds only `##!` flags, `//`
+  comments and unnamed `"` notes above `## artifact`. Any statement (import,
+  source, given, query, run, sql) or other tag above the artifact tag is an
+  error finding. A dashboard may still put statements above its tag.
 - **Description**: the file's unnamed `"` notes above the artifact tag, for
   both notebooks and dashboards. Today's dashboards are unchanged, because that
   is where their description already sits.
-- **Named blocks.** A `##|"` whose opener holds exactly one identifier is a
-  named block: a text tile. The reader strips the name line. A block that no
-  tile references is a lint finding, and so is an opener with more than one
-  word, which Malloy accepts silently (verified on 0.0.432).
+- **Text blocks.** `##|(text) name` … `|##` is a dashboard text tile. The name
+  is the sole token after `(text)` on the opener, a bare word
+  (`[A-Za-z_][A-Za-z0-9_]*`), and the reader strips that opener; the body is the
+  tile's markdown. `##|"` is always unnamed prose. A `(text)` block with a
+  missing or invalid name is an error, one that no `tiles` entry references is a
+  finding, and a `(text)` block in a notebook is a finding. Written without the
+  space (`##|"name`, `##|(text)name`) Malloy drops the note as `malformed-route`
+  (verified on 0.0.432), and the lint says how to spell it.
+- **Kinds.** `kind=dashboard` at model scope is the explicit default for a file
+  under `dashboards/`, and a tile entry may carry `kind=query`. `kind=notebook`
+  under `dashboards/` is a finding.
+- **Grid width.** `dashboard { columns=N }` beside the artifact tag is canonical.
+  `dashboard_columns=N` inside the tag is a deprecated alias, read when the
+  canonical tag is absent and reported as a warn. When both are present and
+  disagree it is an error naming both values, and `columns` wins.
 - **Parameters** are givens declared in the file and bound with `~ $GIVEN`,
   exactly the dashboard convention of §1, so the reader's parameter row and a
   builder's filter window carry over unchanged.
@@ -422,9 +437,11 @@ A dashboard text tile is the same block, named, and referenced from `tiles=`:
 
 **Authoring rules.** Five, and the lint below holds a file to them:
 
-1. The header is `##!` then `## artifact { kind=notebook … }`.
+1. The header is `##!` flags, `//` comments and unnamed `"` notes, then
+   `## artifact { kind=notebook … }`. Nothing else goes above the tag.
 2. Prose is `##"` or `##|"` … `|##`, with the closer at the opener's column. No
-   body line starts with `|##`. Leave a blank line after it.
+   body line starts with `|##`. Leave a blank line after it. A `## Heading`
+   line is model tags, not prose.
 3. Render tags sit directly above `run:`, with nothing between.
 4. `given:` uses `NAME :: filter<T> is f''`, bound with `~`, declared before
    first use. This is identical to the dashboard skill.
@@ -438,7 +455,10 @@ the end of a file there is none, so Malloy refuses it as
 decision, reports each of these with a fix-it: `##| markdown` or `##|markdown`
 ("did you mean `##|"`"); a missing `##!` flag, printing the exact line to add;
 a `|##` body line, and trailing text on a closer; a tag separated from its
-`run:`; an unknown `kind`; an orphan named block; a multi-word block opener.
+`run:`; an unknown `kind`; a statement or tag above `## artifact`; a `(text)`
+block with a bad name, in a notebook, or that no tile references; a `## `
+heading line; an `## artifact { … }` that does not parse; a route glued to its
+word (`##|"name`); and a grid width given two ways.
 
 **What authors lose.** `.malloy` has no VS Code notebook UI the way `.malloynb`
 does. The Console notebook builder and the agent replace it.
@@ -486,15 +506,17 @@ The narrative surface is delivered by the Malloyyo family and not by a
 `.malloynb` editor; a grid with prose is a dashboard with text tiles, a linear
 document is a notebook, and both stand on the same block. On 2026-09-29 (Kyle):
 the format above, spelled on the existing `"` doc-string route with no grammar
-extension; text tiles as named blocks referenced by a `kind=text` tile entry;
+extension; text tiles as `##|(text) name` blocks referenced by a `kind=text`
+tile entry (agreed with Malloyyo the same day, replacing a one-word `##|" name`
+opener);
 the description as the notes above the artifact tag, for both surfaces; and
-`.malloynb` files converted per file, on demand. The spelling is proposed to
-Malloyyo as its own issue, ahead of the combined grammar proposal.
+`.malloynb` files converted per file, on demand. The spelling is agreed with
+the Malloyyo project.
 [choosing-a-surface.md](choosing-a-surface.md) is
 revised when the reader ships, so that "notebook" there means this one.
 
-**Steps.** (1) Done 2026-09-29: the format is decided on the `"` route. It is
-proposed to Malloyyo with the text tile as its own issue; G1, tabs, G3 and G6
+**Steps.** (1) Done 2026-09-29: the format is decided on the `"` route and
+agreed with Malloyyo, text tile included; G1, tabs, G3 and G6
 remain for the grammar package proposal (§8). (2) Generalize the editor
 core and the host flow out of the dashboard builder (no behaviour change; the
 dashboard specs are the guard) — the one step that needs no agreement and can
@@ -536,8 +558,8 @@ _Extension:_ a markdown block that can sit between statements (the one element
 with `text` first (`tiles=[intro { kind=text }, kpis]`), a notebook artifact
 kind whose cells are the file's statements in order, and tabs as a grouping over
 tiles. The block's spelling is decided (2026-09-29): it is the `"` doc-string
-route Malloy already has, a `##|"` … `|##` block named by one identifier on its
-opener when a tile references it, so it is not a grammar extension. `kind=text`
+route Malloy already has, and a text tile is a `##|(text) name` … `|##` block
+that a tile references by name, so it is not a grammar extension. `kind=text`
 and the notebook artifact are proposed on their own, ahead of tabs. _Who
 agrees:_ Malloyyo, same venue. _Renderer:_ none for text; a `button` or `image`
 kind is Publisher UI. _Steps:_ (1) decide the block's spelling (decided

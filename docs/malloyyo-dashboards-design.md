@@ -138,11 +138,12 @@ the formats cannot drift. That extraction is a committed follow-up
 
 ### Where Publisher diverges
 
-One property, deliberately. **Publisher does not read `dashboard_columns`.** The grid width is
-`# dashboard { columns=N }` beside the artifact tag, which is the tag `@malloydata/render` already
-reads on a tagged `query:`, so one spelling covers both and there is no second name to learn.
-Publisher reports `dashboard_columns` as a property it does not read rather than ignoring it, so a
-Malloyyo model repo says what it lost instead of quietly laying out at the default width.
+One property, and it converges. The grid width is `dashboard { columns=N }` beside the artifact tag,
+which is the tag `@malloydata/render` already reads on a tagged `query:`, so one spelling covers both.
+Agreed with Malloyyo (2026-09-29): `dashboard_columns=N` inside the artifact tag stays a deprecated
+alias. Publisher reads it when `dashboard { columns }` is absent and reports it as a warning, and when
+the two disagree it reports an error naming both values and serves `columns`, so a Malloyyo model repo
+lays out at its own width and is told which spelling to move to.
 
 Publisher also reads the renderer's per-child dashboard tags (`# colspan`, `# break`, `# subtitle`,
 `# borderless`, and `# label`) off the view a tile names, and lays its own grid out from them.
@@ -150,8 +151,8 @@ Malloyyo's composite reads `# colspan` and `# break` off each tile's result (sin
 not the other three, so this is a superset: a model using any of the five renders in Malloyyo with
 its widths and row breaks intact and without the labels, subtitles, or borderless cards.
 
-Both belong in the shared-home conversation. If that package keeps `dashboard_columns`, Publisher
-re-adds the reader; the enumeration lint is what makes either direction visible to an author.
+Both belong in the shared-home conversation; the enumeration lint is what makes either direction
+visible to an author.
 
 ### Drift check against Malloyyo 0.2.44 (2026-09-13)
 
@@ -168,7 +169,7 @@ packages/cli/src/frame-runtime` in the Malloyyo repo when the version moves.
 | `name=` in the artifact tag overrides the slug                                                                                                                    | Slug is always the filename; `name` is reported as a property Publisher does not read                                                                                                     | Deliberate. Malloyyo's own docs say not to set it and its TODO calls the filename linkage fragile; the warning already says what happened                                                          |
 | A tile whose result is a single row of measures is spliced in as KPI tiles automatically (0.2.19)                                                                 | Rendered as the renderer's default, a one-row table, unless the view carries `# big_value`                                                                                                | Matched: a composite tile whose result is one row of measures is rendered with `# big_value` prepended (`promoteMeasureRowToKpis`); any render tag on the view, `# table` included, opts out       |
 | Composite tiles honor `# colspan` and `# break` read off each tile's result (0.2.19)                                                                              | Reads those two plus `# label`, `# subtitle`, `# borderless` off the view                                                                                                                 | Compatible; Publisher is a superset. The paragraph above used to say Malloyyo had none, which was stale                                                                                            |
-| Grid width is still `dashboard_columns=N` in the tag                                                                                                              | `# dashboard { columns=N }` as a sibling tag; `dashboard_columns` warned as unread                                                                                                        | Standing divergence, unchanged on both sides. Shared-grammar item                                                                                                                                  |
+| Grid width is still `dashboard_columns=N` in the tag                                                                                                              | `dashboard { columns=N }` as a sibling tag; `dashboard_columns` read as a deprecated alias                                                                                                        | Standing divergence, unchanged on both sides. Shared-grammar item                                                                                                                                  |
 | A drill's target given defaults to the dimension name **upper-cased** (`category` → `CATEGORY`); the `self` lookup folds case                                     | Uses the dimension name **verbatim** and folds case at lookup (`givenNamesByFold` in `Dashboard.tsx`; Notebook likewise)                                                                  | Functionally compatible under the upper-case convention; differs only in the URL key written. No action                                                                                            |
 | Given values travel as `?$NAME=…`; component view state as `?~key=…`                                                                                              | `?NAME=…`, no `$`                                                                                                                                                                         | Links do not carry across the two hosts. Low priority; shared-grammar item if they ever should                                                                                                     |
 | `dashboards/index.jsx` (or `.tsx`) with no `index.malloy` is the **About page** (#164): a queryless, prose-only artifact listed first and published with the rest | `.jsx` is inert with the existing load warning (§Custom JSX components: cut)                                                                                                              | Consistent with the cut. Worth naming `index.jsx` in the warning as Malloyyo's About page and pointing at a notebook or data app for the prose                                                     |
@@ -722,9 +723,9 @@ as a full snapshot rather than a patch, because the sandbox does not compile wit
   get a shared malloydata package that both Publisher and Malloyyo consume, so the formats
   cannot drift. The code was ported first and the grammar with it (see §Sourcing strategy), which
   is what keeps the later swap mechanical; extraction is taken up with the Malloyyo maintainers now
-  that the ported implementation has proven out. The one property Publisher has since diverged on,
-  the grid width, is an input to that conversation rather than a fait accompli: if the shared home
-  keeps `dashboard_columns`, Publisher re-adds the reader.
+  that the ported implementation has proven out. The one property Publisher had diverged on, the
+  grid width, is settled: `dashboard { columns }` is canonical and `dashboard_columns` a deprecated
+  alias that Publisher reads.
 - **Embedding ([#931](https://github.com/malloydata/publisher/issues/931)).** Dashboards become
   embeddable in a host page the way HTML data apps are, and — since the two surfaces now share
   their interactivity — notebooks come along in the same issue. `Publisher.embed` itself needs

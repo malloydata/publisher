@@ -204,10 +204,10 @@ remove it, since it never edits imports or model files.
 
 Note `SINCE` is a `date` rather than a `filter<>`, so it compares with `>=` rather than `~`.
 
-**`# dashboard { columns=N }` is the one spelling of the grid width**, on both forms, beside the
-artifact tag. Anything else inside the artifact tag is a package warning naming it, which is what you
-will see if you write `dashboard_columns=N`: nothing reads it, and the grid would otherwise fall back
-to the default width in silence.
+**`# dashboard { columns=N }` is the spelling of the grid width**, on both forms, beside the
+artifact tag. `dashboard_columns=N` inside the artifact tag is a deprecated alias: it is read when
+`columns` is absent and draws a warning, and when the two disagree it is an error naming both values.
+Any other property inside the artifact tag that Publisher does not read is a package warning naming it.
 
 A tile keeps its view's own field names on axes and column headers. `# label` titles the tile; to label
 what is inside it, label the fields in the view.
@@ -438,8 +438,9 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
   under "Importing a given is what makes it bindable", which the lint now names for you, with the file
   to fix.
 - A tile that does not resolve to a real view; a non-positive `# dashboard { columns }`; a tile view's
-  `# colspan` that is not a positive integer or is wider than the grid; and any property inside the
-  artifact tag Publisher does not read, `dashboard_columns=` included.
+  `# colspan` that is not a positive integer or is wider than the grid; a `dashboard_columns=` alias,
+  which is an error when it disagrees with `dashboard { columns }`; and any property inside the
+  artifact tag Publisher does not read.
 
 Findings carry a `severity`, but `warn` is the ordinary default and tells you nothing about how bad
 one is. Read the text, not the severity and not the count. One message is worth recognising because
