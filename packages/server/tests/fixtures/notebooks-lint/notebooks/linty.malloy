@@ -1,0 +1,9 @@
+## artifact { title="Linty" }
+source: a is duckdb.sql("select 1 as x")
+
+##| markdown
+Prose under a mistyped opener.
+|##
+
+// A comment between cells.
+run: a -> { select: x }

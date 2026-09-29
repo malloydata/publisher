@@ -181,6 +181,16 @@ describe("service/dashboard render-log filtering", () => {
       expect(filterPublisherOwnedRenderLogs(owned, PLAIN)).toEqual([]);
    });
 
+   it("drops the unknown-tag line for the artifact kind of a notebook", () => {
+      const kind = [
+         { message: "Unknown render tag 'artifact.kind' on field 'root'" },
+      ];
+      expect(
+         filterPublisherOwnedRenderLogs(kind, "notebooks/n.malloy"),
+      ).toEqual([]);
+      expect(filterPublisherOwnedRenderLogs(kind, DASH)).toEqual([]);
+   });
+
    // Every tile is a standalone query, and the renderer reads these only for the
    // direct children of a `# dashboard` nest, so it calls them unknown on every
    // tile of every dashboard. Measured against 0.0.432: without this, running the
@@ -2051,6 +2061,16 @@ describe("service/dashboard grid width and hostile literals", () => {
          ),
       ]);
       expect(lintOf(f)[0]).toContain("# dashboard { columns=N }");
+   });
+
+   it("does not call kind unknown, since the notebook lint judges its value", () => {
+      expect(
+         lintOf(
+            composite(
+               '## artifact { kind=notebook tiles=["orders -> totals"] }\n',
+            ),
+         ),
+      ).toEqual([]);
    });
 
    // A tile entry is the run expression alone, and a property hung off one is

@@ -1,0 +1,8 @@
+## artifact { kind=notebook title="Clean" }
+source: a is duckdb.sql("select 1 as x")
+
+##|"
+Prose in a well-formed block.
+|##
+
+run: a -> { select: x }
