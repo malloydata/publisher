@@ -42,8 +42,10 @@ the width it wrote.
 
 `kind=dashboard` on a `dashboards/` file's artifact tag and `kind=query` on a tile entry are accepted
 as the explicit defaults. A text tile is a `##|(text) name` block, which replaces the one-word
-`##|" name` opener: `##|"` is always unnamed prose. Statements and tags above `## artifact` in a
-served notebook are error findings, so `/compile` fails on them.
+`##|" name` opener: `##|"` is always unnamed prose. Five findings are errors and fail
+`/compile`: a statement or a tag above `## artifact` in a served notebook, a `dashboard_columns` that
+disagrees with `dashboard { columns }`, an invalid or missing `(text)` block name in a dashboard, and an
+`## artifact` tag that does not parse. Package-scope `/compile` fails when any file in the package has one.
 
 ## [Unreleased] — /status names the server version, and says why it is empty
 

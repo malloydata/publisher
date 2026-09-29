@@ -3131,6 +3131,12 @@ export class Package {
             }
          }
          for (const finding of lintNotebookText(modelPath, text)) {
+            // A dashboard whose tag does not parse is already reported by the dashboard lint.
+            if (
+               finding.code === "notebook-artifact-unparsed" &&
+               !this.isServedNotebook(modelPath)
+            )
+               continue;
             logger.warn("Notebook lint", {
                packageName: this.packageName,
                model: modelPath,

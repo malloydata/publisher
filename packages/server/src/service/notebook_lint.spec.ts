@@ -581,7 +581,7 @@ describe("notebook lint", () => {
       ).toEqual([[13, "notebook-comment-not-shown"]]);
    });
 
-   it("finds nothing in any example or fixture dashboard, the lint fixtures aside", () => {
+   it("finds nothing in any example or fixture dashboard, the lint fixtures and one malformed tag aside", () => {
       const roots = [path.resolve(__dirname, "../../../../examples"), FIXTURES];
       const found: string[] = [];
       const walk = (dir: string, base: string) => {
@@ -604,13 +604,68 @@ describe("notebook lint", () => {
          }
       };
       for (const root of roots) walk(root, root);
-      expect(found).toEqual([]);
+      expect(found).toEqual([
+         "dashboards-lint/dashboards/malformed.malloy notebook-artifact-unparsed",
+      ]);
    });
 
    it("ignores a file outside notebooks and dashboards", () => {
       expect(
          lint(`${HEADER}##| markdown\nhi\n|##\n`, "models/m.malloy"),
       ).toEqual([]);
+   });
+
+   it('draws the spacing finding for a ##"word line too', () => {
+      expect(lint(`${HEADER}##"word\n${SOURCE}`)).toEqual([
+         {
+            line: 2,
+            code: "notebook-block-opener-spacing",
+            message:
+               'Line 2: `##"word` has no space after the route, so Malloy drops the note. Did you mean `##" word`?',
+         },
+      ]);
+   });
+
+   it("errors when the artifact tag of a dashboard does not parse", () => {
+      const found = lintNotebookText(
+         "dashboards/d.malloy",
+         `## artifact { tiles: [a] }\n${SOURCE}`,
+      );
+      expect(found.map((f) => [f.code, f.severity, f.line])).toEqual([
+         ["notebook-artifact-unparsed", "error", 1],
+      ]);
+   });
+
+   it("finds dashboard { columns } inside a ## | block, past its closer", () => {
+      const found = lint(
+         `## artifact { tiles=[a] dashboard_columns=8 }\n##|\ndashboard { columns=12 }\n|##\n${SOURCE}`,
+         "dashboards/d.malloy",
+      );
+      expect(found.map((f) => f.code)).toEqual(["notebook-columns-conflict"]);
+   });
+
+   it("reports a conflict when dashboard { columns } is present but not a width", () => {
+      const found = lint(
+         `## artifact { tiles=[a] dashboard_columns=8 } dashboard { columns=0 }\n${SOURCE}`,
+         "dashboards/d.malloy",
+      );
+      expect(found.map((f) => f.code)).toEqual(["notebook-columns-conflict"]);
+   });
+
+   it("makes a bad (text) name a warn in a notebook and an error in a dashboard", () => {
+      const severity = (text: string, modelPath: string) =>
+         lintNotebookText(modelPath, text)
+            .filter((f) => f.code === "notebook-text-block-name")
+            .map((f) => f.severity);
+      expect(
+         severity(`${HEADER}##|(text)\nhi\n|##\n`, "notebooks/n.malloy"),
+      ).toEqual(["warn"]);
+      expect(
+         severity(
+            `## artifact { tiles=[a] }\n##|(text)\nhi\n|##\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual(["error"]);
    });
 
    it("carries an error finding's severity into its compile problem", () => {

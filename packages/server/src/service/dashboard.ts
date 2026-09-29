@@ -369,11 +369,12 @@ function readArtifactTag(
       // null against a field the spec declares an integer. That put a value on
       // the wire in the very case the lint was reporting as dropped, so the two
       // disagreed about the same tag.
-      dashboardColumns:
-         positiveInteger(tagNumeric(tag.tag("dashboard"), "columns")) ??
-         (artifact.array("tiles")
-            ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
-            : undefined),
+      // `columns` wins whenever it is written, even when it is not a width.
+      dashboardColumns: tag.tag("dashboard")?.has("columns")
+         ? positiveInteger(tagNumeric(tag.tag("dashboard"), "columns"))
+         : artifact.array("tiles")
+           ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
+           : undefined,
       givens,
       autorun,
    };
@@ -1141,10 +1142,18 @@ export function lintDashboard(
    // failure as an `# artifact` on a view, which is silently a shared include
    // and got its own finding for the same reason.
    for (const entry of artifactTag?.array("tiles") ?? []) {
-      // `kind=query` is what a tile already is, so it says nothing new.
+      const kind = tagText(entry, "kind");
+      if (kind === "text") {
+         add(
+            `\`${tagText(entry) ?? "a tile"}\` in \`tiles=[…]\` is a text tile, ` +
+               `but Publisher does not render text tiles yet, so the entry is ` +
+               `read as a run expression that does not resolve.`,
+         );
+      }
+      // `kind=query` says nothing new, and `kind=text` was reported above.
       const carried = Object.keys(entry.dict ?? {}).filter(
          (property) =>
-            !(property === "kind" && tagText(entry, "kind") === "query"),
+            !(property === "kind" && (kind === "query" || kind === "text")),
       );
       if (carried.length === 0) continue;
       const named = carried.map((property) => `\`${property}\``).join(", ");

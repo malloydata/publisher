@@ -138,7 +138,8 @@ export function lintNotebookText(
             []) as ParseNode[];
          for (const note of notes) {
             const noteText = nodeText(note);
-            modelNotes.push(noteText);
+            // A block note ends at its closer, which is not part of the tag text.
+            modelNotes.push(noteText.replace(/\r?\n\|##[^\n]*\n?$/, ""));
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
             if (!artifact && note.start && isArtifactNoteText(noteText)) {
@@ -315,6 +316,14 @@ export function lintNotebookText(
       for (const token of tokens as ParseToken[]) {
          if (symbolOf(token) !== "DOC_ANNOTATION") continue;
          const line = tokenText(token).replace(/\r?\n$/, "");
+         if (/^##"\S/.test(line)) {
+            add(
+               token.line,
+               "notebook-block-opener-spacing",
+               `\`${quoted(line)}\` has no space after the route, so Malloy drops the note. Did you mean \`##" ${quoted(line).slice(3)}\`?`,
+            );
+            continue;
+         }
          const content = /^##[ \t]+(\S.*)$/.exec(line)?.[1];
          if (
             content &&
@@ -360,7 +369,8 @@ export function lintNotebookText(
                   textOpener.rest === ""
                      ? "a `(text)` block needs a name, the tile's entry in `tiles=[…]`. Fix: write `##|(text) name`, where the name is a bare word of letters, digits and underscores."
                      : `\`${quoted(textOpener.rest)}\` is not a valid name for a \`(text)\` block, which takes exactly one bare word. Fix: write \`##|(text) name\`, where the name is letters, digits and underscores and does not start with a digit.`,
-                  "error",
+                  // A notebook ignores the block either way; a dashboard cannot use it.
+                  inNotebooks ? "warn" : "error",
                );
             }
          } else if (rest.replace(/[\s()]/g, "").toLowerCase() === "markdown") {
@@ -433,17 +443,15 @@ export function lintNotebookText(
    }
 
    function lintArtifact(tagNote: { text: string; line: number }): void {
-      if (inNotebooks) {
-         const [parseError] = motlyParseErrors([tagNote.text]);
-         if (parseError !== undefined) {
-            add(
-               tagNote.line,
-               "notebook-artifact-unparsed",
-               `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${ARTIFACT_KIND_FIX}`,
-               "error",
-            );
-            return;
-         }
+      const [parseError] = motlyParseErrors([tagNote.text]);
+      if (parseError !== undefined) {
+         add(
+            tagNote.line,
+            "notebook-artifact-unparsed",
+            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${inNotebooks ? ARTIFACT_KIND_FIX : "Fix: correct the tag so it parses."}`,
+            "error",
+         );
+         return;
       }
       const tag = motlyTag([tagNote.text])?.tag("artifact");
       if (!tag) return;
@@ -489,13 +497,14 @@ export function lintNotebookText(
       }
       if (properties.includes("dashboard_columns")) {
          const alias = tagText(tag, "dashboard_columns") ?? "";
-         const canonical = tagNumeric(
-            motlyTag(modelNotes)?.tag("dashboard"),
-            "columns",
-         );
+         const dashboardTag = motlyTag(modelNotes)?.tag("dashboard");
+         const canonical = dashboardTag?.has("columns")
+            ? (tagText(dashboardTag, "columns") ?? "")
+            : undefined;
          if (
             canonical !== undefined &&
-            tagNumeric(tag, "dashboard_columns") !== canonical
+            tagNumeric(tag, "dashboard_columns") !==
+               tagNumeric(dashboardTag, "columns")
          ) {
             add(
                tagNote.line,

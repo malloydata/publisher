@@ -152,6 +152,14 @@ describe("notebook lint through the real server (E2E)", () => {
          ]);
       });
 
+      it("reports a dashboard whose artifact tag does not parse once, from the dashboard lint", () => {
+         const of = warnings.filter(
+            (w) => w.model === "dashboards/artifact_unparsed.malloy",
+         );
+         expect(of).toHaveLength(1);
+         expect(of[0].message).not.toMatch(/^Line \d+:/);
+      });
+
       it("serves the alias's width and, on a conflict, the canonical one", async () => {
          const width = async (name: string) =>
             (
@@ -197,6 +205,10 @@ describe("notebook lint through the real server (E2E)", () => {
                .filter((p) => p.severity === "error")
                .map((p) => [p.model, p.code]),
          ).toEqual([
+            [
+               "dashboards/artifact_unparsed.malloy",
+               "notebook-artifact-unparsed",
+            ],
             ["dashboards/columns_conflict.malloy", "notebook-columns-conflict"],
             [
                "notebooks/header_statement.malloy",

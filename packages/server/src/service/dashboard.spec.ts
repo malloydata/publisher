@@ -2055,6 +2055,22 @@ describe("service/dashboard grid width and hostile literals", () => {
       expect(lintOf(f)).toEqual([]);
    });
 
+   it("lets a dashboard { columns } that is not a width win over the alias", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=0 }\n',
+      );
+      expect(build(f)?.dashboardColumns).toBeUndefined();
+   });
+
+   it("says a kind=text tile is not rendered yet, rather than that kind is unread", () => {
+      const f = composite(
+         '## artifact { tiles=[intro { kind=text }, "orders -> totals"] }\n',
+      );
+      const message = lintOf(f).find((finding) => finding.includes("`intro`"));
+      expect(message).toContain("does not render text tiles yet");
+      expect(message).not.toContain("carries");
+   });
+
    it("prefers dashboard { columns } over the dashboard_columns alias", () => {
       const f = composite(
          '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=6 }\n',
@@ -2114,7 +2130,7 @@ describe("service/dashboard grid width and hostile literals", () => {
    // resolve, and be told only that the query failed.
    it("names a property on a tile entry as unread, and where layout goes", () => {
       const f = composite(
-         '## artifact { tiles=[intro { kind=text }, "orders -> totals"] }\n',
+         '## artifact { tiles=[intro { colspan=3 }, "orders -> totals"] }\n',
       );
       // It builds, and the entry is reduced to its text.
       expect(build(f)?.tiles?.map((tile) => tile.query)).toEqual([
@@ -2122,7 +2138,7 @@ describe("service/dashboard grid width and hostile literals", () => {
          "orders -> totals",
       ]);
       const carried = lintOf(f).find((finding) =>
-         finding.includes("carries `kind`"),
+         finding.includes("carries `colspan`"),
       );
       expect(carried).toContain("`intro` in `tiles=[…]`");
       expect(carried).toContain("run expression alone");

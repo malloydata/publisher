@@ -294,6 +294,23 @@ describe("readNotebookCells over the fixture notebooks", () => {
 });
 
 describe("readNotebookCells on inline text", () => {
+   it.each([
+      ['##|"intro\nbody\n|##\n', '##|"intro\nbody'],
+      ['##"word\n', '##"word\n'],
+   ])("does not serve %j as prose, since Malloy drops it", (note, kept) => {
+      const result = readText(`## artifact {}\n${note}run: a -> b\n`, 1);
+      expect(result.cells.map((cell) => cell.kind)).toEqual(["query"]);
+      expect(result.annotations).toContain(kept);
+   });
+
+   it('adds no whitespace-only first line for a ##|" opener with trailing spaces', () => {
+      const result = readText(
+         '## artifact {}\n##|"   \nbody\n|##\nrun: a -> b\n',
+         1,
+      );
+      expect(result.cells[0]).toEqual(md(2, 4, "body") as NotebookCellSpan);
+   });
+
    it('never strips or names the first line of a ##|" block, whatever it holds', () => {
       const onOpener = readText(
          '## artifact {}\n##|" intro\nbody\n|##\nrun: a -> b\n',

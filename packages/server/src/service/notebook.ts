@@ -173,7 +173,8 @@ const STATEMENT_ACCESSORS: readonly [string, "run" | "notes" | "definition"][] =
       ["exportStatement", "definition"],
    ];
 
-const PROSE_NOTE = /^##\|?"/;
+// Malloy reads `##"word` as a malformed route and drops it, so a space, tab or line end must follow.
+const PROSE_NOTE = /^##\|?"([ \t\r\n]|$)/;
 
 const NOTEBOOK_PARSE_URL = "file:///publisher-notebook-reader/notebook.malloy";
 
@@ -446,7 +447,10 @@ export function readNotebookCells(
          let body: string | undefined;
          if (prose && block) {
             // Text on the opener line is prose too; only a `(text)` opener carries a name.
-            const onOpener = noteText.split("\n", 1)[0].replace(/^##\|" ?/, "");
+            const onOpener = noteText
+               .split("\n", 1)[0]
+               .replace(/^##\|" ?/, "")
+               .trim();
             body = normalizeNewlines(
                [onOpener && `${onOpener}\n`, ...bodyTokens.map(tokenText)].join(
                   "",
