@@ -1573,7 +1573,7 @@ paths:
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
         files on that surface are listed, unless `includeOffSurface` is true. With it, every
-        model file is listed and `onSurface` says which ones a query can reach. Dashboard files
+        model file is listed and `onSurface` marks the ones on the surface. Dashboard files
         are listed by the dashboards route either way.
       parameters:
         - name: environmentName
@@ -3791,8 +3791,10 @@ components:
         onSurface:
           type: boolean
           description: |
-            Whether the file is on the package's surface, so a query can reach it. True for
-            every file of a package with no surface. False only on a file listed because the
+            Whether the file is on the package's surface: the files this route lists without
+            `includeOffSurface`. True for every file of a package with no surface. It does not
+            say whether a query can reach the file, which `queryableSources: "all"` also
+            decides. False only on a file listed because the
             request set `includeOffSurface`.
         error:
           type: string
