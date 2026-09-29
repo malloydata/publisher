@@ -16,7 +16,7 @@
  */
 
 import { type Counter, type Histogram } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import { publisherMeter, REQUEST_DURATION_BUCKETS_MS } from "./telemetry";
 
 const resetHooks: (() => void)[] = [];
 
@@ -42,11 +42,6 @@ function lazyHistogram(
          advice: { explicitBucketBoundaries: buckets },
       }));
 }
-
-// The HTTP request histogram's set, since a cell run is one request; the default buckets stop at 10s.
-const CELL_DURATION_BUCKETS_MS = [
-   5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 60000,
-];
 
 /** `malloynb` is the legacy cell format; `malloy` is a served `notebooks/*.malloy`. */
 export type NotebookFormat = "malloynb" | "malloy";
@@ -97,7 +92,8 @@ const cellExecutionDuration = lazyHistogram(
    "publisher_notebook_cell_execution_duration_ms",
    "Wall-clock duration of a notebook cell run. Labels: format, outcome.",
    "ms",
-   CELL_DURATION_BUCKETS_MS,
+   // The HTTP request histogram's set, since a cell run is one request.
+   REQUEST_DURATION_BUCKETS_MS,
 );
 
 /** One notebook was read (or not) by a discovery pass. */
