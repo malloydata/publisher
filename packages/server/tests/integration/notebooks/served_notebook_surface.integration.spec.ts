@@ -144,6 +144,15 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(runColumns(dashboard.modelInfo)).toEqual([["shown_count"]]);
    });
 
+   it("withholds from the notebook GET a run over a source derived from a hidden one", async () => {
+      const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { modelInfo?: string };
+      expect(body.modelInfo).not.toContain("secret_total");
+      // Positive control: the runs over the surface and over a source derived from it.
+      expect(runColumns(body.modelInfo)).toEqual([["order_count"], ["n"]]);
+   });
+
    it("still returns the declared givens and the file text", async () => {
       const body = await getModel();
       expect(body.givens?.map((g) => g.name)).toEqual(["REGION"]);
