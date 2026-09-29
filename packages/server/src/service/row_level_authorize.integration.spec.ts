@@ -4763,10 +4763,12 @@ source: X is duckdb.sql("select 1 as id") extend {
       expect(secureNotesOf(pkg, "ROLE")).toHaveLength(0);
    });
 
-   // GUARDS: every shape below loads today and must keep loading. A scalar
-   // secure given behind a gate is the exact shape an earlier revision of this
-   // work refused, and it is a working configuration -- the gate evaluates and
-   // the query runs.
+   // GUARDS: every shape below loads today and must keep loading. These assert
+   // loading only, not querying. A scalar secure given behind a gate is the
+   // exact shape an earlier revision of this work refused; with the fixture's
+   // `$ROLE = 'admin'` gate it is also a working configuration at query time.
+   // The filter-typed shapes load but do not query correctly against that
+   // equality gate, which is a separate problem from whether they load.
    it.each([
       ["scalar, marked", "  #(secure)\n  ROLE :: string"],
       ["scalar, unmarked", "  ROLE :: string"],
