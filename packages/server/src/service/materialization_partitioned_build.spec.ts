@@ -53,23 +53,32 @@ describe("createTableAndDescribe: statements issued", () => {
          // thread holds before flushing to the partition files. DuckDB's own
          // 524,288 is what a wide, many-partition insert dies on.
          "SET partitioned_write_flush_threshold = 8192",
+         // One appender: a DuckDB-side sort is read in parallel, and several
+         // appenders each meet every partition again.
+         "SET threads = 1",
          "BEGIN TRANSACTION",
          `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS}) WITH NO DATA`,
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id")',
-         `INSERT INTO "lake"."t" (${ROWS})`,
+         // Ordered by the partition columns at the top of the INSERT and nowhere
+         // else: the SELECT handed in is what the CTAS reads, unchanged.
+         `INSERT INTO "lake"."t" (SELECT * FROM (${ROWS}) AS partitioned_build ORDER BY "org_id")`,
          // The read-back is INSIDE, before COMMIT: a failed DESCRIBE drops the
          // table, and after a commit that would delete the generation the
          // previous manifest still names.
          'DESCRIBE "lake"."t"',
          "COMMIT",
+         "RESET threads",
       ]);
    });
 
    it("keeps the author's column order, which is the directory nesting", async () => {
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id", "s"]);
-      expect(sql[3]).toBe(
+      expect(sql[4]).toBe(
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id", "s")',
+      );
+      expect(sql[5]).toBe(
+         `INSERT INTO "lake"."t" (SELECT * FROM (${ROWS}) AS partitioned_build ORDER BY "org_id", "s")`,
       );
    });
 
@@ -92,6 +101,8 @@ describe("createTableAndDescribe: statements issued", () => {
          createTableAndDescribe(conn, '"lake"."t"', ROWS, ["nope"]),
       ).rejects.toThrow("no such column");
       expect(issued).toContain("ROLLBACK");
+      // And the thread count is given back on this path too.
+      expect(issued.at(-1)).toBe("RESET threads");
       // Never a drop: that is what destroyed the served generation.
       expect(issued.filter((q) => q.startsWith("DROP"))).toEqual([]);
       expect(issued.filter((q) => q.startsWith("INSERT"))).toEqual([]);
@@ -114,20 +125,25 @@ describe("createTableAndDescribe: the flush threshold", () => {
       process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"]);
-      expect(sql[0]).toBe("BEGIN TRANSACTION");
-      expect(sql.filter((q) => q.startsWith("SET"))).toEqual([]);
+      expect(sql[0]).toBe("SET threads = 1");
+      expect(sql.filter((q) => q.startsWith("SET partitioned_write"))).toEqual(
+         [],
+      );
    });
 
-   it("never reaches an unpartitioned build", async () => {
+   it("never reaches an unpartitioned build, nor does the ordering or the thread count", async () => {
       // The setting only governs a partitioned COPY, and the unpartitioned
       // CTAS is promised byte-identical to what it was.
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS);
-      expect(sql.filter((q) => q.startsWith("SET"))).toEqual([]);
+      expect(sql).toEqual([
+         `CREATE OR REPLACE TABLE "lake"."t" AS (${ROWS})`,
+         'DESCRIBE "lake"."t"',
+      ]);
    });
 });
 
-describe("orderByPartitionColumns: the warehouse feeds the build in partition order", () => {
+describe("orderByPartitionColumns: the insert reads its SELECT in partition order", () => {
    it("leaves an unpartitioned build's SQL untouched", () => {
       expect(orderByPartitionColumns("SELECT 1", [], "postgres")).toBe(
          "SELECT 1",
@@ -173,9 +189,11 @@ describe("a wide, many-partition insert at a low memory limit", () => {
    // memory limit small enough to fail in seconds: DuckDB's partitioned COPY
    // charges each appender thread one vector per column for every partition it
    // has met, at first sight, and flushes nothing until it has appended
-   // partitioned_write_flush_threshold rows. Each assertion below fails on the
-   // behaviour before this change: unsorted input dies before a row is flushed
-   // at ANY threshold, and sorted input dies at DuckDB's default threshold.
+   // partitioned_write_flush_threshold rows. The SELECT handed in interleaves
+   // its partitions, as a warehouse result does. Each assertion below fails on
+   // the behaviour before this change: without the ORDER BY the insert dies
+   // before a row is flushed at ANY threshold, and with it, it dies at DuckDB's
+   // default threshold.
    const PARTITIONS = 300;
    const ROWS_PER_PARTITION = 2000;
    const COLUMNS = 40;
@@ -184,10 +202,9 @@ describe("a wide, many-partition insert at a low memory limit", () => {
          ? `md5((r + ${i})::VARCHAR) AS c${i}`
          : `(r * ${i + 1})::BIGINT AS c${i}`,
    ).join(", ");
-   const unsorted =
+   const interleaved =
       `SELECT (r % ${PARTITIONS})::BIGINT AS org_id, ${columns} ` +
       `FROM range(${PARTITIONS * ROWS_PER_PARTITION}) t(r)`;
-   const sorted = `${unsorted} ORDER BY org_id`;
 
    // Each case on its OWN instance, as a production build is: the memory limit
    // and thread count below must not leak into the pooled in-memory instance the
@@ -208,8 +225,6 @@ describe("a wide, many-partition insert at a low memory limit", () => {
       );
       await conn.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       await conn.runSQL("SET preserve_insertion_order=false");
-      // One appender, as the production passthrough read is one stream.
-      await conn.runSQL("SET threads=1");
       await conn.runSQL("SET memory_limit='192MB'");
       return { conn, dispose };
    }
@@ -218,36 +233,46 @@ describe("a wide, many-partition insert at a low memory limit", () => {
       delete process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD;
    });
 
-   it("unsorted input fails before a row is flushed, whatever the threshold", async () => {
-      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "2048";
+   it("without the ORDER BY, the insert fails before a row is flushed, whatever the threshold", async () => {
+      // The statements createTableAndDescribe issues, minus the ordering: the
+      // control that shows the ORDER BY is load-bearing, not the threshold alone.
       const { conn, dispose } = await lake();
       try {
+         await conn.runSQL("SET partitioned_write_flush_threshold = 2048");
+         await conn.runSQL("SET threads = 1");
+         await conn.runSQL(
+            `CREATE OR REPLACE TABLE lake.t AS (${interleaved}) WITH NO DATA`,
+         );
+         await conn.runSQL("ALTER TABLE lake.t SET PARTITIONED BY (org_id)");
          await expect(
-            createTableAndDescribe(conn, "lake.t", unsorted, ["org_id"]),
+            conn.runSQL(`INSERT INTO lake.t (${interleaved})`),
          ).rejects.toThrow(/Out of Memory/);
       } finally {
          await dispose();
       }
    }, 120000);
 
-   it("sorted input fails at DuckDB's own threshold", async () => {
+   it("with the ORDER BY but DuckDB's own threshold, the insert still fails", async () => {
       process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
       const { conn, dispose } = await lake();
       try {
          await expect(
-            createTableAndDescribe(conn, "lake.t", sorted, ["org_id"]),
+            createTableAndDescribe(conn, "lake.t", interleaved, ["org_id"]),
          ).rejects.toThrow(/Out of Memory/);
       } finally {
          await dispose();
       }
    }, 120000);
 
-   it("sorted input with the bound completes, one directory per partition", async () => {
+   it("as issued, the insert completes with one directory per partition", async () => {
       const { conn, dispose } = await lake();
       try {
-         const schema = await createTableAndDescribe(conn, "lake.t", sorted, [
-            "org_id",
-         ]);
+         const schema = await createTableAndDescribe(
+            conn,
+            "lake.t",
+            interleaved,
+            ["org_id"],
+         );
          expect(schema).toHaveLength(COLUMNS + 1);
          const count = await conn.runSQL(`SELECT count(*) AS n FROM lake.t`);
          expect(Number((count.rows as { n: unknown }[])[0].n)).toBe(

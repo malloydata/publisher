@@ -41,16 +41,17 @@ appender one vector per column for every partition it has met, and flushes nothi
 appended 524,288 rows. Rows arriving interleaved across partitions brought every partition into
 that set at once.
 
-Two changes, and both are needed. The passthrough SELECT of a partitioned build is now wrapped in
-`SELECT * FROM (...) ORDER BY <partition columns>`, so the **warehouse** returns the rows in
-partition order and the build holds one or two partitions at a time; sorted there rather than in
-DuckDB so the read stays one stream. And the build session sets
-`partitioned_write_flush_threshold`, new `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD` (rows,
-default `8192`, `off` to leave DuckDB's default). Measured on a 122-column, 616k-row Postgres
-source into 308 partitions at `768MB`: unsorted fails at any threshold, sorted fails at DuckDB's
-default, sorted with the bound completes in 11 s. An unpartitioned build is byte-identical to what
-it was; a partitioned build's read now carries the ORDER BY, which on a large source is one more
-pass on the warehouse.
+Three changes, on the partitioned path only. The insert's SELECT is now ordered by the partition
+columns at the top of the INSERT statement, so the build holds one or two partitions at a time; the
+SELECT it was handed — the warehouse passthrough, a chained build's projection — is unchanged, so
+what the warehouse runs, what is attributed to it and what the source is addressed by are untouched.
+That insert runs on one thread, because a DuckDB-side sort is read in parallel and several appenders
+each meet every partition again. And the build session sets `partitioned_write_flush_threshold`,
+new `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD` (rows, default `8192`, `off` to leave DuckDB's
+default). Measured on a 122-column, 616k-row Postgres source into 308 partitions at `768MB`:
+interleaved fails at any threshold, ordered fails at DuckDB's default, ordered on four threads fails,
+ordered on one thread with the bound completes in 9.5 s. An unpartitioned build is byte-identical to
+what it was.
 
 ## [Unreleased] — /status names the server version, and says why it is empty
 

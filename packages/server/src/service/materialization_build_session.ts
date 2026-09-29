@@ -120,53 +120,38 @@ export function wrapPassthrough(
 }
 
 /**
- * Feed a partitioned build in partition order, sorted by the WAREHOUSE.
+ * The SELECT a partitioned insert reads, ordered by the partition columns.
  *
  * DuckDB's partitioned COPY -- which is what a DuckLake insert into a laid-out
- * table plans -- charges each appender thread one vector per column for every
+ * table plans -- charges each appender one vector per column for every
  * partition it has met, at first sight, before any row of it is flushed. Rows
  * that arrive in partition order keep that set at one or two partitions; rows
  * that arrive interleaved bring every partition into it within the first few
- * chunks, and a 308-partition, 120-column insert then fails against the session's
- * `memory_limit` before it has flushed anything, at any flush threshold.
+ * chunks, and a 308-partition, 120-column insert then fails against the
+ * session's `memory_limit` before it has flushed anything, at any threshold.
  *
- * Sorted on the warehouse, NOT here, because a DuckDB-side ORDER BY makes the
- * insert parallel -- a sorted result is read by every thread -- and each of those
- * threads then meets every partition again. The passthrough read is one stream,
- * so an ordered stream stays ordered into the sink. Wrapped as a subselect so the
- * compiled SELECT is not parsed: whatever it is, `SELECT * FROM (...) t ORDER BY`
- * is a statement every supported warehouse accepts.
- *
- * Quoted for the SOURCE dialect, which is not the storage target's: the columns
- * are the source's public projection names, which the compiled SELECT already
- * emits under the warehouse's own quoting. Only BigQuery differs (backticks).
+ * Applied at the top level of the INSERT and nowhere else: the SELECT it wraps
+ * is exactly the one the CTAS would have read -- a warehouse passthrough, a
+ * chained build's projection -- so what the warehouse runs, what is attributed
+ * to it and what the source is addressed by are all unchanged. The sort is
+ * DuckDB's, out of core against the session's spill directory. Wrapped as a
+ * subselect so the SELECT is not parsed.
  */
 export function orderByPartitionColumns(
-   buildSQL: string,
+   selectSQL: string,
    partitionColumns: readonly string[],
    dialect: string,
 ): string {
    if (partitionColumns.length === 0) {
-      return buildSQL;
+      return selectSQL;
    }
    const order = partitionColumns
       .map((name) => quoteIdentifier(name, dialect))
       .join(", ");
    // A compiled SELECT carries no terminator, but one would end the subselect
    // early, so it is not left to chance.
-   const inner = buildSQL.replace(/[\s;]+$/, "");
+   const inner = selectSQL.replace(/[\s;]+$/, "");
    return `SELECT * FROM (${inner}) AS partitioned_build ORDER BY ${order}`;
-}
-
-/**
- * The identifier-quoting dialect of a passthrough source, keyed the way
- * {@link quoteIdentifier} expects (Malloy dialect names): only BigQuery
- * backticks; Postgres and Snowflake double-quote.
- */
-export function passthroughQuotingDialect(
-   sourceType: FederatedSourceType,
-): string {
-   return sourceType === "bigquery" ? "standardsql" : sourceType;
 }
 
 /**
@@ -983,11 +968,7 @@ export async function buildSourceIntoStorage(params: {
          session,
          sourceType,
          federated.handle,
-         orderByPartitionColumns(
-            buildSQL,
-            params.partitionColumns ?? [],
-            passthroughQuotingDialect(sourceType),
-         ),
+         buildSQL,
          queryMetadata,
       );
 
@@ -1197,19 +1178,10 @@ export async function buildDownstreamIntoStorage(params: {
          `${destinationName}.${physicalTableName}`,
          STORAGE_TARGET_DIALECT,
       );
-      // Ordered here, in DuckDB, because the parent IS DuckDB-side: there is no
-      // warehouse to sort on. A sorted result is read in parallel, so each
-      // appender still meets every partition once per flush interval -- narrower
-      // than the interleaved case by the flush threshold, not by the partition
-      // count, and the residual a wide chained source is left with.
       const schema = await createTableAndDescribe(
          session,
          target,
-         orderByPartitionColumns(
-            sql,
-            params.partitionColumns ?? [],
-            STORAGE_TARGET_DIALECT,
-         ),
+         sql,
          params.partitionColumns ?? [],
       );
 
@@ -1515,6 +1487,16 @@ export async function createTableAndDescribe(
          `SET partitioned_write_flush_threshold = ${flushThreshold}`,
       );
    }
+   // One appender. The ORDER BY below is DuckDB's, and a sorted result is read
+   // in parallel, so with several threads each one meets every partition again
+   // and the same insert fails at 768MB that completes on one thread (measured:
+   // 616k rows x 122 columns into 308 partitions, 4 threads fails at 7 s, 1
+   // thread completes in 9.5 s against 8.4 s for the same rows pre-sorted by
+   // the warehouse). The passthrough read is one stream regardless, so little
+   // parallelism is given up. This session is the build's own instance;
+   // RESET below returns it to the instance default rather than leaving the
+   // read-back and commit single-threaded for nothing.
+   await session.runSQL("SET threads = 1");
    let schema: WireColumn[];
    await session.runSQL("BEGIN TRANSACTION");
    try {
@@ -1524,7 +1506,13 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
       );
-      await session.runSQL(`INSERT INTO ${quotedTablePath} (${selectSQL})`);
+      // Ordered by the partition columns here, and only here: see
+      // orderByPartitionColumns for why the rows must arrive partition by
+      // partition, and why that is done at the top of this statement rather
+      // than in the SELECT the build was handed.
+      await session.runSQL(
+         `INSERT INTO ${quotedTablePath} (${orderByPartitionColumns(selectSQL, partitionColumns, STORAGE_TARGET_DIALECT)})`,
+      );
       // Read back INSIDE the transaction, and this is the reason rather than
       // tidiness. `describeOrDrop` DROPS the table when the read-back fails, and
       // the physical name is stable across generations — so after a COMMIT that
@@ -1535,6 +1523,7 @@ export async function createTableAndDescribe(
       // uncommitted table, so nothing is given up by asking here.
       schema = await describeTable(session, quotedTablePath);
       await session.runSQL("COMMIT");
+      await session.runSQL("RESET threads");
    } catch (buildErr) {
       // Restores the previous generation rather than deleting it. Best-effort:
       // a rollback that itself fails must not replace the error that caused it.
@@ -1550,6 +1539,13 @@ export async function createTableAndDescribe(
                cause: errMessage(buildErr),
             },
          );
+      }
+      // Same best-effort footing as the rollback: the thread count is this
+      // session's, and the error being raised is the build's.
+      try {
+         await session.runSQL("RESET threads");
+      } catch {
+         // The session is disposed with the build; a stuck setting dies with it.
       }
       throw buildErr;
    }

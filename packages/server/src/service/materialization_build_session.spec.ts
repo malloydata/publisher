@@ -320,12 +320,11 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
    });
 });
 
-describe("buildSourceIntoStorage feeds a partitioned build in partition order", () => {
-   // The ordering is the warehouse's job, so it has to reach the passthrough
-   // read as part of the SQL the warehouse runs — not be applied on the DuckDB
-   // side, where a sort makes the insert parallel and every thread meets every
-   // partition again. Proved on the SQL the read receives; the memory effect is
-   // pinned against a real DuckLake in materialization_partitioned_build.spec.
+describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partitioned or not", () => {
+   // The ordering a partitioned build needs is applied at the top of the INSERT
+   // (materialization_partitioned_build.spec), never to the SELECT the warehouse
+   // runs: what is executed there, attributed there, and addressed by is the
+   // compiled SQL and nothing else.
    function harness(partitionColumns: string[] | undefined) {
       const received: string[] = [];
       const deps: BuildSessionDeps = {
@@ -339,7 +338,7 @@ describe("buildSourceIntoStorage feeds a partitioned build in partition order", 
             return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
          },
       };
-      const dir = mkdtempSync(join(tmpdir(), "partition-order-"));
+      const dir = mkdtempSync(join(tmpdir(), "partition-verbatim-"));
       mkdirSync(storageDestinationRoot(dir), { recursive: true });
       const params = {
          destinationName: "lake",
@@ -357,7 +356,7 @@ describe("buildSourceIntoStorage feeds a partitioned build in partition order", 
       return { params, dir, received };
    }
 
-   it("orders the warehouse read by the partition columns", async () => {
+   it("for a partitioned build", async () => {
       const h = harness(["org_id"]);
       try {
          // The plain-DuckDB file destination cannot take a layout, so the build
@@ -366,15 +365,13 @@ describe("buildSourceIntoStorage feeds a partitioned build in partition order", 
          await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
             /PARTITIONED BY/,
          );
-         expect(h.received).toEqual([
-            'SELECT * FROM (SELECT 1 AS org_id) AS partitioned_build ORDER BY "org_id"',
-         ]);
+         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
       } finally {
          rmSync(h.dir, { recursive: true, force: true });
       }
    });
 
-   it("hands an unpartitioned build's SQL through verbatim", async () => {
+   it("for an unpartitioned build", async () => {
       const h = harness(undefined);
       try {
          await buildSourceIntoStorage(h.params);
