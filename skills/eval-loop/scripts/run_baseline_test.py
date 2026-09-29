@@ -1965,5 +1965,47 @@ class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
         self.assertEqual(below, [], f"defined below the main guard: {below}")
 
 
+
+class ExpectedEntityLint(unittest.TestCase):
+    """The lint reads the compiled model, not the model text.
+
+    On the storefront tour the text search reported `retail_price`,
+    `signup_date` and `customers.customer_id` as a stale set: two columns the
+    sources expose without declaring, and a joined field named by its path.
+    All three exist, and the message told the reader to edit the set.
+    """
+
+    CASES = [{"qid": "q1", "expectedEntities": {"required": [
+        "dimension:order_items:customers.customer_id",
+        "dimension:customers:signup_date",
+        "measure:order_items:total_sales"]}}]
+    DECLARED = {"order_items": {"source:order_items", "join:customers",
+                                "measure:total_sales"},
+                "customers": {"source:customers", "dimension:customer_id",
+                              "dimension:signup_date"}}
+
+    def test_implicit_columns_and_join_paths_are_not_stale(self):
+        stale, lines = rb.expected_entity_lint(self.CASES, self.DECLARED, "")
+        self.assertEqual((stale, lines), ([], []))
+
+    def test_an_id_the_model_lacks_is_named_with_why(self):
+        cases = [{"qid": "q2", "expectedEntities": {"required": [
+            "dimension:customers:shipped_at"]}}]
+        stale, lines = rb.expected_entity_lint(cases, self.DECLARED, "")
+        self.assertEqual(stale, ["dimension:customers:shipped_at"])
+        self.assertIn("1 expected entity the served model does not declare",
+                      lines[0])
+        self.assertIn("declares no field 'shipped_at'", lines[1])
+
+    def test_without_the_compiled_model_the_text_search_says_it_may_be_wrong(self):
+        stale, lines = rb.expected_entity_lint(
+            self.CASES, None, "source: order_items is x extend { measure: total_sales is 1 }")
+        self.assertEqual(stale, ["customers.customer_id", "signup_date"])
+        self.assertIn("The compiled model could not be read", lines[0])
+
+    def test_nothing_to_lint_against_is_none_not_empty(self):
+        self.assertEqual(rb.expected_entity_lint(self.CASES, None, ""), (None, []))
+
+
 if __name__ == "__main__":
     unittest.main()

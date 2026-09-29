@@ -192,6 +192,7 @@ from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
 import verify_definitions  # noqa: E402
+import check_findable  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
@@ -1765,6 +1766,49 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     return lines
 
 
+def expected_entity_lint(cases: list[dict[str, Any]],
+                         declared: dict[str, set[str]] | None,
+                         model_src: str) -> tuple[list[str] | None, list[str]]:
+    """The expectedEntities ids the served model does not have, and what to print.
+
+    Checked against the COMPILED model when it can be read
+    (`check_findable.declared_findings`). A source exposes every column of its
+    table without declaring it, and a joined field is named by its path, so a
+    search of the model text misses both: on the storefront tour it reported
+    `retail_price`, `signup_date` and `customers.customer_id`, which all exist.
+    The text search is kept only for when the compiled model cannot be read,
+    and says it may be wrong. None when there is nothing to lint against.
+    """
+    if declared:
+        findings = check_findable.declared_findings(cases, declared)
+        stale = sorted({f.split(": ", 1)[0] for f in findings})
+        if not findings:
+            return stale, []
+        return stale, ([f"  ! {len(stale)} expected entit"
+                        f"{'y' if len(stale) == 1 else 'ies'} the served model "
+                        f"does not declare -- a stale set, not a retrieval "
+                        f"miss; fix expectedEntities:"]
+                       + [f"      {f}" for f in findings[:8]]
+                       + (["      ..."] if len(findings) > 8 else []))
+    if not model_src:
+        return None, []
+    names = {e.split(":")[-1] for c in cases
+             for e in ((c.get("expectedEntities") or {}).get("required") or [])
+             + [x for grp in (c.get("expectedEntities") or {}).get("requiredAnyOf") or []
+                for x in grp]}
+    stale = sorted(n for n in names
+                   if n and not re.search(r"(?<![A-Za-z0-9_])" + re.escape(n)
+                                          + r"(?![A-Za-z0-9_])", model_src))
+    if not stale:
+        return stale, []
+    return stale, [f"  ! {len(stale)} expected entity name(s) appear nowhere in "
+                   f"the model text: {', '.join(stale[:8])}"
+                   f"{' ...' if len(stale) > 8 else ''}. The compiled model "
+                   f"could not be read, so a column the model exposes without "
+                   f"declaring it is listed too; check each before editing "
+                   f"expectedEntities"]
+
+
 def golden_check_note(golden_check: str, stale: list[str],
                       has_model_text: bool) -> str:
     """`goldenCheck` with the in-arm lint's result and what it could not cover.
@@ -3280,27 +3324,17 @@ def main(argv: list[str] | None = None) -> int:
                    "the served model could not be located")
             print(f"  ! not re-executing predictions: {why}")
 
-    # Lint the set's expected entities against the model text when there is
-    # one: a name that appears nowhere in the served source is a stale set,
-    # not a retrieval miss, and both VideoAmp platform runs carried five of
-    # them (the set was written against a later package) which read as misses
-    # until someone checked by hand. No model text on a platform target, so
-    # the lint is skipped there and the report has to say so.
-    stale: list[str] = []
-    if model_src:
-        names = {e.split(":")[-1] for c in cases
-                 for g in (c.get("expectedEntities") or {}).get("required", [])
-                 for e in [g]} | {e.split(":")[-1] for c in cases
-                                  for grp in (c.get("expectedEntities") or {}).get("requiredAnyOf", [])
-                                  for e in grp}
-        stale = sorted(n for n in names
-                       if n and not re.search(r"(?<![A-Za-z0-9_])" + re.escape(n)
-                                              + r"(?![A-Za-z0-9_])", model_src))
-        if stale:
-            print(f"  ! {len(stale)} expected entity name(s) appear nowhere in the "
-                  f"served model: {', '.join(stale[:8])}{' ...' if len(stale) > 8 else ''}"
-                  f" -- a stale set, not a retrieval miss; fix expectedEntities")
-    elif a.target == "platform":
+    # Lint the set's expected entities before a dollar is spent: an id the
+    # model does not declare is a stale set, not a retrieval miss, and both
+    # VideoAmp platform runs carried five of them (the set was written against
+    # a later package) which read as misses until someone checked by hand.
+    declared = (check_findable.compiled_entities(a.publisher, a.environment,
+                                                 a.package)
+                if a.target != "platform" and a.publisher else None)
+    stale, lint = expected_entity_lint(cases, declared, model_src)
+    for line in lint:
+        print(line)
+    if stale is None and a.target == "platform":
         print("  ! expected entities not linted against the model (platform target "
               "serves no model text)")
 
@@ -3332,7 +3366,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"is what this run is for: their answers are what keys get "
                   f"derived from.")
 
-    golden_check = golden_check_note(golden_check, stale, bool(model_src))
+    golden_check = golden_check_note(golden_check, stale or [],
+                                     stale is not None)
 
     retrieval_gate = run_retrieval_gate(a)
 
@@ -3429,7 +3464,7 @@ def main(argv: list[str] | None = None) -> int:
         # way to tell a stale set from a model that really is missing them.
         # `null` when there was no model text to lint against, which is a
         # different fact from an empty list.
-        staleEntityNames=(stale if model_src else None),
+        staleEntityNames=stale,
     ), indent=2))
 
     if a.rebuild:
