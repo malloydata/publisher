@@ -11,18 +11,14 @@ import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 
 // Zod shape for reload_package. environmentName/packageName mirror the
-// other tools and point the agent at get_context for name discovery.
+// other tools and point the agent at list_packages for name discovery.
 const reloadShape = {
    environmentName: z
       .string()
-      .describe(
-         "Environment name. Call get_context with no arguments to list the available environments.",
-      ),
+      .describe("Environment name, as list_packages returns it."),
    packageName: z
       .string()
-      .describe(
-         "Package to reload. Call get_context with just environmentName to list its packages.",
-      ),
+      .describe("Package to reload, as list_packages returns it."),
 };
 
 /**
