@@ -8575,9 +8575,8 @@ export class Model {
          // holds for an ordinary malformed `##` line, because nothing calls
          // `motlyParseErrors` on a notebook's model-level tags at all, so the
          // parse error it already produces has no reader. Dashboards report both
-         // through the package lint; notebooks have no equivalent channel yet.
-         // Not closed here: it needs a notebook warnings surface, which is its
-         // own change. Filed as a follow-up.
+         // through the package lint; a served notebook's model-level tags are
+         // linted by notebook_lint.ts, but a `.malloynb` has no equivalent channel.
          autorun: readAutorun(notebookTag),
          startingGivens: readStartingGivens(
             notebookTag,

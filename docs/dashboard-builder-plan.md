@@ -405,8 +405,10 @@ and referenced from `tiles=`:
   its opener line is prose like the rest. Each `run:` together with its contiguous
   `#` tag block is a query cell; a `#"` directly above the run is its caption, a
   chart is a render tag on it (`# bar_chart`), and `# label` titles it. Each
-  other run of statements (`import`, `source:`, `view:`, `given:`) is a
-  definition cell, shown as code or folded and read by every cell below it. The
+  other statement (`import`, `source:`, `query:`, `given:`, `export`, `type:`)
+  is a definition cell of its own, one cell per statement, shown as code or
+  folded and read by every cell below it. Cell index is a wire contract, so
+  statements are never merged into a run. The
   **header** is not a cell, and in a notebook it holds only `##!` flags, `//`
   comments and unnamed `"` notes above `## artifact`. Any statement (import,
   source, given, query, run, sql) or other tag above the artifact tag is an
@@ -418,8 +420,9 @@ and referenced from `tiles=`:
   is the sole token after `(text)` on the opener, a bare word
   (`[A-Za-z_][A-Za-z0-9_]*`), and the reader strips that opener; the body is the
   tile's markdown. `##|"` is always unnamed prose. A `(text)` block with a
-  missing or invalid name is an error, one that no `tiles` entry references is a
-  finding, and a `(text)` block in a notebook is a finding. Written without the
+  missing or invalid name is an error in a dashboard and a warning in a
+  notebook, which ignores the block either way. One that no `tiles` entry
+  references is a finding, and a `(text)` block in a notebook is a finding. Written without the
   space (`##|"name`, `##|(text)name`) Malloy drops the note as `malformed-route`
   (verified on 0.0.432), and the lint says how to spell it.
 - **Kinds.** `kind=dashboard` at model scope is the explicit default for a file
@@ -456,7 +459,8 @@ decision, reports each of these with a fix-it: `##| markdown` or `##|markdown`
 ("did you mean `##|"`"); a missing `##!` flag, printing the exact line to add;
 a `|##` body line, and trailing text on a closer; a tag separated from its
 `run:`; an unknown `kind`; a statement or tag above `## artifact`; a `(text)`
-block with a bad name, in a notebook, or that no tile references; a `## `
+block with a bad name (an error in a dashboard, a warning in a notebook), in a
+notebook, or that no tile references; a `## `
 heading line; an `## artifact { … }` that does not parse; a route glued to its
 word (`##|"name`); and a grid width given two ways.
 

@@ -7,7 +7,7 @@ info:
   description: |
     The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
     A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
-    notebooks (`.malloynb` files), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    notebooks (`.malloynb` files and Malloyyo `.malloy` files under `notebooks/`), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
     under `public/`.
 
     ## Key Features
@@ -1569,7 +1569,9 @@ paths:
       description: |
         Retrieves a list of all Malloy models within the specified package. Each model entry
         includes the relative path, package name, and any compilation errors. This endpoint
-        is useful for discovering available models and checking their status.
+        is useful for discovering available models and checking their status. Served
+        notebooks (`.malloy` files under `notebooks/` that carry an `## artifact` note) are
+        not models here, with or without a surface; they are listed by list-notebooks.
       parameters:
         - name: environmentName
           in: path
@@ -3227,11 +3229,16 @@ components:
             file with an `## artifact` note whose cells could not be read, which
             names the line and the fix and is reported with severity `error`,
             because the notebook is served with that error instead of opening.
-            The same family carries `warn` findings on files under `notebooks/`
-            and `dashboards/` (a mistyped prose-block opener, a missing
-            `kind=notebook`, a block that never closes, and similar), each
-            naming its line and the fix; they are computed at discovery and are
-            also returned by `/compile` at file and package scope.
+            The same family carries findings on files under `notebooks/` and
+            `dashboards/`, each naming its line and the fix; they are computed
+            at discovery and are also returned by `/compile` at file and
+            package scope. Five are `error` and fail `/compile`: a statement or
+            a tag above `## artifact` in a served notebook, a `dashboard_columns`
+            that disagrees with `dashboard { columns }`, an invalid or missing
+            `(text)` block name in a dashboard, an `## artifact` tag that does
+            not parse, and a served notebook whose cells could not be read. The
+            rest are `warn` (a mistyped prose-block opener, a missing
+            `kind=notebook`, a block that never closes, and similar).
             Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
@@ -3857,7 +3864,7 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's `#"` doc comment, when it has one
+          description: The file's unnamed `"` notes above the `## artifact` tag, when it has any
         error:
           type: string
           description: Error message if the dashboard file failed to compile
@@ -3898,7 +3905,7 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's `#"` doc comment, when it has one
+          description: The file's unnamed `"` notes above the `## artifact` tag, when it has any
         error:
           type: string
           description: Error message if the dashboard file failed to compile

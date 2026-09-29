@@ -44,7 +44,7 @@ write just as well as the builder can.
 | **Reading mode**     | Narrative: a data story, read top to bottom in author order                                                    | Operational: one grid behind a filter row, scanned at a glance                                                           | Whatever you design                                                                                                           |
 | **Layout**           | Vertical document flow                                                                                         | Column grid via tags (`# colspan`, `# break`)                                                                            | Fully custom                                                                                                                  |
 | **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: drag tiles in the Console's builder, or write the layout tags (`# artifact`, `# dashboard {columns}`) by hand | Code: HTML/CSS/JS, hand-written or agent-written, no build step. The `malloy-html-data-apps` skills guide an agent through it |
-| **Portability**      | Malloy's notebook format: the same file the VS Code extension authors and runs                                 | Plain Malloy, near-identical to [Malloyyo](https://github.com/malloydata/malloyyo)'s (the grid width differs)            | Standard web page; the `Publisher.*` runtime is Publisher-specific                                                            |
+| **Portability**      | Malloy's notebook format: the same file the VS Code extension authors and runs                                 | Plain Malloy, near-identical to [Malloyyo](https://github.com/malloydata/malloyyo)'s (the canonical grid width is `dashboard { columns=N }`, with `dashboard_columns` read as a deprecated alias)            | Standard web page; the `Publisher.*` runtime is Publisher-specific                                                            |
 | **Filters**          | Auto-rendered from the givens the file declares or imports: select, slider, date picker                        | Auto-rendered from the givens the query references: select, slider, date picker                                          | You build the controls and pass givens through `Publisher.query` yourself                                                     |
 | **Interactivity**    | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                       | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                                 | Anything the web platform can do                                                                                              |
 | **Embedding**        | SDK `<Notebook>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | SDK `<Dashboard>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup]          | `Publisher.embed`: auto-resizing iframe in any host page                                                                      |
@@ -64,9 +64,10 @@ nothing. Import the ones you filter by.
 
 A notebook interleaves markdown prose with live query cells, in the order the author wants them
 read. A cell tagged `# dashboard` can render a KPI grid inline, and a model's givens surface as a
-Parameters panel above the cells. The `.malloynb` format is deprecated — read-only support stays,
-and the bundled examples no longer ship one — so a new narrative surface should be a dashboard until
-the authored notebook format lands.
+Parameters panel above the cells. A new notebook is a Malloyyo notebook: a
+`.malloy` file directly under `notebooks/` whose model-level notes include `## artifact { kind=notebook }`.
+The `.malloynb` format is deprecated — read-only support stays, and the bundled examples no longer
+ship one.
 
 Interactivity is not the axis to choose on: a notebook and a dashboard run the same givens code,
 so both get URL-addressable parameters, the same controls, starting values and Apply batching (a

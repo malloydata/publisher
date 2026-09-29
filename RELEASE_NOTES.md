@@ -31,6 +31,34 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Publisher serves Malloyyo notebooks
+
+A `.malloy` file directly under a package's top-level `notebooks/` whose model-level notes include
+`## artifact { kind=notebook … }` is now a served notebook. Its cells are read from the file in order:
+prose notes, one query cell per `run:` with its tag block, and one definition cell per other
+statement. List-notebooks includes served notebooks beside `.malloynb` files, each with a `format`
+(`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or `definition`). The Console
+opens one at `notebooks/<slug>`. A served notebook keeps `modelType: model`, so the model GET,
+`/compile`, MCP `execute_query` and the declared-givens fetch treat it as any model.
+
+Behavior changes to know about:
+
+- **list-models excludes served notebooks**, with or without a surface, so they are absent from MCP
+  `get_context` as well. Use list-notebooks.
+- **A dashboard's description is the unnamed `"` notes above `## artifact`**, for notebooks too. A
+  `##"` note below the tag is prose, not description. The in-repo dashboards already put theirs above.
+- **`notebooks` is a segment the Console owns.** `/<env>/<pkg>/notebooks/<file.ext>` no longer reaches
+  a package's `public/notebooks/`.
+- **The published-names filter now applies to `modelInfo.anonymous_queries` on the model GET for every
+  curated model**, and to a `.malloynb` GET's `anonymous_queries` under a surface: only runs over
+  published sources are returned.
+- **`/compile` reports new lint problems on files under `notebooks/` and `dashboards/`**, each naming
+  its line and the fix, and they appear in package warnings. A served notebook whose cells cannot be
+  read is an `error`.
+- **New metrics**: `publisher_notebook_discovery_total{format,outcome}`,
+  `publisher_notebook_cell_executions_total{format,kind,outcome}` and
+  `publisher_notebook_cell_execution_duration_ms{format,outcome}`.
+
 ## [Unreleased] — `dashboard_columns` is read again, as a deprecated alias
 
 The 0.8.x note that said `dashboard_columns` is gone is superseded. Agreed with Malloyyo,

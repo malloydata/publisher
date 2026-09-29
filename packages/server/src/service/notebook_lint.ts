@@ -502,7 +502,10 @@ export function lintNotebookText(
          );
       }
       // A single query has no grid, and dashboard.ts already says so.
-      if (properties.includes("dashboard_columns") && properties.includes("tiles")) {
+      if (
+         properties.includes("dashboard_columns") &&
+         properties.includes("tiles")
+      ) {
          const alias = tagText(tag, "dashboard_columns") ?? "";
          const dashboardTag = motlyTag(modelNotes)?.tag("dashboard");
          const canonical = dashboardTag?.has("columns")
