@@ -169,7 +169,7 @@ RUN_REQUIRED = {"runId", "target", "answererModel", "phase", "started"}
 RUN_RECOMMENDED = {"judgeModel", "judgeVersion", "datasetVersion", "modelSha",
                    "skillsVersion", "answererManifest"}
 RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
-                "modelGitSha", "mcpUrl", "publisher", "predictionsReExecuted",
+                "modelGitSha", "modelDir", "mcpUrl", "publisher", "predictionsReExecuted",
                 "serverVersion", "diagnoserModel", "improverModel",
                 "rubricSha",
                 # The prompt the judge was SHOWN, hashed. `rubricSha` covers

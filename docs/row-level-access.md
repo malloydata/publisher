@@ -143,11 +143,11 @@ simply handed all of them by the trusted tier that sets `TENANTS`.
 API=http://localhost:4000/api/v0/environments/examples/packages/governed-analytics/models
 
 # Resolved to every tenant → sees every tenant
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme","globex","initech"]}}'  # → 3 tenants
 
 # Resolved to one tenant → only their own rows
-curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme"]}}'   # → 1 tenant
 ```
 

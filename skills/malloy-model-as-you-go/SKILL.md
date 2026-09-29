@@ -1,6 +1,6 @@
 ---
 name: malloy-model-as-you-go
-description: After answering a data question, write down what the answer assumed so the next reader can trust the number. A field with a #(doc) in the model when you can edit it, an extend in the notebook when you can only author reports, or a stated assumption plus a Malloy snippet when you can only chat. Use after every answered question that rested on a judgment call, and whenever a question is asked against tables that have no model yet.
+description: 'After answering a data question, write down what the answer assumed so the next reader can trust the number. A field with a #(doc) in the model when you can edit it, an extend in the notebook when you can only author reports, or a stated assumption plus a Malloy snippet when you can only chat. Use after every answered question that rested on a judgment call, and whenever a question is asked against tables that have no model yet.'
 ---
 
 <!--

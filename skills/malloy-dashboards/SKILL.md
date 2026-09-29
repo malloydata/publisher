@@ -28,9 +28,13 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 ## Build sequence
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
-   `get_context` if you have it, otherwise the REST model endpoint or the `.malloy` files.
+   `get_context` if you have it, otherwise the REST model endpoint for `index.malloy` (it answers
+   404 for a file off the surface) or the `.malloy` files.
    Never guess a name. A guessed field in a query fails the whole package load, not just that one
    dashboard; a guessed tile or suggest source is quieter, and only shows up in the package warnings.
+   If the package root holds an `index.malloy` (every scaffolded package does), a tile reads only the
+   sources that file exports. A source the dashboard file declares on top of an exported one works;
+   one on top of a hidden source does not. See "Read the lint" for the warning you get otherwise.
 2. **PICK THE VIEWS TO SHOW.** A dashboard is `## artifact { tiles=[…] }` naming existing views, so
    this is the design step: which views, how wide each sits, what each is called. There is one form,
    so there is no form to choose.
@@ -61,8 +65,11 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    include wants `"scope": "package"`**, which recompiles every file as saved: `file` only checks the
    one you are editing, so renaming a source in `_shared.malloy` passes it while breaking every
    dashboard that imports it. A clean compile is not a working dashboard: some tag mistakes surface
-   at step 6, and some only when you look at the page in step 7. (The third scope, `append`, is the
-   default and is what a not-yet-saved file gets.)
+   at step 6, and some only when you look at the page in step 7. **A not-yet-saved dashboard wants
+   `"scope": "file"` too**, not the default: a dashboard file opens with an `import`, and the
+   default `append` scope refuses one, so the new-file case fails on the import and again on the
+   path that does not exist yet. `append` is for a fragment checked against a model that is
+   already on disk, which a dashboard file is not.
 6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `reload_package`, or
    `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
    a 424 means the package did not load and your edit is not live. **The `warnings` key is absent
@@ -437,8 +444,7 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
 Findings carry a `severity`, but `warn` is the ordinary default and tells you nothing about how bad
 one is. Read the text, not the severity and not the count. One message is worth recognising because
 it changes what the rest of the list means: **"Dashboard lint stopped early, so this list is
-incomplete"**. A dashboard withheld from `explores` also loses its own findings, so a short list for a
-withheld file is not a clean bill of health.
+incomplete"**.
 
 **Read the status the reload itself returns, not the listing.** One dashboard that fails to compile
 fails the whole package load, and the reload answers **424** with the compile error. A package that
@@ -451,13 +457,23 @@ failed, and the entry clears on the next reload that compiles. That is the one c
 the fact, so make it the first thing you run when a page will not change. A package that never loaded
 at all appears there too, without `stale`, and is absent from the listing entirely.
 
-If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
-usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
-an untagged shared include. There is a second cause if the package's `publisher.json` carries an
-`explores` list: a dashboard whose file is missing from it is withheld rather than served, and the
-warning says so and names the fix. The list is what matters, not the `queryableSources` setting, which
-is `declared` by default; a package with no `explores` list withholds nothing. Where there is one, a
-`suggest` source has to be queryable as well as resolvable, so it needs to be on the list too.
+If the reload is 200 and the others are listed but yours is not, discovery skipped the file,
+usually a missing or misspelled `# artifact` tag. That is the same mechanism that deliberately skips
+an untagged shared include, and it is also how you hide a dashboard on purpose: drop its tag. The
+package surface never hides a dashboard. Every tagged dashboard is listed and served.
+
+**A tile over a hidden source answers 404.** When the package has an `index.malloy`, tiles, a
+single-query dashboard's query, and filter `suggest` lists read only the sources it exports. The
+dashboard file admits nothing of its own, so importing a source into it is not enough. The package
+load warns once per tile that will fail, for example:
+
+```
+Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.
+```
+
+The fix is the one the warning names: add the source to the `export { ... }` in `index.malloy`. A
+`suggest` over a hidden source gets the same warning, ending "so its list will be empty". Do not
+add an `explores` to `publisher.json` to serve a dashboard; it is deprecated and no longer needed.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
 separate warning for a tag that does not _parse_ is syntax only: it carries no

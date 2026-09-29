@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 > [row-level access](row-level-access.md), and [`#(access_filter)`](authorize.md) gates.
 > Runnable example: [examples/governed-analytics](../examples/governed-analytics).
 
-Givens are Malloy's native mechanism for declaring runtime parameters on a model — one typed value a caller supplies at query time — and the base primitive Publisher builds several features on top of. A model declares a `given:`, queries reference it as `$name`, and the caller supplies a value (or the declared default applies). Publisher introspects declared givens, exposes them through the API, renders inputs in the notebook UI, and forwards values to Malloy's runtime.
+Givens are Malloy's native mechanism for declaring runtime parameters on a model — one typed value a caller supplies at query time — and the base primitive Publisher builds several features on top of. A model declares a `given:`, queries reference it as `$name`, and the caller supplies a value (or the declared default applies). Publisher introspects declared givens, exposes them through the API, renders inputs in the notebook UI and the model Explorer, and forwards values to Malloy's runtime.
 
 For the authoritative Malloy reference (semantics, supported types, scoping rules), see [Malloy: Givens](https://docs.malloydata.dev/documentation/experiments/givens).
 
@@ -17,10 +17,10 @@ For the authoritative Malloy reference (semantics, supported types, scoping rule
 
 Givens are deliberately simple; the leverage is in what they enable. Jump to the application you care about:
 
-| Application                              | What it does                                                                                                                                                                                                    | Where                                   |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| **Interactive filters**                  | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI; changing one re-runs the cells.                                               | [Notebook UI](#notebook-ui), below      |
-| **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out.                                                                      | [Row-level access](row-level-access.md) |
+| Application                              | What it does                                                                                                                                                                                                                                                 | Where                                   |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| **Interactive filters**                  | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI, where changing one re-runs the cells, and in the model Explorer.                                                           | [Notebook UI](#notebook-ui), below      |
+| **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out.                                                                                                                   | [Row-level access](row-level-access.md) |
 | **Source authorization**                 | `#(authorize)` decides whether a caller may reach the source at all and refuses with a 403; `#(access_filter)` is grafted as a row filter, so a caller it matches nowhere gets a normal 200 with zero rows. A 403 also covers either gate failing to attach. | [Authorize](authorize.md)               |
 
 > **Here for access control?** Givens are just the values your gates read. Skim [Declaring Givens](#declaring-givens) for the syntax, then go to [Authorize](authorize.md) to gate a source, or [Row-level access](row-level-access.md) to scope which rows a caller sees. Both enforce policy only behind a trusted tier that sets givens from verified identity — givens are caller-asserted.
@@ -162,9 +162,23 @@ See the [Malloy accepted JS shapes table](https://docs.malloydata.dev/documentat
 
 Malloy validates supplied givens when it prepares the query: an unknown given name (a typo, or a name the model doesn't declare) and a value that doesn't fit the given's declared type both throw a `runtime-given-*` error, which the publisher maps to a **400** with Malloy's message (unknown names come with a "did you mean?" hint).
 
+A `filter<T>` value is checked by the publisher itself, after the authorize check and before the query runs: a value that doesn't parse as a `T` filter gets a **400** that names the given, quotes the parser's reason, and says how to fix it.
+
 There is one exception. On a source guarded by `#(access_filter)`, the authorize check runs first and binds the full supplied givens map, and it fails closed: a bad given (unknown name _or_ wrong-typed value) makes that check throw and the gate denies, so the request returns **403** rather than 400. That looks like access denied, not validation. If a gated query returns 403 unexpectedly, check the given names and values against the model before assuming it's a permission problem.
 
 The `/compile` endpoint (with `includeSql: true`) follows the same handling: a bad given is surfaced rather than silently omitting `sql`.
+
+A given the entry model does not surface, but that some gate reads, is withheld from the query so the gate can still see it. It is not withheld when the query itself also reads a given of that name, for example a `where:` on a source imported from another file that declares its own `HIDE` with a default. Withholding it there would run that `where:` at its default and ignore the value the caller sent, so the request returns a **400** (`unknown given`). To fix it, import the given at the entry model so the query can bind the caller's value.
+
+### A notebook cell binds only the givens its own scope declares
+
+A notebook cell run ignores a given that the notebook declares only in a later cell,
+so a code cell that runs before the notebook's `import` of a given does not 400 when
+the caller sends that given's value. A given the cell's own imports declare, at any
+depth, is still forwarded, but forwarding is not binding: one declared deep and not
+surfaced by the cell's imports still 400s. A name declared nowhere in the notebook
+still 400s.
+Model queries are unaffected.
 
 ### A gate's givens must be on the gating model's own surface
 
@@ -180,7 +194,7 @@ elsewhere (`import { NAME } from "…"`).
 
 ### Introspection
 
-Givens declared on a model appear on `CompiledModel.givens` and on each `Source.givens` in the API response. For the bundled [`governed-analytics/orders.malloy`](../examples/governed-analytics/orders.malloy):
+Givens declared on a model appear on `CompiledModel.givens` and on each `Source.givens` in the API response. The bundled `governed-analytics` package publishes its surface through [`index.malloy`](../examples/governed-analytics/index.malloy), which imports `orders.malloy` and exports `sales`, so address the API at the surface file — `orders.malloy` is off it and answers 404. Givens declared in an imported file reach the surface unchanged:
 
 ```json
 {
@@ -245,7 +259,7 @@ The `execute_query` tool accepts a `givens` parameter on the same wire shape:
 {
   "environmentName": "examples",
   "packageName": "governed-analytics",
-  "modelPath": "orders.malloy",
+  "modelPath": "index.malloy",
   "query": "run: sales -> by_region",
   "givens": {
     "REGION": "us-east"
@@ -265,13 +279,16 @@ Change a control and every cell re-runs with the new value, no reload and no rew
 
 The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics`](../examples/governed-analytics/) to try it.
 
-| Malloy type                                                | Widget                                                                                                                      |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `number`                                                   | Numeric input with × clear                                                                                                  |
-| `boolean`                                                  | Checkbox                                                                                                                    |
-| `date`, `timestamp`, `timestamptz`                         | Date picker with native clear                                                                                               |
-| `filter<date>`, `filter<timestamp>`, `filter<timestamptz>` | Time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days; a single day keeps the date picker |
-| `string`, `filter<…>`, anything else                       | Text input with × clear                                                                                                     |
+The model Explorer shows the same Parameters panel whenever the model it opens declares givens, and sends the values with every Run, so a source gated on a given can be explored from the Console. See [Explorer: parameters](explorer.md#parameters).
+
+| Malloy type                                                | Widget                                                                                                                                                |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `number`                                                   | Numeric input with × clear                                                                                                                            |
+| `boolean`                                                  | Checkbox                                                                                                                                              |
+| `date`, `timestamp`, `timestamptz`                         | Date picker with native clear                                                                                                                         |
+| `filter<date>`, `filter<timestamp>`, `filter<timestamptz>` | Time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days; a single day keeps the date picker                           |
+| `filter<boolean>`                                          | Dropdown of true and false; blank uses the model's default, so no filter when that is `f''`. Other spellings, such as `not true`, keep the text input |
+| `string`, `filter<…>`, anything else                       | Text input with × clear                                                                                                                               |
 
 The UI can also render a two-handled range slider for a `filter<number>` and a
 single- or multi-pick dropdown for a `filter<string>`, driven by the `label`,
@@ -319,8 +336,7 @@ link's values, and Reset discards those too.
 The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
 `##(filters)` annotations is no longer filterable from a notebook, and one with
 a `required` filter cannot be satisfied there at all. The annotations still work
-everywhere else: the REST `filterParams` parameter and the server-side
-enforcement are unchanged. This is the UI half of the migration.
+everywhere else. `#(filter)` is not a security boundary against caller-authored query text or `bypassFilters`; use givens + `#(authorize)`. This is the UI half of the migration.
 
 There is no automatic conversion, because the two mechanisms are different
 shapes. A `#(filter)` annotation marks an existing dimension as filterable and

@@ -832,6 +832,15 @@ class RubricFigures(unittest.TestCase):
             "/ SCOPE.", total_sales=11865343.56))
         self.assertEqual(f, [])
 
+    def test_a_renamed_code_ends_the_accepting_clause_too(self):
+        # The regex listed only the retired names, so a rubric written with
+        # the new ones had its trap figure read as asserted-right.
+        for code in ("RULE_UNWRITTEN", "MISSING", "CONVENTION"):
+            f = verify_goldens.rubric_number_findings(self.case(
+                f"Right: net of returns, 11865343.56. Gross (12566292.88) is "
+                f"{code}.", total_sales=11865343.56))
+            self.assertEqual(f, [], code)
+
     def test_lower_case_prose_is_not_a_code(self):
         # "the scope of the question" rejects nothing; only the upper-case code does.
         f = verify_goldens.rubric_number_findings(self.case(
@@ -1018,6 +1027,252 @@ class NumericRendering(unittest.TestCase):
         # Out of scope on purpose: it parses as no single number, so it stays
         # an exact compare rather than being guessed at.
         self.assertFalse(close_enough("C: 75.70", "C: 75.7", None))
+
+class VerifyQuotedFigures(unittest.TestCase):
+    """Query the numbers a prose answer key quotes, and keep the query.
+
+    The case this exists for: a criteria golden's note said "by order count it
+    is Amelia Cohen (80 orders)". 80 was three customers who share a name,
+    summed by name -- the exact grouping the neighbouring case forbids -- and
+    she was not top even so. Nothing checked it, because a criteria golden has
+    no value to re-derive and no rows for the figure check to read.
+    """
+
+    def case(self, note):
+        return {"qid": "q1", "golden": {"kind": "criteria", "rubric": "prose",
+                                        "verification": {"note": note}}}
+
+    def args(self):
+        return argparse.Namespace(
+            publisher="http://truth", environment="truth",
+            truth_package="t-truth", truth_model="truth.malloy",
+            figure_model="sonnet")
+
+    @staticmethod
+    def cli(text, stderr=""):
+        """A stub with `run_cli`'s return shape, not a bare string. The bare
+        string is how the empty-reply bug on the real path went unseen."""
+        return lambda *a, **k: ([{"type": "assistant"}], text, stderr, 1, 0.1)
+
+    def test_a_contradicted_figure_is_reported_with_its_query(self):
+        reply = json.dumps({
+            "query": "run: t_order_items -> { group_by: customer_id; "
+                     "aggregate: n is count(order_id) }",
+            "rows": "884 | 43", "computed": "43",
+            "verdict": "contradicted",
+            "why": "at customer_id grain the top is 43, not 80; 80 sums three "
+                   "customers who share a name"})
+        out = verify_goldens.verify_figures(
+            self.case("By order count it is Amelia Cohen (80 orders)."),
+            self.args(), run=self.cli(reply))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["verdict"], "contradicted")
+        self.assertEqual(out[0]["figure"], "80")
+        # The query is the receipt: the grouping error is visible in it and
+        # invisible in the verdict alone.
+        self.assertIn("group_by: customer_id", out[0]["query"])
+
+    def test_the_sentence_travels_with_the_figure(self):
+        """A bare number cannot be checked; what it MEANS is in its sentence."""
+        seen = {}
+        def run(cmd, **kw):
+            seen["prompt"] = cmd[2]
+            return self.cli(json.dumps({"verdict": "confirmed", "query": "q",
+                                        "computed": "943"}))()
+        verify_goldens.verify_figures(
+            self.case("A customer is one we delivered to: 943 of them."),
+            self.args(), run=run)
+        self.assertIn("943", seen["prompt"])
+        self.assertIn("delivered to", seen["prompt"])
+
+    def test_an_unreadable_reply_is_unverifiable_not_confirmed(self):
+        out = verify_goldens.verify_figures(
+            self.case("The total was 8,817.56 last year."),
+            self.args(), run=self.cli("not json at all"))
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertEqual(out[0]["why"], "the checker returned no readable JSON")
+
+    def test_stderr_is_the_error_never_the_reply(self):
+        """A timeout's stderr once went to the JSON scanner as the reply."""
+        out = verify_goldens.verify_figures(
+            self.case("We sold 12,345 units."), self.args(),
+            run=self.cli("", stderr='timeout after 300s {"verdict": "confirmed"}'))
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertIn("timeout after 300s", out[0]["error"])
+
+    def test_a_confirmation_without_its_query_is_not_a_receipt(self):
+        out = verify_goldens.verify_figures(
+            self.case("We sold 12,345 units."), self.args(),
+            run=self.cli(json.dumps({"verdict": "confirmed",
+                                     "computed": "12345"})))
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertEqual(out[0]["why"],
+                         "confirmed without the query that computed it")
+
+    def test_a_verdict_outside_the_vocabulary_is_unverifiable(self):
+        out = verify_goldens.verify_figures(
+            self.case("We sold 12,345 units."), self.args(),
+            run=self.cli(json.dumps({"verdict": "probably", "query": "q"})))
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertIn("'probably'", out[0]["why"])
+
+    def test_a_crash_does_not_take_down_the_audit(self):
+        def boom(*a, **k):
+            raise RuntimeError("cli exploded")
+        out = verify_goldens.verify_figures(self.case("We sold 12,345 units."),
+                                            self.args(), run=boom)
+        self.assertEqual(out[0]["verdict"], "unverifiable")
+        self.assertIn("cli exploded", out[0]["error"])
+
+    def test_a_golden_holding_a_value_is_not_this_check(self):
+        """Those re-derive through their own canonicalQuery already."""
+        rows = verify_goldens.verify_figures(
+            {"qid": "q2", "golden": {"kind": "scalar", "value": {"n": 943},
+                                     "rubric": "about 943"}},
+            self.args(), run=self.cli("{}"))
+        self.assertEqual(rows, [])
+
+    def test_the_real_cli_path_returns_the_agents_verdict(self):
+        """Through the real `run_cli`, with a fake `claude` on PATH.
+
+        Every other test injects `run`. This one does not, so it is the one
+        that fails if the command stops asking for stream-json (the reply
+        then parses as empty and every figure reads `unverifiable`) or stops
+        granting the curl the prompt tells the agent to use.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            argv_log = pathlib.Path(d) / "argv.json"
+            reply = json.dumps({"query": "run: t -> { aggregate: n is count() }",
+                                "rows": "43", "computed": "43",
+                                "verdict": "contradicted", "why": "43, not 80"})
+            fake = pathlib.Path(d) / "claude"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                f"open({str(argv_log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+                "if 'stream-json' not in sys.argv:\n"
+                "    print('prose, as claude -p prints without the flag')\n"
+                "    sys.exit(0)\n"
+                "print(json.dumps({'type': 'assistant', 'message': {'content': "
+                f"[{{'type': 'text', 'text': {reply!r}}}]}}}}))\n")
+            fake.chmod(0o755)
+            with unittest.mock.patch.dict(
+                    "os.environ", {"PATH": f"{d}:/usr/bin:/bin"}):
+                out = verify_goldens.verify_figures(
+                    self.case("By order count it is Amelia Cohen (80 orders)."),
+                    self.args())
+            argv = json.loads(argv_log.read_text())
+        self.assertEqual(out[0]["verdict"], "contradicted")
+        self.assertEqual(out[0]["computed"], "43")
+        self.assertIn("Bash(curl:*)", argv)
+        self.assertIn("--strict-mcp-config", argv)
+
+    def test_the_flag_reaches_the_figure_check(self):
+        """`--verify-figures` was parsed and then dropped before `verify()`."""
+        with tempfile.TemporaryDirectory() as d:
+            sd = pathlib.Path(d)
+            (sd / "set.json").write_text(json.dumps({"truthPackage": "t-truth"}))
+            (sd / "cases.jsonl").write_text(json.dumps(
+                {**self.case("It was 80 orders."), "question": "q?"}) + "\n")
+            called = []
+            def fake(case, a, run=None):
+                called.append(a.figure_model)
+                return []
+            with unittest.mock.patch.object(verify_goldens, "verify_figures",
+                                            side_effect=fake), \
+                 unittest.mock.patch.object(sys, "argv", [
+                     "verify_goldens.py", "--set", str(sd),
+                     "--publisher", "http://127.0.0.1:9",
+                     "--verify-figures", "--figure-model", "opus"]), \
+                 unittest.mock.patch("builtins.print"):
+                try:
+                    verify_goldens.main()
+                except SystemExit:
+                    pass
+        self.assertEqual(called, ["opus"])
+
+
+
+
+class HeldGoldensAreNotReDerived(unittest.TestCase):
+    """An `ambiguous` or `invalid` golden is a person's judgement. Running the
+    value check on one reported an error on every audit, `verify()` counted the
+    error as drift, and the arm refused to start."""
+
+    def setUp(self):
+        self.a = argparse.Namespace(rewrite=False, publisher="http://x",
+                                    environment="e", truth_package="t",
+                                    truth_model="truth.malloy")
+
+    def case(self, status):
+        return {"qid": "s-1", "golden": {"kind": "scalar", "status": status,
+                                          "canonicalQuery": "run: model -> { aggregate: n }",
+                                          "value": {"n": 1}}}
+
+    def test_a_held_golden_is_skipped_with_the_reason(self):
+        for status in ("ambiguous", "invalid"):
+            with self.subTest(status=status):
+                with unittest.mock.patch.object(verify_goldens, "try_query") as tq:
+                    got, detail, rows = check_value(self.case(status), self.a)
+                tq.assert_not_called()
+                self.assertEqual(got, "skipped")
+                self.assertIn(status, detail)
+                self.assertIn("side door", detail)
+
+    def test_a_provisional_golden_with_a_query_still_runs(self):
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=([{"n": 1}], None)) as tq:
+            got, _, _ = check_value(self.case("provisional"), self.a)
+        tq.assert_called_once()
+        self.assertEqual(got, "ok")
+
+
+class ANotQueryableKeyNamesItsRootSource(unittest.TestCase):
+    """A set authored before its truth package existed replays packaged views;
+    the truth server answers 404 for each, and the bare message sent a reader
+    to the server instead of the golden."""
+
+    def test_the_root_source_and_the_remedy_are_in_the_detail(self):
+        a = argparse.Namespace(rewrite=False, publisher="http://x", environment="e",
+                               truth_package="t", truth_model="truth.malloy")
+        case = {"qid": "s-2", "golden": {"kind": "scalar", "status": "provisional",
+                                          "canonicalQuery": "run: orders -> { aggregate: n }",
+                                          "value": {"n": 1}}}
+        err = 'HTTP 404: {"code":404,"message":"Query target is not queryable."}'
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=(None, err)):
+            got, detail, _ = check_value(case, a)
+        self.assertEqual(got, "error")
+        self.assertIn("`orders`", detail)
+        self.assertIn("truth package", detail)
+
+    def test_any_other_error_is_reported_as_it_came(self):
+        a = argparse.Namespace(rewrite=False, publisher="http://x", environment="e",
+                               truth_package="t", truth_model="truth.malloy")
+        case = {"qid": "s-3", "golden": {"kind": "scalar", "status": "provisional",
+                                          "canonicalQuery": "run: t_a -> { aggregate: n }",
+                                          "value": {"n": 1}}}
+        with unittest.mock.patch.object(verify_goldens, "try_query",
+                                        return_value=(None, "HTTP 500: boom")):
+            got, detail, _ = check_value(case, a)
+        self.assertEqual((got, detail), ("error", "HTTP 500: boom"))
+
+
+class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
+    """CI runs this file as a script, `python3 <file>`, and `unittest.main()`
+    runs what is defined so far and exits. A test class written below the
+    guard is collected by `-m unittest` and never by CI: four classes sat
+    there after one PR, and one review earlier had moved two more up for the
+    same reason. Reading the file is the check that does not depend on how the
+    tests were invoked."""
+
+    def test_the_guard_is_the_last_statement(self):
+        src = pathlib.Path(__file__).read_text().splitlines()
+        guard = [i for i, l in enumerate(src) if l.startswith('if __name__ == "__main__":')]
+        self.assertEqual(len(guard), 1)
+        below = [l for l in src[guard[0]:] if l.startswith(("class ", "def "))]
+        self.assertEqual(below, [], f"defined below the main guard: {below}")
+
 
 if __name__ == "__main__":
     unittest.main()

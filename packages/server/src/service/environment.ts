@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { GivenValue, LogMessage } from "@malloydata/malloy";
+import type {
+   GivenValue,
+   LogMessage,
+   Model as MalloyModel,
+} from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -12,6 +16,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
 import {
    API_PREFIX,
+   INDEX_MODEL_NAME,
    normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    README_NAME,
@@ -19,15 +24,25 @@ import {
 import {
    AccessDeniedError,
    BadRequestError,
+   CompileRefusedError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
+   ModelCompilationError,
    NotQueryableError,
+   PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
    WriteRolledBackError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import type { CallerRegion } from "./caller_joins";
+import {
+   assertFilterGivensParse,
+   malloyGivenToApi,
+   type MalloyGiven,
+} from "./given";
+import { assertNoRestrictedConstructs } from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -161,6 +176,28 @@ function getPackageAdmissionRejectionsCounter(): Counter {
       },
    );
    return packageAdmissionRejectionsCounter;
+}
+let compileRefusalsCounter: Counter | null = null;
+/**
+ * Append-scope compile refusals, by reason.
+ *
+ * Both reasons answer 4xx or 5xx on the same endpoint, so without the label a
+ * dependency outage and a caller sending forbidden text are one indistinguishable
+ * spike -- and the one that needs paging looks like the one that does not.
+ * `restricted_construct` is the caller's text; `base_model_load_failed` is the
+ * named model failing to load, which includes the schema-fetch case that answers
+ * 503.
+ */
+function getCompileRefusalsCounter(): Counter {
+   if (compileRefusalsCounter) return compileRefusalsCounter;
+   compileRefusalsCounter = publisherMeter().createCounter(
+      "publisher_compile_refusals_total",
+      {
+         description:
+            "Compiles refused at append scope, labelled by reason and environment",
+      },
+   );
+   return compileRefusalsCounter;
 }
 
 /**
@@ -631,6 +668,10 @@ export class Environment {
          const virtualUri = virtualUrl.toString();
 
          let fullSource = source ?? "";
+         // Where the caller's own text starts in the compiled file, so its joins
+         // are gated as the query path gates them. "file" and "package" have
+         // none: the whole text is the author's file.
+         let callerRegion: CallerRegion | undefined;
          if (scope === "append") {
             // Read the full model file so the submitted source inherits the
             // model's complete namespace — imports, source definitions,
@@ -639,12 +680,23 @@ export class Environment {
             try {
                modelContent = await fs.promises.readFile(modelPath, "utf8");
             } catch {
-               // If the model file can't be read, proceed with empty content
-               // and let compilation surface any errors naturally.
+               // Empty content here, and compilation reports the problem. Note
+               // this fallback no longer decides the missing-model case on its
+               // own at `append` scope: the restricted-construct gate below
+               // loads the same model to check the caller's text against, and
+               // refuses when it cannot, so a model that does not exist is
+               // rejected there before this leniency can apply.
             }
             fullSource = modelContent
                ? `${modelContent}\n${source}`
                : (source ?? "");
+            callerRegion = {
+               kind: "span",
+               url: virtualUri,
+               // 0-based: the appended text starts on the line after the model's.
+               fromLine: modelContent ? modelContent.split("\n").length : 0,
+               text: source ?? "",
+            };
          }
 
          // Create a URL Reader that serves the source string for the virtual
@@ -666,13 +718,11 @@ export class Environment {
 
          // Authorize gate: /compile is compile-only, but it can still act
          // as a schema oracle (a denied caller learns a gated source's columns
-         // from compile errors) and, with includeSql, leak its SQL. Gate the
-         // named source the submitted text targets BEFORE compiling — mirrors
-         // the query path's early surface-syntax gate. Unnamed/inline source
-         // text resolves to undefined, so nothing gates it here — a `source:`
-         // is the only place `#(authorize)` is declared, and the compiled
-         // backstop below is what settles a target this cannot name. The
-         // gate runs against the package's cached Model (its
+         // from compile errors) and, with includeSql, leak its SQL. Decide the
+         // locks the submitted text names BEFORE compiling — mirrors the query
+         // path's early gate (see `assertAuthorizedForText` for what each scope
+         // reads); the compiled backstop below settles a target this cannot
+         // name. The gate runs against the package's cached Model (its
          // `given:` block + authorize annotations), independent of the virtual
          // compile below. A new model path has no cached Model, so its early
          // surface-syntax gate cannot run; the compiled backstop below instead
@@ -722,7 +772,14 @@ export class Environment {
                      source,
                   );
                },
-               () => gateModel.assertAuthorizedForText(source, givens ?? {}),
+               () =>
+                  gateModel.assertAuthorizedForText(source, givens ?? {}, {
+                     // File and package scope compile the whole file (or, at
+                     // package scope with a source, the whole replacement) —
+                     // a locked name that is not the statement Malloy runs
+                     // must not refuse it, and its joins are author joins.
+                     wholeFile: scope !== "append",
+                  }),
             );
          }
 
@@ -836,6 +893,16 @@ export class Environment {
                         : { modelPath: modelName, source },
                });
             } catch (error) {
+               // Same split as Package.loadViaWorker: compile errors and an
+               // unusable publisher.json keep their 4xx mapping, and only an
+               // infrastructure failure reads as a worker outage.
+               if (
+                  error instanceof MalloyError ||
+                  error instanceof ModelCompilationError ||
+                  error instanceof PackageManifestError
+               ) {
+                  throw error;
+               }
                throw new ServiceUnavailableError(
                   `Package compile worker unavailable: ${
                      error instanceof Error ? error.message : String(error)
@@ -928,6 +995,124 @@ export class Environment {
             return { problems };
          }
 
+         // Containment for caller-submitted fragments. Scope "append" is the
+         // one scope whose text is a FRAGMENT checked against a curated model
+         // rather than a file the author owns, so it has no legitimate need to
+         // define its own data roots -- and Malloy resolves a source's schema
+         // at compile time, so an unrestricted one reaches the connection, the
+         // filesystem and the network without running a query. Scopes "file"
+         // and "package" are deliberately NOT gated: there the source IS the
+         // model file, and `import` plus `connection.table(...)` /
+         // `connection.sql(...)` are how any model declares what it reads.
+         // Gating them would make an ordinary package un-authorable.
+         if (scope === "append") {
+            // The model as saved, WITHOUT the caller's appended text: the
+            // fragment is checked against the surface the author published, so
+            // the caller cannot widen the namespace it is judged against.
+            //
+            // Five of the seven restricted constructs are refused on sight,
+            // but two are not: `name!type(...)` and the `sql_*` family are
+            // classified inside `computeExpression(fs)`, which needs a resolved
+            // FieldSpace. With no base model a fragment like
+            // `run: base_source -> { ... }` never resolves `base_source`, so
+            // the expression is never evaluated, the construct is never
+            // classified, and the gate passes text the real compile then runs
+            // for real. So a base model that will not load fails the request
+            // rather than lowering the gate: the caller's own text is not what
+            // failed, and the same argument `assertNoRestrictedConstructs`
+            // makes about its own catch applies here -- an infrastructure
+            // error carries no evidence either way.
+            let baseModel: MalloyModel;
+            try {
+               baseModel = await runtime
+                  .loadModel(pathToFileURL(modelPath))
+                  .getModel();
+            } catch (error) {
+               // Three different failures arrive here and they are not one
+               // answer. Refusing uniformly would tell a caller their text was
+               // bad when the warehouse was down, and a 4xx says "do not
+               // retry" -- the opposite of what an outage wants. The detail
+               // stays server-side either way: `modelPath` is an absolute path
+               // inside the container, so returning it would answer "does this
+               // file exist, and is it readable" for any path a caller names,
+               // which is the shape of oracle this gate exists to close.
+               // `warn`, not `error`: a caller typo in `modelPath` reaches here,
+               // and an unauthenticated 400 must not emit ERROR at whatever rate
+               // a caller likes.
+               logger.warn("Compile gate could not load the base model", {
+                  modelPath,
+                  error,
+               });
+               getCompileRefusalsCounter().add(1, {
+                  environment: this.environmentName,
+                  reason: "base_model_load_failed",
+               });
+               if (error instanceof MalloyError) {
+                  // Every MalloyError here is the same answer: the model this
+                  // fragment would be judged against did not compile, so there
+                  // is nothing to judge it against.
+                  //
+                  // There was a 503 branch keyed on `failed-to-fetch-table-schema`,
+                  // on the reading that a schema fetch which failed means the
+                  // dependency is unreachable. That code does not carry that
+                  // meaning: a table that simply DOES NOT EXIST produces it too,
+                  // so a permanent authoring error was telling the client to
+                  // retry. The reverse also held -- a `conn.sql(...)`-rooted
+                  // model whose warehouse was genuinely down fails with
+                  // `invalid-sql-source` and took the 400 anyway. Splitting on
+                  // it was therefore wrong in both directions, and Malloy
+                  // publishes no code here that means "unreachable". Until one
+                  // exists, these are one 400 carrying the model's own problems,
+                  // which is also what `file` and `package` scope already do
+                  // with the same failure.
+                  throw new CompileRefusedError(
+                     `Cannot validate the submitted source: the model ` +
+                        `"${modelName}" does not compile, so there is nothing ` +
+                        `to check the submitted source against. Problems: ` +
+                        error.problems.map((p) => p.message).join("; "),
+                  );
+               }
+               // Missing file, permission, anything else: the caller named a
+               // model this server cannot load, which is theirs to correct.
+               throw new CompileRefusedError(
+                  `Cannot validate the submitted source: the model ` +
+                     `"${modelName}" could not be loaded to check it against.`,
+               );
+            }
+            try {
+               // The fragment ALONE, against the compiled base model. The
+               // concatenation the real compile runs cannot be passed here:
+               // `extendModel` judges text as an extension of a model that
+               // already holds those declarations, so feeding it the model's
+               // own text yields `Cannot redefine` for every source in the file
+               // and aborts before the appended fragment is ever classified --
+               // which is a bypass rather than a stricter check.
+               //
+               // What closes the continuation hole instead is the gate refusing
+               // when it could not parse what it was given (see
+               // assertNoRestrictedConstructs). A continuation fragment is a
+               // syntax error on its own, and that is now a refusal rather than
+               // silence read as approval.
+               await assertNoRestrictedConstructs(
+                  runtime,
+                  baseModel,
+                  source ?? "",
+               );
+            } catch (error) {
+               // Counted here rather than inside the gate so both reasons share
+               // one instrument and one label set. Only the refusal is counted:
+               // anything else the gate rethrows is an infrastructure failure it
+               // deliberately does not convert into a caller-facing verdict.
+               if (error instanceof CompileRefusedError) {
+                  getCompileRefusalsCounter().add(1, {
+                     environment: this.environmentName,
+                     reason: "restricted_construct",
+                  });
+               }
+               throw error;
+            }
+         }
+
          // Attempt to compile
          try {
             const modelMaterializer = runtime.loadModel(virtualUrl);
@@ -950,10 +1135,9 @@ export class Environment {
 
             // Compiled-source backstops — run REGARDLESS of includeSql. They
             // gate the source the COMPILED final query actually reads, closing
-            // named-query / multi-statement indirection the early surface-syntax
-            // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
-            // matches the FIRST `run:`, but the LAST statement is what executes).
-            // Compiling a gated source even without SQL is a schema oracle
+            // the named-query and derivation indirection the early
+            // surface-syntax gate cannot see. Compiling a gated source even
+            // without SQL is a schema oracle
             // (field-not-found errors leak its columns), so this must not be
             // conditional on SQL extraction. (A `source: x is gated` alias
             // carries the gate: only a declaration of its OWN `#(authorize)`
@@ -990,8 +1174,11 @@ export class Environment {
                         ? gateModel.assertAuthorizedForRunnable(
                              materializer,
                              givens ?? {},
+                             callerRegion,
                           )
-                        : gateModel.assertAuthorizedFromCompiledRunnable(
+                        : // No region: this gate model is another file's
+                          // namespace, so its source names cannot place a join.
+                          gateModel.assertAuthorizedFromCompiledRunnable(
                              materializer,
                              givens ?? {},
                           ),
@@ -1001,6 +1188,17 @@ export class Environment {
             // If includeSql is requested and compilation succeeded, attempt to extract SQL
             let sql: string | undefined;
             if (includeSql && queryMaterializer) {
+               // A given value the compiled text's own filter types cannot read
+               // is a bad request, as on the query route. Checked here, after
+               // the gate and against the submitted text's givens rather than
+               // the cached model's, because this is the only place /compile
+               // binds given values.
+               assertFilterGivensParse(
+                  Array.from(model.givens.values()).map((g) =>
+                     malloyGivenToApi(g as MalloyGiven),
+                  ),
+                  givens,
+               );
                try {
                   sql = await queryMaterializer.getSQL({ givens });
                } catch (error) {
@@ -1847,6 +2045,9 @@ export class Environment {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
                existingPackage.getMalloyConfig().shutdown("close"),
             );
+            _package.noteSurfaceChangeFrom(
+               existingPackage.getPackageMetadata().explores,
+            );
          }
          this.packages.set(packageName, _package);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
@@ -2584,11 +2785,30 @@ export class Environment {
          // overwritten when the caller explicitly provides them; otherwise the
          // existing on-disk value is preserved via the spread (an undefined here
          // must not erase it).
+         // A convention-derived surface is never written. A GET of an
+         // index.malloy-curated package echoes the surface the server derived,
+         // so an ordinary read-modify-write PATCH -- one that meant to change
+         // only the description -- hands that derived value back, and writing
+         // it would freeze a surface that tracks the file into a key that does
+         // not. The two behave identically until the file is renamed or
+         // replaced: the convention then follows it, while the frozen key names
+         // a model that no longer exists, and the package silently lists and
+         // serves nothing. Recognizable because it is the exact value the
+         // convention produces, in a manifest that declares no `explores` (a
+         // surface naming a file that is not there was already rejected
+         // upstream by formatInvalidExplores, so the file exists). Declaring it
+         // by hand buys nothing the convention does not already give.
+         const echoesDerivedSurface =
+            existingManifest.explores === undefined &&
+            Array.isArray(metadata.explores) &&
+            metadata.explores.length === 1 &&
+            metadata.explores[0] === INDEX_MODEL_NAME;
+
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
-            ...(metadata.explores !== undefined
+            ...(metadata.explores !== undefined && !echoesDerivedSurface
                ? { explores: metadata.explores }
                : {}),
             ...(metadata.queryableSources !== undefined
@@ -2785,6 +3005,11 @@ export class Environment {
                await _package.reloadAllModels({});
                _package.bindStorageServeBindings({});
             }
+         } else {
+            // The surface may have changed with no file changing, so the tile
+            // findings are re-checked against it. (A manifest rebind above
+            // reloads, which re-discovers and re-lints on its own.)
+            await _package.relintDashboards();
          }
 
          return _package.getPackageMetadata();

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { CompileRefusedError } from "../errors";
 import { Environment } from "./environment";
 
 /**
@@ -68,12 +69,33 @@ describe("compile_model: checking part of a source", () => {
          .map((p) => p.message);
    }
 
+   /** The error a compile threw, or a failure when it unexpectedly succeeded. */
+   async function refusalFor(source: string): Promise<Error> {
+      try {
+         await env.compileSource("pkg", "model.malloy", source);
+      } catch (error) {
+         return error as Error;
+      }
+      throw new Error(
+         `Expected the compile to be refused, but it succeeded: ${source}`,
+      );
+   }
+
    describe("the two failures the description exists to explain", () => {
-      it("rejects a bare view: fragment, naming only the symptom", async () => {
-         const errors = await errorsFor(
+      /**
+       * A bare `view:` is not a top-level statement, so it does not parse on
+       * its own. It is REFUSED rather than reported as a diagnostic: the
+       * append-scope gate reads the fragment by itself, and text it could not
+       * parse is text it could not check, which is the same silence a
+       * continuation fragment produces to get past it. The caller still learns
+       * the fragment is the problem, through a 400 instead of a problems list.
+       */
+      it("refuses a bare view: fragment, which does not parse alone", async () => {
+         const error = await refusalFor(
             "view: by_pts is { group_by: points, aggregate: record_count }",
          );
-         expect(errors.join(" ")).toContain("view:");
+         expect(error).toBeInstanceOf(CompileRefusedError);
+         expect(error.message).toContain("stands alone");
       });
 
       it("rejects resubmitting the source being edited", async () => {

@@ -10,6 +10,8 @@ import {
    isActiveStatus,
    isTerminalStatus,
    parseMetadata,
+   refusedSourcesOf,
+   sourcesSummary,
    statusColor,
    statusLabel,
    triggerLabel,
@@ -178,5 +180,59 @@ describe("formatRelativeTime", () => {
    it("renders a dash when there is no instant", () => {
       expect(formatRelativeTime(null)).toBe("-");
       expect(formatRelativeTime(undefined)).toBe("-");
+   });
+});
+
+describe("sourcesSummary", () => {
+   it("reads as built and reused on a run that refused nothing", () => {
+      expect(sourcesSummary({ sourcesBuilt: 2, sourcesReused: 1 }, ", ")).toBe(
+         "2 built, 1 reused",
+      );
+   });
+
+   it("names the refused count when the run skipped a source", () => {
+      expect(
+         sourcesSummary(
+            { sourcesBuilt: 5, sourcesReused: 0, sourcesRefused: 7 },
+            " · ",
+         ),
+      ).toBe("5 built · 0 reused · 7 refused");
+   });
+});
+
+describe("refusedSourcesOf", () => {
+   it("reads auto-run's metadata list and orchestrated failures marked refused", () => {
+      const materialization = {
+         metadata: {
+            refusedSources: {
+               "b@m": { name: "b", message: "b is gated" },
+            },
+         },
+         manifest: {
+            entries: {},
+            failures: {
+               x: {
+                  sourceEntityId: "x",
+                  sourceName: "a",
+                  reason: "a reads a given",
+                  refused: true,
+               },
+               y: {
+                  sourceEntityId: "y",
+                  sourceName: "c",
+                  reason: "permission denied",
+               },
+            },
+         },
+      } as unknown as Materialization;
+
+      expect(refusedSourcesOf(materialization)).toEqual([
+         { name: "a", message: "a reads a given" },
+         { name: "b", message: "b is gated" },
+      ]);
+   });
+
+   it("is empty for a run that refused nothing", () => {
+      expect(refusedSourcesOf({} as Materialization)).toEqual([]);
    });
 });

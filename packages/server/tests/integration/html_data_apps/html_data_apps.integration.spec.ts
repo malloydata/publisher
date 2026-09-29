@@ -214,19 +214,48 @@ describe("In-package HTML data apps (E2E)", () => {
    it("sets frame-ancestors CSP on HTML responses and clears X-Frame-Options", async () => {
       const res = await fetch(pkgUrl("/index.html"));
       expect(res.status).toBe(200);
+      // Same-origin by default. Cross-origin embedding is opt-in through
+      // PUBLISHER_FRAME_ANCESTORS; it used to be `*` for everyone.
       expect(res.headers.get("content-security-policy")).toBe(
-         "frame-ancestors *",
+         "frame-ancestors 'self'",
       );
       expect(res.headers.get("x-frame-options")).toBeNull();
       expect(res.headers.get("x-content-type-options")).toBe("nosniff");
    });
 
-   it("does NOT set the framing CSP on non-HTML assets", async () => {
+   it("sets the same framing CSP on non-HTML assets", async () => {
       const res = await fetch(pkgUrl("/assets/app.css"));
       expect(res.status).toBe(200);
-      // CSP framing is only meaningful on documents; assets keep their default.
-      expect(res.headers.get("content-security-policy")).toBeNull();
+      // This used to assert the header was ABSENT here, on the reasoning that
+      // framing is only meaningful for a document. That is true, and it is also
+      // why the header is harmless on an asset -- while deciding per response
+      // whether to send it is what left the Console catch-all with no policy at
+      // all. One middleware ahead of every route cannot know the content type
+      // before the handler that sets it has run, and buying a no-op saving on
+      // assets is not worth reintroducing a way for a document to be missed.
+      expect(res.headers.get("content-security-policy")).toBe(
+         "frame-ancestors 'self'",
+      );
       expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+   });
+
+   it("sets the framing CSP outside the package routes too", async () => {
+      // The package routes above carried a policy before the middleware existed,
+      // so they cannot tell whether it is mounted ahead of EVERY route. These two
+      // are the surfaces that had none: the REST API and the Console's catch-all,
+      // which serves the SPA that owns the clickjacking exposure this closes.
+      const api = await fetch(`${baseUrl}/api/v0/status`);
+      expect(api.status).toBe(200);
+      expect(api.headers.get("content-security-policy")).toBe(
+         "frame-ancestors 'self'",
+      );
+      expect(api.headers.get("x-frame-options")).toBeNull();
+
+      const console = await fetch(`${baseUrl}/`);
+      expect(console.headers.get("content-security-policy")).toBe(
+         "frame-ancestors 'self'",
+      );
+      expect(console.headers.get("x-frame-options")).toBeNull();
    });
 
    it("404s a missing file", async () => {

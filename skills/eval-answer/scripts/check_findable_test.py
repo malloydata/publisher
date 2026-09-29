@@ -322,5 +322,43 @@ class Staleness(unittest.TestCase):
         self.assertIsNone(check_findable.stale_packages("http://127.0.0.1:9"))
 
 
+class DottedJoinPaths(unittest.TestCase):
+    """A dotted name is a join path, resolved on the joined source.
+
+    `declared[src]` holds a source's OWN fields, so every dotted id read as a
+    field the source does not declare. On the storefront tour set that was five
+    of eight reported misses, each one an id get_context returns as its top
+    result -- and the check ends by telling you to fix the key, so a false miss
+    here sends you to break an answer key that is correct.
+    """
+
+    DECLARED = {
+        "order_items": {"source:order_items", "measure:total_sales"},
+        "products": {"source:products", "dimension:brand", "measure:product_count"},
+    }
+
+    def findings(self, eid):
+        cases = [{"qid": "q1", "expectedEntities": {"required": [eid]}}]
+        return check_findable.declared_findings(cases, self.DECLARED)
+
+    def test_a_reachable_join_path_is_not_a_finding(self):
+        self.assertEqual(self.findings("dimension:order_items:products.brand"), [])
+
+    def test_the_kind_still_has_to_match_on_the_joined_source(self):
+        out = self.findings("measure:order_items:products.brand")
+        self.assertEqual(len(out), 1)
+        self.assertIn("declares no measure 'brand'", out[0])
+
+    def test_an_unknown_hop_is_named_as_the_hop(self):
+        out = self.findings("dimension:order_items:suppliers.name")
+        self.assertEqual(len(out), 1)
+        self.assertIn("'suppliers'", out[0])
+
+    def test_a_field_missing_on_the_joined_source_is_a_finding(self):
+        out = self.findings("dimension:order_items:products.colour")
+        self.assertEqual(len(out), 1)
+        self.assertIn("'colour'", out[0])
+
+
 if __name__ == "__main__":
     unittest.main()

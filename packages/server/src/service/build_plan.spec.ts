@@ -25,6 +25,10 @@ import {
    resolvePackageConnections,
 } from "./build_plan";
 import { MaterializationEligibilityError } from "../errors";
+import {
+   compilePersistSources,
+   duckdbTestConnections,
+} from "./incremental_test_harness";
 import { fakeSource } from "./materialization_test_fixtures";
 import { Model } from "./model";
 
@@ -261,6 +265,65 @@ describe("resolvePackageConnections", () => {
 });
 
 describe("deriveBuildPlan", () => {
+   it("reports a join to a given-scoped persisted source as joinedTerms, apart from strippedTerms", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      try {
+         const { connections } = duckdbTestConnections();
+         const { sources, materializer } = await compilePersistSources(
+            connections,
+            `##! experimental { persistence givens }
+given:
+  ORG_ID :: number is 1
+  USER_ID :: number is 7
+source: raw is duckdb.sql("""SELECT * FROM (VALUES (1,10)) AS t(org_id, opp_id)""")
+source: grants_raw is duckdb.sql("""SELECT * FROM (VALUES (1,7,10)) AS g(org_id, user_id, opp_id)""")
+#@ persist name="grants" storage=lake
+source: grants is grants_raw -> { select: * } extend {
+  where: org_id = $ORG_ID and user_id = $USER_ID
+}
+#@ persist name="opps" storage=lake
+source: opps is raw -> { select: * } extend {
+  where: org_id = $ORG_ID
+  join_one: g is grants on opp_id = g.opp_id
+  dimension: visible is g.opp_id is not null
+}`,
+         );
+         const compiled = await materializer.getModel();
+         const bySourceID = Object.fromEntries(
+            Object.values(sources).map((src) => [src.sourceID, src]),
+         );
+         const plan = deriveBuildPlan(
+            compiled.getBuildPlan().graphs,
+            bySourceID,
+            { duckdb: "dig" },
+         );
+         const opps = Object.values(plan.sources).find(
+            (p) => p.name === "opps",
+         );
+         expect(opps?.strippedTerms).toEqual([
+            { code: "org_id = $ORG_ID", givens: ["ORG_ID"] },
+         ]);
+         expect(opps?.joinedTerms).toEqual([
+            {
+               alias: "g",
+               source: "grants",
+               terms: [
+                  {
+                     code: "org_id = $ORG_ID and user_id = $USER_ID",
+                     givens: ["ORG_ID", "USER_ID"],
+                  },
+               ],
+            },
+         ]);
+         const grants = Object.values(plan.sources).find(
+            (p) => p.name === "grants",
+         );
+         expect(grants?.joinedTerms).toBeUndefined();
+      } finally {
+         delete process.env.PERSIST_STORAGE_MODE;
+      }
+   });
+
    it("projects graphs and sources into the wire build plan", () => {
       const orders = fakeSource({
          name: "orders",

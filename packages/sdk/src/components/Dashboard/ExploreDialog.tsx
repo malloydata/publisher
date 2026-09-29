@@ -23,6 +23,7 @@ export function ExploreDialog({
    packageName,
    versionId,
    modelPath,
+   givens,
    onClose,
 }: {
    /** The tile expression to open, or undefined when closed. */
@@ -31,6 +32,8 @@ export function ExploreDialog({
    packageName: string;
    versionId?: string;
    modelPath: string;
+   /** The dashboard's current control values, to seed the explorer's own. */
+   givens?: Record<string, string>;
    onClose: () => void;
 }) {
    const resourceUri = encodeResourceUri({
@@ -79,6 +82,8 @@ export function ExploreDialog({
          title={`Explore: ${tile}`}
          existingQuery={existingQuery}
          initialSelectedSourceIndex={sourceIndex}
+         // Reset returns to the dashboard's values, not the model's defaults.
+         startingGivens={givens}
       />
    );
 }

@@ -65,8 +65,13 @@ describe("compile scopes (compileSource)", () => {
    it("file: validates an EDIT to an existing definition, which append cannot", async () => {
       const edited = TRACKS_MODEL.replace("n.sum()", "n.avg()");
       // The append behavior this scope exists to escape: the edit collides
-      // with the model's own copy of every definition it touches.
-      const appended = await compile("tracks.malloy", edited, "append");
+      // with the model's own copy of every definition it touches. Shown
+      // without the model's `import` line, which append scope refuses outright
+      // as a construct that reads a file of the caller's choosing (see
+      // compile_restriction.spec.ts) -- the collision this asserts is about
+      // the redefined source, not the import.
+      const appendable = edited.replace('import "base.malloy"\n', "");
+      const appended = await compile("tracks.malloy", appendable, "append");
       expect(
          appended.problems.some((p) => p.message.includes("Cannot redefine")),
       ).toBe(true);
@@ -133,6 +138,26 @@ source: tracks is base_source extend {
       const broken = await compile("base.malloy", undefined, "package");
       const errors = broken.problems.filter((p) => p.severity === "error");
       expect(errors.some((p) => p.model === "tracks.malloy")).toBe(true);
+   });
+
+   it("package: a publisher.json the dry-run cannot use answers 424, not a worker outage", async () => {
+      // The dry-run re-reads the manifest from disk, so an edit made since the
+      // package loaded reaches it. That is the author's mistake to fix.
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "publisher.json"),
+         '{"name":"pkg","scope":"shared"}',
+      );
+      const { PackageManifestError, internalErrorToHttpError } = await import(
+         "../errors"
+      );
+      const error = await compile("base.malloy", undefined, "package").then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(error).toBeInstanceOf(PackageManifestError);
+      const http = internalErrorToHttpError(error!);
+      expect(http.status).toBe(424);
+      expect(http.json.message).toMatch(/Invalid "scope"/);
    });
 
    it("package: uses reload file selection for notebooks and dotfiles", async () => {

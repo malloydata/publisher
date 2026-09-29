@@ -62,7 +62,7 @@ const compileShape = {
 const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use this while authoring instead of a throwaway execute_query.
 
 ## Scopes (the scope parameter)
-- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file.
+- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file. Refused here, with a 400: import, connection.table(...), connection.sql(...), raw-SQL functions, given: declarations (reading the model's givens as $NAME is fine), ##! flags, and text that does not stand alone as top-level Malloy — a bare view:/dimension:/measure:, or anything parsing only as a continuation of the model's last statement. Wrap a view body in a top-level query:, a field in a throwaway source: check is <source> extend { … }; use "file" or "package" for a model that declares data roots.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
 - "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and authorize gates still apply to caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
 
@@ -219,10 +219,12 @@ export function registerCompileTool(
             });
          } catch (error) {
             // Unknown environment/package, a notebook (.malloynb) rejected up
-            // front, an authorize denial, or a system error: surface as a clean
-            // isError payload rather than a transport fault. A missing modelPath
-            // does NOT error here; compileSource compiles the source against an
-            // empty namespace, so a typo in modelPath yields a normal result.
+            // front, an authorize denial, a model that could not be loaded to
+            // check the caller's text against, or a system error: surface as a
+            // clean isError payload rather than a transport fault. A typo in
+            // modelPath reaches here at the default scope, because the
+            // restricted-construct gate needs the named model to classify
+            // against and refuses when it cannot load one.
             logger.warn("[MCP Tool compile] compile failed", {
                environmentName,
                packageName,

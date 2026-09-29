@@ -154,8 +154,13 @@ watch-mode recompile that failed), and
 connection by plain-English description, for modelling data that is not in this package
 yet; it returns each table's columns and the `source:` line to start from). {{mcpNote}}
 
-REST, for a script or a check that does not need an agent: every model is queryable at
-`POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`, and after a
+REST, for a script or a check that does not need an agent: a model on the package's
+published surface is queryable at
+`POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`. Not every
+`.malloy` file on disk is: where the package has a root `index.malloy`, that file is the
+surface, and a model it does not export is refused with a 404 that reads the same as a
+model that does not exist. Address queries to the surface file, and take the model names
+from the package listing below rather than from the filenames. After a
 model-file edit `GET /api/v0/environments/<env>/packages/<package>?reload=true` recompiles
 the package and comes back 424 with the compile errors when it does not compile. Any other
 non-2xx is a failed check too, and its `message` says what went wrong: a 404 for a package

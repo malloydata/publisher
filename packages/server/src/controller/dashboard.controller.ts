@@ -16,6 +16,7 @@ import {
    type DashboardWriteOutcome,
 } from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
+import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
@@ -43,22 +44,6 @@ function outcomeOf(error: Error): DashboardWriteOutcome {
 
 /** The only files the write endpoint accepts: a dashboard, at the top of `dashboards/`. */
 const DASHBOARD_FILE = /^dashboards\/[^/]+\.malloy$/;
-
-/**
- * One compile problem, as a caller can act on it: where it is, then what it is.
- * The location is the whole reason to say more than the message — an author
- * looking at a refused save wants the line, and the endpoint answers with an
- * `Error` body rather than the `/compile` endpoint's structured problems.
- */
-const describeProblem = (problem: {
-   message: string;
-   at?: { range?: { start?: { line?: number; character?: number } } };
-}): string => {
-   const start = problem.at?.range?.start;
-   return start?.line === undefined
-      ? problem.message
-      : `line ${start.line + 1}:${(start.character ?? 0) + 1} ${problem.message}`;
-};
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>
@@ -207,7 +192,7 @@ export class DashboardController {
       if (errors.length > 0) {
          throw new CompileRefusedError(
             `The dashboard does not compile, so it was not written: ` +
-               errors.map(describeProblem).join("; "),
+               errors.map(formatProblem).join("; "),
          );
       }
 

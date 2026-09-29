@@ -79,7 +79,6 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import {
    MODEL_FILE_SUFFIX,
-   normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
@@ -88,7 +87,7 @@ import {
    recordRowLevelGateRejected,
 } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
-import { ModelCompilationError } from "../errors";
+import { ModelCompilationError, PackageManifestError } from "../errors";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -115,6 +114,7 @@ import {
    materializationWithQueryMetadata,
    parsePackageMaterialization,
    queryMetadataParseWarnings,
+   resolveExplores,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
@@ -443,7 +443,18 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 // stays decoupled from the main-thread service module graph)
 // ──────────────────────────────────────────────────────────────────────
 
-async function readPackageMetadata(packagePath: string): Promise<{
+/**
+ * Parse publisher.json.
+ *
+ * Takes `modelPaths` because the discovery surface has a second source that is
+ * a fact about the tree rather than about the manifest text: a package whose
+ * root holds an `index.malloy` and declares no `explores` takes its surface
+ * from that file. See {@link resolveExplores}.
+ */
+async function readPackageMetadata(
+   packagePath: string,
+   modelPaths: readonly string[],
+): Promise<{
    name?: string;
    description?: string;
    explores?: string[];
@@ -455,7 +466,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
-   const parsed = JSON.parse(contents) as {
+   let parsed: {
       name?: string;
       description?: string;
       explores?: string[];
@@ -465,6 +476,25 @@ async function readPackageMetadata(packagePath: string): Promise<{
       scope?: unknown;
       queryMetadata?: unknown;
    };
+   try {
+      parsed = JSON.parse(contents);
+   } catch (error) {
+      // A syntax error is the author's to fix like any other bad manifest, so
+      // it is a PackageManifestError (424), not a bare SyntaxError the pool
+      // would report as a worker outage.
+      throw new PackageManifestError(
+         `Invalid ${PACKAGE_MANIFEST_NAME}: it is not valid JSON ` +
+            `(${error instanceof Error ? error.message : String(error)}). ` +
+            `The package is not served until the file parses. Fix: make it ` +
+            `valid JSON; a trailing comma or an unquoted key is the usual cause.`,
+      );
+   }
+   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new PackageManifestError(
+         `Invalid ${PACKAGE_MANIFEST_NAME}: expected a JSON object, got ` +
+            `${JSON.stringify(parsed)}. Fix: { "name": "my-package" }.`,
+      );
+   }
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
@@ -476,9 +506,19 @@ async function readPackageMetadata(packagePath: string): Promise<{
       parsed.queryMetadata,
       parsed.materialization,
    );
+   // The discovery surface has two sources as well: an explicit `explores`,
+   // and the `index.malloy` convention, which fills in only where the manifest
+   // is silent. The result is a plain path list either way -- nothing
+   // downstream can tell which source produced it, and nothing should.
+   const explores = resolveExplores({
+      declaredExplores: parsed.explores,
+      declaredQueryableSources: parsed.queryableSources,
+      modelPaths,
+   });
    const manifestWarnings = [
       ...scope.warnings,
       ...queryMetadata.warnings,
+      ...explores.warnings,
       // Report what the WINNING home could not keep. Reading the envelope alone
       // would say nothing about a malformed property declared at the root, which
       // is the home authors are being moved to.
@@ -490,9 +530,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
    return {
       name: parsed.name,
       description: parsed.description,
-      explores: Array.isArray(parsed.explores)
-         ? parsed.explores.map(normalizeModelPath)
-         : undefined,
+      explores: explores.explores,
       // Default + invalid fall back to "declared" (fail-safe: queryable ==
       // discoverable). Only an explicit "all" opts out of the query boundary.
       queryableSources: parsed.queryableSources === "all" ? "all" : "declared",
@@ -547,10 +585,11 @@ function filterModelPaths(allRelative: string[]): string[] {
    );
 }
 
-// `normalizeModelPath` (shared, from ../constants) runs here at parse time so
-// the keys stored in Package.models are already normalized, and the API
-// publish/update path normalizes its `explores` input through the same helper —
-// so on-disk and API-written manifests share one representation.
+// `resolveExplores` normalizes each entry through `normalizeModelPath`
+// (shared, from ../constants) at parse time, so the keys stored in
+// Package.models are already normalized, and the API publish/update path
+// normalizes its `explores` input through the same helper — so on-disk and
+// API-written manifests share one representation.
 
 // explores validation is intentionally NOT done here. The worker is the
 // shared load path (startup, reload, AND publish), but the policy differs by
@@ -1113,11 +1152,23 @@ async function loadPackage(
 ): Promise<LoadPackageResult> {
    const loadStart = performance.now();
 
-   const packageMetadata = await readPackageMetadata(job.packagePath);
-   const malloyConfig = buildWorkerMalloyConfig(job);
-
+   // The file listing runs BEFORE the manifest read: the discovery surface can
+   // be defaulted from a root index.malloy, so parsing the manifest needs to
+   // know what is on disk. Both stay in the setup region excluded from the
+   // compile timing below.
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+
+   // Resolved against the ON-DISK tree, before the replacement fixup below. A
+   // replacement can introduce a modelPath that is not on disk, and a /compile
+   // preview proposing an index.malloy must not re-curate the whole package
+   // for the span of one request.
+   const packageMetadata = await readPackageMetadata(
+      job.packagePath,
+      modelPaths,
+   );
+   const malloyConfig = buildWorkerMalloyConfig(job);
+
    const replacementMatchedExisting = job.replacement
       ? modelPaths.includes(job.replacement.modelPath)
       : undefined;
@@ -1188,6 +1239,16 @@ function serializeError(error: unknown): SerializedError {
          message: error.message,
          stack: error.stack,
          isCompilationError: true,
+      };
+   }
+   // An unusable publisher.json keeps its class across the boundary the same
+   // way, so the main thread answers 424 rather than a worker outage.
+   if (error instanceof PackageManifestError) {
+      return {
+         name: error.name,
+         message: error.message,
+         stack: error.stack,
+         isManifestError: true,
       };
    }
    if (error instanceof Error) {

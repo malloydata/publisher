@@ -63,8 +63,8 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
   it — is in scope below.
 - Broad reach for whoever can publish a package or `PATCH` a connection on a bare Publisher
   ([docs/query-metadata.md](docs/query-metadata.md), [docs/packages.md](docs/packages.md)).
-- The default `Content-Security-Policy: frame-ancestors *`, which `PUBLISHER_FRAME_ANCESTORS` exists
-  to tighten ([docs/html-data-apps.md § Security model](docs/html-data-apps.md#security-model),
+- A deployment that has widened `PUBLISHER_FRAME_ANCESTORS` from its `'self'` default, which is how
+  cross-origin embedding is opted into ([docs/html-data-apps.md § Security model](docs/html-data-apps.md#security-model),
   [docs/configuration.md](docs/configuration.md)).
 - Findings that require ignoring the deployment posture above.
 

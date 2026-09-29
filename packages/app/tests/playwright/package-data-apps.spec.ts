@@ -117,6 +117,79 @@ test.describe("package-data-apps", () => {
       expect(navigations.filter((url) => url.includes("/pages/"))).toEqual([]);
    });
 
+   /**
+    * The framing policy, from the browser rather than from a header assertion.
+    *
+    * The Console frames a data app same-origin, so the `'self'` default admits
+    * it -- but nothing above would notice if that stopped being true. The test
+    * before this one asserts what the iframe POINTS AT, which a blocked frame
+    * still satisfies: `src` is an attribute, set whether or not the browser
+    * went on to render the document. So a policy regression leaves every
+    * existing assertion green and shows up only as a blank panel.
+    *
+    * These two close that. The first reads the policy off the response the
+    * browser actually received, so a failure names the header rather than the
+    * symptom. The second proves the frame was not merely requested but
+    * rendered, by reaching inside it for content only a loaded document has.
+    */
+   test("the data app's own response allows the Console to frame it", async ({
+      page,
+   }) => {
+      const responses: { url: string; csp: string | undefined }[] = [];
+      page.on("response", (res) => {
+         responses.push({
+            url: res.url(),
+            csp: res.headers()["content-security-policy"],
+         });
+      });
+
+      await page.goto(
+         `/${DEFAULT_ENV}/${PACKAGES.dataApp}/data-apps/index.html`,
+      );
+      await expect(page.locator("iframe")).toHaveCount(1);
+
+      // The iframe document itself, not the Console shell that embeds it.
+      await expect
+         .poll(
+            () =>
+               responses.filter((r) =>
+                  r.url.includes(
+                     `/environments/${DEFAULT_ENV}/packages/${PACKAGES.dataApp}/index.html`,
+                  ),
+               ).length,
+            { timeout: 15000 },
+         )
+         .toBeGreaterThan(0);
+
+      const embed = responses.find((r) =>
+         r.url.includes(
+            `/environments/${DEFAULT_ENV}/packages/${PACKAGES.dataApp}/index.html`,
+         ),
+      );
+      // Same-origin here, so `'self'` is the expected value and the one the
+      // default produces. A deployment that framed this from another origin
+      // sets PUBLISHER_FRAME_ANCESTORS; what must never appear is a policy that
+      // admits nobody.
+      expect(
+         embed?.csp,
+         `the data app document must carry a framing policy that admits its own origin; got ${embed?.csp}`,
+      ).toContain("frame-ancestors");
+      expect(embed?.csp).toContain("'self'");
+   });
+
+   test("the framed data app actually renders its content", async ({
+      page,
+   }) => {
+      // `src` being right does not mean the document loaded. Reaching INSIDE
+      // the frame does: a frame-ancestors refusal yields an empty document, so
+      // this fails where the src assertion above still passes.
+      await page.goto(
+         `/${DEFAULT_ENV}/${PACKAGES.dataApp}/data-apps/index.html`,
+      );
+      const frame = page.frameLocator("iframe");
+      await expect(frame.locator("body")).not.toBeEmpty({ timeout: 30000 });
+   });
+
    test("an old pages/ bookmark is no longer rewritten to data-apps", async ({
       page,
    }) => {

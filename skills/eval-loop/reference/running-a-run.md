@@ -15,6 +15,10 @@ check, a judge, and a conformant `events.jsonl`.
 #    if it does not reach `ready`: the sync is lazy, so without it the first
 #    cases are answered LEXICALLY and the run reports that as the model's
 #    number.
+#    Semantic retrieval needs EMBEDDING_API_KEY in the server's environment
+#    (the Publisher does not read OPENAI_API_KEY); without it every ranking is
+#    lexical, the warm-up reports `cooldown`, and the provider's own error is
+#    only in publisher.log (grep Embedding).
 python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/server \
   --server-root <root> --port 4811 --mcp-port 4040 --trace-retrieval \
   --warm-retrieval --environment <env> --package <pkg> \
@@ -58,10 +62,14 @@ python3 skills/eval-loop/scripts/run_baseline.py \
 python3 skills/eval-loop/scripts/run_baseline.py \
   --set <repo>/evals/ecommerce --out results/<arm> \
   --parallel 4 --truth-publisher http://localhost:4881 \
-  --model-repo <repo>   # the checkout the MODEL is versioned in, recorded as
-                        # modelGitSha. It cannot be inferred: Publisher serves
-                        # a copy under publisher_data/, whose surrounding tree
-                        # is the server's storage, not the model's history.
+  --model-repo <repo> --model-dir <package>   # the checkout the MODEL is
+                        # versioned in, recorded as modelGitSha, and the package
+                        # directory inside it the -dirty marker is decided over
+                        # (relative to the repo). Without --model-dir any
+                        # untracked file anywhere in the repo marks the model
+                        # dirty. The repo cannot be inferred: Publisher serves a
+                        # copy under publisher_data/, whose surrounding tree is
+                        # the server's storage, not the model's history.
 #    the run names itself <set>-<phase>-<nn> (ecommerce-baseline-01, then -02
 #    for the second arm of the A/A). Pass --label only for a run that needs a
 #    human name; hand-typed arm names stop being readable within an afternoon.

@@ -13,7 +13,7 @@ On the case:
 | field | from the source | when it is missing |
 |---|---|---|
 | `qid` | their id, if they gave one, prefixed with the set name | derive from the question: a slug of its first words plus a counter. Stable, because scores are keyed on it |
-| `question` | the question text, byte for byte | it is not a case. Do not reconstruct a question from a criterion |
+| `question` | the question text, byte for byte. One exception: a source hard-wrapped at a column width cannot be one line byte for byte, so a line break inside a question becomes one space, the seal is on the unwrapped text, and `sourceNote` says so | it is not a case. Do not reconstruct a question from a criterion |
 | `questionSha` | never from the source | stamped at conversion by `import_cases.py --stamp` |
 | `split` | rarely present | you choose, and freeze it at import |
 | `source` | how it arrived: the filename, or the log query | say `unknown` rather than guessing a provenance |
@@ -31,6 +31,24 @@ where the questions came from and what shape they arrived in. `truthPackage` is
 usually absent at import, and until it exists no golden can reach `verified`;
 `verify_goldens.py --promote` is what takes it there afterwards. `init_truth_package.py` in
 `skill:eval-answer` scaffolds one.
+
+`conventions` is optional: a list of strings, each defining one term the way
+the business uses it, for a term the question does not define itself. The
+coverage check (`check_coverage.py` in `skill:eval-answer`) shows them to its
+judge as definitions it may not replace with its own reading. End each one with
+the questions it governs, as an "Applies to questions that ..." sentence:
+
+```json
+"conventions": [
+  "\"Summer\" means 25 May to 15 September inclusive. Applies to questions that ask about summer."
+]
+```
+
+The scope sentence is what stops the judge applying a definition to every
+question. Without it, one set came back with nine of twelve cases as gaps, and
+the check warns about any convention that has none. Record only a definition
+someone gave you. A convention you invent turns your guess into the business's
+rule, and scores the model against it.
 
 ## Their field names will not be your field names
 

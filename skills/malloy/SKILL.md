@@ -45,6 +45,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
 | `skill:malloy-analysis-report` | Combining validated queries into a notebook report or dashboard |
 | `skill:malloy-analysis-pitfalls` | Checking a query and its results before presenting an answer |
+| `skill:malloy-source-unreachable` | A source is missing from discovery, or a query was refused with a 404 or 403 |
 | `malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells. Ships in `analysis`. |
 | `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |
 
@@ -78,6 +79,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 |-------|-------------|
 | `skill:malloy-publish` | Moving a finished model into a served package (local-to-served handoff) |
 | `skill:malloy-dashboards` | Building a dashboard: a tagged `.malloy` file in a package's `dashboards/` directory, with filter controls and drill-through |
+| `skill:malloy-data-app-design` | Deciding what a data app should be, before building it: audience, archetype, chart forms and depth |
 | `skill:malloy-html-data-apps` | Building an in-package HTML data app (a `public/` directory the package serves) |
 | `skill:malloy-html-data-app-runtime` | Writing the JavaScript that drives that app |
 | `skill:malloy-html-data-app-embedding` | Embedding a served page into a host application |

@@ -23,6 +23,13 @@ WHAT IT PRODUCES
                      the header comment says to; the script will not guess
                      semantics, because guessed semantics are exactly what a
                      truth package exists to exclude.
+                     A key that composes two tables (the top N by one
+                     measure, then another measure over those rows) is written
+                     as a raw per-key rollup declared in truth.malloy --
+                     `source: t_x_by_key is t_x -> { group_by: key; aggregate:
+                     ... }` -- joined from an `extend` in the canonical query.
+                     A raw aggregate by key is not semantics, and the
+                     Publisher refuses a join declared inline in a query.
   publisher.json     the truth package, named, with the standard description.
   publisher.config.json  (--publisher-config) a Publisher server config
                      serving ONLY the truth package, for the second server the
@@ -133,6 +140,9 @@ def main() -> int:
         "//     own doc for where each comes from",
         "//   - raw-column dimensions for anything nested (a VARIANT column, a JSON",
         "//     path) that a golden query will need to group by",
+        "//   - a raw per-key rollup (`source: t_x_by_key is t_x -> { group_by: key;",
+        "//     aggregate: ... }`) wherever a key composes two tables, joined from an",
+        "//     `extend` in the canonical query: the server refuses an inline join",
         "// Keep column names in the warehouse's own case so a golden query reads as",
         "// a warehouse query, not as a model query.",
         "",
@@ -148,6 +158,10 @@ def main() -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "truth.malloy").write_text("\n".join(lines) + "\n")
 
+    # No "explores" and no index.malloy: the package has one model file, so
+    # there is nothing to curate, and goldens address truth.malloy directly
+    # (set.json truthModel defaults to it). An index.malloy would make
+    # truth.malloy an invalid query entry point.
     (a.out / "publisher.json").write_text(json.dumps({
         "name": a.name, "version": "0.0.1",
         "description": (f"Truth package for the {a.name} eval set: the raw tables the "
@@ -155,7 +169,6 @@ def main() -> int:
                         f"and NO semantic modelling. Goldens are computed here so a "
                         f"model bug cannot certify its own golden. Never served on the "
                         f"answerer's Publisher."),
-        "explores": ["truth.malloy"],
     }, indent=2) + "\n")
 
     (a.out / "README.md").write_text(f"""# {a.name}

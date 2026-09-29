@@ -1,0 +1,21 @@
+{
+ "qid": "storefront-tour-signup-cohort-2025",
+ "truthQuery": "run: t_order_items extend { join_one: t_customers on customer_id = t_customers.customer_id } -> { where: t_customers.signup_date.year = @2025; aggregate: cohort_revenue is sale_price.sum() }",
+ "verifyQuery": "run: t_order_items extend { join_one: t_customers on customer_id = t_customers.customer_id } -> { group_by: signup_year is t_customers.signup_date.year; aggregate: revenue is sale_price.sum() } -> { where: signup_year ? @2025; select: revenue }",
+ "truthRows": [
+  {
+   "cohort_revenue": 488970.53999999806
+  }
+ ],
+ "verifyRows": [
+  {
+   "revenue": 488970.53999999806
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "488970.53999999806 vs 488970.53999999806"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

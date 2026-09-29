@@ -40,6 +40,12 @@ function parseDataAppResource(resourceUri: string) {
  * height changes; we listen and resize the iframe to match so embedded
  * dashboards don't get a nested scrollbar.
  *
+ * When those two origins differ, the worker serving the app must name this
+ * SPA's origin in `PUBLISHER_FRAME_ANCESTORS`. The server's default is
+ * `frame-ancestors 'self'`, which permits only its own origin, so a
+ * cross-origin embed is refused by the browser and the iframe renders blank
+ * with nothing logged server-side. A same-origin deployment needs no setting.
+ *
  * Full-screen apps (e.g. slide decks) can opt out of content-height sizing
  * with `<meta name="publisher:fit" content="viewport">`, surfaced as
  * `DataApp.fit === "viewport"`. The iframe then fills the available viewport

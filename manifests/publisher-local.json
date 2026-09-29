@@ -17,6 +17,7 @@
     "malloy-analyze",
     "malloy-charts",
     "malloy-dashboards",
+    "malloy-data-app-design",
     "malloy-debug",
     "malloy-define",
     "malloy-discover",
@@ -41,7 +42,8 @@
     "malloy-publish",
     "malloy-queries",
     "malloy-review",
-    "malloy-scope"
+    "malloy-scope",
+    "malloy-source-unreachable"
   ],
   "supporting": [],
   "groups": {
@@ -56,7 +58,8 @@
       "malloy-analysis-report",
       "malloy-patterns",
       "malloy-gotchas-queries",
-      "malloy-notebooks"
+      "malloy-notebooks",
+      "malloy-source-unreachable"
     ],
     "modeling": [
       "malloy-modeling",
@@ -84,12 +87,14 @@
       "malloy-analysis",
       "malloy-queries",
       "malloy-phrase-detection",
+      "malloy-data-app-design",
       "malloy-html-data-apps",
       "malloy-html-data-app-runtime",
       "malloy-html-data-app-embedding",
       "malloy-materialization-tuning",
       "malloy-dashboards",
-      "malloy-getting-started"
+      "malloy-getting-started",
+      "malloy-source-unreachable"
     ],
     "eval": [
       "eval-loop",

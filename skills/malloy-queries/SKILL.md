@@ -180,7 +180,7 @@ having: count() > 20
 Wrong: `group_by: total_sales` (where `total_sales` is `sum(price)`)
 Right: `group_by: category; aggregate: total_sales`
 
-**Scalar functions are not aggregates.** `concat()`, `substring()`, arithmetic on raw fields, etc. belong in `group_by:` or `select:`, never `aggregate:`.
+**Scalar functions are not aggregates.** `concat()`, `substr()`, arithmetic on raw fields, etc. belong in `group_by:` or `select:`, never `aggregate:`.
 
 Wrong: `aggregate: full_name is concat(first_name, ' ', last_name)`
 Right: `group_by: full_name is concat(first_name, ' ', last_name)`
@@ -263,6 +263,10 @@ Read the error against the tables above and below. Most failures match a known p
 |---|---|
 | `Cannot compare a timestamp to a number` | Comparing `date.year` to an integer. Use `date >= @2020-01-01` instead. |
 | `no viable alternative at input '<word>'` | Often a `;` between fields within one clause - fields under one `aggregate:`/`group_by:` are comma- or newline-separated (the error points at the field right after the `;`). |
+| `unexpected '<field>', expected 'not' or 'null'` | A **reserved word used as a name**, in a multi-line `aggregate:` / `group_by:` list. `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` are reserved. On its own line the compiler says so plainly (`'second' is a reserved word, so to use it as a name you must quote it`), but as a later entry in a multi-line list the parser has already committed, and the error points at the NEXT field instead - so you read it as a problem with the line below. Rename the field or backtick it. Verified against the compiler both ways. |
+| `'logical operator' Can't use type <string\|date\|...>` | **Any `?` apply combined with `and` needs parentheses**, not just the alternation form. `where: t ? 'a' | 'b' and flag` swallows `and flag` into the alternation list, and `where: d ? @2015 and x = 'y'` fails the same way with `Can't use type date`. Wrap the apply: `where: (d ? @2015) and x = 'y'`. The error names the *type on the left of the apply*, so it points at a clause that is perfectly fine and tells you nothing about the missing parentheses; on a date column it can also surface a spurious second error about `!= null` on an unrelated line. |
+| `Circular reference to '<name>' in definition` | A **measure aliased to its own name** (`aggregate: games is games`), which compiles fine until a `having:` references it. Alias to a different name, or drop the alias entirely. |
+| `Unknown function '<name>'. Use '<name>!(...)' to call a SQL function directly.` | The function does not exist in Malloy (`substring` is `substr`; there is no `median`). **In an ad-hoc query the suggested fix is a dead end**: a query sent to a server is compiled in restricted mode, so `median!(...)` then fails with "direct SQL function calls are not permitted" and following the error message costs two round trips. A saved model file is not compiled that way, so the same call is allowed there and fails only on its own merits. Use the Malloy spelling, or express it another way (an ordered `limit` for a median-like value); reach for `!(...)` only in a model file, and only knowing it pins you to one dialect. |
 | `'<field_name>' is not defined` | Field doesn't exist in the source. Re-check against the model definition; you may have stripped a join prefix. |
 | `field is a bar chart, but is not a repeated record` | Chart annotation placed inside `{ }`. Move `# bar_chart` above `run:` / `view:` / `nest:`. |
 | `Parser enountered unexpected statement` | Spelled that way by the compiler. Most often a chart annotation left as the last line inside `{ }` - move it above `run:`. Also syntax Malloy doesn't allow in that position (e.g., `pick` inside a nested view). |

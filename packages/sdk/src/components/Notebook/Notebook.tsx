@@ -3,7 +3,7 @@
 
 import "@malloydata/malloy-explorer/styles.css";
 import { Stack, Typography } from "@mui/material";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { planRun } from "./runPlan";
 import { RawNotebook } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
@@ -15,7 +15,7 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
 import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
-import { givensToRequest } from "../given/paramCodec";
+import { givensToParams, givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
@@ -203,6 +203,14 @@ export default function Notebook({
             : undefined;
       },
       [declaredTypes],
+   );
+
+   // For a cell's "Data Sources" dialog: the notebook's current values, so
+   // exploring from a cell starts from what the reader is looking at rather
+   // than the model's bare defaults.
+   const cellStartingGivens = useMemo(
+      () => givensToParams(applied, declaredTypes),
+      [applied, declaredTypes],
    );
 
    /**
@@ -524,6 +532,8 @@ export default function Notebook({
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}
+                        givens={cellStartingGivens}
+                        givenSpecs={declaredGivens}
                         // Distinct from `isExecuting`: the cell's spinner is
                         // gated on `!cell.result`, so feeding this through it
                         // showed nothing on a re-run, which is the only case

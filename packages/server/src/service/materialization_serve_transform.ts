@@ -9,6 +9,7 @@ import {
 } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import { givenScopedJoinTargets } from "./persist_dynamic_terms";
 import {
    recordEligibilityRefused,
    recordServeShapeTypeFallback,
@@ -603,14 +604,25 @@ export function serveShapeDiagnostics(
 export interface DerivedSourceLift {
    /** The source name a query names. */
    sourceName: string;
-   /** The source it extends. Emitted earlier in the shape, by construction. */
+   /**
+    * The source it extends, or the source its query reads. Emitted earlier in
+    * the shape, by construction.
+    */
    base: string;
    /** Only what this source ADDS to its base — see {@link liftDerivedSources}. */
    refinements: SourceRefinement[];
+   /**
+    * A query-derived source (`X is base -> { … }`), carried as the author's
+    * declaration verbatim rather than as refinements over its base: a query's
+    * output is a new relation, so nothing it declares is inherited from the base
+    * and there is nothing to subtract. When set, `refinements` is empty.
+    */
+   text?: string;
 }
 
 /** One lifted source, as `source: X is <base> extend { … }`. */
 function derivedSourceFragment(lift: DerivedSourceLift): string {
+   if (lift.text !== undefined) return `source: ${lift.text}`;
    const lines = refinementLines(lift.refinements);
    const body = lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
    return `source: ${lift.sourceName} is ${lift.base}${body}`;
@@ -646,6 +658,14 @@ export interface DerivedSourceDef {
    type?: unknown;
    /** The sourceID of the source this one extends, when it extends one. */
    extends?: unknown;
+   /**
+    * A query-derived source's query. Malloy does not set `extends` on one
+    * (`mkQuerySourceDef` drops it, deliberately), so `structRef` is the only
+    * link to the source it reads.
+    */
+   query?: { structRef?: unknown; pipeline?: unknown };
+   /** Where the author declared the source, for lifting its text verbatim. */
+   location?: SourceLocation;
    fields?: unknown[];
    filterList?: unknown[];
    /** The compiled model's own annotation record, read for `#@ -persist`. */
@@ -716,7 +736,7 @@ export function liftDerivedSources(
    // before its extenders without a topological sort.
    const pending = Object.entries(ctx.contents).filter(
       ([name, def]) =>
-         typeof def?.extends === "string" &&
+         derivedFrom(def) !== undefined &&
          !(ctx.boundSourceNames ?? ctx.shapeSourceNames).has(name) &&
          // A source that is itself a build target is never a lift candidate,
          // however it came to be one — `persistent` is true for a plain
@@ -749,9 +769,12 @@ export function liftDerivedSources(
          const entry = pending[i];
          if (!entry) continue;
          const [name, def] = entry;
-         const base = ctx.sourceNameById.get(def.extends as string);
+         const base = ctx.sourceNameById.get(derivedFrom(def) as string);
          if (!base || !available.has(base)) continue;
-         const lift = liftOneDerivedSource(name, def, base, available, ctx);
+         const lift =
+            typeof def.extends === "string"
+               ? liftOneDerivedSource(name, def, base, available, ctx)
+               : liftQueryDerivedSource(name, def, base, available, ctx);
          // A source whose joins cannot all be carried is refused for good, not
          // retried: nothing later in the fixpoint can make a join target
          // materialized.
@@ -766,6 +789,118 @@ export function liftDerivedSources(
 }
 
 /** One candidate, or undefined when it cannot be carried safely. */
+/**
+ * The sourceID a derived source is built from: the source it extends, or the
+ * source a query-derived source's query reads. Undefined for anything else.
+ */
+function derivedFrom(def: DerivedSourceDef | undefined): string | undefined {
+   if (typeof def?.extends === "string") return def.extends;
+   if (def?.type !== "query_source") return undefined;
+   return structRefSourceId(def.query?.structRef);
+}
+
+/**
+ * The sourceID a `structRef` names. The compiled model carries it either as the
+ * reference itself or as the referenced definition embedded whole, which then
+ * holds its own `sourceID`. An inline source has neither and yields undefined.
+ */
+function structRefSourceId(structRef: unknown): string | undefined {
+   if (typeof structRef === "string") return structRef;
+   const sourceID = (structRef as { sourceID?: unknown } | null)?.sourceID;
+   return typeof sourceID === "string" && sourceID.length > 0
+      ? sourceID
+      : undefined;
+}
+
+/**
+ * Carry a query-derived source (`X is base -> { … } [extend { … }]`) as the
+ * author's declaration, verbatim.
+ *
+ * The private-fact / public-wrapper idiom is the case: `#@ persist` sits on the
+ * fact, and queries name a wrapper whose query reads it. Malloy gives such a
+ * wrapper no identity of its own (no `extends`, not `persistent`), so it is never
+ * a build target and has no binding; without this it is an undefined name on the
+ * shape and every query naming it serves live.
+ *
+ * Carried only when everything the declaration names is already on the shape,
+ * decided before emission: the base; every source a pipeline stage reads or
+ * joins; and every join the extend block declares. That is what keeps a lift
+ * that could not compile off the shape — a declaration reaching a warehouse
+ * table or an unmaterialized source is left off, and a query naming it falls
+ * back live, rather than failing the rung and costing every source in the model
+ * its views.
+ */
+function liftQueryDerivedSource(
+   sourceName: string,
+   def: DerivedSourceDef,
+   base: string,
+   available: ReadonlySet<string>,
+   ctx: DerivedLiftContext,
+): DerivedSourceLift | undefined {
+   if (!def.location) return undefined;
+   const text = ctx.liftText(def.location);
+   if (!text) return undefined;
+   const reached = referencedSourceIds(def.query?.pipeline);
+   for (const sourceID of reached) {
+      const name = ctx.sourceNameById.get(sourceID);
+      if (!name || !available.has(name)) return undefined;
+   }
+   const declaredJoins = (def.fields ?? []).filter(
+      (f) => typeof (f as { join?: unknown }).join === "string",
+   );
+   for (const join of declaredJoins) {
+      const sourceID = (join as { sourceID?: unknown }).sourceID;
+      const name =
+         typeof sourceID === "string"
+            ? ctx.sourceNameById.get(sourceID)
+            : undefined;
+      if (!name || !available.has(name)) return undefined;
+   }
+   return { sourceName, base, refinements: [], text };
+}
+
+/**
+ * Every source a query pipeline names — a stage's `structRef`, and the
+ * `sourceID` of anything it joins. A reference with no in-model identity (an
+ * inline source) is reported as the empty string, which maps to no name and so
+ * refuses the lift. A named source is not descended into: what it reads is its
+ * own binding's concern, and its embedded definition names sources (its own
+ * base, a warehouse table) that are rightly absent from the shape.
+ */
+function referencedSourceIds(pipeline: unknown): string[] {
+   const out: string[] = [];
+   // Too deep to read is a reference that cannot be vouched for, so it refuses
+   // this lift — never an exception, which would escape lift selection and cost
+   // every other lift in the model with it.
+   let tooDeep = false;
+   const walk = (node: unknown, depth: number): void => {
+      if (tooDeep) return;
+      if (depth > 200) {
+         tooDeep = true;
+         return;
+      }
+      if (node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+         for (const item of node) walk(item, depth + 1);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      if (typeof record.join === "string") {
+         out.push(typeof record.sourceID === "string" ? record.sourceID : "");
+         return;
+      }
+      if (record.structRef !== undefined) {
+         out.push(structRefSourceId(record.structRef) ?? "");
+      }
+      for (const [key, value] of Object.entries(record)) {
+         if (key === "structRef") continue;
+         walk(value, depth + 1);
+      }
+   };
+   walk(pipeline, 0);
+   return tooDeep ? [""] : out;
+}
+
 function liftOneDerivedSource(
    sourceName: string,
    def: DerivedSourceDef,
@@ -1542,5 +1677,67 @@ export async function assertServesInDuckDB(
             `materialized into a DuckDB/DuckLake store must have a ` +
             `DuckDB-portable served shape.`,
       });
+   }
+}
+
+/**
+ * The bindings left once every binding with a caller-scoped join the serve shape
+ * cannot reproduce is withheld, to a fixpoint; and the names withheld.
+ *
+ * A join to a given-scoped source reproduces the caller's scope only through
+ * that source's own binding (see `joinedSourceRefusal`). It cannot be re-emitted
+ * when the target is not bound — stale past its window, never built, refused —
+ * nor when it is bound on a different destination, since one query cannot join
+ * across two connections; nor when the join is access-restricted, since
+ * restricted joins are never re-emitted while a public field may still read
+ * through them. Either way every
+ * field reading through the join fails the shape compile. Left in, that failure
+ * is answered by the serve-shape ladder, which thins EVERY binding in the model:
+ * one stale grant table would cost each sibling source its joins, dimensions and
+ * measures. Withholding the joining binding instead confines the cost to the
+ * source that needs the join, which serves live.
+ *
+ * To a fixpoint because withholding one binding removes it as a target: a source
+ * with a caller-scoped join to the withheld one is itself withheld next.
+ *
+ * Only caller-scoped joins. A join to an ordinary unmaterialized source keeps its
+ * existing treatment — skipped at extraction, with the ladder answering whatever
+ * reads through it.
+ */
+export function withholdUnreproducibleCallerScopedJoins(
+   bindings: ServeBinding[],
+   contents: Record<string, { fields?: unknown }> | undefined,
+   sourceNameById: ReadonlyMap<string, string>,
+): { kept: ServeBinding[]; withheld: string[] } {
+   let kept = bindings;
+   for (;;) {
+      const destinationOf = new Map(
+         kept.map((b) => [b.sourceName, b.destinationName]),
+      );
+      const next = kept.filter((b) =>
+         givenScopedJoinTargets(contents?.[b.sourceName]?.fields).every(
+            (sourceID) => {
+               const target =
+                  sourceID === undefined
+                     ? undefined
+                     : sourceNameById.get(sourceID);
+               return (
+                  target !== undefined &&
+                  destinationOf.has(target) &&
+                  destinationOf.get(target) === b.destinationName
+               );
+            },
+         ),
+      );
+      if (next.length === kept.length) {
+         const keptNames = new Set(kept.map((b) => b.sourceName));
+         return {
+            kept,
+            withheld: bindings
+               .map((b) => b.sourceName)
+               .filter((name) => !keptNames.has(name)),
+         };
+      }
+      kept = next;
    }
 }

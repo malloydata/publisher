@@ -348,6 +348,166 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
       }
    });
 
+   it("a notebook cell hydrated from the worker's cellModelDef receives only its own scope's givens", async () => {
+      // Here a cell's modelDef comes from the worker's cellModelDef, not a live compile.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "nb.malloynb"),
+         `>>>markdown
+# Notes
+>>>malloy
+source: plain is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
+  measure: c is count()
+}
+run: plain -> { aggregate: c }
+>>>malloy
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: gated is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
+  measure: c is count()
+}
+run: gated -> { aggregate: c }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("nb.malloynb");
+
+         const preImport = await model!.executeNotebookCell(
+            1,
+            undefined,
+            false,
+            { GROUPS: [1] },
+         );
+         const preImportRows = JSON.parse(preImport.result!) as {
+            data?: {
+               array_value?: Array<{
+                  record_value?: Array<{ number_value?: number }>;
+               }>;
+            };
+         };
+         expect(
+            preImportRows.data?.array_value?.[0]?.record_value?.[0]
+               ?.number_value,
+         ).toBe(4);
+
+         const postImport = await model!.executeNotebookCell(
+            2,
+            undefined,
+            false,
+            { GROUPS: [1] },
+         );
+         const postImportRows = JSON.parse(postImport.result!) as {
+            data?: {
+               array_value?: Array<{
+                  record_value?: Array<{ number_value?: number }>;
+               }>;
+            };
+         };
+         const count =
+            postImportRows.data?.array_value?.[0]?.record_value?.[0]
+               ?.number_value;
+         expect(count).toBe(2);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   // #1241: HIDE is off every entry surface; a gate reads it through the hub's
+   // `mid_gated`, and the base's `where:` reads a defaulted same-named given.
+   function writeOffSurfaceGivenPackage(): void {
+      writeManifest();
+      const table = `duckdb.sql("select * from (values ('a'),('b')) as t(val)")`;
+      fs.writeFileSync(
+         path.join(tempDir, "og_base.malloy"),
+         `##! experimental.givens
+
+given:
+  HIDE :: string is 'none'
+
+source: ungated_deep is ${table} extend {
+  where: val != $HIDE
+  measure: c is count()
+}
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_gate.malloy"),
+         `##! experimental.givens
+
+given:
+  HIDE :: string
+
+#(access_filter) val = $HIDE
+source: deep_gated is ${table} extend {
+  measure: c is count()
+}
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_hub.malloy"),
+         `import { ungated_deep } from "og_base.malloy"
+import "og_gate.malloy"
+
+source: mid_ungated is ungated_deep extend {}
+source: mid_gated is deep_gated extend {}
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_entry.malloy"),
+         `import "og_hub.malloy"
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_nb.malloynb"),
+         `>>>malloy
+import "og_hub.malloy"
+run: mid_ungated -> { aggregate: c }`,
+      );
+   }
+
+   it("400s a query reading an off-surface gate given instead of binding its default", async () => {
+      writeOffSurfaceGivenPackage();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const err = await pkg
+            .getModel("og_entry.malloy")!
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: mid_ungated -> { aggregate: c }",
+               undefined,
+               undefined,
+               { HIDE: "a" },
+            )
+            .catch((e: unknown) => e);
+         expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("400s a worker-hydrated notebook cell reading an off-surface gate given", async () => {
+      writeOffSurfaceGivenPackage();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const err = await pkg
+            .getModel("og_nb.malloynb")!
+            .executeNotebookCell(0, undefined, false, { HIDE: "a" })
+            .catch((e: unknown) => e);
+         expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("logs a warning for a package whose view carries an invalid renderer tag", async () => {
       writeManifest();
       // `# big_value { sparkline=... }` is a child-only renderer config placed on
@@ -690,6 +850,74 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          await duckdb.close();
       }
    });
+
+   // An unusable publisher.json is read inside the worker, and crosses the pool
+   // boundary. Anything the pool does not recognize is rewrapped as a 503
+   // "worker pool unavailable", which a caller logs as a server outage. A bad
+   // manifest is the author's mistake, so it must arrive as a 424 carrying the
+   // manifest's own message.
+   it.each([
+      [
+         "a malformed explores",
+         JSON.stringify({ name: "pkg", explores: "index.malloy" }),
+         /Invalid "explores"/,
+      ],
+      [
+         "an unknown scope",
+         JSON.stringify({ name: "pkg", scope: "shared" }),
+         /Invalid "scope"/,
+      ],
+      [
+         "two scope homes that disagree",
+         JSON.stringify({
+            name: "pkg",
+            scope: "version",
+            materialization: { scope: "package" },
+         }),
+         /Conflicting "scope"/,
+      ],
+      [
+         "a JSON syntax error",
+         `{ "name": "pkg", }`,
+         /Invalid publisher\.json: it is not valid JSON/,
+      ],
+      [
+         "JSON that is not an object",
+         `["pkg"]`,
+         /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
+      ],
+   ])(
+      "answers %s in publisher.json with a 424, not a 503",
+      async (_label, manifest, message) => {
+         fs.writeFileSync(path.join(tempDir, "publisher.json"), manifest);
+         fs.writeFileSync(
+            path.join(tempDir, "trivial.malloy"),
+            `source: nums is duckdb.sql("select 1 as a")`,
+         );
+
+         const { PackageManifestError, internalErrorToHttpError } =
+            await import("../errors");
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const error = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            ).then(
+               () => undefined,
+               (e: Error) => e,
+            );
+            expect(error).toBeInstanceOf(PackageManifestError);
+            const http = internalErrorToHttpError(error!);
+            expect(http.status).toBe(424);
+            expect(http.json.message).toMatch(message);
+            expect(http.json.message).not.toMatch(/worker pool/);
+         } finally {
+            await duckdb.close();
+         }
+      },
+   );
 
    // NB: kept last in this describe — swapping the singleton for a
    // pre-shutdown pool also tears down the shared `pool` (the swap

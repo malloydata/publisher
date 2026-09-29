@@ -1386,6 +1386,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
@@ -1448,6 +1450,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
@@ -1615,6 +1619,16 @@ paths:
         Retrieves a compiled Malloy model with its source information, queries, and metadata.
         The model is compiled using the specified version of the Malloy compiler. This endpoint
         provides access to the model's structure, sources, and named queries for use in applications.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
+        that surface answers 404 with the same message a query to it gets. Dashboard files are
+        always returned. A package with no surface, or with `queryableSources: "all"`, returns
+        every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
+        `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
+        the surface file does not carry the hidden sources it imports. A join to a hidden source
+        keeps only its name and the names and types of its fields. `sourceText` is left out
+        when the text names a source the file does not publish; a dashboard's text is always
+        returned.
       parameters:
         - name: environmentName
           in: path
@@ -1770,6 +1784,11 @@ paths:
         as a raw Malloy query string or by referencing a named query within the model. This endpoint
         supports both ad-hoc queries and predefined model queries, making it flexible for various
         use cases including data exploration, reporting, and application integration.
+
+        Ad-hoc query text that does not compile is a 400 whose `problems` locate each error in the
+        submitted text. On a package with a discovery surface this holds when every `run:` in the
+        text targets a source on the surface, or one the text derives only from such sources; text
+        reaching any other source is answered with the 404 a hidden or missing source gets.
       parameters:
         - name: environmentName
           in: path
@@ -1873,6 +1892,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -1898,26 +1919,20 @@ paths:
         would break one is refused and leaves the previously loaded package
         serving, so `error` is only reachable on the paths that keep per-model
         placeholders. Treat it as present-but-uncommon rather than the normal
-        way a broken dashboard surfaces. When the package curates its query surface
-        (`queryableSources: "declared"`), a dashboard whose entry file is not in
-        `explores` is omitted, because its query and given names would not be
-        runnable; the omission is reported in the package's `warnings` as of the
-        last load. A metadata `PATCH` that TIGHTENS curation takes effect on
-        this listing immediately; one that relaxes it takes effect on the next
-        package reload, because the withheld dashboards were never built into
-        the cached set. Either way the matching warning is computed at load, so
-        after a `PATCH` it appears only once the package reloads.
+        way a broken dashboard surfaces.
 
-        Where the boundary is active at all, which needs `explores` declared
-        AND `queryableSources` left at `"declared"`, being listed does not by
-        itself guarantee the dashboard runs: the queryable sources are the
-        union of every listed file's `export {}` closure, so a dashboard whose
-        tiles read a source that only an UNLISTED file exports is still served
-        while those queries are refused. The fix is to list that file too, or
-        to re-export the source from one already listed. It is served rather
-        than withheld because withholding on a guess would hide dashboards that
-        do work. Under `"all"` nothing is refused, so the situation does not
-        arise.
+        Every tagged dashboard is listed, whatever the package's surface. To
+        hide one, remove its `# artifact` tag. On a package with a surface (a
+        root `index.malloy`, or a legacy `explores`) with `queryableSources`
+        left at `"declared"`, a dashboard's tiles, its single query and its
+        filter `suggest` queries may read only sources the surface exports. A
+        source the dashboard declares on top of a surface source may be read;
+        one over a hidden source may not. The dashboard file's own
+        `export {}` and named queries add nothing to the surface. A tile over a
+        hidden source answers 404 when it runs, and the package's `warnings`
+        report each such tile, single query and suggest, with severity
+        `error`, as of the last load, naming the source and the fix. Under
+        `"all"` nothing is refused, so the situation does not arise.
       parameters:
         - name: environmentName
           in: path
@@ -1987,10 +2002,8 @@ paths:
           in: path
           description: >-
             The dashboard's name: its filename basename. Conventionally letters,
-            digits, "-" and "_", and a package is warned when one of its SERVED
-            dashboards falls outside that. A dashboard withheld by curation gets
-            no naming finding, because the naming check runs after the curation
-            gate and a withheld dashboard is already reported as withheld. It is NOT constrained to it, because
+            digits, "-" and "_", and a package is warned when one of its
+            dashboards falls outside that. It is NOT constrained to it, because
             the name comes from a filename rather than being chosen: a file such
             as `dashboards/v1.2.malloy` is served, and its published `resource`
             carries the name percent-encoded. Send it percent-encoded.
@@ -2080,6 +2093,7 @@ paths:
       description: |
         Retrieves a Malloy notebook with its raw cell contents (markdown and code).
         Cell execution should be done separately via the execute-notebook-cell endpoint.
+        On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
         - name: environmentName
           in: path
@@ -2131,6 +2145,14 @@ paths:
         Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
         and runs the Malloy code, returning query results and any new sources defined.
         For markdown cells, this simply returns the cell content.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
+        `queryableSources` left at `"declared"`, a code cell may read only sources the surface
+        exports. A cell over a hidden source answers 404, and 404 rather than 403 even when the
+        source is also `#(authorize)`-gated. A source an earlier cell declares on top of a
+        published source still works. A cell's own source over a raw table (`duckdb.table(...)`
+        or `.sql(...)`) has no published source under it, so it is refused. The response shows
+        only the sources the notebook may read.
       parameters:
         - name: environmentName
           in: path
@@ -2704,6 +2726,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    PackageManifestError:
+      description: |
+        The package's publisher.json cannot be used as written: it is not
+        valid JSON or not a JSON object, it has a malformed "explores" or an
+        unknown "scope", or its two "scope" settings disagree. The message
+        names the problem and the fix. The package is not served until the
+        file is corrected.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     ServiceUnavailable:
       description: |
         The service is temporarily unable to accept the request. Possible
@@ -3088,17 +3121,33 @@ components:
             loaded; defaults to `package` when the manifest omits it.
         explores:
           type: array
+          deprecated: true
           items:
             type: string
           description: >-
-            Optional opt-in for curated discovery. When present, only these
-            model file paths (relative to the package root) are listed via
-            `listModels()`, and within-file discovery is filtered to each
-            model's `export {}` closure. When absent or empty, every model is
-            listed with its full source set (backward-compatible). Every other
-            .malloy file still compiles for import/join resolution but is
-            hidden from listings once `explores` is declared. Notebooks are
-            always listed regardless of this field.
+            The package's discovery surface and query boundary: model file
+            paths relative to the package root. Only these models are listed
+            via `listModels()`, and the surface is the union of their
+            `export {}` closures. Every other .malloy file still compiles for
+            import/join resolution but is hidden. Notebooks and dashboards are
+            always listed regardless of this field, and a dashboard entry
+            needs no listing: a tagged dashboard listed here reads the surface
+            and adds nothing to it. An untagged file under `dashboards/` that
+            is listed is an ordinary surface file.
+            DEPRECATED, still honored. Every non-empty value gets a load
+            warning naming the replacement: a root `index.malloy` that imports
+            the listed files and exports what they publish. `[]` is deprecated
+            too: beside an `index.malloy` it stops that file from limiting
+            what the package publishes (the fix is to rename `index.malloy`
+            and delete this key), and without one it does nothing.
+            A value that is not a list of strings refuses the package load
+            (424).
+            This value MAY have been derived by the server from a root
+            `index.malloy` rather than written by the package author, and the
+            response does not distinguish the two — deliberately, because
+            nothing downstream treats them differently. An explicit key always
+            wins over `index.malloy`. A package is uncurated only when it has
+            neither this key nor a root `index.malloy`.
         exploresWarnings:
           type: array
           readOnly: true
@@ -3132,14 +3181,23 @@ components:
             degrade attribution. A refusal is the one materialization finding the
             build plan cannot also be read for: a refused `storage`/`colocated`
             source is ABSENT from `BuildPlan.sources`, so nothing there records
-            that the annotation was written at all. Discovery findings: a model listed in `explores` whose
-            export closure surfaces no sources or named queries, so it lists as
-            empty and renders a blank page. Dashboard findings: a
+            that the annotation was written at all. Discovery findings: a model
+            on the package's surface whose export closure surfaces no sources or
+            named queries, so it lists as empty and renders a blank page; a
+            surface whose every model failed to compile, so every model in the
+            package answers 404 by name; and, on the reload that caused it, a
+            package that had a surface and now has none, so every source that
+            surface hid is listed and queryable by name again. Manifest
+            findings: each deprecated use of `explores` or of
+            `queryableSources: "declared"`, and a root file such as
+            `Index.malloy` that differs from `index.malloy` only in case and
+            so is ignored. A root `index.malloy` with no manifest keys gets no
+            warning. Dashboard findings: a
             `dashboards/` file whose `# artifact` tag does not parse or does not
             describe a dashboard, a tile or suggest query that does not resolve,
             a `# drill` naming a destination that is not a dashboard, and a
-            dashboard held back from the listing because its entry file is not
-            in `explores`. Two dashboard findings are about Publisher rather
+            tile, single query or filter suggest that reads a source the
+            surface does not export, so it won't load. Two dashboard findings are about Publisher rather
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
@@ -3260,8 +3318,8 @@ components:
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
-                  author probably intended, such as a dashboard held back by
-                  curation. The two findings about Publisher rather than about
+                  author probably intended, such as a dashboard name outside
+                  the conventional shape. The two findings about Publisher rather than about
                   the package split across both: a file that carries an artifact
                   tag and could not be read is `error`, because the dashboard it
                   should have produced does not exist, and a lint that stopped
@@ -3271,15 +3329,17 @@ components:
                   never reached are exactly what it cannot report.
         queryableSources:
           type: string
+          deprecated: true
           enum:
             - declared
             - all
           description: >-
             Controls whether the discovery surface is also a query boundary.
-            `"declared"` (the default) makes queryable == discoverable: when
-            `explores` is declared, only `explores` model files are valid query
-            entry points, and the queryable sources are the union of those
-            files' `export {}` closures — so a source exported by any listed
+            `"declared"` (the default) makes queryable == discoverable: when the
+            package has a surface (a root `index.malloy`, or `explores`), only
+            the surface's model files are valid query entry points, and the
+            queryable sources are the union of those files' `export {}`
+            closures — so a source exported by any listed
             file stays queryable whichever listed model path the request
             addresses it through. Admission is by declaration, not by name: a
             request clears only when the model it names resolves the name to the
@@ -3293,12 +3353,21 @@ components:
             A source that is both hidden and authorize-gated still answers
             `/compile` with the generic 404, so the exemption cannot be used to
             enumerate gated names.
-            `"all"` decouples the axes: `explores`/`export {}` gate discovery
-            only and every compiled source stays directly queryable. When
-            `explores` is absent there is no curated surface, so both modes are
-            equivalent (everything queryable). Invalid values fall back to
-            `"declared"`. Identity-based access is a separate concern — see
-            `#(authorize)` and `#(access_filter)`.
+            `"all"` decouples the axes: the surface gates discovery only, every
+            compiled source stays directly queryable, and model files off the
+            surface are returned by path. The two modes are equivalent
+            (everything queryable) only where there is no curated surface at
+            all, which means no `explores` AND no root
+            `index.malloy` — a package with that file has a surface whether or
+            not the key is present. Invalid values fall back to `"declared"`.
+            Identity-based access is a separate concern — see `#(authorize)`
+            and `#(access_filter)`.
+            `"declared"` is DEPRECATED: it is already the default, so the key
+            changes nothing, and writing it gets a load warning saying to
+            delete it. `"all"` is supported, with no warning, and works beside
+            a root `index.malloy`. It is the one way to hide an
+            `#(authorize)`-gated source from listings while authorized callers
+            can still query it by name.
         manifestLocation:
           type: ["string", "null"]
           description: |
@@ -3522,13 +3591,18 @@ components:
         State of a package's semantic discovery index. Poll `status` until
         `ready` to know retrieval is warm - before this, that state existed
         only as a server log line, so anything waiting on a warm index had to
-        scrape logs. Every count is scoped to the embedding model currently
-        configured, matching what the search path reads, so a server pointed
-        at a new model reports the index as not yet ready rather than
-        reporting rows retrieval would reject. Reading it takes no locks, so
-        polling cannot perturb an indexing run; note that the first read after
-        a package loads or reloads builds the package's entity index, which is
-        work a metadata read would not otherwise do.
+        scrape logs. Send the package one `get_context` question first, then
+        poll: only a question starts the sync, and a restart forgets which
+        syncs completed, so after every restart each package reads `indexing`
+        until it is asked something. Polling before asking waits forever.
+        Every count is scoped to the embedding model currently configured, so
+        rows left behind by an earlier model are never counted. Read `status` for readiness and the counts for
+        coverage: they answer different questions, and only `status` tracks
+        what the search path will do. The first read after a package loads or
+        reloads builds the package's entity index and its content
+        fingerprint, which is work a metadata read would not otherwise do.
+        After that a read is two row counts and never waits on a sync, so
+        polling is cheap.
       properties:
         status:
           type: string
@@ -3538,12 +3612,27 @@ components:
             - cooldown
             - too-many-entities
           description: >-
-            `indexing` = at least one current entity has no usable vector yet.
-            Retrieval answers lexically meanwhile. This clears once a
-            `get_context` question triggers a sync, which is what builds
-            the index; it does not clear on its own for a package nothing has
-            queried. `ready` = every entity the package exposes has a vector
-            under the current model and the cache is serving semantic ranking.
+            `ready` = the index is warm, so the next `get_context` question
+            about this package is ranked semantically rather than lexically.
+            (It is a statement about the index, not a promise about the next
+            response: a question whose own query embedding fails still falls
+            back, reporting `retrieval_reason: provider-error`.) It is decided
+            by the same completed sync the search path gates on, not by
+            whether cached rows happen to cover the current entity names.
+            Those two differ exactly where it matters - the rows outlive a
+            restart and a reload, so a coverage test called an index warm
+            while the next question was still answered lexically.
+            `indexing` = no completed sync covers the package's current
+            content under the current model, so retrieval answers lexically
+            meanwhile. A reload whose files did not change stays `ready`,
+            because the vectors still describe that content. Four things move
+            a package to `indexing`: an edit, a new package, a changed
+            `EMBEDDING_MODEL`, and a server restart - the sync is recorded in
+            memory, so a restart reports `indexing` until the first question
+            re-establishes it, even though the vectors are still on disk. It
+            clears when a `get_context` question triggers a sync, which is
+            what builds the index; a package nothing has ever queried does not
+            warm on its own.
             `cooldown` = the provider failed recently, so the semantic path is
             short-circuited for a window. `too-many-entities` = the package has
             more entities than the embedding cap, so it stays lexical
@@ -3555,18 +3644,26 @@ components:
             Cached vectors for this package under the current embedding model.
             An entity contributes one row for its name plus one per chunk of
             its documentation, so this exceeds `totalEntities` on a documented
-            model and is not a count of entities.
+            model and is not a count of entities. Scoped by model only, not by
+            vector length, so it counts what is cached rather than what a
+            search could read today: after a change to `EMBEDDING_DIMENSIONS`
+            that no question has probed yet, rows of the old length are still
+            counted here until the next search discards them. `status` is
+            already `indexing` in that window.
         totalEntities:
           type: integer
           description: Entities the package currently exposes to retrieval.
         embeddedEntities:
           type: integer
           description: >-
-            Of `totalEntities`, how many have at least one usable vector. The
-            two are equal exactly when `status` is `ready`. Reported because a
-            row count cannot show a model edit that removes two entities and
-            adds two others: the row total is unchanged while the new entities
-            have no vector at all.
+            Of `totalEntities`, how many have at least one usable vector.
+            Reported because a row count cannot show a model edit that removes
+            two entities and adds two others: the row total is unchanged while
+            the new entities have no vector at all. Coverage by identity, so
+            equality does NOT imply `ready`: an edit that rewrote every doc
+            without renaming anything leaves each entity holding its stale
+            name vector. Read `status` for readiness and this pair for how
+            much of the package is covered.
         lastSyncedAt:
           type: string
           format: date-time
@@ -4038,9 +4135,11 @@ components:
             code beside the compiled view of the same file without a second,
             differently-shaped fetch. Named `sourceText`, not `source`, because
             `sources` on this same object are the model's Malloy sources.
-            Optional twice over: absent from servers that predate it, and
-            omitted (with a server-side warning) when the file cannot be read,
-            so a compiled model is never withheld for want of its text.
+            Optional: absent from servers that predate it; omitted (with a
+            server-side warning) when the file cannot be read, so a compiled
+            model is never withheld for want of its text; and omitted when the
+            file text names a source it does not publish, on a package with a
+            surface. A dashboard's text is always returned.
 
     View:
       type: object
@@ -4460,7 +4559,8 @@ components:
           type: string
           description:
             JSON string containing QueryInfo object for the query in this cell
-            (if the cell contains a query)
+            (if the cell contains a query). On a package with a surface, left out
+            for a cell whose query reads a source the notebook may not read.
 
     NotebookCellResult:
       type: object
@@ -5574,6 +5674,18 @@ components:
             grow. Callers must treat an unrecognized value as absent.
 
             Known values: TABLE_NOT_FOUND.
+        problems:
+          type: array
+          description: |
+            Present on the 400 answering ad-hoc query text that does not
+            compile: the compiler's problems, in the shape `/compile` returns.
+            Each `at.range` is located in the submitted `query` text, with
+            0-based lines and characters; `at.url` is omitted, since the text
+            has no document of its own. A problem produced by something the
+            server added to the text (an injected source filter) carries no
+            location.
+          items:
+            $ref: "#/components/schemas/CompileProblem"
       required:
         - message
 
@@ -5660,22 +5772,39 @@ components:
           type: string
           enum: ["append", "file", "package"]
           default: append
-          description:
+          description: >
             What the source means, and how far the check reaches. "append"
-            (default, the historical behavior) appends the source to the model
-            in the URL and compiles it in that namespace — right for NEW
-            definitions; an edit to an existing definition collides ("Cannot
-            redefine"), and diagnostic positions land in the concatenated
-            virtual file. "file" compiles the source AS that model, replacing
-            its on-disk content for the check — validates an edit before
-            saving, at true file coordinates. "package" runs the same worker
-            compiler and file selection as reload over every .malloy and
-            .malloynb file, without swapping the result into the served
-            package; with a source, importers compile against the replacement.
-            Package diagnostics can name files hidden from discovery. No rows
-            or SQL are returned, and caller-provided source remains subject to
-            authorize gates. includeSql is not available at "package". An
-            invalid value is rejected with a 400 naming the valid set.
+            (default) appends the source to the model in the URL and compiles
+            it in that namespace — right for NEW definitions; an edit to an
+            existing definition collides ("Cannot redefine"), and diagnostic
+            positions land in the concatenated virtual file. "file" compiles
+            the source AS that model, replacing its on-disk content for the
+            check — validates an edit before saving, at true file coordinates.
+            "package" runs the same worker compiler and file selection as
+            reload over every .malloy and .malloynb file, without swapping the
+            result into the served package; with a source, importers compile
+            against the replacement. Package diagnostics can name files hidden
+            from discovery. No rows or SQL are returned, and caller-provided
+            source remains subject to authorize gates. includeSql is not
+            available at "package".
+
+            "append" text is checked against the model's PUBLISHED surface, so
+            it may not declare its own data roots: import, connection.table(…),
+            connection.sql(…), given:, ##! compiler flags and the raw-SQL
+            function forms (name!type(…), sql_number, sql_string and the rest
+            of that family) are refused with a 400. Those belong in a model
+            file, so validate text declaring them at "file" or "package", which
+            are not restricted. "append" text must also stand alone as
+            top-level Malloy: a bare view:, dimension: or measure:, and anything
+            that only parses as a continuation of the model's last statement,
+            is refused with a 400, because the check reads the submitted text by
+            itself. Wrap a view body in a top-level query:, or a field in a
+            throwaway source: check is <source> extend { … }. Compiling at
+            "append" also requires the model named in the URL to load: a model
+            that does not compile is a 400 carrying that model's own problems,
+            and a model that does not exist is a 400 that deliberately says only
+            that it could not be loaded. An invalid scope value is rejected with
+            a 400 naming the valid set.
         includeSql:
           type: boolean
           default: false
@@ -6112,6 +6241,28 @@ components:
             The given names this term reads, in first-seen order. A reader must
             bind these for the term to apply; binding none applies each given's
             declared default, as a live query would.
+    JoinedTerms:
+      type: object
+      required: [alias, source, terms]
+      description: >-
+        A join to a given-scoped source, declared on a persisted source and read
+        per caller through the joined source's own artifact.
+      properties:
+        alias:
+          type: string
+          description: >-
+            The join's alias as the author wrote it. Dotted for a join reached
+            through another such join (`grant.team`).
+        source:
+          type: string
+          description: The joined source's name — itself a persisted source.
+        terms:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrippedTerm"
+          description: >-
+            The joined source's own stripped terms, which its binding re-applies
+            with the caller's values.
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
@@ -6216,6 +6367,25 @@ components:
             reader has to bind for it to be served correctly. The publisher's own
             serve path re-derives these from the compiled model rather than from
             here.
+        joinedTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/JoinedTerms"
+          description: >-
+            The joins declared on this source whose TARGET is scoped by a given —
+            one entry per such join, naming the joined source and the terms its
+            own artifact re-applies. Absent or empty means no field of this source
+            reads a caller-scoped join.
+
+
+            These terms are not stripped from THIS artifact: a join is not part of
+            a persist source's build, so this table holds the same rows with or
+            without it. They are what makes a field reading through the join
+            answer per caller (a visibility dimension that null-checks a grant
+            table, say), and they are applied only by the joined source's own
+            binding. So a reader serving this artifact must bind the joined source
+            too; without it, the join cannot be re-emitted and any query reading
+            through the alias must be served live.
         refresh:
           type: ["string", "null"]
           description: >-
@@ -6780,6 +6950,15 @@ components:
             failure. A consumer computes the same destination key a successful
             build would (`storageDestinationName ?? connectionName`) whether the
             source built or failed.
+        refused:
+          type: boolean
+          description: >-
+            True when the materialization-eligibility gate refused this source,
+            so the build was never attempted and `reason` is the gate's message.
+            A refusal is a property of the model, not of the run: retrying
+            returns the same answer until the model changes, unlike a warehouse
+            or compile failure, which may clear on its own. Absent for every
+            other failure.
 
     ManifestEntry:
       type: object

@@ -288,6 +288,11 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
     # so a dirty model repo read clean and the pin silently stopped pinning.
     path = path.resolve()
     scope = scope.resolve() if scope is not None else None
+    if scope is not None and not scope.exists():
+        # `git status -- <missing path>` exits 0 with empty output, so a typo
+        # (`pgk`) or a doubled path (`--model-repo repo/pkg --model-dir pkg`)
+        # read as a clean model. No pin is the honest answer here too.
+        return None
     try:
         d = path if path.is_dir() else path.parent
         head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"],
@@ -298,9 +303,27 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
         if scope is not None:
             cmd += ["--", str(scope)]
         dirty = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if dirty.returncode != 0:
+            # A scope outside the repo makes git exit 128 with empty stdout,
+            # which read as "clean" and dropped the marker on a dirty model.
+            # No pin beats a wrong one: the schema says absent is honest.
+            return None
         return head.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:  # noqa: BLE001
         return None
+
+
+def model_scope(repo: pathlib.Path | None, model_dir: pathlib.Path | None
+                ) -> pathlib.Path | None:
+    """The path the -dirty marker is decided over. A relative --model-dir is
+    resolved against --model-repo, not the working directory: given from
+    anywhere but the repo root it pointed outside the repo, git status exited
+    128 with empty stdout, and a dirty model pinned as clean."""
+    if repo is None:
+        return None
+    if model_dir is None:
+        return repo
+    return model_dir if model_dir.is_absolute() else repo / model_dir
 
 
 # --- Run naming --------------------------------------------------------------
@@ -352,6 +375,18 @@ def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
     while n in used:
         n += 1
     return f"{stem}-{n:02d}"
+
+
+def imply_flags(a: argparse.Namespace) -> argparse.Namespace:
+    """`--rejudge` is `--rebuild`'s answer half plus a fresh judge, so it sets
+    `rebuild`. Without this, `--rejudge` alone reached every `if a.rebuild`
+    gate as a fresh run: it spawned a new answerer per case ($0.33 each) against
+    the flag's own help text, and with `--only` it took the ledger's full-write
+    path and left a 12-case run holding one case. `--from` already set both;
+    this makes the bare flag mean what it says."""
+    if getattr(a, "rejudge", False):
+        a.rebuild = True
+    return a
 
 
 def existing_run_refusal(out: pathlib.Path) -> str | None:
@@ -465,6 +500,54 @@ def format_rows(rows: list[dict], limit: int = 60) -> str:
     return "\n".join(out)
 
 
+# A tool result too large for the model's context is not returned inline: the
+# host writes it to a file and hands back a notice naming the path. The
+# ANSWERER is unaffected -- it reads the file and carries on -- but the notice
+# is not JSON, so this module parsed nothing and recorded an empty entity list.
+# An empty list is not "nothing came back"; it scores as a total retrieval miss
+# on a call that returned a full response, and a run then reports a recall it
+# did not measure. Seen twice in one arm: 86.4% printed against 95% actual, and
+# diagnose went on to explain the phantom miss with an index-readiness story
+# that was not true.
+# One note, one regex, one reader. The CLI names the file it spilled a result
+# to in two spellings ("<persisted-output> ... Full output saved to: <path>" and
+# "Output has been saved to <path>.txt."), sometimes with a colon, sometimes
+# with a trailing period. Two regexes and two readers for this one concept
+# handled those differently, and a rebuild after the CLI's temporary file was
+# gone matched one, missed the other, and scored the call as zero entities.
+# Only the CLI's own note counts, in either of its spellings, and only a
+# .json or .txt path: a looser "saved to|written to" also matched a source doc
+# that said "nightly extract is written to /etc/hosts" inside an ordinary JSON
+# result, replaced the result with that file, and scored the call as zero.
+SAVED_TO = re.compile(
+    r"(?:<persisted-output>.*?Full output saved to|Output has been saved to):?"
+    r"\s+(/[^\s'\"]+?\.(?:json|txt))\.?(?=\s|$)", re.S)
+
+
+def saved_result(text: str) -> tuple[pathlib.Path | None, str | None]:
+    """(path, body) for a result the host spilled to a file.
+
+    (None, None) when the text names no file; (path, None) when it names one
+    that cannot be read, which is the ordinary state of a rebuild since the
+    CLI's tool-results/ files are temporary; (path, body) when it can. Only
+    ever reads a path the host itself named in the result it returned.
+    """
+    m = SAVED_TO.search(text or "")
+    if not m:
+        return None, None
+    path = pathlib.Path(m.group(1))
+    try:
+        return path, path.read_text()
+    except OSError:
+        return path, None
+
+
+def offloaded_json(text: str) -> dict[str, Any] | None:
+    """The response body a host spilled to a file, read back, or None."""
+    _, body = saved_result(text)
+    return resource_json(body) if body is not None else None
+
+
 def resource_json(text: str) -> dict[str, Any] | None:
     """The machine-readable part of a tool result. Publisher wraps it in a
     '[Resource from publisher at ...]' preamble; a hosted MCP may return
@@ -568,6 +651,41 @@ def path_breaches(events: list[dict[str, Any]],
 
 
 def result_text(block: dict[str, Any]) -> str:
+    """The text of one tool_result block, with a spilled result read back.
+
+    Above a size the CLI decides, a tool result reaches the answerer as a note
+    naming a file plus a 2 KB preview. Measured on the first arm against a real
+    model, 14 of 74 get_context results (53 to 70 KB each) arrived that way and
+    the answerer followed the path with Read every time. Reading the note as
+    the payload scored those calls as zero entities delivered. When the file is
+    still there its content is the result; when it is gone (the CLI's
+    tool-results/ files are temporary, so a later rebuild always lands here)
+    the note comes back unchanged and the caller records the call as
+    unmeasured through `saved_result`, never as zero. Text that already parses
+    as a result is returned as it is, whatever paths it mentions.
+    """
+    text = _raw_result_text(block)
+    if resource_json(text) is not None:
+        # Already a result. A note naming a file is looked for only when the
+        # text is not one, so a doc string that mentions a real path inside a
+        # JSON result is never read in its place.
+        return text
+    _, body = saved_result(text)
+    if body is None:
+        return text
+    try:
+        blocks = json.loads(body)
+    except json.JSONDecodeError:
+        return body
+    if isinstance(blocks, list):
+        return "\n".join(b.get("text", "") for b in blocks
+                         if isinstance(b, dict) and b.get("type") == "text")
+    if isinstance(blocks, dict) and blocks.get("type") == "text":
+        return blocks.get("text", "")
+    return body
+
+
+def _raw_result_text(block: dict[str, Any]) -> str:
     c = block.get("content")
     if isinstance(c, str):
         return c
@@ -914,6 +1032,52 @@ def resolve_target_version(scope: str | None, target_version: str | None
     return _strip_v(target_version, "--target-version")
 
 
+def measure_coverage(a: argparse.Namespace) -> str | None:
+    """Run check_coverage.py for this model version, into the run directory.
+
+    Coverage is the first of the four things a run reports -- can the model
+    express an answer at all, did retrieval deliver it, did the agent get it
+    right, what did it cost -- and the only one that says whether a failure
+    was ever winnable. A run that skips it cannot tell a model gap from a
+    retrieval miss from a bad answer, so it is measured rather than left to a
+    follow-up command nobody runs.
+
+    It reads the MODEL through the REST API, not the answers and not a local
+    checkout, so it needs no `--model-repo` and is valid for every arm against
+    this model version: keep the file and pass `--coverage` next time.
+
+    A failure here does not stop the arm. Coverage is one rung of the report,
+    and losing it is worth saying loudly and continuing; killing a run over a
+    side measurement would cost the answerers instead.
+    """
+    out = a.out / "coverage.json"
+    script = (pathlib.Path(__file__).resolve().parent.parent.parent
+              / "eval-answer" / "scripts" / "check_coverage.py")
+    cmd = [sys.executable, str(script), "--set", str(a.set_dir),
+           "--publisher", a.publisher, "--environment", a.environment,
+           "--package", a.package, "--out", str(out),
+           "--parallel", str(a.parallel)]
+    # `--only` narrows the arm, so it must narrow this too: without it a
+    # one-case re-run paid a claude -p call for every case in the set.
+    if a.only:
+        cmd += ["--only", a.only]
+    print("measuring coverage: can the model express each answer at all "
+          "(reads the model; no answerer, no judge, no warehouse)", flush=True)
+    try:
+        r = subprocess.run(cmd, timeout=a.timeout * 2)
+    except Exception as e:  # noqa: BLE001 -- any failure is the same call here
+        print(f"  ! coverage not measured ({e}); the covered? rung will be "
+              f"blank and no failure can be attributed to a model gap",
+              flush=True)
+        return None
+    if r.returncode != 0 or not out.exists():
+        print("  ! coverage not measured (check_coverage.py exited "
+              f"{r.returncode}); the covered? rung will be blank and no "
+              "failure can be attributed to a model gap", flush=True)
+        return None
+    return str(out)
+
+
 def run_retrieval_gate(a: argparse.Namespace) -> str:
     """Hold the arm until retrieval is steady, and say what happened.
 
@@ -1110,7 +1274,50 @@ _FENCE = re.compile(r"```(?:malloy)?\s*\n(.*?)```", re.S | re.I)
 
 
 def _norm(q: str) -> str:
-    return " ".join((q or "").split())
+    """One spelling for one query. Malloy takes a newline OR a semicolon
+    between clauses; the executed query (one line in the tool call) carries
+    semicolons and the block the answer prints carries newlines, so the two
+    never compared equal and `declared` never fired -- the harness fell through
+    to `last_ok` and re-executed a probe. On one acceptance arm that read a
+    model edit as a regression: the answer led with the filtered figure and
+    the harness graded the unfiltered probe it ran afterwards.
+
+    Only a `;` outside a string literal is a clause separator, and the lexer's
+    other two rules are honoured too: inside a string a backslash escapes the
+    next character (`'O\\'Brien'` does not end at the escaped quote), and
+    outside one `--` or `//` starts a comment that runs to the end of the line
+    (an apostrophe in it opens no string). Without those, an escaped quote or a
+    comment apostrophe made the printed form and the executed form normalise
+    differently, and the harness graded the probe query instead."""
+    out: list[str] = []
+    quote: str | None = None
+    q = q or ""
+    i, n = 0, len(q)
+    while i < n:
+        ch = q[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(q[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif q.startswith("--", i) or q.startswith("//", i):
+            j = q.find("\n", i)
+            j = n if j < 0 else j
+            out.append(q[i:j])
+            i = j
+            continue
+        elif ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+        elif ch == ";":
+            out.append(" ")
+        else:
+            out.append(ch)
+        i += 1
+    return " ".join("".join(out).split())
 
 
 def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
@@ -1169,6 +1376,26 @@ def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
     return queries[-1], "last", _model_path_of(queries[-1], runs)
 
 
+def store_events(path: pathlib.Path, events: list[dict[str, Any]],
+                 replaced_qids: set[str] | None = None) -> None:
+    """Write the arm's ledger, or splice a narrowed rebuild into it.
+
+    `--rebuild --only <qid>` re-derives the named cases and nothing else, and
+    it used to write `events.jsonl` from scratch: a 29-case arm became a
+    one-case arm after re-judging one case, its other 28 attempts and scores
+    gone (the artifacts stayed, which is how it was recovered). Downstream
+    nothing said so -- `flip_table --calibration` printed "0 flips over 1
+    cases" and `diagnose.py` found "no diagnosable failures". A narrowed
+    rebuild now replaces the named cases' lines and keeps the rest; a full
+    write (`replaced_qids` None) is unchanged.
+    """
+    if replaced_qids is None:
+        ledger.write_events(path, events)
+        return
+    ledger.replace_events(path, keep=lambda e: e.get("qid") not in replaced_qids,
+                          new=events)
+
+
 def retrieval_summary(attempts: Iterable[dict[str, Any]]
                       ) -> tuple[str, dict[str, int]]:
     """Which retriever answered this run's get_context calls, and the tally.
@@ -1225,7 +1452,15 @@ def cascade_lines(c: dict | None) -> list[str]:
         return []
     covered = (c["total"] - c["not covered"] - c["unmeasured"]
                - c["no entities named"])
-    retrieved = covered - c["not retrieved"]
+    # Retrieval does NOT inherit coverage's denominator, and it must not be
+    # derived from the funnel either. `cascade()` is an elif chain: a row whose
+    # coverage was never measured stops at the first rung, so `not retrieved` is
+    # structurally 0 whenever coverage did not run, and computing the rung from
+    # it reports every retrieval as a success. `recall_scored` / `recall_short`
+    # are tallied outside the chain, over the rows whose recall was actually
+    # computed, which is what this rung is supposed to say.
+    retrieved = c.get("recall_scored", 0) - c.get("recall_short", 0)
+    not_retrieved = c.get("recall_short", 0)
     # A pass that stops on an earlier rung is reported there. Otherwise the
     # last rung reads as the pass count and disagrees with the headline.
     anyway = lambda n: f"; {n} answered correctly anyway" if n else ""
@@ -1245,7 +1480,7 @@ def cascade_lines(c: dict | None) -> list[str]:
     lines = [f"  cascade       {c['total']} cases",
              f"    covered?      {covered} yes, {c['not covered']} no (model "
              f"gap{anyway(c.get('passed_not_covered', 0))})" + covered_tail,
-             f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
+             f"    retrieved?    {retrieved} yes, {not_retrieved} no "
              f"(the entity exists and did not come back: the docs, or the "
              f"search wording; diagnose decides"
              f"{anyway(c.get('passed_not_retrieved', 0))})",
@@ -1875,6 +2110,29 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     calls.append({**info, "error": text[:300] if failed else None,
                                   "rankedSummary": None})
                 else:
+                    if failed:
+                        # The call errored (an answerer that left out `scopes`
+                        # gets an MCP validation error). That is no ranking at
+                        # all, not a ranking of zero: recorded like a spilled
+                        # file that cannot be read, with no summary, so the
+                        # retrieval score never counts it as a search that
+                        # found nothing.
+                        calls.append({**info, "error": text[:300],
+                                      "rankedSummary": None})
+                        continue
+                    # The host may have spilled the body to a file. Read it
+                    # back rather than scoring the notice as an empty response.
+                    if payload is None:
+                        payload = offloaded_json(text)
+                    if payload is None and saved_result(text)[0] is not None:
+                        # Named a file we could not read (a rebuild after the
+                        # CLI's temporary file is gone). Record NO summary
+                        # rather than an empty one: unmeasured is the truth,
+                        # and a zero here is a miss the run did not observe.
+                        calls.append({**info,
+                                      "error": text[:300] if failed else None,
+                                      "rankedSummary": None})
+                        continue
                     ids = entity_ids(payload or {})
                     # Which retriever answered, from the response that answered
                     # it: "semantic", "lexical" when the embedding path is down,
@@ -2589,10 +2847,21 @@ def main(argv: list[str] | None = None) -> int:
                     help="model within the package; defaults to set.json targetModelPath")
     ap.add_argument("--model-repo", default=None, type=pathlib.Path,
                     help="the git checkout the MODEL is versioned in, recorded "
-                         "as modelGitSha (dirty-marked over this path). The "
+                         "as modelGitSha (dirty-marked over --model-dir, or over "
+                         "this whole path without it). The "
                          "Publisher serves a copy under publisher_data/, so "
                          "there is no way to infer it; without this the run "
                          "carries modelSha, the content pin, and no git pin")
+    ap.add_argument("--model-dir", default=None, type=pathlib.Path,
+                    help="the package directory inside --model-repo the answerer "
+                         "was served from. The -dirty marker on modelGitSha is "
+                         "decided over this path, so an unrelated untracked file "
+                         "elsewhere in the repo (a scratch notebook, a run "
+                         "directory) does not stamp a clean model dirty. A "
+                         "relative path is taken from --model-repo (not from the "
+                         "working directory, unlike diagnose.py's --model-dir); "
+                         "a path that does not exist records no pin. Recorded as "
+                         "modelDir; defaults to the whole repo")
     ap.add_argument("--skills-root", default=None,
                     help="a checkout holding skills/ and manifests/ to load the "
                          "answerer's and judge's doctrine from -- a Publisher "
@@ -2645,6 +2914,11 @@ def main(argv: list[str] | None = None) -> int:
                          "in retrieval attribution, and run.json records which "
                          "report was read. Without it an unlabelled case is "
                          "attributed to nobody, not to the model")
+    ap.add_argument("--no-coverage", action="store_true",
+                    help="skip measuring coverage. The covered? rung goes "
+                         "blank and no failure can be attributed to a model "
+                         "gap, so a low score cannot be told from an "
+                         "unanswerable set")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -2663,9 +2937,10 @@ def main(argv: list[str] | None = None) -> int:
                          "delete events.jsonl, find -name judge.md -delete) was "
                          "done three times on one set")
     ap.add_argument("--rejudge", action="store_true",
-                    help="with --rebuild: reuse the answers but score them "
-                         "again, for a judge or rubric change")
+                    help="reuse the saved answers but score them again, for a "
+                         "judge or rubric change. Implies --rebuild")
     a = ap.parse_args(argv)
+    imply_flags(a)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
     a.hosted_tools = hosted_tools(
@@ -3025,15 +3300,28 @@ def main(argv: list[str] | None = None) -> int:
 
     retrieval_gate = run_retrieval_gate(a)
 
-    # Coverage is a read of the MODEL and costs a judge call per case, so the
-    # run does not measure it; it consumes a report made separately and says
-    # which one. A path that does not exist is refused here, not discovered as
-    # a traceback after the answerers have been paid for.
+    # Coverage is one of the four things a run measures -- whether the model
+    # can express an answer AT ALL, before any question of whether retrieval
+    # found it or the agent got it right. A model that cannot express an answer
+    # cannot succeed at it, so a run without coverage cannot say whether a
+    # failure was ever winnable. It is measured by default for that reason.
+    #
+    # It reads the MODEL, not the answers, so it is the same for every arm
+    # against one model version: pass `--coverage` to reuse a report you
+    # already have, and it is used as given. Otherwise the run measures it
+    # once, here, before the answerers are paid for -- a `claude -p` per case
+    # with no warehouse, no judge and no answerer. `--no-coverage` skips it.
     if a.coverage and not pathlib.Path(a.coverage).exists():
         raise SystemExit(
             f"--coverage {a.coverage} does not exist. It should be a "
             f"check_coverage.py --out report for the model version this run "
             f"answers from.")
+    # `--rejudge` re-scores saved answers and calls no answerer, so it must
+    # not re-measure coverage either; it does not set `rebuild` (only
+    # `--from` does), so it needs naming here.
+    if not a.coverage and not a.no_coverage and not a.rebuild \
+            and not getattr(a, 'rejudge', False):
+        a.coverage = measure_coverage(a)
     coverage_report = coverage_report_summary(a.coverage) if a.coverage else None
 
     # BEFORE the fresh run.json overwrites it: a rebuild reuses saved verdicts
@@ -3087,7 +3375,8 @@ def main(argv: list[str] | None = None) -> int:
         # those bytes are versioned, and it is absent rather than wrong when
         # nobody said where that is.
         modelRepo=str(a.model_repo) if a.model_repo else None,
-        modelGitSha=(git_sha(a.model_repo, scope=a.model_repo)
+        modelDir=str(a.model_dir) if a.model_dir else None,
+        modelGitSha=(git_sha(a.model_repo, scope=model_scope(a.model_repo, a.model_dir))
                      if a.model_repo else None),
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),
@@ -3278,7 +3567,8 @@ def main(argv: list[str] | None = None) -> int:
                           must_not_use_hits=mnu["hits"] or None,
                           artifactPath=f"artifacts/{qid}/judge.md"))
 
-    ledger.write_events(a.out / "events.jsonl", events)
+    store_events(a.out / "events.jsonl", events,
+                 {c["qid"] for c in cases} if (a.rebuild and a.only) else None)
 
     # near_match is neither a pass nor a fail: see flip_table.py. Reported on
     # its own line, because a set whose near_match count is climbing has rubrics

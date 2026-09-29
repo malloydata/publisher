@@ -87,7 +87,9 @@ READ_ONLY = (*NO_EDITS, *NO_SHELL)
 # the first column. Parsed, never copied: a hardcoded list silently stops
 # matching the day someone edits the skill, and then the checker passes
 # vocabulary the skill no longer defines.
-CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z-]+)`\s*\|", re.M)
+# `A-Z_-`: RULE_UNWRITTEN carries an underscore, and a class of code the
+# regex cannot see is a code the validator silently rejects.
+CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z_-]+)`\s*\|", re.M)
 COMPONENTS = ("dataset", "agent-call", "get_context/model",
               "get_context/retrieval", "construction", "model-definition")
 OWNERS = ("model", "retrieval", "agent-skill", "dataset")
@@ -704,7 +706,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run", required=True, type=pathlib.Path)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
     ap.add_argument("--model-dir", type=pathlib.Path, default=None,
-                    help="the Malloy package under test; the agent's cwd")
+                    help="the Malloy package under test; the agent's cwd. A "
+                         "relative path is taken from the working directory "
+                         "(run_baseline's --model-dir is relative to its "
+                         "--model-repo instead)")
     # The split is cheap-on-per-case, expensive-on-clustering, and one measured
     # run says it is the wrong way round: every failure in it came from per-case
     # work (wrong output shape, a probe at the wrong grain) while the clustering

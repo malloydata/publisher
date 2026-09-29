@@ -30,6 +30,7 @@ import { GivenValue } from "../../hooks/givenValue";
 import {
    decodeAtLeast,
    decodeBetween,
+   decodeBooleanFilter,
    decodeDayRange,
    decodeFilterList,
    decodeTimePreset,
@@ -676,6 +677,31 @@ export function GivenInput({
       );
    }
 
+   // A `filter<boolean>` gets a dropdown of its two values. Unset and the empty
+   // filter both mean no filtering; any other spelling (`=false`, `not true`,
+   // `null`) falls through to the text box, where it stays as written.
+   if (filterInnerType(type) === "boolean") {
+      const picked =
+         typeof value === "string" ? decodeBooleanFilter(value) : undefined;
+      if (
+         value === undefined ||
+         value === null ||
+         value === "" ||
+         picked !== undefined
+      ) {
+         return (
+            <BooleanFilterControl
+               label={label}
+               picked={picked}
+               emptyOverride={value === ""}
+               onChange={onChange}
+               helperNode={helperNode}
+               defaultDisplay={defaultDisplay}
+            />
+         );
+      }
+   }
+
    if (type === "boolean") {
       // Three states for a boolean. When unset, reflect the model DEFAULT so the
       // box shows what the query will actually run with (not a misleading
@@ -875,6 +901,79 @@ function ClearAdornment({ onClear }: { onClear: () => void }) {
             <ClearIcon fontSize="small" />
          </IconButton>
       </InputAdornment>
+   );
+}
+
+const ANY_BOOLEAN = "__any__";
+
+/**
+ * A dropdown of `true` and `false` for a `filter<boolean>` given.
+ *
+ * Unset shows the model's own default, the way every other control does, and
+ * picks nothing. An explicit `""` (the empty filter, which a URL can carry) is
+ * shown as "Any" and offered only while it is in force: the gesture for "no
+ * filter" is the ×, which reverts to the model default, as in the time-range
+ * control.
+ */
+function BooleanFilterControl({
+   label,
+   picked,
+   emptyOverride,
+   onChange,
+   helperNode,
+   defaultDisplay,
+}: {
+   label: string;
+   picked: "true" | "false" | undefined;
+   emptyOverride: boolean;
+   onChange: (next: GivenValue) => void;
+   helperNode: ReactNode;
+   defaultDisplay: string | undefined;
+}) {
+   const selected = picked ?? (emptyOverride ? ANY_BOOLEAN : "");
+   const isOverridden = selected !== "";
+   return (
+      <Box data-testid="boolean-filter">
+         <TextField
+            select
+            label={label}
+            value={selected}
+            size="small"
+            fullWidth
+            helperText={helperNode}
+            slotProps={{
+               select: {
+                  displayEmpty: true,
+                  renderValue: (v) =>
+                     v === "true" || v === "false"
+                        ? v
+                        : v === ANY_BOOLEAN
+                          ? "Any"
+                          : defaultDisplay || "Any",
+               },
+               input: {
+                  endAdornment: isOverridden ? (
+                     <IconButton
+                        size="small"
+                        aria-label="clear value"
+                        onClick={() => onChange(null)}
+                        sx={{ mr: 2 }}
+                     >
+                        <ClearIcon fontSize="small" />
+                     </IconButton>
+                  ) : undefined,
+               },
+            }}
+            onChange={(e) => {
+               // "Any" is only listed while it is already in force.
+               if (e.target.value !== ANY_BOOLEAN) onChange(e.target.value);
+            }}
+         >
+            {emptyOverride && <MenuItem value={ANY_BOOLEAN}>Any</MenuItem>}
+            <MenuItem value="true">true</MenuItem>
+            <MenuItem value="false">false</MenuItem>
+         </TextField>
+      </Box>
    );
 }
 

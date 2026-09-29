@@ -29,6 +29,7 @@ import {
    isActiveStatus,
    isTerminalStatus,
    parseMetadata,
+   sourcesSummary,
    statusColor,
    statusLabel,
 } from "./utils";
@@ -124,7 +125,7 @@ function MaterializationRow({
    const meta = parseMetadata(materialization);
    const sourcesLabel =
       meta.sourcesBuilt !== undefined || meta.sourcesReused !== undefined
-         ? `${meta.sourcesBuilt ?? 0} built, ${meta.sourcesReused ?? 0} reused`
+         ? sourcesSummary(meta, ", ")
          : "-";
    const active = isActiveStatus(materialization.status);
    const terminal = isTerminalStatus(materialization.status);

@@ -14,6 +14,7 @@ import {
    NotImplementedError,
    NotQueryableError,
    PayloadTooLargeError,
+   QueryCompileError,
    ResponseUnserializableError,
    QueryTimeoutError,
    ServiceUnavailableError,
@@ -58,6 +59,49 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({
          code: 404,
          message: 'No queryable source "hidden".',
+      });
+   });
+
+   it("maps QueryCompileError to 400 carrying its problems, without the document URL", () => {
+      const range = {
+         start: { line: 1, character: 28 },
+         end: { line: 1, character: 35 },
+      };
+      const { status, json } = internalErrorToHttpError(
+         new QueryCompileError("line 2:29 Unknown function 'coutn'.", [
+            {
+               message: "Unknown function 'coutn'.",
+               severity: "error",
+               code: "function-not-found",
+               data: null,
+               at: { url: "internal://query/0f1e", range },
+            },
+            // A problem with no location (one the server's own addition to
+            // the text produced) keeps its message and gains no `at`.
+            {
+               message: "'org_id' is not defined",
+               severity: "error",
+               code: "field-not-found",
+            },
+         ]),
+      );
+      expect(status).toBe(400);
+      expect(json).toEqual({
+         code: 400,
+         message: "line 2:29 Unknown function 'coutn'.",
+         problems: [
+            {
+               message: "Unknown function 'coutn'.",
+               severity: "error",
+               code: "function-not-found",
+               at: { range },
+            },
+            {
+               message: "'org_id' is not defined",
+               severity: "error",
+               code: "field-not-found",
+            },
+         ],
       });
    });
 

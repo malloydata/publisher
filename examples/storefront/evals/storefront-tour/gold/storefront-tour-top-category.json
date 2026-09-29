@@ -1,0 +1,22 @@
+{
+ "qid": "storefront-tour-top-category",
+ "truthQuery": "run: t_order_items extend { join_one: t_products on product_id = t_products.product_id } -> { group_by: category is t_products.category; aggregate: revenue is sale_price.sum(); order_by: revenue desc; limit: 1 }",
+ "verifyQuery": "run: t_order_items extend { join_one: t_products on product_id = t_products.product_id } -> { where: t_products.category = 'Outerwear'; aggregate: revenue is sale_price.sum() }",
+ "truthRows": [
+  {
+   "category": "Outerwear",
+   "revenue": 464861.08000000793
+  }
+ ],
+ "verifyRows": [
+  {
+   "revenue": 464861.08000000793
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "464861.08000000793 vs 464861.08000000793"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

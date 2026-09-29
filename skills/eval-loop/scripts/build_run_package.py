@@ -122,13 +122,12 @@ def golden_display(g: dict[str, Any]) -> str:
 _IDENT = re.compile(r"(?<![A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_])")
 
 
-def _result_text(block: dict[str, Any]) -> str:
-    c = block.get("content")
-    if isinstance(c, str):
-        return c
-    if isinstance(c, list):
-        return "\n".join(x.get("text", "") for x in c if isinstance(x, dict))
-    return ""
+# The run viewer used to keep its own copy of the raw reader, so a get_context
+# result the CLI had spilled to a file showed the "<persisted-output>" note as
+# its detail and no result count. run_baseline.result_text reads the file back
+# when it is still there; when it is gone the note stays, and the summary the
+# ledger recorded (none, for an unmeasured call) is what the viewer shows.
+from run_baseline import result_text as _result_text  # noqa: E402  (same directory)
 
 
 def _payload(text: str) -> Any:
@@ -373,14 +372,21 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
 
             mine = tool_calls.get(kk, [])
             for i, t in enumerate(mine, 1):
-                rs = t.get("rankedSummary") or {}
-                eids = rs.get("entityIds") or []
+                # A get_context call with no rankedSummary was never measured:
+                # the CLI's saved result file was gone by the time of a rebuild,
+                # or the call errored. It used to show as n_returned 0, the same
+                # row a search that found nothing writes, and empty_calls
+                # counted it. n_returned stays empty and `unmeasured` says why.
+                rs = t.get("rankedSummary")
+                unmeasured = t.get("tool") == "get_context" and rs is None
+                eids = (rs or {}).get("entityIds") or []
                 calls.append({
                     "attempt_key": ak,
                     "run_id": run_id, "qid": qid, "sample": e.get("sample"),
                     "call_index": i, "tool": t.get("tool"),
                     "targets": t.get("targets"),
-                    "n_returned": len(eids),
+                    "n_returned": None if unmeasured else len(eids),
+                    "unmeasured": unmeasured,
                     "entity_ids": eids[:40],
                     "error": t.get("error"),
                     # Which retriever answered this call. Absent on a server
@@ -396,7 +402,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             retr.append({"attempt_key": ak, "run_id": run_id, **r})
 
             exp = case.get("expectedEntities") or {}
-            required = {e for g in groups(exp) for e in g}
+            required_groups = groups(exp)
+            required = {e for g in required_groups for e in g}
             acceptable = set(exp.get("acceptable") or []) | required
             got: dict[str, None] = {}
             mine_tokens: list[str] = []
@@ -412,11 +419,23 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             # named in returned source docs (from the ledger when the run
             # recorded them, else from the transcript walked above).
             tokens = {t for t in mine_tokens} | set(_IDENT.findall(docs))
-            for eid in sorted(required):
+            # ONE ROW PER GROUP, not per entity. `groups()` is the unit recall
+            # is scored in -- a `requiredAnyOf` group is satisfied by any one
+            # member -- and flattening it here made the app's badge disagree
+            # with the recall metric printed beside it: a case with one
+            # `required` plus a three-way alternative rendered four dots and
+            # read `2/4` in red on a case whose recall was 2 of 2. Nine of the
+            # storefront set's twelve cases carry such a group.
+            RANK = {"exact": 0, "alias": 1, "in_docs": 2, "missing": 3}
+            for g in sorted(required_groups, key=lambda g: sorted(g)[0]):
+                best = min(((delivery(e, set(got), tokens), e) for e in g),
+                           key=lambda p: RANK.get(p[0], 3))
+                status, eid = best
                 required_rows.append({
                     "attempt_key": ak, "run_id": run_id, "qid": qid,
-                    "entity_id": eid,
-                    "status": delivery(eid, set(got), tokens)})
+                    "entity_id": eid if len(g) == 1 else
+                                 f"{eid} (any of {len(g)})",
+                    "status": status})
 
             roles: list[tuple[str, str]] = []
             roles += [(eid, "required") for eid in sorted(required)]
@@ -499,7 +518,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "missing", "noise", "component", "owner", "where_to_fix", "why"])
     write_csv(data / "calls.csv", calls, [
         "attempt_key", "run_id", "qid", "sample", "call_index", "tool", "targets",
-        "n_returned", "entity_ids", "error", "retrieval_mode"])
+        "n_returned", "unmeasured", "entity_ids", "error", "retrieval_mode"])
     write_csv(data / "entities.csv", ents, [
         "run_id", "qid", "sample", "entity_id", "entity_kind", "entity_source",
         "entity_name", "role"])

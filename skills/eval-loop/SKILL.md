@@ -327,11 +327,19 @@ the run measure something other than what it names:
    first time somebody tidies up; the set, the run directory and the write-up
    belong in git beside the model.
 
-2. The server must be up with retrieval tracing on, so a call's ranked results
-   can be recovered afterwards (open-source Publisher: `PUBLISHER_MCP_TRACE=retrieval`).
-   Confirm a trace lookup is available (absent means tracing is off).
-   Refuse to start a scored run without it: failures without traces cannot be
-   attributed.
+2. The server must be up. Where your host offers retrieval tracing, turn it on
+   and confirm a trace lookup answers, so a call's ranked results can be
+   recovered afterwards.
+
+   **Open-source Publisher has none.** `PUBLISHER_MCP_TRACE=retrieval` is set by
+   `serve.py` and read by nothing: the trace store was written and never merged,
+   so there is no trace tool and `traceId` is null on every local attempt. This
+   does not block a scored run, because attribution never depended on it:
+   `rankedSummary` is copied onto the `tool_call` event at capture, precisely so
+   the evidence survives without a store. So do not refuse a local run for want
+   of tracing -- an earlier version of this rule did, and it refused every local
+   run there has ever been. Refuse one whose `tool_call` events carry no
+   `rankedSummary`, which is what attribution actually reads.
 
 3. Health-check: your host's status check until it reports serving, and inspect
    `loadErrors`. A dead database that still answers HTTP is an environment
@@ -499,6 +507,13 @@ conductor. Do not:
 
 - The model is the only thing improve edits. No question text, qids, or
   expected values in any name, doc, or comment.
+- **You are measuring a model, not reviewing this harness.** Read a script when
+  a number you have to report cannot be explained otherwise, and stop there. Do
+  not audit the scripts, propose fixes to them, or hand back tooling critique
+  in place of a result -- a run that ends in harness feedback has not answered
+  the question it was asked. A defect that changed a number gets one sentence
+  in the report; a defect that changed nothing gets one line in chat, once.
+  Fixing it is a different task, and the user starts it.
 - When the environment misbehaves, stop. Never diagnose a sick system. The
   harness is part of the environment: a known-broken measurement does not
   become quotable by being finished. Measured against this directive, an arm

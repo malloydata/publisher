@@ -290,6 +290,8 @@ export interface SerializedError {
    malloyProblems?: unknown[];
    /** Set when the error originated as `ModelCompilationError`. */
    isCompilationError?: boolean;
+   /** Set when the error originated as `PackageManifestError`. */
+   isManifestError?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────

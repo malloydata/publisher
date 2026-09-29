@@ -53,7 +53,8 @@ const SCHEMA_FETCH_COUNT_BUCKETS = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500];
  *
  * `policy_rejected` is kept out of the generic `error` bucket because it is the
  * author's problem, not the server's: the models compiled, and a gate refused
- * what they declared (today, an invalid `#@ persist` incremental declaration).
+ * what they declared (an invalid `#@ persist` incremental declaration), or the
+ * package's publisher.json cannot be used as written.
  */
 export type PackageLoadStatus =
    | "success"

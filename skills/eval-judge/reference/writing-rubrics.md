@@ -40,6 +40,14 @@ Rules that follow from this:
   must say "for the campaign as a whole". If it does not, the rubric must accept
   a correct figure at any stated grain (judge rule 11). A rubric that quietly
   assumes the golden's grain fails correct answers.
+- **Fix the cardinality in the question, or accept any prefix in the rubric.**
+  "The most", "the top ones", "most often" name no N; the truth query needs
+  one, so the golden fixes 10 or 20 or 25 and an answer that shows five
+  correct rows reads as missing fifteen. Measured over one 24-case set, that
+  class alone produced a `no_match`, a flip and two `near_match` verdicts on
+  answers whose rows were a correct prefix of the golden's. Either write the N
+  into the question, or mark the rubric `ACCEPT the first N of the golden's
+  order for any N of at least five`, and say which order the golden is in.
 - **A right value plus a missing `CREDITED` disclosure is a `match`.** Not a
   near match. Do not deduct for it.
 - **`DIVERGENT` is about definitions, not arithmetic.** A clause permitting a

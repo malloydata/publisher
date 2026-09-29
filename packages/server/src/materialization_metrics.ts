@@ -125,7 +125,7 @@ const runDuration = lazyHistogram(
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused'|'failed').",
+   "Persist sources processed by a materialization run. Labels: outcome ('built'|'reused'|'failed'|'refused'), mode ('auto'|'orchestrated').",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -262,8 +262,9 @@ const eligibilityRefusedCounter = lazyCounter(
 const serveShapeTierDropCounter = lazyCounter(
    "publisher_storage_serve_shape_tier_drop_total",
    "storage serve-shape compile escalations: a refinement tier failed to " +
-      "compile and the riskiest category was dropped. Label: tier (the failed " +
-      "tier index, 0=full).",
+      "compile and the riskiest category was dropped, or one or more lifted " +
+      "entry points failed to compile and were dropped alone. Label: tier (the " +
+      "failed tier index, 0=full; 'lifts' for dropped lifts).",
 );
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
@@ -313,13 +314,19 @@ export function recordMaterializationRun(
  * Record how many persist sources a run built vs. reused (carried forward
  * unchanged via skip-if-unchanged). Lets a dashboard show the reuse ratio,
  * the main lever on materialization cost.
+ *
+ * `refused` counts sources the eligibility gate refused. With
+ * `mode="orchestrated"` it should stay at zero, because a host that builds from
+ * the build plan never instructs a source the plan refused; a nonzero count
+ * there means the plan and the build's own gate disagreed about a source.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused" | "failed",
+   outcome: "built" | "reused" | "failed" | "refused",
    count: number,
+   mode: MaterializationMode,
 ): void {
    if (count <= 0) return;
-   sourcesCounter().add(count, { outcome });
+   sourcesCounter().add(count, { outcome, mode });
 }
 
 /**
@@ -493,8 +500,13 @@ export function recordEligibilityRefused(
  * did not compile, so the riskiest category was dropped and the shape retried.
  * A systematically-dropping source tells authors which refinements aren't
  * servable from storage.
+ *
+ * `"lifts"` records that one or more lifted entry points (derived sources
+ * carried onto the richest rung) did not compile and were dropped alone; it is
+ * recorded only when a lift was actually dropped, not when the probe with every
+ * lift failed and each was then kept.
  */
-export function recordServeShapeTierDrop(failedTier: number): void {
+export function recordServeShapeTierDrop(failedTier: number | "lifts"): void {
    serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
 }
 

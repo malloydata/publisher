@@ -136,7 +136,7 @@ record, and `verify_definitions.py` re-runs and compares it on every rebuild.
     "query": "run: order_items -> { aggregate: control is sale_price.sum() { where: status != 'Cancelled' } - inventory_items.cost.sum() { where: status != 'Cancelled' } }",
     "note": "excludes Cancelled, per status's own doc and units_sold"
   },
-  "cause": "CONVENTION"
+  "cause": "RULE_UNWRITTEN"
 }
 ```
 
@@ -160,7 +160,7 @@ Authoring a control is judgement, and the same rules as authoring a golden apply
 where two populations are both defensible from the docs, do not pick one --
 record the ambiguity in `note` and leave the record `unchecked`. `cause` is the
 `eval-diagnose` code the author expects a disagreement to mean (the cogs case is
-`CONVENTION`); it is carried onto the finding, not inferred.
+`RULE_UNWRITTEN`); it is carried onto the finding, not inferred.
 
 This is **validate what someone asserted**, not **find business-wrong definitions
 unaided**. It turns "I believe `total_gross_margin` should exclude cancelled

@@ -17,7 +17,7 @@ import {
 } from "../drill";
 import { GivensPanel } from "../given";
 import { Prose } from "../Prose";
-import { givensToRequest } from "../given/paramCodec";
+import { givensToParams, givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
@@ -189,6 +189,12 @@ export function Dashboard({
       [applied, declaredTypes],
    );
 
+   // The explorer's controls take the URL-string form, not the request form.
+   const exploreGivens = useMemo(
+      () => givensToParams(applied, declaredTypes),
+      [applied, declaredTypes],
+   );
+
    const { drill, drillMenu } = useDrill({
       onNavigate,
       onSelf,
@@ -350,6 +356,7 @@ export function Dashboard({
                   packageName={packageName}
                   {...(versionId === undefined ? {} : { versionId })}
                   modelPath={modelPath}
+                  givens={exploreGivens}
                   onClose={() => setExploring(undefined)}
                />
             </>

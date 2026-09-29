@@ -11,6 +11,8 @@ SPDX-License-Identifier: MIT
 
 > `Publisher.embed(selector, { src })` drops a package page into a host page as a sandboxed, auto-resizing iframe. Same-origin embeds authenticate with the browser's cookies; cross-origin embeds need a signed token.
 
+> **A cross-origin embed also needs the server to permit it.** Publisher sends `Content-Security-Policy: frame-ancestors 'self'` by default, so a page embedded from another origin is refused by the browser and renders blank -- with nothing logged server-side, which makes it look like a broken page rather than a policy. The deployment must set `PUBLISHER_FRAME_ANCESTORS` to the host page's origin (space-separated for several, or `*` to allow any). Check this first when an embed is blank: the browser console names `frame-ancestors`.
+
 ## The host-page pattern
 
 ```html

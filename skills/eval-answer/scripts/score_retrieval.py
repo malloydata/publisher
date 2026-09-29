@@ -96,8 +96,8 @@ from typing import Any
 # Delivered everything and still wrong. eval-diagnose attributes construction
 # "only after sufficiency": first establish that the docs said enough to use the
 # entity correctly. WRONG-PICK is the model's if the docs did not distinguish the
-# candidates, SCOPE is the model's if the rule was undocumented, CONVENTION is
-# the model's ("expose a named measure"). So this row names no owner. An earlier
+# candidates, SCOPE is the model's if the rule was undocumented, RULE_UNWRITTEN
+# is the model's ("write the rule down"). So this row names no owner. An earlier
 # version charged every such case to the agent, which is how a documentation gap
 # gets filed as a skills bug and never fixed.
 DELIVERED = ("construction", "undecided", "delivered, wrong")
@@ -130,9 +130,9 @@ UNATTRIBUTED = ("", "", "")
 # codes. The four must match `check_coverage.FAIL_VERDICTS`; the test pins that,
 # because this file stays stdlib-only and does not import it.
 MEASURED_GAPS = ("derivable", "absent",
-                 "COVERAGE", "AMBIGUOUS", "NO-DISAMBIG", "CONVENTION")
+                 "MISSING", "AMBIGUOUS", "RULE_UNWRITTEN", "UNDERSPECIFIED")
 # check_coverage.py's "a correct answer is expressible": the measured `covered`.
-MEASURED_OK = "ok"
+MEASURED_OK = "MODELLED"
 # A failure that is retrieval's or the model's, and nothing measured which. Its
 # own bucket, because the alternative was worse: with no authored `coverage`
 # label the case fell through to MODEL with the words "coverage is unknown, so
@@ -528,7 +528,17 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
          # pins that identity never caught it because every row it builds
          # supplies a required entity.
          "passed_not_covered": 0, "passed_not_retrieved": 0,
-         "passed_unmeasured": 0, "passed_no_entities_named": 0}
+         "passed_unmeasured": 0, "passed_no_entities_named": 0,
+         # Recall, tallied OUTSIDE the funnel. The funnel is an elif chain, so a
+         # row whose coverage was never measured stops at rung 1 and never
+         # reaches the recall check -- `not retrieved` is then structurally 0,
+         # and a display that subtracts it from a denominator reports every
+         # retrieval as a success. That is what happened: 12 cases, coverage
+         # unknown, three of them at recall 0.5, printed "retrieved? 12 yes, 0
+         # no". These two count every row whose recall was actually computed and
+         # whose coverage is not a KNOWN gap, so the rung says what was measured
+         # whether or not coverage ran.
+         "recall_scored": 0, "recall_short": 0}
     for r in rows:
         cov = r["coverage"]
         passed = not r["failed"] and r["verdict"] not in UNSCORED
@@ -550,6 +560,9 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
             c["delivered, wrong"] += 1
         else:
             c["delivered, right"] += 1
+        if cov not in MEASURED_GAPS and r["recall"] is not None:
+            c["recall_scored"] += 1
+            c["recall_short"] += r["recall"] < 1.0
     return c
 
 

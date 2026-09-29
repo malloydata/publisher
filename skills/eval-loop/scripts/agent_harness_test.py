@@ -94,9 +94,11 @@ class TheFence(unittest.TestCase):
         # Each of these was measured as GRANTED to the clustering agent on
         # 2026-09-08. `Task` spawns a sub-agent confined by nothing;
         # `ReportFindings` cost the coverage judge its only turn.
+        # `Artifact` was measured as granted to a headless answerer on
+        # 2026-09-22; it alone flagged the attempt contaminated.
         for tool in ("Task", "ReportFindings", "SendMessage", "Workflow",
                      "ScheduleWakeup", "RemoteTrigger", "ShareOnboardingGuide",
-                     "WebFetch", "WebSearch", "ReadMcpResourceTool"):
+                     "WebFetch", "WebSearch", "ReadMcpResourceTool", "Artifact"):
             with self.subTest(tool=tool):
                 self.assertIn(tool, ah.ALWAYS_BLOCKED)
                 self.assertIn(tool, spawn_cmd(mcp_url=None))

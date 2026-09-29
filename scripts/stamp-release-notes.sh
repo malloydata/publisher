@@ -34,6 +34,11 @@ VERSION_FAILED=0
 # deep inside the loop next to the commit — so declare it here too,
 # for the same reason.
 VERSION_NOTE=""
+# Set per attempt inside the loop, beside the reset; declared here for the
+# summary, like the two above.
+BUMPED=0
+BUMP_DETAIL=""
+BUMP_FAILED=0
 OUTCOME=""
 
 # This step prepares a branch and hands a human a link. It deliberately
@@ -159,7 +164,68 @@ for pass in 1 2; do
     VERSION_FAILED=1
   fi
 
-  if [ "$STAMPED" = "0" ] && [ "$VERSIONED" = "0" ]; then
+  # Move each independently-versioned npm package one patch AHEAD of the
+  # version this release publishes for it. `publish-packages` publishes
+  # whatever main declares, so once it has run, main's declared version is
+  # on npm; each package's `pull_request` bump check asks whether the
+  # declared version is ahead of npm, so without this the first PR to
+  # touch that package's content after every release goes red for
+  # something the release did.
+  #
+  # Unconditional, and NOT decided by asking npm. `publish-packages` is not
+  # in this job's `needs`, so at this point it is usually still publishing:
+  # npm's `latest` reads the previous version, and a "bump only if main
+  # equals npm" test would skip exactly the release that needs the bump.
+  # Whatever main declares here is what `publish-packages` publishes (it
+  # checks out main at its own start and aborts if main moves under these
+  # paths), or it was already on npm and skipped. Either way it is spent.
+  #
+  # The cost is a content-free publish on a release where a package did not
+  # change. Both have published on every release since 0.3.0 anyway, the
+  # scaffolder because its bump check watches packages/skills/package.json,
+  # so it follows every skills bump. That coupling is also why the two move
+  # together: bumping skills alone would redden the scaffolder's check on
+  # this very PR.
+  #
+  # The Python client is not here, deliberately: nothing is on PyPI yet, so
+  # its check has nothing to be behind. Add packages/python-client once the
+  # first publish lands, reading pyproject.toml instead of a package.json.
+  #
+  # Like the reset above, a failure is a warning and never a `continue`: it
+  # must not cost the notes half. A package that fails is simply left where
+  # it was, and its bump check tells the next PR author to do it by hand.
+  AHEAD_PKGS="packages/skills/package.json packages/create-malloy-package/package.json"
+  BUMPED=0
+  BUMPED_FILES=""
+  BUMP_DETAIL=""
+  BUMP_FAILED=0
+  for manifest in $AHEAD_PKGS; do
+    if ! declared="$(node -p "require('./${manifest}').version" 2>"$STAMP_LOG")"; then
+      sed 's/^/[bump-ahead] /' "$STAMP_LOG"
+      echo "::warning title=Release notes::could not read the version in ${manifest} (logged above); it was not moved ahead, so the next PR changing it will need a hand bump"
+      BUMP_FAILED=1
+      continue
+    fi
+    # Plain major.minor.patch only. A prerelease or build suffix has no
+    # obvious "next patch", and main should never declare one for these.
+    if ! [[ "$declared" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+      echo "::warning title=Release notes::${manifest} declares '${declared}', which is not major.minor.patch; it was not moved ahead"
+      BUMP_FAILED=1
+      continue
+    fi
+    next="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+    if ! changed="$(node scripts/set-version.mjs "$next" "$manifest" 2>"$STAMP_LOG")"; then
+      sed 's/^/[bump-ahead] /' "$STAMP_LOG"
+      echo "::warning title=Release notes::could not move ${manifest} from ${declared} to ${next} (logged above); it was left at ${declared}"
+      BUMP_FAILED=1
+      continue
+    fi
+    BUMPED=$((BUMPED + changed))
+    BUMPED_FILES="${BUMPED_FILES} ${manifest}"
+    BUMP_DETAIL="${BUMP_DETAIL:+${BUMP_DETAIL}, }$(node -p "require('./${manifest}').name") ${declared} → ${next}"
+  done
+
+  if [ "$STAMPED" = "0" ] && [ "$VERSIONED" = "0" ] && [ "$BUMPED" = "0" ]; then
     # Nothing to stamp and nothing to reset. Two different states for
     # the notes half, and conflating them is how a summary line ends up
     # contradicting a warning the same run already wrote. A non-empty
@@ -186,6 +252,10 @@ for pass in 1 2; do
     # shellcheck disable=SC2086
     git add $PKGS || { FAILURE="could not stage the version files"; continue; }
   fi
+  if [ "$BUMPED" != "0" ]; then
+    # shellcheck disable=SC2086
+    git add $BUMPED_FILES || { FAILURE="could not stage the bumped package versions"; continue; }
+  fi
 
   # One stable title whatever the branch carries, with the detail in
   # the body. The publisher-release skill's optional PR search matches
@@ -204,7 +274,7 @@ for pass in 1 2; do
   fi
   git commit -s \
     -m "chore(release): stamp ${VERSION} on main" \
-    -m "${STAMPED} release-note section(s) stamped, ${VERSIONED} version file(s) reset.${VERSION_NOTE}" \
+    -m "${STAMPED} release-note section(s) stamped, ${VERSIONED} version file(s) reset.${VERSION_NOTE}${BUMP_DETAIL:+ Moved ahead: ${BUMP_DETAIL}.}" \
     || { FAILURE="could not commit the stamp"; continue; }
 
   # NOT forced. A stamp branch already on the remote may carry a
@@ -260,7 +330,7 @@ if [ -n "$STALE_BRANCHES" ]; then
     echo
     while IFS= read -r stale; do echo "- \`${stale}\`"; done <<<"$STALE_BRANCHES"
     echo
-    echo "**Merge them oldest-first, before this release's.** Each stamp branch is cut from \`origin/main\` and rewrites the same three \`package.json\` version lines, so whichever is merged second will conflict there. Resolve in favour of the **newer** version and keep both sets of \`RELEASE_NOTES.md\` edits."
+    echo "**Merge them oldest-first, before this release's.** Each stamp branch is cut from \`origin/main\` and rewrites the same five \`package.json\` version lines (sdk, app, server, skills, create-malloy-package), so whichever is merged second will conflict there. Resolve in favour of the **newer** version and keep both sets of \`RELEASE_NOTES.md\` edits."
     echo
     echo "Do not close a conflicted stamp PR to clear it. The version half is recoverable — \`prepare\` derives its floor from \`max(npm latest, main declared)\` either way — but the notes half is not: those headings still read \`[Unreleased]\`, so every later release re-appends that release's narrative to its own page."
   } >> "$GITHUB_STEP_SUMMARY"
@@ -295,6 +365,12 @@ case "$OUTCOME" in
       # ambiguity; VERSION_NOTE is the one built for the commit body.
       echo "::notice title=Release notes::pushed ${BRANCH} stamping ${STAMPED} section(s) and resetting ${VERSIONED} version file(s) as ${VERSION}${VERSION_NOTE}; open ${COMPARE_URL}"
       LEAD="Pushed \`${BRANCH}\`, stamping ${STAMPED} release-note section(s) and resetting ${VERSIONED} version file(s) to \`${VERSION}\`."
+      if [ -n "$BUMP_DETAIL" ]; then
+        LEAD="${LEAD} It also moves ${BUMP_DETAIL} ahead of this release's publish, so the next PR changing either package's content passes its bump check without a hand bump."
+      fi
+      if [ "$BUMP_FAILED" = 1 ]; then
+        LEAD="${LEAD} At least one independently-versioned package could NOT be moved ahead (see the warnings above); the next PR changing it will need a hand bump."
+      fi
       # "resetting 0 version file(s)" carries the same two meanings the
       # rarer branches below were fixed for — nothing to reset, or the
       # reset failed — and THIS is the branch that fires whenever there
@@ -308,7 +384,9 @@ case "$OUTCOME" in
     {
       echo "$LEAD"
       echo
-      echo "👉 **[Open the pull request](${COMPARE_URL}) and merge it before the next release.**"
+      echo "👉 **[Open the pull request](${COMPARE_URL}) and merge it before the next release — but only after \`Publish independently-versioned packages\` has finished.**"
+      echo
+      echo "That job checks out \`main\` at its start and aborts a dispatch if \`main\` moves under the paths a package is built from. This branch changes \`packages/skills/package.json\` and \`packages/create-malloy-package/package.json\`, which are exactly those paths, so merging it while the job is still running stops whichever of those two has not been dispatched yet. A re-run of that job would then publish the moved-ahead version instead, leaving \`main\` level with npm again."
       echo
       echo "This last step is a human's on purpose. A PR opened by a person triggers \`pull_request\`, so its checks run and any maintainer can merge it; one opened by this workflow would never trigger them, leaving required checks at \`expected\` and an admin as the only person who could merge. Left unopened, the headings on \`main\` still read \`[Unreleased]\` — which is exactly what the next release's \`extract\` matches, so ${VERSION}'s narrative lands on the next release's page too, and on every one after that. \`main\` also keeps declaring the pre-release version, which is the state this reset exists to end."
       # The `unstamped` case below cannot be reached when there is also

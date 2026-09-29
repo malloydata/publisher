@@ -358,21 +358,21 @@ class MeasuredCoverage(unittest.TestCase):
 
     def test_a_measured_ok_with_a_miss_is_a_retrieval_rung_finding(self):
         r = score_case(case(coverage="derivable"), calls([]), KEY, "no_match",
-                       measured="ok")
+                       measured="MODELLED")
         self.assertIn(r["where_to_fix"], ("not retrieved", "never asked"))
         self.assertEqual(r["coverage_source"], "measured")
 
     def test_a_measured_gap_blames_the_model_and_names_the_code(self):
         r = score_case(case(coverage="covered"), calls([]), KEY, "no_match",
-                       measured="NO-DISAMBIG")
+                       measured="AMBIGUOUS")
         self.assertEqual(r["where_to_fix"], "model coverage")
-        self.assertIn("NO-DISAMBIG", r["why"])
+        self.assertIn("AMBIGUOUS", r["why"])
 
     def test_measurement_beats_the_authored_label(self):
         # Label says covered (retrieval's fault); measurement says the model
         # has no representing entity (model's fault). The measurement wins.
         r = score_case(case(coverage="covered"), calls([]), KEY, "no_match",
-                       measured="COVERAGE")
+                       measured="MISSING")
         self.assertEqual(r["owner"], "model")
 
     def test_an_undecided_measurement_falls_back_to_the_label(self):
@@ -400,9 +400,9 @@ class MeasuredCoverage(unittest.TestCase):
             path = os.path.join(d, "cov.json")
             with open(path, "w") as fh:
                 json.dump({"version": "0.0.58", "cases_detail": [
-                    {"qid": "a", "verdict": "ok"},
+                    {"qid": "a", "verdict": "MODELLED"},
                     {"qid": "b", "verdict": None}]}, fh)
-            self.assertEqual(load_coverage_report(path), {"a": "ok", "b": None})
+            self.assertEqual(load_coverage_report(path), {"a": "MODELLED", "b": None})
 
     def test_coverage_report_summary_records_what_run_json_needs(self):
         # The file, the version, the judge, and decided-of-cases. Not the
@@ -411,7 +411,7 @@ class MeasuredCoverage(unittest.TestCase):
             path = os.path.join(d, "cov.json")
             with open(path, "w") as fh:
                 json.dump({"version": "0.0.58", "agentModel": "sonnet",
-                           "cases": 49, "decided": 45, "ok": 22,
+                           "cases": 49, "decided": 45, "MODELLED": 22,
                            "coverage": 0.489, "cases_detail": []}, fh)
             got = coverage_report_summary(path)
         self.assertEqual(got, {"path": path, "version": "0.0.58",
@@ -437,8 +437,15 @@ class Cascade(unittest.TestCase):
     # `passed_not_covered` and `passed_not_retrieved` OVERLAY the rungs: they
     # re-count rows already counted by "not covered" and "not retrieved". They
     # are not rungs and must never be added to them.
+    #
+    # `recall_scored` / `recall_short` are a parallel TALLY, not a rung either.
+    # The rungs are an elif chain, so a row whose coverage was never measured
+    # stops at the first one and its recall is never classified; these two
+    # count recall over every row that carried one, which is what the retrieval
+    # line reports. Same rows, counted on a second axis -- so they overlay.
     OVERLAY = ("total", "passed_not_covered", "passed_not_retrieved",
-               "passed_unmeasured", "passed_no_entities_named")
+               "passed_unmeasured", "passed_no_entities_named",
+               "recall_scored", "recall_short")
 
     def test_every_row_lands_on_exactly_one_rung(self):
         c = cascade(self.rows())
@@ -561,7 +568,7 @@ class Cascade(unittest.TestCase):
 
     def test_a_measured_ok_counts_as_covered(self):
         c = cascade([score_case(case(coverage="derivable"), calls([M_SALES]),
-                                KEY, "match", measured="ok")])
+                                KEY, "match", measured="MODELLED")])
         self.assertEqual(c["delivered, right"], 1)
 
     def test_no_rows_is_an_empty_funnel_not_a_crash(self):

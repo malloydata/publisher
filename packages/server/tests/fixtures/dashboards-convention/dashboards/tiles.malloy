@@ -1,0 +1,12 @@
+import "../orders.malloy"
+
+// Declared here on top of the exported orders, so it may be read.
+source: big_orders is orders extend { where: amt > 0 }
+
+// Also on top of orders, and reached by name rather than through query text.
+query: big_status is big_orders -> by_status
+
+// Declared here on top of orders_staging, so it may not be.
+source: staged is orders_staging extend { where: id > 0 }
+
+## artifact { title="Tiles" tiles=["orders -> by_status", "big_orders -> by_status", "orders_staging -> by_flag", "staged -> by_flag"] }

@@ -1,0 +1,21 @@
+{
+ "qid": "storefront-tour-orders-per-customer",
+ "truthQuery": "run: t_order_items -> { aggregate: orders_per_customer is count(order_id) / count(customer_id) }",
+ "verifyQuery": "run: t_order_items -> { group_by: customer_id; aggregate: n is count(order_id) } -> { aggregate: avg_orders is n.avg() }",
+ "truthRows": [
+  {
+   "orders_per_customer": 11.293634496919918
+  }
+ ],
+ "verifyRows": [
+  {
+   "avg_orders": 11.293634496919918
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "11.293634496919918 vs 11.293634496919918"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

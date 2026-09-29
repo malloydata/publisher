@@ -144,11 +144,26 @@ function frontmatter(name: string): Record<string, string> {
  * cut. The same reason agent-skills reads the raw line rather than the
  * YAML-parsed value, where a `#` in a description ends the scalar early.
  */
-function rawDescriptionLength(name: string): number {
+function rawDescriptionLine(name: string): string {
    const text = fs
       .readFileSync(path.join(skillDir(name), "SKILL.md"), "utf8")
       .replace(/\r\n/g, "\n");
-   return text.match(/^description:[ \t]*(.+)$/m)?.[1].length ?? 0;
+   return text.match(/^description:[ \t]*(.+)$/m)?.[1] ?? "";
+}
+
+function rawDescriptionLength(name: string): number {
+   return rawDescriptionLine(name).length;
+}
+
+/** The raw `description:` line with one layer of YAML quoting removed. */
+function unquoted(raw: string): string {
+   if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+      return raw.slice(1, -1).replaceAll("''", "'");
+   }
+   if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+      return raw.slice(1, -1).replaceAll('\\"', '"');
+   }
+   return raw;
 }
 
 describe("publisher-local manifest", () => {
@@ -280,6 +295,20 @@ describe("shipped skills", () => {
          });
       },
    );
+
+   it.each(shipped)("%s: description survives YAML parsing", (name) => {
+      // The budget tests above measure two different strings and both pass when
+      // YAML silently drops the tail, so neither sees this. An unquoted ` #`
+      // opens a comment: `malloy-model-as-you-go` carried 432 characters and a
+      // host read 123 of them, stopping mid-sentence before the clause saying
+      // when to load the skill. A block scalar (`description: >`) diverges the
+      // same way. Either fix is to quote the whole description.
+      const raw = unquoted(rawDescriptionLine(name));
+      expect({ name, description: frontmatter(name).description }).toEqual({
+         name,
+         description: raw.trim(),
+      });
+   });
 
    it.each(shipped)("%s: declares no version of its own", (name) => {
       // The pack stamps `version:` at pack time and refuses a second one, so a

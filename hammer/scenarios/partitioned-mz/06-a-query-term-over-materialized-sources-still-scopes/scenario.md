@@ -1,6 +1,6 @@
 ---
 id: a-query-term-over-materialized-sources-still-scopes
-tags: serve-correctness, givens, security, known-red
+tags: serve-correctness, givens, security
 package: qts
 ---
 <!--
@@ -8,30 +8,26 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A caller's term in a non-persisted entry point still scopes what it reads
+# A caller's term on an extension of a materialized source still scopes what it reads
 
-`visible_orders` is not materialized. It joins two sources that are, and adds
-`where: vis.user_id = $USER_ID` of its own. That term is part of the QUERY, not
-of either artifact — so it is compiled against the two stored tables and applied
-to them, and each user is answered from their own rows.
+`visible_orders` extends `orders_all`, joins `vis_all`, and adds
+`where: vis.user_id = $USER_ID` of its own. Both sources it reads are
+materialized, each once for every tenant. The extension inherits `#@ persist`
+and its build is `orders_all`'s relation — the join and the `where:` are not in
+it — so it writes no second table and is served from `orders_all`'s, with its
+own join and term re-applied per caller.
 
-This is the arrangement to reach for when a caller's scope comes from a joined
-source's own filter. Stripping such a filter out of a persisted source would not
-leave a column behind to re-apply it with; it would turn the join into a
-fan-out across every user, and the artifact would be wrong. So that shape is
-refused (`dynamic_joined_where`), and this is what replaces it: the org term
-lives on the persisted sources, where it is stripped and re-applied, and the
-user term lives above them, where it was never in an artifact to begin with.
+Two things make that hold. The user term is stripped from the build and
+re-applied at read like any extend-block `where:`. And the join is to a source
+that is itself persisted into storage and scoped by a given, so the serve shape
+re-emits it only against `vis_all`'s own binding, which re-applies `vis_all`'s
+org term with the caller's value. A join to a given-scoped source that is NOT
+materialized that way is still refused (`dynamic_joined_where`): nothing could
+bind it per caller.
 
-Two properties are needed, and dropping either serves these answers live —
-correct, and unaccelerated.
-
-The shape must accept the same givens the author's model does. One that declared
-only the terms its own sources stripped would fail to compile a query mentioning
-`$USER_ID` and serve the whole thing live. That half holds.
-
-The shape must also carry `visible_orders` itself, over the two virtual bases.
-That half does not hold, for the reason in the note below.
+The shape must also accept the same givens the author's model does. One that
+declared only the terms its own sources stripped would fail to compile a query
+mentioning `$USER_ID` and serve the whole thing live.
 
 ## Publisher
 
@@ -79,7 +75,6 @@ source: vis_all is raw_vis -> { select: * } extend {
   where: org_id = $ORG_ID
 }
 
-#@ -persist
 source: visible_orders is orders_all extend {
   join_many: vis is vis_all on vis.list_id = list_id
   where: vis.user_id = $USER_ID
@@ -185,25 +180,3 @@ Expect:
 | total:num |
 | --------- |
 | 100       |
-
-## Note (since=2026-09-18)
-
-> **Red on the tier, not on the answers.** Every answer above is correct today —
-> the org and user terms both apply, and no caller sees another's rows. What does
-> not happen is routing, which `servedFrom` reports on the first query and which
-> the mutate-and-requery corroborates from the other side.
->
-> The shape can carry a non-persisted source over materialized bases. What it
-> cannot carry is THIS one, and the reason is the annotation rather than the
-> mechanism. Persistence is inherited through `extend`, so `visible_orders`
-> written plainly inherits `#@ persist`, becomes a build target of its own, and
-> is refused — here as `dynamic_joined_where`, with a message advising entry
-> "through a non-persisted extension". Written that way, with `#@ -persist`, it
-> opts out of reading the pre-built table, which is what `opt-out-persist-
-> recomputes` pins and what the lift honours by excluding it.
->
-> So the refusal directs the author onto the one annotation that rules out the
-> tier they were reaching for. Closing this means settling what a plain extension
-> should do: Malloy documents it as reading the persisted table, while the
-> publisher treats it as a second build target for the same table. The
-> documentation calls that a present-tense defect rather than design.

@@ -3,9 +3,14 @@
 
 /**
  * Pure parsing of the package manifest's (publisher.json) `materialization`
- * block. Kept side-effect free (no fs, no worker bootstrap) so it is unit
- * testable in isolation from the package-load worker that consumes it.
+ * block and its discovery surface (`explores`). Kept side-effect free (no fs,
+ * no worker bootstrap) so it is unit testable in isolation from the
+ * package-load worker that consumes it.
  */
+
+import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
+import { PackageManifestError } from "../errors";
+import { isDashboardModelPath } from "./dashboard";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -33,7 +38,7 @@ export function parsePackageScope(raw: unknown): PackageScope {
    if ((PACKAGE_SCOPES as readonly unknown[]).includes(raw)) {
       return raw as PackageScope;
    }
-   throw new Error(
+   throw new PackageManifestError(
       `Invalid "scope" in the package manifest: ${JSON.stringify(raw)}. ` +
          `Expected "version" or "package" (default "package").`,
    );
@@ -79,7 +84,7 @@ export function resolvePackageScope(
          // message is the whole diagnosis. Guessing instead would be worse —
          // picking the wrong one reuses a table across versions that was never
          // meant to be shared, silently.
-         throw new Error(
+         throw new PackageManifestError(
             `Conflicting "scope" in publisher.json: root "${rootScope}" vs ` +
                `"materialization.scope" "${envelopeScope}". The package cannot ` +
                `load until they agree. Edit "materialization": { "scope": ... } ` +
@@ -379,3 +384,217 @@ export function queryMetadataParseWarnings(
 ): string[] {
    return parseQueryMetadata(raw, QUERY_METADATA_HOME_LABELS[home]).warnings;
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// The discovery surface: `explores`, and the `index.malloy` convention
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve a package's discovery surface from its two sources: an explicit
+ * `explores` in publisher.json, and the `index.malloy` convention.
+ *
+ * The convention is a DEFAULT FOR ONE MANIFEST FIELD and nothing more. A
+ * surface it fills in is indistinguishable downstream from one an author
+ * wrote: same listing curation, same within-file `export {}` filtering, same
+ * query boundary, same `queryableSources` handling. Nothing in the system
+ * carries where the surface came from, and that is deliberate — the moment a
+ * convention-derived surface behaves differently from a declared one, every
+ * consumer has to learn the difference and the two drift.
+ *
+ * Explicit always wins; the convention fills in only where the manifest is
+ * silent. An explicit `explores: []` counts as explicit and suppresses the
+ * convention: it reads as a deliberate "do not curate", and today it means
+ * every model is listed.
+ *
+ * Only a root-level `index.malloy` counts, matched exactly. A nested
+ * `reports/index.malloy` is an ordinary model, and `Index.malloy` does not
+ * trigger the convention even where the filesystem would open it under the
+ * conventional name: the code tests for one spelling, so it must claim only
+ * that one. A root file that differs only in case is almost certainly meant
+ * as the surface, so it gets a warning saying it is not.
+ *
+ * Every warning is at most two sentences: what is wrong in this package, then
+ * `Fix:` and the one edit. How the surface works belongs in the docs.
+ *
+ * Precedence never throws: a package that declares both a surface and an index
+ * file has a defined answer, and only the author's intent is in doubt, which is
+ * a warning. A MALFORMED `explores` does throw, like {@link
+ * resolvePackageScope}, and fails the package load -- see the rejection below
+ * for why refusing beats every way of carrying on.
+ */
+export function resolveExplores(input: {
+   /** The raw `explores` value as it appeared in publisher.json. */
+   declaredExplores: unknown;
+   /**
+    * The raw `queryableSources` value as it appeared in publisher.json, or
+    * undefined when the key was absent. Raw rather than a resolved mode,
+    * because `"all"` and `"declared"` need different deprecation advice: the
+    * convention replaces one of them and cannot express the other.
+    */
+   declaredQueryableSources: unknown;
+   /** Package-relative model paths, as produced by `filterModelPaths`. */
+   modelPaths: readonly string[];
+}): { explores: string[] | undefined; warnings: string[] } {
+   const { declaredExplores, declaredQueryableSources, modelPaths } = input;
+   const hasIndexModel = modelPaths.includes(INDEX_MODEL_NAME);
+   const warnings: string[] = [];
+
+   // An array of strings is the only well-formed shape, and anything else fails
+   // the package load. `explores` decides what is REACHABLE, so a value the
+   // server only partly understands must not be partly applied:
+   //
+   //  - ignoring it widens the surface. `["orders.malloy", 7]` would resolve to
+   //    no surface at all, and every source the author curated away would be
+   //    listed and queryable -- the exact direction `brokenSurfaceWarnings`
+   //    refuses for the same question in package.ts.
+   //  - keeping the entries that parse serves a surface the author did not
+   //    write, which is guessing at intent on the one key where guessing wrong
+   //    is an access change.
+   //  - coercing (`String(null)` -> "null") builds a surface naming a model
+   //    that cannot exist, so the package lists nothing while reporting a
+   //    reason that describes a file rather than the typo that caused it.
+   //
+   // Refusing is the only one of the four that neither widens the surface nor
+   // invents intent, and an absent package is visible in `loadErrors` where a
+   // silently-uncurated one is not.
+   if (
+      declaredExplores !== undefined &&
+      !(
+         Array.isArray(declaredExplores) &&
+         declaredExplores.every((entry) => typeof entry === "string")
+      )
+   ) {
+      throw new PackageManifestError(
+         `Invalid "explores" in publisher.json: it must be a list of file ` +
+            `names, but is ${JSON.stringify(declaredExplores)}. The package ` +
+            `was not loaded. Fix: delete "explores" and add an ` +
+            `${INDEX_MODEL_NAME}.`,
+      );
+   }
+   const declared = Array.isArray(declaredExplores)
+      ? declaredExplores.map((entry) => normalizeModelPath(entry as string))
+      : undefined;
+
+   // `"all"` is not warned about. It is the only way to curate listings
+   // WITHOUT refusing queries, and the convention has no equivalent: a surface
+   // it derives always arms the boundary, because `queryableSources` defaults
+   // to `"declared"`. A use with no replacement gets no deprecation notice.
+   if (
+      declaredQueryableSources !== undefined &&
+      declaredQueryableSources !== "all"
+   ) {
+      warnings.push(QUERYABLE_SOURCES_DEPRECATION);
+   }
+
+   if (declared !== undefined) {
+      // Every use of the key is deprecated, and each shape gets the one edit
+      // that replaces it. An empty array beside an index.malloy is the old
+      // opt-out; the file itself is now the switch.
+      if (declared.length === 0) {
+         warnings.push(
+            hasIndexModel
+               ? EXPLORES_EMPTY_SUPPRESSES_CONVENTION
+               : EXPLORES_EMPTY_IS_UNCURATED,
+         );
+      } else {
+         warnings.push(exploresDeprecation(declared, hasIndexModel));
+      }
+      // Beside the deprecation, not instead of it: together they say "you are
+      // using a deprecated key, and it is overriding the recommended one".
+      if (
+         hasIndexModel &&
+         declared.length > 0 &&
+         !declared.includes(INDEX_MODEL_NAME)
+      ) {
+         warnings.push(EXPLORES_OMITS_INDEX_MODEL);
+      }
+      return { explores: declared, warnings };
+   }
+
+   if (!hasIndexModel) {
+      // Only here: with an `explores` key the file is not what decides the
+      // surface anyway, and beside an exact index.malloy it is just a file.
+      for (const modelPath of modelPaths) {
+         if (
+            !modelPath.includes("/") &&
+            modelPath.toLowerCase() === INDEX_MODEL_NAME
+         ) {
+            warnings.push(
+               `${modelPath} is ignored: only a root file named exactly ` +
+                  `${INDEX_MODEL_NAME} decides what is published. Fix: rename ` +
+                  `it to ${INDEX_MODEL_NAME}.`,
+            );
+         }
+      }
+      return { explores: undefined, warnings };
+   }
+
+   // The recommended shape, so nothing to say.
+   return { explores: [INDEX_MODEL_NAME], warnings };
+}
+
+/** `a.malloy`, `a.malloy and b.malloy`, `a.malloy, b.malloy and c.malloy`. */
+function listFiles(files: readonly string[]): string {
+   return files.length <= 1
+      ? (files[0] ?? "")
+      : `${files.slice(0, -1).join(", ")} and ${files[files.length - 1]}`;
+}
+
+/**
+ * The deprecation for a non-empty `explores`, with the edit that replaces it.
+ * Entries for index.malloy and for dashboards need no replacement: the file is
+ * the surface, and every dashboard is served. What is left is what index.malloy
+ * has to import.
+ */
+function exploresDeprecation(
+   declared: readonly string[],
+   hasIndexModel: boolean,
+): string {
+   const lead = `"explores" in publisher.json is deprecated.`;
+   const files = declared.filter(
+      (entry) => entry !== INDEX_MODEL_NAME && !isDashboardModelPath(entry),
+   );
+   if (files.length > 0) {
+      return hasIndexModel
+         ? `${lead} Fix: import ${listFiles(files)} into ${INDEX_MODEL_NAME}, ` +
+              `export the sources you publish from it, then delete "explores".`
+         : `${lead} Fix: add an ${INDEX_MODEL_NAME} at the package root that ` +
+              `imports ${listFiles(files)} and exports the sources you want to ` +
+              `publish, then delete "explores".`;
+   }
+   if (declared.includes(INDEX_MODEL_NAME)) {
+      return (
+         `${lead} ${INDEX_MODEL_NAME} already publishes the same thing. ` +
+         `Fix: delete "explores".`
+      );
+   }
+   return hasIndexModel
+      ? `${lead} Fix: delete "explores", so ${INDEX_MODEL_NAME} decides what is published.`
+      : `${lead} Fix: add an ${INDEX_MODEL_NAME} at the package root that ` +
+           `exports the sources you want to publish, then delete "explores".`;
+}
+
+/** A root index.malloy that the explicit key leaves out, and so ignores. */
+const EXPLORES_OMITS_INDEX_MODEL =
+   `${INDEX_MODEL_NAME} is ignored because "explores" in publisher.json ` +
+   `doesn't list it. Fix: delete "explores" to publish what ` +
+   `${INDEX_MODEL_NAME} exports, or rename ${INDEX_MODEL_NAME} (and any import ` +
+   `of it) if it isn't meant to decide what is published.`;
+
+/** The old opt-out: an empty array beside an index.malloy. The fix names the
+ *  imports because a rename alone breaks every file that imports the old
+ *  name, and a broken import fails the whole package's compile. */
+const EXPLORES_EMPTY_SUPPRESSES_CONVENTION =
+   `"explores" in publisher.json is deprecated. Here it stops ` +
+   `${INDEX_MODEL_NAME} from limiting what this package publishes. Fix: to ` +
+   `publish everything, rename ${INDEX_MODEL_NAME}, point any import of it at ` +
+   `the new name, then delete "explores".`;
+
+/** An empty array with no index.malloy: the package is uncurated anyway. */
+const EXPLORES_EMPTY_IS_UNCURATED = `"explores": [] in publisher.json does nothing. Fix: delete it.`;
+
+/** `"declared"` is the default, so the key changes nothing. `"all"` is not
+ *  warned about: it is the one way to hide a source from listings while it
+ *  stays queryable by name (for an #(authorize)-gated source), and nothing
+ *  replaces it. */
+const QUERYABLE_SOURCES_DEPRECATION = `"queryableSources" in publisher.json does nothing. Fix: delete it.`;
