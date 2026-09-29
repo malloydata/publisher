@@ -36,8 +36,9 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 A `.malloy` file directly under a package's top-level `notebooks/` whose model-level notes include
 `## artifact { kind=notebook … }` is now a served notebook. Its cells are read from the file in order:
 prose notes, one query cell per `run:` with its tag block, and one definition cell per other
-statement. List-notebooks includes served notebooks beside `.malloynb` files, each with a `format`
-(`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or `definition`). The Console
+statement. List-notebooks includes served notebooks beside `.malloynb` files. Get-notebook returns
+one with a `format` (`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or
+`definition`). The Console
 opens one at `notebooks/<slug>`. A served notebook keeps `modelType: model`, so the model GET,
 `/compile`, MCP `execute_query` and the declared-givens fetch treat it as any model.
 
@@ -45,8 +46,9 @@ Behavior changes to know about:
 
 - **list-models excludes served notebooks**, with or without a surface, so they are absent from MCP
   `get_context` as well. Use list-notebooks.
-- **A dashboard's description is the unnamed `"` notes above `## artifact`**, for notebooks too. A
-  `##"` note below the tag is prose, not description. The in-repo dashboards already put theirs above.
+- **A notebook's description is the unnamed `"` notes above `## artifact`**; a `##"` note below the
+  tag is a cell. A dashboard's is the same, and when it has none above it still reads the ones below
+  the tag, with a lint warning to move them above. The in-repo dashboards already put theirs above.
 - **`notebooks` is a segment the Console owns.** `/<env>/<pkg>/notebooks/<file.ext>` no longer reaches
   a package's `public/notebooks/`.
 - **The published-names filter now applies to `modelInfo.anonymous_queries` on the model GET for every

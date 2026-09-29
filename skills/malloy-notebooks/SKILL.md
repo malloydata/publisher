@@ -130,7 +130,7 @@ Interactive parameters are common and important. Add them to most notebooks. **U
 
 A notebook's parameter surface comes from the `given:` declarations the file declares or imports. Publisher's notebook UI renders a Parameters panel above the notebook: declared givens become parameter inputs, the values a user sets are forwarded to Malloy's runtime, and every query cell re-executes with those values applied. A `given:` is read by the cells below it, so declare it before the first cell that uses it.
 
-The widget for each parameter follows the given's declared Malloy type (`string`, `string[]`, `number`, `boolean`, `date`/`timestamp`, `filter<T>`); see `docs/givens.md` for the full type table. A `#(description="...")` annotation on the given renders as helper text under its input. A control tag (`control=select suggest { source=… dimension=… }`) goes on the `given:` as shown in the complete notebook above.
+The widget for each parameter follows the given's declared Malloy type (`string`, `string[]`, `number`, `boolean`, `date`/`timestamp`, `filter<T>`); see `docs/givens.md` for the full type table. A `#(description="...")` annotation on the given renders as helper text under its input. It draws a cosmetic `malformed-route` warning that you can ignore; see `docs/givens.md` § Annotations. A control tag (`control=select suggest { source=… dimension=… }`) goes on the `given:` as shown in the complete notebook above.
 
 `malloy-model` § Access Control covers the syntax and the `#(authorize)`/`#(access_filter)` gating story built on top of givens.
 

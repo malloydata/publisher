@@ -1623,14 +1623,14 @@ paths:
         provides access to the model's structure, sources, and named queries for use in applications.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
-        that surface answers 404 with the same message a query to it gets. Dashboard files are
-        always returned. A package with no surface, or with `queryableSources: "all"`, returns
+        that surface answers 404 with the same message a query to it gets. Dashboard files and
+        served notebooks (`notebooks/*.malloy` with an `## artifact` note) are always returned. A package with no surface, or with `queryableSources: "all"`, returns
         every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. A join to a hidden source
         keeps only its name and the names and types of its fields. `sourceText` is left out
-        when the text names a source the file does not publish; a dashboard's text is always
-        returned.
+        when the text names a source the file does not publish; the text of a dashboard or a
+        served notebook is always returned.
       parameters:
         - name: environmentName
           in: path
@@ -2097,6 +2097,8 @@ paths:
       description: |
         Retrieves a Malloy notebook with its raw cell contents (markdown and code).
         Cell execution should be done separately via the execute-notebook-cell endpoint.
+        A served `notebooks/*.malloy` (one with an `## artifact` note) answers here as well as a
+        `.malloynb`.
         On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
         - name: environmentName
@@ -2148,7 +2150,8 @@ paths:
       description: |
         Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
         and runs the Malloy code, returning query results and any new sources defined.
-        For markdown cells, this simply returns the cell content.
+        For markdown cells, this simply returns the cell content. A served `notebooks/*.malloy`
+        answers here as well as a `.malloynb`.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
         `queryableSources` left at `"declared"`, a code cell may read only sources the surface
@@ -3830,8 +3833,8 @@ components:
           type: string
           description:
             The notebook's doc comment, when it has one. For a `.malloy`
-            notebook (and a dashboard) that is the `"` notes above the
-            `## artifact` line; a `##"` note below it is prose, not description.
+            notebook that is the `"` notes above the `## artifact` line; a
+            `##"` note below it is a cell, not description.
         error:
           type: string
           description: Error message if the notebook failed to compile or load
@@ -3867,7 +3870,10 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's unnamed `"` notes above the `## artifact` tag, when it has any
+          description: >-
+            The file's unnamed `"` notes above the `## artifact` tag; when it
+            has none there, the ones below it (a legacy spot the lint flags). For
+            a dashboard whose tag sits on one query, that query's `#"` notes.
         error:
           type: string
           description: Error message if the dashboard file failed to compile
@@ -3908,7 +3914,10 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's unnamed `"` notes above the `## artifact` tag, when it has any
+          description: >-
+            The file's unnamed `"` notes above the `## artifact` tag; when it
+            has none there, the ones below it (a legacy spot the lint flags). For
+            a dashboard whose tag sits on one query, that query's `#"` notes.
         error:
           type: string
           description: Error message if the dashboard file failed to compile

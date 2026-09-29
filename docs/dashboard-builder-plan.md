@@ -414,8 +414,8 @@ and referenced from `tiles=`:
   source, given, query, run, sql) or other tag above the artifact tag is an
   error finding. A dashboard may still put statements above its tag.
 - **Description**: the file's unnamed `"` notes above the artifact tag, for
-  both notebooks and dashboards. Today's dashboards are unchanged, because that
-  is where their description already sits.
+  both notebooks and dashboards. A dashboard with none above its tag still reads
+  the ones below it, as it did before, and the lint asks for them to move above.
 - **Text blocks.** `##|(text) name` … `|##` is a dashboard text tile. The name
   is the sole token after `(text)` on the opener, a bare word
   (`[A-Za-z_][A-Za-z0-9_]*`), and the reader strips that opener; the body is the

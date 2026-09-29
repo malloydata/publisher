@@ -85,7 +85,7 @@ Pick on the shape of the deliverable instead.
 - A notebook is plain Malloy in Malloyyo's format, not a Publisher-specific one. A legacy
   `.malloynb` is still read and rendered, but a new notebook is not authored as one.
 - Its opening heading titles it in the package listing, so a notebook reads as a document there
-  without carrying a tag for it. `## title="…"` or a `#" ` doc comment override.
+  without carrying a tag for it. A `title` in the `## artifact` tag, or a `##" ` note above it, overrides.
 
 **Cons**
 
