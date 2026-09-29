@@ -9,9 +9,9 @@
  * rather than in the notebook reader built on it.
  *
  * Fixtures: `tests/fixtures/notebooks-malloyyo/`. Each is compiled through
- * `Model.create`, the server's in-process compile path. The two rewritten
- * variants compile on a bare `Runtime` instead, because they assert problem
- * codes and `Model.create` wraps a compile failure in an error that keeps the
+ * `Model.create`, the server's in-process compile path. The rewritten
+ * variants compile on a bare `Runtime` instead, because they assert problems
+ * and `Model.create` wraps a compile failure in an error that keeps the
  * message but drops them.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -56,8 +56,13 @@ const EXPECTED_OWN_NOTES: Record<string, ExpectedNote[]> = {
    ],
    "notebooks/definitions_only.malloy": [],
    "notebooks/adjacent_blocks.malloy": [
-      { line: 5, textStartsWith: '##|"\n## A heading\n' },
-      { line: 9, textStartsWith: '##|"\nThe second block' },
+      { line: 6, textStartsWith: '##|"\n## A heading\n' },
+      { line: 10, textStartsWith: '##|"\nThe second block' },
+   ],
+   "notebooks/prose_lines.malloy": [
+      { line: 5, textStartsWith: '##" Two contiguous lines of prose' },
+      { line: 6, textStartsWith: '##" are one markdown cell.' },
+      { line: 8, textStartsWith: '##" A blank line above starts' },
    ],
    "notebooks/tagged_runs.malloy": [
       { line: 12, textStartsWith: '##" Trailing prose is a model note' },
@@ -149,6 +154,18 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       expect(
          new Annotations(modelAnnotations(def)).texts('"').some(isSharedNote),
       ).toBe(true);
+   });
+
+   it("places the artifact tag between the description note and the first cell note", () => {
+      const own = ownModelAnnotations(defOf("notebooks/imported_prose.malloy"));
+      const artifact = new Annotations(own)
+         .forRoute("")
+         .find((note) => note.text.startsWith("## artifact"));
+      if (!artifact) throw new Error("no ## artifact note");
+      const artifactLine = artifact.at.range.start.line + 1;
+      const [description, firstCell] = docStringNotes(own);
+      expect(description.line).toBeLessThan(artifactLine);
+      expect(firstCell.line).toBeGreaterThan(artifactLine);
    });
 
    it('attaches a #" caption and its render tags to the run below, not to the model', () => {
@@ -244,5 +261,16 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       expect(model.problems).toEqual([]);
       const [, block] = docStringNotes(ownModelAnnotations(model._modelDef));
       expect(block.text).toStartWith('##|" intro extra\n');
+   });
+
+   it("accepts text after a block closer without complaint, so only lint can catch it", async () => {
+      const model = await compileVariant(
+         "dashboards/text_tiles.malloy",
+         (text) => text.replace(/\|##\n$/, "|## trailing\n"),
+      );
+      expect(model.problems).toEqual([]);
+      const notes = docStringNotes(ownModelAnnotations(model._modelDef));
+      expect(notes).toHaveLength(2);
+      expect(notes[1].text).toStartWith('##|" intro\n## How to read this page');
    });
 });
