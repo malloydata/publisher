@@ -24,26 +24,23 @@ import { animated, useSpring } from "@react-spring/web";
 import Collapse from "@mui/material/Collapse";
 import DnsIcon from "@mui/icons-material/DnsOutlined";
 import DataArrayIcon from "@mui/icons-material/DataArrayOutlined";
-import { Database, Model, Notebook } from "../../client";
+import { Database, Model } from "../../client";
 import { Typography, Tooltip } from "@mui/material";
 
 interface FiieTreeViewProps {
    items: Model[] | Database[];
-   /** The notebooks listing: a served notebook is a `.malloy` file the suffix cannot tell from a model. */
-   notebooks?: Notebook[];
    defaultExpandedItems: string[];
    onClickTreeNode?: (to: string, event?: React.MouseEvent) => void;
 }
 
 export function FileTreeView({
    items,
-   notebooks,
    defaultExpandedItems,
    onClickTreeNode,
 }: FiieTreeViewProps) {
    return (
       <RichTreeView
-         items={getTreeView(items, onClickTreeNode, notebooks)}
+         items={getTreeView(items, onClickTreeNode)}
          defaultExpandedItems={defaultExpandedItems}
          slots={{ item: CustomTreeItem }}
       />
@@ -178,21 +175,14 @@ const CustomTreeItem = React.forwardRef(function CustomTreeItem(
    );
 });
 
-export function getTreeView(
+function getTreeView(
    metadataEntries: Model[] | Database[],
    onClickTreeNode: (to: string, event?: React.MouseEvent) => void,
-   notebooks: Notebook[] = [],
 ): TreeViewBaseItem<ExtendedTreeItemProps>[] {
    const tree = new Map<string, unknown>();
-   const notebookPaths = new Set(notebooks.map((notebook) => notebook.path));
-   const entries: (Model | Database | Notebook)[] = [
-      ...metadataEntries.filter((entry) => !notebookPaths.has(entry.path)),
-      ...notebooks,
-   ];
-   entries.forEach((entry) => {
-      const path = entry.path ?? "";
+   metadataEntries.map((entry: Model | Database) => {
       let node = tree;
-      const pathParts = path.split("/");
+      const pathParts = entry.path.split("/");
       pathParts.forEach((part, index) => {
          if (index === pathParts.length - 1) {
             node.set(part, entry);
@@ -204,26 +194,24 @@ export function getTreeView(
          }
       });
    });
-   return getTreeViewRecursive(tree, "", onClickTreeNode, notebookPaths);
+   return getTreeViewRecursive(tree, "", onClickTreeNode);
 }
 
 function getTreeViewRecursive(
    node: Map<string, unknown>,
    path: string,
    onClickNode: (to: string, event?: React.MouseEvent) => void,
-   notebookPaths: Set<string | undefined>,
 ): TreeViewBaseItem<ExtendedTreeItemProps>[] {
    const treeViewItems: TreeViewBaseItem<ExtendedTreeItemProps>[] = [];
    node.forEach((value, key) => {
       const fileType =
-         (notebookPaths.has(path + key) && "notebook") ||
          (key.endsWith(".malloy") && "model") ||
          (key.endsWith(".malloynb") && "notebook") ||
          (key.endsWith(".parquet") && "database") ||
          "unknown";
       if (fileType !== "unknown") {
          // This is a model or database.
-         const entry = value as Model | Database | Notebook;
+         const entry = value as Model | Database;
          treeViewItems.push({
             id: path + key,
             label: key,
@@ -248,7 +236,6 @@ function getTreeViewRecursive(
                value as Map<string, unknown>,
                childPath,
                onClickNode,
-               notebookPaths,
             ),
          });
       }

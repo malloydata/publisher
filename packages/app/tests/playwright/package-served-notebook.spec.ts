@@ -41,10 +41,12 @@ test.describe("package-served-notebook", () => {
          `/${DEFAULT_ENV}/${PACKAGES.storefront}/notebooks/category-review`,
       );
 
-      // The named-query cell is the last one: its table is the ten best sellers.
-      const table = page.locator(".malloy-render").last();
-      await expect(table).toBeVisible({ timeout: 30_000 });
-      const before = await table.innerText();
+      // All three queries render; the last is the named-query table, bound to the control.
+      const renders = page.locator(".malloy-render");
+      await expect(renders).toHaveCount(3, { timeout: 30_000 });
+      const table = renders.nth(2);
+      await expect(table).toContainText("Jacket");
+      await expect(table).not.toContainText("Denim");
 
       await page.getByRole("combobox", { name: "Category" }).click();
       await page.getByRole("option", { name: "Jeans" }).click({
@@ -52,8 +54,8 @@ test.describe("package-served-notebook", () => {
       });
 
       await expect(page).toHaveURL(/[?&]CATEGORY=Jeans/);
-      await expect(async () => {
-         expect(await table.innerText()).not.toBe(before);
-      }).toPass({ timeout: 30_000 });
+      // Denim products only exist in the Jeans category.
+      await expect(table).toContainText("Denim", { timeout: 30_000 });
+      await expect(table).not.toContainText("Jacket");
    });
 });

@@ -92,9 +92,7 @@ function ModelPage() {
       );
    }
 
-   // Served notebook. `notebooks/tour` is the notebook; `notebooks/tour.malloy`
-   // keeps opening in the Model view, for the same reason as the dashboard
-   // branch above, and a `.malloynb` under `notebooks/` still opens below.
+   // `notebooks/tour` is the notebook; `.malloy` and `.malloynb` paths keep their own views.
    if (
       modelPath?.startsWith("notebooks/") &&
       !modelPath.endsWith(".malloy") &&

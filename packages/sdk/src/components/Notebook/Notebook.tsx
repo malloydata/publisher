@@ -508,6 +508,12 @@ export default function Notebook({
       executeCells,
    ]);
 
+   const shownCells =
+      enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
+   const firstMarkdown = shownCells.findIndex(
+      (cell) => cell.type === "markdown",
+   );
+
    return (
       <CleanNotebookContainer>
          <CleanNotebookSection>
@@ -522,14 +528,11 @@ export default function Notebook({
 
                {/* Notebook Cells */}
                {isSuccess &&
-                  (enhancedCells.length > 0
-                     ? enhancedCells
-                     : notebook?.notebookCells || []
-                  ).map((cell, index) => (
+                  shownCells.map((cell, index) => (
                      <NotebookCell
                         cell={cell as EnhancedNotebookCell}
                         key={index}
-                        index={index}
+                        showCopyLink={index === firstMarkdown}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { cellCaption, cellRuns } from "./cellKind";
+import { cellCaption, cellRuns, definitionSummary } from "./cellKind";
 
 describe("cellRuns", () => {
    it("runs a .malloynb code cell and skips its markdown", () => {
@@ -38,8 +38,35 @@ describe("cellCaption", () => {
       );
    });
 
+   it("finds the caption under a // comment inside the tag block", () => {
+      expect(cellCaption('// why\n#" Shown\nrun: q')).toBe("Shown");
+   });
+
    it("is undefined when there is no caption", () => {
       expect(cellCaption("# bar_chart\nrun: q")).toBeUndefined();
       expect(cellCaption("")).toBeUndefined();
+   });
+});
+
+describe("definitionSummary", () => {
+   it("names the statement kind and what it defines", () => {
+      expect(definitionSummary("source: sales is orders extend {\n}")).toBe(
+         "source: sales",
+      );
+      expect(definitionSummary("query: top is sales -> q")).toBe("query: top");
+      expect(
+         definitionSummary('# label="Region"\ngiven: REGION :: filter<string>'),
+      ).toBe("given: REGION");
+   });
+
+   it("says only import for an import, whatever it brings in", () => {
+      expect(definitionSummary('import { a, b } from "./m.malloy"')).toBe(
+         "import",
+      );
+   });
+
+   it("falls back to the first line for a statement it does not recognize", () => {
+      expect(definitionSummary("export { a }")).toBe("export");
+      expect(definitionSummary("// note\nmystery thing")).toBe("mystery thing");
    });
 });

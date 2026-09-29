@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import CloseIcon from "@mui/icons-material/Close";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CodeIcon from "@mui/icons-material/Code";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
@@ -34,16 +36,8 @@ import ResultContainer from "../RenderedResult/ResultContainer";
 import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard } from "../styles";
-import { cellCaption } from "./cellKind";
+import { cellCaption, definitionSummary } from "./cellKind";
 import { EnhancedNotebookCell } from "./types";
-
-/** First statement line of a definition, past its tag lines, so the card says what it defines. */
-function definitionSummary(text: string | undefined): string {
-   const lines = (text ?? "").split("\n");
-   return (
-      lines.find((line) => line.trim() && !line.trim().startsWith("#")) ?? ""
-   );
-}
 
 interface NotebookCellProps {
    cell: EnhancedNotebookCell;
@@ -52,7 +46,8 @@ interface NotebookCellProps {
    expandEmbedding?: boolean;
    hideEmbeddingIcon?: boolean;
    resourceUri: string;
-   index: number;
+   /** Whether this is the notebook's first markdown cell, which carries the copy-link icon. */
+   showCopyLink?: boolean;
    maxResultSize?: number;
    isExecuting?: boolean;
    /**
@@ -107,7 +102,7 @@ export function NotebookCell({
    hideCodeCellIcon,
    hideEmbeddingIcon,
    resourceUri,
-   index,
+   showCopyLink,
    maxResultSize,
    isExecuting,
    pendingRerun,
@@ -130,6 +125,7 @@ export function NotebookCell({
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
 
+   const [definitionOpen, setDefinitionOpen] = useState(false);
    const [copyMessage, setCopyMessage] = useState("");
 
    const { environmentName, packageName, modelPath } =
@@ -328,7 +324,7 @@ export function NotebookCell({
       (cell.type === "markdown" && (
          <Box>
             <Box>
-               {index === 0 ? (
+               {showCopyLink ? (
                   <Stack
                      direction="row"
                      alignItems="flex-start"
@@ -365,31 +361,42 @@ export function NotebookCell({
       )) ||
       (cell.kind === "definition" && (
          <Box>
-            <CleanMetricCard
-               sx={{ position: "relative", padding: "12px 24px" }}
+            <Box
+               component="button"
+               type="button"
+               aria-expanded={definitionOpen}
+               onClick={() => setDefinitionOpen((open) => !open)}
+               sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  p: 0,
+                  border: 0,
+                  background: "none",
+                  cursor: "pointer",
+                  fontFamily: "monospace",
+                  fontSize: "13px",
+                  color: "text.secondary",
+               }}
             >
-               <Typography
-                  component="pre"
-                  sx={{
-                     m: 0,
-                     pr: 5,
-                     fontFamily: "monospace",
-                     fontSize: "14px",
-                     color: "text.secondary",
-                     whiteSpace: "pre-wrap",
-                  }}
-               >
-                  {definitionSummary(cell.text)}
-               </Typography>
-               <FloatingIconButton
-                  aria-label="Malloy code"
-                  sx={{ position: "absolute", top: "8px", right: "8px" }}
-                  onClick={() => setCodeDialogOpen(true)}
-               >
-                  <CodeIcon />
-               </FloatingIconButton>
-            </CleanMetricCard>
-            {codeDialog}
+               {definitionOpen ? (
+                  <ExpandMoreIcon fontSize="small" />
+               ) : (
+                  <ChevronRightIcon fontSize="small" />
+               )}
+               {definitionSummary(cell.text)}
+            </Box>
+            {definitionOpen && (
+               <CleanMetricCard sx={{ mt: 1, padding: "12px 24px" }}>
+                  <pre
+                     className="code-display"
+                     style={{ margin: 0, overflow: "auto" }}
+                     dangerouslySetInnerHTML={{
+                        __html: highlightedMalloyCode ?? "",
+                     }}
+                  />
+               </CleanMetricCard>
+            )}
          </Box>
       )) ||
       (cell.type === "code" && (

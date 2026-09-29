@@ -1342,9 +1342,7 @@ describe("every composite dashboard survives an edit", () => {
    const editable = found.filter((f) => {
       const text = fs.readFileSync(f, "utf8");
       return (
-         /##\s*artifact[\s\S]*tiles\s*=/.test(text) &&
-         !f.includes("dashboards-lint") &&
-         !f.includes("notebooks-lint")
+         /##\s*artifact[\s\S]*tiles\s*=/.test(text) && !/-lint[\\/]/.test(f)
       );
    });
 

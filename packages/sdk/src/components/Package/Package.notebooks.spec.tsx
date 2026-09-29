@@ -78,3 +78,13 @@ it("pins notebooks/README.malloy to the front page, matching case-insensitively"
       undefined,
    ]);
 });
+
+it("pins the root README.malloynb over notebooks/README.malloy when both exist", async () => {
+   listed = [{ path: "notebooks/README.malloy" }, { path: "README.malloynb" }];
+   render(<Package resourceUri="publisher://environments/env/packages/pkg" />, {
+      wrapper: serverWrapper,
+   });
+
+   await waitFor(() => expect(getNotebook).toHaveBeenCalled());
+   expect(getNotebook.mock.calls[0][2]).toBe("README.malloynb");
+});

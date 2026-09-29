@@ -19,8 +19,22 @@ export function cellCaption(text: string | undefined): string | undefined {
    const lines: string[] = [];
    for (const raw of (text ?? "").split("\n")) {
       const line = raw.trim();
+      if (line.startsWith("//")) continue;
       if (!line.startsWith("#")) break;
       if (line.startsWith('#"')) lines.push(line.slice(2).trim());
    }
    return lines.length > 0 ? lines.join(" ") : undefined;
+}
+
+/** One-line label for a folded definition cell: its statement kind and name. */
+export function definitionSummary(text: string | undefined): string {
+   const line =
+      (text ?? "")
+         .split("\n")
+         .map((raw) => raw.trim())
+         .find((l) => l && !l.startsWith("#") && !l.startsWith("//")) ?? "";
+   const named = /^(source|query|given|type):?\s+([A-Za-z_]\w*)/.exec(line);
+   if (named) return `${named[1]}: ${named[2]}`;
+   const keyword = /^(import|export)\b/.exec(line);
+   return keyword ? keyword[1] : line;
 }
