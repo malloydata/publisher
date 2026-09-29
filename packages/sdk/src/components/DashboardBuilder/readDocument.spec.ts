@@ -212,6 +212,33 @@ describe("readDashboardDocument", () => {
          expect(doc.description).toBe("Legacy");
       });
 
+      it("does not take an artifact line inside a block for the tag", async () => {
+         const doc = await read(
+            `##|(text) intro\n## artifact { title="Fake" tiles=["x -> y"] }\n|##\n##" Above\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.title).toBe("Probe");
+         expect(doc.description).toBe("Above");
+      });
+
+      it("ends a block only at a closer in the opener's column", async () => {
+         const doc = await read(
+            `##|"\nBlock prose\n  |##\nstill inside\n|##\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBe("Block prose\n|##\nstill inside");
+      });
+
+      it('takes a ##|" block below the tag as the fallback description, like the server', async () => {
+         const doc = await read(`${ARTIFACT}\n##|"\nBelow block\n|##\n${rest}`);
+         expect(doc.description).toBe("Below block");
+      });
+
+      it('ignores a ##" line inside a block', async () => {
+         const doc = await read(
+            `##|(text) intro\n##" not a note\n|##\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBeUndefined();
+      });
+
       it("has no description when the only note is a malformed route", async () => {
          const doc = await read(`##"word\n${ARTIFACT}\n${rest}`);
          expect(doc.description).toBeUndefined();

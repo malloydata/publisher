@@ -16,7 +16,12 @@ import {
    type TreeStage,
    type TreeView,
 } from "./malloyTree";
-import { ARTIFACT_LINE, descriptionNotes, tileSteps } from "./malloyText";
+import {
+   ARTIFACT_LINE,
+   blockLines,
+   descriptionNotes,
+   tileSteps,
+} from "./malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -122,7 +127,9 @@ function modelLines(lines: string[]): {
    artifact: string[];
 } {
    const artifact: string[] = [];
-   for (const raw of lines) {
+   const inside = blockLines(lines);
+   for (const [i, raw] of lines.entries()) {
+      if (inside.has(i)) continue;
       const text = raw.trim();
       if (
          text.startsWith("##") &&

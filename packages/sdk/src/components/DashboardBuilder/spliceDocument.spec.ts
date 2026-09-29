@@ -1097,6 +1097,27 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       });
    });
 
+   it("refuses to reorder, add or remove tiles when tiles holds a text tile, and leaves the file alone", async () => {
+      const source = fs.readFileSync(
+         path.join(
+            REPO,
+            "packages/server/tests/fixtures/notebooks-malloyyo/dashboards/text_tiles.malloy",
+         ),
+         "utf8",
+      );
+      // The file has one quoted tile beside the text tile, so removal is the edit that reaches the list.
+      const reason = await refused(source, (d) => {
+         d.tiles.pop();
+      });
+      expect(reason).toContain("text tile");
+      // A settings edit that does not touch the tile list still works.
+      const out = await spliced(source, (d) => {
+         d.title = "Renamed";
+      });
+      expect(out).toContain("intro { kind=text colspan=12 }");
+      expect(out).toContain('title="Renamed"');
+   });
+
    it("changes the width of a file whose title holds dashboard { }", async () => {
       const source = `## artifact { title="my dashboard {x}" tiles=["a -> x"] } dashboard { columns=4 }\n${TAIL}`;
       const out = await spliced(source, (d) => {
@@ -1177,6 +1198,26 @@ describe("spliceDashboardDocument: the page's own settings", () => {
          });
          expect(out).toContain('##|"\nBlock prose\n|##\n');
          expect(out).toContain('##" Legacy\n');
+      });
+
+      it("refuses to edit a fallback description held in a block below the tag", async () => {
+         const source = `${artifact}\n##|"\nBelow block\n|##\n${TAIL}`;
+         const reason = await refused(source, (d) => {
+            d.description = "New";
+         });
+         expect(reason).toContain("block");
+         await refused(source, (d) => {
+            delete d.description;
+         });
+      });
+
+      it("refuses to clear a description above when a block below would take its place", async () => {
+         await refused(
+            `##" Above\n${artifact}\n##|"\nBelow block\n|##\n${TAIL}`,
+            (d) => {
+               delete d.description;
+            },
+         );
       });
 
       it("clears the notes below the tag too when it clears one above", async () => {

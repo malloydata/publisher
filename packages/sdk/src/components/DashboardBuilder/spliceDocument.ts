@@ -8,7 +8,11 @@ import type {
    DashboardTile,
 } from "./document";
 import type { LocalGiven } from "./document";
-import { artifactLine, descriptionNotes } from "./malloyText";
+import {
+   artifactLine,
+   descriptionNotes,
+   hasNonQuotedTiles,
+} from "./malloyText";
 import {
    parseMalloy,
    parseRefused,
@@ -408,6 +412,13 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
             reason: "Could not find the `## artifact` tag to reorder.",
          };
       }
+      if (hasNonQuotedTiles(lines[artifactAt])) {
+         return {
+            ok: false,
+            reason:
+               "The `tiles=[…]` list holds an entry the builder does not model, such as a text tile, and rewriting the list would drop it. Reorder, add and remove tiles in the file's text.",
+         };
+      }
       const written = [...lines[artifactAt].matchAll(/"([^"]+)"/g)].map(
          (m) => m[1],
       );
@@ -610,8 +621,9 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
    if (current.description !== next.description) {
       // Written above the tag, where the server reads it. A description read
       // from below (the legacy spot) moves there, and the lines it came from go.
-      const { read, blankAbove, below, inBlock } = descriptionNotes(lines);
-      if (inBlock) {
+      const { read, blankAbove, below, belowBlock, inBlock } =
+         descriptionNotes(lines);
+      if (inBlock || (next.description === undefined && belowBlock)) {
          return {
             ok: false,
             reason:
