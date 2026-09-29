@@ -99,20 +99,23 @@ there), REST is on `:4000`, and MCP is on `:4040`.
 
 Without that mount the server still starts and reports `operationalState: serving`, with no
 environments and an empty catalog. That is a supported way to run, since environments can be created
-over the API afterwards, so it is not treated as an error. Two places say so at startup: a line
+over the API afterwards, so it is not treated as an error. Three places say so: a line
 naming the path that was checked,
 
 ```
-Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json.
-Create one there (in Docker, mount it at that path) or pass --config <path>. Environments can also
-be created at runtime through the API.
+Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json
+when the server started. Create one there (in Docker, mount it at that path) and restart, or pass
+--config <path>. Environments can also be created at runtime through the API.
 ```
 
-and the machine-readable readiness line on stderr, whose counts carry what `serving` alone does not.
+and the machine-readable readiness line on stderr, whose counts carry what `serving` alone does not:
 
 ```
 PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=0 packages=0 load_errors=0
 ```
+
+The third is `GET /api/v0/status` (and the `get_status` MCP tool), which carries the first line's
+text as `emptyReason` for as long as no environment exists.
 
 If you expected packages and see `environments=0`, the config did not reach `/publisher`.
 
