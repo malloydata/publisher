@@ -305,13 +305,29 @@ class Roles(unittest.TestCase):
 
     def test_a_changed_config_forces_init(self):
         root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
-        self.assertFalse(serve.write_config(root, {"a": 1}))   # first write
-        self.assertFalse(serve.write_config(root, {"a": 1}))   # unchanged
-        self.assertTrue(serve.write_config(root, {"a": 2}))
+        self.assertEqual(serve.write_config(root, {"a": 1}), (True, None))
+        self.assertEqual(serve.write_config(root, {"a": 1})[0], False)
+        self.assertEqual(serve.write_config(root, {"a": 2})[0], True)
         (root / serve.DB_NAME).write_text("")
         seed, why = serve.init_decision(root, reinit=False, config_changed=True)
         self.assertTrue(seed)
         self.assertIn("publisher.config.json changed", why)
+
+    def test_a_store_with_no_config_file_is_re_read(self):
+        """A store seeded by a start without --role has no file to compare."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        (root / serve.DB_NAME).write_text("")
+        changed, _ = serve.write_config(root, {"a": 1})
+        self.assertTrue(changed)
+        self.assertTrue(serve.init_decision(root, False, changed)[0])
+
+    def test_a_failed_start_puts_the_old_config_back(self):
+        """So the next start still sees the change, and still passes --init."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        serve.write_config(root, {"a": 1})
+        _, previous = serve.write_config(root, {"a": 2})
+        serve.restore_config(root, previous)
+        self.assertEqual(serve.write_config(root, {"a": 2})[0], True)
 
     def test_a_port_flag_that_disagrees_with_eval_toml_is_refused(self):
         d = a_set(TOML)

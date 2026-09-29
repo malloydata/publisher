@@ -34,11 +34,15 @@ where both ports bind before the database initialises (Publisher's own
 friction log, item 7) is caught here rather than 25 hours later.
 
 A restart PRESERVES the server root. `--init` is passed only to seed a fresh
-one, or when `--reinit` asks for a wipe, because it drops every table including
-`entity_embeddings` and a restart that re-embeds silently answers the calls
-arriving during the sync from lexical retrieval instead. `--reinit` is also how
-a `publisher.config.json` edit takes effect, since reading that manifest is
-the flag's other job; the start line says which mode it chose.
+one, when `--reinit` asks for a wipe, or, with --role, when the config this
+script writes differs from the one on disk, because it drops every table
+including `entity_embeddings` and a restart that re-embeds silently answers the
+calls arriving during the sync from lexical retrieval instead. Reading
+`publisher.config.json` is the flag's other job, so without --role `--reinit`
+is how a hand edit to it takes effect. With --role, an eval.toml edit to the
+role's environment, package name, or package directory re-embeds on the next
+start; a port edit does not. The start line says which mode it
+chose.
 
 `--warm-retrieval` closes the gap between "the server answers" and "the server
 answers SEMANTICALLY". The embedding sync is lazy: it is kicked by the first
@@ -333,15 +337,40 @@ def port_clash(cfg: config.Config, role: str, port: int, mcp_port: int) -> str |
     return None
 
 
-def write_config(root: pathlib.Path, wanted: dict) -> bool:
-    """Write publisher.config.json; True when it differs from what was there."""
+def write_config(root: pathlib.Path, wanted: dict) -> tuple[bool, str | None]:
+    """Write publisher.config.json. Returns whether it differs from what was
+    there, and the text that was there, for `restore_config`.
+
+    A missing or unreadable file counts as different: a store seeded from some
+    other config (a start without --role, a deleted file) must be re-read too.
+    `init_decision` passes --init for it only when a store exists.
+    """
     path = root / "publisher.config.json"
     try:
-        before = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+        previous = path.read_text()
+    except OSError:
+        previous = None
+    try:
+        before = json.loads(previous) if previous is not None else None
+    except json.JSONDecodeError:
         before = None
     path.write_text(json.dumps(wanted, indent=2) + "\n")
-    return before is not None and before != wanted
+    return before != wanted, previous
+
+
+def restore_config(root: pathlib.Path, previous: str | None) -> None:
+    """Put back the config a failed start replaced.
+
+    The file is written before the server starts, and --init is what makes the
+    server read it. A start that dies before that point would otherwise leave
+    the new file beside the old store, and the next start would see no change
+    and skip --init.
+    """
+    path = root / "publisher.config.json"
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(previous)
 
 
 def retrieval_note(env: dict[str, str]) -> str | None:
@@ -467,8 +496,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(clash)
 
     root.mkdir(parents=True, exist_ok=True)
-    changed = (write_config(root, role_config(cfg, a.role))
-               if cfg is not None else False)
+    changed, previous = (write_config(root, role_config(cfg, a.role))
+                         if cfg is not None else (False, None))
     env = {**os.environ, "SERVER_ROOT": str(root)}
     if a.allow_proxy:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
@@ -491,6 +520,8 @@ def main(argv: list[str] | None = None) -> int:
     deadline = time.time() + a.wait
     while time.time() < deadline:
         if p.poll() is not None:
+            if changed:
+                restore_config(root, previous)
             print(f"server exited with {p.returncode}; see {root / 'publisher.log'}")
             return 1
         if alive(a.port):
