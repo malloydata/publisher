@@ -63,7 +63,7 @@ describe("createTableAndDescribe: statements issued", () => {
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id")',
          // Ordered by the partition columns at the top of the INSERT and nowhere
          // else: the SELECT handed in is what the CTAS reads, unchanged.
-         `INSERT INTO "lake"."t" (SELECT * FROM (${ROWS}) AS partitioned_build ORDER BY "org_id")`,
+         `INSERT INTO "lake"."t" (SELECT * FROM (\n${ROWS}\n) AS partitioned_build ORDER BY "org_id")`,
          // The read-back is INSIDE, before COMMIT: a failed DESCRIBE drops the
          // table, and after a commit that would delete the generation the
          // previous manifest still names.
@@ -82,7 +82,7 @@ describe("createTableAndDescribe: statements issued", () => {
          'ALTER TABLE "lake"."t" SET PARTITIONED BY ("org_id", "s")',
       );
       expect(sql[5]).toBe(
-         `INSERT INTO "lake"."t" (SELECT * FROM (${ROWS}) AS partitioned_build ORDER BY "org_id", "s")`,
+         `INSERT INTO "lake"."t" (SELECT * FROM (\n${ROWS}\n) AS partitioned_build ORDER BY "org_id", "s")`,
       );
    });
 
@@ -164,7 +164,7 @@ describe("createTableAndDescribe: the flush threshold", () => {
       // The failure is the writer's, measured on Postgres and BigQuery alike,
       // so every passthrough source is bounded the same way; a chained build
       // issues exactly the sequence it did before any of this existed.
-      for (const sourceType of ["bigquery", "snowflake"] as const) {
+      for (const sourceType of ["postgres", "bigquery", "snowflake"] as const) {
          const { conn, sql } = recorder();
          await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
             sourceType,
@@ -172,7 +172,7 @@ describe("createTableAndDescribe: the flush threshold", () => {
          expect(sql[0]).toBe("SET partitioned_write_flush_threshold = 8192");
          expect(sql[1]).toBe("SET threads = 1");
          expect(sql[5]).toBe(
-            `INSERT INTO "lake"."t" (SELECT * FROM (${ROWS}) AS partitioned_build ORDER BY "org_id")`,
+            `INSERT INTO "lake"."t" (SELECT * FROM (\n${ROWS}\n) AS partitioned_build ORDER BY "org_id")`,
          );
          expect(sql.at(-1)).toBe("RESET threads");
       }
@@ -220,28 +220,40 @@ describe("orderByPartitionColumns: the insert reads its SELECT in partition orde
             "postgres",
          ),
       ).toBe(
-         'SELECT * FROM (SELECT a, b FROM t) AS partitioned_build ORDER BY "org_id", "day"',
+         'SELECT * FROM (\nSELECT a, b FROM t\n) AS partitioned_build ORDER BY "org_id", "day"',
       );
    });
 
    it("quotes for the given dialect: backticks on BigQuery, double quotes elsewhere", () => {
       expect(
          orderByPartitionColumns("SELECT 1", ["org_id"], "standardsql"),
-      ).toBe("SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY `org_id`");
+      ).toBe(
+         "SELECT * FROM (\nSELECT 1\n) AS partitioned_build ORDER BY `org_id`",
+      );
       expect(orderByPartitionColumns("SELECT 1", ["org_id"], "snowflake")).toBe(
-         'SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY "org_id"',
+         'SELECT * FROM (\nSELECT 1\n) AS partitioned_build ORDER BY "org_id"',
       );
    });
 
    it("drops a trailing terminator, which would end the subselect early", () => {
       expect(orderByPartitionColumns("SELECT 1;\n", ["org_id"], "duckdb")).toBe(
-         'SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY "org_id"',
+         'SELECT * FROM (\nSELECT 1\n) AS partitioned_build ORDER BY "org_id"',
+      );
+   });
+
+   it("survives a SELECT that ends in a line comment", () => {
+      // Verified against DuckDB: with the paren on the comment's line the
+      // statement is a parser error; on its own line it runs.
+      expect(
+         orderByPartitionColumns("SELECT 1 AS a -- why", ["a"], "duckdb"),
+      ).toBe(
+         'SELECT * FROM (\nSELECT 1 AS a -- why\n) AS partitioned_build ORDER BY "a"',
       );
    });
 
    it("escapes a quote inside a column name rather than breaking the statement", () => {
       expect(orderByPartitionColumns("SELECT 1", ['a"b'], "postgres")).toBe(
-         'SELECT * FROM (SELECT 1) AS partitioned_build ORDER BY "a""b"',
+         'SELECT * FROM (\nSELECT 1\n) AS partitioned_build ORDER BY "a""b"',
       );
    });
 });
@@ -286,6 +298,9 @@ describe("a wide, many-partition insert at a low memory limit", () => {
             `(DATA_PATH '${join(dir, "data")}/')`,
       );
       await conn.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+      // Production clears insertion order only under the row-group bound, which
+      // has no default; the fix completes either way, and this is the cheaper
+      // of the two to run.
       await conn.runSQL("SET preserve_insertion_order=false");
       await conn.runSQL("SET memory_limit='192MB'");
       return { conn, dispose };

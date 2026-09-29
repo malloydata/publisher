@@ -519,9 +519,12 @@ export function assertDuckDBResourceConfig(): void {
       flushThreshold.toLowerCase() !== "off" &&
       !/^[1-9]\d{0,8}$/.test(flushThreshold)
    ) {
-      // At most nine digits: DuckDB takes a larger count, renders it in
-      // scientific notation and refuses it at the first partitioned build,
-      // long after the boot that should have caught it.
+      // At most nine digits, on operational grounds: above a billion rows the
+      // bound is indistinguishable from `off`, so a larger value is a typo or a
+      // misunderstanding, and this is where it is cheapest to say so. (The
+      // rendering hazard is ours, not DuckDB's -- DuckDB takes a 13-digit
+      // count; JavaScript renders 1e21 and above in exponent form, which the
+      // SET then refuses -- but that is thirteen orders of magnitude away.)
       throw new Error(
          `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
             `row count like "8192" (up to nine digits), or "off" to turn the ` +

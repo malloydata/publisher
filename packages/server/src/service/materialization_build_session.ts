@@ -151,9 +151,10 @@ export function orderByPartitionColumns(
       .map((name) => quoteIdentifier(name, dialect))
       .join(", ");
    // A compiled SELECT carries no terminator, but one would end the subselect
-   // early, so it is not left to chance.
+   // early, so it is not left to chance. The closing paren goes on its own
+   // line: a SELECT that ends in a `--` comment would otherwise swallow it.
    const inner = selectSQL.replace(/[\s;]+$/, "");
-   return `SELECT * FROM (${inner}) AS partitioned_build ORDER BY ${order}`;
+   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${order}`;
 }
 
 /**
@@ -970,6 +971,9 @@ export async function buildSourceIntoStorage(params: {
             if (boundDelta) {
                try {
                   await session.runSQL("RESET threads");
+                  await session.runSQL(
+                     "RESET partitioned_write_flush_threshold",
+                  );
                } catch {
                   // best-effort, as in createTableAndDescribe
                }
@@ -1473,15 +1477,17 @@ export async function createTableAndDescribe(
    partitionColumns: readonly string[] = [],
    options: {
       /**
-       * The passthrough engine the SELECT reads from, when it is one. The
-       * memory bounds on the partitioned path below -- the ordered insert, the
-       * single thread and the flush threshold -- apply to a passthrough source
-       * and to nothing else. The failure is the writer's, not the source's:
+       * Set by the single-source build, naming the passthrough engine its
+       * SELECT reads from; absent from a chained build. Its presence is what
+       * the memory bounds on the partitioned path below -- the ordered insert,
+       * the single thread and the flush threshold -- key on: they apply to a
+       * passthrough source and to nothing else, and a chained build issues
+       * exactly the statements it did before. The engine itself does not
+       * change the treatment. The failure is the writer's, not the source's:
        * measured on Postgres and on BigQuery, whose multi-stream read
        * interleaves partitions even from a sorted result, the same interleaved
        * insert dies and the same ordered, single-threaded insert completes.
-       * Snowflake is covered by the same reasoning, unmeasured. A chained build
-       * issues exactly the statements it did before.
+       * Snowflake is covered by the same reasoning, unmeasured.
        */
       sourceType?: FederatedSourceType;
    } = {},
@@ -1538,11 +1544,13 @@ export async function createTableAndDescribe(
       // partition again and the same insert fails at 768MB that completes on
       // one thread (measured: 616k rows x 122 columns into 308 partitions, 4
       // threads fails at 7 s, 1 thread completes in 9.5 s against 8.4 s for the
-      // same rows pre-sorted by the warehouse). The passthrough read is one
-      // stream regardless, so little parallelism is given up. This session is
-      // the build's own instance; RESET below returns it to the instance
-      // default rather than leaving the read-back and commit single-threaded
-      // for nothing.
+      // same rows pre-sorted by the warehouse). What this gives up depends on
+      // the read: `postgres_query`, `snowflake_query` and `bigquery_query` are
+      // one stream, but the labelled BigQuery split reads its result table
+      // with `bigquery_scan`, which is multi-stream, and there the single
+      // thread costs real scan parallelism. This session is the build's own
+      // instance; `SET threads` is NOT transactional, so the RESET in the
+      // finally is what gives the count back after a rollback, not tidiness.
       await session.runSQL("SET threads = 1");
    }
    let schema: WireColumn[];

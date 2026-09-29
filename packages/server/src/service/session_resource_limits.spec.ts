@@ -286,8 +286,8 @@ describe("PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD", () => {
    });
 
    it("fails the boot on anything but a row count of up to nine digits", () => {
-      // The upper bound because DuckDB takes a larger count, renders it in
-      // scientific notation and refuses it at the first partitioned build.
+      // The upper bound is operational: above a billion rows the bound is
+      // indistinguishable from `off`.
       for (const bad of ["0", "-1", "8KB", "2048.5", "lots", "1000000000"]) {
          process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = bad;
          expect(() => assertDuckDBResourceConfig()).toThrow(

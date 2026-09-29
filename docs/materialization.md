@@ -321,7 +321,9 @@ default 8192 rows) so it flushes long before DuckDB's own half-million-row defau
 308-partition, 120-column source fails against a 768MB `memory_limit` before or shortly after its first
 rows, from Postgres and from BigQuery alike; with them it builds in seconds. The sort is DuckDB's, out of
 core against the build's spill directory, and it reads the whole result before the first partition file is
-written — memory traded for local disk and wall-clock. `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD=off`
+written — memory traded for local disk and wall-clock. That disk is the build's working directory under the
+process temp directory; in a container with no volume there, a large spill is an ephemeral-storage
+eviction rather than a caught error, so give the worker a volume or a limit before building at that scale. `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD=off`
 turns all three off. An incremental delta into a laid-out table gets the threshold and the single thread
 through its session, not the ordered read. A chained build is not changed.
 
