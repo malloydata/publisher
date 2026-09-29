@@ -510,9 +510,11 @@ export default function Notebook({
 
    const shownCells =
       enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
-   const firstMarkdown = shownCells.findIndex(
-      (cell) => cell.type === "markdown",
-   );
+   // A served notebook can open with definition cells; a .malloynb keeps the icon on its first cell.
+   const copyLinkIndex =
+      notebook?.format === "malloy"
+         ? shownCells.findIndex((cell) => cell.type === "markdown")
+         : 0;
 
    return (
       <CleanNotebookContainer>
@@ -532,7 +534,7 @@ export default function Notebook({
                      <NotebookCell
                         cell={cell as EnhancedNotebookCell}
                         key={index}
-                        showCopyLink={index === firstMarkdown}
+                        showCopyLink={index === copyLinkIndex}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}

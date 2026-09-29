@@ -33,7 +33,8 @@ const SERVED = {
    ],
 } as RawNotebook;
 
-const getNotebook = mock(() => Promise.resolve({ data: SERVED }));
+let current: RawNotebook = SERVED;
+const getNotebook = mock(() => Promise.resolve({ data: current }));
 const executeNotebookCell = mock(
    (
       _env: string,
@@ -54,6 +55,7 @@ const URI =
    "publisher://environments/env/packages/pkg/models/notebooks/ops.malloy";
 
 beforeEach(() => {
+   current = SERVED;
    clearCache();
    getNotebook.mockClear();
    executeNotebookCell.mockClear();
@@ -95,4 +97,18 @@ it("puts the copy-link icon on the first markdown cell, not on a leading definit
 
    await screen.findByText("Served prose");
    expect(screen.getAllByTestId("LinkOutlinedIcon")).toHaveLength(1);
+});
+
+it("keeps the copy-link icon off a .malloynb that opens with a code cell", async () => {
+   current = {
+      format: "malloynb",
+      notebookCells: [
+         { type: "code", text: "import { orders } from '../orders.malloy'" },
+         { type: "markdown", text: "Legacy prose" },
+      ],
+   } as RawNotebook;
+   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+
+   await screen.findByText("Legacy prose");
+   expect(screen.queryAllByTestId("LinkOutlinedIcon")).toHaveLength(0);
 });

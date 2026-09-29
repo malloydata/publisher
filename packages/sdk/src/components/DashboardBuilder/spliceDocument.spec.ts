@@ -1010,6 +1010,24 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       expect(flowed).not.toContain("dashboard {");
    });
 
+   it("replaces the dashboard_columns alias when a width is set, and the result lints clean", async () => {
+      const aliased = SOURCE.replace(
+         '"a -> by_brand"] } dashboard { columns=12 }',
+         '"a -> by_brand"] dashboard_columns=8 }',
+      );
+      expect(aliased).toContain("dashboard_columns=8");
+      const out = await spliced(aliased, (d) => {
+         d.columns = 12;
+      });
+      expect(out).not.toContain("dashboard_columns");
+      expect(out).toContain("dashboard { columns=12 }");
+      const removed = await spliced(aliased, (d) => {
+         delete d.columns;
+      });
+      expect(removed).not.toContain("dashboard_columns");
+      expect(removed).not.toContain("dashboard {");
+   });
+
    it("adds and removes autorun and starting values inside the tag", async () => {
       const out = await spliced(SOURCE, (d) => {
          d.autorun = false;

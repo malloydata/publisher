@@ -134,6 +134,16 @@ describe("blockAbove", () => {
 });
 
 describe("readDashboardDocument", () => {
+   it("reads a width spelled only as the dashboard_columns alias", async () => {
+      const doc = await read(
+         SIMPLE.replace(
+            '"a -> by_cat"] givens { CATEGORY="Jeans" } } dashboard { columns=12 }',
+            '"a -> by_cat"] givens { CATEGORY="Jeans" } dashboard_columns=8 }',
+         ),
+      );
+      expect(doc.columns).toBe(8);
+   });
+
    it("reads the whole shape", async () => {
       const doc = await read(SIMPLE);
       expect(doc.title).toBe("Probe");

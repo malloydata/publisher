@@ -523,6 +523,11 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       inner = inner.replace(/\s{2,}/g, " ");
       line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
       if (current.columns !== next.columns) {
+         // The deprecated alias would otherwise sit beside the new width and conflict with it.
+         line = line.replace(
+            /\s*\bdashboard_columns=(?:"(?:[^"\\]|\\.)*"|[^\s}]+)/,
+            "",
+         );
          line = line.replace(/\s*dashboard\s*\{[^}]*\}/, "");
          if (next.columns !== undefined)
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;

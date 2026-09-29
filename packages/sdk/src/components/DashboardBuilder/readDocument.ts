@@ -424,7 +424,9 @@ export async function readDashboardDocument(
       if (value !== undefined) startingGivens[key] = value;
    }
 
-   const columnsTag = tag?.tag("dashboard")?.numeric("columns");
+   const columnsTag =
+      tag?.tag("dashboard")?.numeric("columns") ??
+      artifactTag?.numeric("dashboard_columns");
 
    return {
       ok: true,
