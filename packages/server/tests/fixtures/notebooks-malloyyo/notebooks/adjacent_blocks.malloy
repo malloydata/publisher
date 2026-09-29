@@ -1,0 +1,13 @@
+##! experimental.givens
+## artifact { kind=notebook title="Adjacent blocks" }
+import "../models/orders.malloy"
+
+##|"
+## A heading
+The first block's body starts with a markdown heading.
+|##
+##|"
+The second block follows with no statement between them.
+|##
+
+run: orders -> kpis

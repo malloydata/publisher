@@ -1,0 +1,7 @@
+##" A dashboard whose first tile is prose.
+## artifact { title="Text tiles" tiles=[intro { kind=text colspan=12 }, "orders -> kpis"] } dashboard { columns=12 }
+import "../models/orders.malloy"
+
+##|" intro
+## How to read this page
+|##

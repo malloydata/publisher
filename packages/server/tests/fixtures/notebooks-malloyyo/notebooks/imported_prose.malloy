@@ -1,0 +1,8 @@
+##! experimental.givens
+##" Order totals, described above the artifact tag.
+## artifact { kind=notebook title="Imported prose" }
+import "../models/orders.malloy"
+
+##" The only prose cell in this notebook.
+
+run: orders -> kpis
