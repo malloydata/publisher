@@ -11,6 +11,7 @@
 import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
 import { PackageManifestError } from "../errors";
 import { isDashboardModelPath } from "./dashboard";
+import { isNotebookModelPath } from "./notebook";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -552,7 +553,10 @@ function exploresDeprecation(
 ): string {
    const lead = `"explores" in publisher.json is deprecated.`;
    const files = declared.filter(
-      (entry) => entry !== INDEX_MODEL_NAME && !isDashboardModelPath(entry),
+      (entry) =>
+         entry !== INDEX_MODEL_NAME &&
+         !isDashboardModelPath(entry) &&
+         !isNotebookModelPath(entry),
    );
    if (files.length > 0) {
       return hasIndexModel

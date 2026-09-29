@@ -2042,8 +2042,10 @@ paths:
       operationId: list-notebooks
       summary: List package notebooks
       description: |
-        Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
-        includes the relative path, package name, and any compilation errors. This endpoint
+        Retrieves a list of all Malloy notebooks within the specified package: every
+        `.malloynb` file, and every `.malloy` file directly under `notebooks/` that has a
+        model-level `## artifact` note. Each notebook entry includes the relative path,
+        package name, title, description, and any compilation or reading error. This endpoint
         is useful for discovering available notebooks and checking their status.
       parameters:
         - name: environmentName
@@ -2066,7 +2068,7 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
       responses:
         "200":
-          description: A list of models in the package
+          description: A list of notebooks in the package
           content:
             application/json:
               schema:
@@ -3221,7 +3223,11 @@ components:
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
-            rather than as a clean package. Server-computed and read-only:
+            rather than as a clean package. Notebook findings: a `notebooks/`
+            file with an `## artifact` note whose cells could not be read, which
+            names the line and the fix and is reported with severity `error`,
+            because the notebook is served with that error instead of opening.
+            Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
             when there are such findings.
@@ -3799,12 +3805,18 @@ components:
         title:
           type: string
           description:
-            Human title, resolved from the notebook's own `## title="…"`, then
-            its `#"` doc comment, then its first markdown heading. Absent when
-            none of those resolve, leaving the caller to show the path.
+            Human title. For a `.malloynb`, resolved from its own `## title="…"`,
+            then its `#"` doc comment, then its first markdown heading. For a
+            `.malloy` notebook, from the `title` in its `## artifact` tag, then
+            the first line of the `"` notes above that tag, then its first
+            markdown heading when no prose precedes it. Absent when none of
+            those resolve, leaving the caller to show the path.
         description:
           type: string
-          description: The notebook's `#"` doc comment, when it has one
+          description:
+            The notebook's doc comment, when it has one. For a `.malloy`
+            notebook (and a dashboard) that is the `"` notes above the
+            `## artifact` line; a `##"` note below it is prose, not description.
         error:
           type: string
           description: Error message if the notebook failed to compile or load
@@ -4063,6 +4075,14 @@ components:
         modelPath:
           type: string
           description: Relative path to the notebook file within its package directory
+        format:
+          type: string
+          enum: ["malloynb", "malloy"]
+          description:
+            The file format the notebook is written in. `malloynb` is the
+            cell-separated format; `malloy` is a `.malloy` file under
+            `notebooks/` with a model-level `## artifact` note, whose cells are
+            its statements and prose notes in file order.
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
@@ -4076,7 +4096,11 @@ components:
             $ref: "#/components/schemas/NotebookCell"
         annotations:
           type: array
-          description: Array of file-level (##) annotations attached to the notebook
+          description:
+            Array of file-level (##) annotations attached to the notebook. For
+            a `.malloy` notebook, every own note that is not on the `"` prose
+            route, wherever it sits, plus the `"` notes above the `## artifact`
+            line.
           items:
             type: string
         startingGivens:
@@ -4565,6 +4589,13 @@ components:
           type: string
           enum: ["markdown", "code"]
           description: Type of notebook cell
+        kind:
+          type: string
+          enum: ["markdown", "query", "definition"]
+          description:
+            What a cell is, on a `.malloy` notebook. A definition cell
+            (`source:`, `import`, `query:`, `given:`, `export`) has type `code`
+            and produces no result. Absent on a `.malloynb`.
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
@@ -4590,6 +4621,10 @@ components:
           type: string
           enum: ["markdown", "code"]
           description: Type of notebook cell
+        kind:
+          type: string
+          enum: ["markdown", "query", "definition"]
+          description: The cell's kind, on a `.malloy` notebook. Absent on a `.malloynb`.
         text:
           type: string
           description: Text contents of the notebook cell

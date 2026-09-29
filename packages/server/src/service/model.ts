@@ -102,6 +102,7 @@ import {
    annotationTexts,
    ownLevelNotes,
    ownModelAnnotations,
+   ownModelNoteObjects,
    ownModelNotes,
    type AnnotationNote,
 } from "./annotations";
@@ -122,6 +123,7 @@ import {
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
+import { artifactNoteLine, docNotesAboveArtifact } from "./notebook";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -378,6 +380,19 @@ export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 interface CellDeclaredGivens {
    ids: ReadonlySet<string>;
    names: ReadonlySet<string>;
+}
+
+function declaredGivensPerCell(
+   cells: readonly RunnableNotebookCell[],
+): (CellDeclaredGivens | undefined)[] {
+   return cells.map((cell) => {
+      if (!cell.modelDef) return undefined;
+      const registry = cell.modelDef.givens ?? {};
+      return {
+         ids: new Set(Object.keys(registry)),
+         names: new Set(Object.values(registry).map((g) => g.name)),
+      };
+   });
 }
 
 interface RunnableNotebookCell {
@@ -639,7 +654,8 @@ export class Model {
    private preaggregatePlansVersion = 0;
    /**
     * The model file's text as the compile that produced {@link modelDef} read
-    * it, when the loader shipped it (worker package loads of `.malloy` files).
+    * it: shipped by the worker on a package load, read by `Model.create`
+    * in-process.
     *
     * Held on the Model, not re-read on demand, because it is only meaningful
     * paired with THIS compile's `DocumentLocation` coordinates. A Model is
@@ -729,9 +745,14 @@ export class Model {
        *  entry point, but like a notebook it admits nothing of its own: its
        *  tiles read only the package surface. */
       dashboard?: boolean;
-      /** The dashboard's own file text, so a source it declares on top of a
-       *  surface source (`source: big is orders extend {...}`) can be proven
-       *  to derive from it. Author text, not caller text. */
+      /** This file is a served notebook: a `.malloy` under `notebooks/` with a
+       *  model-level `## artifact` note. It keeps `modelType` "model" and, like
+       *  a `.malloynb`, admits nothing of its own. */
+      notebook?: boolean;
+      /** The dashboard's or served notebook's own compiled file text, so a
+       *  source it declares on top of a surface source
+       *  (`source: big is orders extend {...}`) can be proven to derive from
+       *  it. Author text, not caller text. */
       derivationText?: string;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
@@ -913,15 +934,8 @@ export class Model {
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
       this.givens = givens;
-      this.notebookCellDeclaredGivens = (this.runnableNotebookCells ?? []).map(
-         (cell) => {
-            if (!cell.modelDef) return undefined;
-            const registry = cell.modelDef.givens ?? {};
-            return {
-               ids: new Set(Object.keys(registry)),
-               names: new Set(Object.values(registry).map((g) => g.name)),
-            };
-         },
+      this.notebookCellDeclaredGivens = declaredGivensPerCell(
+         this.runnableNotebookCells ?? [],
       );
       // One walk, both consumers. `collectEntryPointGates` is the single
       // definition of "what gates this source as an entry point" — it follows
@@ -4245,6 +4259,13 @@ export class Model {
             options,
          );
 
+      // Read before the lazy compile so the recorded text is the one it saw.
+      const compiledText = modelPath.endsWith(MODEL_FILE_SUFFIX)
+         ? await fs
+              .readFile(path.join(packagePath, modelPath), "utf8")
+              .catch(() => undefined)
+         : undefined;
+
       try {
          const { modelMaterializer, runnableNotebookCells } =
             await Model.getModelMaterializer(
@@ -4408,6 +4429,7 @@ export class Model {
          // internal Malloy method this file's public `Runtime` import doesn't
          // declare, but it is the same underlying `Runtime` instance either way.
          model.setGateRuntime(runtime as HydrationRuntime);
+         model.compiledSourceText = compiledText;
          return model;
       } catch (error) {
          let computedError = error;
@@ -4803,9 +4825,8 @@ export class Model {
    }
 
    /**
-    * The model file's text as this model's compile read it, or undefined when
-    * the loader did not ship it (a notebook, a compile failure, or an
-    * in-process `Model.create`).
+    * The model file's text as this model's compile read it, or undefined when there is
+    * none (a `.malloynb`, a compile failure, or an unreadable file).
     *
     * The only safe input for slicing a `DocumentLocation` out of: the ranges in
     * {@link getModelDef}'s IR index THIS text. Callers must not fall back to
@@ -4872,7 +4893,9 @@ export class Model {
    public hasEmptyDiscoverySurface(): boolean {
       // No curation (no `explores`) ⇒ legacy listings include imported sources.
       if (!this.discoveryCurationEnabled) return false;
-      if (this.modelType !== "model" || !this.modelDef) return false;
+      if (this.modelType !== "model" || this.isNotebook() || !this.modelDef) {
+         return false;
+      }
       return (
          (this.getSources()?.length ?? 0) === 0 &&
          (this.getQueries()?.length ?? 0) === 0
@@ -4888,6 +4911,7 @@ export class Model {
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
       offSurface?: OffSurfaceContext;
       dashboard?: boolean;
+      notebook?: boolean;
       derivationText?: string;
    }): void {
       this.queryBoundary = policy;
@@ -5415,8 +5439,21 @@ export class Model {
       return current;
    }
 
-   private isNotebook(): boolean {
-      return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
+   /** A `.malloynb`, or a `.malloy` the package discovered as a served notebook. */
+   public isNotebook(): boolean {
+      return (
+         this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
+         this.queryBoundary.notebook === true
+      );
+   }
+
+   /** Whether this compiled model has the own `## artifact` note that makes a
+    *  candidate under `notebooks/` a served notebook. */
+   public carriesNotebookArtifactNote(): boolean {
+      return (
+         this.modelDef !== undefined &&
+         artifactNoteLine(ownModelNoteObjects(this.modelDef)) !== undefined
+      );
    }
 
    private isDashboard(): boolean {
@@ -5807,7 +5844,10 @@ export class Model {
     * caller; a title equal to the path would just be noise on the wire.
     */
    public getNotebookListing(): { title?: string; description?: string } {
-      if (this.modelType !== "notebook") return {};
+      if (!this.isNotebook()) return {};
+      if (!this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         return this.getServedNotebookListing();
+      }
       // This notebook's own `##` only: a title belongs to one document, so an
       // imported model's `## title=` or `#"` doc comment must not become it.
       const annotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
@@ -5821,6 +5861,39 @@ export class Model {
          title: doc.title ?? this.firstMarkdownHeading(),
          description: doc.description,
       };
+   }
+
+   /**
+    * A served notebook's listing: `title` in the artifact tag, then the first
+    * line of the `"` notes above the artifact line, then the first markdown
+    * heading when no prose precedes it. Notes below the tag are cells, not
+    * description.
+    */
+   private getServedNotebookListing(): {
+      title?: string;
+      description?: string;
+   } {
+      const notes = this.modelDef ? ownModelNoteObjects(this.modelDef) : [];
+      const artifact = motlyTag(notes.map((note) => note.text))?.tag(
+         "artifact",
+      );
+      const doc = docCommentTitleAndDescription(
+         docNotesAboveArtifact(notes),
+         tagText(artifact, "title"),
+      );
+      return {
+         title: doc.title ?? this.firstMarkdownHeading(),
+         description: doc.description,
+      };
+   }
+
+   /**
+    * Attach the cells of a served notebook, which is only known to be one after
+    * discovery, and recompute the givens each cell may name.
+    */
+   public setNotebookCells(cells: RunnableNotebookCell[]): void {
+      this.runnableNotebookCells = cells;
+      this.notebookCellDeclaredGivens = declaredGivensPerCell(cells);
    }
 
    /**
@@ -5849,11 +5922,11 @@ export class Model {
       if (this.compilationError) {
          throw this.compilationError;
       }
-      if (this.modelType === "notebook") {
+      if (this.isNotebook()) {
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy under notebooks/ with a ## artifact note.`,
          );
       }
    }
@@ -8071,8 +8144,8 @@ export class Model {
     *
     * For an ordinary file, its export closure, the same set
     * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
-    * its own, only the exported names that trace to the package surface: a
-    * source it may read, or a query over one.
+    * its own (as does a served notebook), only the exported names that trace
+    * to the package surface: a source it may read, or a query over one.
     */
    private publishedNames(): Set<string> | undefined {
       if (!this.discoveryCurationEnabled) return undefined;
@@ -8080,7 +8153,11 @@ export class Model {
       if (!Array.isArray(exports)) return undefined;
       const names = new Set<string>(exports);
       const { mode, exploresDeclared } = this.queryBoundary;
-      if (!this.isDashboard() || mode === "all" || !exploresDeclared) {
+      if (
+         !(this.isDashboard() || this.isNotebook()) ||
+         mode === "all" ||
+         !exploresDeclared
+      ) {
          return names;
       }
       const readable = (source: string) =>
@@ -8148,11 +8225,11 @@ export class Model {
     * it, or builds on it: the text would show that name and how it is used.
     * Reads identifiers outside comments and string literals, so an import
     * path or a note does not count, and reads a backticked name whole. A
-    * dashboard's text is always returned, because the dashboard editor needs
-    * it to save.
+    * dashboard's or served notebook's text is always returned, because the
+    * editor needs it to save.
     */
    public showsFileText(text: string): boolean {
-      if (this.isDashboard()) return true;
+      if (this.isDashboard() || this.isNotebook()) return true;
       const published = this.publishedNames();
       if (!published) return true;
       const unpublished = new Set(
@@ -8280,6 +8357,9 @@ export class Model {
          !readable || (name !== undefined && readable(name));
       const notebook: ApiRawNotebook = {
          type: "notebook",
+         format: this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)
+            ? "malloynb"
+            : "malloy",
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,

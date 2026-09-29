@@ -123,7 +123,7 @@ export class ModelController {
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
       }
-      if (model.getType() === "model") {
+      if (!model.isNotebook()) {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
@@ -158,7 +158,7 @@ export class ModelController {
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
       }
-      if (model.getType() === "model") {
+      if (!model.isNotebook()) {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 

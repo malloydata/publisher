@@ -39,7 +39,8 @@ import type {
    TurtleDef,
 } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
-import { ownModelNotes } from "./annotations";
+import { ownModelNoteObjects } from "./annotations";
+import { docNotesAboveArtifact } from "./notebook";
 import {
    readGivenControlSpec,
    type GivenControlKind,
@@ -399,6 +400,11 @@ export interface DashboardModelFacts {
    /** Model-level (`##`) annotation texts, folded across the import lineage. */
    modelAnnotations: string[];
    /**
+    * The `"`-route notes above the artifact line, which are the description:
+    * one below it is a notebook's prose. Absent means all of `modelAnnotations`.
+    */
+   descriptionNotes?: string[];
+   /**
     * Every named query in the file, uncurated — `explores` curation is about
     * the discovery surface for agents, and a dashboard is a separate artifact.
     */
@@ -618,11 +624,13 @@ export function readDashboardModelFacts(
       }
    }
 
+   const modelNotes = ownModelNoteObjects(modelDef);
    return {
       modelPath,
       // This file's own `##` only. An `## artifact` in a shared include
       // describes that include, not everything importing it.
-      modelAnnotations: ownModelNotes(modelDef),
+      modelAnnotations: modelNotes.map((note) => note.text),
+      descriptionNotes: docNotesAboveArtifact(modelNotes),
       queries,
       givens,
       viewGivens,
@@ -897,7 +905,7 @@ export function buildDashboardManifest(
          };
       });
       const doc = docCommentTitleAndDescription(
-         facts.modelAnnotations,
+         facts.descriptionNotes ?? facts.modelAnnotations,
          composite.title,
       );
       return {
