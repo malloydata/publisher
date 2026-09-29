@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import {
    buildDashboardManifest,
    normalizeTileExpression,
@@ -2362,5 +2364,41 @@ describe("service/dashboard tile normalization", () => {
       // The old expression took ~2.3s on this input; a generous ceiling still
       // fails by orders of magnitude if the quadratic form comes back.
       expect(elapsed).toBeLessThan(500);
+   });
+});
+
+describe("service/dashboard text tile entries", () => {
+   const fixture = fs.readFileSync(
+      path.resolve(
+         __dirname,
+         "../../tests/fixtures/notebooks-malloyyo/dashboards/text_tiles.malloy",
+      ),
+      "utf8",
+   );
+   const f = facts({
+      modelAnnotations: fixture
+         .split("\n")
+         .filter((line) => line.startsWith("## artifact"))
+         .map((line) => `${line}\n`),
+      viewGivens: new Map([["orders -> kpis", []]]),
+      viewAnnotations: new Map([["orders -> kpis", []]]),
+      sourceFields: new Map([["orders", new Set(["kpis"])]]),
+   });
+
+   // Text tiles do not render yet, so the entry is left out of the manifest
+   // rather than shown as a run expression that cannot resolve.
+   it("leaves a kind=text entry out of the manifest and draws one warning", () => {
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(manifest.tiles?.map((tile) => tile.query)).toEqual([
+         "orders -> kpis",
+      ]);
+      const findings = lintDashboard(f, manifest);
+      expect(findings.map((x) => [x.severity, x.message])).toEqual([
+         [
+            "warn",
+            "`intro` in `tiles=[…]` is a text tile, but Publisher does not render text tiles yet, so it is left out of the page.",
+         ],
+      ]);
    });
 });

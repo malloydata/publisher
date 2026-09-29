@@ -4,6 +4,11 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import {
+   buildDashboardManifest,
+   lintDashboard,
+   type DashboardModelFacts,
+} from "./dashboard";
 import { lintNotebookText, notebookLintProblems } from "./notebook_lint";
 
 const FIXTURES = path.resolve(__dirname, "../../tests/fixtures");
@@ -639,6 +644,35 @@ describe("notebook lint", () => {
          const text = fs.readFileSync(path.join(root, file), "utf8");
          expect({ file, found: lint(text, file) }).toEqual({ file, found: [] });
       }
+   });
+
+   it("puts the fixture dashboard through the dashboard lint too, which only says its text tile is not rendered yet", () => {
+      const text = fs.readFileSync(
+         path.join(FIXTURES, "notebooks-malloyyo/dashboards/text_tiles.malloy"),
+         "utf8",
+      );
+      const facts: DashboardModelFacts = {
+         modelPath: "dashboards/text_tiles.malloy",
+         modelAnnotations: text
+            .split("\n")
+            .filter((line) => line.startsWith("## artifact"))
+            .map((line) => `${line}\n`),
+         queries: [],
+         givens: new Map(),
+         viewGivens: new Map([["orders -> kpis", []]]),
+         viewAnnotations: new Map([["orders -> kpis", []]]),
+         sourceFields: new Map([["orders", new Set(["kpis"])]]),
+         drills: [],
+         suggestGivens: {
+            forSource: () => undefined,
+            forQuery: () => undefined,
+         },
+      };
+      const manifest = buildDashboardManifest(facts);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(facts, manifest).map((f) => f.severity)).toEqual([
+         "warn",
+      ]);
    });
 
    it("finds what the fixture notebooks carry on purpose", () => {

@@ -185,7 +185,7 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       expect(new Annotations(bare.annotations).texts()).toEqual([]);
    });
 
-   it("puts a (text) block on its own route, with its name on the opener line where a reader can strip it", () => {
+   it("puts a (text) block on its own route, with its name on the opener line of the note text", () => {
       const own = ownModelAnnotations(defOf("dashboards/text_tiles.malloy"));
       const blocks = new Annotations(own).forRoute("text");
       expect(blocks.map((note) => note.at.range.start.line + 1)).toEqual([5]);
@@ -255,7 +255,7 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       );
    });
 
-   it("accepts a (text) opener of more than one word without complaint, so only lint can catch it", async () => {
+   it("accepts a (text) opener of more than one word without a compile problem (the lint reports it)", async () => {
       const model = await compileVariant(
          "dashboards/text_tiles.malloy",
          (text) => text.replace("##|(text) intro\n", "##|(text) intro extra\n"),
@@ -285,7 +285,7 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       },
    );
 
-   it("accepts text after a block closer without complaint, so only lint can catch it", async () => {
+   it("accepts text after a block closer without a compile problem (the lint reports it)", async () => {
       const model = await compileVariant(
          "dashboards/text_tiles.malloy",
          (text) => text.replace(/\|##\n$/, "|## trailing\n"),

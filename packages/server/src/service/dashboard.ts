@@ -354,9 +354,12 @@ function readArtifactTag(
 
    return {
       title: tagText(artifact, "title"),
+      // A `kind=text` entry is not a run expression and text tiles do not render
+      // yet, so it is left out here and the lint says so.
       tiles: artifact
          .array("tiles")
-         ?.map((tile) => tagText(tile))
+         ?.filter((tile) => tagText(tile, "kind") !== "text")
+         .map((tile) => tagText(tile))
          .filter((tile): tile is string => tile !== undefined),
       // One spelling for both forms: the `# dashboard { columns=N }` render tag
       // sitting beside the artifact tag, which is also what the renderer reads
@@ -1145,14 +1148,14 @@ export function lintDashboard(
       if (kind === "text") {
          add(
             `\`${tagText(entry) ?? "a tile"}\` in \`tiles=[…]\` is a text tile, ` +
-               `but Publisher does not render text tiles yet, so the entry is ` +
-               `read as a run expression that does not resolve.`,
+               `but Publisher does not render text tiles yet, so it is left out ` +
+               `of the page.`,
          );
+         continue;
       }
-      // `kind=query` says nothing new, and `kind=text` was reported above.
+      // `kind=query` says nothing new.
       const carried = Object.keys(entry.dict ?? {}).filter(
-         (property) =>
-            !(property === "kind" && (kind === "query" || kind === "text")),
+         (property) => !(property === "kind" && kind === "query"),
       );
       if (carried.length === 0) continue;
       const named = carried.map((property) => `\`${property}\``).join(", ");
