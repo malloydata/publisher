@@ -171,22 +171,31 @@ The two packages are decided differently:
 - **skills** publishes when its published content changed since npm `latest`'s `gitHead`: a
   `git diff --quiet <gitHead> HEAD` over `skills/`, `packages/skills/`, `bun.lock` and the root
   `package.json`, excluding `skills/README.md` and `packages/skills/src/*.spec.ts` (neither reaches
-  the tarball). Changed publishes `latest` + 1 patch; unchanged skips. `gitHead` is what `npm
-  publish` stamped onto the currently-published version's manifest, which is why `release.yml`'s
-  checkout now uses `fetch-depth: 0` — an arbitrary past commit a shallow clone would not have.
+  the tarball). Changed publishes one patch above the highest published plain version; unchanged
+  skips. `gitHead` is what `npm publish` stamped onto the currently-published version's manifest,
+  which is why `release.yml`'s checkout now uses `fetch-depth: 0` — an arbitrary past commit a
+  shallow clone would not have.
 - **create-malloy-package** publishes on every non-prerelease release, because it bakes the
   server's npm `latest` into every workspace it scaffolds, so a release changes what it ships even
   when nothing in its own directory did. The only skip is a re-run: if npm `latest`'s
   `publisherServer` field already equals this release's version, a previous attempt of the same
   release already got it out.
 
+The publish version is one patch above the HIGHEST published plain `x.y.z` version
+(`npm view <pkg> versions --json`), not `latest` plus one: `latest` can be moved backwards by hand
+(`npm dist-tag add <pkg>@<older> latest`) after a bad release while the newer version stays
+published, and computing off `latest` alone would recompute that already-published version and
+abort — under `set -e`, before the scaffolder is ever dispatched, so a server release could ship
+with no scaffolder pinning it. `latest` and its `gitHead` stay the content-diff baseline above,
+since that's what users actually get; only the version arithmetic moved to the versions list.
+
 A hand dispatch of either child workflow (`gh workflow run skills-npm.yml` /
-`create-malloy-package-npm.yml`, no `version` input) publishes npm `latest` + 1 patch, the same
-"free and above latest" guard the old PR check used to enforce, now run once at dispatch time
-instead of on every PR. **A minor or major bump is a hand dispatch with `-f version=`** — nothing
-computes one automatically. After a hand-dispatched skills minor, hand-dispatch the scaffolder too
-(it depends on skills' version), or just wait for the next release, which republishes the
-scaffolder anyway.
+`create-malloy-package-npm.yml`, no `version` input) publishes one patch above the highest
+published version, the same "free and above the ceiling" guard the old PR check used to enforce,
+now run once at dispatch time instead of on every PR. **A minor or major bump is a hand dispatch
+with `-f version=`** — nothing computes one automatically. After a hand-dispatched skills minor,
+hand-dispatch the scaffolder too (it depends on skills' version), or just wait for the next
+release, which republishes the scaffolder anyway.
 
 The old PR-time bump check's `bun.lock` gap is closed by this move, not merely inherited: `bun.lock`
 and the root `package.json` are in the skills diff's watched paths directly (they change what

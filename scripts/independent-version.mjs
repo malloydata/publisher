@@ -48,6 +48,53 @@ export function nextPatch(latest) {
   return `${major}.${minor}.${Number(patch) + 1}`;
 }
 
+/** Numeric compare of two plain major.minor.patch strings (positive if `a` >
+ * `b`), so "0.1.10" sorts above "0.1.9" — a lexical or `sort -V`-on-untrusted-
+ * input compare gets this wrong or is unsafe over an unvalidated list. */
+function compareVersions(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  }
+  return 0;
+}
+
+/**
+ * The highest plain major.minor.patch version in `versions` (npm's full
+ * published-versions list). Prereleases and anything else non-plain are
+ * ignored, not just deprioritized: `dist-tags.latest` can be rolled back by
+ * hand after a bad release (`npm dist-tag add`), which is exactly the case
+ * this exists to survive, so the ceiling has to be the highest version npm
+ * has ever accepted, not whatever `latest` currently points at. Throws —
+ * fail-closed — on anything that is not an array, or has no plain version at
+ * all, since npm immutability means guessing wrong here risks colliding with
+ * an already-published version.
+ */
+export function highestPlain(versions) {
+  if (!Array.isArray(versions)) {
+    throw new Error(
+      "expected npm's published-versions list as an array of strings, got " +
+        `${sanitizeForLine(JSON.stringify(versions))}`,
+    );
+  }
+  const plain = versions.filter(
+    (v) => typeof v === "string" && PLAIN_VERSION.test(v),
+  );
+  if (plain.length === 0) {
+    throw new Error(
+      "npm's published-versions list has no plain major.minor.patch version to compute from",
+    );
+  }
+  return plain.reduce((best, v) => (compareVersions(v, best) > 0 ? v : best));
+}
+
+/** One patch above the highest published plain version — see `highestPlain`
+ * for why this is the ceiling rather than `dist-tags.latest`. */
+export function nextAfterHighest(versions) {
+  return nextPatch(highestPlain(versions));
+}
+
 function abort(reason) {
   return { action: "abort", reason };
 }
@@ -64,11 +111,18 @@ function abort(reason) {
  *   can make it not, and there is then nothing to diff against.
  * - `changed`: "changed" | "unchanged" | "error", the three outcomes of
  *   `git diff --quiet <gitHead> HEAD -- <watched paths>`.
+ * - `versions`: npm's full published-versions list (`npm view <pkg>
+ *   versions --json`), the source for the publish version — see
+ *   `highestPlain`. `gitHead` still comes from `latest` (the content-diff
+ *   baseline is what users actually get), but the version to publish is one
+ *   patch above the highest version npm has ever accepted, not above
+ *   `latest`, so a rolled-back `latest` dist-tag can't make this recompute
+ *   something already published.
  */
-export function decideSkills({ npmOk, latest, gitHead, objectPresent, changed }) {
+export function decideSkills({ npmOk, latest, gitHead, objectPresent, changed, versions }) {
   if (!npmOk) {
     return abort(
-      "npm did not answer for @malloy-publisher/skills (latest or its gitHead), so publish/skip cannot be decided",
+      "npm did not answer for @malloy-publisher/skills (latest, its gitHead, or its published versions list), so publish/skip cannot be decided",
     );
   }
   if (!PLAIN_VERSION.test(latest)) {
@@ -86,6 +140,14 @@ export function decideSkills({ npmOk, latest, gitHead, objectPresent, changed })
       `commit ${gitHead} (the gitHead npm recorded for @malloy-publisher/skills@${latest}) is not present in this checkout ` +
         `(a version published by hand from a workstation, outside this checkout's history, can do this). ` +
         `Recovery: hand-dispatch skills-npm.yml on main to publish a CI-built version, which records a gitHead this checkout can diff against next time.`,
+    );
+  }
+  let nextVersion;
+  try {
+    nextVersion = nextAfterHighest(versions);
+  } catch (error) {
+    return abort(
+      `could not compute a next version for @malloy-publisher/skills from npm's published versions list: ${sanitizeForLine(error.message)}`,
     );
   }
   if (changed === "error") {
@@ -106,7 +168,7 @@ export function decideSkills({ npmOk, latest, gitHead, objectPresent, changed })
   }
   return {
     action: "publish",
-    version: nextPatch(latest),
+    version: nextVersion,
     reason: `published content changed since npm latest's gitHead ${gitHead}`,
   };
 }
@@ -139,6 +201,10 @@ export function decideSkills({ npmOk, latest, gitHead, objectPresent, changed })
  *   checkout (`git cat-file -e`).
  * - `changed`: "changed" | "unchanged" | "error", the diff of the
  *   scaffolder's watched paths against `gitHead`.
+ * - `versions`: npm's full published-versions list, the source for the
+ *   publish version — see `decideSkills` and `highestPlain` for why this is
+ *   one patch above the highest published version rather than above
+ *   `latest`.
  */
 export function decideScaffolder({
   npmOk,
@@ -148,15 +214,24 @@ export function decideScaffolder({
   gitHead,
   objectPresent,
   changed,
+  versions,
 }) {
   if (!npmOk) {
     return abort(
-      "npm did not answer for @malloy-publisher/create-malloy-package's latest, so publish/skip cannot be decided",
+      "npm did not answer for @malloy-publisher/create-malloy-package (its latest or its published versions list), so publish/skip cannot be decided",
     );
   }
   if (!PLAIN_VERSION.test(latest)) {
     return abort(
       `npm latest "${sanitizeForLine(latest)}" for @malloy-publisher/create-malloy-package is not major.minor.patch`,
+    );
+  }
+  let nextVersion;
+  try {
+    nextVersion = nextAfterHighest(versions);
+  } catch (error) {
+    return abort(
+      `could not compute a next version for @malloy-publisher/create-malloy-package from npm's published versions list: ${sanitizeForLine(error.message)}`,
     );
   }
   if (publisherServer && publisherServer === release) {
@@ -177,13 +252,13 @@ export function decideScaffolder({
     }
     return {
       action: "publish",
-      version: nextPatch(latest),
+      version: nextVersion,
       reason: `latest's publisherServer already equals ${release} (a re-run), but ${why}; publishing an extra patch is harmless`,
     };
   }
   return {
     action: "publish",
-    version: nextPatch(latest),
+    version: nextVersion,
     reason: publisherServer
       ? `latest's publisherServer is ${publisherServer}, not this release's ${release}`
       : "latest has no publisherServer field yet",
@@ -198,14 +273,15 @@ export function decideScaffolder({
  * `status` mirrors `registry_has` in publish-packages.sh: "published",
  * "free", or "unknown" (the registry did not give a usable answer).
  */
-export function checkFree({ status, name, version }) {
+export function checkFree({ status, name, version, wf }) {
   switch (status) {
     case "free":
       return null;
     case "published":
       return abort(
         `${name}@${version} is already on npm; refusing to publish over it (the version this release computed should have been free). ` +
-          `This can happen if a CDN edge was still serving a stale \`latest\` when this was checked. Recovery: re-run this job after a few minutes.`,
+          `This can happen if a CDN edge was still serving a stale \`latest\` when this was checked. Recovery: re-run this job after a few minutes. ` +
+          `If a re-run doesn't clear it, hand-dispatch ${wf || "the workflow"} on main with an explicit -f version= set above the highest published version.`,
       );
     default:
       return abort(
@@ -236,6 +312,22 @@ function boolEnv(name) {
   return raw === "1" || raw === "true";
 }
 
+/** Parses VERSIONS_JSON (npm's `versions --json` output, passed through
+ * whole). Distinguishes "not set" (undefined) from "set but not valid JSON"
+ * (throws), so a caller can fail closed on the latter rather than silently
+ * treating garbage as an empty list. */
+function versionsEnv() {
+  const raw = process.env.VERSIONS_JSON;
+  if (raw === undefined || raw === "") return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    // npm prints a bare string, not an array, for a package with one version.
+    return typeof parsed === "string" ? [parsed] : parsed;
+  } catch (error) {
+    throw new Error(`VERSIONS_JSON is not valid JSON: ${error.message}`);
+  }
+}
+
 function reportDecision(decision) {
   if (decision.action === "abort") {
     console.log(`abort ${decision.reason}`);
@@ -255,32 +347,70 @@ function main(argv) {
   const [command, ...rest] = argv;
 
   switch (command) {
-    case "next": {
-      const [latest] = rest;
-      if (!latest) usageFail("usage: independent-version.mjs next <latest>");
-      let version;
+    // Used directly by the child workflows' own "Resolve version to publish"
+    // step for a hand dispatch with no `version` input: reads the full
+    // published-versions list from VERSIONS_JSON rather than a single
+    // `latest` argument, so a rolled-back `latest` dist-tag can't make this
+    // recompute a version that's already published (see `highestPlain`).
+    case "next-after-highest": {
+      let versions;
       try {
-        version = nextPatch(latest);
+        versions = versionsEnv();
+        if (versions === undefined) {
+          throw new Error("VERSIONS_JSON is not set");
+        }
+        console.log(nextAfterHighest(versions));
       } catch (error) {
         usageFail(error.message);
       }
-      console.log(version);
+      return;
+    }
+
+    // The ceiling itself, for a caller that needs to compare an explicit
+    // `-f version=` against it (the child workflows' "refuse at or below"
+    // guard) rather than compute the next patch above it.
+    case "highest-plain": {
+      let versions;
+      try {
+        versions = versionsEnv();
+        if (versions === undefined) {
+          throw new Error("VERSIONS_JSON is not set");
+        }
+        console.log(highestPlain(versions));
+      } catch (error) {
+        usageFail(error.message);
+      }
       return;
     }
 
     case "decide-skills": {
+      let versions;
+      try {
+        versions = versionsEnv();
+      } catch (error) {
+        reportDecision(abort(error.message));
+        return;
+      }
       const decision = decideSkills({
         npmOk: boolEnv("NPM_OK"),
         latest: process.env.LATEST ?? "",
         gitHead: process.env.GIT_HEAD ?? "",
         objectPresent: boolEnv("OBJECT_PRESENT"),
         changed: process.env.CHANGED ?? "",
+        versions,
       });
       reportDecision(decision);
       return;
     }
 
     case "decide-scaffolder": {
+      let versions;
+      try {
+        versions = versionsEnv();
+      } catch (error) {
+        reportDecision(abort(error.message));
+        return;
+      }
       const decision = decideScaffolder({
         npmOk: boolEnv("NPM_OK"),
         latest: process.env.LATEST ?? "",
@@ -289,6 +419,7 @@ function main(argv) {
         gitHead: process.env.GIT_HEAD ?? "",
         objectPresent: boolEnv("OBJECT_PRESENT"),
         changed: process.env.CHANGED ?? "",
+        versions,
       });
       reportDecision(decision);
       return;
@@ -298,7 +429,8 @@ function main(argv) {
       const status = process.env.STATUS ?? "";
       const name = process.env.NAME ?? "";
       const version = process.env.VERSION ?? "";
-      const result = checkFree({ status, name, version });
+      const wf = process.env.WF ?? "";
+      const result = checkFree({ status, name, version, wf });
       if (result) {
         console.log(`abort ${result.reason}`);
         process.exit(ABORT_EXIT_CODE);
@@ -309,7 +441,7 @@ function main(argv) {
 
     default:
       usageFail(
-        `unknown command "${command ?? ""}"; expected next, decide-skills, decide-scaffolder, or check-free`,
+        `unknown command "${command ?? ""}"; expected next-after-highest, highest-plain, decide-skills, decide-scaffolder, or check-free`,
       );
   }
 }

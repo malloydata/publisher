@@ -28,10 +28,10 @@ on:
     inputs:
       # Set by release.yml's publish-packages to the version it decided
       # (scripts/independent-version.mjs). Left empty on a hand dispatch, which
-      # publishes npm latest + 1 patch instead; see "Resolve version to
-      # publish" in the publish job.
+      # publishes one patch above the highest published version instead; see
+      # "Resolve version to publish" in the publish job.
       version:
-        description: "Version to publish (release use; leave empty to publish npm latest + 1 patch)"
+        description: "Version to publish (release use; leave empty to publish one patch above the highest published version)"
         required: false
         default: ""
       # Set by release.yml's publish-packages to the skills version it just
@@ -351,8 +351,9 @@ jobs:
 
       # Decide what to publish, before "Read version" reads it back out of the
       # manifest: the input if the dispatch named one (release.yml always
-      # does), else npm latest + 1 patch. Refuses anything at or below npm's
-      # latest, since a hand dispatch is the one path nothing else gates.
+      # does), else one patch above the highest published plain version.
+      # Refuses anything at or below that ceiling, since a hand dispatch is
+      # the one path nothing else gates.
       - name: Resolve version to publish
         id: resolve_version
         env:
@@ -360,24 +361,54 @@ jobs:
         run: |
           set -euo pipefail
 
-          if LATEST_OUTPUT="$(npm view @malloy-publisher/create-malloy-package dist-tags.latest --prefer-online 2>&1)" && [ -n "$LATEST_OUTPUT" ]; then
-            # tail -n 1: npm writes routine warnings to the same stream on a
-            # successful run too (unknown env config, update notices, retries).
-            LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | tail -n 1)"
-          elif [[ "$LATEST_OUTPUT" == *E404* ]]; then
-            LATEST=""
+          # The full published-versions list, not just `latest`: `latest` can
+          # be rolled back by hand (`npm dist-tag add ... latest`) after a bad
+          # release while the newer version stays published, and computing
+          # off `latest` alone would recompute that already-published version
+          # and abort below at "Verify this version is not already
+          # published". The JSON can span many lines, so stdout is captured
+          # on its own (not folded with stderr and tail -n1'd, which would
+          # silently truncate it), and npm can still write warnings to stderr
+          # on a successful run, so those are logged rather than discarded.
+          NPM_VERSIONS_ERR="$(mktemp)"
+          if VERSIONS_JSON="$(npm view @malloy-publisher/create-malloy-package versions --json --prefer-online 2>"$NPM_VERSIONS_ERR")"; then
+            NPM_OK=1
           else
-            printf '%s\n' "$LATEST_OUTPUT" | sed 's/^/[npm] /'
-            echo "::error title=Version::could not ask npm for @malloy-publisher/create-malloy-package dist-tags.latest"
-            exit 1
+            NPM_OK=0
+          fi
+          NPM_VERSIONS_ERR_CONTENT="$(cat "$NPM_VERSIONS_ERR")"
+          rm -f "$NPM_VERSIONS_ERR"
+          if [ "$NPM_OK" != 1 ]; then
+            if [[ "$NPM_VERSIONS_ERR_CONTENT" == *E404* ]]; then
+              VERSIONS_JSON="[]"
+            else
+              printf '%s\n' "$NPM_VERSIONS_ERR_CONTENT" | sed 's/^/[npm] /'
+              echo "::error title=Version::could not ask npm for @malloy-publisher/create-malloy-package's published versions"
+              exit 1
+            fi
+          elif [ -n "$NPM_VERSIONS_ERR_CONTENT" ]; then
+            printf '%s\n' "$NPM_VERSIONS_ERR_CONTENT" | sed 's/^/[npm] /'
+          fi
+
+          HIGHEST=""
+          if [ "$VERSIONS_JSON" != "[]" ]; then
+            if ! HIGHEST="$(VERSIONS_JSON="$VERSIONS_JSON" node scripts/independent-version.mjs highest-plain 2>&1)"; then
+              printf '%s\n' "$HIGHEST" | sed 's/^/[version] /'
+              echo "::error title=Version::could not compute the highest published version for @malloy-publisher/create-malloy-package from npm's versions list"
+              exit 1
+            fi
           fi
 
           if [ -n "$INPUT_VERSION" ]; then
             VERSION="$INPUT_VERSION"
-          elif [ -n "$LATEST" ]; then
-            VERSION="$(node scripts/independent-version.mjs next "$LATEST")"
+          elif [ -n "$HIGHEST" ]; then
+            if ! VERSION="$(VERSIONS_JSON="$VERSIONS_JSON" node scripts/independent-version.mjs next-after-highest 2>&1)"; then
+              printf '%s\n' "$VERSION" | sed 's/^/[version] /'
+              echo "::error title=Version::could not compute a next version for @malloy-publisher/create-malloy-package from npm's versions list"
+              exit 1
+            fi
           else
-            echo "::error title=Version::@malloy-publisher/create-malloy-package has never been published, so there is no npm latest to compute a next patch from; dispatch this workflow with version set explicitly"
+            echo "::error title=Version::@malloy-publisher/create-malloy-package has never been published, so there is no highest published version to compute a next patch from; dispatch this workflow with version set explicitly"
             exit 1
           fi
 
@@ -394,11 +425,11 @@ jobs:
           # | tail -1` is `0.2.0-rc.1`), so a prerelease is exempted rather
           # than compared: it publishes under the "next" dist-tag below and
           # cannot move "latest" backwards regardless.
-          if [ -n "$LATEST" ]; then
+          if [ -n "$HIGHEST" ]; then
             if [[ "$VERSION" == *-* ]]; then
-              echo "::notice title=Version::$VERSION is a prerelease; skipping the above-latest test because it does not move the latest dist-tag"
-            elif [ "$VERSION" != "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -1)" ]; then
-              echo "::error title=Version::$VERSION is at or below npm's latest ($LATEST); refusing to publish it"
+              echo "::notice title=Version::$VERSION is a prerelease; skipping the above-highest test because it does not move the latest dist-tag"
+            elif [ "$VERSION" != "$(printf '%s\n%s\n' "$HIGHEST" "$VERSION" | sort -V | tail -1)" ]; then
+              echo "::error title=Version::$VERSION is at or below the highest published version ($HIGHEST); refusing to publish it"
               exit 1
             fi
           fi
@@ -520,7 +551,7 @@ jobs:
           # means this version is free. Any other failure means the registry did
           # not answer, which is not the same as a green light.
           if PUBLISHED="$(npm view "$SPEC" version 2>&1)"; then
-            echo "::error title=Version::$SPEC is already published; re-dispatch this workflow with no version input (publishes npm latest + 1 patch) or with version set higher than $CURRENT_VERSION"
+            echo "::error title=Version::$SPEC is already published; re-dispatch this workflow with no version input (publishes one patch above the highest published version) or with version set higher than $CURRENT_VERSION"
             exit 1
           elif [[ "$PUBLISHED" != *E404* ]]; then
             printf '%s\n' "$PUBLISHED" | sed 's/^/[npm] /'

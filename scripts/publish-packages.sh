@@ -302,11 +302,13 @@ G_GIT_HEAD=""
 G_OBJECT_PRESENT=0
 G_CHANGED="error"
 G_DIFF_STAT=""
+G_VERSIONS_JSON=""
 G_PUBLISHER_SERVER=""
 G_SCAFFOLDER_GIT_HEAD=""
 G_SCAFFOLDER_OBJECT_PRESENT=0
 G_SCAFFOLDER_CHANGED="error"
 G_SCAFFOLDER_DIFF_STAT=""
+G_SCAFFOLDER_VERSIONS_JSON=""
 
 # Content-changed check for skills: unchanged (0), changed (1), or an error
 # (anything else) diffing npm latest's gitHead against this checkout. Fails
@@ -352,11 +354,12 @@ scaffolder_diff_status() {
   esac
 }
 
-# Sets G_NPM_OK, G_LATEST, G_GIT_HEAD, G_OBJECT_PRESENT, G_CHANGED, G_DIFF_STAT.
-# A plain function call, not a subshell, so the globals persist to the caller.
+# Sets G_NPM_OK, G_LATEST, G_GIT_HEAD, G_OBJECT_PRESENT, G_CHANGED, G_DIFF_STAT,
+# G_VERSIONS_JSON. A plain function call, not a subshell, so the globals
+# persist to the caller.
 gather_skills_facts() {
-  G_NPM_OK=1 G_LATEST="" G_GIT_HEAD="" G_OBJECT_PRESENT=0 G_CHANGED="error" G_DIFF_STAT=""
-  local raw diff_out
+  G_NPM_OK=1 G_LATEST="" G_GIT_HEAD="" G_OBJECT_PRESENT=0 G_CHANGED="error" G_DIFF_STAT="" G_VERSIONS_JSON=""
+  local raw diff_out versions_err versions_err_content
 
   if ! raw="$(npm view @malloy-publisher/skills dist-tags.latest --prefer-online 2>&1)" || [ -z "$raw" ]; then
     echo_untrusted_output "$raw" >&2
@@ -373,6 +376,27 @@ gather_skills_facts() {
     return 0
   fi
   G_GIT_HEAD="$(printf '%s\n' "$raw" | tail -n 1)"
+
+  # The full published-versions list: the ceiling for the version to publish
+  # is one patch above the HIGHEST version npm has ever accepted, not above
+  # `latest` (see independent-version.mjs's highestPlain), so a `latest`
+  # dist-tag rolled back by hand after a bad release can't make this
+  # recompute something already published. The JSON can span many lines, so
+  # stdout is captured on its own rather than folded with stderr and
+  # tail -n1'd, which would silently truncate it to one line; npm can still
+  # write warnings to stderr on a successful run, so those are read and
+  # logged separately rather than discarded.
+  versions_err="$(mktemp)"
+  if ! G_VERSIONS_JSON="$(npm view @malloy-publisher/skills versions --json --prefer-online 2>"$versions_err")"; then
+    versions_err_content="$(cat "$versions_err")"
+    rm -f "$versions_err"
+    echo_untrusted_output "$versions_err_content" >&2
+    G_NPM_OK=0
+    return 0
+  fi
+  versions_err_content="$(cat "$versions_err")"
+  rm -f "$versions_err"
+  [ -n "$versions_err_content" ] && echo_untrusted_output "$versions_err_content" >&2
 
   if [[ "$G_GIT_HEAD" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${G_GIT_HEAD}^{commit}" 2>/dev/null; then
     G_OBJECT_PRESENT=1
@@ -392,12 +416,13 @@ gather_skills_facts() {
 }
 
 # Sets G_NPM_OK, G_LATEST, G_PUBLISHER_SERVER, G_SCAFFOLDER_GIT_HEAD,
-# G_SCAFFOLDER_OBJECT_PRESENT, G_SCAFFOLDER_CHANGED, G_SCAFFOLDER_DIFF_STAT.
+# G_SCAFFOLDER_OBJECT_PRESENT, G_SCAFFOLDER_CHANGED, G_SCAFFOLDER_DIFF_STAT,
+# G_SCAFFOLDER_VERSIONS_JSON.
 gather_scaffolder_facts() {
   G_NPM_OK=1 G_LATEST="" G_PUBLISHER_SERVER=""
   G_SCAFFOLDER_GIT_HEAD="" G_SCAFFOLDER_OBJECT_PRESENT=0 \
-    G_SCAFFOLDER_CHANGED="error" G_SCAFFOLDER_DIFF_STAT=""
-  local raw diff_out
+    G_SCAFFOLDER_CHANGED="error" G_SCAFFOLDER_DIFF_STAT="" G_SCAFFOLDER_VERSIONS_JSON=""
+  local raw diff_out versions_err versions_err_content
 
   if ! raw="$(npm view @malloy-publisher/create-malloy-package dist-tags.latest --prefer-online 2>&1)" || [ -z "$raw" ]; then
     echo_untrusted_output "$raw" >&2
@@ -416,6 +441,21 @@ gather_scaffolder_facts() {
     return 0
   fi
   G_PUBLISHER_SERVER="$(printf '%s\n' "$raw" | tail -n 1)"
+
+  # The full published-versions list; see gather_skills_facts's copy of this
+  # comment for why it is captured on its own stream rather than folded with
+  # stderr and tail -n1'd.
+  versions_err="$(mktemp)"
+  if ! G_SCAFFOLDER_VERSIONS_JSON="$(npm view @malloy-publisher/create-malloy-package versions --json --prefer-online 2>"$versions_err")"; then
+    versions_err_content="$(cat "$versions_err")"
+    rm -f "$versions_err"
+    echo_untrusted_output "$versions_err_content" >&2
+    G_NPM_OK=0
+    return 0
+  fi
+  versions_err_content="$(cat "$versions_err")"
+  rm -f "$versions_err"
+  [ -n "$versions_err_content" ] && echo_untrusted_output "$versions_err_content" >&2
 
   # gitHead only matters to confirm a pin-matching re-run actually shipped
   # unchanged content (see decideScaffolder). Unlike the two reads above, a
@@ -557,6 +597,7 @@ publish_indep_pkg() {
       decide_err_file="$(mktemp)"
       if out="$(NPM_OK="$G_NPM_OK" LATEST="$G_LATEST" GIT_HEAD="$G_GIT_HEAD" \
                 OBJECT_PRESENT="$G_OBJECT_PRESENT" CHANGED="$G_CHANGED" \
+                VERSIONS_JSON="$G_VERSIONS_JSON" \
                 node scripts/independent-version.mjs decide-skills 2>"$decide_err_file")"; then
         rc=0
       else
@@ -584,6 +625,7 @@ publish_indep_pkg() {
       if out="$(NPM_OK="$G_NPM_OK" LATEST="$G_LATEST" PUBLISHER_SERVER="$G_PUBLISHER_SERVER" \
                 RELEASE="$NEW_VERSION" GIT_HEAD="$G_SCAFFOLDER_GIT_HEAD" \
                 OBJECT_PRESENT="$G_SCAFFOLDER_OBJECT_PRESENT" CHANGED="$G_SCAFFOLDER_CHANGED" \
+                VERSIONS_JSON="$G_SCAFFOLDER_VERSIONS_JSON" \
                 node scripts/independent-version.mjs decide-scaffolder 2>"$decide_err_file")"; then
         rc=0
       else
@@ -690,7 +732,7 @@ publish_indep_pkg() {
   # decision this parses.
   local check_err_file check_out check_rc
   check_err_file="$(mktemp)"
-  if check_out="$(STATUS="$status" NAME="$name" VERSION="$version" \
+  if check_out="$(STATUS="$status" NAME="$name" VERSION="$version" WF="$wf" \
                   node scripts/independent-version.mjs check-free 2>"$check_err_file")"; then
     check_rc=0
   else

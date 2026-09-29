@@ -299,6 +299,9 @@ describe("publish-packages.sh", () => {
       baseConfig({
         "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
         "@malloy-publisher/skills@0.1.28 gitHead": { stdout: OLD_SHA },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
         "@malloy-publisher/skills@0.1.29 version": [
           { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
           { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
@@ -314,6 +317,9 @@ describe("publish-packages.sh", () => {
         // regardless), but gather_scaffolder_facts always reads it.
         "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
           stdout: HEAD_SHA,
+        },
+        "@malloy-publisher/create-malloy-package versions": {
+          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
         },
         "@malloy-publisher/create-malloy-package@0.0.23 version": [
           { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
@@ -348,16 +354,77 @@ describe("publish-packages.sh", () => {
     );
   }, 15000);
 
-  it("skills content unchanged: skips skills-npm.yml, still dispatches the scaffolder with skills' npm latest", () => {
+  it("skills latest rolled back by hand after 0.1.28 published: still dispatches skills at 0.1.29, then the scaffolder", () => {
+    // The bug this whole change fixes: `npm dist-tag add ...skills@0.1.27
+    // latest` while 0.1.28 is still published. `latest` alone would recompute
+    // 0.1.28 and checkFree would abort with "already on npm"; the versions
+    // list still has 0.1.28, so the ceiling has to come from there instead.
     const result = runPublishScript(
       baseConfig({
-        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
-        "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
+        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.27" },
+        "@malloy-publisher/skills@0.1.27 gitHead": { stdout: OLD_SHA },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
+        "@malloy-publisher/skills@0.1.29 version": [
+          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+          { stdout: "0.1.29" },
+        ],
         "@malloy-publisher/create-malloy-package dist-tags.latest": {
           stdout: "0.0.22",
         },
         "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
           stdout: "",
+        },
+        "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+          stdout: HEAD_SHA,
+        },
+        "@malloy-publisher/create-malloy-package versions": {
+          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
+        },
+        "@malloy-publisher/create-malloy-package@0.0.23 version": [
+          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+          { exit: 1, stdout: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
+          { stdout: "0.0.23" },
+        ],
+        "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
+      }),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+
+    const skillsRun = dispatchedArgs(result.ghLog, "skills-npm.yml");
+    expect(skillsRun).not.toBeNull();
+    expect(skillsRun).toEqual(expect.arrayContaining(["-f", "version=0.1.29"]));
+
+    const scaffolderRun = dispatchedArgs(
+      result.ghLog,
+      "create-malloy-package-npm.yml",
+    );
+    expect(scaffolderRun).not.toBeNull();
+    expect(scaffolderRun).toEqual(
+      expect.arrayContaining(["-f", "version=0.0.23", "-f", "skills_version=0.1.29"]),
+    );
+  }, 15000);
+
+  it("skills content unchanged: skips skills-npm.yml, still dispatches the scaffolder with skills' npm latest", () => {
+    const result = runPublishScript(
+      baseConfig({
+        "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
+        "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
+        "@malloy-publisher/create-malloy-package dist-tags.latest": {
+          stdout: "0.0.22",
+        },
+        "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+          stdout: "",
+        },
+        "@malloy-publisher/create-malloy-package versions": {
+          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
         },
         "@malloy-publisher/create-malloy-package@0.0.23 version": [
           { exit: 1, stdout: "npm ERR! code E404" },
@@ -393,6 +460,9 @@ describe("publish-packages.sh", () => {
       baseConfig({
         "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
         "@malloy-publisher/skills@0.1.28 gitHead": { stdout: OLD_SHA },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
         "@malloy-publisher/skills@0.1.29 version": [
           { exit: 1, stdout: "npm ERR! code E404" },
           { exit: 1, stdout: "npm ERR! code E404" },
@@ -408,6 +478,9 @@ describe("publish-packages.sh", () => {
         // Diffing HEAD against HEAD is always empty, so this reads "unchanged".
         "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
           stdout: HEAD_SHA,
+        },
+        "@malloy-publisher/create-malloy-package versions": {
+          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
         },
       }),
     );
@@ -435,6 +508,9 @@ describe("publish-packages.sh", () => {
       baseConfig({
         "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
         "@malloy-publisher/skills@0.1.28 gitHead": { stdout: HEAD_SHA },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
         "@malloy-publisher/create-malloy-package dist-tags.latest": {
           stdout: "0.0.22",
         },
@@ -445,6 +521,9 @@ describe("publish-packages.sh", () => {
         // against it reads "changed".
         "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
           stdout: OLD_SHA,
+        },
+        "@malloy-publisher/create-malloy-package versions": {
+          stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
         },
         "@malloy-publisher/create-malloy-package@0.0.23 version": [
           { exit: 1, stdout: "npm ERR! code E404" },
@@ -470,6 +549,9 @@ describe("publish-packages.sh", () => {
       baseConfig({
         "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
         "@malloy-publisher/skills@0.1.28 gitHead": { stdout: "" },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
       }),
     );
     expect(result.code).not.toBe(0);
@@ -485,6 +567,9 @@ describe("publish-packages.sh", () => {
         "@malloy-publisher/skills@0.1.28 gitHead": {
           stdout: "0000000000000000000000000000000000000000",
         },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
       }),
     );
     expect(result.code).not.toBe(0);
@@ -497,12 +582,16 @@ describe("publish-packages.sh", () => {
       baseConfig({
         "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
         "@malloy-publisher/skills@0.1.28 gitHead": { stdout: OLD_SHA },
+        "@malloy-publisher/skills versions": {
+          stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+        },
         // The computed next-patch, 0.1.29, is already on npm.
         "@malloy-publisher/skills@0.1.29 version": { stdout: "0.1.29" },
       }),
     );
     expect(result.code).not.toBe(0);
     expect(result.summary).toContain("already on npm");
+    expect(result.summary).toContain("-f version=");
     expect(result.ghLog.length).toBe(0);
   });
 

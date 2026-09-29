@@ -185,20 +185,26 @@ The two are decided differently:
 - **skills** publishes when its published content changed since npm `latest`'s
   `gitHead` — a diff of `skills/`, `packages/skills/`, `bun.lock` and the root
   `package.json`, excluding `skills/README.md` and
-  `packages/skills/src/*.spec.ts`. Changed publishes `latest` + 1 patch;
-  unchanged skips.
+  `packages/skills/src/*.spec.ts`. Changed publishes one patch above the
+  highest published plain version; unchanged skips.
 - **create-malloy-package** publishes on every non-prerelease release,
   unconditionally, because it bakes the server's npm `latest` into every
   workspace it scaffolds — a release changes what it ships even when its own
   directory did not. The only skip is a re-run of the same release, detected by
   its published `publisherServer` field already matching.
 
-A hand dispatch of either child workflow with no `version` input publishes npm
-`latest` + 1 patch, the same guard the old PR check used to enforce, now run once
-at dispatch time. **A minor or major bump is a hand dispatch with
-`-f version=`.** After a hand-dispatched skills minor, hand-dispatch the
-scaffolder too — it depends on skills' version — or wait for the next release,
-which republishes the scaffolder anyway.
+The publish version is one patch above the HIGHEST published plain version
+(`npm view <pkg> versions --json`), not `latest` plus one — a `latest` dist-tag
+rolled back by hand after a bad release must not make this recompute a version
+that's already published. `latest`'s `gitHead` stays the content-diff baseline
+above; only the version arithmetic reads the full versions list.
+
+A hand dispatch of either child workflow with no `version` input publishes one
+patch above the highest published version, the same guard the old PR check
+used to enforce, now run once at dispatch time. **A minor or major bump is a
+hand dispatch with `-f version=`.** After a hand-dispatched skills minor,
+hand-dispatch the scaffolder too — it depends on skills' version — or wait for
+the next release, which republishes the scaffolder anyway.
 
 One caveat: the **Python** check has nothing to *catch* until the first publish
 lands, because `malloy-publisher-sdk` is not on PyPI at all and a project-level

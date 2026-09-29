@@ -20,6 +20,8 @@ import {
   checkFree,
   decideScaffolder,
   decideSkills,
+  highestPlain,
+  nextAfterHighest,
   nextPatch,
 } from "./independent-version.mjs";
 
@@ -50,17 +52,84 @@ describe("nextPatch", () => {
   });
 });
 
+describe("highestPlain", () => {
+  it("picks the highest of a rolled-back latest and later published versions", () => {
+    // The rollback case this whole change exists for: `latest` moved back to
+    // 0.1.27 by hand after 0.1.28 published, but 0.1.28 is still on the
+    // registry and must still be the ceiling.
+    expect(highestPlain(["0.1.26", "0.1.27", "0.1.28"])).toBe("0.1.28");
+  });
+
+  it("compares numerically, not lexically", () => {
+    expect(highestPlain(["0.1.9", "0.1.10"])).toBe("0.1.10");
+  });
+
+  it("ignores prereleases", () => {
+    expect(highestPlain(["0.1.27", "0.1.28-rc.1", "0.1.26"])).toBe("0.1.27");
+  });
+
+  it("throws on an empty list", () => {
+    expect(() => highestPlain([])).toThrow(/no plain/);
+  });
+
+  it("throws on a list with no plain version", () => {
+    expect(() => highestPlain(["0.1.28-rc.1", "not-a-version"])).toThrow(/no plain/);
+  });
+
+  it("throws on something that is not an array", () => {
+    expect(() => highestPlain("0.1.28")).toThrow(/array/);
+    expect(() => highestPlain(undefined)).toThrow(/array/);
+    expect(() => highestPlain(null)).toThrow(/array/);
+  });
+});
+
+describe("nextAfterHighest", () => {
+  it("is one patch above the highest plain version, not above a rolled-back latest", () => {
+    expect(nextAfterHighest(["0.1.26", "0.1.27", "0.1.28"])).toBe("0.1.29");
+  });
+
+  it("throws (fail-closed) when the list is garbage", () => {
+    expect(() => nextAfterHighest(["garbage"])).toThrow();
+  });
+});
+
 describe("decideSkills", () => {
   const base = {
     npmOk: true,
     latest: "0.1.28",
     gitHead: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
     objectPresent: true,
+    versions: ["0.1.26", "0.1.27", "0.1.28"],
   };
 
   it("publishes the next patch when content changed since npm latest's gitHead", () => {
     const decision = decideSkills({ ...base, changed: "changed" });
     expect(decision).toMatchObject({ action: "publish", version: "0.1.29" });
+  });
+
+  it("publishes one patch above the HIGHEST published version, not above a rolled-back latest", () => {
+    // latest was rolled back by hand to 0.1.27 after 0.1.28 published; the
+    // versions list still has 0.1.28, so the next version must be 0.1.29,
+    // not 0.1.28 (which is already taken).
+    const decision = decideSkills({
+      ...base,
+      latest: "0.1.27",
+      versions: ["0.1.26", "0.1.27", "0.1.28"],
+      changed: "changed",
+    });
+    expect(decision).toMatchObject({ action: "publish", version: "0.1.29" });
+  });
+
+  it("aborts when the versions list is missing a plain version", () => {
+    const decision = decideSkills({ ...base, versions: ["0.1.28-rc.1"], changed: "changed" });
+    expect(decision.action).toBe("abort");
+    expect(decision.reason).toContain("published versions list");
+  });
+
+  it("aborts when the versions list is not an array", () => {
+    const decision = decideSkills({ ...base, versions: undefined, changed: "changed" });
+    expect(decision.action).toBe("abort");
+    expect(decision.reason).toContain("published versions list");
   });
 
   it("skips when nothing changed since npm latest's gitHead", () => {
@@ -135,7 +204,24 @@ describe("decideScaffolder", () => {
     gitHead,
     objectPresent: true,
     changed: "unchanged",
+    versions: ["0.0.20", "0.0.21", "0.0.22"],
   };
+
+  it("publishes one patch above the HIGHEST published version, not above a rolled-back latest", () => {
+    const decision = decideScaffolder({
+      ...base,
+      publisherServer: "",
+      latest: "0.0.21",
+      versions: ["0.0.20", "0.0.21", "0.0.22"],
+    });
+    expect(decision).toMatchObject({ action: "publish", version: "0.0.23" });
+  });
+
+  it("aborts when the versions list has no plain version", () => {
+    const decision = decideScaffolder({ ...base, publisherServer: "", versions: [] });
+    expect(decision.action).toBe("abort");
+    expect(decision.reason).toContain("published versions list");
+  });
 
   it("publishes the next patch when publisherServer has never been set", () => {
     const decision = decideScaffolder({ ...base, publisherServer: "" });
@@ -218,9 +304,13 @@ describe("checkFree", () => {
       status: "published",
       name: "@malloy-publisher/skills",
       version: "0.1.29",
+      wf: "skills-npm.yml",
     });
     expect(result?.action).toBe("abort");
     expect(result?.reason).toContain("already on npm");
+    expect(result?.reason).toContain("CDN edge");
+    expect(result?.reason).toContain("-f version=");
+    expect(result?.reason).toContain("skills-npm.yml");
   });
 
   it("is an error when the registry gave no usable answer", () => {
@@ -249,15 +339,44 @@ describe("the CLI, end to end", () => {
     };
   }
 
-  it("next prints the bumped version", () => {
-    const proc = Bun.spawnSync([
-      "node",
-      path.join(import.meta.dir, "independent-version.mjs"),
-      "next",
-      "0.1.28",
-    ]);
-    expect(proc.exitCode).toBe(0);
-    expect(proc.stdout.toString().trim()).toBe("0.1.29");
+  it("next-after-highest prints one patch above the highest published version", () => {
+    const { code, stdout } = run("next-after-highest", {
+      VERSIONS_JSON: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+    });
+    expect(code).toBe(0);
+    expect(stdout).toBe("0.1.29");
+  });
+
+  it("next-after-highest accepts npm's bare-string answer for a single-version package", () => {
+    const { code, stdout } = run("next-after-highest", {
+      VERSIONS_JSON: JSON.stringify("0.0.1"),
+    });
+    expect(code).toBe(0);
+    expect(stdout).toBe("0.0.2");
+  });
+
+  it("next-after-highest fails with a usage error on an empty versions list", () => {
+    const { code, stderr } = run("next-after-highest", { VERSIONS_JSON: "[]" });
+    expect(code).toBe(1); // usage-error exit code, distinct from the abort code
+    expect(stderr).toContain("no plain");
+  });
+
+  it("next-after-highest fails with a usage error when VERSIONS_JSON is unset", () => {
+    const env = { ...process.env };
+    delete (env as Record<string, string | undefined>).VERSIONS_JSON;
+    const proc = Bun.spawnSync(
+      ["node", path.join(import.meta.dir, "independent-version.mjs"), "next-after-highest"],
+      { env },
+    );
+    expect(proc.exitCode).toBe(1);
+  });
+
+  it("highest-plain prints the highest published version", () => {
+    const { code, stdout } = run("highest-plain", {
+      VERSIONS_JSON: JSON.stringify(["0.1.9", "0.1.10", "0.1.28-rc.1"]),
+    });
+    expect(code).toBe(0);
+    expect(stdout).toBe("0.1.10");
   });
 
   it("decide-skills prints 'publish <version>' and exits 0 when changed", () => {
@@ -267,6 +386,20 @@ describe("the CLI, end to end", () => {
       GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
       OBJECT_PRESENT: "1",
       CHANGED: "changed",
+      VERSIONS_JSON: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+    });
+    expect(code).toBe(0);
+    expect(stdout).toBe("publish 0.1.29");
+  });
+
+  it("decide-skills computes one patch above the HIGHEST published version, not a rolled-back latest", () => {
+    const { code, stdout } = run("decide-skills", {
+      NPM_OK: "1",
+      LATEST: "0.1.27", // rolled back by hand; 0.1.28 is still published
+      GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
+      OBJECT_PRESENT: "1",
+      CHANGED: "changed",
+      VERSIONS_JSON: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
     });
     expect(code).toBe(0);
     expect(stdout).toBe("publish 0.1.29");
@@ -279,6 +412,7 @@ describe("the CLI, end to end", () => {
       GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
       OBJECT_PRESENT: "1",
       CHANGED: "unchanged",
+      VERSIONS_JSON: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
     });
     expect(code).toBe(0);
     expect(stdout).toBe("skip");
@@ -298,12 +432,27 @@ describe("the CLI, end to end", () => {
     expect(stderr).toBe("");
   });
 
+  it("decide-skills aborts when VERSIONS_JSON is not valid JSON", () => {
+    const { code, stdout } = run("decide-skills", {
+      NPM_OK: "1",
+      LATEST: "0.1.28",
+      GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
+      OBJECT_PRESENT: "1",
+      CHANGED: "changed",
+      VERSIONS_JSON: "{not json",
+    });
+    expect(code).not.toBe(0);
+    expect(code).not.toBe(1);
+    expect(stdout).toStartWith("abort ");
+  });
+
   it("decide-scaffolder prints 'publish <version>' when the pin does not match this release", () => {
     const { code, stdout } = run("decide-scaffolder", {
       NPM_OK: "1",
       LATEST: "0.0.22",
       PUBLISHER_SERVER: "",
       RELEASE: "0.8.3",
+      VERSIONS_JSON: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
     });
     expect(code).toBe(0);
     expect(stdout).toBe("publish 0.0.23");
@@ -318,6 +467,7 @@ describe("the CLI, end to end", () => {
       GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
       OBJECT_PRESENT: "1",
       CHANGED: "unchanged",
+      VERSIONS_JSON: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
     });
     expect(code).toBe(0);
     expect(stdout).toBe("skip");
@@ -332,6 +482,7 @@ describe("the CLI, end to end", () => {
       GIT_HEAD: "c3e52cc157205f0c3bd21719864a2e494ac5427e",
       OBJECT_PRESENT: "1",
       CHANGED: "changed",
+      VERSIONS_JSON: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
     });
     expect(code).toBe(0);
     expect(stdout).toBe("publish 0.0.23");
@@ -342,9 +493,11 @@ describe("the CLI, end to end", () => {
       STATUS: "published",
       NAME: "@malloy-publisher/skills",
       VERSION: "0.1.29",
+      WF: "skills-npm.yml",
     });
     expect(code).not.toBe(0);
     expect(stdout).toStartWith("abort ");
+    expect(stdout).toContain("skills-npm.yml");
   });
 
   it("fails with a usage error, distinct from abort, on an unknown command", () => {
@@ -375,7 +528,9 @@ describe("the is-main guard, through a symlink", () => {
     const link = path.join(dir, "independent-version-link.mjs");
     symlinkSync(real, link);
 
-    const proc = Bun.spawnSync(["node", link, "next", "0.1.28"]);
+    const proc = Bun.spawnSync(["node", link, "next-after-highest"], {
+      env: { ...process.env, VERSIONS_JSON: JSON.stringify(["0.1.28"]) },
+    });
     expect(proc.exitCode).toBe(0);
     expect(proc.stdout.toString().trim()).toBe("0.1.29");
   });
