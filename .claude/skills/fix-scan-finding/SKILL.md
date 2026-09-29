@@ -82,10 +82,13 @@ jq -r '.Results[]? | .Target as $t | (.Vulnerabilities // [])[]
 - **For image findings, build what CI builds.** CI builds and scans both `linux/amd64` and
   `linux/arm64`, with the DuckDB version derived from Malloy. A local build covers only the platform
   you ask for, and the per-architecture base images and prebuilt binaries differ enough that the two
-  report different findings. Build the platform whose job is red:
+  report different findings. Build the platform whose job is red (`linux/amd64` or `linux/arm64`),
+  and pass `APT_REFRESH` as the CI builds do, or a stale cached `apt-get upgrade` layer can report
+  Debian packages CI has already upgraded:
   ```bash
-  docker buildx build --platform linux/amd64 --load \
-    --build-arg DUCKDB_VERSION=$(node scripts/duckdb-version.js) -t publisher:scan .
+  docker buildx build --platform <platform> --load \
+    --build-arg DUCKDB_VERSION=$(node scripts/duckdb-version.js) \
+    --build-arg APT_REFRESH=$(date -u +%G-W%V) -t publisher:scan .
   trivy image publisher:scan --scanners vuln --severity CRITICAL --ignorefile .trivyignore.yaml
   ```
 - **Run once more with `--include-dev-deps`.** Trivy skips devDependencies in Node lockfiles by
@@ -150,8 +153,8 @@ Whatever you touch, the **stale-pin comment is part of the diff**. A pin comment
 own removal becomes a lie the next reader believes -- rewrite it to describe the new state and the
 invariant that still matters, not the change you made.
 
-Run builds, image builds, and test suites with `run_in_background: true`; an amd64 image build on an
-arm64 machine takes minutes.
+Run builds, image builds, and test suites with `run_in_background: true`; an image build for a
+platform other than your machine's runs under emulation and takes minutes.
 
 ## D. Verify
 
@@ -162,7 +165,7 @@ Both, in that order, and neither substitutes for the other.
    partial fix, and the fifth is the one that matters.
 2. **Run what exercises the moved dependency:** `bun run test` for server dependencies;
    `bun install --frozen-lockfile && bun run generate-clients` in `packages/server/k6-tests` for its
-   codegen; an amd64 image build (step A) for anything in the `Dockerfile`.
+   codegen; an image build of the red job's platform (step A) for anything in the `Dockerfile`.
 3. **Do not trust a codegen exit code.** `bun run generate-clients` exits 0 even when it generates
    no files. Count the output files, and diff them against the previous version.
 4. **For a Dockerfile change, confirm the component is gone from the built image,** for example
@@ -259,8 +262,8 @@ scan that covered no targets.
 ### The handoff is not done until CI is green
 
 A green local run is necessary and not sufficient. A dependency move changes the resolved tree for
-every consumer, and CI is the only place the `linux/amd64` image is built and scanned the way the
-gate runs it, and the only place the full build and test matrix runs against the new lockfile. Local
+every consumer, and CI is the only place the image is built and scanned on both published
+platforms the way the gate runs it, and the only place the full build and test matrix runs against the new lockfile. Local
 runs also use your machine's `node_modules` and Docker cache, which can hold artifacts CI resolves
 differently.
 
