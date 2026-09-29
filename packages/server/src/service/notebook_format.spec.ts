@@ -73,7 +73,6 @@ const EXPECTED_OWN_NOTES: Record<string, ExpectedNote[]> = {
    ],
    "dashboards/text_tiles.malloy": [
       { line: 1, textStartsWith: '##" A dashboard whose first tile is prose.' },
-      { line: 5, textStartsWith: '##|" intro\n## How to read this page' },
    ],
 };
 
@@ -186,11 +185,11 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       expect(new Annotations(bare.annotations).texts()).toEqual([]);
    });
 
-   it("keeps a named block's name on its opener line, where a reader can strip it", () => {
-      const [, block] = docStringNotes(
-         ownModelAnnotations(defOf("dashboards/text_tiles.malloy")),
-      );
-      expect(block.text).toStartWith('##|" intro\n');
+   it("puts a (text) block on its own route, with its name on the opener line where a reader can strip it", () => {
+      const own = ownModelAnnotations(defOf("dashboards/text_tiles.malloy"));
+      const blocks = new Annotations(own).forRoute("text");
+      expect(blocks.map((note) => note.at.range.start.line + 1)).toEqual([5]);
+      expect(blocks[0].text).toStartWith("##|(text) intro\n## How to read");
    });
 
    it("parses a text tile entry and a quoted tile side by side in tiles=", () => {
@@ -256,15 +255,35 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       );
    });
 
-   it("accepts a block opener of more than one word without complaint, so only lint can catch it", async () => {
+   it("accepts a (text) opener of more than one word without complaint, so only lint can catch it", async () => {
       const model = await compileVariant(
          "dashboards/text_tiles.malloy",
-         (text) => text.replace('##|" intro\n', '##|" intro extra\n'),
+         (text) => text.replace("##|(text) intro\n", "##|(text) intro extra\n"),
       );
       expect(model.problems).toEqual([]);
-      const [, block] = docStringNotes(ownModelAnnotations(model._modelDef));
-      expect(block.text).toStartWith('##|" intro extra\n');
+      const [block] = new Annotations(
+         ownModelAnnotations(model._modelDef),
+      ).forRoute("text");
+      expect(block.text).toStartWith("##|(text) intro extra\n");
    });
+
+   it.each(["##|(text)intro\n", '##|"intro\n'])(
+      "drops a block whose route touches its word (%j), as malformed-route",
+      async (glued) => {
+         const model = await compileVariant(
+            "dashboards/text_tiles.malloy",
+            (text) => text.replace("##|(text) intro\n", glued),
+         );
+         expect(model.problems.map((problem) => problem.code)).toContain(
+            "malformed-route",
+         );
+         const own = new Annotations(ownModelAnnotations(model._modelDef));
+         expect(own.forRoute("text")).toEqual([]);
+         expect(
+            docStringNotes(ownModelAnnotations(model._modelDef)),
+         ).toHaveLength(1);
+      },
+   );
 
    it("accepts text after a block closer without complaint, so only lint can catch it", async () => {
       const model = await compileVariant(
@@ -272,8 +291,12 @@ describe("Malloyyo notebook format (compiler contract)", () => {
          (text) => text.replace(/\|##\n$/, "|## trailing\n"),
       );
       expect(model.problems).toEqual([]);
-      const notes = docStringNotes(ownModelAnnotations(model._modelDef));
-      expect(notes).toHaveLength(2);
-      expect(notes[1].text).toStartWith('##|" intro\n## How to read this page');
+      const notes = new Annotations(
+         ownModelAnnotations(model._modelDef),
+      ).forRoute("text");
+      expect(notes).toHaveLength(1);
+      expect(notes[0].text).toStartWith(
+         "##|(text) intro\n## How to read this page",
+      );
    });
 });
