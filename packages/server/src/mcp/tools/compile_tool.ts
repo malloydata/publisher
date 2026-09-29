@@ -20,14 +20,10 @@ import { jsonResource, jsonToolError } from "../tool_response";
 const compileShape = {
    environmentName: z
       .string()
-      .describe(
-         "Environment name. Call get_context with no arguments to list the available environments.",
-      ),
+      .describe("Environment name, as list_packages returns it."),
    packageName: z
       .string()
-      .describe(
-         "Package containing the model. Call get_context with just environmentName to list its packages.",
-      ),
+      .describe("Package containing the model, as list_packages returns it."),
    modelPath: z
       .string()
       .describe(
