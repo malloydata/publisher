@@ -40,6 +40,12 @@ class Label(unittest.TestCase):
                 self.assertIn("Invalid --label: expected a run name",
                               str(e.exception))
 
+    def test_a_second_label_is_refused_not_dropped(self):
+        with self.assertRaises(SystemExit) as e:
+            entry.run_dir_from_label(["--set", "s", "--label", "a", "--label", "b"])
+        self.assertIn("expected one run name, got 2", str(e.exception))
+        self.assertIn("--run", str(e.exception))
+
     def test_no_label_passes_through(self):
         self.assertEqual(entry.run_dir_from_label(["--set", "s", "--run", "/r"]),
                          ["--set", "s", "--run", "/r"])

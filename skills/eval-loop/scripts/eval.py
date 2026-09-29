@@ -49,6 +49,12 @@ def run_dir_from_label(args: list[str]) -> list[str]:
     The label is always taken out: `diagnose` and `package` have no `--label`,
     so one left in is an argparse error. With `--run` also given, `--run` wins.
     """
+    given = sum(x == "--label" or x.startswith("--label=") for x in args)
+    if given > 1:
+        # Only one run can come from a label; the rest would be dropped.
+        raise SystemExit("Invalid --label: expected one run name, got "
+                         f"{given}. Fix: name each run with --run for an A/B, "
+                         "e.g. --run <workdir>/runs/a --run <workdir>/runs/b")
     label = flag_value(args, "--label")
     if label is None:
         if "--label" in args:
