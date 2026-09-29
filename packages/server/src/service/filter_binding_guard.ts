@@ -22,9 +22,12 @@
  * one field-identity primitive, {@link assertFilterConditionBindsToDeclaringSource}.
  *
  * "Identical field" (this module's one comparison) means: same `name`, same
- * `type`, and a deep-equal `e` — ignoring `location`, `at`, `annotations` and
- * `accessModifier`, which can legitimately differ across a derivation without
- * the field being a different one. A join hop additionally requires the same
+ * `type`, and a deep-equal `e` — ignoring `annotations` and `accessModifier`
+ * by name, and `location`/`at` by VALUE SHAPE (a real `DocumentLocation`,
+ * never by key name alone, since both are also legal parameter and
+ * record-literal-field names — see {@link isDocumentLocation}), all of which
+ * can legitimately differ across a derivation without the field being a
+ * different one. A join hop additionally requires the same
  * `join` relationship and a deep-equal `onExpression`, `filterList`,
  * `parameters` and `arguments` on the joined struct, since two same-table
  * sources share a `name` and differ in rows only through those. Source
@@ -134,29 +137,89 @@ function activeName(f: { name: string; as?: string }): string {
    return f.as ?? f.name;
 }
 
-const IGNORED_KEYS = new Set([
-   "location",
-   "at",
-   "annotations",
-   "accessModifier",
-]);
+/** Stripped everywhere by NAME: neither collides with a name-keyed record
+ *  (`parameters`/`arguments`/a record-literal's `kids`) anywhere in the IR. */
+const IGNORED_KEYS_BY_NAME = new Set(["annotations", "accessModifier"]);
+
+/** Stripped only when the VALUE is actually a `DocumentLocation` — `location`
+ *  and `at` are also legal author parameter/record-literal-field names
+ *  (`SafeRecord<Parameter|Argument>` and `RecordLiteralNode.kids` are both
+ *  keyed by the author's own names), so stripping by key name alone deletes
+ *  those entries as if they were position metadata and makes two different
+ *  bindings compare equal. */
+const SHAPE_CHECKED_KEYS = new Set(["location", "at"]);
+
+/** Structural match for `DocumentLocation` (`{url, range: {start, end}}`,
+ *  each a `{line, character}`) — the one shape `location`/`at` take as real
+ *  IR metadata; no Expr node or Parameter value can match it. */
+function isDocumentLocation(v: unknown): boolean {
+   if (!v || typeof v !== "object") return false;
+   const o = v as Record<string, unknown>;
+   if (typeof o.url !== "string" || !o.range || typeof o.range !== "object") {
+      return false;
+   }
+   const isPosition = (p: unknown): boolean =>
+      !!p &&
+      typeof p === "object" &&
+      typeof (p as Record<string, unknown>).line === "number" &&
+      typeof (p as Record<string, unknown>).character === "number";
+   const range = o.range as Record<string, unknown>;
+   return isPosition(range.start) && isPosition(range.end);
+}
 
 /** Joined-struct properties, beyond `name`, that decide which rows the join reaches. */
 const JOINED_STRUCT_ROW_KEYS = ["filterList", "parameters", "arguments"];
 
-/** Structural equality ignoring {@link IGNORED_KEYS}. A key-order mismatch
- *  between two otherwise-identical objects would read as "different" here —
- *  that fails CLOSED (an extra denial), never open, so it is not chased. */
+/** {@link JOINED_STRUCT_ROW_KEYS} entries that are name-keyed records
+ *  (`SafeRecord<Parameter|Argument>`), compared entry-by-entry so a
+ *  parameter literally named `location`/`at`/`annotations`/`accessModifier`
+ *  keeps its own identity instead of being merged under {@link strip}'s
+ *  generic key-based pass. `filterList` is an array, not a name-keyed
+ *  record, so it keeps going through {@link deepEqualIgnoring} as-is. */
+const NAME_KEYED_RECORD_KEYS = new Set(["parameters", "arguments"]);
+
+/** Structural equality ignoring {@link IGNORED_KEYS_BY_NAME} and
+ *  {@link SHAPE_CHECKED_KEYS} (by shape). A key-order mismatch between two
+ *  otherwise-identical objects would read as "different" here — that fails
+ *  CLOSED (an extra denial), never open, so it is not chased. */
 function deepEqualIgnoring(a: unknown, b: unknown): boolean {
    return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+}
+
+/** Entry-by-entry equality for a `SafeRecord` keyed by the author's own
+ *  names (`parameters`/`arguments`) — never deletes an entry by its key, so
+ *  a binding named `location`/`at`/etc. is compared like any other. */
+function recordEntriesEqual(a: unknown, b: unknown): boolean {
+   const ao = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
+   const bo = (b && typeof b === "object" ? b : {}) as Record<string, unknown>;
+   const aKeys = Object.keys(ao);
+   const bKeys = Object.keys(bo);
+   if (aKeys.length !== bKeys.length) return false;
+   return aKeys.every((k) => k in bo && deepEqualIgnoring(ao[k], bo[k]));
 }
 
 function strip(value: unknown): unknown {
    if (Array.isArray(value)) return value.map(strip);
    if (value && typeof value === "object") {
+      const obj = value as Record<string, unknown>;
       const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-         if (IGNORED_KEYS.has(k)) continue;
+      for (const [k, v] of Object.entries(obj)) {
+         // A record literal's `kids` is a `SafeRecord<Expr>` keyed by the
+         // author's own field names — same trap as `parameters`/`arguments`,
+         // but reached through this generic recursion rather than the
+         // `JOINED_STRUCT_ROW_KEYS` call site, so it needs its own guard here.
+         if (k === "kids" && obj.node === "recordLiteral") {
+            const kids = (v && typeof v === "object" ? v : {}) as Record<
+               string,
+               unknown
+            >;
+            out[k] = Object.fromEntries(
+               Object.entries(kids).map(([kk, kv]) => [kk, strip(kv)]),
+            );
+            continue;
+         }
+         if (IGNORED_KEYS_BY_NAME.has(k)) continue;
+         if (SHAPE_CHECKED_KEYS.has(k) && isDocumentLocation(v)) continue;
          out[k] = strip(v);
       }
       return out;
@@ -185,7 +248,10 @@ function fieldsIdentical(
       const ja = a as unknown as Record<string, unknown>;
       const jb = b as unknown as Record<string, unknown>;
       for (const key of JOINED_STRUCT_ROW_KEYS) {
-         if (!deepEqualIgnoring(ja[key], jb[key])) return false;
+         const equal = NAME_KEYED_RECORD_KEYS.has(key)
+            ? recordEntriesEqual(ja[key], jb[key])
+            : deepEqualIgnoring(ja[key], jb[key]);
+         if (!equal) return false;
       }
    }
    return true;

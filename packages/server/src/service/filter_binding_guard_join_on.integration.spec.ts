@@ -90,6 +90,22 @@ source: child_from(minid::number) is duckdb.table('childtable') extend {
    primary_key: id
    where: id >= minid
 }
+source: child_loc(location::number) is duckdb.table('childtable') extend {
+   primary_key: id
+   where: id >= location
+}
+source: child_at(at::number) is duckdb.table('childtable') extend {
+   primary_key: id
+   where: id >= at
+}
+source: child_annotations(annotations::number) is duckdb.table('childtable') extend {
+   primary_key: id
+   where: id >= annotations
+}
+source: child_accessmodifier(accessModifier::number) is duckdb.table('childtable') extend {
+   primary_key: id
+   where: id >= accessModifier
+}
 
 #(access_filter) child.org_id in $GROUPS
 source: gated_plain is duckdb.table('orgtable') extend {
@@ -121,7 +137,39 @@ source: gated_from is duckdb.table('orgtable') extend {
    measure: n is count()
 }
 
+#(access_filter) child.org_id in $GROUPS
+source: gated_loc is duckdb.table('orgtable') extend {
+   join_one: child is child_loc(location is 3) on id = child.id
+   measure: n is count()
+}
+
+#(access_filter) child.org_id in $GROUPS
+source: gated_at is duckdb.table('orgtable') extend {
+   join_one: child is child_at(at is 3) on id = child.id
+   measure: n is count()
+}
+
+#(access_filter) child.org_id in $GROUPS
+source: gated_annotations is duckdb.table('orgtable') extend {
+   join_one: child is child_annotations(annotations is 3) on id = child.id
+   measure: n is count()
+}
+
+#(access_filter) child.org_id in $GROUPS
+source: gated_accessmodifier is duckdb.table('orgtable') extend {
+   join_one: child is child_accessmodifier(accessModifier is 3) on id = child.id
+   measure: n is count()
+}
+
 source: gated_plain_ext is gated_plain extend { dimension: doubled is id * 2 }
+
+#(access_filter) x.location in $GROUPS
+source: gated_recloc is duckdb.table('orgtable') extend {
+   dimension: x is { location is org_id }
+   measure: n is count()
+}
+
+source: gated_recloc_ext is gated_recloc extend { dimension: unused is 1 }
 `;
 
 async function newDuckdb(): Promise<DuckDBConnection> {
@@ -405,6 +453,66 @@ describe("filter binding guard — a swapped-in joined source that rebinds what 
             `run: ${target} extend { ${extendBody} }${IDS}`,
             { GROUPS: groups },
          );
+      });
+   });
+});
+
+// A joined struct's own `parameters` record is always empty; the caller's
+// bound values land in `arguments`. So every case below exercises the
+// `arguments` entry-by-entry comparison specifically, never `parameters`.
+describe("filter binding guard — a swapped-in joined source that rebinds a parameter whose name the comparison used to strip", () => {
+   it.each([
+      ["location", "gated_loc", "child_loc"],
+      ["at", "gated_at", "child_at"],
+      ["annotations", "gated_annotations", "child_annotations"],
+      ["accessModifier", "gated_accessmodifier", "child_accessmodifier"],
+   ])("is denied (parameter named %s)", async (name, target, childSrc) => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            `run: ${target} extend { except: child; join_one: child is ${childSrc}(${name} is 1) on id = child.id }${IDS}`,
+            { GROUPS: [1] },
+         );
+      });
+   });
+
+   it.each([
+      ["location", "gated_loc", "child_loc"],
+      ["at", "gated_at", "child_at"],
+      ["annotations", "gated_annotations", "child_annotations"],
+      ["accessModifier", "gated_accessmodifier", "child_accessmodifier"],
+   ])(
+      "the exact re-join keeps serving (parameter named %s)",
+      async (name, target, childSrc) => {
+         await withModel(async (model) => {
+            expect(
+               await rows(
+                  model,
+                  `run: ${target} extend { except: child; join_one: child is ${childSrc}(${name} is 3) on id = child.id }${IDS}`,
+                  { GROUPS: [1] },
+               ),
+            ).toEqual([]);
+         });
+      },
+   );
+});
+
+describe("filter binding guard — a record-literal field named location, reached by the gate directly", () => {
+   it("the entry point redefining the record literal's location member is denied", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: gated_recloc extend { rename: x0 is x; dimension: x is { location is 1 } } -> { aggregate: n is count() }",
+            { GROUPS: [1] },
+         );
+      });
+   });
+
+   it("a model-declared extend that leaves the record literal alone still serves", async () => {
+      await withModel(async (model) => {
+         expect(
+            await rows(model, `run: gated_recloc_ext${IDS}`, { GROUPS: [1] }),
+         ).toEqual([{ id: 1 }, { id: 2 }]);
       });
    });
 });
