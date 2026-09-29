@@ -8,6 +8,7 @@ import {
 } from "@malloydata/malloy";
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
+import { docCommentText } from "./motly";
 
 /** The package-relative directory a served notebook must live in. */
 export const NOTEBOOKS_DIR = "notebooks";
@@ -53,6 +54,22 @@ export function docNotesAboveArtifact(
 }
 
 /**
+ * A dashboard's description notes: those above the artifact line, or, when they
+ * carry no prose, those below it, so a `"` note below the tag (where a
+ * dashboard's description used to be read from) still describes the page.
+ */
+export function dashboardDescriptionNotes(
+   notes: readonly AnnotationNote[],
+): string[] {
+   const above = docNotesAboveArtifact(notes);
+   if (docCommentText(above) !== undefined) return above;
+   const line = artifactNoteLine(notes);
+   return notes
+      .filter((n) => line !== undefined && (n.at?.range.start.line ?? 0) > line)
+      .map((n) => n.text);
+}
+
+/**
  * Whether raw file text has a line matching `artifact` outside a `##|"` (or
  * `#|`) block body, whose prose could otherwise pass for a tag. For a file that
  * did not compile, where no note can be read.
@@ -61,18 +78,21 @@ export function hasArtifactLineOutsideBlocks(
    source: string,
    artifactLine: RegExp,
 ): boolean {
-   let closer: string | undefined;
-   for (const line of source.split(/\r?\n/)) {
-      const trimmed = line.trimStart();
-      if (closer) {
-         if (trimmed.startsWith(closer)) closer = undefined;
-         continue;
-      }
+   const lines = source.split(/\r\n|\r|\n/);
+   for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trimStart();
       const opener = /^(#{1,2})\|/.exec(trimmed);
       if (opener) {
          const wanted = `|${opener[1]}`;
-         if (!trimmed.includes(wanted, opener[0].length)) closer = wanted;
-         continue;
+         if (trimmed.includes(wanted, opener[0].length)) continue;
+         const end = lines.findIndex(
+            (line, at) => at > i && line.trimStart().startsWith(wanted),
+         );
+         // An unclosed opener holds no block, so it must not hide the rest of the file.
+         if (end !== -1) {
+            i = end;
+            continue;
+         }
       }
       if (artifactLine.test(trimmed)) return true;
    }

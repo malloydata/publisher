@@ -28,6 +28,7 @@ import {
    artifactNoteLine,
    claimsToBeANotebook,
    docNotesAboveArtifact,
+   hasArtifactLineOutsideBlocks,
    isNotebookModelPath,
 } from "./notebook";
 
@@ -85,6 +86,34 @@ describe("notebook predicates", () => {
       expect(
          claimsToBeANotebook('##|"\nprose\n|##\n## artifact {}\nrun: x'),
       ).toBe(true);
+   });
+});
+
+describe("hasArtifactLineOutsideBlocks", () => {
+   const TAG = /^##[ \t]*artifact\b/;
+
+   it("splits on a bare CR and CRLF as well as LF", () => {
+      expect(hasArtifactLineOutsideBlocks("a\r## artifact {}\rb", TAG)).toBe(
+         true,
+      );
+      expect(
+         hasArtifactLineOutsideBlocks("a\r\n## artifact {}\r\nb", TAG),
+      ).toBe(true);
+      expect(
+         hasArtifactLineOutsideBlocks(
+            '##|"\r## artifact kinds\r|##\rrun: x',
+            TAG,
+         ),
+      ).toBe(false);
+   });
+
+   it("does not let an unterminated block hide a later artifact line", () => {
+      expect(
+         hasArtifactLineOutsideBlocks('##|"\nprose\n## artifact {}', TAG),
+      ).toBe(true);
+      expect(hasArtifactLineOutsideBlocks('##|"\nprose\nmore', TAG)).toBe(
+         false,
+      );
    });
 });
 
@@ -309,6 +338,51 @@ describe("served notebooks (worker path)", () => {
          expect(dashboards.map((d) => d.description)).toEqual([
             "Above the tag",
          ]);
+      });
+   });
+
+   it("reads a dashboard's description from below the tag only when nothing is above it", async () => {
+      manifest();
+      const model = `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`;
+      write(
+         "dashboards/legacy.malloy",
+         `## artifact { tiles=["base -> v"] }\n##" Legacy title\n##" Legacy body\n${model}`,
+      );
+      write(
+         "dashboards/blank_above.malloy",
+         `##"\n## artifact { tiles=["base -> v"] title="T" }\n##" Below body\n${model}`,
+      );
+      write(
+         "dashboards/current.malloy",
+         `##" Current title\n##" Current body\n## artifact { tiles=["base -> v"] }\n##" Ignored below\n${model}`,
+      );
+      await withPackage(async (pkg) => {
+         const by = (name: string) => pkg.getDashboard(name)!;
+         expect(by("legacy")).toMatchObject({
+            title: "Legacy title",
+            description: "Legacy body",
+         });
+         expect(by("blank_above")).toMatchObject({
+            title: "T",
+            description: "Below body",
+         });
+         expect(by("current")).toMatchObject({
+            title: "Current title",
+            description: "Current body",
+         });
+      });
+   });
+
+   it("never reads a served notebook's description from below the tag, however little is above it", async () => {
+      manifest();
+      write(
+         "notebooks/nb.malloy",
+         `## artifact {}\n##" a markdown cell\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         const [nb] = await pkg.listNotebooks();
+         expect(nb.description).toBeUndefined();
+         expect(nb.title).toBeUndefined();
       });
    });
 

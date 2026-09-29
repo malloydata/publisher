@@ -2362,13 +2362,16 @@ export class Package {
          return [];
       }
       // Models off the surface that compiled FINE, which is the count worth
-      // reporting: they are the ones refused for someone else's typo. A hidden
+      // reporting: they are the ones refused for someone else's typo. Served
+      // dashboards and notebooks are not on the surface and not refused. A hidden
       // model that failed to compile of its own accord was not taken down by
       // this, and has its own error on the listing.
       const collateral = Array.from(this.models.entries()).filter(
          ([modelPath, model]) =>
             modelPath.endsWith(MODEL_FILE_SUFFIX) &&
             !exploreSet.has(modelPath) &&
+            !this.isServedDashboard(modelPath) &&
+            !this.isServedNotebook(modelPath) &&
             !model.getCompilationError(),
       ).length;
       // ONE message, however many files the surface spans. Emitting it per

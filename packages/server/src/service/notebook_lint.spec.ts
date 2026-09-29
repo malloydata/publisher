@@ -143,9 +143,38 @@ describe("notebook lint", () => {
             line: 3,
             code: "notebook-text-block-unreferenced",
             message:
-               "Line 3: the `(text)` block `intro` is not named by any entry in `tiles=[…]`, so no tile shows it. Fix: add `intro { kind=text }` to `tiles`, or delete the block.",
+               "Line 3: the `(text)` block `intro` is not named by any entry in `tiles=[…]`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.",
          },
       ]);
+   });
+
+   it("warns when a dashboard's description sits only below its artifact tag", () => {
+      expect(
+         lint(
+            `## artifact { tiles=["a -> v"] }\n##" Legacy\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([
+         {
+            line: 2,
+            code: "notebook-description-below-artifact",
+            message:
+               "Line 2: this `\"` note below `## artifact` is the dashboard's description only because nothing sits above the tag. Fix: move it above `## artifact`.",
+         },
+      ]);
+   });
+
+   it("is quiet about a description above the tag, even with a note below it", () => {
+      expect(
+         lint(
+            `##" Above\n## artifact { tiles=["a -> v"] }\n##" Below\n${SOURCE}`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([]);
+   });
+
+   it("does not flag prose below the tag of a notebook, where it is a cell", () => {
+      expect(lint(`${HEADER}##" a cell\n${SOURCE}`)).toEqual([]);
    });
 
    it("reads a text tile entry with kind=query, and a dashboard with kind=dashboard, as clean", () => {

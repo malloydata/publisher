@@ -165,6 +165,8 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       const models = (await (await fetch(pkgUrl("/models"))).json()) as {
          path?: string;
       }[];
+      // The listing does carry the surface's own model, so the absence below is not an empty list.
+      expect(models.map((m) => m.path)).toContain("index.malloy");
       expect(models.map((m) => m.path)).not.toContain(NOTEBOOK);
 
       const notebooks = (await (await fetch(pkgUrl("/notebooks"))).json()) as {

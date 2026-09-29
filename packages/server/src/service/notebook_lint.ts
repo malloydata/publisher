@@ -17,7 +17,13 @@ import {
    type ParseToken,
    type TokenStreamShape,
 } from "./notebook";
-import { motlyParseErrors, motlyTag, tagNumeric, tagText } from "./motly";
+import {
+   docCommentText,
+   motlyParseErrors,
+   motlyTag,
+   tagNumeric,
+   tagText,
+} from "./motly";
 
 /** One finding on a file under `notebooks/` or `dashboards/`. */
 export interface NotebookLintFinding {
@@ -112,6 +118,7 @@ export function lintNotebookText(
    // What sits above the artifact tag that only the header may hold, judged once the tag is found.
    const aboveArtifact: { line: number; code: string; what: string }[] = [];
    const modelNotes: string[] = [];
+   const docNotes: { line: number; text: string }[] = [];
    children.forEach((child, index) => {
       if (!isRuleNode(child)) {
          const token = child?.symbol;
@@ -142,6 +149,7 @@ export function lintNotebookText(
             modelNotes.push(noteText.replace(/\r?\n\|##[^\n]*\n?$/, ""));
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
+            docNotes.push({ line: lineOfNode(note), text: noteText });
             if (!artifact && note.start && isArtifactNoteText(noteText)) {
                artifact = {
                   text: noteText,
@@ -226,6 +234,7 @@ export function lintNotebookText(
 
    if (artifact) lintArtifact(artifact);
    if (artifact && !inNotebooks) lintUnreferencedTextBlocks(artifact);
+   if (artifact && !inNotebooks) lintDescriptionBelow(artifact.line);
 
    if (inNotebooks && artifact) lintComments(artifact.startIndex);
 
@@ -434,6 +443,22 @@ export function lintNotebookText(
       }
    }
 
+   /** A dashboard with no description above its tag reads one from below it, where a notebook's would be a cell. */
+   function lintDescriptionBelow(artifactLine: number): void {
+      const prose = (n: { text: string }) => docCommentText([n.text]);
+      if (docNotes.some((n) => n.line < artifactLine && prose(n) !== undefined))
+         return;
+      const below = docNotes.find(
+         (n) => n.line > artifactLine && prose(n) !== undefined,
+      );
+      if (!below) return;
+      add(
+         below.line,
+         "notebook-description-below-artifact",
+         "this `\"` note below `## artifact` is the dashboard's description only because nothing sits above the tag. Fix: move it above `## artifact`.",
+      );
+   }
+
    /** A `(text)` block is a tile only when `tiles` names it. */
    function lintUnreferencedTextBlocks(tagNote: { text: string }): void {
       const tiles = motlyTag([tagNote.text])
@@ -445,7 +470,7 @@ export function lintNotebookText(
          add(
             block.line,
             "notebook-text-block-unreferenced",
-            `the \`(text)\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so no tile shows it. Fix: add \`${block.name} { kind=text }\` to \`tiles\`, or delete the block.`,
+            `the \`(text)\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.`,
          );
       }
    }

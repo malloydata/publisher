@@ -40,7 +40,7 @@ import type {
 } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
-import { docNotesAboveArtifact } from "./notebook";
+import { dashboardDescriptionNotes } from "./notebook";
 import {
    readGivenControlSpec,
    type GivenControlKind,
@@ -409,9 +409,8 @@ export interface DashboardModelFacts {
    /** Model-level (`##`) annotation texts, folded across the import lineage. */
    modelAnnotations: string[];
    /**
-    * The own notes above the artifact line, of every route; the doc-comment
-    * reader keeps the `"` ones as the description, since one below the line is
-    * a notebook's prose. Absent means all of `modelAnnotations`.
+    * The own notes that describe the dashboard, of every route; the doc-comment
+    * reader keeps the `"` ones. Absent means all of `modelAnnotations`.
     */
    descriptionNotes?: string[];
    /**
@@ -640,7 +639,7 @@ export function readDashboardModelFacts(
       // This file's own `##` only. An `## artifact` in a shared include
       // describes that include, not everything importing it.
       modelAnnotations: modelNotes.map((note) => note.text),
-      descriptionNotes: docNotesAboveArtifact(modelNotes),
+      descriptionNotes: dashboardDescriptionNotes(modelNotes),
       queries,
       givens,
       viewGivens,

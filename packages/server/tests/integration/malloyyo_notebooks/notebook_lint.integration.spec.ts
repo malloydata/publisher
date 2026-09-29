@@ -150,6 +150,9 @@ describe("notebook lint through the real server (E2E)", () => {
          expect(severityOf("dashboards/text_block_orphan.malloy")).toEqual([
             ["warn", "Line 4"],
          ]);
+         expect(severityOf("dashboards/description_below.malloy")).toEqual([
+            ["warn", "Line 2"],
+         ]);
       });
 
       it("reports a dashboard whose artifact tag does not parse once, from the dashboard lint", () => {
@@ -243,6 +246,10 @@ describe("notebook lint through the real server (E2E)", () => {
       });
 
       it("does not return them at append scope, where positions are in the concatenated file", async () => {
+         const file = await compile(LINTY, "file");
+         expect(
+            file.problems.filter((p) => /^notebook-/.test(p.code ?? "")),
+         ).not.toEqual([]);
          const { problems } = await compile(
             LINTY,
             "append",
