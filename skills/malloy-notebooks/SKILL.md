@@ -96,7 +96,7 @@ Pick a **Category** in the controls above and every chart below re-runs for it.
 Leave the control empty to read the whole catalog.
 |##
 
-# description="Narrow to one product category. Leave empty for all"
+#(description="Narrow to one product category")
 # label="Category" control=select suggest { source=products dimension=category }
 given: CATEGORY :: filter<string> is f''
 

@@ -3232,12 +3232,15 @@ components:
             The same family carries findings on files under `notebooks/` and
             `dashboards/`, each naming its line and the fix; they are computed
             at discovery and are also returned by `/compile` at file and
-            package scope. Five are `error` and fail `/compile`: a statement or
-            a tag above `## artifact` in a served notebook, a `dashboard_columns`
-            that disagrees with `dashboard { columns }`, an invalid or missing
-            `(text)` block name in a dashboard, an `## artifact` tag that does
-            not parse, and a served notebook whose cells could not be read. The
-            rest are `warn` (a mistyped prose-block opener, a missing
+            package scope. Six codes are `error` and fail `/compile`:
+            `notebook-statement-above-artifact` and `notebook-tag-above-artifact`
+            (a statement or a tag above a served notebook's `## artifact`),
+            `notebook-columns-conflict` (a tiled dashboard's `dashboard_columns`
+            disagrees with `dashboard { columns }`), `notebook-text-block-name`
+            (a dashboard's `(text)` block has an invalid or missing name),
+            `notebook-artifact-unparsed` (an `## artifact` tag does not parse),
+            and `notebook-cells-unreadable` (the reader could not read a served
+            notebook's cells). The rest are `warn` (a mistyped prose-block opener, a missing
             `kind=notebook`, a block that never closes, and similar).
             Server-computed and read-only:
             ignored on
