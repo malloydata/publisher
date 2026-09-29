@@ -50,7 +50,7 @@ Concretely:
   same gateway or is closed by the same setting. An attacker who can reach it can already register
   a package, so it opens no door that was shut.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
-  row-level access, `explores`, and `queryableSources` constrain what a _model_ exposes. They are
+  row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
   a given is whatever the caller sends.
   One request-level exception, and it is load-bearing: `x-publisher-bypass-authorize` carrying

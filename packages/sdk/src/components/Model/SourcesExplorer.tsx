@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import * as Malloy from "@malloydata/malloy-interfaces";
+import type { Message } from "@malloydata/malloy-explorer";
 import { Box, Stack } from "@mui/system";
 import {
    StyledCardMedia,
@@ -14,6 +15,7 @@ import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 // import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";
+import { missingGivensHint, type RunGate } from "./runGate";
 
 type ExplorerComponents = typeof import("@malloydata/malloy-explorer");
 type QueryBuilder = typeof import("@malloydata/malloy-query-builder");
@@ -30,6 +32,10 @@ export interface SourceExplorerProps {
    onQueryChange?: (query: QueryExplorerResult) => void;
    onSourceChange?: (index: number) => void;
    resourceUri: string;
+   /** The control row's current values, sent with every Run. */
+   givens?: Record<string, unknown>;
+   /** What the control row leaves unset, for the words around a result or a refusal. */
+   gate?: RunGate;
 }
 
 /**
@@ -46,6 +52,8 @@ export function SourcesExplorer({
    onQueryChange,
    onSourceChange,
    resourceUri,
+   givens,
+   gate,
 }: SourceExplorerProps) {
    // Notify parent component when selected source changes
    React.useEffect(() => {
@@ -66,6 +74,8 @@ export function SourcesExplorer({
                   }
                }}
                resourceUri={resourceUri}
+               givens={givens}
+               gate={gate}
             />
             <Box height="5px" />
          </Stack>
@@ -78,6 +88,8 @@ interface SourceExplorerComponentProps {
    existingQuery?: QueryExplorerResult;
    onChange?: (query: QueryExplorerResult) => void;
    resourceUri: string;
+   givens?: Record<string, unknown>;
+   gate?: RunGate;
 }
 
 export interface QueryExplorerResult {
@@ -100,6 +112,8 @@ function SourceExplorerComponentInner({
    explorerComponents,
    QueryBuilder,
    resourceUri,
+   givens,
+   gate,
 }: SourceExplorerComponentProps & {
    explorerComponents: ExplorerComponents;
    QueryBuilder: QueryBuilder;
@@ -112,7 +126,8 @@ function SourceExplorerComponentInner({
       | {
            executionState: "running" | "finished";
            response: {
-              result: Malloy.Result;
+              result?: Malloy.Result;
+              messages?: Message[];
            };
            query: Malloy.Query | string;
            queryResolutionStartMillis: number;
@@ -151,18 +166,14 @@ function SourceExplorerComponentInner({
    } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
+   // Captured at Run, so the defaults note describes the run that produced the result.
+   const gateAtRunRef = React.useRef<RunGate | undefined>(undefined);
+
    const mutation = useMutationWithApiError({
       mutationFn: () => {
-         // If malloyQuery is a string, we can use it directly, otherwise convert to Malloy
-         const malloy =
-            typeof query?.malloyQuery === "string"
-               ? query.malloyQuery
-               : new QueryBuilder.ASTQuery({
-                    source: sourceAndPath.sourceInfo,
-                    query: query?.malloyQuery,
-                 }).toMalloy();
-
-         // Set submitted query when execution starts
+         gateAtRunRef.current = gate;
+         // Before building the Malloy, so a build that throws still has a run
+         // for `onError` to report into.
          setSubmittedQuery({
             executionState: "running",
             query: query?.malloyQuery,
@@ -171,10 +182,17 @@ function SourceExplorerComponentInner({
                mutation.reset();
                setSubmittedQuery(undefined);
             },
-            response: {
-               result: {} as Malloy.Result, // placeholder
-            },
+            response: {},
          });
+
+         // If malloyQuery is a string, we can use it directly, otherwise convert to Malloy
+         const malloy =
+            typeof query?.malloyQuery === "string"
+               ? query.malloyQuery
+               : new QueryBuilder.ASTQuery({
+                    source: sourceAndPath.sourceInfo,
+                    query: query?.malloyQuery,
+                 }).toMalloy();
 
          setQuery({
             ...query,
@@ -189,6 +207,8 @@ function SourceExplorerComponentInner({
                sourceName: undefined,
                queryName: undefined,
                versionId: versionId,
+               // Omitted when empty, so a model with no givens sends the same body as before.
+               ...(givens && Object.keys(givens).length > 0 ? { givens } : {}),
             },
          );
       },
@@ -199,6 +219,7 @@ function SourceExplorerComponentInner({
                ...query,
                malloyResult: parsedResult as Malloy.Result,
             });
+            const ranGate = gateAtRunRef.current;
             // Update submitted query with results
             setSubmittedQuery((prev) =>
                prev
@@ -207,6 +228,16 @@ function SourceExplorerComponentInner({
                        executionState: "finished",
                        response: {
                           result: parsedResult as Malloy.Result,
+                          ...(ranGate?.defaultsNote
+                             ? {
+                                  messages: [
+                                     {
+                                        severity: "INFO",
+                                        title: ranGate.defaultsNote,
+                                     },
+                                  ],
+                               }
+                             : {}),
                        },
                     }
                   : undefined,
@@ -214,8 +245,32 @@ function SourceExplorerComponentInner({
          }
       },
       onError: (error) => {
-         setSubmittedQuery(undefined);
          console.error("Query execution error:", error);
+         const message =
+            (error as { data?: { message?: string } } | undefined)?.data
+               ?.message ??
+            (error as Error | undefined)?.message ??
+            "The query could not be run.";
+         const messages: Message[] = [{ severity: "ERROR", title: message }];
+         // A gate's 403 names only the source, so say which blank givens it may want.
+         const missing = gateAtRunRef.current?.missing ?? [];
+         const refused =
+            (error as { status?: number } | undefined)?.status === 403 ||
+            /Access denied for source/i.test(message);
+         if (refused && missing.length > 0) {
+            messages.push({
+               severity: "WARN",
+               title: missingGivensHint(missing),
+            });
+         }
+         // Shown in the results pane rather than cleared, so the server's
+         // reason is visible. No run means Cancel cleared it: a late failure
+         // from that request must not bring the pane back.
+         setSubmittedQuery((prev) =>
+            prev
+               ? { ...prev, executionState: "finished", response: { messages } }
+               : undefined,
+         );
       },
    });
 

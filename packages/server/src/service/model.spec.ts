@@ -1010,6 +1010,112 @@ describe("service/model", () => {
             expect(parsed.name).toBe("carriers");
             expect(parsed.givens).toEqual(givens);
          });
+
+         it("drops a given from the real query when the cell's own modelDef doesn't declare it", async () => {
+            const preparedResultStub = sinon
+               .stub()
+               .resolves({ resultExplore: { limit: 10 } });
+            const runStub = sinon
+               .stub()
+               .rejects(new MalloyError("stub-stop", []));
+            const cellRunnable = {
+               getPreparedResult: preparedResultStub,
+               run: runStub,
+            };
+            // The model surfaces GROUPS (below), so the drop is the cell's doing.
+            const runnableCells = [
+               {
+                  type: "code" as const,
+                  text: "run: plain -> by_code",
+                  runnable: cellRunnable,
+                  modelDef: { givens: {} },
+               },
+            ];
+
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               runnableCells as any,
+               undefined,
+               undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               [{ name: "GROUPS", type: "number[]" }] as any,
+            );
+
+            await expect(
+               model.executeNotebookCell(0, undefined, undefined, {
+                  GROUPS: [1],
+               }),
+            ).rejects.toThrow(MalloyError);
+
+            expect(preparedResultStub.firstCall.args[0]).toEqual({
+               givens: {},
+            });
+            expect(runStub.firstCall.args[0]).toMatchObject({ givens: {} });
+
+            sinon.restore();
+         });
+
+         it("forwards a given the cell's own modelDef declares", async () => {
+            const preparedResultStub = sinon
+               .stub()
+               .resolves({ resultExplore: { limit: 10 } });
+            const runStub = sinon
+               .stub()
+               .rejects(new MalloyError("stub-stop", []));
+            const cellRunnable = {
+               getPreparedResult: preparedResultStub,
+               run: runStub,
+            };
+            const runnableCells = [
+               {
+                  type: "code" as const,
+                  text: "run: gated -> by_code",
+                  runnable: cellRunnable,
+                  modelDef: { givens: { g1: { name: "GROUPS" } } },
+               },
+            ];
+
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               runnableCells as any,
+               undefined,
+               undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               [{ name: "GROUPS", type: "number[]" }] as any,
+            );
+
+            const groupsArg = { GROUPS: [1] };
+            await expect(
+               model.executeNotebookCell(0, undefined, undefined, groupsArg),
+            ).rejects.toThrow(MalloyError);
+
+            expect(preparedResultStub.firstCall.args[0]).toEqual({
+               givens: groupsArg,
+            });
+            expect(runStub.firstCall.args[0]).toMatchObject({
+               givens: groupsArg,
+            });
+
+            sinon.restore();
+         });
       });
    });
 
@@ -1343,12 +1449,9 @@ describe("service/model", () => {
       });
 
       it("tags the source the query RUNS, not the first one its text names", async () => {
-         // Malloy executes the LAST `run:`; `extractRunTargetSourceName` reads
-         // the FIRST. Tagging off the surface syntax therefore attributed an
-         // expensive statement to the cheap source's team and tier — worse than
-         // missing attribution, because the bill lands on a source that never
-         // ran. The authorize gate already resolves the compiled target for
-         // exactly this reason; metadata now reads the same answer.
+         // Malloy executes the LAST `run:`, and `extractRunTargetSourceName`
+         // does too. Metadata still reads the compiled target, which is the
+         // source that actually ran.
          process.env.PUBLISHER_QUERY_METADATA = "on";
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],

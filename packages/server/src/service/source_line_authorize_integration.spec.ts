@@ -41,10 +41,13 @@
  * source still aborts the load as it always has.
  *
  * Scope is Task 1 (spine: compile, enforce, override, join non-propagation,
- * query-source inheritance, repeated-note conjunction; two known edge cases:
- * the except:+rename: misbinding hole, a bare `false` literal) plus Task 2 (the
- * load-abort fix above). It does not migrate the existing dimension-form
- * corpus (Task 3) or touch `gate_dimension.ts`'s validation (Task 4).
+ * query-source inheritance, repeated-note conjunction; one known edge case, a
+ * bare `false` literal) plus Task 2 (the load-abort fix above). The
+ * except:+rename: misbinding case is now closed by `./filter_binding_guard`
+ * (see `filter_binding_guard_integration.spec.ts` for its coverage) rather
+ * than pinned as a known gap here. It does not migrate the existing
+ * dimension-form corpus (Task 3) or touch `gate_dimension.ts`'s validation
+ * (Task 4).
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -683,7 +686,7 @@ source: child_own_source_authorize is gated_parent2 extend {}
 });
 
 // ---------------------------------------------------------------------------
-// Fail-closed reversal + the misbinding hole.
+// Fail-closed reversal, and the (now-closed) misbinding hole.
 //
 // Each of these derives `gated_parent` in a way that breaks its OWN field
 // space's ability to express the inherited gate. Written against
@@ -754,12 +757,16 @@ source: w_accept is gated_parent extend { accept: id, val, n }
       }
    });
 
-   it("KNOWN HOLE — except: the gated column then rename: another column onto its exact name grafts successfully and MISBINDS to the wrong column", async () => {
-      // Not a passing guarantee: this pins the OBSERVED behavior so a future
-      // reader knows it is a known gap, not a security property. `w_misbind`
-      // drops `org_id` and renames `owner` onto that name — the graft
-      // compiles (there IS a field named `org_id` again) and filters on
-      // `owner`'s values instead of the real `org_id`'s.
+   it("except: the gated column then rename: another column onto its exact name still denies rather than misbinding", async () => {
+      // Formerly KNOWN HOLE: `w_misbind` drops `org_id` and renames `owner`
+      // onto that name — the graft still compiles (there IS a field named
+      // `org_id` again), but `./filter_binding_guard` now proves the
+      // grafted condition's field references no longer resolve to the same
+      // field they did at the declaring source, and denies instead of
+      // silently filtering on `owner`'s values. See
+      // `filter_binding_guard_integration.spec.ts` for the full variant
+      // matrix (accept:/include, joined field, transitive dimension,
+      // caller-declared source, package-derived, and the negatives).
       const { model, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
@@ -772,22 +779,16 @@ source: gated_parent is duckdb.table('orgtable') extend {
 source: w_misbind is gated_parent extend { except: org_id } extend { rename: org_id is owner }
 `);
       try {
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: w_misbind -> { group_by: id; aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
-         );
-         const ids = (result.compactResult as unknown as { id: number }[])
-            .map((r) => r.id)
-            .sort();
-         // The CORRECT (org_id-bound) answer would be [1, 2] (org_id=1 rows).
-         // The MISBOUND (owner-bound) answer is [2, 3] (owner=1 rows) — a
-         // DIFFERENT set, not a subset or superset, proving the bind
-         // actually moved to the wrong column rather than merely degrading.
-         expect(ids).toEqual([2, 3]);
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: w_misbind -> { group_by: id; aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup(duckdb);
       }

@@ -288,7 +288,8 @@ change lands in the right place.
   edit a copy, commit on close.
 - `DashboardBuilder.tsx` — the document, the selection and the dialogs.
 - `DashboardEditor.tsx` — the Console's host: the package file, the browser's
-  draft, the catalog from the file's imports, the live surface, export.
+  draft, the catalog (built from the package's published models, limited to
+  what the file imports), the live surface, export.
 - `../Dashboard/useDashboardControls.ts` — the control row, shared by the viewer
   and the builder's live surface; `../Dashboard/telemetry.ts` — the events.
 

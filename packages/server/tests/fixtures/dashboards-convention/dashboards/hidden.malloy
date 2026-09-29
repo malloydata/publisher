@@ -1,0 +1,6 @@
+import "../orders.malloy"
+
+// Listed like every dashboard, but its one query reads a source index.malloy
+// does not export, so the query is refused and the load warns.
+# artifact name="hidden" title="Hidden"
+query: hidden is orders_staging -> by_flag

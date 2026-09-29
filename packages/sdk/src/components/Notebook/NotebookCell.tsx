@@ -20,6 +20,7 @@ import {
    Typography,
 } from "@mui/material";
 import React, { useEffect, useState } from "react";
+import type { Given } from "../../client";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
@@ -82,6 +83,14 @@ interface NotebookCellProps {
     * drill inert rather than dead-ended, and removes the affordance with it.
     */
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
+   /**
+    * The notebook's current control values, to seed the "Data Sources"
+    * dialog's own so exploring from a cell starts from what the reader is
+    * looking at rather than the model's bare defaults.
+    */
+   givens?: Record<string, string>;
+   /** The notebook's declared givens, so that dialog renders their controls. */
+   givenSpecs?: Given[];
 }
 
 export function NotebookCell({
@@ -97,6 +106,8 @@ export function NotebookCell({
    onDrillSelf,
    canDrillSelf,
    onDrillNavigate,
+   givens,
+   givenSpecs,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -209,13 +220,20 @@ export function NotebookCell({
       return 0; // Default to the first source
    };
 
-   const modelDataFromNewSources =
-      cell.newSources && cell.newSources.length > 0
-         ? {
-              sourceInfos: cell.newSources,
-              resource: resourceUri,
-           }
-         : undefined;
+   // Memoized: the dialog's given controls key off this object's identity.
+   const modelDataFromNewSources = React.useMemo(
+      () =>
+         cell.newSources && cell.newSources.length > 0
+            ? {
+                 sourceInfos: cell.newSources,
+                 resource: resourceUri,
+                 // A cell's sources carry no givens of their own; without the
+                 // notebook's, the dialog has no controls and a gated source 403s.
+                 givens: givenSpecs,
+              }
+            : undefined,
+      [cell.newSources, resourceUri, givenSpecs],
+   );
 
    const queryResultCodeSnippet = createEmbeddedQueryResult({
       query: cell.text,
@@ -349,6 +367,7 @@ export function NotebookCell({
                resourceUri={resourceUri}
                data={modelDataFromNewSources}
                initialSelectedSourceIndex={getInitialSourceIndex()}
+               startingGivens={givens}
             />
 
             {/* Code Dialog */}

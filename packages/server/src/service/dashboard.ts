@@ -275,9 +275,9 @@ export function dashboardSlug(modelPath: string): string {
  * Whether a name matches the naming CONVENTION `api-doc.yaml` describes in
  * prose. There is no pattern on the parameter; see below.
  *
- * ADVISORY ONLY. It does not decide whether a dashboard is served. Curation
- * does, and can withhold one (see `Package.isQueryableEntryPoint`); what this
- * governs is that a name is never the reason. A served dashboard's name is
+ * ADVISORY ONLY. It does not decide whether a dashboard is served: every
+ * tagged dashboard is, whatever its name, and curation decides only what its
+ * tiles may read. What this governs is that a name is never the reason. A served dashboard's name is
  * percent-encoded into the published URL, so the route resolves whatever the
  * name contains. The spec declares no
  * pattern on `dashboardName` either, deliberately, because the name comes from

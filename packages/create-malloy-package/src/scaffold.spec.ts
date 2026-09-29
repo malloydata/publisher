@@ -317,6 +317,13 @@ describe("scaffold: the published surface", () => {
       );
    });
 
+   test("the briefing does not send dashboards to explores", () => {
+      // Dashboards read the surface index.malloy exports, so a new package
+      // never needs the deprecated key.
+      run();
+      expect(agentsFile()).not.toContain("explores");
+   });
+
    test("the briefing's curl targets the surface, not the model file", () => {
       // The surface is the query boundary, so a model file off it answers 404.
       // A briefing naming sales.malloy would hand every new user an example

@@ -158,6 +158,10 @@ def main() -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "truth.malloy").write_text("\n".join(lines) + "\n")
 
+    # No "explores" and no index.malloy: the package has one model file, so
+    # there is nothing to curate, and goldens address truth.malloy directly
+    # (set.json truthModel defaults to it). An index.malloy would make
+    # truth.malloy an invalid query entry point.
     (a.out / "publisher.json").write_text(json.dumps({
         "name": a.name, "version": "0.0.1",
         "description": (f"Truth package for the {a.name} eval set: the raw tables the "
@@ -165,7 +169,6 @@ def main() -> int:
                         f"and NO semantic modelling. Goldens are computed here so a "
                         f"model bug cannot certify its own golden. Never served on the "
                         f"answerer's Publisher."),
-        "explores": ["truth.malloy"],
     }, indent=2) + "\n")
 
     (a.out / "README.md").write_text(f"""# {a.name}

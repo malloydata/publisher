@@ -63,6 +63,9 @@ const getDashboard = mock(
          data: { path: "dashboards/overview.malloy", givens: [], tiles: [] },
       }),
 );
+const listModels = mock((_env: string, _pkg: string, _versionId?: string) =>
+   Promise.resolve({ data: [{ path: "data_app.malloy" }] }),
+);
 const listDashboards = mock((_env: string, _pkg: string, _versionId?: string) =>
    Promise.resolve({ data: [{ name: "overview" }] }),
 );
@@ -94,7 +97,7 @@ const executeQueryModel = mock(
 const serverContext = { mutable: false };
 mockServerProvider(
    {
-      models: { getModel, executeQueryModel, updateModelSource },
+      models: { getModel, executeQueryModel, updateModelSource, listModels },
       dashboards: { getDashboard, listDashboards },
    },
    serverContext,
@@ -137,6 +140,7 @@ beforeEach(() => {
    getModel.mockClear();
    getDashboard.mockClear();
    listDashboards.mockClear();
+   listModels.mockClear();
    updateModelSource.mockClear();
    // Uncleared, a tile query from an earlier test carries into the next one's
    // assertions, where it looks like the component under test made it.
@@ -200,6 +204,7 @@ describe("versionId", () => {
          "v7",
       ]);
       expect(listDashboards.mock.calls[0]).toEqual(["env", "pkg", "v7"]);
+      expect(listModels.mock.calls[0]).toEqual(["env", "pkg", "v7"]);
 
       // The key too, appended last, never spliced in the middle of it: a
       // version in the wrong slot is a key that cannot tell two versions of

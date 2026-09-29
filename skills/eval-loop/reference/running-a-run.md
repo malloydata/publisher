@@ -62,10 +62,14 @@ python3 skills/eval-loop/scripts/run_baseline.py \
 python3 skills/eval-loop/scripts/run_baseline.py \
   --set <repo>/evals/ecommerce --out results/<arm> \
   --parallel 4 --truth-publisher http://localhost:4881 \
-  --model-repo <repo>   # the checkout the MODEL is versioned in, recorded as
-                        # modelGitSha. It cannot be inferred: Publisher serves
-                        # a copy under publisher_data/, whose surrounding tree
-                        # is the server's storage, not the model's history.
+  --model-repo <repo> --model-dir <package>   # the checkout the MODEL is
+                        # versioned in, recorded as modelGitSha, and the package
+                        # directory inside it the -dirty marker is decided over
+                        # (relative to the repo). Without --model-dir any
+                        # untracked file anywhere in the repo marks the model
+                        # dirty. The repo cannot be inferred: Publisher serves a
+                        # copy under publisher_data/, whose surrounding tree is
+                        # the server's storage, not the model's history.
 #    the run names itself <set>-<phase>-<nn> (ecommerce-baseline-01, then -02
 #    for the second arm of the A/A). Pass --label only for a run that needs a
 #    human name; hand-typed arm names stop being readable within an afternoon.

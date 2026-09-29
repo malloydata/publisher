@@ -31,6 +31,246 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — /status names the server version, and says why it is empty
+
+`GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and
+the MCP handshake reports the same value instead of `0.0.1`. A stale copy from the `npx` cache is
+now visible from outside the process.
+
+A server that found no `publisher.config.json` still reports `serving`, which is deliberate: some
+deployments start empty and create environments over the API. It now also reports `emptyReason`,
+naming the path it checked. It is set for a mistyped `--config` path too. The field is absent once
+any environment exists, and absent when a config was found but lists none.
+
+## [Unreleased] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
+
+**Reloading a package no longer costs you a lexically-ranked answer.** A reload
+never dropped a package's vectors — they are keyed by package name in
+`publisher.db` — but it did throw away the server's record that they were
+current, because that record was tied to the in-memory package object a reload
+replaces. So the first `get_context` after every `reload_package`, every REST
+`?reload=true`, and every watch-mode save was ranked lexically while the server
+re-checked hashes that all still matched. If you author models with watch mode
+on, that was one degraded answer per save, including saves that changed nothing
+relevant. Now a reload whose files hash the same keeps the warm index and is
+ranked semantically on its first call; an edit still re-embeds, and still only
+the parts whose text changed.
+
+**`embeddingIndex.status` keeps its name and changes its basis, so read this if
+you poll it.** On the package resource
+(`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
+from whether cached rows covered the package's current entity *names*. Vectors
+outlive a restart and a reload, so that reported `ready` immediately — while the
+next question was still answered lexically. Anything following the documented
+"poll until `ready` before measuring retrieval quality" could therefore measure a
+lexical run and record it as a semantic one, which is a wrong number rather than
+a slow start. `ready` now means one thing: the index is warm, so the next
+`get_context` question about this package is ranked semantically. It is decided
+by the same completed sync the search path itself gates on. It describes the
+index, not the next response — a question whose own query embedding fails still
+falls back, with `retrieval_reason: provider-error`.
+
+**What to do.** If you poll for readiness, keep polling `status` — it is now
+accurate, and it is the field to trust. If you instead inferred readiness from
+`embeddedEntities == totalEntities`, stop: those count coverage by entity name,
+so they can be equal while `status` is `indexing` (an edit that rewrote every
+doc without renaming anything leaves each entity holding its stale name vector).
+Expect `status` to read `indexing` in two places it previously read `ready`:
+just after a server restart, until the first question re-establishes the sync,
+and after a doc-only edit. Both clear on the next `get_context` question.
+Because only a question starts the sync, poll in this order: send the package one
+`get_context` question, then poll until `ready`. That holds after every restart,
+not only for a package nothing has queried. A script that polls before asking
+anything never sees `ready`.
+
+**If your embedding provider ignores `EMBEDDING_DIMENSIONS`, the coverage counts
+now match reality.** The `dims` column records the length the provider actually
+returned, and some providers (Ollama among them) ignore the requested value.
+`embeddedRows` and `embeddedEntities` were counted against the *configured*
+value instead, so for those providers they read 0 while retrieval was reading
+those same vectors happily — and that also pinned `status` at `indexing`. Both
+now count on the same rule the sync uses to decide a row is current: the current
+model, any vector length.
+
+That makes them a count of what is cached, not a prediction of what a search can
+read — the scan also matches on vector length, which only a real question knows.
+So after a change to `EMBEDDING_DIMENSIONS` that no question has probed yet, the
+old rows are still counted until the next search discards them. `status` is
+already `indexing` throughout that window, which is why it, and not the counts,
+is the field to poll.
+
+Unrelated to the above, and unchanged: `--init` still drops the vector cache
+along with the rest of persisted storage. It resets the server root, and it
+remains the reclaim path for rows orphaned by a configuration change.
+
+## [Unreleased] — a given the query reads is no longer silently replaced by its default
+
+Publisher withholds a given the entry model doesn't surface when a gate is the only thing reading
+it, so the gate can still evaluate. It also withheld it when the query itself read a given of the
+same name, such as a `where:` on a source from another file that declares its own defaulted
+`HIDE`. That `where:` then ran at its default: a caller who sent `HIDE: us-west` got the rows for
+`'none'`, with no error. The value is now forwarded, so the request returns a 400 (`unknown given
+'HIDE'`), the same as for any given the entry model doesn't surface. **Behavior change:** a
+request that used to return rows at the default now fails with a 400. To fix the model, import the
+given at the entry model.
+
+## [0.8.2] — the model Explorer takes givens
+
+The Console's model Explorer now shows a **Parameters** row when the model declares givens, and
+sends the values with every Run. Before this, a source gated with `#(authorize)` on a given could
+not be explored from the Console at all: the Explorer had no way to supply the value, the server
+answered 403, and the Explorer showed nothing.
+
+- The values live in the page URL, so a parameterized exploration is a shareable link (the page's
+  copy-link button now carries them too).
+- A blank given with a default runs, and the result says which default it used. When a query is
+  refused and a given with no default was left blank, the results pane names it.
+- Query errors, including a 403 from a gate, now show in the results pane instead of vanishing.
+- **Explore from here** on a dashboard and a notebook cell's **Data sources** dialog open the
+  Explorer with the document's current values rather than none.
+
+No server or API change: the Explorer sends givens through the same `POST …/query` field notebooks
+and dashboards use. See [docs/explorer.md](docs/explorer.md#parameters).
+
+## [0.8.2] — notebook cells receive only the givens in their own scope
+
+A notebook cell now ignores a given the notebook declares only in a later cell.
+Previously any code cell that ran before the notebook's `import` of a given 400'd
+with `unknown given` when the caller sent that given, which is what the Publisher
+UI and a router injecting trusted givens both do. A given the cell's own imports
+declare is still forwarded, and a name declared nowhere in the notebook still 400s.
+
+## [0.8.1] (BREAKING) — dashboards and notebooks read only what `index.malloy` exports
+
+A package's surface is now the one list of what anyone can read, through every route. An agent
+querying `index.malloy`, a dashboard tile, and a notebook cell see the same sources. This reverses
+two pieces of 0.7.0 advice: you no longer need `explores` to serve dashboards, and the opt-out is no
+longer `"explores": []`.
+
+**Every dashboard is listed.** In 0.7.0 a root `index.malloy` withheld every dashboard, and the fix
+was an `explores` listing `index.malloy` and each dashboard file. Now each tagged `dashboards/*.malloy`
+is served whatever the surface is. Its tiles, its single query, and its filters' `suggest` read only
+what the surface publishes. A source the dashboard declares on top of a published one
+(`source: big_orders is orders extend { ... }`) can be read; one over a hidden source cannot. A tile
+over a hidden source answers 404, and the load warns once per tile:
+
+```
+Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.
+```
+
+In a package that gates anything with `#(authorize)`, the warning says "a source" rather than naming
+it, the same way the query's own 404 does.
+
+What can break:
+
+- **A dashboard file no longer admits anything of its own.** Its `export { ... }` and its own named
+  queries used to make a hidden source queryable, even under a written `explores`. They don't now,
+  so a tile that relied on that answers 404 and is named in the warnings. Export the source from
+  `index.malloy` (or from a file `explores` lists).
+- **Dashboards `explores` left out on purpose are now listed**, with their givens and filter names.
+  To hide one, remove its `# artifact` tag, and take it out of `explores` if that lists it: an
+  untagged file `explores` lists is published like any other model, as before.
+- **Every dashboard file is now a query path, and the check is on the source a query runs.** Any
+  caller can send query text to `…/models/dashboards/<name>.malloy/query`, not only its tiles.
+  `run: secret` there answers 404, and so does a query over a published source that joins a hidden
+  source the dashboard file imports:
+  `run: orders extend { join_one: s is secret on id = s.id } -> { group_by: s.x }`, the same as a
+  query sent to `index.malloy` (see the caller-join section below). Only tiles are checked at load;
+  other query text on the dashboard path is checked when it runs.
+
+**A model off the surface answers 404 when read, not only when queried.** `GET …/models/{path}`
+used to return any file, with its full compiled model and its text. Now a file off the surface gets
+the same 404 the query route gives. Files it does return carry only the names they publish:
+`modelDef.contents` and `exports`, `modelInfo`, `sources` and `sourceInfos` are limited to them, so
+`index.malloy`'s own response no longer includes the sources it imports and hides. A join to a hidden
+source keeps its name and its fields' names and types, which is what querying through it needs, but
+not the hidden source's table, SQL or connection. `sourceText` is left out when the text names a
+source the file does not publish, backticked names included. A dashboard's text is always returned,
+because the Console's dashboard editor saves with it. The editor now builds its field list from the
+published models rather than from the files a dashboard imports. None of this applies with no surface
+or under `queryableSources: "all"`.
+
+**Notebook cells are held to the surface.** A cell used to run whatever its notebook imported, so
+`GET …/notebooks/{path}/cells/{i}` returned rows from a source `index.malloy` hides. Now a cell over a
+hidden source answers 404, and 404 rather than 403 when the source is also gated. A source an earlier
+cell derives from a published one still works. The notebook GET and the cell response list only the
+sources the notebook may read, and the notebook GET leaves out `queryInfo` for a cell that would be
+refused, since its schema lists the columns the hidden source returns. A cell's own source over a raw table (`duckdb.table(...)`,
+`duckdb.sql(...)`) has no published source under it, so on a curated package it answers 404 too.
+
+**Every use of `explores` is deprecated, and every warning is two sentences.** `explores` still works
+as before: the files it lists are listed and queryable, and what they export is the surface, wherever
+they live. The one change is a tagged dashboard it lists, which reads the surface and adds nothing to
+it (see above). A root `index.malloy` with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
+this package, then `Fix:` and the one edit:
+
+| `publisher.json` | Warning |
+| --- | --- |
+| `explores` naming files | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement. |
+| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`. |
+| `explores: []` alone | Does nothing. Delete it. |
+| `queryableSources: "declared"` | Does nothing. Delete it. |
+| `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
+| `Index.malloy` (any other case) | Ignored: only a root file named exactly `index.malloy` decides what is published. |
+
+Renaming `index.malloy` is now the way to leave a package uncurated. The caveat from 0.7.0 still
+holds: a file that imports `"index.malloy"` fails to compile after the rename, and the compile error
+names it. Nothing is removed in this release; both keys still work.
+
+**Unchanged:** materialization and pre-aggregation builds ignore the surface, so a hidden `#@ persist`
+intermediate is still built and an exported source still reads its table. `/compile` and MCP
+`compile_model` stay exempt. The check is on what a query runs, so a query over a published source
+can still join a hidden source its file can see. The surface decides what is listed and queryable by
+name; `#(authorize)` is what decides who may read a source.
+
+## [0.8.1] — a join written in query text is held to the joined source's gate and to the query boundary
+
+A caller's ad-hoc query could join a source it was not allowed to query, and read it.
+`#(authorize)`, `#(access_filter)` and the `queryableSources` boundary ran on the run
+target only, so `run: open_src extend { join_cross: g is locked } -> { group_by: g.secret }`
+returned `locked`'s rows, a join into a hidden source returned its rows, and a join into a
+row-filtered source returned every row.
+
+A join the **caller** writes is now checked as if it were another run target:
+
+| The caller joins                                  | Before         | Now                                                     |
+| ------------------------------------------------- | -------------- | ------------------------------------------------------- |
+| an `#(authorize)` source they are not admitted to | 200            | 403 naming the join alias                               |
+| an `#(access_filter)` source                      | 200, every row | 200, their rows (the filter applies in the join's `ON`) |
+| a source off the discovery surface                | 200            | 404 `Query target is not queryable.`                    |
+| anything else, including an admitted lock         | 200            | 200                                                     |
+
+Joins the **author** declares in the model are unchanged: joining sensitive data into an
+ungated source still publishes it, as documented in `docs/authorize.md`. Named queries and
+notebook cells are author text and are unaffected.
+
+Also fixed here: Malloy keywords are case-insensitive, and `RUN:` / `SOURCE: x IS y` skipped
+the pre-compile checks, including a `required` `#(filter)`. Every caller-text reader now
+matches keywords in any case.
+
+Also fixed here: a row filter now stays bound to the field it was written against. An inherited
+filter (`where:`, a grafted `#(access_filter)`, or an injected `#(filter)`) that would evaluate
+against a different field of the same name in the executed query, including inside a caller's join,
+is refused with 403 instead of served. Renaming or excepting a field that no filter reads still works.
+
+Every locked name in the request is now decided before compile, not only the run target and
+its joins: a lock (`#(authorize)`) applies wherever its source's name appears, in any case,
+inside backticks (decoded as Malloy decodes them), parentheses, `compose`, or a derivation
+chain. The read over-collects on purpose -- it takes any identifier-shaped token, including
+one in a comment or a string literal -- so a caller the lock refuses also gets 403 when some
+other name merely matches it. The run target read before compile is the last `run:` in the
+text, the one Malloy executes, and `/compile` at file or package scope walks, without a depth
+cap, every derivation reachable from that final `run:` target -- or from every declared name,
+when the text has no `run:` at all.
+
+`#(filter)` is not a security boundary against caller-authored query text or
+`bypassFilters`; use givens and `#(authorize)`.
+
+**Who is affected:** callers who were reading through a join, or through a name the
+pre-compile read missed, what they could not read with `run:`. If an app sends ad-hoc text
+that reaches a gated or hidden source for users the gate does not admit, those requests now
+get 403 or 404, and a refused caller also gets 403 for text that merely names a locked source.
+
 ## [0.8.0] — every document is framable only from its own origin, and the framing policy finally covers all of them (ACTION REQUIRED)
 
 Two changes to `Content-Security-Policy: frame-ancestors`, shipped together because

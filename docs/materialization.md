@@ -410,6 +410,8 @@ Publisher enforces these rules identically at **publish** (strict — rejected),
 
 A materialization run compiles the package, builds every `#@ persist` source into its table, writes a manifest, and loads it so queries serve from the built tables. It settles at `MANIFEST_FILE_READY` (success) or `FAILED` / `CANCELLED`.
 
+A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
+
 Each run records a **trigger** in its metadata: `ON_DEMAND` (a manual/API build) or `SCHEDULER` (a scheduled fire). Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build.
 
 On demand, via the CLI:

@@ -4,12 +4,16 @@
 import { Box, Stack } from "@mui/material";
 import Autocomplete from "@mui/material/Autocomplete";
 import TextField from "@mui/material/TextField";
-import React from "react";
+import React, { useMemo } from "react";
 import { CompiledModel } from "../../client";
+import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { GivensPanel } from "../given";
+import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { StyledCard, StyledCardContent, StyledCardMedia } from "../styles";
+import { runGate } from "./runGate";
 import { QueryExplorerResult, SourcesExplorer } from "./SourcesExplorer";
 import { useModelData } from "./useModelData";
 
@@ -53,6 +57,29 @@ export interface ModelExplorerProps {
    /** Callback when source selection changes */
    onSourceChange?: (index: number) => void;
    resourceUri: string;
+   /**
+    * Control values from the host, typically its URL query parameters. These
+    * beat the model's own starting values, so a shared link shows what the
+    * sender was looking at.
+    */
+   givens?: Record<string, string>;
+   /**
+    * Applied control values, for a host that wants them in its URL.
+    *
+    * `managed` is every given this model declares, whether or not it currently
+    * holds a value, and a host writing to a shared query string needs it.
+    * `givens` alone says which parameters to write but not which to REMOVE, so
+    * a host that guesses by deleting everything it did not just receive
+    * deletes the unrelated parameters it has no business touching. Same
+    * contract as `Dashboard` and `Notebook`, so a host can treat every surface
+    * alike.
+    */
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
+   /** Where the controls start, from the host, e.g. a dashboard tile's values. */
+   startingGivens?: Record<string, string>;
 }
 
 /**
@@ -68,6 +95,9 @@ export function ModelExplorer({
    initialSelectedSourceIndex = 0,
    onSourceChange,
    resourceUri,
+   givens,
+   onGivensChange,
+   startingGivens,
 }: ModelExplorerProps) {
    const [selectedTab, setSelectedTab] = React.useState(
       initialSelectedSourceIndex,
@@ -85,9 +115,39 @@ export function ModelExplorer({
       isLoading,
       error,
    } = useModelData(resourceUri, !data); // we shld only fetch when data is not provided
-   const { modelPath } = parseResourceUri(resourceUri);
+   const { environmentName, packageName, modelPath, versionId } =
+      parseResourceUri(resourceUri);
 
    const effectiveData = data || fetchedData;
+
+   // Above the early returns, which would otherwise skip these hooks.
+   const specs = React.useMemo(
+      () => effectiveData?.givens ?? [],
+      [effectiveData],
+   );
+   const controls = useDocumentControls({
+      specs,
+      loaded: !!effectiveData,
+      params: givens,
+      onGivensChange,
+      startingValues: startingGivens,
+      documentKey: resourceUri,
+      // No Apply button: the Explorer already waits for an explicit Run.
+      autorun: true,
+      environmentName: environmentName ?? "",
+      packageName: packageName ?? "",
+      modelPath,
+      versionId,
+      documentName: modelPath,
+   });
+   const requestGivens = useMemo(
+      () => givensToRequest(controls.applied, controls.declaredTypes),
+      [controls.applied, controls.declaredTypes],
+   );
+   const gate = useMemo(
+      () => runGate(specs, controls.applied),
+      [specs, controls.applied],
+   );
 
    if (isLoading && !data) {
       return <Loading text="Fetching Model..." />;
@@ -180,6 +240,7 @@ export function ModelExplorer({
                />
             </Stack>
          </StyledCardContent>
+         <GivensPanel {...controls.panel} />
          <StyledCardMedia>
             <Stack spacing={2} component="section">
                {/* Render the selected source info */}
@@ -199,6 +260,8 @@ export function ModelExplorer({
                         existingQuery={existingQuery}
                         onQueryChange={onChange}
                         resourceUri={resourceUri}
+                        givens={requestGivens}
+                        gate={gate}
                      />
                   )}
 

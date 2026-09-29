@@ -460,6 +460,15 @@ const enforcedVectors: EnforcedVector[] = [
       validParams: { Organization: "acme", Category: "widgets" },
       expectedRows: 1,
    },
+   {
+      // Case-insensitive `run:` still resolves the protected source.
+      label: "uppercase RUN: orders",
+      modelPath: "orders.malloy",
+      query: "RUN: orders -> { group_by: org_id, category; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme", Category: "widgets" },
+      expectedRows: 1,
+   },
 ];
 
 describe("alias/extend/chain of a protected source is enforced (not restricted)", () => {
@@ -594,5 +603,42 @@ describe("regressions", () => {
          true,
       );
       expect(asRows(compactResult).length).toBe(3);
+   });
+});
+
+// Malloy keywords are case-insensitive, so `RUN:` compiles like `run:`.
+describe("a keyword spelled in another case does not skip enforcement", () => {
+   for (const runKw of ["RUN:", "Run:"]) {
+      it(`rejects \`${runKw}\` with no filter params`, async () => {
+         const model = await makeModel("products.malloy");
+         await expectFilterRejected(
+            model,
+            `${runKw} products -> { group_by: org_id, product_name }`,
+            undefined,
+            "Organization",
+         );
+      });
+
+      it(`scopes \`${runKw}\` to the supplied Organization`, async () => {
+         const model = await makeModel("products.malloy");
+         const rows = await runAdHoc(
+            model,
+            `${runKw} products -> { group_by: org_id, product_name }`,
+            { Organization: "acme" },
+         );
+         expectAcmeScoped(rows, 2);
+      });
+   }
+
+   it("enforces through an upper-case `SOURCE: x IS products EXTEND {}` alias", async () => {
+      const model = await makeModel("products.malloy");
+      const query =
+         "SOURCE: mine IS products EXTEND {}\n" +
+         "RUN: mine -> { group_by: org_id, product_name }";
+      await expectFilterRejected(model, query, undefined, "Organization");
+      expectAcmeScoped(
+         await runAdHoc(model, query, { Organization: "acme" }),
+         2,
+      );
    });
 });
