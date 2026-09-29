@@ -47,7 +47,9 @@ SPDX-License-Identifier: MIT
 2. Pass a schema name exactly as it was returned, plus a `searchQuery` describing the data you need, to rank that schema's tables. DuckDB schema names are qualified (`memory.main`), so a bare `main` is rejected.
 3. Each table comes back with a `source:` line. Paste it into the model verbatim as your minimal source (step 6). Validate the whole file, not just the new line: a check that appends text to the existing model rejects a `connection.table(...)` line. Then save it and make it queryable the way your modeling workflow does before previewing it.
 
-If the environment lists no connection, or you do not have `search_database_schema`, do NOT silently retry or proceed without data. Tell the user: "No model sources were found, and no database connection is configured to start one from. Add a connection to the package, then try again."
+If the environment lists no connection, do NOT silently retry or proceed without data. Tell the user: "No model sources were found, and no database connection is configured to start one from. Add a connection to the package, then try again."
+
+If you do not have `search_database_schema`, a connection may still exist; you just cannot list its tables. Do NOT tell the user to add one. Ask which connection and table to start from, then define a minimal source from them (step 6).
 
 **If the model has no sources defined** but LookML files ARE present (LookML-only mode), skip steps 3-7. Use connection name and table paths from the LookML review. Flag all proposals as unvalidated.
 
