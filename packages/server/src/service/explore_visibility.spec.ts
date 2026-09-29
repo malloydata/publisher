@@ -269,6 +269,57 @@ export { customers }`,
       }
    });
 
+   it("lists the files off the surface only when asked, marked onSurface: false, and keeps them unqueryable", async () => {
+      writeManifest(); // the root index.malloy is the surface
+      writeLayeredModels();
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const byPath = (models: { path?: string; onSurface?: boolean }[]) =>
+            Object.fromEntries(models.map((m) => [m.path, m.onSurface]));
+
+         expect(byPath(await pkg.listModels())).toEqual({
+            "index.malloy": true,
+         });
+         expect(
+            byPath(await pkg.listModels({ includeOffSurface: true })),
+         ).toEqual({ "base.malloy": false, "index.malloy": true });
+
+         // Listing it does not open it: the query route still refuses it.
+         await expect(
+            pkg
+               .getModel("base.malloy")!
+               .getQueryResults(
+                  "base_source",
+                  undefined,
+                  "run: base_source -> { select: * }",
+               ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("marks every file onSurface: true in a package with no surface", async () => {
+      writeManifest();
+      writeLayeredModels("surface.malloy"); // not index.malloy: no surface
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const includeOffSurface of [false, true]) {
+            const models = await pkg.listModels({ includeOffSurface });
+            expect(models.map((m) => [m.path, m.onSurface]).sort()).toEqual([
+               ["base.malloy", true],
+               ["surface.malloy", true],
+            ]);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("prefers an explicit explores over the convention, and says so", async () => {
       writeManifest({ explores: ["base.malloy"] });
       writeLayeredModels(); // index.malloy exists but is not declared

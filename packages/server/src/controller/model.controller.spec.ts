@@ -107,6 +107,48 @@ describe("ModelController.getModel", () => {
       expect(showsFileText.calledOnceWithExactly(SOURCE_TEXT)).toBe(true);
    });
 
+   it("returns a file off the surface, with its text, when the caller asks to see it", async () => {
+      const assertFileOnSurface = sinon
+         .stub()
+         .throws(new NotQueryableError('No queryable model "orders.malloy".'));
+      const showsFileText = sinon.stub().returns(false);
+      const { controller } = buildController({
+         getType: () => "model",
+         getModel: sinon.stub().resolves(COMPILED),
+         assertFileOnSurface,
+         showsFileText,
+      });
+
+      const result = await controller.getModel("env", "faa", "orders.malloy", {
+         includeOffSurface: true,
+      });
+
+      // The compiled body is the model's own, curated as ever; only the 404
+      // and the text's withholding are lifted.
+      expect(result).toEqual({ ...COMPILED, sourceText: SOURCE_TEXT });
+      expect(assertFileOnSurface.called).toBe(false);
+      expect(showsFileText.called).toBe(false);
+   });
+
+   it("keeps both checks when includeOffSurface is false", async () => {
+      const refusal = new NotQueryableError(
+         'No queryable model "orders.malloy".',
+      );
+      const { controller } = buildController({
+         getType: () => "model",
+         getModel: sinon.stub().resolves(COMPILED),
+         assertFileOnSurface: () => {
+            throw refusal;
+         },
+      });
+
+      await expect(
+         controller.getModel("env", "faa", "orders.malloy", {
+            includeOffSurface: false,
+         }),
+      ).rejects.toBe(refusal);
+   });
+
    it("still refuses a notebook before reading anything", async () => {
       const { controller, getModelFileText } = buildController({
          getType: () => "notebook",

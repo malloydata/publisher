@@ -1567,9 +1567,14 @@ paths:
       operationId: list-models
       summary: List package models
       description: |
-        Retrieves a list of all Malloy models within the specified package. Each model entry
-        includes the relative path, package name, and any compilation errors. This endpoint
-        is useful for discovering available models and checking their status.
+        Retrieves the Malloy models within the specified package. Each model entry includes
+        the relative path, package name, whether the file is on the package's surface, and any
+        compilation errors.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
+        files on that surface are listed, unless `includeOffSurface` is true. With it, every
+        model file is listed and `onSurface` says which ones a query can reach. Dashboard files
+        are listed by the dashboards route either way.
       parameters:
         - name: environmentName
           in: path
@@ -1589,6 +1594,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeOffSurface"
       responses:
         "200":
           description: A list of models in the package
@@ -1621,7 +1627,9 @@ paths:
         provides access to the model's structure, sources, and named queries for use in applications.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
-        that surface answers 404 with the same message a query to it gets. Dashboard files are
+        that surface answers 404 with the same message a query to it gets, unless
+        `includeOffSurface` is true. With it, the file is returned with its `sourceText`, whatever
+        sources the text names; a query to that file still answers 404. Dashboard files are
         always returned. A package with no surface, or with `queryableSources: "all"`, returns
         every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
@@ -1654,6 +1662,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeOffSurface"
       responses:
         "200":
           description: Compiled Malloy model
@@ -3779,6 +3788,12 @@ components:
         path:
           type: string
           description: Relative path to the model file within its package directory
+        onSurface:
+          type: boolean
+          description: |
+            Whether the file is on the package's surface, so a query can reach it. True for
+            every file of a package with no surface. False only on a file listed because the
+            request set `includeOffSurface`.
         error:
           type: string
           description: Error message if the model failed to compile or load
@@ -7180,6 +7195,26 @@ components:
             gate rejects anyway.
 
   parameters:
+    includeOffSurface:
+      name: includeOffSurface
+      in: query
+      required: false
+      description: |
+        When true, a package with a surface (a root `index.malloy`, or a legacy
+        `explores`) also returns the files off that surface. It changes what is
+        shown, never what can be queried: the query, notebook and dashboard
+        routes stay held to the surface.
+
+        Like every route on this server, it is unauthenticated. A deployment
+        that authenticates in front of Publisher decides who may send it, and
+        should pass it only for callers allowed to read a package's hidden
+        files, such as its authors.
+
+        Only `true` and `false` are accepted. Any other value is refused with
+        400.
+      schema:
+        type: boolean
+        default: false
     environmentName:
       name: environmentName
       in: path

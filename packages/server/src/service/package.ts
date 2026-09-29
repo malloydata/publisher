@@ -2675,14 +2675,21 @@ export class Package {
       return await model.getFileText(this.packagePath);
    }
 
-   public async listModels(): Promise<ApiModel[]> {
+   public async listModels(
+      options: { includeOffSurface?: boolean } = {},
+   ): Promise<ApiModel[]> {
       // When the package resolved a surface — an `explores` in publisher.json
       // or a root `index.malloy` — only those models are listed; every other
       // .malloy file still compiles for import/join resolution but is hidden.
       // No surface → every model is listed (backward-compatible default), but
       // note that means no surface, not merely no manifest key. Notebooks are
       // unaffected (see listNotebooks) — they are always public.
+      //
+      // `includeOffSurface` lists the hidden files too, each marked
+      // `onSurface: false`. It shows them; it does not make them queryable.
       const exploreSet = this.exploreSet();
+      const onSurface = (modelPath: string) =>
+         !exploreSet || exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
@@ -2690,10 +2697,8 @@ export class Package {
                // A dashboard file is not a model on the surface even when
                // `explores` lists it: it is listed as a dashboard instead.
                if (!exploreSet) return true;
-               return (
-                  exploreSet.has(modelPath) &&
-                  !this.isServedDashboard(modelPath)
-               );
+               if (this.isServedDashboard(modelPath)) return false;
+               return options.includeOffSurface || exploreSet.has(modelPath);
             })
             .map(async (modelPath) => {
                let error: string | undefined;
@@ -2709,6 +2714,7 @@ export class Package {
                   environmentName: this.environmentName,
                   path: modelPath,
                   packageName: this.packageName,
+                  onSurface: onSurface(modelPath),
                   error,
                };
             }),
