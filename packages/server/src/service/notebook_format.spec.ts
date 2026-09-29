@@ -215,8 +215,11 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       rewrite: (text: string) => string,
    ) => {
       const root = "file:///nb/";
+      // A Windows checkout hands these fixtures over as CRLF; the rewrites match on `\n`.
       const read = (file: string) =>
-         fs.readFileSync(path.join(FIXTURE_DIR, file), "utf8");
+         fs
+            .readFileSync(path.join(FIXTURE_DIR, file), "utf8")
+            .replace(/\r\n/g, "\n");
       const text = read(fixture);
       const rewritten = rewrite(text);
       expect(rewritten).not.toBe(text);
