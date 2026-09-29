@@ -1,0 +1,19 @@
+##! experimental.givens
+## artifact { kind=notebook title="Cells" }
+import "../models/orders.malloy"
+import "../models/hidden.malloy"
+import "../models/secured.malloy"
+
+given: REGION :: filter<string> is f''
+
+query: own_cells_query is orders -> { aggregate: order_count }
+
+run: orders -> { aggregate: order_count }
+
+run: hidden -> { aggregate: secret_total }
+
+run: gated -> { aggregate: n }
+
+run: filtered -> { aggregate: n }
+
+run: orders -> { where: region ~ $REGION; aggregate: order_count }

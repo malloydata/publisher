@@ -217,7 +217,7 @@ describe("served notebooks (worker path)", () => {
       });
    });
 
-   it("answers the notebook GET for a served notebook that has no cells yet", async () => {
+   it("answers the notebook GET for a served notebook whose only statement is a definition", async () => {
       manifest();
       write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
       await withPackage(async (pkg) => {
@@ -225,7 +225,9 @@ describe("served notebooks (worker path)", () => {
          expect(raw).toMatchObject({
             type: "notebook",
             format: "malloy",
-            notebookCells: [],
+            notebookCells: [
+               { type: "code", kind: "definition", text: BASE.trimEnd() },
+            ],
          });
       });
    });

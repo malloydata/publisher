@@ -1,3 +1,4 @@
 import "models/orders.malloy"
+import "models/secured.malloy"
 
-export { orders }
+export { orders, gated, filtered }

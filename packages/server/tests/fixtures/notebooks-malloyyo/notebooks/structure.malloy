@@ -1,0 +1,18 @@
+##! experimental.givens
+import "../models/orders.malloy"
+## artifact { kind=notebook title="Structure" }
+## title="A non-prose note after the tag"
+##(filters) ["orders.region"]
+
+##|" intro
+# Named block
+The name on the opener line is not prose.
+|##
+
+/* A two-line comment
+   between cells is not structure. */
+source: us_orders is orders extend { where: region = 'US' }
+
+export { us_orders }
+
+run: us_orders -> kpis

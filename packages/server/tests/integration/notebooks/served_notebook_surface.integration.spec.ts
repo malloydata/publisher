@@ -135,15 +135,15 @@ describe("Served notebook on a package with a surface (E2E)", () => {
          description?: string;
          error?: string;
       }[];
-      expect(notebooks).toEqual([
+      const listed = notebooks.find((nb) => nb.path === NOTEBOOK);
+      expect(listed).toEqual(
          expect.objectContaining({
-            path: NOTEBOOK,
             title: "Surface probe",
             description:
                "Reads the surface, and declares a source over a file the surface hides.",
          }),
-      ]);
-      expect(notebooks[0].error).toBeUndefined();
+      );
+      expect(listed?.error).toBeUndefined();
    });
 
    it("runs a query over a source derived from the surface", async () => {
