@@ -1137,6 +1137,284 @@ class DisconnectedStringSelectorStaysSkip(unittest.TestCase):
         self.assertEqual(results[("T", "Selected page")]["routes"], ["SKIP"])
 
 
+class CaseInsensitiveAll(unittest.TestCase):
+    """DAX is case-insensitive; the ALL patterns matched upper case only, so a
+    model written in mixed case routed every ALL measure DIRECT."""
+
+    def routes(self, dax):
+        return cm.local_routes(measure("M", dax), {}, NO_FLAGS)[0]
+
+    def test_mixed_case_all_on_a_column_is_fc5(self):
+        self.assertIn("FC5", self.routes("Calculate([S], All(Sales[Region]))"))
+
+    def test_lower_case_all_on_a_table_is_fc2(self):
+        self.assertIn("FC2", self.routes("divide([S], calculate([S], all(Sales)))"))
+
+    def test_mixed_case_filter_all_is_fc1_and_not_fc5(self):
+        routes = self.routes('Calculate([S], Filter(All(Sales[Region]), Sales[Region] <> "X"))')
+        self.assertIn("FC1", routes)
+        self.assertNotIn("FC5", routes)
+
+    def test_lower_case_filter_all_is_fc1(self):
+        self.assertIn("FC1", self.routes(
+            "calculate([S], filter(all(Sales[Region]), Sales[Region] > 1))"))
+
+
+class SemiAdditiveFilters(unittest.TestCase):
+    """LASTDATE / LASTNONBLANK and friends as a CALCULATE filter are the
+    closing-balance shape (T5), not an overwriting Boolean filter (FC1)."""
+
+    def routes(self, dax):
+        return cm.local_routes(measure("M", dax), {}, NO_FLAGS)[0]
+
+    def test_a_leading_lastdate_filter_routes_to_t5_without_fc1(self):
+        routes = self.routes("Calculate([Balance], LastDate(D[Date]))")
+        self.assertIn("T5", routes)
+        self.assertNotIn("FC1", routes)
+
+    def test_every_semi_additive_name_routes_to_t5(self):
+        for fn in ("lastnonblank", "FirstNonBlank", "LASTDATE", "firstdate",
+                   "EndOfMonth", "endofquarter", "ENDOFYEAR", "startofmonth",
+                   "StartOfQuarter", "STARTOFYEAR"):
+            with self.subTest(fn=fn):
+                routes = self.routes(f"calculate([Balance], {fn}(D[Date]))")
+                self.assertIn("T5", routes)
+                self.assertNotIn("FC1", routes)
+
+    def test_lastnonblank_with_a_measure_argument_routes_to_t5(self):
+        routes = self.routes("Calculate([Balance], LastNonBlank(D[Date], [Balance]))")
+        self.assertIn("T5", routes)
+        self.assertNotIn("FC1", routes)
+
+    def test_a_bare_lastdate_outside_calculate_is_not_t5(self):
+        self.assertNotIn("T5", self.routes("lastdate(D[Date])"))
+
+    def test_lastdate_nested_inside_datesbetween_stays_t3_only(self):
+        routes = self.routes(
+            "Calculate([S], DatesBetween(D[Date], BLANK(), LastDate(D[Date])))")
+        self.assertIn("T3", routes)
+        self.assertNotIn("T5", routes)
+
+    def test_the_semi_additive_names_stay_out_of_time_intelligence(self):
+        self.assertFalse(cm.SEMI_ADDITIVE & set(cm.TIME_INTELLIGENCE))
+
+
+class AllSelectedColumnForm(unittest.TestCase):
+    def routes(self, dax):
+        return cm.local_routes(measure("M", dax), {}, NO_FLAGS)[0]
+
+    def test_the_column_form_as_a_calculate_filter_is_fc5_and_keeps_fc3(self):
+        routes = self.routes("Calculate([X], AllSelected(Product[Subcategory]))")
+        self.assertIn("FC5", routes)
+        self.assertIn("FC3", routes)
+
+    def test_bare_allselected_stays_fc3_only(self):
+        routes = self.routes("calculate([X], allselected())")
+        self.assertIn("FC3", routes)
+        self.assertNotIn("FC5", routes)
+
+    def test_the_table_form_stays_fc3_only(self):
+        routes = self.routes("calculate([X], AllSelected(Product))")
+        self.assertIn("FC3", routes)
+        self.assertNotIn("FC5", routes)
+
+    def test_a_ranking_scope_is_not_a_calculate_filter(self):
+        routes = self.routes("RankX(AllSelected(Product[Name]), [X])")
+        self.assertIn("FC7", routes)
+        self.assertNotIn("FC5", routes)
+
+    def test_fc5_is_not_suppressed_by_the_top_n_shape(self):
+        routes = self.routes(
+            "RANKX ( CALCULATETABLE ( GROUPBY ( T ), ALLSELECTED ( T ) ), "
+            "Calculate([X], AllSelected(P[Name])) ) <= MAX ( 'Top N Selector'[Value] )")
+        self.assertIn("FC6", routes)
+        self.assertIn("FC5", routes)
+
+
+class CalculateTableBooleanFilter(unittest.TestCase):
+    def routes(self, dax):
+        return cm.local_routes(measure("M", dax), {}, NO_FLAGS)[0]
+
+    def test_a_boolean_argument_overwrites_like_calculate(self):
+        self.assertIn("FC1", self.routes('CountRows(CalculateTable(T, T[c] = "x"))'))
+
+    def test_keepfilters_on_it_does_not(self):
+        self.assertNotIn(
+            "FC1", self.routes('CountRows(calculatetable(T, KeepFilters(T[c] = "x")))'))
+
+    def test_the_table_argument_itself_is_not_a_filter(self):
+        self.assertNotIn("FC1", self.routes("COUNTROWS(CALCULATETABLE(T))"))
+
+
+class NoRecipeConstructs(unittest.TestCase):
+    """EARLIER/EARLIEST have no recipe. That is a fourth outcome, not a recipe
+    row, and the per-kind table has to still sum to its Total."""
+
+    def rows(self, defs, flags=NO_FLAGS):
+        results, _ = cm.classify(defs, {}, flags)
+        return results, cm.report_text(results, "", "demo", flags)
+
+    def test_earlier_and_earliest_route_to_nr(self):
+        for fn in ("Earlier", "earliest"):
+            with self.subTest(fn=fn):
+                routes = cm.local_routes(
+                    measure("M", f"countrows(filter(T, T[a] = {fn}(T[a])))"),
+                    {}, NO_FLAGS)[0]
+                self.assertIn("NR", routes)
+
+    def test_nr_is_neither_divergent_nor_stopgap_and_is_in_recipes(self):
+        self.assertIn("NR", cm.RECIPES)
+        self.assertNotIn("NR", cm.DIVERGENT_ROUTES | cm.STOPGAP_ROUTES)
+
+    def test_a_wrapper_over_a_no_recipe_leaf_inherits_it(self):
+        leaf = measure("Leaf", "SUMX(T, Earlier(T[a]))")
+        wrapper = measure("Wrapper", "[Leaf] + 1")
+        results, _ = cm.classify([leaf, wrapper], {}, NO_FLAGS)
+        self.assertIn("NR", results[("T", "Wrapper")]["routes"])
+
+    def test_the_per_kind_row_still_sums_to_total(self):
+        defs = [measure("Plain", "SUM(T[a])"),
+                measure("Label", 'IF(ISFILTERED(T[a]), "x", "y")'),
+                measure("Recipe", 'CALCULATE([S], T[c] = "x")'),
+                measure("Rowctx", "SUMX(T, Earlier(T[a]))"),
+                measure("Wrapper", "[Rowctx] + 1")]
+        _, text = self.rows(defs)
+        self.assertIn("| Kind | Total | Report-layer | Direct | Needs a recipe | No recipe |", text)
+        self.assertIn("| measures | 5 | 1 | 1 | 1 | 2 |", text)
+
+    def test_nr_appears_in_the_by_recipe_table_with_its_text(self):
+        _, text = self.rows([measure("Rowctx", "SUMX(T, Earlier(T[a]))")])
+        row = next(l for l in text.splitlines() if l.startswith("| NR |"))
+        self.assertNotIn("| ? |", row)
+        self.assertIn(cm.RECIPES["NR"], row)
+
+    def test_the_report_says_no_recipe_and_never_untranslatable(self):
+        _, text = self.rows([measure("Rowctx", "SUMX(T, Earlier(T[a]))")])
+        self.assertIn("no recipe", text)
+        self.assertNotIn("untranslatable", text.lower())
+
+
+class TmdlIndentUnit(unittest.TestCase):
+    """A body sits two indent units in and its properties one. Counting a space
+    as one unit folded `isHidden` and `displayFolder` into the DAX of every
+    2- and 4-space export."""
+
+    def fixture(self, u):
+        return (
+            "table Sales\n"
+            f"{u}measure Margin =\n"
+            f"{u*3}DIVIDE (\n"
+            f"{u*3}    [Profit],\n"
+            f"{u*3}    [Revenue]\n"
+            f"{u*3})\n"
+            f"{u*2}displayFolder: KPIs\n"
+            f"{u*2}isHidden\n"
+            "\n"
+            f"{u}measure Revenue = SUM ( Sales[Amount] )\n"
+            f"{u*2}lineageTag: abc\n"
+        )
+
+    def parse(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "Sales.tmdl")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            return cm.parse_table_file(path)[1]
+
+    def check(self, u):
+        defs = self.parse(self.fixture(u))
+        self.assertEqual([d["name"] for d in defs], ["Margin", "Revenue"])
+        margin = defs[0]
+        self.assertNotIn("displayFolder", margin["dax"])
+        self.assertNotIn("isHidden", margin["dax"])
+        self.assertIn("[Revenue]", margin["dax"])
+        self.assertEqual(margin["displayFolder"], "KPIs")
+        self.assertTrue(margin["hidden"])
+        self.assertEqual(defs[1]["dax"], "SUM ( Sales[Amount] )")
+
+    def test_tab_indented(self):
+        self.check("\t")
+
+    def test_two_space_indented(self):
+        self.check("  ")
+
+    def test_four_space_indented(self):
+        self.check("    ")
+
+    def test_a_four_space_functions_file_keeps_its_properties_out_of_the_body(self):
+        u = "    "
+        text = (f"function Half =\n{u*2}(x: INT64) => DIVIDE ( x, 2 )\n"
+                f"{u}lineageTag: abc\n")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "functions.tmdl")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            defs = cm.parse_functions_file(path)
+        self.assertNotIn("lineageTag", defs[0]["dax"])
+
+    def test_a_four_space_dynamic_format_string_stays_a_property(self):
+        u = "    "
+        text = ("table Sales\n"
+                f"{u}measure Margin = 1\n"
+                f"{u*2}formatStringDefinition =\n"
+                f"{u*4}\"0.0\"\n"
+                f"{u*2}displayFolder: KPIs\n")
+        defs = self.parse(text)
+        self.assertEqual(defs[0]["dax"], "1")
+        self.assertEqual(defs[0]["displayFolder"], "KPIs")
+        self.assertEqual(defs[0]["formatStringDefinition"], '"0.0"')
+
+
+class ObjectLevelSecurityOnlyRoles(unittest.TestCase):
+    """A role with only object-level security produces no row, so without a
+    line saying so the model reads as having no such role."""
+
+    def model(self, role_text):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "tables"))
+        os.makedirs(os.path.join(d, "roles"))
+        with open(os.path.join(d, "tables", "Sales.tmdl"), "w", encoding="utf-8") as fh:
+            fh.write("table Sales\n\tmeasure Total = SUM ( Sales[Amount] )\n")
+        with open(os.path.join(d, "roles", "Ops.tmdl"), "w", encoding="utf-8") as fh:
+            fh.write(role_text)
+        return d
+
+    OLS = ("role Ops\n"
+           "\tmodelPermission: read\n"
+           "\n"
+           "\ttablePermission Customers\n"
+           "\t\tcolumnPermission Ssn = none\n")
+
+    def test_an_ols_only_role_is_named_and_produces_no_row(self):
+        d = self.model(self.OLS)
+        measures, _, flags, _ = cm.load_tmdl(d)
+        self.assertEqual(flags["ols_roles"], ["Ops"])
+        self.assertFalse([m for m in measures if m["kind"] == "role_permission"])
+
+    def test_the_report_tells_the_reader_to_read_the_role_files(self):
+        d = self.model(self.OLS)
+        measures, coltypes, flags, note = cm.load_tmdl(d)
+        results, _ = cm.classify(measures, coltypes, flags)
+        text = cm.report_text(results, note, "demo", flags)
+        self.assertIn("Not parsed", text)
+        self.assertIn("read the role files", text)
+        self.assertIn("Ops", text)
+
+    def test_the_objectlevelsecurity_keyword_form_is_also_caught(self):
+        d = self.model("role Ops\n\tobjectLevelSecurity: none\n")
+        self.assertEqual(cm.load_tmdl(d)[2]["ols_roles"], ["Ops"])
+
+    def test_a_role_with_a_row_filter_is_not_listed(self):
+        d = self.model("role Ops\n\ttablePermission Customers = Customers[a] = 1\n")
+        self.assertEqual(cm.load_tmdl(d)[2]["ols_roles"], [])
+
+    def test_a_model_without_such_a_role_prints_no_line(self):
+        d = self.model("role Ops\n\ttablePermission Customers = Customers[a] = 1\n")
+        measures, coltypes, flags, note = cm.load_tmdl(d)
+        results, _ = cm.classify(measures, coltypes, flags)
+        self.assertNotIn("Not parsed", cm.report_text(results, note, "demo", flags))
+
+
 class NoVacuousZeros(unittest.TestCase):
     """`T4` was declared, counted as a stopgap, and reported as firing zero times
     across 1,622 measures - a zero guaranteed by construction, because no code

@@ -20,6 +20,7 @@ Usage:
     classify_measures.py <model-dir>            # a TMDL model: .../definition
     classify_measures.py --json <measures.json> # no TMDL (the .pbix path)
     classify_measures.py <model-dir> --format json
+    classify_measures.py <model-dir> --functions  # every DAX function used, with counts
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ RECIPES = {
     "S6": "cookbook-structure.md#s6 - parent-child PATH hierarchy (STOPGAP)",
     "S7": "cookbook-structure.md#s7 - auto date tables",
     "RLS": "rls-roles.md - row-level security predicate",
+    "NR": "translate-measures.md - EARLIER/EARLIEST row-context construct, no recipe (rewrite the intent)",
     "DIRECT": "translate directly - no recipe needed",
     "SKIP": "report-layer: returns a label, not a number",
 }
@@ -95,6 +97,14 @@ TIME_INTELLIGENCE = {
     "OPENINGBALANCEYEAR": "T5", "CLOSINGBALANCEMONTH": "T5",
     "CLOSINGBALANCEQUARTER": "T5", "CLOSINGBALANCEYEAR": "T5",
     "CALENDAR": "T6", "CALENDARAUTO": "T6",
+}
+
+# Kept out of TIME_INTELLIGENCE, which routes on presence anywhere in a body: a
+# bare LASTDATE, or one nested in DATESBETWEEN, is not a closing-balance filter.
+SEMI_ADDITIVE = {
+    "LASTNONBLANK", "FIRSTNONBLANK", "LASTDATE", "FIRSTDATE",
+    "ENDOFMONTH", "ENDOFQUARTER", "ENDOFYEAR",
+    "STARTOFMONTH", "STARTOFQUARTER", "STARTOFYEAR",
 }
 
 # Functions whose result is a number whatever their arguments are. Used to type
@@ -277,6 +287,15 @@ def _indent(line: str) -> int:
     return n
 
 
+def _indent_unit(lines) -> int:
+    """Width of one indent level, read from the file: 1 for tabs, else the
+    narrowest space indent (2 and 4 both occur in exports)."""
+    if any(l.startswith("\t") for l in lines):
+        return 1
+    widths = [_indent(l) for l in lines if l.strip() and _indent(l)]
+    return min(widths) if widths else 1
+
+
 def _unquote(name: str) -> str:
     name = name.strip()
     if name.startswith("'") and name.endswith("'") and len(name) > 1:
@@ -306,12 +325,12 @@ _SOURCE_RE = re.compile(r"^\s*source\s*=\s*(.*)$")
 _FORMAT_STRING_RE = re.compile(r"^\s*formatStringDefinition\s*=\s*(.*)$")
 
 
-def _read_body(lines, i, base, rest):
+def _read_body(lines, i, base, rest, unit):
     """Consume one `<decl> = <DAX>` block. Returns (body_lines, next_i).
 
     Two spellings: fenced in ``` ```, or unfenced, in which case the body is
     every line indented deeper than the declaration's own properties, which sit
-    at base + 1. Blank lines stay in the body - real exports put one
+    one `unit` in. Blank lines stay in the body - real exports put one
     mid-expression, and ending there drops the rest of the measure silently.
     """
     body = []
@@ -330,7 +349,7 @@ def _read_body(lines, i, base, rest):
             body.append(nxt)
             i += 1
             continue
-        if _indent(nxt) > base + 1:
+        if _indent(nxt) > base + unit:
             body.append(nxt)
             i += 1
             continue
@@ -338,7 +357,7 @@ def _read_body(lines, i, base, rest):
     return body, i
 
 
-def _read_props(lines, i, base):
+def _read_props(lines, i, base, unit):
     """Consume a declaration's property lines. Returns (props, extra, next_i),
     where `extra` holds any nested `key = <DAX>` block found among them."""
     props, extra = {}, {}
@@ -351,7 +370,7 @@ def _read_props(lines, i, base):
             break
         m = _FORMAT_STRING_RE.match(nxt)
         if m:
-            body, i = _read_body(lines, i, _indent(nxt), m.group(1).strip())
+            body, i = _read_body(lines, i, _indent(nxt), m.group(1).strip(), unit)
             extra["formatStringDefinition"] = "\n".join(body).strip()
             continue
         stripped = nxt.strip()
@@ -388,6 +407,7 @@ def parse_table_file(path: str):
         lines = fh.read().splitlines()
 
     table = os.path.splitext(os.path.basename(path))[0]
+    unit = _indent_unit(lines)
     defs, columns = [], {}
     i = 0
     while i < len(lines):
@@ -402,8 +422,8 @@ def parse_table_file(path: str):
         if m:
             kind = "measure" if _MEASURE_RE.match(line) else "calculation_item"
             base = _indent(line)
-            body, i = _read_body(lines, i, base, m.group(2).strip())
-            props, extra, i = _read_props(lines, i, base)
+            body, i = _read_body(lines, i, base, m.group(2).strip(), unit)
+            props, extra, i = _read_props(lines, i, base, unit)
             defs.append(_record(table, _unquote(m.group(1)), kind, body, props, extra))
             continue
 
@@ -411,8 +431,8 @@ def parse_table_file(path: str):
         if m:
             cname = _unquote(m.group(1))
             base = _indent(line)
-            body, i = _read_body(lines, i, base, m.group(2).strip())
-            props, extra, i = _read_props(lines, i, base)
+            body, i = _read_body(lines, i, base, m.group(2).strip(), unit)
+            props, extra, i = _read_props(lines, i, base, unit)
             columns[cname] = props.get("dataType", "")
             defs.append(_record(table, cname, "calculated_column", body, props, extra))
             continue
@@ -432,7 +452,8 @@ def parse_table_file(path: str):
                     # Consume every partition's source, not just a calculated
                     # one: an M body left unread is scanned line by line below,
                     # where a line can look like a declaration it is not.
-                    src, i = _read_body(lines, i, _indent(nxt), s.group(1).strip())
+                    src, i = _read_body(lines, i, _indent(nxt), s.group(1).strip(),
+                                        unit)
                     if ptype == "calculated":
                         body = src
                     continue
@@ -471,7 +492,7 @@ def parse_functions_file(path: str):
     with open(path, encoding="utf-8-sig") as fh:
         lines = fh.read().splitlines()
 
-    out, i = [], 0
+    out, i, unit = [], 0, _indent_unit(lines)
     while i < len(lines):
         m = _FUNCTION_RE.match(lines[i])
         if not m:
@@ -487,11 +508,11 @@ def parse_functions_file(path: str):
                 i += 1
             i += 1
         else:
-            # `> base + 1`, as every other body reader uses: at `> base` the
+            # `> base + unit`, as every other body reader uses: at `> base` the
             # function's own `lineageTag` and `annotation` lines are swallowed
             # into the DAX, which happened to 58 of the corpus's 86 UDFs.
             while i < len(lines) and (not lines[i].strip()
-                                      or _indent(lines[i]) > base + 1):
+                                      or _indent(lines[i]) > base + unit):
                 body.append(lines[i])
                 i += 1
         out.append({"table": "(functions)", "name": name, "kind": "function",
@@ -507,8 +528,16 @@ _ROLE_RE = re.compile(r"^\s*role\s+('(?:[^']|'')*'|\S+)\s*$")
 _TABLE_PERMISSION_RE = re.compile(r"^\s*tablePermission\s+(.+?)\s*=\s*(.*)$")
 
 
-def parse_roles_dir(defn: str):
-    """Row-level security predicates from `definition/roles/*.tmdl`.
+# A role can restrict objects rather than rows. None of these yields a DAX
+# predicate, so a role holding only them would otherwise vanish from the report.
+_OLS_RE = re.compile(r"^\s*(objectLevelSecurity|columnPermission|metadataPermission|"
+                     r"tablePermission)\b")
+
+
+def scan_roles(defn: str):
+    """Row-level security from `definition/roles/*.tmdl`. Returns (predicates,
+    ols_only), the second being the names of roles that carry object-level
+    security and no row filter, which nothing here parses.
 
     These are the highest-stakes DAX in the model and the loader never opened the
     directory, so a model whose only `USERPRINCIPALNAME` lives in a role reported
@@ -516,32 +545,44 @@ def parse_roles_dir(defn: str):
     """
     roles_dir = os.path.join(defn, "roles")
     if not os.path.isdir(roles_dir):
-        return []
+        return [], []
 
-    out = []
+    out, ols_only = [], []
     for fn in sorted(os.listdir(roles_dir)):
         if not fn.endswith(".tmdl"):
             continue
         with open(os.path.join(roles_dir, fn), encoding="utf-8-sig") as fh:
             lines = fh.read().splitlines()
+        unit = _indent_unit(lines)
         role = os.path.splitext(fn)[0]
+        # role -> [has a parsed row filter, has an object-level line]
+        seen = {role: [False, False]}
         i = 0
         while i < len(lines):
             m = _ROLE_RE.match(lines[i])
             if m and _indent(lines[i]) == 0:
                 role = _unquote(m.group(1))
+                seen.setdefault(role, [False, False])
                 i += 1
                 continue
             m = _TABLE_PERMISSION_RE.match(lines[i])
             if m:
                 base = _indent(lines[i])
-                body, i = _read_body(lines, i, base, m.group(2).strip())
-                props, _extra, i = _read_props(lines, i, base)
+                body, i = _read_body(lines, i, base, m.group(2).strip(), unit)
+                props, _extra, i = _read_props(lines, i, base, unit)
                 out.append(_record(f"(role) {role}", _unquote(m.group(1)),
                                    "role_permission", body, props))
+                seen[role][0] = True
                 continue
+            if _OLS_RE.match(lines[i]):
+                seen[role][1] = True
             i += 1
-    return out
+        ols_only += [r for r, (rows, ols) in seen.items() if ols and not rows]
+    return out, ols_only
+
+
+def parse_roles_dir(defn: str):
+    return scan_roles(defn)[0]
 
 
 def parse_relationships(path: str):
@@ -615,10 +656,12 @@ def load_tmdl(model_dir: str):
             coltypes[(table, c)] = t
 
     measures.extend(parse_functions_file(os.path.join(defn, "functions.tmdl")))
-    measures.extend(parse_roles_dir(defn))
+    roles, ols_roles = scan_roles(defn)
+    measures.extend(roles)
 
     flags, note = parse_relationships(os.path.join(defn, "relationships.tmdl"))
     flags["auto_date"] = auto_date
+    flags["ols_roles"] = ols_roles
     flags["tables"] = all_tables
     # A table in no relationship at all is a disconnected slicer or what-if
     # parameter. Only meaningful once we know the model *has* relationships -
@@ -872,9 +915,21 @@ PRESERVING_FILTER_FUNCS = {
     "FILTER", "VALUES", "DISTINCT",             # evaluated in the current context
     "SUMMARIZE", "ADDCOLUMNS", "SELECTCOLUMNS",
     "ALL", "ALLEXCEPT", "ALLNOBLANKROW", "ALLSELECTED", "REMOVEFILTERS",
-} | set(TIME_INTELLIGENCE)
+} | set(TIME_INTELLIGENCE) | SEMI_ADDITIVE
 
 _LEADING_CALL_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+
+
+def _filter_args(dax: str) -> list:
+    """Every filter argument of every `CALCULATE` / `CALCULATETABLE`, unwrapped."""
+    out = []
+    for fname in ("CALCULATE", "CALCULATETABLE"):
+        for argtext in call_args(dax, fname):
+            for start, end in _split_args(argtext)[1:]:
+                arg = _unwrap_parens(argtext[start:end])
+                if arg:
+                    out.append(arg)
+    return out
 
 
 def overwriting_filter_args(dax: str) -> list:
@@ -886,15 +941,11 @@ def overwriting_filter_args(dax: str) -> list:
     so read `NOT ISBLANK(T[c])` and `TREATAS(…)` as harmless.
     """
     out = []
-    for argtext in call_args(dax, "CALCULATE"):
-        for start, end in _split_args(argtext)[1:]:
-            arg = _unwrap_parens(argtext[start:end])
-            if not arg:
-                continue
-            lead = _LEADING_CALL_RE.match(arg)
-            if lead and lead.group(1).upper() in PRESERVING_FILTER_FUNCS:
-                continue
-            out.append(arg)
+    for arg in _filter_args(dax):
+        lead = _LEADING_CALL_RE.match(arg)
+        if lead and lead.group(1).upper() in PRESERVING_FILTER_FUNCS:
+            continue
+        out.append(arg)
     return out
 
 
@@ -1167,6 +1218,13 @@ def local_routes(m, coltypes, flags, resolve=None):
     for fn, route in TIME_INTELLIGENCE.items():
         if fn in fns:
             add(route, fn)
+    filter_args = _filter_args(dax)
+    for arg in filter_args:
+        lead = _LEADING_CALL_RE.match(arg)
+        if lead and lead.group(1).upper() in SEMI_ADDITIVE:
+            add("T5", f"{lead.group(1).upper()} as a CALCULATE filter")
+    if fns & {"EARLIER", "EARLIEST"}:
+        add("NR", "EARLIER/EARLIEST is a row-context construct with no recipe")
     if fns & {"PATH", "PATHITEM", "PATHCONTAINS", "PATHLENGTH"}:
         add("S6", "parent-child hierarchy")
 
@@ -1197,6 +1255,12 @@ def local_routes(m, coltypes, flags, resolve=None):
     # Step 3: filter context.
     if "ALLSELECTED" in fns and "FC6" not in routes:
         add("FC3", "ALLSELECTED")
+    # The column form restores only that column's filter, so it is also FC5's
+    # `exclude()`; a ranking scope is not a CALCULATE filter and is not this.
+    for arg in filter_args:
+        lead = _LEADING_CALL_RE.match(arg)
+        if lead and lead.group(1).upper() == "ALLSELECTED" and column_refs(arg):
+            add("FC5", "ALLSELECTED on a column removes only that column's filter")
     if "ALLEXCEPT" in fns:
         add("FC4", "ALLEXCEPT")
 
@@ -1209,15 +1273,15 @@ def local_routes(m, coltypes, flags, resolve=None):
     outer = re.sub(r"\bFILTER\s*\(\s*ALL", lambda mm: " " * len(mm.group(0)),
                    body, flags=re.I)
     outer_nb = _BRACKET_RE.sub(lambda mm: " " * len(mm.group(0)), outer)
-    all_table = re.search(r"\bALL\s*\(\s*'?[A-Za-z_]", outer_nb) is not None
-    all_column = re.search(r"\bALL\s*\(\s*[^)]*\[", outer) is not None
+    all_table = re.search(r"\bALL\s*\(\s*'?[A-Za-z_]", outer_nb, re.I) is not None
+    all_column = re.search(r"\bALL\s*\(\s*[^)]*\[", outer, re.I) is not None
     if "REMOVEFILTERS" in fns or all_column:
         add("FC5", "ALL/REMOVEFILTERS on a column")
     elif all_table:
         add("FC2", "ALL on a table")
 
     # FILTER(ALL(...), ...) is the explicit spelling of the overwriting form.
-    if re.search(r"\bFILTER\s*\(\s*ALL", body_nb):
+    if re.search(r"\bFILTER\s*\(\s*ALL", body_nb, re.I):
         add("FC1", "FILTER(ALL(...)) overwrites the filter on that column")
     elif overwriting_filter_args(dax):
         # Decided per argument, not per measure. Suppressing this whenever any
@@ -1225,7 +1289,7 @@ def local_routes(m, coltypes, flags, resolve=None):
         # CALCULATE carried an `ALL` *and* independent Boolean predicates - the
         # `ALL` produced FC5 and the predicates, which overwrite a slicer on
         # their own columns, went unreported.
-        add("FC1", "CALCULATE with a Boolean filter and no KEEPFILTERS")
+        add("FC1", "CALCULATE/CALCULATETABLE with a Boolean filter and no KEEPFILTERS")
 
     # A measure reference inside an iterator is context transition. Not for
     # RANKX once ranking has already been named: its measure argument is how
@@ -1355,7 +1419,10 @@ def report_text(results, note, model_name, flags):
     total = len(rows)
     skipped = [r for r in rows if r["routes"] == ["SKIP"]]
     direct = [r for r in rows if r["routes"] == ["DIRECT"]]
-    routed = [r for r in rows if r not in skipped and r not in direct]
+    # No-recipe wins the partition, so each per-kind row still sums to its Total.
+    no_recipe = [r for r in rows if "NR" in r["routes"] and r not in skipped]
+    routed = [r for r in rows if r not in skipped and r not in direct
+              and r not in no_recipe]
     kinds = Counter(r["m"].get("kind", "measure") for r in rows)
 
     out = []
@@ -1369,8 +1436,8 @@ def report_text(results, note, model_name, flags):
         out.append(f"Plus {', '.join(other)} - also DAX, and also routed, but not "
                    f"measures. {total} definitions in all.")
         out.append("")
-    out.append("| Kind | Total | Report-layer | Direct | Needs a recipe |")
-    out.append("|------|------:|-------------:|-------:|---------------:|")
+    out.append("| Kind | Total | Report-layer | Direct | Needs a recipe | No recipe |")
+    out.append("|------|------:|-------------:|-------:|---------------:|----------:|")
     for kind, label in KIND_LABELS:
         if not kinds[kind]:
             continue
@@ -1378,8 +1445,16 @@ def report_text(results, note, model_name, flags):
         out.append(f"| {label} | {len(sel)} "
                    f"| {sum(1 for r in sel if r in skipped)} "
                    f"| {sum(1 for r in sel if r in direct)} "
-                   f"| {sum(1 for r in sel if r in routed)} |")
+                   f"| {sum(1 for r in sel if r in routed)} "
+                   f"| {sum(1 for r in sel if r in no_recipe)} |")
     out.append("")
+    ols_roles = flags.get("ols_roles", ())
+    if ols_roles:
+        out.append(f"**Not parsed:** {len(ols_roles)} role(s) carry object-level "
+                   f"security and no row filter ({', '.join(ols_roles[:6])}"
+                   f"{', ...' if len(ols_roles) > 6 else ''}). They produce no row "
+                   "below; read the role files (`reference/rls-roles.md`).")
+        out.append("")
     auto_date = sorted(flags.get("auto_date", ()))
     if auto_date:
         route = "S7"
@@ -1401,13 +1476,17 @@ def report_text(results, note, model_name, flags):
         out.append("")
 
     counts = Counter()
-    for r in routed:
+    for r in routed + no_recipe:
         for route in r["routes"]:
             counts[route] += 1
     div = sum(1 for r in routed if set(r["routes"]) & DIVERGENT_ROUTES)
     stop = sum(1 for r in routed if set(r["routes"]) & STOPGAP_ROUTES)
     out.append(f"Of the {len(routed)}: {div} can return a different number silently, "
                f"{stop} land on a stopgap recipe.")
+    if no_recipe:
+        out.append(f"{len(no_recipe)} have no recipe (EARLIER/EARLIEST, directly or "
+                   "through a dependency): ask what the number means and rewrite "
+                   "the intent.")
     out.append("")
     out.append("## By recipe (a definition can need more than one)")
     out.append("")
