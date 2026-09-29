@@ -166,7 +166,8 @@ def config(run: Path) -> dict[str, Any]:
 # two nulls compare equal, so an older pair is unaffected.
 COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
               "answererModel", "judgeModel", "answererManifest",
-              "retrievalMode", "modelGitSha", "targetVersion")
+              "retrievalMode", "modelGitSha", "targetVersion",
+              "retrievalOverrideSha")
 
 
 def completeness_note(ca: dict, cb: dict, la: str, lb: str,
@@ -261,6 +262,34 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
           if ma == mb == "mixed" else
           "    Fix the embedding provider and re-run, or pass "
           "--allow-retrieval-mismatch to report anyway.")
+    return 2
+
+
+def retrieval_config_gate(ca: dict, cb: dict, la: str, lb: str,
+                          allow: bool) -> int:
+    """Refuse a pair whose arms sent different retrieval overrides.
+
+    Two arms that differ in an X-Publisher-Retrieval override retrieved
+    differently BY DESIGN, so their flips measure the override, not the noise
+    of the answerer. That is exactly what a retrieval sweep wants, and exactly
+    what an A/A noise band must not contain -- so it is refused unless the
+    caller says the comparison is the point. A run with no override records
+    none, and an arm with no override against one with one is a difference.
+    """
+    sa, sb = ca.get("retrievalOverrideSha"), cb.get("retrievalOverrideSha")
+    if sa == sb:
+        return 0
+    oa, ob = ca.get("retrievalOverride"), cb.get("retrievalOverride")
+    print(f"\n  ! retrieval config differs: {la} {oa or 'no override'}, "
+          f"{lb} {ob or 'no override'}. The arms did not retrieve the same "
+          f"way, so these flips are the effect of the config change plus "
+          f"answerer noise, not a noise band.")
+    if allow:
+        print("    --compare-retrieval-config given; reporting as an A/B of "
+              "the retrieval config.")
+        return 0
+    print("    Pass --compare-retrieval-config if the config change IS the "
+          "comparison, or re-run both arms with the same override.")
     return 2
 
 
@@ -431,6 +460,10 @@ def main() -> int:
                    help="report a pair whose arms used different retrievers. "
                         "The flips are then not a measurement of the change; "
                         "say so wherever the number is quoted.")
+    p.add_argument("--compare-retrieval-config", action="store_true",
+                   help="the arms sent different X-Publisher-Retrieval "
+                        "overrides on purpose: report the pair as an A/B of "
+                        "the retrieval config instead of refusing it")
     p.add_argument("--calibration", action="store_true",
                    help="print the set's CALIBRATION.md entry for this pair, "
                         "ready to append. Use it on an A/A.")
@@ -547,6 +580,8 @@ def main() -> int:
 
     gate = retrieval_gate(cfg_a, cfg_b, la, lb,
                           a_args.allow_retrieval_mismatch)
+    gate = max(gate, retrieval_config_gate(
+        cfg_a, cfg_b, la, lb, a_args.compare_retrieval_config))
     completeness_note(cfg_a, cfg_b, la, lb, A, B)
 
     ca, cb = cost(a_args.a), cost(a_args.b)

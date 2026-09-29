@@ -87,7 +87,7 @@ describe("entity_embeddings facet re-keying", () => {
          await db.run(
             `INSERT INTO entity_embeddings VALUES
               ('env', 'pkg', 'dimension', 'src', 'state', ?, 'm.malloy',
-               'hash', 'stub-model', 2, CAST('[1.0, 0.0]' AS FLOAT[]), ?)`,
+               'hash', 'stub-model', 2, CAST('[1.0, 0.0]' AS FLOAT[]), ?, NULL)`,
             [facet, now],
          );
       }
@@ -101,7 +101,7 @@ describe("entity_embeddings facet re-keying", () => {
       await db.run(
          `INSERT INTO entity_embeddings VALUES
            ('env', 'pkg', 'dimension', 'src', 'state', 'name', 'm.malloy',
-            'hash', 'stub-model', 2, CAST('[1.0, 0.0]' AS FLOAT[]), ?)`,
+            'hash', 'stub-model', 2, CAST('[1.0, 0.0]' AS FLOAT[]), ?, NULL)`,
          [new Date().toISOString()],
       );
 

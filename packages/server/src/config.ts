@@ -126,6 +126,12 @@ export type PublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
    environments: Environment[];
+   /**
+    * The raw, unvalidated `retrieval` block (LLM-assisted get_context tuning).
+    * Validated once at boot by resolveRetrievalConfig; carried through here
+    * untouched so this file does not depend on that module.
+    */
+   retrieval?: unknown;
 };
 
 export type ProcessedEnvironment = {
@@ -590,28 +596,42 @@ const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
  */
 export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
 
+/** Whether `baseUrl` is OpenAI's own endpoint (where a default model exists). */
+const isOpenAiHost = (baseUrl: string): boolean => {
+   try {
+      return new URL(baseUrl).hostname === "api.openai.com";
+   } catch {
+      return false;
+   }
+};
+
 /**
  * Embedding-provider settings for semantic `get_context` retrieval,
  * or `null` when the feature is disabled. The feature is enabled iff
- * `EMBEDDING_API_KEY` is set and non-empty; without it the tool keeps its
- * lexical (lunr) ranking unchanged.
+ * `EMBEDDING_API_KEY` or `EMBEDDING_API_BASE` is set and non-empty; without
+ * either the tool keeps its lexical (lunr) ranking unchanged.
  *
- * The key must be set explicitly. An ambient provider key (for example
+ * A base URL alone is enough so a local server (Ollama, vLLM, LM Studio),
+ * which needs no key, can be used. Setting it is as explicit as setting a key:
+ * it names where text goes. An ambient provider key (for example
  * `OPENAI_API_KEY`) is deliberately NOT read: enabling this feature sends
  * entity names, `#(doc)` text, and query strings to the configured
  * endpoint, and that egress must never switch on just because a commonly
  * exported variable happens to be present.
  *
+ * With no key the endpoint is not assumed to be OpenAI's, so there is no
+ * default model to fall back on: `EMBEDDING_MODEL` is then required.
+ *
  * Throws on malformed companion values (bad URL, bad integer) so a typo
  * surfaces loudly in the log rather than silently degrading to lexical.
  */
 export const getEmbeddingConfig = (): EmbeddingConfig | null => {
-   const apiKey = process.env.EMBEDDING_API_KEY?.trim();
-   if (!apiKey) {
+   const apiKey = process.env.EMBEDDING_API_KEY?.trim() ?? "";
+   const rawBase = process.env.EMBEDDING_API_BASE;
+   if (!apiKey && !rawBase?.trim()) {
       return null;
    }
 
-   const rawBase = process.env.EMBEDDING_API_BASE;
    const baseUrl = (rawBase?.trim() || DEFAULT_EMBEDDING_API_BASE).replace(
       /\/+$/,
       "",
@@ -624,7 +644,14 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
       );
    }
 
-   const model = process.env.EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL;
+   const explicitModel = process.env.EMBEDDING_MODEL?.trim();
+   if (!explicitModel && !apiKey && !isOpenAiHost(baseUrl)) {
+      throw new Error(
+         `Invalid EMBEDDING_MODEL: expected the name of a model ${baseUrl} serves, got nothing. ` +
+            `Fix: EMBEDDING_MODEL=nomic-embed-text (the default ${DEFAULT_EMBEDDING_MODEL} only exists on OpenAI)`,
+      );
+   }
+   const model = explicitModel || DEFAULT_EMBEDDING_MODEL;
 
    const dimensions = parseIntEnv("EMBEDDING_DIMENSIONS");
    if (dimensions !== undefined && dimensions <= 0) {
@@ -648,6 +675,59 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
    }
 
    return { apiKey, model, baseUrl, dimensions, minSimilarity };
+};
+
+/**
+ * Connection settings for the LLM behind the optional retrieval stages
+ * (keyphrase generation, refine, rerank). See {@link getLlmConfig}.
+ */
+export interface LlmConfig {
+   /** Bearer token; empty for a local server that needs none. */
+   apiKey: string;
+   /** Base URL of an OpenAI-compatible chat API (no trailing slash). */
+   baseUrl: string;
+   /**
+    * Model from `LLM_MODEL`, or OpenAI's default on OpenAI's own endpoint.
+    * Undefined otherwise: a stage's own `retrieval.llm.models.*` or
+    * `retrieval.llm.model` may still supply one, and boot validation fails
+    * if a stage that needs a model has none.
+    */
+   model?: string;
+}
+
+const DEFAULT_LLM_API_BASE = "https://api.openai.com/v1";
+export const DEFAULT_OPENAI_LLM_MODEL = "gpt-4o-mini";
+
+/**
+ * LLM connection settings, or `null` when no LLM is configured. The LLM is
+ * on iff `LLM_API_BASE` or `LLM_API_KEY` is set and non-empty. A key is never
+ * required when a base is set (Ollama, vLLM). As with embeddings, an ambient
+ * `OPENAI_API_KEY` is deliberately not read: these stages send entity names
+ * and, if the operator allows it, more, and that must not switch on because a
+ * common variable is exported. What may be sent is `retrieval.egress`.
+ */
+export const getLlmConfig = (): LlmConfig | null => {
+   const apiKey = process.env.LLM_API_KEY?.trim() ?? "";
+   const rawBase = process.env.LLM_API_BASE;
+   if (!apiKey && !rawBase?.trim()) {
+      return null;
+   }
+   const baseUrl = (rawBase?.trim() || DEFAULT_LLM_API_BASE).replace(
+      /\/+$/,
+      "",
+   );
+   try {
+      new URL(baseUrl);
+   } catch {
+      throw new Error(
+         `Invalid value for LLM_API_BASE: expected a URL, got "${rawBase}"`,
+      );
+   }
+   const explicitModel = process.env.LLM_MODEL?.trim();
+   const model =
+      explicitModel ||
+      (isOpenAiHost(baseUrl) ? DEFAULT_OPENAI_LLM_MODEL : undefined);
+   return { apiKey, baseUrl, ...(model ? { model } : {}) };
 };
 
 /**
@@ -1269,10 +1349,18 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
+   const retrieval =
+      processedConfig &&
+      typeof processedConfig === "object" &&
+      "retrieval" in processedConfig
+         ? (processedConfig as { retrieval: unknown }).retrieval
+         : undefined;
+
    return {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
       environments,
+      ...(retrieval !== undefined ? { retrieval } : {}),
    } as PublisherConfig;
 };
 

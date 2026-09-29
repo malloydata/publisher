@@ -111,6 +111,38 @@ a source that should not answer schema questions to outsiders wants a lock as we
   because the row-level change is what made it reachable — a whole-source gate denied on the source
   name before compiling anything.
 
+## What leaves the machine: embedding and LLM calls
+
+Semantic retrieval and the LLM retrieval stages send text to the endpoints you configure
+(`EMBEDDING_API_BASE`, `LLM_API_BASE`). Point both at a local server and nothing leaves the machine.
+Otherwise, `retrieval.egress` decides what is sent. See
+[configuration.md](configuration.md#llm-assisted-retrieval-for-get_context) for the switches.
+
+- **Default:** entity names, `#(doc)` text and the agent's search text. This is what embeddings have
+  always sent.
+- **`"preset": "full"` or a single switch:** also the other fields of a source (as context for a
+  keyphrase), a field's Malloy source, and dimension values. Each is a separate opt-in.
+- **Never, under any setting:** `#(access_filter)` and `#(authorize)` lines. Embedded text is built
+  from `#(doc)` lines only, the `code` class strips every `#` annotation line from a field's source
+  before it goes into a prompt, and there is no switch to send a predicate. A predicate is the
+  policy itself and often names the tenant or the rule, so it does not go to a third party. A test
+  puts a tenant filter and an authorize rule on a field and a view, runs enrichment under the
+  default classes, `preset: full`, and `code` alone, and checks that neither the predicate text nor
+  the names in it appear in any request to the LLM.
+- **Dimension values are customer data.** They are embedded and stored only when
+  `dimensionalValues` is on, and the `dimensionalValues` egress class is what lets them reach a
+  hosted provider. A source gated by `#(access_filter)`, `#(authorize)` or a required `#(filter)` is
+  never value-indexed at all: the index is shared by every caller, and a gate depends on the caller.
+  This fails closed, with no override.
+- **Per-request overrides** (`X-Publisher-Retrieval`, only with `PUBLISHER_RETRIEVAL_OVERRIDES=1`) can
+  change ranking and response size. They cannot change egress, endpoints or keys. Like every other
+  request to an unauthenticated API, they are open to anyone who can reach the port, so leave the
+  variable unset outside evals.
+- **What the LLM can do:** it only orders and filters candidates the server already found, and its
+  reply is parsed as data. A reply cannot add an entity, call a tool or change a filter. The worst a
+  poisoned `#(doc)` can do to retrieval is bias the order of the candidates, which is the same reach
+  a doc already has over a semantic ranking.
+
 ## Where author code executes today
 
 One surface runs author-written JavaScript, and it runs it with everything the viewer has.

@@ -850,7 +850,8 @@ RETRY_REASON = "indexing"
 
 
 def mcp_call(url: str, tool: str, arguments: dict[str, Any],
-             timeout: int = 60) -> Any:
+             timeout: int = 60,
+             headers: dict[str, str] | None = None) -> Any:
     """One MCP `tools/call`, returning the tool's parsed JSON payload.
 
     Stateless streamable HTTP, so the reply is either a JSON body or one SSE
@@ -870,7 +871,8 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     req = urllib.request.Request(
         url, data=body.encode(), method="POST",
         headers={"Content-Type": "application/json",
-                 "Accept": "application/json, text/event-stream"})
+                 "Accept": "application/json, text/event-stream",
+                 **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read().decode()
     if raw.lstrip().startswith("event:") or "\ndata: " in raw:
@@ -907,6 +909,55 @@ class AuthRequired(Exception):
         super().__init__(f"{url} returned {code}")
 
 
+RETRIEVAL_OVERRIDE_HEADER = "X-Publisher-Retrieval"
+RETRIEVAL_TRACE_HEADER = "X-Publisher-Retrieval-Trace"
+
+
+def load_retrieval_override(raw: str | None) -> dict[str, Any] | None:
+    """`--retrieval-override` as a dict: inline JSON, or a path to a JSON file.
+
+    Parsed here, once, so a typo fails before the run spends anything. The
+    server rejects a bad override with a tool error rather than ignoring it, so
+    a bad one that got this far would fail every case instead.
+    """
+    if not raw:
+        return None
+    text = raw
+    if not raw.lstrip().startswith("{"):
+        try:
+            text = pathlib.Path(raw).read_text()
+        except OSError as e:
+            raise SystemExit(f"--retrieval-override: {raw!r} is neither JSON "
+                             f"nor a readable file ({e})")
+    try:
+        value = json.loads(text)
+    except ValueError as e:
+        raise SystemExit(f"--retrieval-override: not valid JSON ({e}). Fix: "
+                         f"""--retrieval-override '{{"refine":{{"minLevel":"HIGH"}}}}'""")
+    if not isinstance(value, dict):
+        raise SystemExit("--retrieval-override: expected a JSON object")
+    return value
+
+
+def retrieval_headers(a: argparse.Namespace) -> dict[str, str]:
+    """The headers every get_context call of this arm carries.
+
+    Empty unless the arm asked for an override or a trace, so a default run
+    sends exactly what it always did. Compact JSON with sorted keys, so the
+    same override is the same bytes -- and the same hash in run.json -- however
+    it was typed.
+    """
+    headers: dict[str, str] = {}
+    override = getattr(a, "retrieval_override", None)
+    if override:
+        headers[RETRIEVAL_OVERRIDE_HEADER] = json.dumps(
+            override, sort_keys=True, separators=(",", ":"))
+    trace = getattr(a, "retrieval_trace", None)
+    if trace:
+        headers[RETRIEVAL_TRACE_HEADER] = trace
+    return headers
+
+
 def probe_arguments(a: argparse.Namespace) -> dict[str, Any]:
     """The arguments of the one cheap `get_context` every probe makes.
 
@@ -932,7 +983,8 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     waiting for something that cannot arrive.
     """
     try:
-        payload = mcp_call(a.mcp_url, "get_context", probe_arguments(a))
+        payload = mcp_call(a.mcp_url, "get_context", probe_arguments(a),
+                           headers=retrieval_headers(a))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise AuthRequired(e.code, a.mcp_url) from e
@@ -2011,8 +2063,11 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
             work = tempfile.mkdtemp(prefix=f"ans-{qid}-")
         mcp = os.path.join(work, "mcp.json")
         with open(mcp, "w") as fh:
-            json.dump({"mcpServers": {server: {"type": "http",
-                                               "url": a.mcp_url}}}, fh)
+            entry = {"type": "http", "url": a.mcp_url}
+            hdrs = retrieval_headers(a)
+            if hdrs:
+                entry["headers"] = hdrs
+            json.dump({"mcpServers": {server: entry}}, fh)
         scope_line = ""
         if platform and a.scope:
             env, pkg, version, _ = parse_scope(a.scope, a.target_version)
@@ -2193,6 +2248,20 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                       # rank question should be asked of.
                                       "hits": entity_hits(payload or {}),
                                       "resultCount": len(ids),
+                                      # How much the answerer had to read:
+                                      # the size of the response, measured
+                                      # here so it is comparable across arms
+                                      # whether or not the server traced. A
+                                      # retrieval change that holds recall and
+                                      # shortens this is the precision win.
+                                      "responseChars": (
+                                          len(json.dumps(payload, separators=(",", ":")))
+                                          if payload is not None else len(text)),
+                                      # The server's own LLM usage for this
+                                      # call (calls, tokens, ms), present only
+                                      # under --retrieval-trace.
+                                      "retrievalLlm": ((payload or {})
+                                          .get("retrieval_trace") or {}).get("llm"),
                                       # identifiers named in the returned
                                       # sources' docs: an entity there has
                                       # reached the answerer without being
@@ -3013,6 +3082,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="comma-separated qids")
     ap.add_argument("--phase", default="baseline")
     ap.add_argument("--no-judge", action="store_true")
+    ap.add_argument("--retrieval-override", default=None, metavar="JSON|FILE",
+                    help="send this X-Publisher-Retrieval override on every "
+                         "get_context of the arm (the answerer's and the "
+                         "readiness probe's), so one warm local server can "
+                         "serve every point of a retrieval sweep. The server "
+                         "must run with PUBLISHER_RETRIEVAL_OVERRIDES=1 "
+                         "(serve.py --allow-retrieval-overrides). Recorded in "
+                         "run.json with its hash. Local target only")
+    ap.add_argument("--retrieval-trace", choices=("summary", "full"),
+                    default=None,
+                    help="ask the server for retrieval_trace in every "
+                         "get_context response (X-Publisher-Retrieval-Trace)")
     ap.add_argument("--rebuild", action="store_true",
                     help="re-derive events.jsonl from saved transcripts, "
                          "calling no model")
@@ -3027,6 +3108,11 @@ def main(argv: list[str] | None = None) -> int:
                          "judge or rubric change. Implies --rebuild")
     a = ap.parse_args(argv)
     cfg = resolve_config(a)
+    a.retrieval_override = load_retrieval_override(a.retrieval_override)
+    if a.target == "platform" and (a.retrieval_override or a.retrieval_trace):
+        raise SystemExit("--retrieval-override/--retrieval-trace tune a local "
+                         "Publisher; a platform arm's retriever is not "
+                         "configurable from here")
     imply_flags(a)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
@@ -3409,7 +3495,14 @@ def main(argv: list[str] | None = None) -> int:
     # and spends nothing on judging, and `run_config` does not carry the
     # previous judging spend forward. Read at the end, this is already gone.
     prior_judge = prior_judge_cost(a.out)
+    override_json = (json.dumps(a.retrieval_override, sort_keys=True,
+                                separators=(",", ":"))
+                     if a.retrieval_override else None)
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
+        **({"retrievalOverride": a.retrieval_override,
+            "retrievalOverrideSha": sha256(override_json.encode())}
+           if override_json else {}),
+        **({"retrievalTrace": a.retrieval_trace} if a.retrieval_trace else {}),
         retrievalGate=retrieval_gate,
         coverageReport=coverage_report,
         runId=a.out.name, label=label, target=a.target,

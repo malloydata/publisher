@@ -1,0 +1,126 @@
+{
+  "lexical ranked": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "pin",
+            "package": "sales",
+            "model_path": "sales.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per order.",
+          "docs": "One row per order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "total_revenue",
+            "entity_type": "measure",
+            "entity_id": "measure:orders:total_revenue",
+            "description": "Sum of order revenue."
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "description": "Order status."
+          }
+        ]
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 1,
+    "returned": 1
+  },
+  "lexical listing": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "pin",
+            "package": "sales",
+            "model_path": "sales.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per order.",
+          "docs": "One row per order.",
+          "joins": []
+        }
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "pin",
+            "package": "sales",
+            "model_path": "sales.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        }
+      }
+    ],
+    "ranking": "prominence",
+    "total_available": 2,
+    "returned": 2
+  },
+  "dimensional value unsupported": {
+    "sources": [],
+    "ranking": "prominence",
+    "total_available": 0,
+    "returned": 0,
+    "warnings": [
+      "No index for target_type dimensional_value: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension })."
+    ]
+  },
+  "semantic ranked": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "pin",
+            "package": "sales",
+            "model_path": "sales.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per order.",
+          "docs": "One row per order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "total_revenue",
+            "entity_type": "measure",
+            "entity_id": "measure:orders:total_revenue",
+            "relevance": 1,
+            "description": "Sum of order revenue.",
+            "matched_targets": [
+              {
+                "search_text": "revenue by order",
+                "relevance": 1
+              }
+            ]
+          }
+        ],
+        "relevance": 1
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 1,
+    "returned": 1,
+    "retrieval": "semantic",
+    "below_cutoff_count": 0,
+    "total_entities": 1
+  },
+  "semantic true negative": {
+    "sources": [],
+    "ranking": "relevance",
+    "total_available": 0,
+    "returned": 0,
+    "retrieval": "semantic",
+    "below_cutoff_count": 1,
+    "total_entities": 1
+  }
+}

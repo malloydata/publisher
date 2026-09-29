@@ -41,6 +41,8 @@ One target per concept is enough: the tool handles phrasing variants internally.
 
 **Resolving categorical values.** When the user names a literal value like "premium" or "New York City", send a `dimensional_value` target for it, scoped to its source once you know the source. Filter on the exact string it returns: the data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
 
+**What a value hit looks like.** A hit comes back as the dimension that holds the value, with the matching values in a `values` list under it. `values_indexed: true` on a dimension means its values are searchable, so a `dimensional_value` target can find them. `values_truncated: true` means the index kept only the most frequent values, so a value that did not come back may still exist: confirm it with `execute_query` before saying it is absent.
+
 **Where value search isn't available.** Some servers have no value index and return nothing for a `dimensional_value` target, and on others a particular dimension's values may not be indexed. Then target the *dimension* the value lives on (`"the subscription tier"`, `"the city where the subscriber lives"`), and confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it.
 
 ## Non-obvious decomposition patterns

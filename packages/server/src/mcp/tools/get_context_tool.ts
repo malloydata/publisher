@@ -8,6 +8,7 @@ import { z } from "zod/v3";
 import lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";
+import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import {
@@ -21,11 +22,58 @@ import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
+   DEFAULT_RETRIEVAL_CONFIG,
+   getRetrievalConfig,
+   resolveEgress,
+   type RetrievalConfig,
+} from "../../retrieval/retrieval_config";
+import {
+   cardScore,
+   groupByCard,
+   orderCards,
+   publishCardRelevance,
+   reorderByCards,
+} from "../../retrieval/cards";
+import { rrfFuse } from "../../retrieval/hybrid";
+import { runRefine } from "../../retrieval/stages/refine";
+import { runRerank } from "../../retrieval/stages/rerank";
+import type { LlmUsage } from "../../service/llm_runner";
+import {
+   getEnrichmentStatus,
+   hydrateEnrichment,
+   kickEnrichment,
+   type EnrichmentStatus,
+} from "../../retrieval/enrichment";
+import {
+   attachRetrievalMeta,
+   beginRun,
+   envLlmModel,
+   type RetrievalRun,
+} from "../../retrieval/run";
+import { getLlmRunner } from "../../service/llm_runner";
+import {
+   discoverValueDimensions,
+   getValueIndexStatus,
+   kickValueIndex,
+   loadTruncation,
+   searchDimensionValues,
+   type RunQuery,
+   type TruncationMap,
+   type ValueCandidate,
+   type ValueDimension,
+   type ValueHit,
+   type ValueIndexStatus,
+} from "../../retrieval/dim_values";
+import { parseIndexTag } from "../../retrieval/index_annotation";
+import {
    entityRowKey,
    KEY_SEPARATOR,
+   enrichmentExtrasFor,
+   entityFacets,
    getEmbeddingIndexStatus,
    trySemanticSearch,
    type EmbeddingIndexStatus,
+   type FacetExtras,
    type SemanticUnavailableReason,
 } from "./embedding_index";
 
@@ -71,6 +119,9 @@ interface Entity {
    // ("orders", or "order_items.inventory_items"), which is also the dotted
    // prefix of `name`. Absent on a source's own fields. See collectJoinedFields.
    joinPath?: string;
+   // Set on a dimension whose author tagged it `#(index)` / `#(index_values)`,
+   // opting its distinct values into value search. `n` is their own cap.
+   indexValues?: { n?: number };
 }
 
 /**
@@ -161,6 +212,32 @@ interface ResultEntity {
     * target found a row even though it withholds how well.
     */
    bestTarget?: number;
+   /**
+    * The score this row was ranked on, INTERNAL only: cosine on the semantic
+    * path, the per-target-normalised lunr score on the lexical one. Unlike
+    * `score` it is set on both paths and never reaches the wire, so the
+    * stages that cut by score (gap cut) work the same on either without
+    * publishing a lexical number as a relevance.
+    */
+   rankScore?: number;
+   /**
+    * INTERNAL, like the rest of this block: the `#(doc)`-only text (the one
+    * description that may leave the machine, unlike `doc`, which can fall
+    * back to raw annotation lines carrying predicates), an LLM keyphrase for
+    * sparse docs, the per-target score before any LLM stage (on both paths),
+    * and the per-target reason an LLM stage gave. Only `matchReasons` reaches
+    * the wire, and only as `matched_targets[].match_reason`.
+    */
+   embedDoc?: string;
+   keyphrase?: string;
+   candidateScores?: Map<number, number>;
+   matchReasons?: Map<number, string>;
+   /** Values of this dimension a value-target matched; serialized as `values`. */
+   values?: ValueMatch[];
+   /** This dimension's values are searchable (it is in the value index). */
+   valuesIndexed?: boolean;
+   /** Its values were cut at a cap, so one may be missing from the index. */
+   valuesTruncated?: boolean;
 }
 
 /**
@@ -352,6 +429,13 @@ interface SourceCardInfo {
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
+   /**
+    * LLM-written summary of the source, present only when the operator sets
+    * `retrieval.response.surfaceGenerated`. Kept apart from `docs`, which is
+    * what the model's author wrote, so a reader can tell the two apart.
+    */
+   generated_summary?: string;
+   generated_one_line_summary?: string;
 }
 
 interface SourceCardEntity {
@@ -363,6 +447,14 @@ interface SourceCardEntity {
    data_type?: string;
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
+   /** LLM-written keyphrase; see `generated_summary` on the source. */
+   generated_description?: string;
+   /** Values of this dimension that matched a `dimensional_value` target. */
+   values?: ValueMatch[];
+   /** This dimension's values are indexed and can be searched. */
+   values_indexed?: boolean;
+   /** Its values were cut at a cap: a missing value may be absent from the index, not the data. */
+   values_truncated?: boolean;
    /**
     * The entity's definition, present when the caller passed `include_code` or
     * pinned `scopes[].entity_name`. A dimension or measure carries its Malloy
@@ -375,14 +467,50 @@ interface SourceCardEntity {
    /** The join traversal reaching this field, when it is not the source's own. */
    join_path?: string;
    /** Which search targets matched this entity, and how well. */
-   matched_targets?: Array<{ search_text: string; relevance: number }>;
+   matched_targets?: MatchedTarget[];
    aliases?: string[];
+}
+
+/** One indexed value a search target matched. */
+interface ValueMatch {
+   value: string;
+   relevance: number;
+   search_text: string;
+}
+
+interface MatchedTarget {
+   search_text: string;
+   relevance: number;
+   /** One sentence from the LLM stage that rated it; absent without one. */
+   match_reason?: string;
 }
 
 interface SourceCard {
    source_info: SourceCardInfo;
    relevance?: number;
    entities?: SourceCardEntity[];
+}
+
+/** The generated-summary fields for a source card, or nothing. */
+function generatedSourceFields(
+   source: string,
+   generated?: ReadonlyMap<string, FacetExtras>,
+): { generated_summary?: string; generated_one_line_summary?: string } {
+   const g = generated?.get(entityRowKey("source", source, source));
+   if (!g?.summary) return {};
+   return {
+      generated_summary: g.summary,
+      ...(g.oneLine ? { generated_one_line_summary: g.oneLine } : {}),
+   };
+}
+
+/** The generated keyphrase for an entity, or nothing. */
+function generatedEntityFields(
+   r: ResultEntity,
+   generated?: ReadonlyMap<string, FacetExtras>,
+): { generated_description?: string } {
+   const g = generated?.get(entityRowKey(r.kind, r.source ?? "", r.name));
+   return g?.keyphrase ? { generated_description: g.keyphrase } : {};
 }
 
 /**
@@ -408,6 +536,12 @@ function toSourceResults(
    includeCode = false,
    /** Deny-all sources collectEntities already dropped; refuse to mint a bare card for one. */
    droppedSources: Set<string> = new Set(),
+   /** Serialize the LLM's per-target reason as `match_reason`. */
+   includeMatchReason = true,
+   /** Card relevance a stage set (rerank, coverage), keyed like `sourceContext`. */
+   sourceRelevance?: Map<string, number>,
+   /** LLM-written text to show, keyed by entityRowKey; set only when the operator asks. */
+   generated?: ReadonlyMap<string, FacetExtras>,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -446,6 +580,7 @@ function toSourceResults(
                ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
                ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
                joins: ctx?.joins ?? [],
+               ...generatedSourceFields(name, generated),
             },
          };
          bySource.set(key, entry);
@@ -470,20 +605,30 @@ function toSourceResults(
          ...(r.score !== undefined ? { relevance: r.score } : {}),
          ...(r.doc ? { description: r.doc } : {}),
          ...(r.dataType ? { data_type: r.dataType } : {}),
+         ...generatedEntityFields(r, generated),
+         ...(r.values && r.values.length > 0 ? { values: r.values } : {}),
+         ...(r.valuesIndexed ? { values_indexed: true } : {}),
+         ...(r.valuesTruncated ? { values_truncated: true } : {}),
          ...(r.relationship ? { relationship: r.relationship } : {}),
          ...(r.joinPath ? { join_path: r.joinPath } : {}),
          ...(includeCode && r.code ? { code: r.code } : {}),
-         ...matchedTargetsFor(r, searchTexts),
+         ...matchedTargetsFor(r, searchTexts, includeMatchReason),
          ...(r.aliases ? { aliases: r.aliases } : {}),
       };
       (entry.entities ??= []).push(entity);
       // A source with no hit of its own still ranks by its best entity, so a
       // caller reading source relevance never sees a matched source at null.
-      if (
-         r.score !== undefined &&
-         (entry.relevance === undefined || r.score > entry.relevance)
-      ) {
-         entry.relevance = r.score;
+      // A dimension found only by its values has no relevance of its own, so
+      // its best value stands in: a matched card is never reported at null.
+      const own = r.score ?? r.values?.[0]?.relevance;
+      if (own !== undefined && (entry.relevance === undefined || own > entry.relevance)) {
+         entry.relevance = own;
+      }
+   }
+   if (sourceRelevance) {
+      for (const [key, card] of bySource) {
+         const set = sourceRelevance.get(key);
+         if (set !== undefined) card.relevance = set;
       }
    }
    return Array.from(bySource.values());
@@ -501,15 +646,23 @@ function toSourceResults(
 function matchedTargetsFor(
    r: ResultEntity,
    searchTexts: Map<number, string>,
-): { matched_targets?: Array<{ search_text: string; relevance: number }> } {
+   includeReason = true,
+): { matched_targets?: MatchedTarget[] } {
    if (!r.targetScores || r.targetScores.size === 0) return {};
    const matched = [...r.targetScores.entries()]
       .sort((a, b) => a[0] - b[0])
       .flatMap(([index, relevance]) => {
          const search_text = searchTexts.get(index);
          if (search_text === undefined) return [];
+         // Present only when an LLM stage rated this target, so a response
+         // from a server with none carries no such key at all.
+         const reason = includeReason ? r.matchReasons?.get(index) : undefined;
          return [
-            { search_text, relevance: Math.round(relevance * 10_000) / 10_000 },
+            {
+               search_text,
+               relevance: Math.round(relevance * 10_000) / 10_000,
+               ...(reason ? { match_reason: reason } : {}),
+            },
          ];
       });
    return matched.length > 0 ? { matched_targets: matched } : {};
@@ -524,6 +677,9 @@ function matchedTargetsFor(
  * below prevents between cards.
  */
 const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
+
+/** Matched values shown per dimension. */
+const VALUES_PER_ENTITY = 10;
 
 /**
  * Window a ranked list into `limit` SOURCE cards, capping the entities each
@@ -552,11 +708,14 @@ const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 function windowBySource(
    rows: ResultEntity[],
    sourceLimit: number,
+   perTargetCap: number = MAX_ENTITIES_PER_SOURCE_TARGET,
 ): {
    rows: ResultEntity[];
    totalSources: number;
    returnedSources: number;
    entitiesDropped: number;
+   /** Rows lost with the sources past `sourceLimit`, for the trace. */
+   rowsDroppedBySourceLimit: number;
 } {
    const order: string[] = [];
    const bySource = new Map<string, ResultEntity[]>();
@@ -586,7 +745,7 @@ function windowBySource(
          // only a guard.
          const target = r.bestTarget ?? -1;
          const taken = perTarget.get(target) ?? 0;
-         if (taken >= MAX_ENTITIES_PER_SOURCE_TARGET) {
+         if (taken >= perTargetCap) {
             entitiesDropped += 1;
             continue;
          }
@@ -594,11 +753,136 @@ function windowBySource(
          kept.push(r);
       }
    }
+   let rowsDroppedBySourceLimit = 0;
+   for (const key of order.slice(sourceLimit)) {
+      rowsDroppedBySourceLimit += bySource.get(key)?.length ?? 0;
+   }
    return {
       rows: kept,
       totalSources: order.length,
       returnedSources: keptSources.length,
       entitiesDropped,
+      rowsDroppedBySourceLimit,
+   };
+}
+
+/** What one stage spent, from two snapshots of the request's LLM usage. */
+function llmDelta(
+   before: LlmUsage | undefined,
+   after: LlmUsage | undefined,
+): {
+   llm_calls?: number;
+   prompt_tokens?: number;
+   completion_tokens?: number;
+   cache_hits?: number;
+} {
+   if (!before || !after) return {};
+   return {
+      llm_calls: after.calls - before.calls,
+      prompt_tokens: after.promptTokens - before.promptTokens,
+      completion_tokens: after.completionTokens - before.completionTokens,
+      cache_hits: after.cacheHits - before.cacheHits,
+   };
+}
+
+/**
+ * Drop rows that score far below their target's best.
+ *
+ * Every target keeps its own top hit whatever it scores, and every other row
+ * must reach `ratio` of that top. A tail of weak matches trailing a strong one
+ * is noise an agent has to read past; a target whose best match is itself weak
+ * keeps its weak matches, because nothing better exists to be crowded out by.
+ * Needs no LLM and works on both paths (it reads `rankScore`), so it is the
+ * cheapest precision lever there is.
+ */
+function applyGapCut(
+   rows: ResultEntity[],
+   ratio: number,
+): { rows: ResultEntity[]; dropped: number } {
+   const top = new Map<number, number>();
+   for (const r of rows) {
+      const t = r.bestTarget ?? -1;
+      const s = r.rankScore ?? 0;
+      if (s > (top.get(t) ?? -Infinity)) top.set(t, s);
+   }
+   const kept = rows.filter((r) => {
+      const best = top.get(r.bestTarget ?? -1) ?? 0;
+      return (r.rankScore ?? 0) >= best * ratio;
+   });
+   return { rows: kept, dropped: rows.length - kept.length };
+}
+
+/**
+ * Trim a finished payload to a character budget, worst first.
+ *
+ * Sources are already best-first and so are the entities inside each, so the
+ * tail is what is cheapest to lose: entities go from the last card backwards,
+ * then that card, then the one before. The order is a fixed sequence, so the
+ * largest prefix of it that fits is found by bisection instead of re-measuring
+ * after every drop. The first card is never removed: a response with no
+ * sources at all reads as "nothing found", which is not what happened.
+ */
+function trimToCharBudget(
+   sources: SourceCard[],
+   fixedChars: number,
+   maxChars: number,
+): {
+   sources: SourceCard[];
+   entitiesDropped: number;
+   sourcesDropped: number;
+} {
+   const measure = (cards: SourceCard[]) =>
+      fixedChars + JSON.stringify(cards).length;
+   if (measure(sources) <= maxChars) {
+      return { sources, entitiesDropped: 0, sourcesDropped: 0 };
+   }
+   type Step = { card: number; entity?: number };
+   const steps: Step[] = [];
+   for (let c = sources.length - 1; c >= 0; c--) {
+      const n = sources[c].entities?.length ?? 0;
+      for (let e = n - 1; e >= 0; e--) steps.push({ card: c, entity: e });
+      if (c > 0) steps.push({ card: c });
+   }
+   const apply = (k: number): SourceCard[] => {
+      const removedEntities = new Map<number, Set<number>>();
+      const removedCards = new Set<number>();
+      for (let i = 0; i < k; i++) {
+         const s = steps[i];
+         if (s.entity !== undefined) {
+            let set = removedEntities.get(s.card);
+            if (!set) removedEntities.set(s.card, (set = new Set()));
+            set.add(s.entity);
+         } else {
+            removedCards.add(s.card);
+         }
+      }
+      return sources.flatMap((card, c) => {
+         if (removedCards.has(c)) return [];
+         const gone = removedEntities.get(c);
+         if (!gone || !card.entities) return [card];
+         const entities = card.entities.filter((_, e) => !gone.has(e));
+         const { entities: _drop, ...rest } = card;
+         return [entities.length > 0 ? { ...rest, entities } : rest];
+      });
+   };
+   // The FEWEST removals that fit. `lo` never fits (the untrimmed response
+   // does not, checked above) and `hi` is the answer once the two meet; if even
+   // removing every step does not fit, `hi` stays at the last step and the
+   // result is the smallest response this can produce.
+   let lo = 0;
+   let hi = steps.length;
+   while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (measure(apply(mid)) <= maxChars) hi = mid;
+      else lo = mid;
+   }
+   const trimmed = apply(hi);
+   const count = (cards: SourceCard[]) =>
+      cards.reduce((n, c) => n + (c.entities?.length ?? 0), 0);
+   return {
+      sources: trimmed,
+      entitiesDropped: count(sources) - count(trimmed),
+      sourcesDropped: sources.length - trimmed.length,
    };
 }
 
@@ -639,6 +923,7 @@ function projectEntity(
       packageName,
       modelPath: e.modelPath,
       doc: e.doc,
+      embedDoc: e.embedDoc,
       ...(e.relationship ? { relationship: e.relationship } : {}),
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
@@ -674,8 +959,20 @@ function finishRanked(args: {
    searchTexts: Map<number, string>;
    includeCode: boolean;
    droppedSources: Set<string>;
-}): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
-   const windowed = windowBySource(args.rows, args.max);
+   /** Entities per source per target; the constant unless the config moves it. */
+   perTargetCap?: number;
+   includeMatchReason?: boolean;
+   sourceRelevance?: Map<string, number>;
+   generated?: ReadonlyMap<string, FacetExtras>;
+}): {
+   sources: SourceCard[];
+   totalSources: number;
+   entitiesDropped: number;
+   rowsDroppedBySourceLimit: number;
+   rowsIn: number;
+   rowsKept: number;
+} {
+   const windowed = windowBySource(args.rows, args.max, args.perTargetCap);
    const sources = toSourceResults(
       windowed.rows,
       args.sourceContext,
@@ -684,12 +981,59 @@ function finishRanked(args: {
       args.searchTexts,
       args.includeCode,
       args.droppedSources,
+      args.includeMatchReason,
+      args.sourceRelevance,
+      args.generated,
    );
    return {
       sources,
       totalSources: windowed.totalSources,
       entitiesDropped: windowed.entitiesDropped,
+      rowsDroppedBySourceLimit: windowed.rowsDroppedBySourceLimit,
+      rowsIn: args.rows.length,
+      rowsKept: windowed.rows.length,
    };
+}
+
+/**
+ * Fit a whole response, not just its cards, under `maxChars`.
+ *
+ * The envelope around the cards (counts, warnings, the trim note itself) also
+ * costs characters and depends on how many cards survive, so the size the
+ * cards may take is not known until they are chosen. This measures the
+ * envelope with no cards, trims the cards to what is left, rebuilds, and
+ * tightens by any overshoot; a few passes settle it, since each is bounded
+ * by the envelope's small, slowly varying size.
+ */
+function fitToMaxChars(
+   sources: SourceCard[],
+   maxChars: number,
+   build: (sources: SourceCard[], trimNote?: string) => Record<string, unknown>,
+): {
+   sources: SourceCard[];
+   entitiesDropped: number;
+   sourcesDropped: number;
+   note: string | undefined;
+} {
+   if (JSON.stringify(build(sources)).length <= maxChars) {
+      return { sources, entitiesDropped: 0, sourcesDropped: 0, note: undefined };
+   }
+   const noteFor = (entities: number, cards: number) =>
+      `Trimmed to fit response.maxChars (${maxChars}): dropped ${entities} ${entities === 1 ? "entity" : "entities"} and ${cards} ${cards === 1 ? "source" : "sources"}, lowest ranked first.`;
+   let reserve = 0;
+   let best = trimToCharBudget(sources, 0, maxChars);
+   let note = noteFor(best.entitiesDropped, best.sourcesDropped);
+   for (let pass = 0; pass < 4; pass++) {
+      // "[]" is what an empty sources array costs inside the envelope.
+      const fixed =
+         JSON.stringify(build([], noteFor(9_999, 999))).length - 2 + reserve;
+      best = trimToCharBudget(sources, fixed, maxChars);
+      note = noteFor(best.entitiesDropped, best.sourcesDropped);
+      const size = JSON.stringify(build(best.sources, note)).length;
+      if (size <= maxChars) break;
+      reserve += size - maxChars;
+   }
+   return { ...best, note };
 }
 
 function truncateDoc(doc: string, max: number): string {
@@ -864,6 +1208,12 @@ interface ResolvedRequest {
    /** Every kind any target selects. Empty only if every target was unsupported. */
    kinds: Set<string>;
    searches: ResolvedSearch[];
+   /**
+    * `dimensional_value` targets with text, when value search is on. Kept apart
+    * from `searches` so every entity path keeps working over entity targets
+    * alone; a request may carry either kind or both.
+    */
+   valueSearches: ResolvedSearch[];
    /** True when no target carried search text: enumerate, do not rank. */
    listingOnly: boolean;
    /** Serialize each entity's Malloy expression as `code`. */
@@ -874,15 +1224,31 @@ interface ResolvedRequest {
    offset: number;
 }
 
-export function resolveRequest(params: GetContextParams): ResolvedRequest {
+export function resolveRequest(
+   params: GetContextParams,
+   options: { valueSearch?: boolean } = {},
+): ResolvedRequest {
    const scope = params.scopes[0];
    const kinds = new Set<string>();
    const searches: ResolvedSearch[] = [];
+   const valueSearches: ResolvedSearch[] = [];
    const unsupported: SearchTargetType[] = [];
 
    params.search_targets.forEach((target, targetIndex) => {
       const targetKinds = KINDS_BY_TARGET[target.target_type];
       if (targetKinds.length === 0) {
+         // A value target is a real search when value search is on and it
+         // carries text; otherwise it stays unsupported, with its warning.
+         const text = target.search_text?.trim();
+         if (options.valueSearch && target.target_type === "dimensional_value" && text) {
+            valueSearches.push({
+               targetIndex,
+               targetType: target.target_type,
+               text,
+               kinds: [],
+            });
+            return;
+         }
          unsupported.push(target.target_type);
          return;
       }
@@ -900,7 +1266,7 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       }
    });
 
-   const listingOnly = searches.length === 0;
+   const listingOnly = searches.length === 0 && valueSearches.length === 0;
    const pureSourceListing =
       listingOnly &&
       params.search_targets.length > 0 &&
@@ -914,6 +1280,7 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       ...(scope.entity_name ? { entityName: scope.entity_name } : {}),
       kinds,
       searches,
+      valueSearches,
       listingOnly,
       // Pinning an entity by name turns code on, matching the hosted
       // retrieval API: a caller who has narrowed to one entity is asking what
@@ -1346,6 +1713,14 @@ function collectJoinedFields(args: {
    }
 }
 
+/** `{ indexValues }` for a dimension carrying `#(index)`, else nothing. */
+function indexValuesFor(
+   annotations?: Array<string | { value: string }>,
+): { indexValues?: { n?: number } } {
+   const tag = parseIndexTag(annotations);
+   return tag ? { indexValues: tag } : {};
+}
+
 /**
  * Whether `apiSource` is denied unconditionally — on EITHER route, since the
  * two routes AND together and one bare-`false` conjunct denies every caller
@@ -1576,6 +1951,9 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                ...(fieldProvenance?.code ? { code: fieldProvenance.code } : {}),
                ...(!isView && fieldProvenance?.aliasOf
                   ? { aliasOf: fieldProvenance.aliasOf }
+                  : {}),
+               ...(field.kind === "dimension"
+                  ? indexValuesFor(field.annotations)
                   : {}),
             });
          }
@@ -1906,6 +2284,147 @@ function buildSourceContext(
    return context;
 }
 
+/**
+ * One lunr pass per target, merged. Each target's hits are normalized against
+ * ITS OWN top hit before merging, which is what makes two targets' scores
+ * comparable at all: raw lunr scores are relative to the query that produced
+ * them. All targets share one index, so the IDF corpus is the same and the
+ * normalization is the only correction needed. Returns entity id -> (target
+ * index -> normalized score).
+ */
+function lunrTargetScores(
+   index: lunr.Index,
+   byId: ReadonlyMap<string, Entity>,
+   searches: readonly ResolvedSearch[],
+): Map<string, Map<number, number>> {
+   const bestByRef = new Map<string, Map<number, number>>();
+   for (const search of searches) {
+      const sanitized = sanitize(search.text);
+      if (!sanitized) continue;
+      let targetHits: lunr.Index.Result[] = [];
+      try {
+         targetHits = index.search(sanitized);
+      } catch (error) {
+         logger.warn("[MCP Tool getContext] lunr search failed", {
+            query: search.text,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         continue;
+      }
+      const top = targetHits[0]?.score ?? 0;
+      for (const hit of targetHits) {
+         const entity = byId.get(hit.ref);
+         // A target only claims the kinds it selects, so a `measure`
+         // target never surfaces a dimension that happened to match.
+         if (!entity || !search.kinds.includes(entity.kind)) continue;
+         const score = top > 0 ? hit.score / top : 0;
+         const scores = bestByRef.get(hit.ref) ?? new Map<number, number>();
+         scores.set(
+            search.targetIndex,
+            Math.max(scores.get(search.targetIndex) ?? 0, score),
+         );
+         bestByRef.set(hit.ref, scores);
+      }
+   }
+   return bestByRef;
+}
+
+/** The embedding provider, or null when none is configured or its config is bad. */
+function safeEmbeddingProvider(): EmbeddingProvider | null {
+   if (!embeddingConfigured()) return null;
+   try {
+      return getEmbeddingProvider();
+   } catch {
+      return null;
+   }
+}
+
+/**
+ * The dimensions of a package that value search indexes under `cfg`.
+ *
+ * A source gated by `#(access_filter)`, `#(authorize)` or a required
+ * `#(filter)` is never indexed (see dim_values.ts). The check is made here from
+ * the same governance the response reports, so what a card says is gated and
+ * what value search refuses cannot disagree.
+ */
+function packageValueDimensions(
+   pkgIndex: PackageIndex,
+   cfg: RetrievalConfig,
+): ValueDimension[] {
+   if (cfg.dimensionalValues.mode === "off") return [];
+   return discoverValueDimensions(
+      pkgIndex.retrievalEntities as readonly ValueCandidate[],
+      cfg.dimensionalValues,
+      (modelPath, source) => {
+         const key = sourceContextKey(modelPath, source);
+         const ctx = pkgIndex.sourceContext.get(key);
+         return (
+            pkgIndex.droppedSources.has(key) ||
+            Boolean(
+               ctx?.accessFilter?.length ||
+                  ctx?.authorize?.length ||
+                  ctx?.filters?.some((f) => f.required),
+            )
+         );
+      },
+   );
+}
+
+/** Start (non-blocking) indexing the package's values, once per package instance. */
+function kickPackageValues(
+   pkgIndex: PackageIndex,
+   dims: ValueDimension[],
+   cfg: RetrievalConfig,
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   packageName: string,
+): void {
+   if (dims.length === 0) return;
+   const run: RunQuery = async (modelPath, query, signal) => {
+      const model = pkgIndex.pkg.getModel(modelPath);
+      if (!model) throw new Error(`model ${modelPath} is not loaded`);
+      const res = await model.getQueryResults(
+         undefined,
+         undefined,
+         query,
+         undefined,
+         undefined,
+         undefined,
+         signal,
+         undefined,
+         "compact",
+      );
+      return res.compactResult as unknown as ReadonlyArray<Record<string, unknown>>;
+   };
+   // Values share the package's item budget with the entity facets and the
+   // generated text, which is placed first (summaries, keyphrases, then values).
+   const generated = cfg.enrichment.enabled
+      ? (getEnrichmentStatus(environmentName, packageName)?.enriched ?? 0)
+      : 0;
+   kickValueIndex(pkgIndex.pkg, {
+      db: environmentStore.storageManager.getDuckDbConnection(),
+      provider: safeEmbeddingProvider(),
+      environmentName,
+      packageName,
+      dims,
+      run,
+      config: cfg,
+      itemBudget: Math.max(0, generatedTextBudget(pkgIndex, cfg) - generated),
+   });
+}
+
+/**
+ * Rows `indexing.maxItemsPerPackage` leaves for everything added on top of the
+ * entities' own facets (generated text, then dimension values).
+ */
+function generatedTextBudget(pkgIndex: PackageIndex, cfg: RetrievalConfig): number {
+   const baseRows = pkgIndex.retrievalEntities.reduce(
+      (n, e) => n + entityFacets(e).length,
+      0,
+   );
+   return Math.max(0, cfg.indexing.maxItemsPerPackage - baseRows);
+}
+
 // Cache the built entity index per Package instance. environment.getPackage()
 // serves a cached Package, and a reload swaps in a new instance, so a stale entry
 // is dropped automatically (WeakMap) and the next call rebuilds.
@@ -2035,13 +2554,23 @@ async function runContextQuery(
    request: ResolvedRequest,
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
+   run?: RetrievalRun,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = request;
    const max = request.limit;
+   // The tuning for this call. Absent (and equal to the defaults) unless the
+   // operator or an eval changed it, in which case every value below is the
+   // constant it replaced.
+   const cfg = run?.config ?? DEFAULT_RETRIEVAL_CONFIG;
+   const trace = run?.trace ?? null;
+   const perTargetCap = cfg.response.maxEntitiesPerSourceTarget;
    // One lookup from target index back to the text the caller wrote, so
    // matched_targets can name a target without re-walking the request.
    const searchTextsByIndex = new Map(
-      request.searches.map((search) => [search.targetIndex, search.text]),
+      [...request.searches, ...request.valueSearches].map((search) => [
+         search.targetIndex,
+         search.text,
+      ]),
    );
    logger.info("[MCP Tool getContext] Retrieving context", {
       environmentName,
@@ -2077,6 +2606,16 @@ async function runContextQuery(
    }
 
    const { byId, index, sourceContext, droppedSources } = pkgIndex;
+
+   // Value search: which dimensions are indexed, and start indexing them.
+   const valueCfg = cfg.dimensionalValues;
+   const valueDims = packageValueDimensions(pkgIndex, cfg);
+   const valueDimKeys = new Set(
+      valueDims.map((d) => [d.source, d.dimension].join(KEY_SEPARATOR)),
+   );
+   const valueProvider = safeEmbeddingProvider;
+   kickPackageValues(pkgIndex, valueDims, cfg, environmentStore, environmentName, packageName);
+
    const uri = buildMalloyUri(
       { environment: environmentName, package: packageName },
       "get-context",
@@ -2160,7 +2699,7 @@ async function runContextQuery(
          : undefined;
    const entityCutWarning = (dropped: number) =>
       dropped > 0
-         ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
+         ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${perTargetCap} per source per target. Scope to one source to list all of its fields.`
          : undefined;
 
    // Tier 3: nothing to rank -> enumerate what the targets name.
@@ -2284,25 +2823,94 @@ async function runContextQuery(
       // healthy package: a `dimensional_value` search against storefront
       // reported that its seven sources were a curation gap.
       if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
-         return jsonResource(uri, {
-            sources,
-            ...listingEnvelope,
-            ...warningsFor(
-               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
+         return jsonResource(
+            uri,
+            attachRetrievalMeta(
+               {
+                  sources,
+                  ...listingEnvelope,
+                  ...warningsFor(
+                     "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
+                  ),
+               },
+               run,
+               "listing",
             ),
-         });
+         );
       }
-      return jsonResource(uri, {
-         sources,
-         ...listingEnvelope,
-         ...warningsFor(
-            // A pure browse pages; every other listing shape is capped in
-            // entities and says so.
-            request.pureSourceListing
-               ? listingPageWarning(sources.length, inScope.length)
-               : truncationWarning(spendable(capped), cappable),
+      return jsonResource(
+         uri,
+         attachRetrievalMeta(
+            {
+               sources,
+               ...listingEnvelope,
+               ...warningsFor(
+                  // A pure browse pages; every other listing shape is capped in
+                  // entities and says so.
+                  request.pureSourceListing
+                     ? listingPageWarning(sources.length, inScope.length)
+                     : truncationWarning(spendable(capped), cappable),
+               ),
+            },
+            run,
+            "listing",
          ),
-      });
+      );
+   }
+
+   // Value targets: look the phrases up in the value index. The lexical arm
+   // needs nothing but the stored text; the semantic arm adds vectors when an
+   // embedding provider exists. Failing soft: a value search that cannot run
+   // costs the values, never the entity results beside them.
+   let valueHits: ValueHit[] = [];
+   let truncation: TruncationMap = new Map();
+   const valueWarnings: string[] = [];
+   if (valueCfg.mode !== "off") {
+      const db = environmentStore.storageManager.getDuckDbConnection();
+      truncation = await loadTruncation(db, environmentName, packageName);
+      if (request.valueSearches.length > 0) {
+         try {
+            const provider = valueProvider();
+            valueHits = await searchDimensionValues({
+               db,
+               provider,
+               environmentName,
+               packageName,
+               queries: request.valueSearches.map((v) => ({
+                  targetIndex: v.targetIndex,
+                  text: v.text,
+               })),
+               config: cfg,
+               ...(sourceName ? { sourceName } : {}),
+               minSimilarity:
+                  valueCfg.minSimilarity ??
+                  cfg.embedding.minSimilarity ??
+                  provider?.minSimilarity ??
+                  DEFAULT_EMBEDDING_MIN_SIMILARITY,
+            });
+         } catch (error) {
+            logger.warn("[MCP Tool getContext] Value search failed", {
+               environmentName,
+               packageName,
+               error: error instanceof Error ? error.message : String(error),
+            });
+            valueWarnings.push(
+               "Value search is unavailable right now; results carry no matched values.",
+            );
+         }
+         if (valueDims.length === 0) {
+            valueWarnings.push(
+               "No dimension in this package is set up for value search. Tag one with #(index) in the model, or set retrieval.dimensionalValues.mode to \"auto\".",
+            );
+         } else if (valueHits.length === 0) {
+            const st = getValueIndexStatus(environmentName, packageName);
+            if (!st || st.status === "building") {
+               valueWarnings.push(
+                  "Dimension values are still being indexed; try the value search again shortly.",
+               );
+            }
+         }
+      }
    }
 
    // Tier 4: retrieval over the package's entities. With an
@@ -2328,7 +2936,7 @@ async function runContextQuery(
    // is a dead end: an agent cannot tell a cold index, which clears in
    // seconds and is worth retrying, from a down provider, which is not.
    let retrievalReason: RetrievalReason | undefined;
-   if (configured) {
+   if (configured && request.searches.length > 0) {
       let provider: EmbeddingProvider | null = null;
       try {
          provider = getEmbeddingProvider();
@@ -2343,6 +2951,20 @@ async function runContextQuery(
       }
       if (provider) {
          try {
+            // Restore cached LLM facets before the first sync of this package
+            // instance, so the sync finds their rows current instead of
+            // deleting them (see hydrateEnrichment).
+            if (cfg.enrichment.enabled) {
+               await hydrateEnrichment(pkgIndex.pkg, {
+                  db: environmentStore.storageManager.getDuckDbConnection(),
+                  environmentName,
+                  packageName,
+                  entities: pkgIndex.retrievalEntities,
+                  config: cfg,
+                  envModel: envLlmModel(),
+                  itemBudget: generatedTextBudget(pkgIndex, cfg),
+               });
+            }
             // One pass per target, merged on score. A max ACROSS passes is
             // meaningful here and only here: cosine is an absolute scale,
             // so 0.7 from the measure target and 0.7 from the dimension
@@ -2351,6 +2973,48 @@ async function runContextQuery(
             // own query.) The next commit collapses these passes into one
             // batched embed and one scan; the merge rule does not change.
             const merged = new Map<string, ResultEntity>();
+            // Hybrid: order the embedding rows by fused rank with lunr's, and
+            // in `union` mode add the rows only lunr found. The published
+            // `relevance` stays the cosine; only the order and the internal
+            // rankScore (what the gap cut and the LLM stages read) change.
+            const fuseWithLexical = (rows: Map<string, ResultEntity>) => {
+               const lexical = new Map<string, Map<number, number>>();
+               const lexRows = new Map<string, ResultEntity>();
+               for (const [ref, ts] of lunrTargetScores(index, byId, request.searches)) {
+                  const e = byId.get(ref);
+                  if (!e || (sourceName && e.source !== sourceName)) continue;
+                  if (!matchesScope(e, request)) continue;
+                  const projected = projectEntity(e, environmentName, packageName);
+                  const key = entityCardKey(projected);
+                  lexical.set(key, ts);
+                  lexRows.set(key, {
+                     ...projected,
+                     bestTarget: bestTargetOf(ts),
+                     candidateScores: ts,
+                  });
+               }
+               const semantic = new Map<string, Map<number, number>>();
+               for (const [key, row] of rows) {
+                  if (row.targetScores) semantic.set(key, row.targetScores);
+               }
+               const fused = rrfFuse({
+                  semantic,
+                  lexical,
+                  k: cfg.hybrid.rrfK,
+                  mode: cfg.hybrid.mode as "rerank-only" | "union",
+               });
+               for (const [key, row] of rows) {
+                  row.rankScore = fused.get(key) ?? 0;
+               }
+               if (cfg.hybrid.mode === "union") {
+                  for (const [key, score] of fused) {
+                     const extra = lexRows.get(key);
+                     if (!rows.has(key) && extra) {
+                        rows.set(key, { ...extra, rankScore: score });
+                     }
+                  }
+               }
+            };
             let searchFailure: RetrievalReason | undefined;
             let unionTotalEntities: number | undefined;
             let unionBelowCutoff: number | undefined;
@@ -2383,7 +3047,17 @@ async function runContextQuery(
                   // one source and return a single card where `max` were
                   // asked for. A drill-down is confined to one source, so
                   // there the extra rows are waste.
-                  limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
+                  limit:
+                     cfg.candidates.perTargetLimit ??
+                     (scoped ? max : Math.min(MAX_LIMIT, max * 3)),
+                  // Null in the config means "the provider's own floor", so
+                  // the default call is unchanged.
+                  ...(cfg.embedding.minSimilarity !== null
+                     ? { minSimilarity: cfg.embedding.minSimilarity }
+                     : {}),
+                  ...(cfg.embedding.facets !== null
+                     ? { facets: cfg.embedding.facets }
+                     : {}),
                   // "" means no drill-down, matching the lexical
                   // path's truthiness filter.
                   sourceName: sourceName || undefined,
@@ -2404,6 +3078,25 @@ async function runContextQuery(
                         : undefined,
                });
                if ("hits" in semantic) {
+                  // The base index is built, so generated facets can be added
+                  // to it. Non-blocking: this call answers now and a later one
+                  // benefits.
+                  if (cfg.enrichment.enabled) {
+                     const runner = getLlmRunner(cfg);
+                     if (runner) {
+                        kickEnrichment(pkgIndex.pkg, {
+                           db: environmentStore.storageManager.getDuckDbConnection(),
+                           provider,
+                           environmentName,
+                           packageName,
+                           entities: pkgIndex.retrievalEntities,
+                           config: cfg,
+                           runner,
+                           envModel: envLlmModel(),
+                           itemBudget: generatedTextBudget(pkgIndex, cfg),
+                        });
+                     }
+                  }
                   // One row per (kind, source, name) is EMBEDDED — the
                   // text is identical for every model path that reaches
                   // the entity, so the vector is stored once — but
@@ -2460,6 +3153,8 @@ async function runContextQuery(
                      merged.set(key, {
                         ...row,
                         bestTarget: bestTargetOf(row.targetScores ?? new Map()),
+                        rankScore: row.score,
+                        candidateScores: row.targetScores,
                      });
                   }
                   // The denominator counts the package's entities, not the
@@ -2471,8 +3166,13 @@ async function runContextQuery(
                }
             }
             if (merged.size > 0 || searchFailure === undefined) {
+               if (cfg.hybrid.mode !== "off" && searchFailure === undefined) {
+                  fuseWithLexical(merged);
+               }
                const ranked = [...merged.values()].sort(
-                  (a, b) => (b.score ?? 0) - (a.score ?? 0),
+                  cfg.hybrid.mode !== "off"
+                     ? (a, b) => (b.rankScore ?? 0) - (a.rankScore ?? 0)
+                     : (a, b) => (b.score ?? 0) - (a.score ?? 0),
                );
                // Collapse, windowing and serialization are finishRanked's,
                // shared with the lexical path so the two cannot drift.
@@ -2507,9 +3207,308 @@ async function runContextQuery(
       }
    }
 
-   if (semanticRanked !== undefined) {
-      const { sources, totalSources, entitiesDropped } = finishRanked({
-         rows: semanticRanked,
+   /**
+    * Put matched values on their dimensions, and mark the dimensions whose
+    * values are searchable. A dimension the entity search already returned
+    * gets its `values`; one it did not is added, carrying no relevance of its
+    * own, ranked by its best value, so a question that names only a value
+    * ("Premium") still returns the dimension that holds it.
+    */
+   const attachValues = (rows: ResultEntity[]): ResultEntity[] => {
+      if (valueDims.length === 0) return rows;
+      const out = rows.map((r) => ({ ...r }));
+      const byDim = new Map<string, ValueHit[]>();
+      for (const h of valueHits) {
+         const k = [h.source, h.dimension].join(KEY_SEPARATOR);
+         const at = byDim.get(k);
+         if (at) at.push(h);
+         else byDim.set(k, [h]);
+      }
+      const have = new Set(
+         out
+            .filter((r) => r.kind === "dimension")
+            .map((r) => [r.modelPath, r.source, r.name].join(KEY_SEPARATOR)),
+      );
+      for (const [k, hits] of byDim) {
+         const top = hits.slice(0, VALUES_PER_ENTITY);
+         const matches: ValueMatch[] = top.map((h) => ({
+            value: h.value,
+            relevance: h.score,
+            search_text: searchTextsByIndex.get(h.targetIndex) ?? "",
+         }));
+         const [source, dimension] = k.split(KEY_SEPARATOR);
+         for (const r of out) {
+            if (r.kind === "dimension" && r.source === source && r.name === dimension) {
+               r.values = matches;
+            }
+         }
+         for (const e of byId.values()) {
+            if (
+               e.kind !== "dimension" ||
+               e.source !== source ||
+               e.name !== dimension ||
+               e.joinPath ||
+               !matchesScope(e, request) ||
+               have.has([e.modelPath, e.source, e.name].join(KEY_SEPARATOR))
+            ) {
+               continue;
+            }
+            out.push({
+               ...projectEntity(e, environmentName, packageName),
+               values: matches,
+               rankScore: hits[0].score,
+               bestTarget: hits[0].targetIndex,
+            });
+         }
+      }
+      for (const r of out) {
+         if (r.kind !== "dimension" || !r.source) continue;
+         const k = [r.source, r.name].join(KEY_SEPARATOR);
+         if (!valueDimKeys.has(k)) continue;
+         r.valuesIndexed = true;
+         if (truncation.get(k)) r.valuesTruncated = true;
+      }
+      // Best first, by the score each row ranks on; stable, so rows that tie
+      // keep the order they arrived in.
+      return out
+         .map((r, i) => ({ r, i }))
+         .sort((a, b) => (b.r.rankScore ?? 0) - (a.r.rankScore ?? 0) || a.i - b.i)
+         .map((x) => x.r);
+   };
+
+   /**
+    * The tail both ranked paths share, after scoring: the optional gap cut,
+    * the source window, and the optional character budget, each recorded in
+    * the trace. `candidate` says how many entities were weighed and how many
+    * cleared the scoring stage, with the reasons for the rest.
+    *
+    * Lives here rather than in finishRanked because it needs the envelope, and
+    * the two paths build different ones.
+    */
+   const rankedTail = async (
+      scoredRows: ResultEntity[],
+      candidate: { in: number; out: number; reasons: Record<string, number> },
+      retrieval: "semantic" | "lexical",
+      buildEnvelope: (
+         tail: {
+            sources: SourceCard[];
+            totalSources: number;
+            entitiesDropped: number;
+            /** Cards the page limit kept, before any character trim. */
+            pageSources: number;
+            /** Notes from LLM stages that failed soft, for `warnings`. */
+            stageWarnings: string[];
+         },
+         sources: SourceCard[],
+         trimNote: string | undefined,
+      ) => Record<string, unknown>,
+   ): Promise<Record<string, unknown>> => {
+      trace?.gate("candidate", candidate.in, candidate.out, candidate.reasons);
+      const idOf = (r: ResultEntity) =>
+         `${r.modelPath}\u0000${entityId(r.kind, r.source, r.name)}`;
+      if (trace?.wantsCandidates) {
+         trace.setCandidates(
+            scoredRows.map((r) => ({
+               entity_id: entityId(r.kind, r.source, r.name),
+               source: r.source,
+               model_path: r.modelPath,
+               target: r.bestTarget,
+               score: r.rankScore,
+               kept: true,
+            })),
+         );
+      }
+
+      // Hand each row the keyphrase written for it, so a stage describing an
+      // undocumented entity to the model has something to say. Internal only;
+      // whether the text is also SHOWN is response.surfaceGenerated.
+      const extras = enrichmentExtrasFor(environmentName, packageName);
+      const withValues = attachValues(scoredRows);
+      let rows = extras
+         ? withValues.map((r) => {
+              const kp = extras.get(entityRowKey(r.kind, r.source ?? "", r.name))?.keyphrase;
+              return kp ? { ...r, keyphrase: kp } : r;
+           })
+         : withValues;
+      const stageWarnings: string[] = [...valueWarnings];
+      const stageStatus: Record<string, string> = {};
+
+      // Entity refine: an LLM rates each candidate against each phrase.
+      if (cfg.refine.enabled) {
+         const before = run?.llm ? { ...run.llm.budget.usage } : undefined;
+         const started = Date.now();
+         const outcome = await runRefine({
+            rows,
+            searches: request.searches.map((s) => ({
+               targetIndex: s.targetIndex,
+               text: s.text,
+            })),
+            config: cfg,
+            llm: run?.llm ?? null,
+            lexical: retrieval === "lexical",
+            egress: resolveEgress(cfg),
+         });
+         stageStatus.refine = outcome.status;
+         stageWarnings.push(...outcome.warnings);
+         const applied =
+            outcome.status === "ok" || outcome.status.startsWith("partial");
+         trace?.gate(
+            "refine",
+            outcome.rowsIn,
+            applied ? outcome.rows.length : outcome.rowsIn,
+            applied ? outcome.dropped : {},
+            {
+               status: outcome.status,
+               ms: Date.now() - started,
+               ...llmDelta(before, run?.llm?.budget.usage),
+            },
+         );
+         if (applied) {
+            if (trace?.wantsCandidates) {
+               const survivors = new Map(outcome.rows.map((r) => [idOf(r), r]));
+               // Trace candidates are keyed by model path and entity id; the
+               // stage's verdicts by the embedded row (kind, source, name).
+               const verdictKey = new Map(
+                  scoredRows.map((r) => [
+                     idOf(r),
+                     entityRowKey(r.kind, r.source ?? "", r.name),
+                  ]),
+               );
+               trace.annotate((c) => {
+                  const key = `${c.model_path}\u0000${c.entity_id}`;
+                  const byTarget = outcome.verdicts?.get(verdictKey.get(key) ?? "");
+                  const levels: Record<string, string> = {};
+                  for (const [t, v] of byTarget ?? []) {
+                     levels[String(t)] = v.level ?? v.outcome;
+                  }
+                  const r = survivors.get(key);
+                  const own = c.target === undefined ? undefined : byTarget?.get(c.target);
+                  const level = own?.level;
+                  if (!r) {
+                     // Why, in the stage's own words, so a reader can tell a
+                     // low rating from an omission from the cap.
+                     const why = own?.outcome === "scored"
+                        ? "below_min_level"
+                        : own?.outcome === "omitted"
+                          ? "llm_omitted"
+                          : own?.outcome === "capped"
+                            ? "refine_cap"
+                            : "refine";
+                     return {
+                        kept: false,
+                        dropped_by: `refine:${why}`,
+                        levels,
+                        ...(level ? { level } : {}),
+                     };
+                  }
+                  const t = r.bestTarget;
+                  return {
+                     score: r.rankScore,
+                     reason: t === undefined ? undefined : r.matchReasons?.get(t),
+                     levels,
+                     ...(level ? { level } : {}),
+                  };
+               });
+            }
+            rows = outcome.rows;
+         }
+      }
+
+      const refineApplied =
+         stageStatus.refine === "ok" ||
+         (stageStatus.refine?.startsWith("partial") ?? false);
+      let sourceRelevance: Map<string, number> | undefined;
+
+      // Source rerank: one LLM call orders the best few source cards against
+      // the whole question.
+      if (cfg.rerank.enabled) {
+         const before = run?.llm ? { ...run.llm.budget.usage } : undefined;
+         const started = Date.now();
+         const outcome = await runRerank({
+            rows,
+            searches: request.searches.map((s) => ({
+               targetIndex: s.targetIndex,
+               text: s.text,
+            })),
+            config: cfg,
+            llm: run?.llm ?? null,
+            lexical: retrieval === "lexical",
+            egress: resolveEgress(cfg),
+            packageName,
+            docsFor: (key) => sourceContext.get(key)?.doc || undefined,
+            summaryFor: (source) =>
+               extras?.get(entityRowKey("source", source, source))?.summary,
+            scoredByLlm: refineApplied,
+         });
+         stageStatus.rerank = outcome.status;
+         stageWarnings.push(...outcome.warnings);
+         const applied = outcome.status === "ok";
+         trace?.gate(
+            "rerank",
+            outcome.rowsIn,
+            applied ? outcome.rows.length : outcome.rowsIn,
+            applied ? outcome.dropped : {},
+            {
+               status: outcome.status,
+               ms: Date.now() - started,
+               ...llmDelta(before, run?.llm?.budget.usage),
+            },
+         );
+         if (applied) {
+            if (trace?.wantsCandidates) {
+               const survivors = new Set(outcome.rows.map(idOf));
+               trace.markDropped(
+                  (c) => !survivors.has(`${c.model_path}\u0000${c.entity_id}`),
+                  "rerank",
+               );
+            }
+            rows = outcome.rows;
+            sourceRelevance = outcome.sourceRelevance;
+         }
+      }
+
+      // Coverage ordering when nothing above already ordered the cards: a
+      // source answering more of the caller's phrases ranks higher within a
+      // relevance level.
+      if (!sourceRelevance && cfg.scoring.sourceRelevance === "coverage") {
+         const cards = groupByCard(rows);
+         const raw = new Map(
+            [...cards].map(([key, group]) => [
+               key,
+               cardScore(group, "coverage", request.searches.length),
+            ]),
+         );
+         const order = orderCards(raw);
+         rows = reorderByCards(rows, order);
+         sourceRelevance = new Map(
+            order.map((key) => [
+               key,
+               publishCardRelevance(
+                  raw.get(key) ?? 0,
+                  refineApplied,
+                  cfg.scoring.knots,
+               ),
+            ]),
+         );
+      }
+
+      if (cfg.response.gapCut !== null) {
+         const cut = applyGapCut(rows, cfg.response.gapCut);
+         trace?.gate("gap_cut", rows.length, cut.rows.length, {
+            gap_cut: cut.dropped,
+         });
+         if (trace?.wantsCandidates) {
+            const keptIds = new Set(cut.rows.map(idOf));
+            trace.markDropped(
+               (c) => !keptIds.has(`${c.model_path}\u0000${c.entity_id}`),
+               "gap_cut",
+            );
+         }
+         rows = cut.rows;
+      }
+
+      const finished = finishRanked({
+         rows,
          max,
          sourceContext,
          environmentName,
@@ -2517,68 +3516,129 @@ async function runContextQuery(
          searchTexts: searchTextsByIndex,
          includeCode: request.includeCode,
          droppedSources,
+         perTargetCap,
+         includeMatchReason: cfg.response.matchReason,
+         sourceRelevance,
+         generated: cfg.response.surfaceGenerated ? extras : undefined,
       });
-      return jsonResource(uri, {
-         sources,
-         ranking: "relevance" as const,
-         total_available: totalSources,
-         returned: sources.length,
-         retrieval: "semantic",
-         // Always present on a semantic response, including 0: the
-         // reading depends on being able to tell 0 from absent. Paired
-         // with total_entities, without which the count is a bare number
-         // an agent cannot scale -- see SemanticSearchResult for why
-         // the ratio, not the count, carries the signal.
-         below_cutoff_count: belowCutoffCount,
-         ...(totalEntities !== undefined
-            ? { total_entities: totalEntities }
-            : {}),
-         // Each cut in its own unit: `limit` drops whole sources, the
-         // per-source cap drops entities inside the ones it kept.
-         ...warningsFor(
-            // Counted in CARDS, the same unit `returned` reports, so the
-            // two cannot disagree.
-            sourceCutWarning(sources.length, totalSources),
-            entityCutWarning(entitiesDropped),
+      trace?.gate("page", finished.rowsIn, finished.rowsKept, {
+         source_limit: finished.rowsDroppedBySourceLimit,
+         per_source_target_cap: finished.entitiesDropped,
+      });
+
+      const tail = {
+         sources: finished.sources,
+         totalSources: finished.totalSources,
+         entitiesDropped: finished.entitiesDropped,
+         pageSources: finished.sources.length,
+         stageWarnings,
+      };
+      const countEntities = (cards: SourceCard[]) =>
+         cards.reduce((n, c) => n + (c.entities?.length ?? 0), 0);
+
+      let sources = finished.sources;
+      let trimNote: string | undefined;
+      if (cfg.response.maxChars !== null) {
+         const fitted = fitToMaxChars(
+            sources,
+            cfg.response.maxChars,
+            (s, note) => buildEnvelope(tail, s, note),
+         );
+         trace?.gate(
+            "budget",
+            countEntities(sources),
+            countEntities(fitted.sources),
+            { char_budget: fitted.entitiesDropped },
+         );
+         sources = fitted.sources;
+         trimNote = fitted.note;
+      }
+      trace?.gate(
+         "delivered",
+         countEntities(sources),
+         countEntities(sources),
+         {},
+      );
+      if (trace?.wantsCandidates) {
+         // A source hit is the card itself rather than an entity inside one,
+         // so a delivered card counts its own source row as delivered.
+         const delivered = new Set(
+            sources.flatMap((c) => {
+               const path = c.source_info.resource_id.model_path;
+               const src = c.source_info.resource_id.source;
+               return [
+                  `${path}\u0000${entityId("source", src, src)}`,
+                  ...(c.entities ?? []).map((e) => `${path}\u0000${e.entity_id}`),
+               ];
+            }),
+         );
+         trace.markDropped(
+            (c) => !delivered.has(`${c.model_path}\u0000${c.entity_id}`),
+            "page_or_budget",
+         );
+      }
+      const envelope = buildEnvelope(tail, sources, trimNote);
+      // Which LLM stages ran, and how. Present only when the config asks for
+      // one, so a server with none answers as it always has.
+      if (Object.keys(stageStatus).length > 0) {
+         envelope.retrieval_stages = stageStatus;
+      }
+      return attachRetrievalMeta(envelope, run, retrieval);
+   };
+
+   if (semanticRanked !== undefined) {
+      const distinctHits = new Set(
+         semanticRanked.map((r) => entityRowKey(r.kind, r.source ?? "", r.name)),
+      ).size;
+      const inCount = totalEntities ?? distinctHits;
+      return jsonResource(
+         uri,
+         await rankedTail(
+            semanticRanked,
+            {
+               in: inCount,
+               out: distinctHits,
+               reasons: {
+                  below_floor: belowCutoffCount,
+                  outside_candidate_window: Math.max(
+                     0,
+                     inCount - belowCutoffCount - distinctHits,
+                  ),
+               },
+            },
+            "semantic",
+            (tail, sources, trimNote) => ({
+               sources,
+               ranking: "relevance" as const,
+               total_available: tail.totalSources,
+               returned: sources.length,
+               retrieval: "semantic",
+               // Always present on a semantic response, including 0: the
+               // reading depends on being able to tell 0 from absent. Paired
+               // with total_entities, without which the count is a bare number
+               // an agent cannot scale -- see SemanticSearchResult for why
+               // the ratio, not the count, carries the signal.
+               below_cutoff_count: belowCutoffCount,
+               ...(totalEntities !== undefined
+                  ? { total_entities: totalEntities }
+                  : {}),
+               // Each cut in its own unit: `limit` drops whole sources, the
+               // per-source cap drops entities inside the ones it kept.
+               ...warningsFor(
+                  // Counted in CARDS, the same unit `returned` reports, so the
+                  // two cannot disagree.
+                  sourceCutWarning(tail.pageSources, tail.totalSources),
+                  entityCutWarning(tail.entitiesDropped),
+                  ...tail.stageWarnings,
+                  trimNote,
+               ),
+            }),
          ),
-      });
+      );
    }
 
-   // One lunr pass per target, merged. Each target's hits are normalized
-   // against ITS OWN top hit before merging, which is what makes two
-   // targets' scores comparable at all: raw lunr scores are relative to
-   // the query that produced them. All targets share one index, so the
-   // IDF corpus is the same and the normalization is the only correction
-   // needed.
-   const bestByRef = new Map<string, Map<number, number>>();
-   for (const search of request.searches) {
-      const sanitized = sanitize(search.text);
-      if (!sanitized) continue;
-      let targetHits: lunr.Index.Result[] = [];
-      try {
-         targetHits = index.search(sanitized);
-      } catch (error) {
-         logger.warn("[MCP Tool getContext] lunr search failed", {
-            query: search.text,
-            error: error instanceof Error ? error.message : String(error),
-         });
-         continue;
-      }
-      const top = targetHits[0]?.score ?? 0;
-      for (const hit of targetHits) {
-         const entity = byId.get(hit.ref);
-         // A target only claims the kinds it selects, so a `measure`
-         // target never surfaces a dimension that happened to match.
-         if (!entity || !search.kinds.includes(entity.kind)) continue;
-         const score = top > 0 ? hit.score / top : 0;
-         const scores = bestByRef.get(hit.ref) ?? new Map<number, number>();
-         scores.set(
-            search.targetIndex,
-            Math.max(scores.get(search.targetIndex) ?? 0, score),
-         );
-         bestByRef.set(hit.ref, scores);
-      }
-   }
+   // One lunr pass per target, merged; see lunrTargetScores.
+   const bestByRef = lunrTargetScores(index, byId, request.searches);
    // Already normalized per target and merged, so this is the ranked list
    // rather than raw lunr output -- no fake lunr Result needs constructing
    // to carry it.
@@ -2597,7 +3657,7 @@ async function runContextQuery(
       })
       .sort((a, b) => b.score - a.score);
 
-   const scored: ResultEntity[] = ranking.map(({ e, targetScores }) => ({
+   const scored: ResultEntity[] = ranking.map(({ e, score, targetScores }) => ({
       ...projectEntity(e, environmentName, packageName),
       // WHICH target found the row is carried, for the per-target window;
       // HOW WELL is not. targetScores would reach the wire as
@@ -2607,39 +3667,48 @@ async function runContextQuery(
       // relative to its own query and comparing two of them means nothing.
       // Budgeting needs only the index, so the two concerns separate cleanly.
       bestTarget: bestTargetOf(targetScores),
+      // Kept off the wire like everything else about a lexical score; the
+      // stages that cut by score read it from here.
+      rankScore: score,
+      candidateScores: targetScores,
    }));
    // The tail is the semantic path's, which is why it is the same function:
    // each target gets its own share of every source here too.
-   const { sources, totalSources, entitiesDropped } = finishRanked({
-      rows: scored,
-      max,
-      sourceContext,
-      environmentName,
-      packageName,
-      searchTexts: searchTextsByIndex,
-      includeCode: request.includeCode,
-      droppedSources,
-   });
-   const envelope = {
-      sources,
-      ranking: "relevance" as const,
-      total_available: totalSources,
-      returned: sources.length,
-   };
-   const lexicalWarnings = warningsFor(
-      sourceCutWarning(sources.length, totalSources),
-      entityCutWarning(entitiesDropped),
-   );
    return jsonResource(
       uri,
-      configured
-         ? {
-              ...envelope,
-              retrieval: "lexical",
-              ...(retrievalReason ? { retrieval_reason: retrievalReason } : {}),
-              ...lexicalWarnings,
-           }
-         : { ...envelope, ...lexicalWarnings },
+      await rankedTail(
+         scored,
+         {
+            in: pkgIndex.entityCount,
+            out: scored.length,
+            reasons: { no_match: pkgIndex.entityCount - scored.length },
+         },
+         "lexical",
+         (tail, sources, trimNote) => {
+            const envelope = {
+               sources,
+               ranking: "relevance" as const,
+               total_available: tail.totalSources,
+               returned: sources.length,
+            };
+            const lexicalWarnings = warningsFor(
+               sourceCutWarning(tail.pageSources, tail.totalSources),
+               entityCutWarning(tail.entitiesDropped),
+               ...tail.stageWarnings,
+               trimNote,
+            );
+            return configured && request.searches.length > 0
+               ? {
+                    ...envelope,
+                    retrieval: "lexical",
+                    ...(retrievalReason
+                       ? { retrieval_reason: retrievalReason }
+                       : {}),
+                    ...lexicalWarnings,
+                 }
+               : { ...envelope, ...lexicalWarnings };
+         },
+      ),
    );
 }
 
@@ -2768,8 +3837,34 @@ export function registerGetContextTool(
       "get_context",
       GET_CONTEXT_DESCRIPTION,
       convergedContextShape,
-      async (params: GetContextParams) => {
-         const request = resolveRequest(params);
+      async (
+         params: GetContextParams,
+         extra?: { requestInfo?: { headers?: Record<string, string | string[] | undefined> } },
+      ) => {
+         // Tuning for THIS call: the server's config, plus an eval's override
+         // header when the operator has opened that gate. Resolved before any
+         // work so a malformed override fails the call rather than half
+         // applying. It comes first because whether a value target is a real
+         // search depends on it.
+         const began = beginRun(extra?.requestInfo?.headers);
+         const request = resolveRequest(params, {
+            valueSearch:
+               began.ok && began.run.config.dimensionalValues.mode !== "off",
+         });
+         if (!began.ok) {
+            return contextError(
+               buildMalloyUri(
+                  {
+                     environment: request.environmentName,
+                     package: request.packageName,
+                  },
+                  "get-context",
+               ),
+               `${request.environmentName}/${request.packageName}`,
+               new InvalidArgumentError(began.errors.join(" ")),
+            );
+         }
+         const run = began.run;
          if (request.offset > 0 && !request.pureSourceListing) {
             // Refused rather than ignored. A ranked response has no
             // reproducible order to resume from, so honouring the offset
@@ -2799,7 +3894,8 @@ export function registerGetContextTool(
          return runContextQuery(
             request,
             environmentStore,
-            unsupportedTargetWarnings(request),
+            [...unsupportedTargetWarnings(request), ...run.warnings],
+            run,
          );
       },
    );
@@ -2820,7 +3916,13 @@ export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
-): Promise<EmbeddingIndexStatus | undefined> {
+): Promise<
+   | (EmbeddingIndexStatus & {
+        enrichment?: EnrichmentStatus;
+        valueIndex?: ValueIndexStatus;
+     })
+   | undefined
+> {
    if (!embeddingConfigured()) return undefined;
    const provider = getEmbeddingProvider();
    if (!provider) return undefined;
@@ -2829,11 +3931,51 @@ export async function getPackageEmbeddingStatus(
       environmentName,
       packageName,
    );
-   return getEmbeddingIndexStatus(
-      environmentStore.storageManager.getDuckDbConnection(),
+   const db = environmentStore.storageManager.getDuckDbConnection();
+   const status = await getEmbeddingIndexStatus(
+      db,
       provider,
       environmentName,
       packageName,
       pkgIndex.retrievalEntities,
    );
+   const cfg = getRetrievalConfig();
+   // Asking for the status is also a way to start the work, so a harness that
+   // only polls it (the eval's --warm-retrieval) still gets an enriched index.
+   if (cfg.enrichment.enabled && status.status === "ready") {
+      const runner = getLlmRunner(cfg);
+      if (runner) {
+         kickEnrichment(pkgIndex.pkg, {
+            db,
+            provider,
+            environmentName,
+            packageName,
+            entities: pkgIndex.retrievalEntities,
+            config: cfg,
+            runner,
+            envModel: envLlmModel(),
+            itemBudget: generatedTextBudget(pkgIndex, cfg),
+         });
+      }
+   }
+   let valueIndex: ValueIndexStatus | undefined;
+   if (cfg.dimensionalValues.mode !== "off") {
+      const dims = packageValueDimensions(pkgIndex, cfg);
+      kickPackageValues(pkgIndex, dims, cfg, environmentStore, environmentName, packageName);
+      valueIndex =
+         getValueIndexStatus(environmentName, packageName) ??
+         (dims.length === 0
+            ? { status: "ready", dimensions: 0, values: 0, truncated: 0, failed: 0 }
+            : { status: "building", dimensions: dims.length, values: 0, truncated: 0, failed: 0 });
+   }
+   const enrichment = cfg.enrichment.enabled
+      ? getEnrichmentStatus(environmentName, packageName)
+      : undefined;
+   return enrichment || valueIndex
+      ? {
+           ...status,
+           ...(enrichment ? { enrichment } : {}),
+           ...(valueIndex ? { valueIndex } : {}),
+        }
+      : status;
 }

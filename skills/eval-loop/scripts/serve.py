@@ -194,6 +194,50 @@ def warm_arguments(environment: str, package: str) -> dict:
     }
 
 
+# LLM-written facets and the dimension value index build after the embedding
+# index is `ready` and never change its status, so a run that starts at `ready`
+# measures a half-built index. These are their non-terminal states.
+BUILDING_ENRICHMENT = frozenset({"pending", "running"})
+BUILDING_VALUES = frozenset({"building"})
+
+
+def still_building(package_payload: dict) -> str | None:
+    """Which extra index is still building, or None when none is.
+
+    `partial` and `failed` are terminal on purpose: a per-sync limit or a dead
+    LLM does not clear by waiting, and the run should say so rather than hang.
+    """
+    index = package_payload.get("embeddingIndex")
+    if not isinstance(index, dict):
+        return None
+    enrichment = (index.get("enrichment") or {}).get("status")
+    if enrichment in BUILDING_ENRICHMENT:
+        return f"enrichment {enrichment}"
+    values = (index.get("valueIndex") or {}).get("status")
+    if values in BUILDING_VALUES:
+        return f"valueIndex {values}"
+    return None
+
+
+def extras_summary(package_payload: dict) -> str:
+    """One line on the generated facets and value index, for the run log."""
+    index = package_payload.get("embeddingIndex") or {}
+    parts = []
+    e = index.get("enrichment")
+    if isinstance(e, dict):
+        parts.append(f"enrichment {e.get('status')} "
+                     f"({e.get('enriched', 0)}/{e.get('eligible', 0)} enriched, "
+                     f"{e.get('failed', 0)} failed, "
+                     f"{e.get('deferredByBudget', 0)} deferred by budget)")
+    v = index.get("valueIndex")
+    if isinstance(v, dict):
+        parts.append(f"valueIndex {v.get('status')} ({v.get('values', 0)} values "
+                     f"in {v.get('dimensions', 0)} dimensions, "
+                     f"{v.get('truncated', 0)} truncated, "
+                     f"{v.get('failed', 0)} failed)")
+    return "; ".join(parts)
+
+
 def index_status(package_payload: dict) -> str | None:
     """`embeddingIndex.status` from a package resource, or None if absent.
 
@@ -252,15 +296,26 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
                           "against it is LEXICAL -- do not report "
                           "discoverability findings from it")
         if status in TERMINAL_INDEX_STATES:
-            break
+            building = still_building(payload) if status == "ready" else None
+            if building is None:
+                extras = extras_summary(payload)
+                break
+            last_error = f"waiting on {building}"
         time.sleep(2)
+    else:
+        extras = extras_summary(payload) if read_one else ""
     if not read_one:
         return None, (f"could not read the package resource at {url} within "
                       f"{wait}s ({last_error}). The warm-up did not run, which "
                       f"is not a finding about the server's embedding provider "
                       f"-- check the environment and package names first")
+    suffix = f"; {extras}" if extras else ""
+    if status == "ready" and last_error and last_error.startswith("waiting on"):
+        return "building", (f"retrieval index ready but {last_error} after "
+                            f"{wait}s{suffix}; a run now measures a half-built "
+                            f"index")
     if status == "ready":
-        return status, "retrieval index ready: rankings are semantic"
+        return status, f"retrieval index ready: rankings are semantic{suffix}"
     if status in TERMINAL_INDEX_STATES:
         return status, (f"retrieval index {status}: rankings are NOT semantic "
                         f"-- do not report discoverability findings")
@@ -414,6 +469,11 @@ def main(argv: list[str] | None = None) -> int:
                     "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
+    ap.add_argument("--allow-retrieval-overrides", action="store_true",
+                    help="honour the X-Publisher-Retrieval header "
+                         "(PUBLISHER_RETRIEVAL_OVERRIDES=1), so one warm "
+                         "server can serve every arm of a retrieval sweep. "
+                         "Needed for run_baseline.py --retrieval-override")
     ap.add_argument("--reinit", action="store_true",
                     help="drop the store and re-read publisher.config.json. "
                          "Needed after a config edit -- a new environment or a "
@@ -519,6 +579,8 @@ def main(argv: list[str] | None = None) -> int:
     env = {**os.environ, "SERVER_ROOT": str(root)}
     if a.allow_proxy:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
+    if a.allow_retrieval_overrides:
+        env["PUBLISHER_RETRIEVAL_OVERRIDES"] = "1"
     if a.trace_retrieval:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
     seed, why = init_decision(root, a.reinit, changed)

@@ -411,5 +411,48 @@ class WarmByDefault(unittest.TestCase):
         self.assertFalse(serve.warm_by_default("truth", False, {"EMBEDDING_API_KEY": "k"}))
 
 
+def pkg(enrichment=None, values=None):
+    index = {"status": "ready"}
+    if enrichment:
+        index["enrichment"] = {"status": enrichment}
+    if values:
+        index["valueIndex"] = {"status": values}
+    return {"embeddingIndex": index}
+
+
+class StillBuilding(unittest.TestCase):
+    """The embedding index is `ready` before the generated facets and value
+    index are, and a run started at `ready` measures a half-built index."""
+
+    def test_nothing_extra_is_not_waiting(self):
+        self.assertIsNone(serve.still_building(pkg()))
+
+    def test_pending_and_running_enrichment_wait(self):
+        for state in ("pending", "running"):
+            self.assertIn("enrichment", serve.still_building(pkg(enrichment=state)))
+
+    def test_building_value_index_waits(self):
+        self.assertIn("valueIndex", serve.still_building(pkg(values="building")))
+
+    def test_partial_and_failed_are_terminal(self):
+        # A per-sync limit or a dead LLM does not clear by waiting.
+        for state in ("ready", "partial", "failed"):
+            self.assertIsNone(serve.still_building(pkg(enrichment=state)))
+            self.assertIsNone(serve.still_building(pkg(values=state)))
+
+    def test_no_embedding_index_is_not_waiting(self):
+        self.assertIsNone(serve.still_building({}))
+
+    def test_summary_names_the_counts(self):
+        line = serve.extras_summary({"embeddingIndex": {
+            "enrichment": {"status": "partial", "eligible": 10, "enriched": 7,
+                           "failed": 1, "deferredByBudget": 2},
+            "valueIndex": {"status": "ready", "values": 40, "dimensions": 3,
+                           "truncated": 1, "failed": 0}}})
+        self.assertIn("7/10 enriched", line)
+        self.assertIn("2 deferred by budget", line)
+        self.assertIn("40 values in 3 dimensions", line)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -195,9 +195,17 @@ KINDS_BY_TARGET = {
     # published shape says a `view` target is for.
     "view": {"view", "query"},
     "join": {"join"},
-    # Publisher indexes no dimensional values, so this target selects nothing.
+    # The ENTITY search selects nothing for this target; pinned to the
+    # server's table by score_retrieval_test. See VALUE_HIT_KINDS.
     "dimensional_value": set(),
 }
+
+# A value search is a separate path from the entity search: a hit comes back as
+# the DIMENSION that holds the value, with the value nested under it (only when
+# Publisher's dimensional value index is on). Kept out of KINDS_BY_TARGET so
+# that table stays a mirror of the server's entity-search table; added on top
+# when working out what an agent's searches could reach.
+VALUE_HIT_KINDS = {"dimensional_value": {"dimension"}}
 
 
 def retrieved(events: list[dict[str, Any]],
@@ -242,9 +250,25 @@ def retrieved(events: list[dict[str, Any]],
                     asked.add(str(t["target_type"]).strip().lower())
     # Expand target types to the kinds they can actually return, so a `view`
     # target counts as having asked for a model-level named query.
-    reachable = set().union(*(KINDS_BY_TARGET.get(a, {a}) for a in asked)) \
+    reachable = set().union(*(KINDS_BY_TARGET.get(a, {a})
+                              | VALUE_HIT_KINDS.get(a, set()) for a in asked)) \
         if asked else set()
     return list(seen), calls, tokens, reachable
+
+
+def response_chars(events: list[dict[str, Any]], key: tuple) -> int | None:
+    """Total size of the attempt's get_context responses, or None if unrecorded."""
+    total, seen = 0, False
+    for e in events:
+        if e.get("kind") != "tool_call" or e.get("tool") != "get_context":
+            continue
+        if attempt_key(e) != key:
+            continue
+        n = (e.get("rankedSummary") or {}).get("responseChars")
+        if isinstance(n, int):
+            total += n
+            seen = True
+    return total if seen else None
 
 
 def split_entity(eid: str) -> tuple[str, str, str]:
@@ -406,6 +430,7 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
     acceptable = authored_acceptable | required
     got, calls, tokens, asked = retrieved(events, key)
     got_set = set(got)
+    chars = response_chars(events, key)
     route = {e: delivery(e, got_set, tokens) for e in sorted(required)}
     delivered = {e for e, r in route.items() if r != "missing"}
 
@@ -452,6 +477,11 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
         "precision": precision,
         "n_required": len(req_groups),
         "n_returned": len(got_set),
+        # What the answerer had to read, summed over the attempt's get_context
+        # calls; None when the run recorded no size (older runs). Entity
+        # precision counts rows and ignores how long each one is, so a change
+        # that shortens the response without changing the rows shows only here.
+        "response_chars": chars,
         # Precision reads everything outside `acceptable` as noise, so a set
         # that never authored one scores every legitimate extra as a miss. The
         # flag travels with the row so a reader knows which they are looking at.
@@ -496,6 +526,8 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         # authored, so they say something about retrieval on any set.
         "mean_returned": mean([r["n_returned"] for r in scored]),
         "mean_required": mean([r["n_required"] for r in scored]),
+        "mean_response_chars": mean([r["response_chars"] for r in rows
+                                     if r.get("response_chars") is not None]),
         "cases_with_acceptable": sum(1 for r in rows if r.get("has_acceptable")),
         "failures_by_where_to_fix": placed,
     }
@@ -648,6 +680,9 @@ def main(argv: list[str] | None = None) -> int:
               f"{s['retrieval_scored']} (every required entity returned); "
               f"mean recall {meanpct(s['mean_recall'])}, "
               f"mean precision {meanpct(s['mean_precision'])}")
+    if s["mean_response_chars"] is not None:
+        print(f"mean get_context response {s['mean_response_chars']:.0f} chars "
+              f"per attempt (what the answerer read)")
     if s["failures_by_where_to_fix"]:
         print("where to fix: " + ", ".join(
             f"{k} {v}" for k, v in sorted(s["failures_by_where_to_fix"].items())))

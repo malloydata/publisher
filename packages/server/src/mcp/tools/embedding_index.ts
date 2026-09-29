@@ -165,6 +165,15 @@ export function embeddingText(entity: EmbeddableEntity): string {
 
 /** The facet holding an entity's own name, embedded free of doc text. */
 export const NAME_FACET = "name";
+/** The LLM keyphrase facet, and the prefix of a source's LLM summary facets. */
+export const KEYPHRASE_FACET = "kw";
+export const SUMMARY_FACET_PREFIX = "sum:";
+/**
+ * The facet FAMILIES a query-time allow-list can name. `doc` and `sum` are
+ * families (doc:0, doc:1, ...) and match by prefix; `name` and `kw` match
+ * exactly.
+ */
+export const FACET_FAMILIES = ["name", "doc", "kw", "sum"] as const;
 
 /**
  * Target and hard ceiling for one doc chunk, in characters, and the most
@@ -195,6 +204,27 @@ export const CHUNK_HARD_MAX_CHARS = 768;
  * doc observed in a real model, and everything under it is embedded whole.
  */
 export const MAX_DOC_CHARS = MAX_DOC_CHUNKS * CHUNK_HARD_MAX_CHARS;
+
+/**
+ * Facet text beyond an entity's own name and doc: an LLM keyphrase (`kw`) and,
+ * for a source, an LLM summary (`sum`), each already rendered to the exact
+ * text to embed. Produced by retrieval/enrichment.ts and supplied through a
+ * per-package overlay (see the block below) rather than on the entity, so the
+ * entity list retrieval hands in stays a pure function of the model and the
+ * enrichment can arrive later without the caller re-deriving anything.
+ */
+export interface FacetExtras {
+   kw?: string;
+   sum?: string;
+   /**
+    * Display copies of what the model wrote, before rendering into `kw` and
+    * `sum`. Not embedded and not part of any fingerprint: they exist so a
+    * response can show the generated text when the operator asks for it.
+    */
+   keyphrase?: string;
+   summary?: string;
+   oneLine?: string;
+}
 
 /** One embeddable unit of an entity: its name, or a chunk of its doc. */
 export interface EntityFacet {
@@ -303,7 +333,10 @@ export function chunkDoc(doc: string): string[] {
  * with the entity's name, which anchors a bare fact to the thing it is about;
  * the chunks are short, so that prefix costs little dilution.
  */
-export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
+export function entityFacets(
+   entity: EmbeddableEntity,
+   extras?: FacetExtras,
+): EntityFacet[] {
    const name = humanizeName(entity.name) || entity.name;
    const facets: EntityFacet[] = [{ facet: NAME_FACET, text: name }];
    // The prefix is only known here, so this is the only place that can tell
@@ -316,6 +349,16 @@ export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
    for (const chunk of chunkDoc(entity.embedDoc)) {
       for (const piece of splitToFit(chunk, room)) {
          facets.push({ facet: `doc:${i++}`, text: `${name}: ${piece}` });
+      }
+   }
+   // LLM-written facets are additive: scoring takes the best facet, so they can
+   // only add recall. The keyphrase is short and stays one row; a summary is a
+   // paragraph, so it is split like a long doc rather than cut at the input cap.
+   if (extras?.kw) facets.push({ facet: KEYPHRASE_FACET, text: extras.kw });
+   if (extras?.sum) {
+      let j = 0;
+      for (const piece of splitToFit(extras.sum, MAX_EMBED_INPUT_CHARS)) {
+         facets.push({ facet: `${SUMMARY_FACET_PREFIX}${j++}`, text: piece });
       }
    }
    return facets;
@@ -451,9 +494,17 @@ interface DesiredFacet {
  * Hashing per facet is what keeps the diff cheap under faceting: editing a
  * doc re-embeds that entity's doc rows and leaves its name row alone.
  */
-function desiredFacets(entities: EmbeddableEntity[]): DesiredFacet[] {
+function desiredFacets(
+   entities: EmbeddableEntity[],
+   extras: ReadonlyMap<string, FacetExtras> = NO_EXTRAS,
+): DesiredFacet[] {
    return entities.flatMap((entity) =>
-      entityFacets(entity).map(({ facet, text: raw }) => {
+      entityFacets(
+         entity,
+         extras.get(
+            entityRowKey(entity.kind, sourceColumn(entity.source), entity.name),
+         ),
+      ).map(({ facet, text: raw }) => {
          const text = prepareEmbeddingInput(raw);
          return { entity, facet, text, hash: contentHash(text) };
       }),
@@ -591,20 +642,67 @@ function inCooldown(meta: PackageSyncMeta): boolean {
    return Date.now() - meta.failureAtMs < cooldownMs;
 }
 
+// The enrichment overlay: per package, the LLM-written facet text for the
+// entities that have any, and a version that moves whenever it changes.
+//
+// It lives beside the sync state, not in the entity list, because the two
+// change on different clocks. The entity list is a pure function of the model
+// and is rebuilt on reload; enrichment is produced later, by LLM calls that can
+// take minutes, and must never be recomputed by a reload that changed nothing.
+// The overlay is part of what the index is FOR, so it is part of the
+// fingerprint: installing one makes the desired row set differ, and the normal
+// content-hash sync then embeds exactly the new facets and nothing else.
+const NO_EXTRAS: ReadonlyMap<string, FacetExtras> = new Map();
+interface EnrichmentOverlay {
+   version: number;
+   extras: ReadonlyMap<string, FacetExtras>;
+}
+const overlays = new Map<string, EnrichmentOverlay>();
+
+function overlayFor(
+   environmentName: string,
+   packageName: string,
+): EnrichmentOverlay | undefined {
+   return overlays.get(metaKey(environmentName, packageName));
+}
+
+/**
+ * The LLM-written text installed for a package, keyed by entityRowKey, or
+ * undefined when there is none. Read-only: for ranking stages that describe an
+ * undocumented entity to the model, and for responses that show the text.
+ */
+export function enrichmentExtrasFor(
+   environmentName: string,
+   packageName: string,
+): ReadonlyMap<string, FacetExtras> | undefined {
+   return overlayFor(environmentName, packageName)?.extras;
+}
+
+/** Test seam and status: the version of a package's installed overlay. */
+export function enrichmentOverlayVersion(
+   environmentName: string,
+   packageName: string,
+): number {
+   return overlayFor(environmentName, packageName)?.version ?? 0;
+}
+
 /**
  * The model/dims request-config a sync ran under. Rows embedded under one
  * config are not interchangeable with another's, so both the search path and
  * the readiness test compare it; defined here so they cannot disagree.
  */
 function providerKeyFor(provider: EmbeddingProvider): string {
-   return `${provider.model}${KEY_SEPARATOR}${provider.dimensions ?? ""}`;
+   return `${provider.rowModel}${KEY_SEPARATOR}${provider.dimensions ?? ""}`;
 }
 
 /**
  * Fingerprints already computed, keyed on the frozen entity array they
  * describe. See fingerprintFor.
  */
-const fingerprintCache = new WeakMap<readonly EmbeddableEntity[], string>();
+const fingerprintCache = new WeakMap<
+   readonly EmbeddableEntity[],
+   Map<string, string>
+>();
 
 /**
  * The fingerprint of an entity set: the value the sync records as
@@ -626,14 +724,26 @@ const fingerprintCache = new WeakMap<readonly EmbeddableEntity[], string>();
  * misses and is computed fresh. An unfrozen array could be edited after its
  * fingerprint was cached, so it is never cached.
  */
-function fingerprintFor(entities: readonly EmbeddableEntity[]): string {
+function fingerprintFor(
+   entities: readonly EmbeddableEntity[],
+   environmentName: string,
+   packageName: string,
+): string {
    const frozen = Object.isFrozen(entities);
-   const cached = frozen ? fingerprintCache.get(entities) : undefined;
+   // The overlay is part of what is embedded, so its version is part of the
+   // cache key: the same frozen array fingerprints differently once enriched.
+   const overlay = overlayFor(environmentName, packageName);
+   const cacheKey = `${metaKey(environmentName, packageName)}#${overlay?.version ?? 0}`;
+   const cached = frozen ? fingerprintCache.get(entities)?.get(cacheKey) : undefined;
    if (cached !== undefined) return cached;
    const fingerprint = desiredFingerprint(
-      desiredFacets(uniqueByEntityKey(entities)),
+      desiredFacets(uniqueByEntityKey(entities), overlay?.extras),
    );
-   if (frozen) fingerprintCache.set(entities, fingerprint);
+   if (frozen) {
+      let byKey = fingerprintCache.get(entities);
+      if (!byKey) fingerprintCache.set(entities, (byKey = new Map()));
+      byKey.set(cacheKey, fingerprint);
+   }
    return fingerprint;
 }
 
@@ -664,6 +774,7 @@ function isSynced(
 export function _resetEmbeddingIndexStateForTests(): void {
    oversizeWarned.clear();
    syncMeta.clear();
+   overlays.clear();
    cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
    purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
 }
@@ -734,7 +845,9 @@ export async function deletePackageEmbeddings(
           WHERE environment_name = ? AND package_name = ?`,
          [environmentName, packageName],
       );
+      await deleteEnrichmentRows(db, environmentName, packageName);
       meta.generation = ++generationCounter;
+      overlays.delete(metaKey(environmentName, packageName));
       // Removing the entry keeps package churn from growing the map for
       // the process lifetime; it is safe because generations are
       // globally unique (a re-minted meta can never match a memo issued
@@ -774,6 +887,45 @@ export async function deleteEnvironmentEmbeddings(
    await db.run(`DELETE FROM entity_embeddings WHERE environment_name = ?`, [
       environmentName,
    ]);
+   await deleteEnrichmentRows(db, environmentName);
+}
+
+/**
+ * Drop the LLM's memory and the indexed dimension values of a deleted package or environment. Best effort, like
+ * the rest of this cleanup: the rows are inert once their package is gone
+ * (every read is scoped by environment and package), and a database that
+ * predates the table simply has none.
+ */
+async function deleteEnrichmentRows(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName?: string,
+): Promise<void> {
+   try {
+      for (const table of [
+         "entity_enrichment",
+         "dimension_values",
+         "dimension_value_state",
+      ]) {
+         if (packageName === undefined) {
+            await db.run(`DELETE FROM ${table} WHERE environment_name = ?`, [
+               environmentName,
+            ]);
+         } else {
+            await db.run(
+               `DELETE FROM ${table}
+                WHERE environment_name = ? AND package_name = ?`,
+               [environmentName, packageName],
+            );
+         }
+      }
+   } catch (error) {
+      logger.debug("[MCP Tool getContext] Enrichment cleanup skipped", {
+         environmentName,
+         packageName,
+         error: error instanceof Error ? error.message : String(error),
+      });
+   }
 }
 
 /**
@@ -793,6 +945,16 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
+   options: {
+      /** Sync toward this overlay instead of the installed one. */
+      extras?: ReadonlyMap<string, FacetExtras>;
+      /**
+       * Runs inside the package mutex, in the same tick that records the sync,
+       * so installing the overlay and recording that the rows match it cannot
+       * be separated by a query.
+       */
+      afterSync?: () => void;
+   } = {},
 ): Promise<void> {
    const meta = metaFor(environmentName, packageName);
    return meta.mutex.runExclusive(async () => {
@@ -853,7 +1015,10 @@ async function syncPackageEmbeddings(
          }
       }
 
-      const desired = desiredFacets(entities);
+      const desired = desiredFacets(
+         entities,
+         options.extras ?? overlayFor(environmentName, packageName)?.extras,
+      );
       const desiredKeys = new Set(
          desired.map((d) =>
             facetRowKey(
@@ -886,7 +1051,7 @@ async function syncPackageEmbeddings(
          );
          if (!row) return true;
          if (row.content_hash !== d.hash) return true;
-         if (row.embedding_model !== provider.model) return true;
+         if (row.embedding_model !== provider.rowModel) return true;
          return false;
       });
 
@@ -913,8 +1078,8 @@ async function syncPackageEmbeddings(
                   `INSERT INTO entity_embeddings (
                      environment_name, package_name, entity_kind, entity_source,
                      entity_name, facet, model_path, content_hash, embedding_model,
-                     dims, embedding, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)
+                     dims, embedding, updated_at, embedded_text
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?, ?)
                    ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
                    DO UPDATE SET
                      model_path = EXCLUDED.model_path,
@@ -922,7 +1087,8 @@ async function syncPackageEmbeddings(
                      embedding_model = EXCLUDED.embedding_model,
                      dims = EXCLUDED.dims,
                      embedding = EXCLUDED.embedding,
-                     updated_at = EXCLUDED.updated_at`,
+                     updated_at = EXCLUDED.updated_at,
+                     embedded_text = EXCLUDED.embedded_text`,
                   [
                      environmentName,
                      packageName,
@@ -932,10 +1098,11 @@ async function syncPackageEmbeddings(
                      d.facet,
                      d.entity.modelPath,
                      d.hash,
-                     provider.model,
+                     provider.rowModel,
                      vector.length,
                      JSON.stringify(vector),
                      now,
+                     d.text,
                   ],
                );
                rowsChanged = true;
@@ -978,6 +1145,7 @@ async function syncPackageEmbeddings(
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
       };
+      options.afterSync?.();
 
       logger.debug("[MCP Tool getContext] Synced entity embeddings", {
          environmentName,
@@ -987,6 +1155,64 @@ async function syncPackageEmbeddings(
          deleted,
       });
    });
+}
+
+/**
+ * Install an overlay WITHOUT syncing: the next query finds the fingerprint
+ * moved and kicks the ordinary sync, which embeds whatever is missing. Used to
+ * restore the overlay from the enrichment cache after a restart, when the
+ * generated facets' rows are still in the table and only the memory of them is
+ * gone: installing first makes the desired set include them, so the sync
+ * finds them current instead of deleting them.
+ */
+export function installEnrichmentOverlay(
+   environmentName: string,
+   packageName: string,
+   extras: ReadonlyMap<string, FacetExtras>,
+): void {
+   const key = metaKey(environmentName, packageName);
+   overlays.set(key, {
+      version: (overlays.get(key)?.version ?? 0) + 1,
+      extras,
+   });
+}
+
+/**
+ * Install LLM-written facets for a package and embed exactly the new ones.
+ *
+ * Syncs toward the candidate overlay under the package mutex and installs it
+ * in the same tick the sync is recorded (see `afterSync`), so a query sees
+ * either the old overlay with the old rows or the new overlay with the new
+ * rows, never a fingerprint that matches neither. Resolves once the rows are
+ * written; throws if the provider or storage fails, leaving the previous
+ * overlay in force.
+ */
+export async function applyEnrichmentOverlay(args: {
+   db: DuckDBConnection;
+   provider: EmbeddingProvider;
+   environmentName: string;
+   packageName: string;
+   entities: readonly EmbeddableEntity[];
+   extras: ReadonlyMap<string, FacetExtras>;
+}): Promise<void> {
+   const { environmentName, packageName, extras } = args;
+   const key = metaKey(environmentName, packageName);
+   await syncPackageEmbeddings(
+      args.db,
+      args.provider,
+      environmentName,
+      packageName,
+      uniqueByEntityKey(args.entities),
+      {
+         extras,
+         afterSync: () => {
+            overlays.set(key, {
+               version: (overlays.get(key)?.version ?? 0) + 1,
+               extras,
+            });
+         },
+      },
+   );
 }
 
 /**
@@ -1126,6 +1352,21 @@ export async function trySemanticSearch(args: {
     * than falling through to the unscoped set.
     */
    scopeKeys?: Array<{ kind: string; source: string; name: string }>;
+   /**
+    * Overrides the provider's cosine floor for this call. The floor is what
+    * `belowCutoffCount` and "nothing cleared it" are measured against, so an
+    * override changes those counts too, which is the point: it lets an eval
+    * sweep the floor without restarting the server.
+    */
+   minSimilarity?: number;
+   /**
+    * Score only these facets: `name`, `doc` (every doc chunk), `kw` (the LLM
+    * keyphrase) and `sum` (the LLM source summary). Omit to score them all.
+    * Ablates what an index was built from without rebuilding it. An entity
+    * with no facet in the list is not weighed at all, so it is in neither
+    * `hits` nor the counts.
+    */
+   facets?: readonly string[];
 }): Promise<SemanticSearchResult> {
    const {
       db,
@@ -1137,7 +1378,9 @@ export async function trySemanticSearch(args: {
       limit,
       sourceName,
       scopeKeys,
+      facets,
    } = args;
+   const floor = args.minSimilarity ?? provider.minSimilarity;
    // Unique by the key the rows themselves use, before anything counts or
    // embeds them. See uniqueByEntityKey.
    const entities = uniqueByEntityKey(args.entities);
@@ -1180,7 +1423,7 @@ export async function trySemanticSearch(args: {
    const entryGeneration = meta.generation;
    // The caller's array, not the deduped copy: the copy is new every call,
    // so only the caller's array can hit the cache.
-   const fingerprint = fingerprintFor(args.entities);
+   const fingerprint = fingerprintFor(args.entities, environmentName, packageName);
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -1204,6 +1447,7 @@ export async function trySemanticSearch(args: {
       queryVectors = await provider.embedBatch(
          queries.map((q) => q.text),
          EMBEDDING_QUERY_TIMEOUT_MS,
+         "query",
       );
    } catch (error) {
       markProviderFailure(meta);
@@ -1274,6 +1518,24 @@ export async function trySemanticSearch(args: {
       // its join from the statement entirely.
       const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
       const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
+      // The facet allow-list as a predicate. `doc` is a family (doc:0, doc:1,
+      // ...), so it matches by prefix; the rest match exactly. Values are bound
+      // as parameters, never spliced into the statement.
+      const exactFacets = (facets ?? []).filter(
+         (f) => f !== "doc" && f !== "sum",
+      );
+      const facetClauses = [
+         ...(facets?.includes("doc") ? ["facet LIKE 'doc:%'"] : []),
+         ...(facets?.includes("sum") ? ["facet LIKE 'sum:%'"] : []),
+         ...exactFacets.map(() => "facet = ?"),
+      ];
+      const facetPredicate =
+         facets !== undefined
+            ? facetClauses.length > 0
+               ? `AND (${facetClauses.join(" OR ")})`
+               : "AND FALSE"
+            : "";
+      const facetParams = exactFacets;
       const scan = await db.all<{
          total: number;
          below: number;
@@ -1311,6 +1573,7 @@ export async function trySemanticSearch(args: {
               AND environment_name = ? AND package_name = ?
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
+              ${facetPredicate}
               ${
                  scopeValues
                     ? `AND EXISTS (SELECT 1 FROM scope sc
@@ -1343,7 +1606,15 @@ export async function trySemanticSearch(args: {
             SELECT entity_kind, entity_source, entity_name, target_idx, score,
                    ROW_NUMBER() OVER (
                       PARTITION BY target_idx
-                      ORDER BY score DESC, entity_name
+                      -- Source and kind break a tie on name: the same field
+                      -- name in several sources scores identically, and
+                      -- without them DuckDB's parallel scan decides which
+                      -- one falls inside the window.
+                      -- Source and kind break a tie on name: the same field
+                      -- name in several sources scores identically, and
+                      -- without them DuckDB's parallel scan decides which
+                      -- one falls inside the window.
+                      ORDER BY score DESC, entity_name, entity_source, entity_kind
                    ) AS rn
             FROM scored
             WHERE score >= ?
@@ -1367,7 +1638,8 @@ export async function trySemanticSearch(args: {
            ON s.entity_kind = h.entity_kind
           AND s.entity_source = h.entity_source
           AND s.entity_name = h.entity_name
-         ORDER BY h.best DESC, h.entity_name, s.target_idx`,
+         ORDER BY h.best DESC, h.entity_name, h.entity_source, h.entity_kind,
+                  s.target_idx`,
          [
             ...queryVectors.map((v) => JSON.stringify(v)),
             ...targetKinds.map(({ kind }) => kind),
@@ -1376,11 +1648,12 @@ export async function trySemanticSearch(args: {
             ...(scopeKeys ?? []).flatMap((k) => [k.kind, k.source, k.name]),
             environmentName,
             packageName,
-            provider.model,
+            provider.rowModel,
             queryVectors[0].length,
             ...(sourceName !== undefined ? [sourceName] : []),
-            provider.minSimilarity,
-            provider.minSimilarity,
+            ...facetParams,
+            floor,
+            floor,
             limit,
          ],
       );
@@ -1463,7 +1736,7 @@ export async function trySemanticSearch(args: {
          `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
           WHERE environment_name = ? AND package_name = ?
             AND NOT (embedding_model = ? AND dims = ?)`,
-         [environmentName, packageName, provider.model, queryVectors[0].length],
+         [environmentName, packageName, provider.rowModel, queryVectors[0].length],
       );
       if ((staleRows?.n ?? 0) > 0) {
          // The check-and-purge runs under the package-name mutex so it
@@ -1490,7 +1763,7 @@ export async function trySemanticSearch(args: {
                   [
                      environmentName,
                      packageName,
-                     provider.model,
+                     provider.rowModel,
                      queryVectors[0].length,
                   ],
                );
@@ -1539,7 +1812,7 @@ export async function trySemanticSearch(args: {
                   [
                      environmentName,
                      packageName,
-                     provider.model,
+                     provider.rowModel,
                      queryVectors[0].length,
                   ],
                );
@@ -1683,7 +1956,7 @@ export async function getEmbeddingIndexStatus(
    // the configured `dimensions` is what once pinned them at 0 for a provider
    // that ignores the request parameter, reporting `ready` beside
    // `embeddedRows: 0`.
-   const scope = [environmentName, packageName, provider.model];
+   const scope = [environmentName, packageName, provider.rowModel];
 
    const row = await db.get<{ n: number; last: string | null }>(
       `SELECT CAST(COUNT(*) AS INTEGER) AS n,
@@ -1729,7 +2002,7 @@ export async function getEmbeddingIndexStatus(
              meta &&
                isSynced(
                   meta,
-                  fingerprintFor(allEntities),
+                  fingerprintFor(allEntities, environmentName, packageName),
                   providerKeyFor(provider),
                ) &&
                !meta.mutex.isLocked()

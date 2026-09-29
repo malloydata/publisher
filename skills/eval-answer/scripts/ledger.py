@@ -182,6 +182,11 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # defect run for three arms with every test passing.
                 "judgePromptSha", "setName", "targetVersion", "scope", "mode",
                 "traceMode",
+                # The per-request retrieval override this arm sent on every
+                # get_context (X-Publisher-Retrieval), its hash, and the trace
+                # level. Two arms with different overrides measured different
+                # retrievers, and only these fields say so.
+                "retrievalOverride", "retrievalOverrideSha", "retrievalTrace",
                 # The answerer's cap and timeout, as the run actually ran them.
                 # `eval-loop` step 6 lists "call budget" among the pins to
                 # freeze for a whole arm, and nothing wrote one, so no two runs

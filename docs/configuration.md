@@ -125,12 +125,16 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS` | — | `60000` (1 min) | How often the scheduler sweeps for due schedules, in ms. Minimum `1000`. Only read when the scheduler is enabled. |
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | — | `10` | Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer. |
 | `PERSIST_STORAGE_MODE` | — | `off` | Controls the `#@ persist storage=<name>` materialization tier (materialize a source into a registered [storage destination](connections.md#storage-destinations) and serve it from there — a destination is declared alongside `connections`, not in it, and is not nameable from a model). `off`: the `storage=` annotation is inert — sources build and serve from their own warehouse exactly as without it. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package — a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md). |
-| `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic (embedding-based) ranking for `get_context` question retrieval. Sent as a bearer token to the embedding endpoint. Unset: retrieval stays lexical (lunr/BM25), unchanged. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "Semantic retrieval for get_context" below. |
+| `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic (embedding-based) ranking for `get_context` question retrieval. Sent as a bearer token to the embedding endpoint. Unset (and `EMBEDDING_API_BASE` unset): retrieval stays lexical (lunr/BM25), unchanged. Setting `EMBEDDING_API_BASE` alone also enables it, for a keyless local server; then `EMBEDDING_MODEL` is required unless the base is api.openai.com. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "Semantic retrieval for get_context" below. |
 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. |
 | `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). |
 | `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. |
 | `EMBEDDING_MIN_SIMILARITY` | — | `0.2` | Cosine-similarity floor a match must clear to be returned at all, for both `get_context` and `search_database_schema`. Below it an entity is dropped rather than returned as a weak hit, which is what makes an empty result mean "not modelled here". Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. See "Tuning the floor" below. |
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `search_database_schema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for search_database_schema" below. |
+| `LLM_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible chat-completions API (`POST <base>/chat/completions`). Setting it (or `LLM_API_KEY`) turns the LLM retrieval stages on, when the `retrieval` block in `publisher.config.json` asks for them. Point it at a local Ollama, vLLM or LM Studio server to keep everything on the machine. See "LLM-assisted retrieval for get_context" below. |
+| `LLM_API_KEY` | — | _unset_ | Bearer token for the LLM endpoint. Optional when `LLM_API_BASE` is set: a local server needs none, and no `Authorization` header is sent without one. |
+| `LLM_MODEL` | — | `gpt-4o-mini` on api.openai.com, otherwise required | Model name sent to the LLM endpoint. A non-OpenAI `LLM_API_BASE` with no model is a startup error, because the OpenAI default would not exist on your server. A stage can use its own model through `retrieval.llm.models`. |
+| `PUBLISHER_RETRIEVAL_OVERRIDES` | — | _unset_ | Set to `1` to honour the `X-Publisher-Retrieval` request header, which changes query-time retrieval settings for one request. For evals and tuning only. Leave it unset in production: anyone who can call `get_context` could otherwise switch query-time stages on or off and change how much comes back. It cannot change what is sent to a provider beyond what the config allows. |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
 ### Where to put these
@@ -239,8 +243,8 @@ part means more documentation can add recall but never costs an entity precision
 
 What to know before turning it on:
 
-- What leaves the machine: entity names, their annotation text (the `#(doc)` docs, or an entity's
-  other `#` annotation lines when it has no `#(doc)`), and the query strings agents pass to
+- What leaves the machine: entity names, their `#(doc)` text (other annotation lines, such as
+  `#(access_filter)`, are never sent), and the query strings agents pass to
   `get_context`. Model source code, data, and query results are never sent. Point
   `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM) to keep everything
   on-machine; with a local server, also set `EMBEDDING_MODEL` to a model that server actually
@@ -301,6 +305,205 @@ What to know before turning it on:
   the floor is applied at query time, not at index time.
 - To measure the difference on your own models, see the eval script header in
   `packages/server/src/mcp/tools/get_context_eval.ts`.
+
+## LLM-assisted retrieval for get_context
+
+Embeddings find entities that are close in meaning. An LLM can then check the candidates the way a
+person would. Publisher can run the same steps Credible's hosted `get_context` runs, against any
+OpenAI-compatible chat endpoint (OpenAI, Ollama, vLLM, LM Studio). Every step is off until you turn
+it on, and with nothing configured the `get_context` response is byte-for-byte what it was before.
+
+| Step | When it runs | What it does |
+|---|---|---|
+| Keyphrases | Indexing | Writes a short phrase for a field that has no doc, or a doc longer than `enrichment.keyphrase.wordThreshold` words (8 by default; 12 for views), and embeds it as an extra `kw` facet. A short doc is left alone: it is already its own best keyphrase. |
+| Source summaries | Indexing | Writes a summary and a one-line description per source, embedded as an extra `sum` facet. |
+| Dimension values | Indexing | Reads the distinct values of dimensions you tag, so a question that names a value (`Premium`) finds the dimension that holds it. |
+| Refine | Query | The LLM rates each candidate LOW, MEDIUM or HIGH for the question. Candidates below `refine.minLevel` are dropped. |
+| Rerank | Query | The LLM orders the top sources and drops the ones that do not answer the question. |
+| Hybrid fusion | Query | Merges the lunr ranking into the embedding ranking. |
+
+Generated text is added as **extra** search facets. It never replaces a field's authored `#(doc)`,
+so it can only add recall. It shows up in a response only when `response.surfaceGenerated` is on,
+in separate `generated_description` and `generated_summary` fields.
+
+### Turn it on
+
+Secrets and endpoints go in the environment. Tuning goes in a `retrieval` block at the top level of
+`publisher.config.json`. Every key is optional. An unknown key or a bad value stops the server at
+startup with a message that names the field and shows a fix, because a typo that is silently ignored
+ruins a tuning run.
+
+```
+# .env
+LLM_API_BASE=http://localhost:11434/v1
+LLM_MODEL=qwen2.5:7b-instruct
+```
+
+```jsonc
+// publisher.config.json
+{
+  "retrieval": {
+    "enrichment": { "enabled": true, "sourceSummary": { "enabled": true } },
+    "refine": { "enabled": true },
+    "rerank": { "enabled": true },
+    "dimensionalValues": { "mode": "annotated" }
+  }
+}
+```
+
+A stage that is switched on with no LLM configured at all (no `LLM_API_BASE` or `LLM_API_KEY`) logs a
+warning at startup and is skipped, so one config file works on a machine with a key and on one
+without. It is a startup error when an LLM *is* configured but no model resolves for an enabled stage
+(a non-OpenAI base with no `LLM_MODEL`). Enrichment also needs embeddings, and logs a warning without
+them.
+
+### If something fails, the call still works
+
+No LLM stage can make `get_context` fail. If a call times out, returns bad JSON, or the endpoint is
+down, that stage keeps the order it was given and the response says so: a `retrieval_stages` field
+(`ok`, `skipped:<why>` or `failed:<kind>`) and a warning. After three failures in a row a circuit
+breaker skips the LLM for a minute. Set `retrieval.llm.timeoutMs`, `maxAttempts`, `concurrency`,
+`requestBudgetMs` and `maxCallsPerRequest` to bound the added latency.
+
+### What leaves the machine
+
+Everything the LLM and embedding endpoints receive is chosen by the `retrieval.egress` switches.
+The default sends what semantic retrieval already sends: entity names and `#(doc)` text, plus the
+question. `"preset": "full"` also sends the other classes, and each one can be set on its own.
+
+| Class | Default | `full` | What it is |
+|---|---|---|---|
+| `names` | on | on | Source, field, view and join names. Turning it off stops refine and rerank (`skipped:egress`) and refuses to run enrichment, because their prompts are built around names. It does not stop embeddings, which have always sent names. |
+| `docs` | on | on | `#(doc)` text only. Other annotation lines are never included. |
+| `schemaContext` | off | on | The other fields of the same source (names and types), added to a field's keyphrase prompt so the model can tell what the source is about. |
+| `code` | off | on | Malloy source of a field, for keyphrases. Annotation lines are stripped first. |
+| `dimensionalValues` | off | on | Dimension values: embedded for value search, and shown to the reranker (up to `rerank.valuesPerEntity` per dimension). |
+
+**Access predicates never leave the machine, whatever you set.** `#(access_filter)` and
+`#(authorize)` lines are stripped from anything sent to a provider, and there is no switch for them.
+A source gated by `#(access_filter)`, `#(authorize)` or a required `#(filter)` is also never
+value-indexed, because its values differ per caller and the index is shared.
+
+### Dimension values
+
+`dimensionalValues.mode` is `off`, `annotated` or `auto`. `annotated` indexes dimensions tagged
+`#(index)` (or `#(index_values n=200)` to cap that one). `auto` indexes string dimensions matching
+`include` and not `exclude`, as `source.dimension` globs. One small query per dimension reads the
+values, most frequent first. Lookup needs no embedding endpoint: exact, prefix and near-spelling
+matches work without one. With embeddings on, a value is also found by meaning.
+
+A value hit comes back as the dimension that holds it, with the matching values under it in
+`values`. `values_indexed` says a dimension has an index. `values_truncated` says it was cut at a
+cap, so a missing value is not proof it does not exist.
+
+### Keeping indexing short
+
+Indexing runs in the background under hard per-sync limits, so a sync finishes in minutes on a
+laptop. Work past a limit is deferred to the next sync, never dropped silently.
+
+| Setting | Default | Limits |
+|---|---|---|
+| `indexing.maxItemsPerPackage` | `10000` | Rows embedded per package, entity facets and values together. |
+| `indexing.maxLlmCallsPerSync` | `300` | LLM calls for keyphrases and summaries. Keyphrases go ten to a call. |
+| `indexing.deadlineMs` | `480000` | Wall-clock limit for the LLM and value work. |
+| `dimensionalValues.maxValuesPerDimension` | `100` | Values kept per dimension, most frequent first. |
+| `dimensionalValues.maxValuesPerPackage` | `2000` | Values kept per package. |
+
+When a limit bites, source summaries go first, then keyphrases for the emptiest docs, then values
+with the highest counts. Finished work is cached in `publisher.db`, so a later sync continues where
+the last one stopped. `maxItemsPerPackage` counts every row the package embeds: the entities' own
+facets come first and are never cut, and generated text and values share what is left. Lowering it
+leaves already-cached text out of the index without asking the LLM again.
+
+After the LLM fails three times in a row, the circuit breaker stops all calls for `llm.breaker.cooldownMs`
+(60 seconds by default). Indexing that failed in that window is retried by the next question or status
+read after `enrichment.retryAfterMs` (10 minutes by default), so a recovering LLM is not picked up
+instantly. Lower both when trying things out.
+
+Check progress at `GET /api/v0/environments/{env}/packages/{pkg}`. Its `embeddingIndex` gains an
+`enrichment` object and a `valueIndex` object, each with a `status`, counts, and how many were
+deferred by a limit. Like the embedding index they start on the first question, so ask one and then
+poll. Measure retrieval only after both have left `pending`, `running` and `building`.
+
+### Tuning for recall and precision
+
+Each knob below can be set in the config block. The query-time ones can also be changed for a single
+request, so one warm server can serve every point of a sweep.
+
+| Group | Main knobs |
+|---|---|
+| `embedding` | `minSimilarity`, `queryPrefix`, `documentPrefix`, `extraBody`, `queryExtraBody`, `facets` (which of `name`, `doc`, `kw`, `sum` to score) |
+| `candidates` | `perTargetLimit` |
+| `refine` | `enabled`, `minLevel` (`MEDIUM`), `dropOmitted`, `unscoredLevel`, `maxPerSource`, `maxCandidates`, `batchSize`, `skipIfAtMost`, `onLexical` |
+| `rerank` | `enabled`, `topSources` (8), `minScore` (2), `beyondTop` (`keep` or `drop`), `maxEntityLines`, `skipIfAtMost` |
+| `scoring` | `knots`, `joinDepthDamping`, `sourceRelevance` (`best-hit` or `coverage`) |
+| `response` | `maxEntitiesPerSourceTarget` (10), `maxChars`, `gapCut`, `matchReason`, `surfaceGenerated` |
+| `hybrid` | `mode` (`off`, `rerank-only`, `union`), `rrfK` (60) |
+| `llm` | `model`, `models` (per stage), `temperature`, `seed`, `timeoutMs`, `concurrency`, `jsonMode`, `extraBody`, `cache` |
+
+The ones that shorten a response without an LLM are `response.maxEntitiesPerSourceTarget`,
+`response.gapCut` (drop entities scoring below that fraction of the target's best), `response.maxChars`,
+`embedding.minSimilarity` and `candidates.perTargetLimit`.
+
+Some embedding models want a different prefix for a short question than for a long document (for
+example `search_query: ` and `search_document: ` for `nomic-embed-text`). Set `embedding.queryPrefix`
+and `embedding.documentPrefix`. The document side is part of the index: change it and the package
+re-embeds on the next question.
+
+`hybrid.mode` `rerank-only` reorders what the embedding search already found, so
+`below_cutoff_count` keeps its meaning. `union` also returns entities only lunr found, which have no
+`relevance` of their own.
+
+### Changing settings for one request
+
+With `PUBLISHER_RETRIEVAL_OVERRIDES=1`, a request may send `X-Publisher-Retrieval: <json>`, for
+example `{"refine":{"minLevel":"HIGH"},"response":{"gapCut":0.5}}`. It may change `refine`, `rerank`,
+`scoring`, `response`, `candidates`, `hybrid`, `trace`, `embedding.minSimilarity`, `embedding.facets`,
+`llm.models` and `llm.cache`. That includes switching `refine` and `rerank` on or off, so one server
+can serve arms with and without them (an LLM must be configured for a stage to run). It cannot
+change egress, endpoints, keys, or anything that affects the index (`enrichment`, `indexing`,
+`dimensionalValues.mode`), so it can never send more to a provider than the config allows. A bad
+override is a tool error, not an ignored one.
+
+`X-Publisher-Retrieval-Trace: summary` (or `full`) adds a `retrieval_trace` to the response: one
+record per gate (`index`, `candidate`, `refine`, `rerank`, `page`, `budget`, `delivered`) with how many
+entities went in and out and why each drop happened, LLM calls, tokens and time, and the response
+size. `full` adds each candidate's cosine and LLM level, so level thresholds can be replayed offline.
+A response whose settings differ from the defaults carries a `retrieval_config` fingerprint.
+
+For evals, start the server with `serve.py --allow-retrieval-overrides` and pass
+`run_baseline.py --retrieval-override '<json>'`. See `skills/eval-loop`.
+
+### Recipe: everything local with Ollama
+
+```
+ollama pull nomic-embed-text
+ollama pull qwen2.5:7b-instruct
+export OLLAMA_CONTEXT_LENGTH=8192
+
+# .env
+EMBEDDING_API_BASE=http://localhost:11434/v1
+EMBEDDING_MODEL=nomic-embed-text
+LLM_API_BASE=http://localhost:11434/v1
+LLM_MODEL=qwen2.5:7b-instruct
+```
+
+```jsonc
+{
+  "retrieval": {
+    "embedding": { "queryPrefix": "search_query: ", "documentPrefix": "search_document: " },
+    "llm": { "concurrency": 1 },
+    "enrichment": { "enabled": true, "sourceSummary": { "enabled": true } },
+    "refine": { "enabled": true },
+    "rerank": { "enabled": true }
+  }
+}
+```
+
+Keep `llm.concurrency` at 1 or 2 on a laptop. Small models sometimes reply with malformed JSON; the
+parser repairs fences, trailing commas and truncated arrays, retries once, and otherwise keeps the
+previous order. To size `indexing.maxLlmCallsPerSync` and `indexing.deadlineMs`, watch the
+`enrichment` counts while a package indexes and see how many calls a minute your model manages.
 
 ## Semantic ranking for `search_database_schema`
 

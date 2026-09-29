@@ -3728,6 +3728,101 @@ components:
           description: >-
             Most recent write to this package's vectors. Absent when nothing
             has been embedded yet.
+        enrichment:
+          type: object
+          description: >-
+            Progress of the LLM-written retrieval facets (a keyphrase per field
+            and a summary per source; see `retrieval.enrichment` in
+            publisher.config.json). Present only when enrichment is enabled.
+            It never affects `status`: the base index serves throughout, and
+            enrichment adds recall when it lands. It starts on the first
+            `get_context` question, like the index itself, so poll after asking.
+            A harness measuring retrieval should wait for this to leave
+            `pending` and `running`, or it scores a half-built index.
+          properties:
+            status:
+              type: string
+              enum:
+                - pending
+                - running
+                - ready
+                - partial
+                - failed
+              description: >-
+                `pending` = enabled, not started. `running` = the LLM is being
+                asked. `ready` = every eligible field and source has generated
+                text that matches its inputs. `partial` = some are missing:
+                either a per-sync limit was reached (`deferredByBudget`, picked
+                up by a later run) or an attempt failed (`failed`, retried after
+                `retryAfterMs`). `failed` = the run itself could not complete,
+                for example the embedding endpoint was down or no model is
+                configured; `error` says why. The base index is unaffected.
+            eligible:
+              type: integer
+              description: >-
+                Fields and sources that qualify for enrichment under the
+                current settings.
+            enriched:
+              type: integer
+              description: >-
+                Of `eligible`, how many have generated text that matches what
+                the model would see today. A doc edit, a different model or a
+                changed egress setting makes the old text stale, so it stops
+                counting here until regenerated.
+            failed:
+              type: integer
+              description: Attempted, failed, and waiting to be retried.
+            deferredByBudget:
+              type: integer
+              description: >-
+                Not attempted because `indexing.maxLlmCallsPerSync` or
+                `indexing.deadlineMs` was reached.
+            updatedAt:
+              type: string
+              format: date-time
+            error:
+              type: string
+              description: Why the run failed. Present only when `status` is `failed`.
+        valueIndex:
+          type: object
+          description: >-
+            Progress of the dimension value index behind `dimensional_value`
+            search targets (see `retrieval.dimensionalValues` in
+            publisher.config.json). Present only when value indexing is not
+            `off`. It starts on the first `get_context` question, so poll after
+            asking. A harness measuring retrieval should wait for `status` to
+            leave `building`.
+          properties:
+            status:
+              type: string
+              enum:
+                - building
+                - ready
+                - partial
+                - failed
+              description: >-
+                `building` = values are being read. `ready` = every selected
+                dimension is indexed. `partial` = some were cut by a cap or a
+                per-sync limit, or could not be read (see `truncated` and
+                `failed`). `failed` = nothing could be indexed.
+            dimensions:
+              type: integer
+              description: Dimensions selected for value indexing.
+            values:
+              type: integer
+              description: Values kept across all selected dimensions.
+            truncated:
+              type: integer
+              description: >-
+                Dimensions whose values were cut at a cap. Their `values_truncated`
+                flag is set on the response so a missing value is not read as
+                absent.
+            failed:
+              type: integer
+              description: Dimensions that could not be read, or were left for a later run.
+            updatedAt:
+              type: string
+              format: date-time
 
     PackageMaterializationConfig:
       type: object

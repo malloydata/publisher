@@ -201,6 +201,28 @@ describe("EmbeddingProvider", () => {
       expect(err!.message).not.toContain("test-key");
    });
 
+   it("sends no Authorization header without a key (Ollama, vLLM)", async () => {
+      const captured: CapturedRequest[] = [];
+      const provider = new EmbeddingProvider(
+         { ...CONFIG, apiKey: "" },
+         stubFetch(captured),
+      );
+      await provider.embedBatch(["a"], 1000);
+      expect(captured[0].authorization).toBeUndefined();
+   });
+
+   it("keeps a keyless error body intact instead of splitting on an empty key", async () => {
+      const provider = new EmbeddingProvider(
+         { ...CONFIG, apiKey: "" },
+         stubFetch([], () => new Response("model not found", { status: 404 })),
+      );
+      const err = await provider.embedBatch(["a"], 1000).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err!.message).toContain("(404): model not found");
+   });
+
    it("names a timeout in the failure message", async () => {
       const timeoutFetch = (async () => {
          const error = new Error("The operation timed out");
@@ -329,5 +351,89 @@ describe("getEmbeddingProvider / embeddingConfigured", () => {
       process.env.EMBEDDING_API_KEY = "k";
       process.env.EMBEDDING_DIMENSIONS = "lots";
       expect(() => getEmbeddingProvider()).toThrow("EMBEDDING_DIMENSIONS");
+   });
+});
+
+describe("asymmetric embedding tuning", () => {
+   const TUNING = {
+      queryPrefix: "search_query: ",
+      documentPrefix: "search_document: ",
+      extraBody: {},
+      queryExtraBody: {},
+   };
+
+   it("embeds a document and a query differently: prefix and body per role", async () => {
+      const captured: CapturedRequest[] = [];
+      const provider = new EmbeddingProvider(
+         CONFIG,
+         stubFetch(captured),
+         {
+            ...TUNING,
+            extraBody: { truncate: "END" },
+            queryExtraBody: { input_type: "search_query" },
+         },
+      );
+      await provider.embedBatch(["revenue"], 1000, "document");
+      await provider.embedBatch(["revenue"], 1000, "query");
+      expect(captured[0].body.input).toEqual(["search_document: revenue"]);
+      expect(captured[0].body.truncate).toBe("END");
+      expect(captured[0].body.input_type).toBeUndefined();
+      expect(captured[1].body.input).toEqual(["search_query: revenue"]);
+      expect(captured[1].body.truncate).toBe("END");
+      expect(captured[1].body.input_type).toBe("search_query");
+   });
+
+   it("embeds documents by default, which is what indexing does", async () => {
+      const captured: CapturedRequest[] = [];
+      const provider = new EmbeddingProvider(CONFIG, stubFetch(captured), TUNING);
+      await provider.embedBatch(["a"], 1000);
+      expect(captured[0].body.input).toEqual(["search_document: a"]);
+   });
+
+   it("lets an operator's body parameter override a field the client set", async () => {
+      const captured: CapturedRequest[] = [];
+      const provider = new EmbeddingProvider(
+         { ...CONFIG, dimensions: 512 },
+         stubFetch(captured),
+         { ...TUNING, extraBody: { dimensions: 256 } },
+      );
+      await provider.embedBatch(["a"], 1000);
+      expect(captured[0].body.dimensions).toBe(256);
+   });
+
+   it("sends exactly what it did before when nothing is tuned", async () => {
+      const captured: CapturedRequest[] = [];
+      const provider = new EmbeddingProvider(CONFIG, stubFetch(captured));
+      await provider.embedBatch(["a"], 1000);
+      await provider.embedBatch(["a"], 1000, "query");
+      for (const c of captured) {
+         expect(c.body).toEqual({ model: "test-model", input: ["a"] });
+      }
+   });
+
+   describe("rowModel", () => {
+      const key = (t: Partial<typeof TUNING>) =>
+         new EmbeddingProvider(CONFIG, fetch, { ...TUNING, queryPrefix: "", documentPrefix: "", ...t }).rowModel;
+
+      it("is the model name when the index side is not tuned", () => {
+         expect(key({})).toBe("test-model");
+         expect(new EmbeddingProvider(CONFIG).rowModel).toBe("test-model");
+      });
+
+      it("changes with the document prefix or body, so the index rebuilds", () => {
+         const withPrefix = key({ documentPrefix: "search_document: " });
+         expect(withPrefix).toMatch(/^test-model#[0-9a-f]{10}$/);
+         expect(key({ documentPrefix: "passage: " })).not.toBe(withPrefix);
+         expect(key({ extraBody: { task_type: "RETRIEVAL_DOCUMENT" } })).not.toBe(key({}));
+      });
+
+      it("does not change with query-side settings, which store nothing", () => {
+         expect(key({ queryPrefix: "search_query: " })).toBe("test-model");
+         expect(key({ queryExtraBody: { task_type: "RETRIEVAL_QUERY" } })).toBe("test-model");
+      });
+
+      it("ignores the order of body keys", () => {
+         expect(key({ extraBody: { a: 1, b: 2 } })).toBe(key({ extraBody: { b: 2, a: 1 } }));
+      });
    });
 });

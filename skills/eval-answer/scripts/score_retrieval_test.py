@@ -862,6 +862,41 @@ class TargetKinds(unittest.TestCase):
         self.assertNotIn("never asked", where)
         self.assertEqual(owner, "undecided")
 
+    def test_a_value_search_can_reach_a_dimension(self):
+        # Publisher's value index returns the dimension that holds the value,
+        # so an agent that searched a value did ask for a dimension.
+        ev = [{"kind": "tool_call", "tool": "get_context", "qid": "q",
+               "sample": None, "phase": "baseline",
+               "rankedSummary": {"entityIds": []},
+               "target_shapes": [{"type": "dimensional_value", "has_text": True}]}]
+        _, _, _, reachable = score_retrieval.retrieved(ev, KEY)
+        self.assertIn("dimension", reachable)
+
+
+class ResponseSize(unittest.TestCase):
+    def call(self, chars):
+        rs = {"entityIds": []}
+        if chars is not None:
+            rs["responseChars"] = chars
+        return {"kind": "tool_call", "tool": "get_context", "qid": "q",
+                "sample": None, "phase": "baseline", "rankedSummary": rs}
+
+    def test_sums_over_the_attempts_calls(self):
+        ev = [self.call(100), self.call(250)]
+        self.assertEqual(score_retrieval.response_chars(ev, KEY), 350)
+
+    def test_none_when_the_run_recorded_no_size(self):
+        self.assertIsNone(score_retrieval.response_chars([self.call(None)], KEY))
+
+    def test_summary_averages_only_recorded_attempts(self):
+        rows = [{"recall": 1.0, "precision": 1.0, "failed": False,
+                 "where_to_fix": None, "n_returned": 1, "n_required": 1,
+                 "response_chars": 100},
+                {"recall": 1.0, "precision": 1.0, "failed": False,
+                 "where_to_fix": None, "n_returned": 1, "n_required": 1,
+                 "response_chars": None}]
+        self.assertEqual(score_retrieval.summarise(rows)["mean_response_chars"], 100)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

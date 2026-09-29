@@ -51,6 +51,8 @@ import {
    getDuckDBTempDirectory,
    getEmbeddingConfig,
    getExtensionFetchPolicy,
+   getLlmConfig,
+   getPublisherConfig,
    getMaterializationSchedulerConfig,
    getMcpCorsOrigins,
    getMemoryGovernorConfig,
@@ -60,6 +62,11 @@ import {
    getQueryMetadataMode,
 } from "./config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
+import { checkRetrievalAgainstEnvironment } from "./retrieval/boot";
+import {
+   retrievalConfigFingerprint,
+   setRetrievalConfig,
+} from "./retrieval/retrieval_config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
@@ -348,6 +355,32 @@ const embeddingConfig = getEmbeddingConfig();
 if (embeddingConfig) {
    logger.info(
       `Semantic get_context enabled: model ${embeddingConfig.model} at ${new URL(embeddingConfig.baseUrl).host}`,
+   );
+}
+// The LLM-assisted retrieval tuning block, validated once here for the same
+// reason: a typo'd knob or an out-of-range value must stop the boot with every
+// problem listed, not silently drive (or silently fail to drive) an eval sweep.
+// The block is optional; with none, every stage is off and get_context is
+// unchanged.
+const llmConfig = getLlmConfig();
+const retrievalConfig = setRetrievalConfig(
+   getPublisherConfig(SERVER_ROOT).retrieval,
+);
+const retrievalCheck = checkRetrievalAgainstEnvironment(
+   retrievalConfig,
+   llmConfig,
+   embeddingConfig !== null,
+);
+if (retrievalCheck.errors.length > 0) {
+   throw new Error(retrievalCheck.errors.join("\n"));
+}
+for (const warning of retrievalCheck.warnings) {
+   logger.warn(warning);
+}
+if (llmConfig) {
+   logger.info(
+      `LLM retrieval stages available: ${new URL(llmConfig.baseUrl).host}` +
+         ` (fingerprint ${retrievalConfigFingerprint(retrievalConfig)})`,
    );
 }
 const memoryGovernorConfig = getMemoryGovernorConfig();

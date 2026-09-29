@@ -92,6 +92,39 @@ class Gate(unittest.TestCase):
         self.assertEqual(ft.retrieval_gate({}, {}, "a", "b", False), 0)
 
 
+class ConfigGate(unittest.TestCase):
+    def test_same_override_passes(self):
+        cfg = {"retrievalOverrideSha": "s", "retrievalOverride": {"a": 1}}
+        self.assertEqual(ft.retrieval_config_gate(cfg, dict(cfg), "a", "b", False), 0)
+
+    def test_no_override_on_either_side_passes(self):
+        self.assertEqual(ft.retrieval_config_gate({}, {}, "a", "b", False), 0)
+
+    def test_different_overrides_are_refused(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = ft.retrieval_config_gate(
+                {"retrievalOverrideSha": "1", "retrievalOverride": {"x": 1}},
+                {"retrievalOverrideSha": "2", "retrievalOverride": {"x": 2}},
+                "a", "b", False)
+        self.assertEqual(code, 2)
+        self.assertIn("--compare-retrieval-config", buf.getvalue())
+
+    def test_an_override_against_none_is_a_difference(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = ft.retrieval_config_gate(
+                {}, {"retrievalOverrideSha": "2", "retrievalOverride": {"x": 2}},
+                "a", "b", False)
+        self.assertEqual(code, 2)
+
+    def test_the_flag_reports_it_as_an_ab(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = ft.retrieval_config_gate(
+                {"retrievalOverrideSha": "1"}, {"retrievalOverrideSha": "2"},
+                "a", "b", True)
+        self.assertEqual(code, 0)
+
+
 class Main(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())

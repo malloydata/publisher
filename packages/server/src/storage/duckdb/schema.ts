@@ -265,6 +265,8 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
   `);
 
    await createEntityEmbeddingsTable(db);
+   await createEntityEnrichmentTable(db);
+   await createDimensionValueTables(db);
 }
 
 async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
@@ -758,6 +760,113 @@ export async function createEntityEmbeddingsTable(
       PRIMARY KEY (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
     )
   `);
+   // What was embedded, kept beside the vector so a bad retrieval hit can be
+   // explained: the service does not persist the text behind its vectors, so a
+   // surprising match there cannot be traced to the words that produced it.
+   // Added in place (a nullable column), never by re-keying: rows written
+   // before it exist stay valid, read NULL, and fill in the next time their
+   // text changes.
+   await db.run(
+      "ALTER TABLE entity_embeddings ADD COLUMN IF NOT EXISTS embedded_text VARCHAR",
+   );
+}
+
+/**
+ * LLM-written text for retrieval (see retrieval/enrichment.ts): a keyphrase per
+ * entity and a summary per source. One row per (entity, kind of enrichment).
+ *
+ * This is the LLM's memory, and the reason a sync never re-asks it. A row is
+ * reused only when `input_hash` still matches: a hash over exactly what was
+ * sent (the egress-filtered inputs), the model and the prompt version. So a
+ * changed doc, a different model, a new prompt or a switched egress class each
+ * regenerate, and nothing else does. The generated `text` is kept, not just
+ * embedded, so what the model said is inspectable; the service does not
+ * persist its keyphrase, which makes a bad retrieval hit impossible to debug.
+ *
+ * A failed attempt is stored too (`status = 'failed'`), so a model that keeps
+ * refusing one field is retried after a delay, not on every sync. Losing the
+ * table costs LLM calls, never correctness.
+ */
+export async function createEntityEnrichmentTable(
+   db: DuckDBConnection,
+): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS entity_enrichment (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      entity_kind VARCHAR NOT NULL,
+      entity_source VARCHAR NOT NULL,
+      entity_name VARCHAR NOT NULL,
+      enrichment VARCHAR NOT NULL,
+      input_hash VARCHAR NOT NULL,
+      llm_model VARCHAR NOT NULL,
+      prompt_version VARCHAR NOT NULL,
+      status VARCHAR NOT NULL,
+      text VARCHAR,
+      text2 VARCHAR,
+      egress_classes VARCHAR NOT NULL,
+      attempts INTEGER NOT NULL,
+      last_error VARCHAR,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, entity_kind, entity_source, entity_name, enrichment)
+    )
+  `);
+}
+
+/**
+ * The values of dimensions an author opted into value search (see
+ * retrieval/dim_values.ts), so "Premium" can be found as a value of
+ * `customers.tier` without a query to discover it.
+ *
+ * `dimension_values` holds one row per distinct value, its count (`weight`, the
+ * rows it appears on, which is how the top N are chosen when a dimension has
+ * more than the cap), and its embedding. The embedding is NULLABLE: values are
+ * stored even with no embedding provider, because the lexical arm (exact,
+ * prefix and near-match on the text) needs only the text. `embedded_text` is
+ * what was embedded, as for entity vectors.
+ *
+ * `dimension_value_state` records the last fetch per dimension: when, how many
+ * distinct values it had, and whether the cap cut it. `truncated` is what lets
+ * a response say a value may be absent from the index rather than absent from
+ * the data.
+ *
+ * Both are caches of the warehouse and the model; wiping them costs a refetch.
+ */
+export async function createDimensionValueTables(
+   db: DuckDBConnection,
+): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_values (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      source_name VARCHAR NOT NULL,
+      dimension_name VARCHAR NOT NULL,
+      value VARCHAR NOT NULL,
+      weight BIGINT NOT NULL,
+      content_hash VARCHAR NOT NULL,
+      embedding_model VARCHAR,
+      dims INTEGER,
+      embedding FLOAT[],
+      embedded_text VARCHAR,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, source_name, dimension_name, value)
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_value_state (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      source_name VARCHAR NOT NULL,
+      dimension_name VARCHAR NOT NULL,
+      distinct_seen INTEGER NOT NULL,
+      kept INTEGER NOT NULL,
+      truncated BOOLEAN NOT NULL,
+      status VARCHAR NOT NULL,
+      last_error VARCHAR,
+      fetched_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, source_name, dimension_name)
+    )
+  `);
 }
 
 // TODO: Remove this during projects cleanup
@@ -803,6 +912,9 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "environments",
       "themes",
       "entity_embeddings",
+      "entity_enrichment",
+      "dimension_values",
+      "dimension_value_state",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

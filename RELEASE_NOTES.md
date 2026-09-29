@@ -31,6 +31,48 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — get_context can use an LLM to refine, rerank and index, and every step is tunable
+
+`get_context` can now run the steps Credible's hosted retrieval runs, against any OpenAI-compatible
+chat endpoint, including a local Ollama. All of it is off by default. With nothing configured the
+response is byte-for-byte what it was.
+
+What is new, each behind its own switch in a `retrieval` block in `publisher.config.json`:
+
+- **Refine.** The LLM rates each candidate LOW, MEDIUM or HIGH and candidates below `refine.minLevel`
+  are dropped. Each surviving match carries a `match_reason`.
+- **Rerank.** The LLM orders the top sources and drops the ones that do not answer the question.
+- **Keyphrases and source summaries.** Written at index time and embedded as extra facets, so a
+  field with no doc (or a very long one) is found by what it means. They never replace an
+  authored `#(doc)`.
+- **Dimension values.** Tag a dimension `#(index)` and a question that names one of its values
+  finds the dimension. A source gated by `#(access_filter)`, `#(authorize)` or a required
+  `#(filter)` is never indexed.
+- **Hybrid fusion.** Merges the lunr ranking into the embedding ranking (`hybrid.mode`).
+- **Embedding prefixes.** `embedding.queryPrefix` and `documentPrefix` for models that expect a
+  different prefix for a short question than for a document.
+
+To try it: set `LLM_API_BASE` (and `LLM_MODEL`, and `LLM_API_KEY` if the endpoint needs one), then
+switch stages on in the `retrieval` block. A server with only `EMBEDDING_API_BASE` set now also
+enables embeddings, so a keyless local server needs no dummy key. The recipe for a fully local setup
+is in [docs/configuration.md](docs/configuration.md#llm-assisted-retrieval-for-get_context).
+
+Things to know:
+
+- A failing LLM never fails `get_context`. The stage keeps its input order and the response says
+  so in `retrieval_stages` and a warning.
+- What is sent to a provider is set by `retrieval.egress`. The default is what embeddings already
+  send: names and `#(doc)` text. Access predicates are never sent, under any setting.
+- Indexing has hard limits (10,000 items, 300 LLM calls, 8 minutes per sync), so it finishes in
+  minutes on a laptop. Progress is in `embeddingIndex.enrichment` and `embeddingIndex.valueIndex` on
+  the package resource.
+- For tuning, `PUBLISHER_RETRIEVAL_OVERRIDES=1` lets a request change query-time settings with an
+  `X-Publisher-Retrieval` header, and `X-Publisher-Retrieval-Trace` returns a per-stage
+  `retrieval_trace`. Leave it unset outside evals. `skills/eval-loop` has flags for it
+  (`serve.py --allow-retrieval-overrides`, `run_baseline.py --retrieval-override`).
+- The `entity_embeddings` cache gains an `embedded_text` column and new `entity_enrichment`,
+  `dimension_values` and `dimension_value_state` tables. All are caches; `--init` rebuilds them.
+
 ## [Unreleased] — The Docker image runs the server as a non-root user
 
 `ms2data/malloy-publisher` now runs the server as `bun`, uid 1000 and gid 1000, instead of root. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`. The DuckDB CLI and the baked extensions move from `/root/.duckdb/` to `/home/bun/.duckdb/`, and the image sets `HOME=/home/bun`.

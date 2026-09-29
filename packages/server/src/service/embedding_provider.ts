@@ -1,7 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { createHash } from "node:crypto";
 import { EmbeddingConfig, getEmbeddingConfig } from "../config";
+import { getRetrievalConfig } from "../retrieval/retrieval_config";
 
 /** Timeout for bulk (index-build) embedding calls. */
 export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
@@ -18,6 +20,35 @@ export const MAX_EMBED_INPUT_CHARS = 1_024;
 export const MAX_EMBED_BATCH_SIZE = 512;
 
 type FetchFn = typeof fetch;
+
+/**
+ * How an asymmetric embedding model wants its two sides handled. Many
+ * retrieval models embed a short query differently from the long passage it
+ * should match: a task type (Gemini `RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT`),
+ * an input type (Cohere, Voyage `search_query` / `search_document`), or a text
+ * prefix (E5, nomic `search_query: ` / `search_document: `). Symmetric models
+ * (OpenAI `text-embedding-3-*`) want none of it, which is the default.
+ */
+export interface EmbeddingTuning {
+   /** Prepended to a search text before it is embedded. */
+   queryPrefix: string;
+   /** Prepended to indexed text before it is embedded. */
+   documentPrefix: string;
+   /** Merged into every request body: provider parameters such as a task type. */
+   extraBody: Record<string, unknown>;
+   /** Merged over `extraBody` for query requests only (e.g. a query task type). */
+   queryExtraBody: Record<string, unknown>;
+}
+
+export const NO_TUNING: EmbeddingTuning = {
+   queryPrefix: "",
+   documentPrefix: "",
+   extraBody: {},
+   queryExtraBody: {},
+};
+
+/** Which side of the match a text is on. */
+export type EmbeddingRole = "document" | "query";
 
 interface EmbeddingResponseItem {
    index?: number;
@@ -56,10 +87,36 @@ export class EmbeddingProvider {
    constructor(
       private config: EmbeddingConfig,
       private fetchFn: FetchFn = fetch,
+      private tuning: EmbeddingTuning = NO_TUNING,
    ) {}
 
    get model(): string {
       return this.config.model;
+   }
+
+   /**
+    * The key stored rows carry as their `embedding_model`, and the one a search
+    * matches them on. It is the model name alone unless the index side is
+    * tuned, in which case it also carries a short hash of what the documents
+    * were embedded with (their prefix and body parameters).
+    *
+    * That is what makes a change of setup rebuild the index instead of mixing
+    * vectors: a document prefix or task type changes what a vector MEANS
+    * without changing the text it came from, so the text hash cannot notice.
+    * Query-side settings are deliberately not in it, since they change no
+    * stored vector. With no tuning the key is the model name, so an index built
+    * before any of this existed stays valid.
+    */
+   get rowModel(): string {
+      const { documentPrefix, extraBody } = this.tuning;
+      if (!documentPrefix && Object.keys(extraBody).length === 0) {
+         return this.config.model;
+      }
+      const spec = createHash("sha256")
+         .update(JSON.stringify([documentPrefix, sortKeys(extraBody)]))
+         .digest("hex")
+         .slice(0, 10);
+      return `${this.config.model}#${spec}`;
    }
 
    /**
@@ -82,13 +139,23 @@ export class EmbeddingProvider {
     * on any HTTP, timeout, or malformed-response failure; callers own the
     * fallback-to-lexical decision.
     */
-   async embedBatch(texts: string[], timeoutMs: number): Promise<number[][]> {
+   async embedBatch(
+      texts: string[],
+      timeoutMs: number,
+      role: EmbeddingRole = "document",
+   ): Promise<number[][]> {
+      const prefix =
+         role === "query" ? this.tuning.queryPrefix : this.tuning.documentPrefix;
+      const extra =
+         role === "query"
+            ? { ...this.tuning.extraBody, ...this.tuning.queryExtraBody }
+            : this.tuning.extraBody;
       const vectors: number[][] = [];
       for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
          const chunk = texts
             .slice(i, i + MAX_EMBED_BATCH_SIZE)
-            .map(prepareEmbeddingInput);
-         vectors.push(...(await this.embedChunk(chunk, timeoutMs)));
+            .map((t) => prepareEmbeddingInput(prefix + t));
+         vectors.push(...(await this.embedChunk(chunk, timeoutMs, extra)));
       }
       return vectors;
    }
@@ -96,6 +163,7 @@ export class EmbeddingProvider {
    private async embedChunk(
       inputs: string[],
       timeoutMs: number,
+      extraBody: Record<string, unknown> = {},
    ): Promise<number[][]> {
       const url = `${this.config.baseUrl}/embeddings`;
       const body: Record<string, unknown> = {
@@ -105,15 +173,23 @@ export class EmbeddingProvider {
       if (this.config.dimensions !== undefined) {
          body.dimensions = this.config.dimensions;
       }
+      // Last, so an operator's parameter wins over a field this client set.
+      Object.assign(body, extraBody);
+
+      // A local server (Ollama, vLLM) needs no key; send no Authorization
+      // header rather than "Bearer ".
+      const headers: Record<string, string> = {
+         "Content-Type": "application/json",
+      };
+      if (this.config.apiKey) {
+         headers.Authorization = `Bearer ${this.config.apiKey}`;
+      }
 
       let response: Response;
       try {
          response = await this.fetchFn(url, {
             method: "POST",
-            headers: {
-               "Content-Type": "application/json",
-               Authorization: `Bearer ${this.config.apiKey}`,
-            },
+            headers,
             body: JSON.stringify(body),
             signal: AbortSignal.timeout(timeoutMs),
          });
@@ -136,10 +212,12 @@ export class EmbeddingProvider {
             detail = "authentication failed; check EMBEDDING_API_KEY";
          } else {
             const bodyText = await response.text().catch(() => "");
-            detail = bodyText
-               .split(this.config.apiKey)
-               .join("[REDACTED]")
-               .slice(0, 200);
+            // split("") would shred the body, so an absent key skips the scrub.
+            detail = (
+               this.config.apiKey
+                  ? bodyText.split(this.config.apiKey).join("[REDACTED]")
+                  : bodyText
+            ).slice(0, 200);
          }
          throw new Error(
             `Embedding request to ${url} failed (${response.status}): ${detail}`,
@@ -185,6 +263,23 @@ export class EmbeddingProvider {
    }
 }
 
+function sortKeys(o: Record<string, unknown>): Record<string, unknown> {
+   return Object.fromEntries(
+      Object.entries(o).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+   );
+}
+
+/** The tuning the current retrieval config asks for. */
+function currentTuning(): EmbeddingTuning {
+   const e = getRetrievalConfig().embedding;
+   return {
+      queryPrefix: e.queryPrefix,
+      documentPrefix: e.documentPrefix,
+      extraBody: e.extraBody,
+      queryExtraBody: e.queryExtraBody,
+   };
+}
+
 // Cached on a config fingerprint, never on null: a call after the env
 // changes (tests, operator restarts with new vars are moot, but the
 // integration suite runs many specs in one process) always sees the
@@ -224,15 +319,20 @@ export function getEmbeddingProvider(): EmbeddingProvider | null {
       cached = null;
       return null;
    }
+   const tuning = currentTuning();
    const fingerprint = [
       config.baseUrl,
       config.model,
       config.dimensions ?? "",
       config.apiKey,
       config.minSimilarity,
+      JSON.stringify(tuning),
    ].join("\u0000");
    if (!cached || cached.fingerprint !== fingerprint) {
-      cached = { fingerprint, provider: new EmbeddingProvider(config) };
+      cached = {
+         fingerprint,
+         provider: new EmbeddingProvider(config, fetch, tuning),
+      };
    }
    return cached.provider;
 }

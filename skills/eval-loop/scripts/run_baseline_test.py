@@ -1959,6 +1959,63 @@ class AnErroredGetContextIsUnmeasured(unittest.TestCase):
         self.assertIsNone(call["error"])
 
 
+class RetrievalOverride(unittest.TestCase):
+    """--retrieval-override becomes an X-Publisher-Retrieval header on every
+    get_context of the arm, and nothing at all when it is not given."""
+
+    def ns(self, **kw):
+        return argparse.Namespace(retrieval_override=None,
+                                  retrieval_trace=None, **kw)
+
+    def test_a_default_run_sends_no_extra_header(self):
+        self.assertEqual(rb.retrieval_headers(self.ns()), {})
+
+    def test_inline_json_is_parsed(self):
+        self.assertEqual(rb.load_retrieval_override('{"refine":{"enabled":false}}'),
+                         {"refine": {"enabled": False}})
+
+    def test_a_file_path_is_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "o.json"
+            f.write_text('{"hybrid":{"mode":"union"}}')
+            self.assertEqual(rb.load_retrieval_override(str(f)),
+                             {"hybrid": {"mode": "union"}})
+
+    def test_bad_json_fails_before_the_run_with_a_fix(self):
+        with self.assertRaises(SystemExit) as cm:
+            rb.load_retrieval_override('{"refine":')
+        self.assertIn("Fix:", str(cm.exception))
+
+    def test_a_missing_file_is_named(self):
+        with self.assertRaises(SystemExit) as cm:
+            rb.load_retrieval_override("/no/such/override.json")
+        self.assertIn("/no/such/override.json", str(cm.exception))
+
+    def test_a_non_object_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "o.json"
+            f.write_text("[1]")
+            with self.assertRaises(SystemExit):
+                rb.load_retrieval_override(str(f))
+
+    def test_the_header_is_compact_and_key_sorted(self):
+        a = self.ns()
+        a.retrieval_override = {"b": 1, "a": {"y": 2, "x": 1}}
+        self.assertEqual(rb.retrieval_headers(a)["X-Publisher-Retrieval"],
+                         '{"a":{"x":1,"y":2},"b":1}')
+
+    def test_trace_is_its_own_header(self):
+        a = self.ns()
+        a.retrieval_trace = "full"
+        self.assertEqual(rb.retrieval_headers(a),
+                         {"X-Publisher-Retrieval-Trace": "full"})
+
+    def test_run_json_accepts_the_new_pins(self):
+        pins = dict(retrievalOverride={"a": 1}, retrievalOverrideSha="x",
+                    retrievalTrace="summary")
+        self.assertFalse(set(pins) - rb.ledger.RUN_OPTIONAL)
+
+
 class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
     """CI runs this file as a script, `python3 <file>`, and `unittest.main()`
     runs what is defined so far and exits. A test class written below the

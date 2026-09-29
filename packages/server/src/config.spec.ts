@@ -8,6 +8,7 @@ import {
    convertConnectionsToApiConnections,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
    getEmbeddingConfig,
+   getLlmConfig,
    getPersistCollisionEnforce,
    getProcessedPublisherConfig,
    getPublisherConfig,
@@ -1737,5 +1738,114 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
       expect(() => getEmbeddingConfig()).toThrow(
          /EMBEDDING_MIN_SIMILARITY.*Fix: EMBEDDING_MIN_SIMILARITY=0\.35/s,
       );
+   });
+});
+
+describe("keyless embedding and LLM configuration", () => {
+   const saved = { ...process.env };
+   beforeEach(() => {
+      for (const k of [
+         "EMBEDDING_API_KEY",
+         "EMBEDDING_API_BASE",
+         "EMBEDDING_MODEL",
+         "LLM_API_KEY",
+         "LLM_API_BASE",
+         "LLM_MODEL",
+      ]) {
+         delete process.env[k];
+      }
+   });
+   afterEach(() => {
+      process.env = { ...saved };
+   });
+
+   it("leaves embeddings off with neither a key nor a base", () => {
+      expect(getEmbeddingConfig()).toBeNull();
+      process.env.OPENAI_API_KEY = "ambient";
+      expect(getEmbeddingConfig()).toBeNull();
+   });
+
+   it("enables embeddings from a base URL alone (Ollama needs no key)", () => {
+      process.env.EMBEDDING_API_BASE = "http://localhost:11434/v1/";
+      process.env.EMBEDDING_MODEL = "nomic-embed-text";
+      expect(getEmbeddingConfig()).toEqual({
+         apiKey: "",
+         model: "nomic-embed-text",
+         baseUrl: "http://localhost:11434/v1",
+         dimensions: undefined,
+         minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
+      });
+   });
+
+   it("requires a model for a keyless non-OpenAI endpoint", () => {
+      process.env.EMBEDDING_API_BASE = "http://localhost:11434/v1";
+      expect(() => getEmbeddingConfig()).toThrow(
+         /Invalid EMBEDDING_MODEL.*Fix: EMBEDDING_MODEL=nomic-embed-text/s,
+      );
+   });
+
+   it("keeps the OpenAI default model when a key is set", () => {
+      process.env.EMBEDDING_API_KEY = "k";
+      expect(getEmbeddingConfig()?.model).toBe("text-embedding-3-small");
+      process.env.EMBEDDING_API_BASE = "https://proxy.example.com/v1";
+      expect(getEmbeddingConfig()?.model).toBe("text-embedding-3-small");
+   });
+
+   it("leaves the LLM off with neither a key nor a base", () => {
+      expect(getLlmConfig()).toBeNull();
+      process.env.OPENAI_API_KEY = "ambient";
+      expect(getLlmConfig()).toBeNull();
+   });
+
+   it("enables the LLM from a base URL alone, with no default model", () => {
+      process.env.LLM_API_BASE = "http://localhost:11434/v1/";
+      expect(getLlmConfig()).toEqual({
+         apiKey: "",
+         baseUrl: "http://localhost:11434/v1",
+      });
+      process.env.LLM_MODEL = "llama3.1:8b";
+      expect(getLlmConfig()?.model).toBe("llama3.1:8b");
+   });
+
+   it("defaults the model only on OpenAI's own endpoint", () => {
+      process.env.LLM_API_KEY = "k";
+      expect(getLlmConfig()).toEqual({
+         apiKey: "k",
+         baseUrl: "https://api.openai.com/v1",
+         model: "gpt-4o-mini",
+      });
+   });
+
+   it("rejects a malformed LLM_API_BASE", () => {
+      process.env.LLM_API_BASE = "not a url";
+      expect(() => getLlmConfig()).toThrow(/Invalid value for LLM_API_BASE/);
+   });
+});
+
+describe("publisher.config.json retrieval block", () => {
+   const root = path.join(process.cwd(), "test-temp-config-retrieval");
+   beforeEach(() => fs.mkdirSync(root, { recursive: true }));
+   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+   it("carries the block through untouched for later validation", () => {
+      fs.writeFileSync(
+         path.join(root, PUBLISHER_CONFIG_NAME),
+         JSON.stringify({
+            environments: [],
+            retrieval: { refine: { enabled: true, batchSiz: 3 } },
+         }),
+      );
+      // Not validated here: a typo must reach resolveRetrievalConfig intact.
+      expect(getPublisherConfig(root).retrieval).toEqual({
+         refine: { enabled: true, batchSiz: 3 },
+      });
+   });
+
+   it("omits the key when the file has no block", () => {
+      fs.writeFileSync(
+         path.join(root, PUBLISHER_CONFIG_NAME),
+         JSON.stringify({ environments: [] }),
+      );
+      expect("retrieval" in getPublisherConfig(root)).toBe(false);
    });
 });
