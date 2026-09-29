@@ -197,8 +197,16 @@ export function lintNotebookText(
       }
    });
 
-   // Without an artifact note the file is a helper model, and quoting its lines would only be noise.
-   if (!artifact) return [];
+   // A query-level `# artifact` also makes a dashboard, so only a file with neither tag is a helper.
+   const queryLevelArtifact =
+      !inNotebooks &&
+      (tokens as ParseToken[]).some(
+         (token) =>
+            symbolOf(token) !== "DOC_ANNOTATION" &&
+            /^#\s*artifact\b/.test(tokenText(token)),
+      );
+   // A helper model's lines would only be noise to quote.
+   if (!artifact && !queryLevelArtifact) return [];
    for (const { line, code, what } of aboveArtifact) {
       add(
          line,

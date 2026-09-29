@@ -526,6 +526,15 @@ describe("notebook lint", () => {
       ).toEqual([]);
    });
 
+   it("still lints a single-query dashboard whose artifact tag sits on its query", () => {
+      expect(
+         lint(
+            `${SOURCE}##| markdown\nhi\n|##\n# artifact { title="One" }\nquery: q is a -> { select: x }\n`,
+            "dashboards/d.malloy",
+         ).map((f) => f.code),
+      ).toEqual(["notebook-markdown-opener"]);
+   });
+
    it("leaves the dashboard_columns alias out of a single-query artifact, which has no grid", () => {
       expect(
          lint(
