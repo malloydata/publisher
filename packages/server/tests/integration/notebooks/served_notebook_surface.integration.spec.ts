@@ -115,6 +115,35 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(Object.keys(def.contents ?? {})).toContain("on_surface");
    });
 
+   const runColumns = (modelInfo: string | undefined) =>
+      (
+         (
+            JSON.parse(modelInfo ?? "{}") as {
+               anonymous_queries?: { schema?: { fields?: Named[] } }[];
+            }
+         ).anonymous_queries ?? []
+      ).map((run) => (run.schema?.fields ?? []).map((field) => field.name));
+
+   it("describes on the model GET only the runs over published names", async () => {
+      const notebook = await getModel();
+      // Positive control: a run over the notebook's surface-derived source.
+      expect(runColumns(notebook.modelInfo)).toEqual([["n"]]);
+      expect(notebook.modelInfo).not.toContain("secret_total");
+
+      for (const file of ["notebooks/cells.malloy", "dashboards/runs.malloy"]) {
+         const res = await fetch(pkgUrl(`/models/${file}`));
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as ModelBody;
+         expect(body.modelInfo).not.toContain("secret_total");
+         expect(runColumns(body.modelInfo).flat()).not.toContain("amount");
+      }
+      const dashboard = (await (
+         await fetch(pkgUrl("/models/dashboards/runs.malloy"))
+      ).json()) as ModelBody;
+      // Positive control: the dashboard's run over its surface-derived source.
+      expect(runColumns(dashboard.modelInfo)).toEqual([["shown_count"]]);
+   });
+
    it("still returns the declared givens and the file text", async () => {
       const body = await getModel();
       expect(body.givens?.map((g) => g.name)).toEqual(["REGION"]);

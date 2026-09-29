@@ -8243,7 +8243,11 @@ export class Model {
          // export-curated by Malloy; `keep` adds a dashboard's surface rule.
          modelInfo: JSON.stringify(
             this.modelInfo
-               ? { ...this.modelInfo, entries: keep(this.modelInfo.entries) }
+               ? {
+                    ...this.modelInfo,
+                    entries: keep(this.modelInfo.entries),
+                    anonymous_queries: this.publishedRuns(published),
+                 }
                : {},
          ),
          sourceInfos: keep(this.getSourceInfos())?.map((sourceInfo) =>
@@ -8307,15 +8311,8 @@ export class Model {
       // can see; `queryList` holds the file's top-level `run:` statements, each
       // with the source it reads inline. `modelAnnotations`, `dependencies`
       // and `imports` are keyed by file, not by source, and are kept.
-      const runsPublished = (query: unknown) => {
-         const ref = (query as { structRef?: unknown }).structRef;
-         const name =
-            typeof ref === "string"
-               ? ref
-               : ((ref as { as?: string; name?: string } | undefined)?.as ??
-                 (ref as { name?: string } | undefined)?.name);
-         return name !== undefined && published.has(name);
-      };
+      const runsPublished = (query: unknown) =>
+         runReadsPublished(query, published);
       return {
          ...this.modelDef,
          contents: Object.fromEntries(
@@ -8337,6 +8334,21 @@ export class Model {
          // Nothing that reads this response uses it.
          references: [],
       };
+   }
+
+   /**
+    * `modelInfo.anonymous_queries` limited to the runs `publishedModelDef`
+    * keeps in `queryList`: each run's schema lists every column it returns.
+    */
+   private publishedRuns(
+      published: Set<string> | undefined,
+   ): Malloy.ModelInfo["anonymous_queries"] | undefined {
+      const runs = this.modelInfo?.anonymous_queries;
+      if (!published || !runs) return runs;
+      const queryList = this.modelDef?.queryList ?? [];
+      // Index-aligned with `queryList`; when they disagree, show none.
+      if (queryList.length !== runs.length) return [];
+      return runs.filter((_, k) => runReadsPublished(queryList[k], published));
    }
 
    /**
@@ -9564,6 +9576,20 @@ function hydrateMarkdownOnlyCells(
       // A code cell without a hydratable scope — surface text only.
       return { type: "code", text: sc.text };
    });
+}
+
+/** Whether a top-level `run:` reads a source named in `published`. */
+function runReadsPublished(
+   query: unknown,
+   published: ReadonlySet<string>,
+): boolean {
+   const ref = (query as { structRef?: unknown }).structRef;
+   const name =
+      typeof ref === "string"
+         ? ref
+         : ((ref as { as?: string; name?: string } | undefined)?.as ??
+           (ref as { name?: string } | undefined)?.name);
+   return name !== undefined && published.has(name);
 }
 
 /** The keys of a compiled struct that hold a `name@file` identity of another

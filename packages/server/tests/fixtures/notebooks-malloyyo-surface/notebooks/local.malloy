@@ -15,3 +15,7 @@ source: loc is hidden extend {}
 query: own_query is orders -> { aggregate: order_count }
 
 run: orders -> { aggregate: order_count }
+
+run: on_surface -> { aggregate: n }
+
+run: loc -> { aggregate: secret_total }

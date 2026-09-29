@@ -193,6 +193,17 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(onDisk.sort()).toEqual(Object.keys(KINDS).sort());
       });
 
+      it("describes every run on the model GET, over imports it does not export too", async () => {
+         const { status, body } = await getJson<{ modelInfo?: string }>(
+            pkgUrl(PLAIN, "/models/notebooks/tagged_runs.malloy"),
+         );
+         expect(status).toBe(200);
+         const info = JSON.parse(body.modelInfo ?? "{}") as {
+            anonymous_queries?: unknown[];
+         };
+         expect(info.anonymous_queries).toHaveLength(2);
+      });
+
       for (const [notebook, kinds] of Object.entries(KINDS)) {
          it(`serves ${notebook} as a malloy-format notebook with its cells`, async () => {
             const { status, body } = await getJson<{
