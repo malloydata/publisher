@@ -1,0 +1,17 @@
+##! experimental.givens
+##" Reads the surface, and declares a source over a file the surface hides.
+## artifact { kind=notebook title="Surface probe" }
+import "../models/orders.malloy"
+import "../models/hidden.malloy"
+
+given: REGION :: string is 'US'
+
+##" A source over the surface, then one over the hidden file.
+
+source: on_surface is orders extend { measure: n is count() }
+
+source: loc is hidden extend {}
+
+query: own_query is orders -> { aggregate: order_count }
+
+run: orders -> { aggregate: order_count }
