@@ -89,10 +89,12 @@ it, including why the obvious command for it is destructive.
 
 **`0.MINOR.PATCH` for every published package, while pre-1.0.** It is the policy,
 not yet the state: `skills` follows it, `sdk`/`app`/`server` are still on `0.0.x`
-until `0.2.0` is cut, `create-malloy-package` is on `0.0.8`, and the Python client
-declares `0.1.0` — sharing `0.1.x` with `skills`. The bump checks enforce *ahead of
-the registry*, not the shape of the number, so moving those two is a judgement call
-on their next release rather than something CI will demand.
+until `0.2.0` is cut, `create-malloy-package` versions on its own `0.0.x` line, computed at release time, and the Python client
+declares `0.1.0` — sharing `0.1.x` with `skills`. Nothing enforces the *shape* of
+the number for any of them — skills and create-malloy-package resolve their next
+version from npm `latest` at release time, and moving either onto a new minor
+line is a judgement call made with an explicit `-f version=`, not something CI
+demands.
 
 - **MINOR = a breaking change. PATCH = everything else.** A breaking change is
   one that turns a package which loaded or built yesterday into one that does
@@ -163,52 +165,64 @@ not a precaution.
 
 ## The version trains
 
-| Packages | Version | Bumped by | Missing bump caught by |
+| Packages | Version | Decided by | Missing bump caught by |
 | --- | --- | --- | --- |
 | `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/sdk-<v>` branch | n/a — the release sets it |
-| `skills` | its own line | each stamp PR, one patch ahead; you, for a minor | `skills-npm.yml` PR check |
-| `create-malloy-package` | its own line | each stamp PR, one patch ahead; you, for a minor | `create-malloy-package-npm.yml` PR check |
+| `skills` | its own line, `package.json` carries a fixed `0.0.0-dev` placeholder | release time, from npm's own state (`scripts/independent-version.mjs`); you, for a minor | n/a — nothing is committed ahead of time to forget |
+| `create-malloy-package` | its own line, same placeholder | release time, the same way | n/a, same reason |
 | `malloy-publisher-sdk` (Python) | its own line | you, by hand, on `main` | `python-sdk.yml` PR check — but see below |
 
-**A forgotten bump is now a red PR check**, not a silent skip at release time.
-Each check asks the same thing — *is the declared version ahead of the registry* —
-scoped to the paths that package's published content is built from, and skips
-when this PR touched none of them. So the pre-release hand-audit that used to
-live in step 2 below is mostly gone.
+**Skills and create-malloy-package no longer have a version to forget.** Nothing
+is bumped ahead of a release: both packages' `package.json` declare `0.0.0-dev`
+in the repo, and what actually publishes is decided at release time by
+`scripts/independent-version.mjs`, called from `scripts/publish-packages.sh`, and
+written into the manifest at publish time. So the pre-release hand-audit that
+used to live in step 2 below (comparing `main`'s declared version against npm)
+no longer applies to either package — there is nothing on `main` to compare.
 
-**And the stamp PR keeps `main` ahead, so that check rarely fires.** A release
-spends whatever version `main` declares for skills and the scaffolder, which
-would leave `main` level with npm and turn the next PR touching either package
-red. So the stamp branch (step 6) moves both one patch ahead, and once it merges
-nobody bumps them by hand for an ordinary change. Bump by hand only for a
-breaking change, to the next minor, which no check enforces. The two move
-together because the scaffolder's check watches `packages/skills/package.json`.
+The two are decided differently:
 
-Two caveats on that:
+- **skills** publishes when its published content changed since npm `latest`'s
+  `gitHead` — a diff of `skills/`, `packages/skills/`, `bun.lock` and the root
+  `package.json`, excluding `skills/README.md` and
+  `packages/skills/src/*.spec.ts`. Changed publishes one patch above the
+  highest published plain version; unchanged skips.
+- **create-malloy-package** publishes on every non-prerelease release,
+  unconditionally, because it bakes the server's npm `latest` into every
+  workspace it scaffolds — a release changes what it ships even when its own
+  directory did not. The only skip is a re-run of the same release, detected by
+  its published `publisherServer` field already matching.
 
-- The **Python** check has nothing to *catch* until the first publish lands,
-  because `malloy-publisher-sdk` is not on PyPI at all and a project-level 404 is
-  its pass. (It can still go red on an unreadable `pyproject.toml`, a version
-  that is not `major.minor.patch`, or a registry that answers neither 200 nor
-  404.) It starts enforcing like the npm checks the moment a version is up there,
-  so treat the Python version as unenforced only until then.
+The publish version is one patch above the HIGHEST published plain version
+(`npm view <pkg> versions --json`), not `latest` plus one — a `latest` dist-tag
+rolled back by hand after a bad release must not make this recompute a version
+that's already published. `latest`'s `gitHead` stays the content-diff baseline
+above; only the version arithmetic reads the full versions list.
 
-  **And the release now publishes it.** `python-client` is the third package
-  `publish-packages` dispatches, so the next ordinary release is the first one
-  that would upload to PyPI. Read *The first PyPI publish* in
-  `.github/workflows/CONTEXT.md` before cutting it: `PYPI_TOKEN` has to be
-  account-scoped for a first upload (a project-scoped token cannot exist for a
-  project that does not), the name has to still be free, and `0.1.0` is what
-  ships — PyPI filenames can never be reused, so move the version before that
-  run if it is going to move at all. A failure there is cheap: it is dispatched
-  last, nothing depends on it, and re-running the job skips whatever already
-  published.
-- `bun.lock` and the root `package.json` change what `skills` publishes (its
-  `dist/` is emitted by `tsc`, whose version bun resolves from the lockfile) but
-  are **not** in `skills-npm.yml`'s trigger, so a lockfile-only PR never reaches
-  the check. With the last stamp PR merged, `main` is already ahead and the
-  change ships anyway; if it was not merged, that case still needs the manual
-  look in step 2.
+A hand dispatch of either child workflow with no `version` input publishes one
+patch above the highest published version, the same guard the old PR check
+used to enforce, now run once at dispatch time. **A minor or major bump is a
+hand dispatch with `-f version=`.** After a hand-dispatched skills minor,
+hand-dispatch the scaffolder too — it depends on skills' version — or wait for
+the next release, which republishes the scaffolder anyway.
+
+One caveat: the **Python** check has nothing to *catch* until the first publish
+lands, because `malloy-publisher-sdk` is not on PyPI at all and a project-level
+404 is its pass. (It can still go red on an unreadable `pyproject.toml`, a
+version that is not `major.minor.patch`, or a registry that answers neither 200
+nor 404.) It starts enforcing for real the moment a version is up there, so treat
+the Python version as unenforced only until then.
+
+**Its PyPI publish is paused, though.** The `publish_pkg python-client` line at
+the end of `scripts/publish-packages.sh` is commented out, so no release
+dispatches `python-sdk.yml` today. Before restoring that line, read *The first
+PyPI publish* in `.github/workflows/CONTEXT.md`: `PYPI_TOKEN` has to be
+account-scoped for a first upload (a project-scoped token cannot exist for a
+project that does not), the name has to still be free, and `0.1.0` is what
+ships — PyPI filenames can never be reused, so move the version before that
+run if it is going to move at all. A failure there is cheap: it is dispatched
+last, nothing depends on it, and re-running the job skips whatever already
+published.
 
 `main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
 should: the post-release stamp PR resets those three files to the version that
@@ -230,56 +244,46 @@ git log --oneline "v$(npm view @malloy-publisher/server version)..origin/main"
 That commit list is what this release ships. If it is empty, there is nothing to
 release.
 
-### 2. Confirm the independently-versioned packages are bumped
+### 2. Skills and create-malloy-package need no pre-flight bump check
 
-`publish-packages` decides purely on the version in `main`'s `package.json`, and
-**a change that lands without a bump is skipped while the release stays green.**
-That used to be caught by nothing, so this step was a hand-audit of two packages.
-It is now a PR check on each of them, so this step is a confirmation rather than
-an investigation:
+Nothing is committed ahead of time for either package, so there is nothing to
+confirm here: `scripts/independent-version.mjs` reads npm's own state at release
+time and decides publish/skip/version from it, not from what `main` declares.
+Skip straight to *Sanity-check the notes* below.
+
+If you want to see what the release will decide before dispatching, ask npm the
+same questions the release does:
 
 ```bash
-for p in skills create-malloy-package; do
-  printf '%s: npm %s, main %s\n' "$p" \
-    "$(npm view "@malloy-publisher/$p" version)" \
-    "$(node -p "require('./packages/$p/package.json').version")"
-done
+npm view @malloy-publisher/skills dist-tags.latest
+npm view "@malloy-publisher/skills@$(npm view @malloy-publisher/skills dist-tags.latest)" gitHead
+git diff --quiet "<that gitHead>" origin/main -- skills/ packages/skills/ bun.lock package.json \
+  ':!skills/README.md' ':!packages/skills/src/*.spec.ts' && echo unchanged || echo changed
 
-# The Python client too. Its PyPI publish is paused (work in progress): the
-# release does not dispatch python-sdk.yml until the `publish_pkg python-client`
-# line at the end of scripts/publish-packages.sh is restored, so this reading does
-# not change between releases for now. Its version is in pyproject.toml, not a
-# package.json, and PyPI answers 404 for the whole project until the first upload
-# lands -- so "PyPI: 404" here is the expected reading today and NOT a reason to
-# skip the comparison next time.
+npm view @malloy-publisher/create-malloy-package dist-tags.latest
+npm view "@malloy-publisher/create-malloy-package@$(npm view @malloy-publisher/create-malloy-package dist-tags.latest)" publisherServer
+```
+
+`changed` (or any diff not `unchanged`) means skills will publish this release;
+`unchanged` means it skips. create-malloy-package publishes regardless, unless
+its `publisherServer` already equals the version this release is about to ship —
+that only happens on a re-run.
+
+Also check the Python client. Its PyPI publish is paused (work in progress): the
+release does not dispatch python-sdk.yml until the `publish_pkg python-client`
+line at the end of scripts/publish-packages.sh is restored, so this reading does
+not change between releases for now. Its version is in `pyproject.toml`, not a
+`package.json`, and PyPI answers 404 for the whole project until the first upload
+lands — so "PyPI: 404" here is the expected reading today and NOT a reason to
+skip the comparison next time.
+
+```bash
 printf 'python-client: PyPI %s, main %s\n' \
   "$(curl -sS --max-time 20 https://pypi.org/pypi/malloy-publisher-sdk/json \
      | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])' \
      2>/dev/null || echo 404)" \
   "$(python3 -c 'import tomllib; print(tomllib.load(open("packages/python-client/pyproject.toml","rb"))["project"]["version"])')"
 ```
-
-`main` one patch ahead of npm is the normal state: the last stamp PR moved it
-there. **Equal means that stamp PR has not merged** — look for it with step 3's
-`git ls-remote` and merge it before dispatching, or the release skips both
-packages and leaves `main` level with npm. Either way, the bump must be
-**merged to `main` before the dispatch**, because the release reads `main`, not
-the release branch.
-
-The one gap the checks do not cover: `bun.lock` and the root `package.json`
-change what `skills` publishes — its `dist/` is emitted by `tsc`, whose version
-bun resolves from the lockfile — but neither is in `skills-npm.yml`'s trigger, so
-a lockfile-only PR never reaches the check. It only matters when `skills` is at
-npm's version, which now means the last stamp PR did not merge. If so, and this
-release contains a dependency bump, look:
-
-```bash
-vb=$(git log --format=%h -S"\"version\": \"$(npm view @malloy-publisher/skills version)\"" \
-       -- packages/skills/package.json | tail -1)
-git log --oneline "$vb..origin/main" -- bun.lock package.json
-```
-
-Output there means bump `packages/skills/package.json`.
 
 #### The scaffolder's server pin is derived now — do not set it by hand
 
@@ -448,14 +452,14 @@ Two things `gh-release` did, both visible without leaving the run:
 - A `release-notes-stamp-<version>` branch is pushed, and the job summary's
   *Release notes and version* section carries a compare link to open it as a PR.
 
-**That branch carries three things**, despite its name: the stamped
-`RELEASE_NOTES.md` headings, `main`'s three `packages/{sdk,app,server}/
-package.json` files reset to the version that shipped, and `skills` and
-`create-malloy-package` moved one patch past what this release published for
-them. The summary line names all three. The first two can legitimately be zero —
-nothing to stamp, or `main` already declaring that version — so the bump is what
-normally guarantees a branch; when all three are zero no branch is pushed, and
-the summary says so.
+**That branch carries two things**, despite its name: the stamped
+`RELEASE_NOTES.md` headings, and `main`'s three `packages/{sdk,app,server}/
+package.json` files reset to the version that shipped. It no longer touches
+`skills` or `create-malloy-package`: both carry a fixed `0.0.0-dev` placeholder,
+decided at release time from npm's own state, so there is nothing left for this
+step to move ahead of. The summary line names both. Either can legitimately be
+zero — nothing to stamp, or `main` already declaring that version — so when both
+are zero no branch is pushed, and the summary says so.
 
 The name is unchanged on purpose: it is the identifier this skill and
 `CONTEXT.md` both tell you to look for, and renaming it would break the recovery
@@ -481,15 +485,12 @@ git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
 git fetch origin main && git show origin/main:packages/sdk/package.json | grep '"version"'
 ```
 
-**Wait for `publish-packages` to finish before you merge it.** This is not
-optional. The branch changes `packages/skills/package.json` and
-`packages/create-malloy-package/package.json`, which are exactly the paths that
-job's "main moved" guard watches, so merging early aborts the dispatch of
-whichever of the two has not gone yet. Re-running the job recovers, but it checks
-out the new `main` and publishes the moved-ahead version, leaving `main` level
-with npm and the next PR red again. Wait for the job to *finish*, not to go green:
-while the PyPI upload is still failing it ends red after both npm packages have
-published, and its summary says so.
+**Merging this PR is no longer time-sensitive against `publish-packages`.** The
+branch only touches `packages/{sdk,app,server}/package.json` and
+`RELEASE_NOTES.md`, neither of which is a path `publish_indep_pkg`'s "main moved"
+guard watches for skills or create-malloy-package, so merging it while
+`publish-packages` is still polling npm cannot abort either dispatch. Merge it
+whenever is convenient.
 
 The stamp step is `continue-on-error`, deliberately: the release is already
 public and correct by then, and reddening a finished release over a docs commit

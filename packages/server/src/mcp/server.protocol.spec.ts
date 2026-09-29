@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
 import { RELOAD_FAILURE_IS_SAFE } from "./tools/reload_package_tool";
 import type { EnvironmentStore } from "../service/environment_store";
+import packageJson from "../../package.json";
 
 /**
  * End-to-end coverage of the unified MCP server over the real MCP protocol,
@@ -181,6 +182,11 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       const { prompts } = await client.listPrompts();
       expect(prompts.length).toBeGreaterThanOrEqual(24);
       expect(prompts.some((p) => p.name === "malloy-analysis")).toBe(true);
+   });
+
+   it("names the real release in the initialize handshake", () => {
+      // This was a hard-coded "0.0.1", so a trace could not name its build.
+      expect(client.getServerVersion()?.version).toBe(packageJson.version);
    });
 
    it("delivers orientation instructions to the connecting client", () => {
