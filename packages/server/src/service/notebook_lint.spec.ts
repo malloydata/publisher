@@ -159,6 +159,11 @@ describe("notebook lint", () => {
       expect(lint(`${HEADER}##|"\n${body}|##\n`)).toEqual([]);
    });
 
+   it("leaves an indented block example inside prose alone", () => {
+      const body = 'See:\n    ##|"\n    example\n    |##\nmore\n';
+      expect(lint(`${HEADER}##|"\n${body}|##\n`)).toEqual([]);
+   });
+
    it("says render tags sit directly above the run they annotate", () => {
       expect(lint(`${HEADER}${SOURCE}# bar_chart\n##" a note\n${RUN}`)).toEqual(
          [

@@ -284,8 +284,8 @@ export function lintNotebookText(
          ) {
             if (!firstRun && /^\s*run\s*:/.test(tokenText(list[j])))
                firstRun = list[j];
-            if (!nested && /^\s*##\|/.test(tokenText(list[j])))
-               nested = list[j];
+            // An indented `##|` is quoted prose; a missed closer leaves the next opener at column 0.
+            if (!nested && /^##\|/.test(tokenText(list[j]))) nested = list[j];
             j++;
          }
          const end =
