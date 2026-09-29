@@ -111,6 +111,22 @@ class Formats(unittest.TestCase):
             config.load(make_set({"eval.toml": "[model]\nskip_golden_check = true\n"}))
         self.assertIn("'skip_golden_check' under [model]", str(e.exception))
 
+    def test_a_malformed_set_json_is_a_config_error(self):
+        with self.assertRaises(config.ConfigError) as e:
+            config.load(make_set({"set.json": '{"truthPackage": '}))
+        self.assertIn("set.json is not valid JSON", str(e.exception))
+
+    def test_a_set_json_that_is_not_an_object_is_a_config_error(self):
+        with self.assertRaises(config.ConfigError) as e:
+            config.load(make_set({"set.json": "[]"}))
+        self.assertIn("expected a JSON object at the top level, got list",
+                      str(e.exception))
+
+    def test_a_port_out_of_range_is_refused(self):
+        with self.assertRaises(config.ConfigError) as e:
+            config.load(make_set({"eval.json": json.dumps({"model": {"port": 0}})}))
+        self.assertIn("expected a port from 1 to 65535, got 0", str(e.exception))
+
     def test_a_wrong_type_is_refused(self):
         with self.assertRaises(config.ConfigError) as e:
             config.load(make_set({"eval.toml": '[model]\nport = "4000"\n'}))

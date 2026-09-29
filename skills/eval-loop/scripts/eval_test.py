@@ -59,5 +59,20 @@ class Help(unittest.TestCase):
                 self.assertIn("--set", out.getvalue())
 
 
+
+class UnreadableConfig(unittest.TestCase):
+    def test_a_malformed_set_json_exits_3_not_1(self):
+        """1 from verify says a golden drifted; nothing was checked here."""
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "set.json").write_text('{"truthPackage": ')
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = entry.main(["verify", "--set", d])
+        self.assertEqual(code, 3)
+        self.assertIn("set.json is not valid JSON", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -203,11 +203,20 @@ def _read(set_dir: pathlib.Path) -> tuple[pathlib.Path | None, dict[str, Any]]:
         except tomllib.TOMLDecodeError as e:
             raise ConfigError(f"{toml_path} is not valid TOML: {e}") from e
     if json_path.exists():
-        try:
-            return json_path, json.loads(json_path.read_text())
-        except json.JSONDecodeError as e:
-            raise ConfigError(f"{json_path} is not valid JSON: {e}") from e
+        return json_path, _json_object(json_path)
     return None, {}
+
+
+def _json_object(path: pathlib.Path) -> dict[str, Any]:
+    """A JSON file whose top level is an object, or a ConfigError that says why."""
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"{path} is not valid JSON: {e}") from e
+    if not isinstance(value, dict):
+        raise ConfigError(f"Invalid {path}: expected a JSON object at the top "
+                          f"level, got {type(value).__name__}.")
+    return value
 
 
 def _check(path: pathlib.Path, raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -239,6 +248,10 @@ def _check(path: pathlib.Path, raw: dict[str, Any]) -> dict[str, dict[str, Any]]
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise ConfigError(f"Invalid {path} on '{section}.{key}': "
                                       f"expected an integer, got {value!r}.")
+                if not 1 <= value <= 65535:
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a port from 1 to 65535, got "
+                                      f"{value}.")
                 out[section][key] = value
             else:
                 if not isinstance(value, str) or not value:
@@ -253,5 +266,5 @@ def load(set_dir: pathlib.Path) -> Config:
     path, raw = _read(set_dir)
     data = _check(path, raw) if path else {}
     meta_path = set_dir / "set.json"
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta = _json_object(meta_path) if meta_path.exists() else {}
     return Config(set_dir, path, data, meta)

@@ -76,8 +76,20 @@ def run_dir_from_label(args: list[str]) -> list[str]:
     return [*out, "--run", str(cfg.workdir() / "runs" / label)]
 
 
+CANNOT_RUN = 3
+
+
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+    """Exit 3 for a set whose config cannot be read, as every script does:
+    nothing was checked or run, which is not the same as a check failing."""
+    try:
+        return dispatch(list(sys.argv[1:] if argv is None else argv))
+    except config.ConfigError as e:
+        print(e, file=sys.stderr)
+        return CANNOT_RUN
+
+
+def dispatch(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in VERBS:
         print(__doc__)
         return 0 if argv and argv[0] in ("-h", "--help") else 2
