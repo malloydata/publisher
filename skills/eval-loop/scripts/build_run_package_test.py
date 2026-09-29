@@ -212,7 +212,7 @@ class RefusalsAndServing(unittest.TestCase):
         (self.run / "clusters.jsonl").write_text("")
         (self.sset / "eval.toml").write_text("[truth]\nport = 4881\n")
         out = self.tmp / "pkg"
-        p = self.build("--out", str(out))
+        p = self.build("--out", str(out), "--no-register")
         self.assertEqual(p.returncode, 0, p.stderr)
         want = ["# case matrix: http://localhost:4881/environments/truth/packages/pkg/",
                 "# notebook:    http://localhost:4881/truth/pkg/eval_run.malloynb"]
@@ -257,6 +257,50 @@ class RefusalsAndServing(unittest.TestCase):
         lines = build_run_package.serving_lines(cfg, [run], out)
         body = shlex.split(lines[1].strip())[-1]
         self.assertEqual(json.loads(body)["location"], str(out.resolve()))
+
+
+class Register(unittest.TestCase):
+    """`package` registers the report on the truth server itself."""
+
+    def serve(self, status):
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers["content-length"])
+                seen.append((self.path, json.loads(self.rfile.read(n))))
+                self.send_response(status)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}", seen
+
+    def test_it_posts_the_built_package(self):
+        base, seen = self.serve(200)
+        out = pathlib.Path(tempfile.mkdtemp()) / "eval-r1"
+        self.assertIsNone(build_run_package.register(base, "truth", out))
+        self.assertEqual(seen, [("/api/v0/environments/truth/packages",
+                                 {"name": "eval-r1",
+                                  "location": str(out.resolve())})])
+
+    def test_a_refusal_is_returned_with_its_status(self):
+        base, _ = self.serve(500)
+        got = build_run_package.register(base, "truth", pathlib.Path("/x/eval-r1"))
+        self.assertTrue(got.startswith("HTTP 500"), got)
+
+    def test_no_server_is_returned_not_raised(self):
+        got = build_run_package.register("http://127.0.0.1:9", "truth",
+                                         pathlib.Path("/x/eval-r1"))
+        self.assertIsNotNone(got)
+
 
 if __name__ == "__main__":
     unittest.main()

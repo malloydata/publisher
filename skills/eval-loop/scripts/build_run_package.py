@@ -32,6 +32,8 @@ import pathlib
 import shlex
 import shutil
 import sys
+import urllib.error
+import urllib.request
 from typing import Any
 
 TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-run-package"
@@ -597,6 +599,25 @@ def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
             *tail]
 
 
+def register(base: str, env: str, out: pathlib.Path) -> str | None:
+    """Register the built package on `base`, or return why it could not be.
+
+    A POST for a name the server already has re-copies the package, so a
+    rebuilt report replaces the one it served; no delete is needed first.
+    """
+    body = json.dumps({"name": out.name, "location": str(out.resolve())}).encode()
+    req = urllib.request.Request(
+        f"{base.rstrip('/')}/api/v0/environments/{env}/packages", data=body,
+        method="POST", headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120):
+            return None
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}"
+    except (urllib.error.URLError, OSError) as e:
+        return str(getattr(e, "reason", e))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", action="append", required=True, type=pathlib.Path,
@@ -613,6 +634,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="with no truth server, print the command that registers "
                          "the report on the model server anyway, and the DELETE "
                          "that removes it before the next run")
+    ap.add_argument("--no-register", action="store_true",
+                    help="build and print the registration command, but do not "
+                         "register the report on the truth server")
     a = ap.parse_args(argv)
     cfg = config.load(a.set_dir)
     out = a.out or cfg.workdir() / "packages" / f"eval-{a.run[0].name}"
@@ -637,6 +661,18 @@ def main(argv: list[str] | None = None) -> int:
         "# Serving this report\n\n```bash\n" + "\n".join(lines) + "\n```\n")
     print(f"{out}")
     print("  " + ", ".join(f"{v} {k}" for k, v in counts.items()))
+    base = cfg.truth_publisher()
+    if base and not a.no_register:
+        env = cfg.get("truth", "environment")
+        failed = register(base, env, out)
+        if failed is None:
+            print(f"registered on the truth server, {base}")
+            print("\n".join(l for l in lines if l.startswith("# ")))
+            return 0
+        print(f"  ! could not register on {base}: {failed}. Is `eval.py serve "
+              f"truth` running? Start it, then run:", file=sys.stderr)
+        print("\n".join(lines))
+        return 1
     print("\n".join(lines))
     return 0
 

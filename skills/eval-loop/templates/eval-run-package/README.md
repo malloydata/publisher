@@ -120,8 +120,9 @@ hole -- that exact bug is why the tables are cross-checked rather than trusted.
 
 ## Serving it
 
-`eval.py package` prints the `curl` that registers this package on a
-server that is already running (the truth server when the set has one). The
+`eval.py package` registers this package on the set's truth server, and
+writes the `curl` that does it into the README.md it builds, for serving it
+again later. The
 rest of this section is for serving it on a Publisher of its own.
 
 ```bash

@@ -55,11 +55,12 @@ different task with its own turn.
 python3 skills/eval-loop/scripts/eval.py package --set <set-dir> --label <label>
 ```
 
-That builds a Malloy package over the run's own CSVs and prints the `curl` that
-registers it with no restart, and the two URLs below. Run the printed `curl` as
-it is. It registers on the TRUTH server, because the package holds the answer
-key and the answerer must not reach it. A set with no truth server gets no
-`curl`: the only Publisher is the answerer's. Add a `[truth]` section and
+That builds a Malloy package over the run's own CSVs, registers it with no
+restart, and prints the two URLs below. It registers on the TRUTH server,
+because the package holds the answer key and the answerer must not reach it.
+If the truth server is not running it says so and prints the `curl` to run
+once it is. A set with no truth server gets no registration: the only
+Publisher is the answerer's. Add a `[truth]` section and
 `eval.py serve truth`, or pass `--on-model-server`, which prints the `curl`
 and the `DELETE` to run before the next run.
 
