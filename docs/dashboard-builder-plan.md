@@ -443,9 +443,12 @@ and referenced from `tiles=`:
 1. The header is `##!` flags, `//` comments and unnamed `"` notes, then
    `## artifact { kind=notebook … }`. Nothing else goes above the tag.
 2. Prose is `##"` or `##|"` … `|##`, with the closer at the opener's column. No
-   body line starts with `|##`. Leave a blank line after it. A `## Heading`
-   line is model tags, not prose.
-3. Render tags sit directly above `run:`, with nothing between.
+   body line starts with `|##`. A `## Heading` line is model tags, not prose.
+   (Generators leave a blank line after a closer as style; the compiler does not
+   require it.)
+3. No statement and no `##` line between a run's tags and its `run:`. A blank
+   line or a `//` comment there is fine. A `#"` or `# tag` above a `given:`
+   attaches to the given, not to the next run.
 4. `given:` uses `NAME :: filter<T> is f''`, bound with `~`, declared before
    first use. This is identical to the dashboard skill.
 5. Trailing prose is `##"`, never `#"`.
