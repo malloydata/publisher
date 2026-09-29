@@ -22,10 +22,15 @@
  * one field-identity primitive, {@link assertFilterConditionBindsToDeclaringSource}.
  *
  * "Identical field" (this module's one comparison) means: same `name`, same
- * `type`, and a deep-equal `e` — ignoring `location`, `annotations` and
+ * `type`, and a deep-equal `e` — ignoring `location`, `at`, `annotations` and
  * `accessModifier`, which can legitimately differ across a derivation without
  * the field being a different one. A join hop additionally requires the same
- * `join` relationship and a deep-equal `onExpression`. A field is looked up
+ * `join` relationship and a deep-equal `onExpression`, `filterList`,
+ * `parameters` and `arguments` on the joined struct, since two same-table
+ * sources share a `name` and differ in rows only through those. Source
+ * positions are never compared, so a caller who re-joins exactly what the
+ * author declared is served, and one who changes what it reads is refused on
+ * that change. A field is looked up
  * by its ACTIVE name (`.as` if aliased, else `.name` — see {@link activeName}),
  * never by `.name` alone, so an aliased join member is compared correctly
  * instead of failing to resolve at all.
@@ -129,7 +134,15 @@ function activeName(f: { name: string; as?: string }): string {
    return f.as ?? f.name;
 }
 
-const IGNORED_KEYS = new Set(["location", "annotations", "accessModifier"]);
+const IGNORED_KEYS = new Set([
+   "location",
+   "at",
+   "annotations",
+   "accessModifier",
+]);
+
+/** Joined-struct properties, beyond `name`, that decide which rows the join reaches. */
+const JOINED_STRUCT_ROW_KEYS = ["filterList", "parameters", "arguments"];
 
 /** Structural equality ignoring {@link IGNORED_KEYS}. A key-order mismatch
  *  between two otherwise-identical objects would read as "different" here —
@@ -168,6 +181,12 @@ function fieldsIdentical(
       if (!isJoined(a) || !isJoined(b)) return false;
       if (a.join !== b.join) return false;
       if (!deepEqualIgnoring(a.onExpression, b.onExpression)) return false;
+      // A same-table sibling (`where:`, or different parameter bindings) keeps the joined struct's `name`.
+      const ja = a as unknown as Record<string, unknown>;
+      const jb = b as unknown as Record<string, unknown>;
+      for (const key of JOINED_STRUCT_ROW_KEYS) {
+         if (!deepEqualIgnoring(ja[key], jb[key])) return false;
+      }
    }
    return true;
 }
@@ -246,8 +265,9 @@ function fieldPathIdentical(
  * - each such join's joined source: the fields its own `where:` conditions
  *   read, relative to the joined struct.
  * Returns `truncated: true` (never a partial list) when the walk would exceed
- * {@link MAX_CLOSURE_SIZE}, and `unrecordedJoin` naming a join whose ON reads
- * fields but carries no `refSummary` to list them. The caller must treat
+ * {@link MAX_CLOSURE_SIZE}, and `unrecordedJoin` naming a join whose ON, or
+ * one of its joined source's `where:` conditions, reads fields but carries no
+ * `refSummary` to list them. The caller must treat
  * either as "cannot prove this binds correctly" (deny), not "here is
  * everything there is".
  */
@@ -295,7 +315,10 @@ function fieldUsageClosure(
             | {
                  onExpression?: unknown;
                  refSummary?: RefSummaryLike;
-                 filterList?: readonly { refSummary?: RefSummaryLike }[];
+                 filterList?: readonly {
+                    refSummary?: RefSummaryLike;
+                    e?: unknown;
+                 }[];
               }
             | undefined;
          if (
@@ -313,6 +336,13 @@ function fieldUsageClosure(
             queue.push([...path.slice(0, i), ...u.path]);
          }
          for (const condition of join?.filterList ?? []) {
+            if (!condition.refSummary && expressionReadsField(condition.e)) {
+               return {
+                  paths,
+                  truncated: false,
+                  unrecordedJoin: path.slice(0, i + 1).join("."),
+               };
+            }
             for (const u of condition.refSummary?.fieldUsage ?? []) {
                queue.push([...path.slice(0, i + 1), ...u.path]);
             }
@@ -344,7 +374,7 @@ export function assertFilterConditionBindsToDeclaringSource(
    }
    if (unrecordedJoin) {
       throw new Error(
-         `a row-security filter reaches through \`${unrecordedJoin}\`, whose ON inputs are not recorded`,
+         `a row-security filter reaches through \`${unrecordedJoin}\`, whose ON or where: inputs are not recorded`,
       );
    }
    for (const path of paths) {
@@ -384,7 +414,7 @@ export function assertFilterDimensionBindsToDeclaringSource(
    }
    if (unrecordedJoin) {
       throw new Error(
-         `a #(filter) dimension reaches through \`${unrecordedJoin}\`, whose ON inputs are not recorded`,
+         `a #(filter) dimension reaches through \`${unrecordedJoin}\`, whose ON or where: inputs are not recorded`,
       );
    }
    for (const path of paths) {

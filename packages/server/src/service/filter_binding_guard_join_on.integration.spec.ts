@@ -9,7 +9,9 @@
  * a swapped-in joined source, changes which child row each parent row reaches
  * without touching `child.org_id` itself. These pin that the filter-binding
  * check compares those columns too, through the real `Model.create` /
- * `getQueryResults` path.
+ * `getQueryResults` path. The unrecorded-inputs cases are hand-built
+ * `SourceDef`s calling the assert directly, because the real compiler always
+ * records a join's ON and `where:` inputs.
  *
  * Seed: parent ids 1,2 join children in org 1 and ids 3,4 children in org 2,
  * so GROUPS [1] admits exactly parent ids 1,2. `active` is true only for
@@ -27,7 +29,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError } from "../errors";
-import { assertFilterConditionBindsToDeclaringSource } from "./filter_binding_guard";
+import {
+   assertFilterConditionBindsToDeclaringSource,
+   assertFilterDimensionBindsToDeclaringSource,
+} from "./filter_binding_guard";
 import { Model } from "./model";
 
 const SEED_SQL = `
@@ -252,40 +257,87 @@ describe("filter binding guard — a caller join into a gated source that rebind
    });
 });
 
-describe("filter binding guard — a join whose ON inputs are not recorded", () => {
-   it("denies rather than skipping the ON", () => {
-      const join = {
-         type: "table",
-         name: "duckdb:childtable",
-         as: "child",
-         dialect: "duckdb",
-         connection: "duckdb",
-         tablePath: "childtable",
-         join: "one",
-         onExpression: {
-            node: "=",
-            kids: {
-               left: { node: "field", path: ["id"] },
-               right: { node: "field", path: ["child", "id"] },
-            },
-         },
-         fields: [{ type: "number", name: "org_id" }],
-      };
-      const root = {
+describe("filter binding guard — a join whose ON or where: inputs are not recorded", () => {
+   const onExpression = {
+      node: "=",
+      kids: {
+         left: { node: "field", path: ["id"] },
+         right: { node: "field", path: ["child", "id"] },
+      },
+   };
+
+   function root(join: Record<string, unknown>): SourceDef {
+      return {
          type: "table",
          name: "duckdb:orgtable",
          dialect: "duckdb",
          connection: "duckdb",
          tablePath: "orgtable",
-         fields: [{ type: "number", name: "id" }, join],
+         fields: [
+            { type: "number", name: "id" },
+            {
+               type: "number",
+               name: "child_org",
+               e: { node: "field", path: ["child", "org_id"] },
+               refSummary: { fieldUsage: [{ path: ["child", "org_id"] }] },
+            },
+            {
+               type: "table",
+               name: "duckdb:childtable",
+               as: "child",
+               dialect: "duckdb",
+               connection: "duckdb",
+               tablePath: "childtable",
+               join: "one",
+               onExpression,
+               fields: [
+                  { type: "number", name: "org_id" },
+                  { type: "boolean", name: "active" },
+               ],
+               ...join,
+            },
+         ],
       } as unknown as SourceDef;
-      const condition = {
-         code: "child.org_id in $GROUPS",
-         refSummary: { fieldUsage: [{ path: ["child", "org_id"] }] },
-      } as unknown as FilterCondition;
+   }
+
+   const condition = {
+      code: "child.org_id in $GROUPS",
+      refSummary: { fieldUsage: [{ path: ["child", "org_id"] }] },
+   } as unknown as FilterCondition;
+   const unrecordedOn = root({});
+   const unrecordedWhere = root({
+      refSummary: { fieldUsage: [{ path: ["id"] }, { path: ["child", "id"] }] },
+      filterList: [{ code: "active", e: { node: "field", path: ["active"] } }],
+   });
+
+   it("denies a row filter rather than skipping the ON", () => {
       expect(() =>
-         assertFilterConditionBindsToDeclaringSource(root, root, condition),
-      ).toThrow(/ON inputs are not recorded/);
+         assertFilterConditionBindsToDeclaringSource(
+            unrecordedOn,
+            unrecordedOn,
+            condition,
+         ),
+      ).toThrow(/ON or where: inputs are not recorded/);
+   });
+
+   it("denies a row filter rather than skipping the joined source's where:", () => {
+      expect(() =>
+         assertFilterConditionBindsToDeclaringSource(
+            unrecordedWhere,
+            unrecordedWhere,
+            condition,
+         ),
+      ).toThrow(/ON or where: inputs are not recorded/);
+   });
+
+   it("denies a #(filter) dimension that reaches through the join", () => {
+      expect(() =>
+         assertFilterDimensionBindsToDeclaringSource(
+            unrecordedOn,
+            unrecordedOn,
+            "child_org",
+         ),
+      ).toThrow(/#\(filter\) dimension .*not recorded/);
    });
 });
 
@@ -333,6 +385,19 @@ describe("filter binding guard — a swapped-in joined source that rebinds what 
          "except: child; join_one: child is child_from(minid is 1) on id = child.id",
          [1, 2],
       ],
+      // Children 3,4 are in org 2 and inactive, so GROUPS [2] should see none.
+      [
+         "the joined source's where: dropped",
+         "gated_active",
+         "except: child; join_one: child is child_all on id = child.id",
+         [2],
+      ],
+      [
+         "the joined source's where: flipped",
+         "gated_active",
+         "except: child; join_one: child is child_all extend { where: not active } on id = child.id",
+         [2],
+      ],
    ])("is denied (%s)", async (_label, target, extendBody, groups) => {
       await withModel(async (model) => {
          await expectDenied(
@@ -345,6 +410,18 @@ describe("filter binding guard — a swapped-in joined source that rebinds what 
 });
 
 describe("filter binding guard — shapes that leave the join's inputs alone still serve", () => {
+   it("a caller re-join of the author's own joined source with the same ON", async () => {
+      await withModel(async (model) => {
+         expect(
+            await rows(
+               model,
+               `run: gated_active extend { except: child; join_one: child is child_active on id = child.id }${IDS}`,
+               { GROUPS: [1, 2] },
+            ),
+         ).toEqual([{ id: 1 }, { id: 2 }]);
+      });
+   });
+
    it("a model-declared extend of the gated source", async () => {
       await withModel(async (model) => {
          expect(
