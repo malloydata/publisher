@@ -21,3 +21,8 @@ export const METER_NAME = "publisher";
 export function publisherMeter(): Meter {
    return metrics.getMeter(METER_NAME);
 }
+
+/** Histogram buckets for a request duration; the OTel default stops at 10s. */
+export const REQUEST_DURATION_BUCKETS_MS = [
+   5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 60000,
+];

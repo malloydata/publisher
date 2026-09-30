@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { artifactLine, isIdentifier, tileSteps } from "./malloyText";
+import {
+   artifactLine,
+   blockSpans,
+   closesBlock,
+   isIdentifier,
+   markdownNote,
+   tileSteps,
+} from "./malloyText";
 
 /**
  * What is left here reads the two grammars that are not Malloy's. The shapes
@@ -41,5 +48,67 @@ describe("the model-level ## lines", () => {
       ];
       expect(artifactLine(lines)).toBe(2);
       expect(artifactLine(["source: a is b"])).toBe(-1);
+   });
+});
+
+describe("markdownNote", () => {
+   it("reads Malloy's route from the first token, in every bracket form", () => {
+      expect(markdownNote("#(markdown) x")).toEqual({ level: 1, block: false });
+      expect(markdownNote("  ##[markdown]")).toEqual({
+         level: 2,
+         block: false,
+      });
+      expect(markdownNote("#|<markdown>")).toEqual({ level: 1, block: true });
+      expect(markdownNote("##|{markdown} x")).toEqual({
+         level: 2,
+         block: true,
+      });
+   });
+
+   it("refuses a malformed or different route", () => {
+      for (const line of [
+         "#(markdown)hi",
+         "#(markdown]",
+         "#markdown x",
+         "#(Markdown) x",
+         "#(markdown_help) x",
+         "#(doc) x",
+         "# (markdown)",
+         "###(markdown)",
+      ])
+         expect(markdownNote(line)).toBeUndefined();
+   });
+});
+
+describe("closesBlock", () => {
+   it("wants the opener's own column", () => {
+      expect(closesBlock("|#", 0, "|#")).toBe(true);
+      expect(closesBlock("  |#", 0, "|#")).toBe(false);
+      expect(closesBlock("  |#", 2, "|#")).toBe(true);
+      expect(closesBlock("|#", 2, "|#")).toBe(false);
+      expect(closesBlock("    |#", 2, "|#")).toBe(false);
+      expect(closesBlock("    |#", undefined, "|#")).toBe(true);
+   });
+
+   it("never closes a `#|` block on `|##`", () => {
+      expect(closesBlock("|##", 0, "|#")).toBe(false);
+      expect(closesBlock("|##", 0, "|##")).toBe(true);
+      expect(closesBlock("|# tail", 0, "|#")).toBe(true);
+   });
+});
+
+describe("blockSpans", () => {
+   it("closes on the opener's column and skips openers a comment holds", () => {
+      const lines = [
+         "  #|(markdown)",
+         "|# wrong column",
+         "  |## wrong closer",
+         "  |#",
+         "/*",
+         "#| in a comment",
+         "|#",
+         "*/",
+      ];
+      expect(blockSpans(lines, (i) => i >= 4)).toEqual([[0, 3]]);
    });
 });

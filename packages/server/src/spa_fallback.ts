@@ -78,7 +78,8 @@ const ASSET_EXTENSIONS = new Set([
  * Third segments that belong to the app rather than to a package's `public/`
  * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
  * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
- * embedded data app viewer and `dashboards/<slug>` is the dashboard viewer.
+ * embedded data app viewer, `dashboards/<slug>` is the dashboard viewer, and
+ * `notebooks/<slug>` is the served-notebook viewer.
  *
  * `dashboards` is here because a slug is a FILENAME with its `.malloy` suffix
  * removed, so `dashboards/report.csv.malloy` publishes the slug `report.csv`,
@@ -86,6 +87,10 @@ const ASSET_EXTENSIONS = new Set([
  * this entry that dashboard is listed on the package page, served by the API,
  * and reachable by in-app navigation, but a deep link or a refresh 302s to the
  * static route and answers 404. Measured before adding it.
+ *
+ * `notebooks` is here for the same reason (`notebooks/report.csv.malloy`
+ * publishes the slug `report.csv`) and carries the same cost for a package's
+ * own `public/notebooks/` directory.
  *
  * The cost, worth stating: a package
  * that ships a `public/dashboards/` directory can no longer address those files
@@ -101,7 +106,7 @@ const ASSET_EXTENSIONS = new Set([
  * a `pages/...` path is an ordinary path into the package's `public/` directory
  * again.
  */
-const SPA_OWNED_SEGMENTS = new Set(["dashboards", "data-apps"]);
+const SPA_OWNED_SEGMENTS = new Set(["dashboards", "data-apps", "notebooks"]);
 
 export type SpaFallbackAction =
    /** Serve the app shell, as before. */

@@ -92,6 +92,21 @@ function ModelPage() {
       );
    }
 
+   // `notebooks/tour` is the notebook; `.malloy` and `.malloynb` paths keep their own views.
+   if (
+      modelPath?.startsWith("notebooks/") &&
+      !modelPath.endsWith(".malloy") &&
+      !modelPath.endsWith(".malloynb")
+   ) {
+      return (
+         <NotebookPage
+            environmentName={params.environmentName}
+            packageName={params.packageName}
+            notebookPath={`${modelPath}.malloy`}
+         />
+      );
+   }
+
    // In-package HTML data app (embedded view). The Data Apps section in
    // <Package> routes clicks to `data-apps/<file>` so this branch picks them
    // up. <DataAppViewer> iframes the standalone Publisher URL and resizes

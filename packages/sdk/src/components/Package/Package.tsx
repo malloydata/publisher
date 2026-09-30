@@ -40,7 +40,14 @@ import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
 
+// The pinned README: the root `.malloynb`, or a served notebook named README in `notebooks/`.
 const README_NOTEBOOK = "README.malloynb";
+const isServedReadme = (path: string | undefined) =>
+   path?.toLowerCase() === "notebooks/readme.malloy";
+
+/** A served notebook opens by slug, like a dashboard; a `.malloynb` opens by path. */
+const servedNotebookSlug = (path: string | undefined) =>
+   /^notebooks\/([^/]+)\.malloy$/.exec(path ?? "")?.[1];
 
 interface PackageProps {
    onClickPackageFile?: (to: string, event?: React.MouseEvent) => void;
@@ -228,12 +235,16 @@ export default function Package({
       .sort((a, b) => a.path.localeCompare(b.path));
 
    const description = pkgQuery.data?.data?.description ?? "";
-   const hasReadme = notebooks.some((n) => n.path === README_NOTEBOOK);
+   // The root `.malloynb` wins when both exist, so a listing order never flips the pin.
+   const readmePath = (
+      notebooks.find((n) => n.path === README_NOTEBOOK) ??
+      notebooks.find((n) => isServedReadme(n.path))
+   )?.path;
    const readmeResourceUri = encodeResourceUri({
       environmentName,
       packageName,
       versionId,
-      modelPath: README_NOTEBOOK,
+      modelPath: readmePath,
    });
 
    // The dashboards list is part of the gate, not just the notebooks one,
@@ -442,6 +453,7 @@ export default function Package({
                         // reader needs to find the file is never lost.
                         const hasTitle =
                            !!notebook.title && notebook.title !== notebook.path;
+                        const slug = servedNotebookSlug(notebook.path);
                         return (
                            <PackageItemRow
                               key={notebook.path}
@@ -450,7 +462,9 @@ export default function Package({
                               rightLabel={hasTitle ? notebook.path : undefined}
                               onClick={(event) =>
                                  onClick(
-                                    `/${environmentName}/${packageName}/${notebook.path}`,
+                                    slug === undefined
+                                       ? `/${environmentName}/${packageName}/${notebook.path}`
+                                       : `/${environmentName}/${packageName}/notebooks/${encodeURIComponent(slug)}`,
                                     event,
                                  )
                               }
@@ -564,7 +578,7 @@ export default function Package({
 
                <Materializations resourceUri={resourceUri} />
 
-               {hasReadme && (
+               {readmePath && (
                   <Box sx={{ mt: 6 }}>
                      <Notebook
                         resourceUri={readmeResourceUri}

@@ -10,7 +10,7 @@ an in-package HTML app for the case matrix.
 WHY BOTH A NOTEBOOK AND AN APP
 
 They are not redundant, and the split is not stylistic. Publisher renders a
-`.malloynb` natively, so the aggregate tables -- pass rate, effort, most-missed
+`.malloy` notebook natively, so the aggregate tables -- pass rate, effort, most-missed
 entities, the backlog -- are best expressed as Malloy and left alone: no
 JavaScript to drift out of step with the model. What a notebook cannot do is
 open a drawer, and reading an eval is mostly drilling into one case. So the
@@ -530,9 +530,11 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "n_cases", "proposed_edit", "evidence", "confidence"])
     write_csv(data / "cluster_members.csv", member_rows, ["cluster_id", "qid"])
 
-    for name in ("publisher.json", "eval_run.malloy", "eval_run.malloynb"):
+    for name in ("publisher.json", "eval_run.malloy"):
         if (TEMPLATE / name).exists():
             shutil.copy(TEMPLATE / name, out / name)
+    if (TEMPLATE / "notebooks").exists():
+        shutil.copytree(TEMPLATE / "notebooks", out / "notebooks", dirs_exist_ok=True)
     if (TEMPLATE / "public").exists():
         shutil.copytree(TEMPLATE / "public", out / "public", dirs_exist_ok=True)
 

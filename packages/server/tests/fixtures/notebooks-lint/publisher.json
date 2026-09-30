@@ -1,0 +1,5 @@
+{
+   "name": "notebooks-lint",
+   "version": "1.0.0",
+   "description": "Fixture for the served-notebook lint and its fix-its"
+}

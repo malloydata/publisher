@@ -1,0 +1,13 @@
+import "../models/orders.malloy"
+import "../models/hidden.malloy"
+
+source: shown is orders extend { measure: shown_count is count() }
+
+# artifact { title="Runs" }
+query: tile is shown -> { aggregate: shown_count }
+
+run: shown -> { aggregate: shown_count }
+
+run: hidden -> { select: * }
+
+run: hidden -> { aggregate: secret_total }

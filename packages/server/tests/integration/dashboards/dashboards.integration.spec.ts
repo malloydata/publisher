@@ -1003,12 +1003,10 @@ describe("Dashboard discovery (E2E)", () => {
                "# dashboard { columns=… } must be a positive integer",
             ),
          );
-         // The other half of the one-spelling change, and the reason the
-         // enumeration lint exists: nothing reads `dashboard_columns` any more,
-         // so without this the grid silently falls back to the default width.
+         // The enumeration lint: a property nothing reads would otherwise fall back silently.
          expect(messages).toContainEqual(
             expect.stringContaining(
-               "`dashboard_columns` in the artifact tag does nothing in Publisher",
+               "`tile_columns` in the artifact tag does nothing in Publisher",
             ),
          );
          expect(messages).toContainEqual(

@@ -829,6 +829,46 @@ export { pub2, pub3 }`,
       }
    });
 
+   it("does not count a served notebook or dashboard among the models a broken surface refuses", async () => {
+      writeManifest({});
+      fs.mkdirSync(path.join(tempDir, "notebooks"));
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `source: orders is duckdb.sql("select 1 as id")\nexport { orders }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "notebooks/nb.malloy"),
+         `## artifact { kind=notebook }\nsource: nb is duckdb.sql("select 1 as id")\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards/d.malloy"),
+         `## artifact { tiles=["dq -> v"] }\nsource: dq is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "orders.malloy"\nexport { orders }`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "orders.malloy"\nexport { ordrs }`,
+         );
+         await pkg.reloadAllModels({});
+         expect(pkg.isServedNotebook("notebooks/nb.malloy")).toBe(true);
+         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+            "dashboards/d.malloy",
+         ]);
+         expect(pkg.brokenSurfaceWarnings()[0].message).toContain(
+            "including the 1 that compiled",
+         );
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("explains itself when a broken index.malloy takes the whole package down", async () => {
       // `reloadAllModels` DIRECTLY, which is the narrow path this warning is
       // for: it installs a placeholder for the file that failed and does not

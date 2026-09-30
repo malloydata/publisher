@@ -82,7 +82,7 @@ there for the primitive, then follow the application you need.
 | [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                                                          |
 | [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                                                              |
 | [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.                                                                                                                 |
-| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder and the Malloyyo-style notebook — research, gaps against the state of the art, how the builder is built, the notebook format and its builder, and the steps for each gap. |
+| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder and the `.malloy` notebook      — research, gaps against the state of the art, how the builder is built, the notebook format and its builder, and the steps for each gap. |
 
 ## Full public docs
 

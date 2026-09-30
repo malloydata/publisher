@@ -8,7 +8,11 @@ import type {
    DashboardTile,
 } from "./document";
 import type { LocalGiven } from "./document";
-import { artifactLine } from "./malloyText";
+import {
+   artifactLine,
+   descriptionNotes,
+   hasNonQuotedTiles,
+} from "./malloyText";
 import {
    parseMalloy,
    parseRefused,
@@ -408,6 +412,13 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
             reason: "Could not find the `## artifact` tag to reorder.",
          };
       }
+      if (hasNonQuotedTiles(lines[artifactAt])) {
+         return {
+            ok: false,
+            reason:
+               "The `tiles=[…]` list holds an entry the builder does not model, such as a text tile, and rewriting the list would drop it. Reorder, add and remove tiles in the file's text.",
+         };
+      }
       const written = [...lines[artifactAt].matchAll(/"([^"]+)"/g)].map(
          (m) => m[1],
       );
@@ -442,6 +453,81 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
          edits.push({ ...wholeLine(artifactAt), text: `${rewritten}\n` });
    }
    return undefined;
+}
+
+/**
+ * `line` without one property of the artifact tag's own braces: spelled with
+ * any spacing round the `=`, and never matched inside a quoted string or a
+ * nested block.
+ */
+function removeArtifactProperty(line: string, key: string): string {
+   let depth = 0;
+   let groups = 0;
+   for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+         i = endOfString(line, i);
+      } else if (c === "{" || c === "[") {
+         if (depth++ === 0) groups++;
+      } else if (c === "}" || c === "]") {
+         depth--;
+      } else if (
+         groups === 1 &&
+         depth === 1 &&
+         line.startsWith(key, i) &&
+         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
+      ) {
+         const eq = /^\s*=\s*/.exec(line.slice(i + key.length));
+         if (!eq) continue;
+         const valueAt = i + key.length + eq[0].length;
+         const valueEnd =
+            line[valueAt] === '"'
+               ? endOfString(line, valueAt) + 1
+               : valueAt +
+                 (/^[^\s}]*/.exec(line.slice(valueAt))?.[0].length ?? 0);
+         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
+         return line.slice(0, from) + line.slice(valueEnd);
+      }
+   }
+   return line;
+}
+
+/** `line` without its `dashboard { … }` block: outside the artifact braces and never inside a string. */
+function removeDashboardBlock(line: string): string {
+   let depth = 0;
+   for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') i = endOfString(line, i);
+      else if (c === "{" || c === "[") depth++;
+      else if (c === "}" || c === "]") depth--;
+      else if (
+         depth === 0 &&
+         line.startsWith("dashboard", i) &&
+         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
+      ) {
+         const open = /^dashboard\s*\{/.exec(line.slice(i));
+         if (!open) continue;
+         let inner = 1;
+         let j = i + open[0].length;
+         for (; j < line.length && inner > 0; j++) {
+            if (line[j] === '"') j = endOfString(line, j);
+            else if (line[j] === "{") inner++;
+            else if (line[j] === "}") inner--;
+         }
+         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
+         return line.slice(0, from) + line.slice(j);
+      }
+   }
+   return line;
+}
+
+/** The index of the quote closing the string that opens at `open`. */
+function endOfString(line: string, open: number): number {
+   for (let i = open + 1; i < line.length; i++) {
+      if (line[i] === "\\") i++;
+      else if (line[i] === '"') return i;
+   }
+   return line.length;
 }
 
 function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
@@ -523,7 +609,9 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       inner = inner.replace(/\s{2,}/g, " ");
       line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
       if (current.columns !== next.columns) {
-         line = line.replace(/\s*dashboard\s*\{[^}]*\}/, "");
+         // The deprecated alias would otherwise sit beside the new width and conflict with it.
+         line = removeArtifactProperty(line, "dashboard_columns");
+         line = removeDashboardBlock(line);
          if (next.columns !== undefined)
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
       }
@@ -531,25 +619,35 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       else edits.push({ ...wholeLine(artifactAt), text: `${line}\n` });
    }
    if (current.description !== next.description) {
-      // The run of `##"` lines, wherever it is; a new one goes above the tag.
-      const docLines = lines
-         .map((l, i) => (l.trim().startsWith('##"') ? i : -1))
-         .filter((i) => i >= 0);
+      // Written above the tag, where the server reads it. A description read
+      // from below (the legacy spot) moves there, and the lines it came from go.
+      const { read, blankAbove, below, belowBlock, inBlock } =
+         descriptionNotes(lines);
+      if (inBlock || (next.description === undefined && belowBlock)) {
+         return {
+            ok: false,
+            reason:
+               "The description is written in a `##|\"` block, which the builder cannot edit in place. Change it in the file's text.",
+         };
+      }
       const text = (next.description ?? "")
          .split("\n")
          .map((para) => (para.trim() === "" ? '##"' : `##" ${para.trim()}`))
          .join("\n");
-      if (docLines.length > 0) {
-         const first = docLines[0];
-         const last = docLines[docLines.length - 1];
+      const above = read.length > 0 && read[0] < artifactLine(lines);
+      // Clearing it must not let the server fall back to notes left below the tag.
+      const clearing = next.description === undefined;
+      const removed = above
+         ? [...read.slice(1), ...(clearing ? below : [])]
+         : [...read, ...blankAbove];
+      for (const at of removed) edits.push({ ...wholeLine(at), text: "" });
+      if (above) {
          edits.push({
-            start: wholeLine(first).start,
-            end: wholeLine(last).end,
+            ...wholeLine(read[0]),
             text: next.description === undefined ? "" : `${text}\n`,
          });
       } else if (next.description !== undefined) {
-         const artifactAt = artifactLine(lines);
-         const at = wholeLine(artifactAt).start;
+         const at = wholeLine(artifactLine(lines)).start;
          edits.push({ start: at, end: at, text: `${text}\n` });
       }
    }
@@ -585,7 +683,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
       // removed declaration is the exception and takes every tag with it: a
       // `#` line left behind does not lapse, it attaches to whatever is
       // declared next, so an orphaned `#(secure)` would silently move.
-      const { tags } = blockAbove(parsed, lines, at.line);
+      const { tags, prose } = blockAbove(parsed, lines, at.line);
       const owned =
          want === undefined
             ? tags
@@ -593,9 +691,14 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
                  const key = tagKey(tag.text);
                  return key !== undefined && MODELLED_GIVEN_TAG_KEYS.has(key);
               });
-      for (const tag of owned) {
-         edits.push({ ...wholeLine(tag.line), text: "" });
-         removedLines.add(tag.line);
+      // Prose leaves with a removed declaration for the same reason.
+      const ownedLines = [
+         ...owned.map((tag) => tag.line),
+         ...(want === undefined ? prose : []),
+      ];
+      for (const line of ownedLines) {
+         edits.push({ ...wholeLine(line), text: "" });
+         removedLines.add(line);
       }
       // A declaration can run past its first line -- `NAME :: string is` with
       // its default below it is ordinary Malloy -- so the lines to take come
@@ -611,7 +714,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
          for (let l = at.line; l <= lastLine; l++) removedLines.add(l);
          // A declaration set off by blank lines takes one of them with it, or
          // the two separators meet and the file gains an empty line per edit.
-         const first = Math.min(at.line, ...tags.map((tag) => tag.line));
+         const first = Math.min(at.line, ...ownedLines);
          const above = at.blockHeader ?? first;
          const belowIsBlank = (lines[lastLine + 1] ?? "x").trim() === "";
          const aboveIsBlank = above === 0 || lines[above - 1].trim() === "";

@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 **Dimension:** `structure`
 **Rules:** 5
 
-Applies to the organization of `.malloy` files within a package. Skip a file for structural review if it's a `.malloynb` notebook (which has its own conventions) or a one-off sandbox script.
+Applies to the organization of `.malloy` files within a package. Skip a file for structural review if it's a notebook (a `.malloynb`, or a `notebooks/*.malloy` with an `## artifact { kind=notebook }` tag), which has its own conventions, or a one-off sandbox script.
 
 For every rule, the linked instruction-skill section is the canonical source for rationale and examples.
 
