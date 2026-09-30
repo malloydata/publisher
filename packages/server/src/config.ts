@@ -387,6 +387,53 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
 };
 
 /**
+ * How many rows the appender buffers before a partitioned storage build flushes
+ * them to the partition files (`partitioned_write_flush_threshold`,
+ * `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`). Default 8192 rows. `off` turns
+ * the whole partitioned-insert treatment off -- this threshold, the ordered
+ * insert and the single appender thread together -- and leaves DuckDB's own
+ * behaviour, which is the one the treatment exists to avoid; it is the escape
+ * hatch for a source that built fine before, at the cost of the sort.
+ *
+ * A `#@ persist partition=` build is DuckDB's partitioned COPY, and that operator
+ * buffers rows per partition in a column-data collection INSIDE the buffer
+ * manager -- so unlike the two DuckLake bounds above, `memory_limit` does see
+ * this term, and the failure reads `Out of Memory Error: failed to pin block`
+ * against the session's own limit rather than a container kill. Two things drive
+ * it. Every partition a thread meets costs it one vector per column up front, at
+ * first sight, before a single row of it is flushed; and nothing is flushed
+ * until the thread has appended this many rows across all its partitions. Per
+ * THREAD, so a parallel appender multiplies it.
+ *
+ * This bounds the second term only. The first -- one vector per column for every
+ * partition in flight -- is bounded by {@link orderByPartitionColumns}: the
+ * insert reads its SELECT ordered by the partition columns, sorted by DuckDB at
+ * the top of the INSERT, on one thread, because a sorted result is read in
+ * parallel and each reader then meets every partition again. Measured on 616k
+ * rows x 122 columns into 308 partitions at 768MB, from Postgres: interleaved
+ * rows fail at any threshold, ordered rows fail at DuckDB's default, ordered
+ * rows on one thread complete at this default in 9.5 s (four threads fail); from
+ * BigQuery the same shape fails at 54 s and completes in 36 s. Neither half is
+ * sufficient alone.
+ *
+ * Rows rather than bytes because that is the unit DuckDB exposes; the byte-based
+ * row-group bound governs the Parquet writer downstream of this buffer and does
+ * not reach it.
+ */
+export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
+
+export const getPartitionedWriteFlushThreshold = (): number | undefined => {
+   const raw = process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
+   if (raw === undefined || raw === "") {
+      return DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD;
+   }
+   if (raw.toLowerCase() === "off") {
+      return undefined;
+   }
+   return Number(raw);
+};
+
+/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -462,6 +509,26 @@ export function assertDuckDBResourceConfig(): void {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +
             `size like "256MB", got "${targetFileSizeBytes}"`,
+      );
+   }
+   const flushThreshold =
+      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
+   if (
+      flushThreshold !== undefined &&
+      flushThreshold !== "" &&
+      flushThreshold.toLowerCase() !== "off" &&
+      !/^[1-9]\d{0,8}$/.test(flushThreshold)
+   ) {
+      // At most nine digits, on operational grounds: above a billion rows the
+      // bound is indistinguishable from `off`, so a larger value is a typo or a
+      // misunderstanding, and this is where it is cheapest to say so. (The
+      // rendering hazard is ours, not DuckDB's -- DuckDB takes a 13-digit
+      // count; JavaScript renders 1e21 and above in exponent form, which the
+      // SET then refuses -- but that is thirteen orders of magnitude away.)
+      throw new Error(
+         `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
+            `row count like "8192" (up to nine digits), or "off" to turn the ` +
+            `partitioned-insert bounds off, got "${flushThreshold}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();
@@ -1064,27 +1131,30 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
 
 /**
  * The `publisher.config.json` path that was looked for and not found, or null
- * whenever a config did resolve.
+ * whenever a config did resolve. `explicit` says the path came from `--config`.
  *
  * Exists so a caller running ONCE at boot can explain an empty environment list.
  * `getPublisherConfig` deliberately does not log this itself: it is called on
  * every config read, so a line there re-emits per request.
  *
- * Returns null when `--config` was given, whether or not that path exists.
- * A missing explicit path is already reported by `getPublisherConfig`, and
- * reporting it twice in two different shapes helps nobody.
+ * A missing `--config` path is returned too, flagged `explicit`, because a typo
+ * in the flag is the likelier way to boot empty. `getPublisherConfig` already
+ * logs that case at error, so a caller should report it without logging again.
  */
 export const getUnresolvedPublisherConfigPath = (
    serverRoot: string,
-): string | null => {
-   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
-   if (explicitPath && explicitPath.length > 0) {
-      return null;
-   }
+): { path: string; explicit: boolean } | null => {
    if (resolvePublisherConfigPath(serverRoot)) {
       return null;
    }
-   return path.join(serverRoot, PUBLISHER_CONFIG_NAME);
+   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
+   if (explicitPath && explicitPath.length > 0) {
+      return { path: explicitPath, explicit: true };
+   }
+   return {
+      path: path.join(serverRoot, PUBLISHER_CONFIG_NAME),
+      explicit: false,
+   };
 };
 
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {

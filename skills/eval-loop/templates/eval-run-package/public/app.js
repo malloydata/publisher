@@ -11,7 +11,7 @@
  * query was wrong or a right query was read wrongly; the sequence can, and
  * every earlier viewer flattened it into one blob of prose.
  *
- * Aggregate tables live in eval_run.malloynb, which Publisher renders. This
+ * Aggregate tables live in notebooks/eval_run.malloy, which Publisher renders. This
  * file holds no scoring logic; everything comes from eval_run.malloy. That
  * includes classifying a verdict: the `outcome` column is decided once, in
  * flip_table.outcome, and travels through the CSV. This file used to keep its

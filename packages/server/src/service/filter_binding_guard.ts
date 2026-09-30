@@ -22,10 +22,18 @@
  * one field-identity primitive, {@link assertFilterConditionBindsToDeclaringSource}.
  *
  * "Identical field" (this module's one comparison) means: same `name`, same
- * `type`, and a deep-equal `e` — ignoring `location`, `annotations` and
- * `accessModifier`, which can legitimately differ across a derivation without
- * the field being a different one. A join hop additionally requires the same
- * `join` relationship and a deep-equal `onExpression`. A field is looked up
+ * `type`, and a deep-equal `e` — ignoring `annotations` and `accessModifier`
+ * by name, and `location`/`at` by VALUE SHAPE (a real `DocumentLocation`,
+ * never by key name alone, since both are also legal parameter and
+ * record-literal-field names — see {@link isDocumentLocation}), all of which
+ * can legitimately differ across a derivation without the field being a
+ * different one. A join hop additionally requires the same
+ * `join` relationship and a deep-equal `onExpression`, `filterList`,
+ * `parameters` and `arguments` on the joined struct, since two same-table
+ * sources share a `name` and differ in rows only through those. Source
+ * positions are never compared, so a caller who re-joins exactly what the
+ * author declared is served, and one who changes what it reads is refused on
+ * that change. A field is looked up
  * by its ACTIVE name (`.as` if aliased, else `.name` — see {@link activeName}),
  * never by `.name` alone, so an aliased join member is compared correctly
  * instead of failing to resolve at all.
@@ -129,21 +137,89 @@ function activeName(f: { name: string; as?: string }): string {
    return f.as ?? f.name;
 }
 
-const IGNORED_KEYS = new Set(["location", "annotations", "accessModifier"]);
+/** Stripped everywhere by NAME: neither collides with a name-keyed record
+ *  (`parameters`/`arguments`/a record-literal's `kids`) anywhere in the IR. */
+const IGNORED_KEYS_BY_NAME = new Set(["annotations", "accessModifier"]);
 
-/** Structural equality ignoring {@link IGNORED_KEYS}. A key-order mismatch
- *  between two otherwise-identical objects would read as "different" here —
- *  that fails CLOSED (an extra denial), never open, so it is not chased. */
+/** Stripped only when the VALUE is actually a `DocumentLocation` — `location`
+ *  and `at` are also legal author parameter/record-literal-field names
+ *  (`SafeRecord<Parameter|Argument>` and `RecordLiteralNode.kids` are both
+ *  keyed by the author's own names), so stripping by key name alone deletes
+ *  those entries as if they were position metadata and makes two different
+ *  bindings compare equal. */
+const SHAPE_CHECKED_KEYS = new Set(["location", "at"]);
+
+/** Structural match for `DocumentLocation` (`{url, range: {start, end}}`,
+ *  each a `{line, character}`) — the one shape `location`/`at` take as real
+ *  IR metadata; no Expr node or Parameter value can match it. */
+function isDocumentLocation(v: unknown): boolean {
+   if (!v || typeof v !== "object") return false;
+   const o = v as Record<string, unknown>;
+   if (typeof o.url !== "string" || !o.range || typeof o.range !== "object") {
+      return false;
+   }
+   const isPosition = (p: unknown): boolean =>
+      !!p &&
+      typeof p === "object" &&
+      typeof (p as Record<string, unknown>).line === "number" &&
+      typeof (p as Record<string, unknown>).character === "number";
+   const range = o.range as Record<string, unknown>;
+   return isPosition(range.start) && isPosition(range.end);
+}
+
+/** Joined-struct properties, beyond `name`, that decide which rows the join reaches. */
+const JOINED_STRUCT_ROW_KEYS = ["filterList", "parameters", "arguments"];
+
+/** {@link JOINED_STRUCT_ROW_KEYS} entries that are name-keyed records
+ *  (`SafeRecord<Parameter|Argument>`), compared entry-by-entry so a
+ *  parameter literally named `location`/`at`/`annotations`/`accessModifier`
+ *  keeps its own identity instead of being merged under {@link strip}'s
+ *  generic key-based pass. `filterList` is an array, not a name-keyed
+ *  record, so it keeps going through {@link deepEqualIgnoring} as-is. */
+const NAME_KEYED_RECORD_KEYS = new Set(["parameters", "arguments"]);
+
+/** Structural equality ignoring {@link IGNORED_KEYS_BY_NAME} and
+ *  {@link SHAPE_CHECKED_KEYS} (by shape). A key-order mismatch between two
+ *  otherwise-identical objects would read as "different" here — that fails
+ *  CLOSED (an extra denial), never open, so it is not chased. */
 function deepEqualIgnoring(a: unknown, b: unknown): boolean {
    return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+}
+
+/** Entry-by-entry equality for a `SafeRecord` keyed by the author's own
+ *  names (`parameters`/`arguments`) — never deletes an entry by its key, so
+ *  a binding named `location`/`at`/etc. is compared like any other. */
+function recordEntriesEqual(a: unknown, b: unknown): boolean {
+   const ao = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
+   const bo = (b && typeof b === "object" ? b : {}) as Record<string, unknown>;
+   const aKeys = Object.keys(ao);
+   const bKeys = Object.keys(bo);
+   if (aKeys.length !== bKeys.length) return false;
+   return aKeys.every((k) => k in bo && deepEqualIgnoring(ao[k], bo[k]));
 }
 
 function strip(value: unknown): unknown {
    if (Array.isArray(value)) return value.map(strip);
    if (value && typeof value === "object") {
+      const obj = value as Record<string, unknown>;
       const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-         if (IGNORED_KEYS.has(k)) continue;
+      for (const [k, v] of Object.entries(obj)) {
+         // A record literal's `kids` is a `SafeRecord<Expr>` keyed by the
+         // author's own field names — same trap as `parameters`/`arguments`,
+         // but reached through this generic recursion rather than the
+         // `JOINED_STRUCT_ROW_KEYS` call site, so it needs its own guard here.
+         if (k === "kids" && obj.node === "recordLiteral") {
+            const kids = (v && typeof v === "object" ? v : {}) as Record<
+               string,
+               unknown
+            >;
+            out[k] = Object.fromEntries(
+               Object.entries(kids).map(([kk, kv]) => [kk, strip(kv)]),
+            );
+            continue;
+         }
+         if (IGNORED_KEYS_BY_NAME.has(k)) continue;
+         if (SHAPE_CHECKED_KEYS.has(k) && isDocumentLocation(v)) continue;
          out[k] = strip(v);
       }
       return out;
@@ -168,8 +244,27 @@ function fieldsIdentical(
       if (!isJoined(a) || !isJoined(b)) return false;
       if (a.join !== b.join) return false;
       if (!deepEqualIgnoring(a.onExpression, b.onExpression)) return false;
+      // A same-table sibling (`where:`, or different parameter bindings) keeps the joined struct's `name`.
+      const ja = a as unknown as Record<string, unknown>;
+      const jb = b as unknown as Record<string, unknown>;
+      for (const key of JOINED_STRUCT_ROW_KEYS) {
+         const equal = NAME_KEYED_RECORD_KEYS.has(key)
+            ? recordEntriesEqual(ja[key], jb[key])
+            : deepEqualIgnoring(ja[key], jb[key]);
+         if (!equal) return false;
+      }
    }
    return true;
+}
+
+/** Whether an expression tree contains a field reference anywhere. */
+function expressionReadsField(e: unknown): boolean {
+   if (Array.isArray(e)) return e.some(expressionReadsField);
+   if (!e || typeof e !== "object") return false;
+   if ((e as { node?: unknown }).node === "field") return true;
+   return Object.values(e as Record<string, unknown>).some(
+      expressionReadsField,
+   );
 }
 
 /** Resolve a dotted field path (a join path, for a field reached through one
@@ -225,18 +320,27 @@ function fieldPathIdentical(
 
 /**
  * Every field-usage path reachable from `refSummary`, resolved TRANSITIVELY
- * through `declaring`: a filter that reads a dimension (`org_id in $GROUPS`
- * over `#(access_filter) authorized`, say) only lists `authorized` in its own
- * `fieldUsage` — the fields THAT dimension's own expression reads are only
- * discoverable by following its own `refSummary`, one hop at a time. Returns
- * `truncated: true` (never a partial list) when the walk would exceed
- * {@link MAX_CLOSURE_SIZE} — the caller must treat that as "cannot prove
- * this binds correctly" (deny), not "here is everything there is".
+ * through `declaring`. Three kinds of dependency are followed, each one hop at
+ * a time:
+ * - a field's own expression: a filter that reads a dimension (`org_id in
+ *   $GROUPS` over `#(access_filter) authorized`, say) only lists `authorized`
+ *   in its own `fieldUsage`, so the fields THAT dimension reads come from its
+ *   own `refSummary`;
+ * - each join a path goes through: the fields its ON (or `with`) reads,
+ *   relative to the struct that declares the join;
+ * - each such join's joined source: the fields its own `where:` conditions
+ *   read, relative to the joined struct.
+ * Returns `truncated: true` (never a partial list) when the walk would exceed
+ * {@link MAX_CLOSURE_SIZE}, and `unrecordedJoin` naming a join whose ON, or
+ * one of its joined source's `where:` conditions, reads fields but carries no
+ * `refSummary` to list them. The caller must treat
+ * either as "cannot prove this binds correctly" (deny), not "here is
+ * everything there is".
  */
 function fieldUsageClosure(
    declaring: SourceDef,
    refSummary: RefSummaryLike | undefined,
-): { paths: string[][]; truncated: boolean } {
+): { paths: string[][]; truncated: boolean; unrecordedJoin?: string } {
    const seen = new Set<string>();
    const paths: string[][] = [];
    const queue: string[][] = (refSummary?.fieldUsage ?? []).map(
@@ -269,6 +373,47 @@ function fieldUsageClosure(
       for (const u of nested?.fieldUsage ?? []) {
          queue.push([...prefix, ...u.path]);
       }
+      // Each join on the way also reads its ON (relative to the struct that
+      // declares it) and its own `where:` (relative to the joined struct):
+      // rebinding either moves the row the path reaches without touching it.
+      for (let i = 0; i < path.length - 1; i++) {
+         const join = resolveFieldByPath(declaring, path.slice(0, i + 1)) as
+            | {
+                 onExpression?: unknown;
+                 refSummary?: RefSummaryLike;
+                 filterList?: readonly {
+                    refSummary?: RefSummaryLike;
+                    e?: unknown;
+                 }[];
+              }
+            | undefined;
+         if (
+            join &&
+            !join.refSummary &&
+            expressionReadsField(join.onExpression)
+         ) {
+            return {
+               paths,
+               truncated: false,
+               unrecordedJoin: path.slice(0, i + 1).join("."),
+            };
+         }
+         for (const u of join?.refSummary?.fieldUsage ?? []) {
+            queue.push([...path.slice(0, i), ...u.path]);
+         }
+         for (const condition of join?.filterList ?? []) {
+            if (!condition.refSummary && expressionReadsField(condition.e)) {
+               return {
+                  paths,
+                  truncated: false,
+                  unrecordedJoin: path.slice(0, i + 1).join("."),
+               };
+            }
+            for (const u of condition.refSummary?.fieldUsage ?? []) {
+               queue.push([...path.slice(0, i + 1), ...u.path]);
+            }
+         }
+      }
    }
    return { paths, truncated: false };
 }
@@ -284,13 +429,18 @@ export function assertFilterConditionBindsToDeclaringSource(
    executedStruct: SourceDef,
    condition: FilterCondition,
 ): void {
-   const { paths, truncated } = fieldUsageClosure(
+   const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
       condition.refSummary,
    );
    if (truncated) {
       throw new Error(
          "a row-security filter's field-usage closure exceeded the resolution bound",
+      );
+   }
+   if (unrecordedJoin) {
+      throw new Error(
+         `a row-security filter reaches through \`${unrecordedJoin}\`, whose ON or where: inputs are not recorded`,
       );
    }
    for (const path of paths) {
@@ -319,12 +469,18 @@ export function assertFilterDimensionBindsToDeclaringSource(
    executedStruct: SourceDef,
    dimension: string,
 ): void {
-   const { paths, truncated } = fieldUsageClosure(declaringStruct, {
-      fieldUsage: [{ path: [dimension] }],
-   });
+   const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
+      declaringStruct,
+      { fieldUsage: [{ path: [dimension] }] },
+   );
    if (truncated) {
       throw new Error(
          "a #(filter) dimension's field-usage closure exceeded the resolution bound",
+      );
+   }
+   if (unrecordedJoin) {
+      throw new Error(
+         `a #(filter) dimension reaches through \`${unrecordedJoin}\`, whose ON or where: inputs are not recorded`,
       );
    }
    for (const path of paths) {

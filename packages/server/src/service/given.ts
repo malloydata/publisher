@@ -17,13 +17,22 @@
  */
 
 import {
+   type GivenValue,
    isSourceDef,
    type ModelDef,
    type NamedQueryDef,
 } from "@malloydata/malloy";
 import type { Annotations } from "@malloydata/malloy";
+import {
+   BooleanFilterExpression,
+   NumberFilterExpression,
+   StringFilterExpression,
+   TemporalFilterExpression,
+} from "@malloydata/malloy-filter";
+import { BadRequestError } from "../errors";
 import { isReservedRoute } from "./annotations";
 import { referencedGivenNames } from "./authorize";
+import { MARKDOWN_ROUTE } from "./notebook";
 import type { Tag } from "@malloydata/malloy-tag";
 import { motlyTag, tagNumeric, tagText } from "./motly";
 
@@ -269,7 +278,11 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
       name: given.name,
       type: renderedType,
       annotations: allNotes
-         .filter((note) => !isReservedRoute(note.route))
+         // `(markdown)` is a notebook cell's own prose, not part of the given.
+         .filter(
+            (note) =>
+               !isReservedRoute(note.route) && note.route !== MARKDOWN_ROUTE,
+         )
          .map((note) => note.text),
       // Reads the reserved plain-`#` notes the line above drops, which is where
       // the control tags live.
@@ -428,5 +441,52 @@ export function attachSuggestGivenNames(
       const names = suggestGivenNames(given.suggest, lookup);
       if (names) given.suggest.givenNames = names;
       else delete given.suggest.givenNames;
+   }
+}
+
+/** The parser for each `filter<T>` a given can declare, keyed by `T`. */
+const FILTER_PARSERS: Record<
+   string,
+   { parse(text: string): { log: { message: string; severity: string }[] } }
+> = {
+   string: StringFilterExpression,
+   number: NumberFilterExpression,
+   boolean: BooleanFilterExpression,
+   date: TemporalFilterExpression,
+   timestamp: TemporalFilterExpression,
+   timestamptz: TemporalFilterExpression,
+};
+
+/**
+ * Refuse a request whose value for a `filter<T>` given does not parse as a
+ * `T` filter, with the parser's own reason. Malloy refuses it too, but only
+ * once the query compiles, and its message loses the reason
+ * (`Filter expression parse error: [object Object].`).
+ *
+ * Checks only givens the model declares, with the same parser Malloy uses, so
+ * a value this accepts is one the compiler reads. An unknown name is left to
+ * Malloy's own "unknown given" error.
+ */
+export function assertFilterGivensParse(
+   declared: readonly { name?: string; type?: string }[] | undefined,
+   givens: Record<string, GivenValue> | undefined,
+): void {
+   if (!declared || !givens) return;
+   for (const given of declared) {
+      const inner = /^filter<(.+)>$/.exec(given.type ?? "")?.[1];
+      if (!given.name || !inner) continue;
+      const value = givens[given.name];
+      if (typeof value !== "string") continue;
+      // Malloy refuses a filter on any log entry, whatever its severity, and
+      // reports the first; match it, so every value this passes compiles.
+      const problem = FILTER_PARSERS[inner]?.parse(value).log[0];
+      if (problem) {
+         throw new BadRequestError(
+            `Invalid value for given ${given.name} (${given.type}): ` +
+               `${problem.message.replace(/\.$/, "")}. Fix: send a ` +
+               `${given.type} expression, or leave ${given.name} unset to use ` +
+               `its default.`,
+         );
+      }
    }
 }

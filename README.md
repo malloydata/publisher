@@ -180,7 +180,8 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Ask in plain English.** An agent grounds itself with `get_context`, runs
   `execute_query`, and answers from the model, never from raw tables. Analysis skills teach it the
   pitfalls and how to write up a finding — [docs/ai-agents.md](docs/ai-agents.md).
-- **Work in notebooks.** `.malloynb` notebooks live inside a package, mix prose and queries, and run on
+- **Work in notebooks.** Notebooks are `notebooks/*.malloy` files (a legacy `.malloynb` is read, not
+  authored); they live inside a package, mix prose and queries, and run on
   the same governed endpoints — [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
 - **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
   every action generates valid Malloy, so metrics stay correct across joins.
@@ -195,8 +196,10 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
   against the model — [docs/html-data-apps.md](docs/html-data-apps.md).
 - **The Publisher Console.** Browse packages, models, and every artifact in the built-in web UI, with
   your own [colors, fonts, and dark mode](docs/theming.md) — [docs/console.md](docs/console.md).
-- **Your own applications.** The REST API serves any language; a Python client ships in
-  [`packages/python-client`](packages/python-client), and the running server publishes its OpenAPI spec.
+- **Your own applications.** The REST API serves any language, and the running server publishes its
+  OpenAPI spec. From Python, the standard library is enough: [AGENTS.md section 7](AGENTS.md#7-working-unattended-the-rest-api)
+  has a copyable example. A generated client lives in [`packages/python-client`](packages/python-client),
+  but it is not published to PyPI.
 
 ### Govern
 

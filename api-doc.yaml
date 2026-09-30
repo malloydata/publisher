@@ -7,7 +7,7 @@ info:
   description: |
     The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
     A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
-    notebooks (`.malloynb` files), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    notebooks (`.malloynb` files and `.malloy` files under `notebooks/`), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
     under `public/`.
 
     ## Key Features
@@ -1567,9 +1567,16 @@ paths:
       operationId: list-models
       summary: List package models
       description: |
-        Retrieves a list of all Malloy models within the specified package. Each model entry
-        includes the relative path, package name, and any compilation errors. This endpoint
-        is useful for discovering available models and checking their status.
+        Retrieves the Malloy models within the specified package. Each model entry includes
+        the relative path, package name, whether the file is on the package's surface, and any
+        compilation errors.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
+        files on that surface are listed, unless `includeHiddenFilesAndSources` is true. With it, every
+        model file is listed and `onSurface` marks the ones on the surface. Dashboard files
+        are listed by the dashboards route either way. Served notebooks (`.malloy` files under
+        `notebooks/` that carry an `## artifact` note) are not models here, with or without a
+        surface; they are listed by list-notebooks.
       parameters:
         - name: environmentName
           in: path
@@ -1589,6 +1596,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: A list of models in the package
@@ -1621,14 +1629,16 @@ paths:
         provides access to the model's structure, sources, and named queries for use in applications.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
-        that surface answers 404 with the same message a query to it gets. Dashboard files are
-        always returned. A package with no surface, or with `queryableSources: "all"`, returns
-        every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
+        that surface answers 404 with the same message a query to it gets, unless
+        `includeHiddenFilesAndSources` is true. With it, the file is returned with its `sourceText`, whatever
+        sources the text names. Dashboard files and served notebooks (`notebooks/*.malloy` with
+        an `## artifact` note) are always returned. A package with no surface, or with
+        `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. A join to a hidden source
         keeps only its name and the names and types of its fields. `sourceText` is left out
-        when the text names a source the file does not publish; a dashboard's text is always
-        returned.
+        when the text names a source the file does not publish; the text of a dashboard is
+        always returned.
       parameters:
         - name: environmentName
           in: path
@@ -1654,6 +1664,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: Compiled Malloy model
@@ -1808,6 +1819,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       requestBody:
         required: true
         content:
@@ -2042,8 +2054,10 @@ paths:
       operationId: list-notebooks
       summary: List package notebooks
       description: |
-        Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
-        includes the relative path, package name, and any compilation errors. This endpoint
+        Retrieves a list of all Malloy notebooks within the specified package: every
+        `.malloynb` file, and every `.malloy` file directly under `notebooks/` that has a
+        model-level `## artifact` note. Each notebook entry includes the relative path,
+        package name, title, description, and any compilation or reading error. This endpoint
         is useful for discovering available notebooks and checking their status.
       parameters:
         - name: environmentName
@@ -2066,7 +2080,7 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
       responses:
         "200":
-          description: A list of models in the package
+          description: A list of notebooks in the package
           content:
             application/json:
               schema:
@@ -2093,6 +2107,8 @@ paths:
       description: |
         Retrieves a Malloy notebook with its raw cell contents (markdown and code).
         Cell execution should be done separately via the execute-notebook-cell endpoint.
+        A served `notebooks/*.malloy` (one with an `## artifact` note) answers here as well as a
+        `.malloynb`.
         On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
         - name: environmentName
@@ -2144,7 +2160,8 @@ paths:
       description: |
         Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
         and runs the Malloy code, returning query results and any new sources defined.
-        For markdown cells, this simply returns the cell content.
+        For markdown cells, this simply returns the cell content. A served `notebooks/*.malloy`
+        answers here as well as a `.malloynb`.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
         `queryableSources` left at `"declared"`, a code cell may read only sources the surface
@@ -2839,6 +2856,26 @@ components:
             governor). Already-loaded packages remain serviceable while throttled;
             callers can treat a throttled server as unhealthy for new load.
             Only reported when the memory governor is enabled.
+        version:
+          type: string
+          readOnly: true
+          description:
+            This server's release version, for example "0.8.2". Use it to tell
+            which build answered, for instance to rule out an old copy served
+            from the npx cache.
+        emptyReason:
+          type: string
+          readOnly: true
+          description:
+            Present only when the server has no environments because no
+            publisher.config.json was found at startup, or because the --config
+            path it was given does not exist. It names the path that was checked
+            and how to fix it. It describes startup, so a config written while
+            the server runs is not read until a restart. A server in this state
+            still reports serving, so check this before treating an empty
+            environments list as intended. Absent once any environment exists, including one created
+            at runtime through the API, and absent when a config was found but
+            lists no environments.
         loadErrors:
           type: array
           readOnly: true
@@ -3201,7 +3238,28 @@ components:
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
-            rather than as a clean package. Server-computed and read-only:
+            rather than as a clean package. Notebook findings: a `notebooks/`
+            file with an `## artifact` note whose cells could not be read, which
+            names the line and the fix and is reported with severity `error`,
+            because the notebook is served with that error instead of opening.
+            The same family carries findings on files under `notebooks/` and
+            `dashboards/`, each naming its line and the fix; they are computed
+            at discovery and are also returned by `/compile` at file and
+            package scope. Eight codes are `error` and fail `/compile`:
+            `notebook-statement-above-artifact` and `notebook-tag-above-artifact`
+            (a statement or a tag above a served notebook's `## artifact`),
+            `notebook-markdown-above-artifact` (a `(markdown)` annotation above
+            it), `notebook-columns-conflict` (a tiled dashboard's
+            `dashboard_columns` disagrees with `dashboard { columns }`),
+            `notebook-markdown-opener-text` (more than a
+            name after `(markdown)` on a block's opener),
+            `notebook-markdown-attached-nowhere` (a `#(markdown)` annotation
+            with no statement to take it), `notebook-artifact-unparsed` (an
+            `## artifact` tag does not parse), and `notebook-cells-unreadable`
+            (the reader could not read a served notebook's cells). The rest are
+            `warn` (a mistyped `(markdown)` opener, a missing `kind=notebook`, a
+            block that never closes, and similar).
+            Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
             when there are such findings.
@@ -3591,13 +3649,18 @@ components:
         State of a package's semantic discovery index. Poll `status` until
         `ready` to know retrieval is warm - before this, that state existed
         only as a server log line, so anything waiting on a warm index had to
-        scrape logs. Every count is scoped to the embedding model currently
-        configured, matching what the search path reads, so a server pointed
-        at a new model reports the index as not yet ready rather than
-        reporting rows retrieval would reject. Reading it takes no locks, so
-        polling cannot perturb an indexing run; note that the first read after
-        a package loads or reloads builds the package's entity index, which is
-        work a metadata read would not otherwise do.
+        scrape logs. Send the package one `get_context` question first, then
+        poll: only a question starts the sync, and a restart forgets which
+        syncs completed, so after every restart each package reads `indexing`
+        until it is asked something. Polling before asking waits forever.
+        Every count is scoped to the embedding model currently configured, so
+        rows left behind by an earlier model are never counted. Read `status` for readiness and the counts for
+        coverage: they answer different questions, and only `status` tracks
+        what the search path will do. The first read after a package loads or
+        reloads builds the package's entity index and its content
+        fingerprint, which is work a metadata read would not otherwise do.
+        After that a read is two row counts and never waits on a sync, so
+        polling is cheap.
       properties:
         status:
           type: string
@@ -3607,12 +3670,27 @@ components:
             - cooldown
             - too-many-entities
           description: >-
-            `indexing` = at least one current entity has no usable vector yet.
-            Retrieval answers lexically meanwhile. This clears once a
-            `get_context` question triggers a sync, which is what builds
-            the index; it does not clear on its own for a package nothing has
-            queried. `ready` = every entity the package exposes has a vector
-            under the current model and the cache is serving semantic ranking.
+            `ready` = the index is warm, so the next `get_context` question
+            about this package is ranked semantically rather than lexically.
+            (It is a statement about the index, not a promise about the next
+            response: a question whose own query embedding fails still falls
+            back, reporting `retrieval_reason: provider-error`.) It is decided
+            by the same completed sync the search path gates on, not by
+            whether cached rows happen to cover the current entity names.
+            Those two differ exactly where it matters - the rows outlive a
+            restart and a reload, so a coverage test called an index warm
+            while the next question was still answered lexically.
+            `indexing` = no completed sync covers the package's current
+            content under the current model, so retrieval answers lexically
+            meanwhile. A reload whose files did not change stays `ready`,
+            because the vectors still describe that content. Four things move
+            a package to `indexing`: an edit, a new package, a changed
+            `EMBEDDING_MODEL`, and a server restart - the sync is recorded in
+            memory, so a restart reports `indexing` until the first question
+            re-establishes it, even though the vectors are still on disk. It
+            clears when a `get_context` question triggers a sync, which is
+            what builds the index; a package nothing has ever queried does not
+            warm on its own.
             `cooldown` = the provider failed recently, so the semantic path is
             short-circuited for a window. `too-many-entities` = the package has
             more entities than the embedding cap, so it stays lexical
@@ -3624,18 +3702,26 @@ components:
             Cached vectors for this package under the current embedding model.
             An entity contributes one row for its name plus one per chunk of
             its documentation, so this exceeds `totalEntities` on a documented
-            model and is not a count of entities.
+            model and is not a count of entities. Scoped by model only, not by
+            vector length, so it counts what is cached rather than what a
+            search could read today: after a change to `EMBEDDING_DIMENSIONS`
+            that no question has probed yet, rows of the old length are still
+            counted here until the next search discards them. `status` is
+            already `indexing` in that window.
         totalEntities:
           type: integer
           description: Entities the package currently exposes to retrieval.
         embeddedEntities:
           type: integer
           description: >-
-            Of `totalEntities`, how many have at least one usable vector. The
-            two are equal exactly when `status` is `ready`. Reported because a
-            row count cannot show a model edit that removes two entities and
-            adds two others: the row total is unchanged while the new entities
-            have no vector at all.
+            Of `totalEntities`, how many have at least one usable vector.
+            Reported because a row count cannot show a model edit that removes
+            two entities and adds two others: the row total is unchanged while
+            the new entities have no vector at all. Coverage by identity, so
+            equality does NOT imply `ready`: an edit that rewrote every doc
+            without renaming anything leaves each entity holding its stale
+            name vector. Read `status` for readiness and this pair for how
+            much of the package is covered.
         lastSyncedAt:
           type: string
           format: date-time
@@ -3731,6 +3817,14 @@ components:
         path:
           type: string
           description: Relative path to the model file within its package directory
+        onSurface:
+          type: boolean
+          description: |
+            Whether the file is on the package's surface: the files this route lists without
+            `includeHiddenFilesAndSources`. True for every file of a package with no surface. It does not
+            say whether a query can reach the file, which `queryableSources: "all"` also
+            decides. False only on a file listed because the
+            request set `includeHiddenFilesAndSources`.
         error:
           type: string
           description: Error message if the model failed to compile or load
@@ -3751,12 +3845,18 @@ components:
         title:
           type: string
           description:
-            Human title, resolved from the notebook's own `## title="…"`, then
-            its `#"` doc comment, then its first markdown heading. Absent when
-            none of those resolve, leaving the caller to show the path.
+            Human title. For a `.malloynb`, resolved from its own `## title="…"`,
+            then its `#"` doc comment, then its first markdown heading. For a
+            `.malloy` notebook, from the `title` in its `## artifact` tag, then
+            the first line of the `"` notes above that tag, then its first
+            markdown heading when no prose precedes it. Absent when none of
+            those resolve, leaving the caller to show the path.
         description:
           type: string
-          description: The notebook's `#"` doc comment, when it has one
+          description:
+            The notebook's doc comment, when it has one. For a `.malloy`
+            notebook that is the `"` notes above the `## artifact` line; prose
+            below it is a `##(markdown)` or `##|(markdown)` cell.
         error:
           type: string
           description: Error message if the notebook failed to compile or load
@@ -3792,7 +3892,10 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's `#"` doc comment, when it has one
+          description: >-
+            The file's unnamed `"` notes above the `## artifact` tag; when it
+            has none there, the ones below it (a legacy spot the lint flags). For
+            a dashboard whose tag sits on one query, that query's `#"` notes.
         error:
           type: string
           description: Error message if the dashboard file failed to compile
@@ -3833,7 +3936,10 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's `#"` doc comment, when it has one
+          description: >-
+            The file's unnamed `"` notes above the `## artifact` tag; when it
+            has none there, the ones below it (a legacy spot the lint flags). For
+            a dashboard whose tag sits on one query, that query's `#"` notes.
         error:
           type: string
           description: Error message if the dashboard file failed to compile
@@ -4015,6 +4121,14 @@ components:
         modelPath:
           type: string
           description: Relative path to the notebook file within its package directory
+        format:
+          type: string
+          enum: ["malloynb", "malloy"]
+          description:
+            The file format the notebook is written in. `malloynb` is the
+            cell-separated format; `malloy` is a `.malloy` file under
+            `notebooks/` with a model-level `## artifact` note, whose cells are
+            its statements and its floating `(markdown)` notes in file order.
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
@@ -4028,24 +4142,31 @@ components:
             $ref: "#/components/schemas/NotebookCell"
         annotations:
           type: array
-          description: Array of file-level (##) annotations attached to the notebook
+          description:
+            Array of file-level (##) annotations attached to the notebook. For
+            a `.malloy` notebook, every own note that is not a floating
+            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
+            note below the `## artifact` tag is dropped and not listed.
           items:
             type: string
         startingGivens:
           allOf:
             - $ref: "#/components/schemas/EncodedGivenValues"
           description:
-            Starting values for the notebook's controls, declared at its file
-            level. URL parameters override these, which is why the two share a
-            shape. Omitted when the notebook declares none.
+            Starting values for the notebook's controls. A `.malloy` notebook
+            declares them in its artifact tag (`## artifact { givens { … } }`),
+            a `.malloynb` in its file-level tags (`## givens { … }`). URL
+            parameters override these, which is why the two share a shape.
+            Omitted when the notebook declares none.
         autorun:
           type: boolean
           description:
             False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true. The same flag, with
-            the same default, that `DashboardManifest.autorun` carries, so a
-            notebook's `## autorun=false` and a dashboard's
-            `# artifact { autorun=false }` arrive identically.
+            re-running on every change. Defaults to true. A `.malloy` notebook
+            reads it from its artifact tag (`## artifact { autorun=false }`), a
+            `.malloynb` from its file-level tags (`## autorun=false`). The same
+            flag, with the same default, that `DashboardManifest.autorun`
+            carries.
         sources:
           type: array
           description: Sources defined in the notebook's model
@@ -4517,9 +4638,56 @@ components:
           type: string
           enum: ["markdown", "code"]
           description: Type of notebook cell
+        kind:
+          type: string
+          enum: ["markdown", "query", "definition"]
+          description:
+            What a cell is, on a `.malloy` notebook. A definition cell
+            (`source:`, `import`, `query:`, `given:`, `type:`, `export`) has type `code`
+            and produces no result. Absent on a `.malloynb`.
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
+        markdown:
+          type: string
+          description:
+            On a `.malloy` notebook's code cell, the prose written on the
+            `(markdown)` route in its own tag lines (`#(markdown) text` lines,
+            `#|(markdown)` … `|#` blocks), which `text` still contains. Blocks
+            join with a blank line, adjacent lines with a newline. Author
+            prose, so it is served even when `queryInfo` is withheld. Absent
+            when the cell has none.
+        proseLines:
+          type: array
+          description:
+            Present on every code cell of a `.malloy` notebook, and absent on
+            a `.malloynb` or from a server that predates it. The lines of
+            `text` that hold `markdown`, as `[start, end]` pairs in file order;
+            `[]` when the cell has none. Lines are 0-based and inclusive,
+            counted on `text` split at `\n`. Strip exactly these lines to get
+            the cell's code without its prose; do not re-derive them from
+            `text`, whose first line has lost its indentation.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: integer
+        codeLine:
+          type: integer
+          description:
+            Present on every code cell of a `.malloy` notebook, as `proseLines`
+            is. The 0-based line of `text` (split at `\n`) where the
+            statement's code starts, its first token that is neither a note nor
+            a comment, so the `source`, `run`, `given` or `import` keyword sits
+            on it.
+        caption:
+          type: string
+          description:
+            On a `.malloy` notebook's code cell, the joined text of its leading
+            `#"` lines (space-joined, trimmed). Author prose, so it is served
+            even when `queryInfo` is withheld. Absent when the cell has none,
+            which is authoritative wherever `proseLines` is present.
         newSources:
           type: array
           description:
@@ -4542,9 +4710,33 @@ components:
           type: string
           enum: ["markdown", "code"]
           description: Type of notebook cell
+        kind:
+          type: string
+          enum: ["markdown", "query", "definition"]
+          description: The cell's kind, on a `.malloy` notebook. Absent on a `.malloynb`.
         text:
           type: string
           description: Text contents of the notebook cell
+        markdown:
+          type: string
+          description:
+            A `.malloy` notebook code cell's own `(markdown)` prose, as on
+            `NotebookCell`. Absent when the cell has none.
+        proseLines:
+          type: array
+          description: The lines of `text` that hold `markdown`, as on `NotebookCell`; `[]` when none.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: integer
+        codeLine:
+          type: integer
+          description: The line of `text` where the statement's code starts, as on `NotebookCell`.
+        caption:
+          type: string
+          description: The cell's leading `#"` caption, as on `NotebookCell`. Absent when the cell has none.
         result:
           type: string
           description: JSON string containing the execution result for this cell
@@ -7132,6 +7324,38 @@ components:
             gate rejects anyway.
 
   parameters:
+    includeHiddenFilesAndSources:
+      name: includeHiddenFilesAndSources
+      in: query
+      required: false
+      description: |
+        When true, a package with a surface (a root `index.malloy`, or a legacy
+        `explores`) is served to this request as if it had none: the models
+        list includes the files off the surface, the model GET returns them, and
+        the query route runs any model path the request names, including a
+        dashboard or notebook file, against every source, as
+        `queryableSources: "all"` does for every request. `#(authorize)` and
+        `#(access_filter)` still apply: it lifts curation, never the lock.
+
+        The model GET goes one step further than `queryableSources: "all"`: it
+        returns the file's `sourceText` even when that text names a source the
+        file does not publish. That text can include `#(authorize)`
+        expressions, `given:` defaults, connection names and raw SQL.
+
+        Only the models list, the model GET and the query route read it. The
+        notebook-cell route, the dashboards route, the MCP tools, and the legacy
+        `/projects/...` aliases of these routes ignore it.
+
+        Like every route on this server, it is unauthenticated. A deployment
+        that authenticates in front of Publisher decides who may send it, and
+        should pass it only for callers allowed to work with a package's hidden
+        files, such as its authors.
+
+        Only `true` and `false` are accepted. Any other value is refused with
+        400.
+      schema:
+        type: boolean
+        default: false
     environmentName:
       name: environmentName
       in: path

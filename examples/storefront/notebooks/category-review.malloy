@@ -1,0 +1,42 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// A notebook: prose and queries in reading order, over the storefront model.
+// The `## artifact` tag below is what makes this file a notebook rather than a
+// shared include, and `notebooks/` is the directory that decides it.
+##! experimental.givens
+##" One category at a time: how it sells across the year, which brands carry it, and the products that lead it.
+## artifact { kind=notebook title="Category review" }
+import { order_items, products } from "../storefront.malloy"
+
+##|(markdown)
+# Category review
+
+Pick a **Category** in the controls above and every chart below re-runs for it.
+Leave the control empty to read the whole catalog.
+|##
+
+# description="Narrow to one product category. Leave empty for all"
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
+
+##(markdown) The monthly trend says which way revenue is moving.
+
+#" Revenue by month for the selected category
+# line_chart
+# label="Revenue by month"
+run: order_items -> sales_by_month + { where: category ~ $CATEGORY }
+
+##(markdown) The brand ranking says who is behind those numbers.
+
+#" The eight brands with the most revenue in the selected category
+# bar_chart
+# label="Top brands"
+run: order_items -> top_brands + { where: category ~ $CATEGORY }
+
+##(markdown) Last, the best-selling products, defined once as a named query and then run.
+
+query: top_products_in_category is order_items -> top_products + { where: category ~ $CATEGORY }
+
+#" The ten best-selling products in the selected category
+run: top_products_in_category

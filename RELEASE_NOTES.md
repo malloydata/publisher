@@ -31,6 +31,194 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Publisher serves `.malloy` notebooks
+
+A `.malloy` file directly under a package's top-level `notebooks/` whose model-level notes include
+`## artifact { kind=notebook … }` is now a served notebook. Its cells are read from the file in order:
+floating `(markdown)` notes, one query cell per `run:` with its tag block, and one definition
+cell per other statement. List-notebooks includes served notebooks beside `.malloynb` files. Get-notebook returns
+one with a `format` (`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or
+`definition`). A code cell also carries a `markdown` field when `(markdown)` prose is attached to its
+statement, a `proseLines` field naming the lines of its `text` that hold that prose (0-based,
+inclusive `[start, end]` pairs, `[]` when none), a `codeLine` field with the line where its
+statement's code starts, and a `caption` field with its leading `#"` text when it has one. The Console opens one at `notebooks/<slug>`. A served notebook keeps
+`modelType: model`, so the model GET, `/compile`, MCP `execute_query` and the declared-givens fetch
+treat it as any model.
+
+Behavior changes to know about:
+
+- **list-models excludes served notebooks**, with or without a surface, so they are absent from MCP
+  `get_context` as well. Use list-notebooks.
+- **Notebook prose is an annotation on the `(markdown)` route, and the number of `#` says what it
+  belongs to.** `##|(markdown)` … `|##` (the body starts on the next line) or `##(markdown) text` is
+  a cell of its own, and adjacent lines merge. `#(markdown) text` or `#|(markdown)` … `|#` belongs
+  to the statement below it (`run:`, `source:`, `query:`, `given:`, `type:`) and renders with that
+  cell, as a header above a `run:`'s result and above its `#"` caption. It cannot sit above an
+  `import` or `export`, which take no annotations; use `##|(markdown)` there. Earlier
+  spellings are still read: `##"`, `##|"`, `##(text)` and `##|(text)` notes below a notebook's tag
+  are markdown cells too, with no lint finding (a name on a block draws a warning).
+- **A notebook's description is the unnamed `"` notes above `## artifact`.** A dashboard's is the
+  same, and when it has none above it still reads the ones below the tag, with a lint warning to
+  move them above. The in-repo dashboards already put theirs above. On a dashboard, `##|(text) name`
+  is still a text tile, with no lint finding.
+- **`notebooks` is a segment the Console owns.** `/<env>/<pkg>/notebooks/<file.ext>` no longer reaches
+  a package's `public/notebooks/`.
+- **The published-names filter now applies to `modelInfo.anonymous_queries` on the model GET for every
+  curated model**, and to a `.malloynb` GET's `anonymous_queries` under a surface: only runs over
+  published sources are returned.
+- **`/compile` reports new lint problems on files under `notebooks/` and `dashboards/`**, each naming
+  its line and the fix, and they appear in package warnings. A served notebook whose cells cannot be
+  read is an `error`.
+- **New metrics**: `publisher_notebook_discovery_total{format,outcome}`,
+  `publisher_notebook_cell_executions_total{format,kind,outcome}` and
+  `publisher_notebook_cell_execution_duration_ms{format,outcome}`.
+
+## [Unreleased] — `dashboard_columns` is read again, as a deprecated alias
+
+The 0.2.1 note that said `dashboard_columns` is gone is superseded.
+`dashboard { columns=N }` beside the artifact tag stays the canonical grid width, and
+`dashboard_columns=N` inside the artifact tag is a deprecated alias that Publisher reads when
+`columns` is absent. It draws a warning, and when the two disagree it is an error naming both values
+and `columns` is what is served. A package that spelled the alias and got the default width now gets
+the width it wrote.
+
+`kind=dashboard` on a `dashboards/` file's artifact tag and `kind=query` on a tile entry are accepted
+as the explicit defaults. A text tile is a named `##|(markdown) name` block listed in `tiles` with
+`kind=text`; the format is decided, but text tiles are not rendered yet. Eight finding codes fail
+`/compile` regardless: `notebook-statement-above-artifact`, `notebook-tag-above-artifact` and
+`notebook-markdown-above-artifact` (a statement, a tag or a `(markdown)` note above a served
+notebook's `## artifact`), `notebook-columns-conflict` (a tiled dashboard's `dashboard_columns`
+disagrees with `dashboard { columns }`), `notebook-markdown-opener-text` (more than a name after
+`(markdown)` on a block's opener), `notebook-markdown-attached-nowhere` (a `#(markdown)` note with no
+statement to take it), `notebook-artifact-unparsed` (an `## artifact` tag that does not parse), and
+`notebook-cells-unreadable` (a served notebook's cells could not be read).
+Package-scope `/compile` fails when any file in the package has one.
+
+## [0.8.3] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
+
+A `#@ persist partition=` build of a wide source with many partition values failed against the
+build session's `memory_limit` — `Out of Memory Error: failed to pin block of size 256.0 KiB` —
+before or shortly after its first rows, where the same source built unpartitioned. The build is
+DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager, charges each
+appender one vector per column for every partition it has met, and flushes nothing until it has
+appended 524,288 rows. Rows arriving interleaved across partitions brought every partition into
+that set at once.
+
+Three changes, on a passthrough-sourced partitioned build only (Postgres, BigQuery, Snowflake).
+The insert's SELECT is now ordered by the partition columns at the top of the INSERT statement, so
+the build holds one or two partitions at a time; the SELECT it was handed is unchanged, so what the
+warehouse runs, its query tag or label, and what the source is addressed by are untouched. That
+insert runs on one thread, because a DuckDB-side sort is read in parallel and several appenders each
+meet every partition again. And the build session sets `partitioned_write_flush_threshold`, new
+`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD` (rows, default `8192`; `off` turns all three off, for a
+source that built fine before). The sort reads the whole result before the first partition file is
+written and spills to the build's working directory, so memory is traded for local disk and wall-clock.
+An incremental delta into a laid-out table gets the threshold and the single thread through its session.
+Measured on 122 columns, 616k rows, 308 partitions at `768MB`: from Postgres, interleaved fails at any
+threshold, ordered fails at DuckDB's default, ordered on four threads fails, ordered on one thread
+with the bound completes in 9.5 s; from BigQuery, interleaved fails at 54 s and the same shape
+completes in 36 s. An unpartitioned build, and a chained build, are byte-identical to what they
+were.
+
+## [0.8.3] — /status names the server version, and says why it is empty
+
+`GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and
+the MCP handshake reports the same value instead of `0.0.1`. A stale copy from the `npx` cache is
+now visible from outside the process.
+
+A server that found no `publisher.config.json` still reports `serving`, which is deliberate: some
+deployments start empty and create environments over the API. It now also reports `emptyReason`,
+naming the path it checked. It is set for a mistyped `--config` path too. The field is absent once
+any environment exists, and absent when a config was found but lists none.
+
+## [0.8.3] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
+
+**Reloading a package no longer costs you a lexically-ranked answer.** A reload
+never dropped a package's vectors — they are keyed by package name in
+`publisher.db` — but it did throw away the server's record that they were
+current, because that record was tied to the in-memory package object a reload
+replaces. So the first `get_context` after every `reload_package`, every REST
+`?reload=true`, and every watch-mode save was ranked lexically while the server
+re-checked hashes that all still matched. If you author models with watch mode
+on, that was one degraded answer per save, including saves that changed nothing
+relevant. Now a reload whose files hash the same keeps the warm index and is
+ranked semantically on its first call; an edit still re-embeds, and still only
+the parts whose text changed.
+
+**`embeddingIndex.status` keeps its name and changes its basis, so read this if
+you poll it.** On the package resource
+(`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
+from whether cached rows covered the package's current entity *names*. Vectors
+outlive a restart and a reload, so that reported `ready` immediately — while the
+next question was still answered lexically. Anything following the documented
+"poll until `ready` before measuring retrieval quality" could therefore measure a
+lexical run and record it as a semantic one, which is a wrong number rather than
+a slow start. `ready` now means one thing: the index is warm, so the next
+`get_context` question about this package is ranked semantically. It is decided
+by the same completed sync the search path itself gates on. It describes the
+index, not the next response — a question whose own query embedding fails still
+falls back, with `retrieval_reason: provider-error`.
+
+**What to do.** If you poll for readiness, keep polling `status` — it is now
+accurate, and it is the field to trust. If you instead inferred readiness from
+`embeddedEntities == totalEntities`, stop: those count coverage by entity name,
+so they can be equal while `status` is `indexing` (an edit that rewrote every
+doc without renaming anything leaves each entity holding its stale name vector).
+Expect `status` to read `indexing` in two places it previously read `ready`:
+just after a server restart, until the first question re-establishes the sync,
+and after a doc-only edit. Both clear on the next `get_context` question.
+Because only a question starts the sync, poll in this order: send the package one
+`get_context` question, then poll until `ready`. That holds after every restart,
+not only for a package nothing has queried. A script that polls before asking
+anything never sees `ready`.
+
+**If your embedding provider ignores `EMBEDDING_DIMENSIONS`, the coverage counts
+now match reality.** The `dims` column records the length the provider actually
+returned, and some providers (Ollama among them) ignore the requested value.
+`embeddedRows` and `embeddedEntities` were counted against the *configured*
+value instead, so for those providers they read 0 while retrieval was reading
+those same vectors happily — and that also pinned `status` at `indexing`. Both
+now count on the same rule the sync uses to decide a row is current: the current
+model, any vector length.
+
+That makes them a count of what is cached, not a prediction of what a search can
+read — the scan also matches on vector length, which only a real question knows.
+So after a change to `EMBEDDING_DIMENSIONS` that no question has probed yet, the
+old rows are still counted until the next search discards them. `status` is
+already `indexing` throughout that window, which is why it, and not the counts,
+is the field to poll.
+
+Unrelated to the above, and unchanged: `--init` still drops the vector cache
+along with the rest of persisted storage. It resets the server root, and it
+remains the reclaim path for rows orphaned by a configuration change.
+
+## [0.8.3] — a given the query reads is no longer silently replaced by its default
+
+Publisher withholds a given the entry model doesn't surface when a gate is the only thing reading
+it, so the gate can still evaluate. It also withheld it when the query itself read a given of the
+same name, such as a `where:` on a source from another file that declares its own defaulted
+`HIDE`. That `where:` then ran at its default: a caller who sent `HIDE: us-west` got the rows for
+`'none'`, with no error. The value is now forwarded, so the request returns a 400 (`unknown given
+'HIDE'`), the same as for any given the entry model doesn't surface. **Behavior change:** a
+request that used to return rows at the default now fails with a 400. To fix the model, import the
+given at the entry model.
+
+## [0.8.3] — a gate on a joined field checks what the join reads
+
+The filter-binding check introduced in 0.8.1 now also compares, for a gate on a joined field such
+as `#(access_filter) child.org_id in $GROUPS`, what decides which joined row each row reaches. That
+covers the columns the join's `ON` or `with` reads, and the joined source's own `where:`,
+parameters and arguments. **Behavior change:** a query or a model extension that redefines one of
+those answers 403 on every query, even when the new definition is equivalent
+(`rename: raw_id is id; dimension: id is raw_id`), as a redefinition of the gated column itself
+already did. If an extension of a gated source needs a reshaped join key, give the new dimension a
+new name. A caller who re-joins exactly the joined source the author declared, with the same `ON`,
+is now served rather than refused. **Fixes a pre-existing gap, present since 0.8.2 or earlier:** a
+gate reading into a record-literal field named `location` (`dimension: x is { location is … }`)
+was comparable-as-equal regardless of value, because the field-identity check stripped any key
+named `location` by name rather than by shape; a caller could redefine that field and see rows the
+gate should have hidden.
+
 ## [0.8.2] — the model Explorer takes givens
 
 The Console's model Explorer now shows a **Parameters** row when the model declares givens, and

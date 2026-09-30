@@ -281,15 +281,23 @@ jobs:
 
   # skills, create-malloy-package and python-client version on their own lines,
   # so this job triggers them rather than versioning them. The first two publish
-  # to npm and the third to PyPI, through one parameterised publish_pkg.
+  # to npm through publish_indep_pkg, which decides their version at release
+  # time (scripts/independent-version.mjs) rather than reading one committed to
+  # their package.json; python-client publishes to PyPI through the older
+  # publish_pkg, which still reads its version straight from pyproject.toml.
+  # Both share publish_resolved for the registry-agnostic tail: the watched-path
+  # guard, the "main moved" compare, the dispatch, and the poll loop.
   #
   # It triggers them but does NOT align their version numbers with sdk/app/
   # server, and that is not an omission to be tidied up later. malloydata/malloy
   # gets one shared number across its packages from Lerna fixed mode; these two
   # were already published on their own lines before this job existed, and npm
-  # versions are immutable, so there is no path back to a shared number. Each
-  # package therefore publishes at the version its own package.json declares,
-  # and is skipped when that version is already on npm.
+  # versions are immutable, so there is no path back to a shared number. skills
+  # is skipped when its published content is unchanged since npm latest's
+  # gitHead; create-malloy-package publishes on every non-prerelease release
+  # and is skipped only on a re-run (its publisherServer already matches);
+  # python-client is paused. A computed version already on npm is an error for
+  # either, never a skip.
   #
   # They are DISPATCHED through the Actions API rather than called with
   # workflow_call, deliberately. npm allows one trusted publisher per package
@@ -372,13 +380,19 @@ jobs:
           # checkout leaves a token carrying this job's actions: write scope in
           # .git/config for the life of the job.
           persist-credentials: false
+          # Full history, not the default shallow clone: deciding skills'
+          # version needs to `git cat-file`/`git diff` against npm latest's
+          # gitHead, an arbitrary past commit a shallow checkout would not have.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "24"
 
-      - name: Publish skills, create-malloy-package, then python-client
+      # python-client's PyPI publish is paused (work in progress); see the end of
+      # scripts/publish-packages.sh.
+      - name: Publish skills and create-malloy-package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Through env, not interpolated into the script body.
@@ -564,17 +578,12 @@ jobs:
       # below runs, and its "main moved during this release" guard aborts a
       # dispatch when main moves under a watched path.
       #
-      # The step below cannot trip it: it pushes a branch, and main does not
-      # move. But the release does not end here — the operator is then told to
-      # open and merge the stamp PR, and `publish-packages` can still be inside
-      # its npm poll budget when they do. That merge moves main mid-release,
-      # and it is NOT harmless: the stamp branch moves skills and
-      # create-malloy-package one patch ahead, and both package.json files are
-      # paths that guard watches. Merged early, it aborts the dispatch of
-      # whichever of the two has not gone yet (fail-closed and retryable, but
-      # the retry publishes the moved-ahead version). So the summary tells the
-      # operator to wait for `publish-packages` to finish before merging, and
-      # the publisher-release skill says the same.
+      # The step below, and merging the PR it opens, cannot trip that guard
+      # either way: it only resets packages/{sdk,app,server}/package.json and
+      # stamps RELEASE_NOTES.md, and neither is a path skills' or
+      # create-malloy-package's guard watches — those two no longer have a
+      # version committed ahead of time for this step to move, so there is
+      # nothing here left to collide with an in-flight publish-packages run.
       # `+` as well as `-`, because the two guards otherwise disagree about what
       # counts as a prerelease. `scripts/set-version.mjs` accepts a `+build`
       # suffix (it is valid semver and nothing is computed from it), so

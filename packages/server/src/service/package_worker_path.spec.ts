@@ -418,6 +418,96 @@ run: gated -> { aggregate: c }`,
       }
    });
 
+   // #1241: HIDE is off every entry surface; a gate reads it through the hub's
+   // `mid_gated`, and the base's `where:` reads a defaulted same-named given.
+   function writeOffSurfaceGivenPackage(): void {
+      writeManifest();
+      const table = `duckdb.sql("select * from (values ('a'),('b')) as t(val)")`;
+      fs.writeFileSync(
+         path.join(tempDir, "og_base.malloy"),
+         `##! experimental.givens
+
+given:
+  HIDE :: string is 'none'
+
+source: ungated_deep is ${table} extend {
+  where: val != $HIDE
+  measure: c is count()
+}
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_gate.malloy"),
+         `##! experimental.givens
+
+given:
+  HIDE :: string
+
+#(access_filter) val = $HIDE
+source: deep_gated is ${table} extend {
+  measure: c is count()
+}
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_hub.malloy"),
+         `import { ungated_deep } from "og_base.malloy"
+import "og_gate.malloy"
+
+source: mid_ungated is ungated_deep extend {}
+source: mid_gated is deep_gated extend {}
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_entry.malloy"),
+         `import "og_hub.malloy"
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "og_nb.malloynb"),
+         `>>>malloy
+import "og_hub.malloy"
+run: mid_ungated -> { aggregate: c }`,
+      );
+   }
+
+   it("400s a query reading an off-surface gate given instead of binding its default", async () => {
+      writeOffSurfaceGivenPackage();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const err = await pkg
+            .getModel("og_entry.malloy")!
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: mid_ungated -> { aggregate: c }",
+               undefined,
+               undefined,
+               { HIDE: "a" },
+            )
+            .catch((e: unknown) => e);
+         expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("400s a worker-hydrated notebook cell reading an off-surface gate given", async () => {
+      writeOffSurfaceGivenPackage();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const err = await pkg
+            .getModel("og_nb.malloynb")!
+            .executeNotebookCell(0, undefined, false, { HIDE: "a" })
+            .catch((e: unknown) => e);
+         expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("logs a warning for a package whose view carries an invalid renderer tag", async () => {
       writeManifest();
       // `# big_value { sparkline=... }` is a child-only renderer config placed on

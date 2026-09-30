@@ -5,8 +5,12 @@ import type {
    GivenValue,
    LogMessage,
    Model as MalloyModel,
+   ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
+import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
+import { isDashboardModelPath } from "./dashboard";
+import { notebookLintProblems } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -37,6 +41,11 @@ import {
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
+import {
+   assertFilterGivensParse,
+   malloyGivenToApi,
+   type MalloyGiven,
+} from "./given";
 import { assertNoRestrictedConstructs } from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
@@ -242,6 +251,19 @@ export type CompileScope = (typeof COMPILE_SCOPES)[number];
  *  to, resolvable from `at.url` — load-bearing at scope "package", where
  *  problems from every file share one array. */
 export type TaggedLogMessage = LogMessage & { model?: string };
+
+/** The package-relative model path of a file inside the package, `/`-separated on every platform; undefined outside it. */
+export function packageRelativeModelPath(
+   packagePath: string,
+   filePath: string,
+   pathModule: Pick<typeof path, "relative" | "isAbsolute" | "sep"> = path,
+): string | undefined {
+   const rel = pathModule.relative(packagePath, filePath);
+   if (rel === "" || rel.startsWith("..") || pathModule.isAbsolute(rel)) {
+      return undefined;
+   }
+   return rel.split(pathModule.sep).join("/");
+}
 
 async function denyHiddenAsNotQueryable(
    convert: () => void | Promise<void>,
@@ -806,10 +828,10 @@ export class Environment {
                let model: string | undefined;
                if (url && url.startsWith("file:")) {
                   try {
-                     const rel = path.relative(packagePath, fileURLToPath(url));
-                     if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
-                        model = rel;
-                     }
+                     model = packageRelativeModelPath(
+                        packagePath,
+                        fileURLToPath(url),
+                     );
                   } catch {
                      // Not a resolvable file URL — leave the tag off.
                   }
@@ -949,6 +971,18 @@ export class Environment {
                      compiled.modelPath,
                   );
                }
+               const readerProblem =
+                  compiled.modelDef && compiled.modelSourceText !== undefined
+                     ? notebookReaderProblem(
+                          compiled.modelPath,
+                          compiled.modelSourceText,
+                          compiled.modelDef as ModelDef,
+                          pathToFileURL(
+                             path.join(packagePath, compiled.modelPath),
+                          ).toString(),
+                       )
+                     : undefined;
+               if (readerProblem) collect([readerProblem], compiled.modelPath);
                if (compiled.compilationError) {
                   const compilerProblems =
                      compiled.compilationError.malloyProblems;
@@ -968,6 +1002,33 @@ export class Environment {
                         compiled.modelPath,
                      );
                   }
+               }
+               // A file that did not compile carries no text back, so it is read as saved (or as replaced).
+               const lintText = !(
+                  isNotebookModelPath(compiled.modelPath) ||
+                  isDashboardModelPath(compiled.modelPath)
+               )
+                  ? undefined
+                  : (compiled.modelSourceText ??
+                    (compiled.modelPath === modelName && source !== undefined
+                       ? source
+                       : await fs.promises
+                            .readFile(
+                               path.join(packagePath, compiled.modelPath),
+                               "utf8",
+                            )
+                            .catch(() => undefined)));
+               if (lintText !== undefined) {
+                  collect(
+                     notebookLintProblems(
+                        compiled.modelPath,
+                        lintText,
+                        pathToFileURL(
+                           path.join(packagePath, compiled.modelPath),
+                        ).toString(),
+                     ),
+                     compiled.modelPath,
+                  );
                }
             }
             if (
@@ -1183,6 +1244,17 @@ export class Environment {
             // If includeSql is requested and compilation succeeded, attempt to extract SQL
             let sql: string | undefined;
             if (includeSql && queryMaterializer) {
+               // A given value the compiled text's own filter types cannot read
+               // is a bad request, as on the query route. Checked here, after
+               // the gate and against the submitted text's givens rather than
+               // the cached model's, because this is the only place /compile
+               // binds given values.
+               assertFilterGivensParse(
+                  Array.from(model.givens.values()).map((g) =>
+                     malloyGivenToApi(g as MalloyGiven),
+                  ),
+                  givens,
+               );
                try {
                   sql = await queryMaterializer.getSQL({ givens });
                } catch (error) {
@@ -1213,11 +1285,40 @@ export class Environment {
             }
 
             // If successful, return any non-fatal warnings
-            return { problems: tagProblems(model.problems), sql };
+            const readerProblem = notebookReaderProblem(
+               modelName,
+               fullSource,
+               model._modelDef,
+               virtualUri,
+            );
+            // Its positions are in the concatenated file at "append", so the lint is for a whole file only.
+            const lintProblems =
+               scope === "append"
+                  ? []
+                  : notebookLintProblems(modelName, fullSource, virtualUri);
+            return {
+               problems: tagProblems([
+                  ...model.problems,
+                  ...(readerProblem ? [readerProblem] : []),
+                  ...lintProblems,
+               ]),
+               sql,
+            };
          } catch (error) {
             // If parsing/compilation fails, return the errors
             if (error instanceof MalloyError) {
-               return { problems: tagProblems(error.problems) };
+               return {
+                  problems: tagProblems([
+                     ...error.problems,
+                     ...(scope === "append"
+                        ? []
+                        : notebookLintProblems(
+                             modelName,
+                             fullSource,
+                             virtualUri,
+                          )),
+                  ]),
+               };
             }
             // If it's a system error (e.g. file not found), throw it up
             throw error;

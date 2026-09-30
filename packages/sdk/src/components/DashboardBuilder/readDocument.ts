@@ -16,7 +16,13 @@ import {
    type TreeStage,
    type TreeView,
 } from "./malloyTree";
-import { tileSteps } from "./malloyText";
+import {
+   ARTIFACT_LINE,
+   blockLines,
+   descriptionNotes,
+   markdownNote,
+   tileSteps,
+} from "./malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -75,6 +81,8 @@ export interface Block {
     * needs the numbers to patch a tag in place; the reader only needs the text.
     */
    tags: Array<{ line: number; text: string }>;
+   /** The `(markdown)` annotation lines in the block, which are not tags but leave with the declaration they describe. */
+   prose: number[];
 }
 
 /**
@@ -100,17 +108,22 @@ export function blockAbove(
 ): Block {
    const start = parsed.blockStart(declLine);
    const tags: Array<{ line: number; text: string }> = [];
+   const prose: number[] = [];
    for (let i = start; i < declLine; i++) {
       // Inside a `/* … */`, where a line beginning `#` is prose. Rewriting one
-      // would put an edit inside a comment.
+      // would put an edit inside a comment, and `(markdown)` text there is no annotation.
       if (parsed.commentLine(i)) continue;
+      if (parsed.proseLine(i)) {
+         prose.push(i);
+         continue;
+      }
       const text = lines[i].trim();
       // `##` at this indent level is a MODEL annotation and never belongs to a
       // declaration; only single-`#` object tags do.
       if (text.startsWith("#") && !text.startsWith("##"))
          tags.push({ line: i, text });
    }
-   return { start, tags };
+   return { start, tags, prose };
 }
 
 /** Just the text of a block's tags, which is what `parseAnnotation` takes. */
@@ -121,18 +134,21 @@ function modelLines(lines: string[]): {
    description?: string;
    artifact: string[];
 } {
-   const doc: string[] = [];
    const artifact: string[] = [];
-   for (const raw of lines) {
+   const inside = blockLines(lines);
+   for (const [i, raw] of lines.entries()) {
+      if (inside.has(i)) continue;
       const text = raw.trim();
-      if (text.startsWith('##"')) doc.push(text.slice(3).trim());
-      else if (text.startsWith("##!")) continue;
-      else if (text.startsWith("##")) artifact.push(text);
+      const note = markdownNote(text);
+      if (
+         text.startsWith("##") &&
+         !text.startsWith('##"') &&
+         !text.startsWith("##!") &&
+         !(note?.level === 2 && !note.block)
+      )
+         artifact.push(text);
    }
-   return {
-      description: doc.length > 0 ? doc.join("\n") : undefined,
-      artifact,
-   };
+   return { description: descriptionNotes(lines).text, artifact };
 }
 
 /**
@@ -235,6 +251,21 @@ function readControlTags(tag: TagLike | null | undefined): Partial<LocalGiven> {
    };
 }
 
+/** A grid width: a plain decimal positive integer, else undefined. */
+function gridWidth(
+   tag: { text(key: string): string | undefined } | undefined,
+   key: string,
+): number | undefined {
+   const raw = tag?.text(key)?.trim();
+   if (
+      raw === undefined ||
+      !/^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/.test(raw)
+   )
+      return undefined;
+   const value = Number(raw);
+   return Number.isInteger(value) && value >= 1 ? value : undefined;
+}
+
 /** The `tiles=[…]` entries, in order, as written. */
 function tileEntries(artifactLine: string): string[] {
    const key = artifactLine.search(/tiles\s*=\s*\[/);
@@ -262,7 +293,7 @@ export async function readDashboardDocument(
    const parsed = parse.parsed;
 
    const { description, artifact } = modelLines(lines);
-   const artifactLine = artifact.find((l) => l.includes("artifact"));
+   const artifactLine = artifact.find((l) => ARTIFACT_LINE.test(l));
    if (artifactLine === undefined) {
       return {
          ok: false,
@@ -424,7 +455,14 @@ export async function readDashboardDocument(
       if (value !== undefined) startingGivens[key] = value;
    }
 
-   const columnsTag = tag?.tag("dashboard")?.numeric("columns");
+   // The server's rule: a written `dashboard { columns }` wins even when it is
+   // not a width (the default width then applies), and the alias only counts
+   // beside `tiles`.
+   const columnsTag = tag?.tag("dashboard")?.has("columns")
+      ? gridWidth(tag.tag("dashboard"), "columns")
+      : artifactTag?.array("tiles")
+        ? gridWidth(artifactTag, "dashboard_columns")
+        : undefined;
 
    return {
       ok: true,

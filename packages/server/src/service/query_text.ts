@@ -416,7 +416,7 @@ function skipAnnotation(
 }
 
 /** Whether the line starting at `at` closes a block annotation opened in `column`. */
-function closesBlock(
+export function closesBlock(
    text: string,
    at: number,
    column: number,

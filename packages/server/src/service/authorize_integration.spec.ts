@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { Connection, GivenValue } from "@malloydata/malloy";
+import { Connection, GivenValue, MalloyError } from "@malloydata/malloy";
 import {
    afterAll,
    afterEach,
@@ -2655,6 +2655,166 @@ source: hb_top is duckdb.table('customers') extend {
             { HIDEE: "us-west" }, // typo for HIDE
          ),
       ).rejects.toBeTruthy();
+   });
+});
+
+// #1241: a name off the entry surface that a gate references used to be
+// dropped even when the query itself read a same-named `where:` given, which
+// bound that declaration's default instead of the caller's value.
+describe("an off-surface gate given the query also reads is forwarded, not dropped", () => {
+   const OG_BASE = `##! experimental { givens parameters }
+
+given:
+  HIDE :: string is 'none'
+
+source: ungated_deep is duckdb.table('customers') extend {
+  where: region != $HIDE
+  measure: c is count()
+}
+
+source: field_reader is duckdb.table('customers') extend {
+  dimension: hidden is $HIDE
+  measure: c is count()
+}
+
+source: pp(x::string is 'none') is duckdb.table('customers') extend {
+  where: region != x
+}
+source: arg_bound is pp(x is $HIDE) -> { group_by: region }
+`;
+   const OG_GATE = `##! experimental.givens
+
+given:
+  HIDE :: string
+
+#(access_filter) region = $HIDE
+source: deep_gated is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+   // The base is imported selectively so only the gate's undefaulted HIDE
+   // is on the hub's surface; the entry, two hops away, surfaces neither.
+   const OG_HUB = `import { ungated_deep, field_reader, arg_bound } from "og_base.malloy"
+import "og_gate.malloy"
+
+source: mid_ungated is ungated_deep extend {}
+source: mid_fields is field_reader extend {}
+source: mid_arg is arg_bound extend {}
+source: mid_gated is deep_gated extend {}
+source: mid_q is mid_ungated -> { group_by: region }
+query: q_mid is mid_ungated -> { aggregate: c }
+`;
+   const OG_ENTRY = `import "og_hub.malloy"
+
+source: plain is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+
+   beforeEach(async () => {
+      await writeModel("og_base.malloy", OG_BASE);
+      await writeModel("og_gate.malloy", OG_GATE);
+      await writeModel("og_hub.malloy", OG_HUB);
+      await writeModel("og_entry.malloy", OG_ENTRY);
+      // Surfaces the base's HIDE under another name; `HIDE` itself stays off.
+      await writeModel(
+         "og_alias.malloy",
+         `import "og_hub.malloy"\nimport { T is HIDE } from "og_base.malloy"\n`,
+      );
+   });
+
+   async function expectUnknownHide(query: string, entry = "og_entry.malloy") {
+      const err = await runGated(entry, query, {
+         HIDE: "us-west",
+      }).catch((e: unknown) => e);
+      // MalloyError is what the HTTP layer maps to 400.
+      expect(err).toBeInstanceOf(MalloyError);
+      expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
+   }
+
+   it("400s a query over the where: source instead of binding its default", async () => {
+      await expectUnknownHide("run: mid_ungated -> { aggregate: c }");
+   });
+
+   it("400s a caller-written join to the where: source", async () => {
+      await expectUnknownHide(
+         "run: plain -> { extend: { join_one: mid_ungated on id = mid_ungated.id } aggregate: c is mid_ungated.c }",
+      );
+   });
+
+   it("refuses a caller-declared alias of the where: source", async () => {
+      // The inherited-filter binding guard denies this before the run.
+      await expect(
+         runGated(
+            "og_entry.malloy",
+            "source: mine is mid_ungated extend {}\nrun: mine -> { aggregate: c }",
+            { HIDE: "us-west" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("400s a query-source over the where: source", async () => {
+      await expectUnknownHide("run: mid_q -> { aggregate: c is count() }");
+   });
+
+   it("refuses a named query that reaches the where: source by name", async () => {
+      await expect(
+         runGated("og_entry.malloy", "run: q_mid", { HIDE: "us-west" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("still drops the name for a query that never reads it", async () => {
+      const { compactResult } = await runGated(
+         "og_entry.malloy",
+         "run: plain -> { aggregate: c }",
+         { HIDE: "us-west" },
+      );
+      const rows = compactResult as unknown as Array<Record<string, unknown>>;
+      expect(Number(rows[0]?.c)).toBe(2);
+   });
+
+   it("still drops the name when only an unused field reads it", async () => {
+      const { compactResult } = await runGated(
+         "og_entry.malloy",
+         "run: mid_fields -> { aggregate: c }",
+         { HIDE: "us-west" },
+      );
+      const rows = compactResult as unknown as Array<Record<string, unknown>>;
+      expect(Number(rows[0]?.c)).toBe(2);
+   });
+
+   it("400s once the query uses a field that reads it", async () => {
+      await expectUnknownHide(
+         "run: mid_fields -> { group_by: hidden; aggregate: c }",
+      );
+   });
+
+   it("400s a source that binds it as a source argument", async () => {
+      // Malloy's givenUsage does not list an argument binding.
+      await expectUnknownHide("run: mid_arg -> { aggregate: c is count() }");
+   });
+
+   it("400s when the entry surfaces the same given under an alias", async () => {
+      await expectUnknownHide(
+         "run: mid_ungated -> { aggregate: c }",
+         "og_alias.malloy",
+      );
+   });
+
+   it("leaves the gated source's refusal ahead of the new 400", async () => {
+      await expect(
+         runGated("og_entry.malloy", "run: mid_gated -> { aggregate: c }", {
+            HIDE: "us-west",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("400s a typo'd name", async () => {
+      await expect(
+         runGated("og_entry.malloy", "run: plain -> { aggregate: c }", {
+            HIDEE: "us-west",
+         }),
+      ).rejects.toBeInstanceOf(MalloyError);
    });
 });
 

@@ -537,3 +537,100 @@ run: gated -> { aggregate: c }
       }
    });
 });
+
+// #1241 in a notebook: HIDE is on no cell's surface, and the gate reading it is
+// reached only through the hub's `mid_gated`.
+const OG_BASE = `##! experimental.givens
+
+given:
+  HIDE :: string is 'none'
+
+source: ungated_deep is duckdb.table('orgtable') extend {
+  where: val != $HIDE
+  measure: c is count()
+}
+`;
+
+const OG_GATE = `##! experimental.givens
+
+given:
+  HIDE :: string
+
+#(access_filter) val = $HIDE
+source: deep_gated is duckdb.table('orgtable') extend {
+  measure: c is count()
+}
+`;
+
+const OG_HUB = `import { ungated_deep } from "og_base.malloy"
+import "og_gate.malloy"
+
+source: mid_ungated is ungated_deep extend {}
+source: mid_gated is deep_gated extend {}
+query: q_mid is mid_ungated -> { aggregate: c }
+`;
+
+const OG_NOTEBOOK = `>>>malloy
+import "plain.malloy"
+run: plain -> { aggregate: c }
+>>>malloy
+import "og_hub.malloy"
+run: mid_ungated -> { aggregate: c }
+>>>malloy
+run: q_mid
+`;
+
+describe("a notebook cell that reads an off-surface gate given", () => {
+   const files = {
+      "plain.malloy": PLAIN,
+      "og_base.malloy": OG_BASE,
+      "og_gate.malloy": OG_GATE,
+      "og_hub.malloy": OG_HUB,
+      "nb.malloynb": OG_NOTEBOOK,
+   };
+
+   it("400s instead of binding the where: given's default", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         files,
+         "nb.malloynb",
+      );
+      try {
+         const err = await model
+            .executeNotebookCell(1, undefined, false, { HIDE: "a" })
+            .catch((e: unknown) => e);
+         expect(err).toBeInstanceOf(MalloyError);
+         expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("refuses a cell running a named query that reaches it by name", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         files,
+         "nb.malloynb",
+      );
+      try {
+         await expect(
+            model.executeNotebookCell(2, undefined, false, { HIDE: "a" }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("still drops it for a cell that never reads it", async () => {
+      const { model, duckdb, dir } = await createModelWithFiles(
+         files,
+         "nb.malloynb",
+      );
+      try {
+         const result = await model.executeNotebookCell(0, undefined, false, {
+            HIDE: "a",
+         });
+         expect(cellCount(result)).toBe(4);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
