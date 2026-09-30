@@ -31,6 +31,32 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
+
+A `#@ persist partition=` build of a wide source with many partition values failed against the
+build session's `memory_limit` — `Out of Memory Error: failed to pin block of size 256.0 KiB` —
+before or shortly after its first rows, where the same source built unpartitioned. The build is
+DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager, charges each
+appender one vector per column for every partition it has met, and flushes nothing until it has
+appended 524,288 rows. Rows arriving interleaved across partitions brought every partition into
+that set at once.
+
+Three changes, on a passthrough-sourced partitioned build only (Postgres, BigQuery, Snowflake).
+The insert's SELECT is now ordered by the partition columns at the top of the INSERT statement, so
+the build holds one or two partitions at a time; the SELECT it was handed is unchanged, so what the
+warehouse runs, its query tag or label, and what the source is addressed by are untouched. That
+insert runs on one thread, because a DuckDB-side sort is read in parallel and several appenders each
+meet every partition again. And the build session sets `partitioned_write_flush_threshold`, new
+`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD` (rows, default `8192`; `off` turns all three off, for a
+source that built fine before). The sort reads the whole result before the first partition file is
+written and spills to the build's working directory, so memory is traded for local disk and wall-clock.
+An incremental delta into a laid-out table gets the threshold and the single thread through its session.
+Measured on 122 columns, 616k rows, 308 partitions at `768MB`: from Postgres, interleaved fails at any
+threshold, ordered fails at DuckDB's default, ordered on four threads fails, ordered on one thread
+with the bound completes in 9.5 s; from BigQuery, interleaved fails at 54 s and the same shape
+completes in 36 s. An unpartitioned build, and a chained build, are byte-identical to what they
+were.
+
 ## [Unreleased] — /status names the server version, and says why it is empty
 
 `GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and
