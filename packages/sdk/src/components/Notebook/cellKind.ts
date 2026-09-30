@@ -12,16 +12,26 @@ export function cellRuns(cell: Pick<NotebookCell, "type" | "kind">): boolean {
    return cell.kind ? cell.kind === "query" : cell.type === "code";
 }
 
+const indentOf = (line: string) => /^[ \t]*/.exec(line)[0].length;
+
 /** The line closing the block opened on line `from`, by Malloy's column rule; -1 when there is none. */
 function closerAfter(lines: string[], from: number, closer: "|#" | "|##") {
-   // A cell's first line has lost its indentation, so its column is unknown: prefer a closer in
-   // column 0, else take any indent.
-   const columns =
-      from === 0 ? [0, undefined] : [/^[ \t]*/.exec(lines[from])[0].length];
-   for (const column of columns)
+   if (from > 0) {
+      const column = indentOf(lines[from]);
       for (let j = from + 1; j < lines.length; j++)
          if (closesBlock(lines[j], column, closer)) return j;
-   return -1;
+      return -1;
+   }
+   // A cell's first line has lost its indentation, so the opener's column is unknown. The real
+   // closer is followed by code at its own column; failing that, the nearest closer wins.
+   let nearest = -1;
+   for (let j = from + 1; j < lines.length; j++) {
+      if (!closesBlock(lines[j], undefined, closer)) continue;
+      if (nearest < 0) nearest = j;
+      const next = lines.slice(j + 1).find((l) => l.trim() !== "");
+      if (next === undefined || indentOf(next) === indentOf(lines[j])) return j;
+   }
+   return nearest;
 }
 
 /**

@@ -89,7 +89,7 @@ describe("notebook lint", () => {
             line: 2,
             code: "notebook-markdown-opener",
             message:
-               "Line 2: `##| markdown` opens a block that is not on the `(markdown)` route, so its body is not a text tile. Did you mean `##|(markdown)`?",
+               "Line 2: `##| markdown` opens a block that is not on the `(markdown)` route, so its body is not a text tile. Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`.",
          },
       ]);
    });
@@ -244,15 +244,17 @@ describe("notebook lint", () => {
                "dashboards/d.malloy",
             )[0].message;
          expect(dash("##|(text) intro\nhi\n|##\n")).toContain(
-            "Fix: use `##|(markdown) intro`.",
+            "Fix: write `##|(markdown) intro` and list `intro { kind=text }` in `tiles`.",
          );
          expect(dash("##|(text)\nhi\n|##\n")).toContain(
-            "Fix: use `##|(markdown) name`.",
+            "Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`.",
          );
          expect(dash("##|(text) two words\nhi\n|##\n")).toContain(
-            "Fix: write `##|(markdown) name` and move `two words` onto the line below it.",
+            "Fix: write `##|(markdown) name`, put `two words` on the line below it, and list `name { kind=text }` in `tiles`.",
          );
-         expect(dash("##(text) a line\n")).toContain('Fix: use `##"`.');
+         expect(dash("##(text) a line\n")).toContain(
+            'with the text as its body, or move it above the `## artifact` tag and write `##"`.',
+         );
       });
    });
 
@@ -282,10 +284,10 @@ describe("notebook lint", () => {
             "dashboards/d.malloy",
          )[0].message;
       expect(dash("##|(markdown)intro")).toContain(
-         "Fix: put a space after the route, as in `##|(markdown) intro`.",
+         "Fix: put a space after the route, as in `##|(markdown) intro`, and list `intro { kind=text }` in `tiles`.",
       );
       expect(dash("##|(markdown)two words")).toContain(
-         "Fix: write `##|(markdown)` and put `two words` on the line below it.",
+         "Fix: write `##|(markdown) name`, put `two words` on the line below it, and list `name { kind=text }` in `tiles`.",
       );
    });
 
@@ -368,13 +370,13 @@ describe("notebook lint", () => {
          code: "notebook-markdown-opener-text",
          severity: "error",
          message:
-            "Line 3: `my-intro` is not a valid name for a `(markdown)` tile, which takes one bare word of letters, digits and underscores that does not start with a digit. Fix: write `##|(markdown) my_intro`.",
+            "Line 3: `my-intro` is not a valid name for a `(markdown)` tile, which takes one bare word of letters, digits and underscores that does not start with a digit. Fix: write `##|(markdown) my_intro` and list `my_intro { kind=text }` in `tiles`.",
       });
       expect(dash("##|(markdown) 2024")[0].message).toContain(
-         "Fix: write `##|(markdown) _2024`.",
+         "Fix: write `##|(markdown) _2024` and list",
       );
       expect(dash("##|(markdown) two words")[0].message).toContain(
-         "Fix: move it into the body",
+         "Fix: write `##|(markdown) name`, put `two words` on the line below it",
       );
    });
 
@@ -405,7 +407,7 @@ describe("notebook lint", () => {
             line: 3,
             code: "notebook-markdown-attached-nowhere",
             message:
-               "Line 3: `#(markdown) trailing` annotates no statement, since an import and an export take no annotations and no statement follows it. Fix: write it as a floating `##(markdown)` line for prose that stands on its own, or move it directly above the statement it describes.",
+               "Line 3: `#(markdown) trailing` annotates no statement, since what follows it (the end of the file, an import or export, or a `##` model-level note) takes no annotation. Fix: write it as a floating `##(markdown)` line for prose that stands on its own, or move it directly above the statement it describes.",
          },
       ]);
    });
@@ -1031,7 +1033,7 @@ describe("notebook lint", () => {
       ]);
    });
 
-   it('suggests ##" for a ##"word line above the tag and in a dashboard', () => {
+   it('suggests ##" for a ##"word line above the tag, and a text tile in a dashboard', () => {
       expect(lint(`##"word\n${HEADER}${SOURCE}`)[0].message).toContain(
          'Did you mean `##" word`?',
       );
@@ -1040,7 +1042,9 @@ describe("notebook lint", () => {
             `## artifact { tiles=["a -> v"] }\n##"word\n${SOURCE}`,
             "dashboards/d.malloy",
          )[0].message,
-      ).toContain('Did you mean `##" word`?');
+      ).toContain(
+         "Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`, with the text as its body.",
+      );
    });
 
    it("errors when the artifact tag of a dashboard does not parse", () => {
@@ -1166,6 +1170,40 @@ describe("notebook lint: attached #| blocks and one-line slips", () => {
       ).toEqual([]);
    });
 
+   it("reports a #| block that closes early once, without an attached-nowhere error beside it", () => {
+      expect(
+         lint(`${HEADER}#|(markdown)\nhi\n|#\nmore prose\n${RUN}`).map(
+            (f) => f.code,
+         ),
+      ).toEqual(["notebook-block-closed-early"]);
+   });
+
+   it("does not say no statement follows a #(markdown) that a model-level note separates from its run:", () => {
+      const [found] = lint(`${HEADER}#(markdown) a\n##(markdown) b\n${RUN}`);
+      expect(found.code).toBe("notebook-markdown-attached-nowhere");
+      expect(found.message).toContain("a `##` model-level note");
+      expect(found.message).not.toContain("no statement follows");
+   });
+
+   it.each([
+      [
+         "a block-form given's description",
+         `##! experimental.givens\n${HEADER}given:\n#|"\nthe description\n|#\nG :: string is "x"\n${RUN}`,
+      ],
+      [
+         "a tagged item in a dimension list",
+         `${HEADER}source: s is a extend {\ndimension:\n#|\nlabel="B"\n|#\nb is 2\n}\n`,
+      ],
+      [
+         "a (markdown) block before an item in group_by",
+         `${HEADER}run: a -> {\ngroup_by:\n#|(markdown)\nabout x\n|#\nx\n}\n`,
+      ],
+   ])("does not call %s a block that closed early", (_name, text) => {
+      expect(
+         lint(text).filter((f) => f.code === "notebook-block-closed-early"),
+      ).toEqual([]);
+   });
+
    it.each([
       ["#(Markdown) text", "#(Markdown) text", "#(markdown)"],
       ["#markdown text", "#markdown text", "#(markdown)"],
@@ -1253,6 +1291,17 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
    const DASH_INTRO = "## artifact { tiles=[intro { kind=text }] }\n";
    const sub = (from: string | RegExp, to: string) => (t: string) =>
       t.replace(from, to);
+   const listTile = (name: string) =>
+      sub('tiles=["a -> v"]', `tiles=["a -> v", ${name} { kind=text }]`);
+   const steps =
+      (...fns: ((t: string) => string)[]) =>
+      (t: string) =>
+         fns.reduce((acc, fn) => fn(acc), t);
+   const TILE =
+      "write `##|(markdown) name` and list `name { kind=text }` in `tiles`";
+   const TWO_WORDS =
+      "write `##|(markdown) name`, put `two words` on the line below it, and list `name { kind=text }` in `tiles`";
+   const NESTED = `${HEADER}source: a is duckdb.sql("select 1 as x") extend {\n  #(markdown)text\n  dimension: y is x\n}\n`;
 
    type Case = {
       name: string;
@@ -1328,24 +1377,81 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
          path: DASH,
          text: `${DASH_INTRO}##|(text) intro\nhi\n|##\n${SOURCE}`,
          code: "notebook-old-prose-spelling",
-         fix: "use `##|(markdown) intro`",
+         fix: "write `##|(markdown) intro` and list `intro { kind=text }` in `tiles`",
          apply: sub("##|(text) intro", "##|(markdown) intro"),
+      },
+      {
+         name: "an unlisted (text) block in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}##|(text) intro\nhi\n|##\n${SOURCE}`,
+         code: "notebook-old-prose-spelling",
+         fix: "write `##|(markdown) intro` and list `intro { kind=text }` in `tiles`",
+         apply: steps(
+            sub("##|(text) intro", "##|(markdown) intro"),
+            listTile("intro"),
+         ),
+      },
+      {
+         name: "a (text) block with several words in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}##|(text) two words\nhi\n|##\n${SOURCE}`,
+         code: "notebook-old-prose-spelling",
+         fix: TWO_WORDS,
+         apply: steps(
+            sub("##|(text) two words", "##|(markdown) name\ntwo words"),
+            listTile("name"),
+         ),
       },
       {
          name: "a nameless (text) block in a dashboard",
          path: DASH,
-         text: `${DASH_INTRO}##|(text)\nhi\n|##\n${SOURCE}`,
+         text: `${DASH_TAG}##|(text)\nhi\n|##\n${SOURCE}`,
          code: "notebook-old-prose-spelling",
-         fix: "use `##|(markdown) name`",
-         apply: sub("##|(text)", "##|(markdown) name"),
+         fix: TILE,
+         apply: steps(sub("##|(text)", "##|(markdown) name"), listTile("name")),
       },
       {
-         name: "a (text) line in a dashboard",
+         name: "a (text) line below a dashboard tag",
          path: DASH,
          text: `${DASH_TAG}##(text) a line\n${SOURCE}`,
          code: "notebook-old-prose-spelling",
+         fix: `${TILE} with the text as its body`,
+         apply: steps(
+            sub("##(text) a line", "##|(markdown) name\na line\n|##"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: "a (text) line above a dashboard tag",
+         path: DASH,
+         text: `##(text) a line\n${DASH_TAG}${SOURCE}`,
+         code: "notebook-old-prose-spelling",
          fix: 'use `##"`',
          apply: sub("##(text)", '##"'),
+      },
+      {
+         name: "a (text) line above a notebook tag",
+         path: NB,
+         text: `##(text) a line\n${HEADER}${SOURCE}`,
+         code: "notebook-old-prose-spelling",
+         fix: 'use `##"`, or move it below the `## artifact` tag and write `##(markdown)`',
+         apply: sub("##(text)", '##"'),
+      },
+      {
+         name: "a (text) block above a notebook tag",
+         path: NB,
+         text: `##|(text) intro\nhi\n|##\n${HEADER}${SOURCE}`,
+         code: "notebook-old-prose-spelling",
+         fix: 'write `##|"` and move `intro` onto the line below it',
+         apply: sub("##|(text) intro", '##|"\nintro'),
+      },
+      {
+         name: "a nameless (text) block above a notebook tag",
+         path: NB,
+         text: `##|(text)\nhi\n|##\n${HEADER}${SOURCE}`,
+         code: "notebook-old-prose-spelling",
+         fix: 'use `##|"`',
+         apply: sub("##|(text)", '##|"'),
       },
       {
          name: 'a ##"word line below a notebook tag',
@@ -1473,8 +1579,30 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
          path: DASH,
          text: `${DASH_INTRO}##|(markdown)intro\nhi\n|##\n${SOURCE}`,
          code: "notebook-block-opener-spacing",
-         fix: "put a space after the route, as in `##|(markdown) intro`",
+         fix: "put a space after the route, as in `##|(markdown) intro`, and list `intro { kind=text }` in `tiles`",
          apply: sub("##|(markdown)intro", "##|(markdown) intro"),
+      },
+      {
+         name: "a glued tile name that no tile lists",
+         path: DASH,
+         text: `${DASH_TAG}##|(markdown)intro\nhi\n|##\n${SOURCE}`,
+         code: "notebook-block-opener-spacing",
+         fix: "put a space after the route, as in `##|(markdown) intro`, and list `intro { kind=text }` in `tiles`",
+         apply: steps(
+            sub("##|(markdown)intro", "##|(markdown) intro"),
+            listTile("intro"),
+         ),
+      },
+      {
+         name: "a glued invalid tile name in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}##|(markdown)my-intro\nhi\n|##\n${SOURCE}`,
+         code: "notebook-block-opener-spacing",
+         fix: "write `##|(markdown) name`, put `my-intro` on the line below it, and list `name { kind=text }` in `tiles`",
+         apply: steps(
+            sub("##|(markdown)my-intro", "##|(markdown) name\nmy-intro"),
+            listTile("name"),
+         ),
       },
       {
          name: "text after (markdown) on a notebook opener",
@@ -1489,8 +1617,22 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
          path: DASH,
          text: `${DASH_TAG}${SOURCE}##|(markdown) my-intro\nhi\n|##\n`,
          code: "notebook-markdown-opener-text",
-         fix: "write `##|(markdown) my_intro`",
-         apply: sub("##|(markdown) my-intro", "##|(markdown) my_intro"),
+         fix: "write `##|(markdown) my_intro` and list `my_intro { kind=text }` in `tiles`",
+         apply: steps(
+            sub("##|(markdown) my-intro", "##|(markdown) my_intro"),
+            listTile("my_intro"),
+         ),
+      },
+      {
+         name: "words on a dashboard tile's opener line",
+         path: DASH,
+         text: `${DASH_TAG}${SOURCE}##|(markdown) two words\nhi\n|##\n`,
+         code: "notebook-markdown-opener-text",
+         fix: TWO_WORDS,
+         apply: steps(
+            sub("##|(markdown) two words", "##|(markdown) name\ntwo words"),
+            listTile("name"),
+         ),
       },
       {
          name: "a name on a notebook block",
@@ -1570,6 +1712,153 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
             t.replace("#|(markdown)", "##|(markdown)").replace("|#\n", "|##\n"),
       },
       {
+         name: "a dangling #(markdown) line in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}${SOURCE}#(markdown) trailing\n`,
+         code: "notebook-markdown-attached-nowhere",
+         fix: `${TILE}, with the text as its body, or delete it`,
+         apply: steps(
+            sub("#(markdown) trailing", "##|(markdown) name\ntrailing\n|##"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: "a dangling #|(markdown) block in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}${SOURCE}#|(markdown)\nhi\n|#\n`,
+         code: "notebook-markdown-attached-nowhere",
+         fix: `${TILE}, with the text as its body, or delete it`,
+         apply: steps(
+            sub("#|(markdown)\nhi\n|#", "##|(markdown) name\nhi\n|##"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: "a markdown note nested in a dashboard statement",
+         path: DASH,
+         text: `${DASH_TAG}source: a is duckdb.sql("select 1 as x") extend {\n  #(markdown) about y\n  dimension: y is x\n}\n`,
+         code: "notebook-markdown-nested",
+         fix: `a dashboard reads no attached note, so ${TILE}, with the text as its body, or delete it`,
+         apply: steps(
+            sub("  #(markdown) about y\n", ""),
+            sub("source: a", "##|(markdown) name\nabout y\n|##\nsource: a"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: 'a ##"word line below a dashboard tag',
+         path: DASH,
+         text: `${DASH_TAG}##"word\n${SOURCE}`,
+         code: "notebook-block-opener-spacing",
+         fix: `${TILE}, with the text as its body`,
+         apply: steps(
+            sub('##"word', "##|(markdown) name\nword\n|##"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: "a ##(markdown)word line in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}##(markdown)word\n${SOURCE}`,
+         code: "notebook-block-opener-spacing",
+         fix: `${TILE}, with the text as its body`,
+         apply: steps(
+            sub("##(markdown)word", "##|(markdown) name\nword\n|##"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: "a ##markdown slip in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}##markdown hi\n${SOURCE}`,
+         code: "notebook-markdown-opener",
+         fix: `${TILE}, with the text as its body`,
+         apply: steps(
+            sub("##markdown hi", "##|(markdown) name\nhi\n|##"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: "a ##| markdown slip in a dashboard",
+         path: DASH,
+         text: `${DASH_TAG}##| markdown\nhi\n|##\n${SOURCE}`,
+         code: "notebook-markdown-opener",
+         fix: TILE,
+         apply: steps(
+            sub("##| markdown", "##|(markdown) name"),
+            listTile("name"),
+         ),
+      },
+      {
+         name: "a ##(markdown)word line above a notebook tag",
+         path: NB,
+         text: `##(markdown)word\n${HEADER}${SOURCE}`,
+         code: "notebook-block-opener-spacing",
+         fix: "It also sits above the `## artifact` tag",
+         apply: (t) =>
+            t
+               .replace("##(markdown)word\n", "")
+               .replace(SOURCE, `##(markdown) word\n${SOURCE}`),
+      },
+      {
+         name: "a ##markdown slip above a notebook tag",
+         path: NB,
+         text: `##markdown hi\n${HEADER}${SOURCE}`,
+         code: "notebook-markdown-opener",
+         fix: "It also sits above the `## artifact` tag",
+         apply: (t) =>
+            t
+               .replace("##markdown hi\n", "")
+               .replace(SOURCE, `##(markdown) hi\n${SOURCE}`),
+      },
+      {
+         name: "a glued ##|(markdown) block above a notebook tag",
+         path: NB,
+         text: `##|(markdown)intro\nhi\n|##\n${HEADER}${SOURCE}`,
+         code: "notebook-block-opener-spacing",
+         fix: "It also sits above the `## artifact` tag",
+         apply: (t) =>
+            t
+               .replace("##|(markdown)intro\nhi\n|##\n", "")
+               .replace(SOURCE, `##|(markdown)\nintro\nhi\n|##\n${SOURCE}`),
+      },
+      {
+         name: "a glued #(markdown) note nested in a statement",
+         path: NB,
+         text: NESTED,
+         code: "notebook-block-opener-spacing",
+         fix: "It also sits inside a statement",
+         apply: steps(
+            sub("  #(markdown)text\n", ""),
+            sub("source: a", "#(markdown) text\nsource: a"),
+         ),
+      },
+      {
+         name: "a #markdown slip nested in a statement",
+         path: NB,
+         text: NESTED.replace("#(markdown)text", "#markdown text"),
+         code: "notebook-markdown-opener",
+         fix: "It also sits inside a statement",
+         apply: steps(
+            sub("  #markdown text\n", ""),
+            sub("source: a", "#(markdown) text\nsource: a"),
+         ),
+      },
+      {
+         name: "a glued #|(markdown) block nested in a statement",
+         path: NB,
+         text: NESTED.replace(
+            "  #(markdown)text\n",
+            "  #|(markdown)text\n  hi\n  |#\n",
+         ),
+         code: "notebook-block-opener-spacing",
+         fix: "It also sits inside a statement",
+         apply: steps(
+            sub("  #|(markdown)text\n  hi\n  |#\n", ""),
+            sub("source: a", "#|(markdown)\ntext\nhi\n|#\nsource: a"),
+         ),
+      },
+      {
          name: "a markdown note nested in a statement",
          path: NB,
          text: `${HEADER}source: a is duckdb.sql("select 1 as x") extend {\n  #(markdown) about y\n  dimension: y is x\n}\n`,
@@ -1590,8 +1879,7 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
       expect(found!.message).toContain(fix);
       const fixed = apply(text);
       expect(fixed).not.toBe(text);
-      const after = lintNotebookText(modelPath, fixed);
-      expect(after.filter((f) => f.severity === "error")).toEqual([]);
-      expect(after.find((f) => f.code === code)).toBeUndefined();
+      const after = lintNotebookText(modelPath, fixed).map((f) => f.code);
+      expect(after).toEqual([]);
    });
 });

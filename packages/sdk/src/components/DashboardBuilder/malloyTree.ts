@@ -295,7 +295,7 @@ class Reader {
    commentLines: ReadonlySet<number> = new Set();
    /** `(markdown)` annotation lines, whose body can start with `#` without being a tag. */
    proseLines: ReadonlySet<number> = new Set();
-   /** The `#|`/`##|` blocks with a closer, as [opener line, closer line]; a comment's lines open none. */
+   /** The `#|` blocks with a closer, as [opener line, closer line]; a comment's lines open none. */
    blocks: [number, number][] = [];
 
    constructor(readonly text: string) {
@@ -787,7 +787,10 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
    const textLines = text.split("\n");
    const inComment = (line: number) => comments.lines.has(line);
    r.proseLines = markdownLines(textLines, inComment);
-   r.blocks = blockSpans(textLines, inComment);
+   // A `##|` block is a floating note, never part of a declaration's tags.
+   r.blocks = blockSpans(textLines, inComment).filter(
+      ([from]) => !textLines[from].trimStart().startsWith("##"),
+   );
    const sources = readSources(r, root);
 
    // The shape assertion, on real content rather than on the API's presence:
@@ -959,7 +962,7 @@ function blockStart(
    let start = line;
    for (let i = line - 1; i >= 0; i--) {
       const text = lineText(i);
-      // A block's body lines are not `#` lines, so its closer pulls in the whole block.
+      // A `#|` block's body lines are not `#` lines, so its closer pulls in the whole block.
       const block = r.blocks.find(([, to]) => to === i);
       if (block) {
          start = i = block[0];

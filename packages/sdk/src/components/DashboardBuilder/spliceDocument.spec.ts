@@ -2450,4 +2450,40 @@ source: a is one extend {
       expect(out).not.toContain("SINCE");
       expect(out).toContain("given: CATEGORY");
    });
+
+   const FLOATING = (
+      body: string,
+      tag = '# label="Category" control=select',
+   ) => `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+##|(markdown)
+${body}
+Use the filters.
+|##
+${tag}
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  view: x is vx
+}`;
+
+   it("keeps a floating text block's heading when the given right below it is removed", async () => {
+      const out = await spliced(FLOATING("# Welcome"), (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "CATEGORY",
+         );
+      });
+      expect(out).toContain("##|(markdown)\n# Welcome\nUse the filters.\n|##");
+      expect(out).not.toContain("CATEGORY");
+   });
+
+   it("does not read a floating text block's # line as the given's label", async () => {
+      const doc = await openDocument(
+         FLOATING('# label="Introduction"', "# control=select"),
+      );
+      const given = doc.localGivens?.find((g) => g.name === "CATEGORY");
+      expect(given?.label).toBeUndefined();
+   });
 });

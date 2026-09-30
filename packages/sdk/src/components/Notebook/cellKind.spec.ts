@@ -174,6 +174,29 @@ describe("prose, by Malloy's rules", () => {
       expect(stripProse("#|(markdown)\n  body\n  |#\nrun: q")).toBe("run: q");
    });
 
+   it("closes an indented leading block at its own closer, not a later column-0 one", () => {
+      const cell =
+         "#|(markdown)\n   prose\n   |#\n   run: q\n   # after\n   view: v is x\n#|(markdown)\nnote\n|#";
+      expect(stripProse(cell)).toBe(
+         "   run: q\n   # after\n   view: v is x\n#|(markdown)\nnote\n|#",
+      );
+      expect(definitionSummary(cell)).toBe("run: q");
+   });
+
+   it("does not close an indented statement's block on a column-0 line in its body", () => {
+      const cell =
+         "#|(markdown)\n   prose\n|# not a closer\n   more\n   |#\n   # bar_chart\n   run: a -> b";
+      expect(stripProse(cell)).toBe("   # bar_chart\n   run: a -> b");
+      expect(definitionSummary(cell)).toBe("run: a -> b");
+   });
+
+   it("does not close on a closer shallower than the statement", () => {
+      const cell =
+         "#|(markdown)\n    prose\n  |# nope\n    |#\n    run: a -> b";
+      expect(stripProse(cell)).toBe("    run: a -> b");
+      expect(definitionSummary(cell)).toBe("run: a -> b");
+   });
+
    it("recognizes the bracket spellings of the route", () => {
       expect(
          stripProse("#[markdown] a\n#<markdown> b\n#{markdown} c\nrun: q"),
