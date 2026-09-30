@@ -2749,6 +2749,8 @@ export class Model {
       phase: "boundary" | "locks",
       /** Locked names this request already decided; each one decided here is added. */
       decided: Set<string> = new Set(),
+      /** The request lifted the surface: a refusal stays the lock's 403. */
+      includeOffSurface = false,
    ): Promise<void> {
       const joins = buildJoinBaseMap(query);
       if (joins.size === 0) return;
@@ -2812,7 +2814,7 @@ export class Model {
                // A 403 naming a hidden source over this join's alias confirms
                // it exists; convert on the source actually gated, the same
                // way the other early lock passes do.
-               if (error instanceof AccessDeniedError) {
+               if (error instanceof AccessDeniedError && !includeOffSurface) {
                   this.assertQueryBoundaryEarly(name, undefined, undefined);
                }
                throw error;
@@ -3960,6 +3962,8 @@ export class Model {
       givens: Record<string, GivenValue>,
       bypassAuthorize: boolean,
       decided: Set<string>,
+      /** The request lifted the surface: a refusal stays the lock's 403. */
+      includeOffSurface = false,
    ): Promise<void> {
       if (!this.declaresAnyGate()) return;
       for (const name of collectIdentifierNames(text)) {
@@ -3979,7 +3983,7 @@ export class Model {
             // A 403 that names a hidden source confirms it exists. Convert on
             // the source actually gated, the same way the derivation walk does:
             // a hidden one is a 404, and a curated one keeps the 403.
-            if (error instanceof AccessDeniedError) {
+            if (error instanceof AccessDeniedError && !includeOffSurface) {
                this.assertQueryBoundaryEarly(source, undefined, undefined);
             }
             throw error;
@@ -6753,7 +6757,8 @@ export class Model {
             : undefined;
       const readCallerJoinText =
          !!callerRegion && !hasCallerAuthorizeAnnotation(callerRegion.text);
-      if (readCallerJoinText) {
+      // Under `includeOffSurface` there is no boundary to check a join against.
+      if (readCallerJoinText && !includeOffSurface) {
          await this.assertCallerJoinBasesEarly(
             callerRegion.text,
             givens ?? {},
@@ -6803,6 +6808,7 @@ export class Model {
             givens ?? {},
             "locks",
             decided,
+            includeOffSurface,
          );
       }
       // Every other locked name the text mentions, wherever it sits: an alias,
@@ -6817,6 +6823,7 @@ export class Model {
             givens ?? {},
             bypassAuthorize,
             decided,
+            includeOffSurface,
          );
       }
 

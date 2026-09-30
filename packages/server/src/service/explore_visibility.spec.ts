@@ -308,7 +308,8 @@ export { customers }`,
       fs.writeFileSync(
          path.join(tempDir, "locked.malloy"),
          `#(authorize) false
-source: locked is duckdb.sql("select 1 as id")`,
+source: locked is duckdb.sql("select 1 as id")
+source: open_src is duckdb.sql("select 1 as id")`,
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -352,10 +353,32 @@ source: locked is duckdb.sql("select 1 as id")`,
          await expect(
             run("index.malloy", "run: helper -> { select: * }", false),
          ).rejects.toBeInstanceOf(NotQueryableError);
-         // The option lifts curation, never the lock.
+         // A caller's own join to that hidden source runs too.
+         const joinHelper = `source: x is customers extend {
+  join_one: h is helper on id = h.id
+}
+run: x -> { group_by: h.id }`;
+         const joined = await run("index.malloy", joinHelper, true);
+         expect(joined.result.data).toBeDefined();
          await expect(
-            run("locked.malloy", "run: locked -> { select: * }", true),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+            run("index.malloy", joinHelper, false),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+         // The option lifts curation, never the lock, and the refusal stays
+         // the lock's 403 however the text reaches it: directly, through an
+         // alias, or through a caller join.
+         for (const query of [
+            "run: locked -> { select: * }",
+            `source: x is locked extend {}
+run: x -> { select: * }`,
+            `source: y is open_src extend {
+  join_one: l is locked on id = l.id
+}
+run: y -> { group_by: l.id }`,
+         ]) {
+            await expect(
+               run("locked.malloy", query, true),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         }
       } finally {
          await duckdb.close();
       }

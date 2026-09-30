@@ -7205,11 +7205,20 @@ components:
       description: |
         When true, a package with a surface (a root `index.malloy`, or a legacy
         `explores`) is served to this request as if it had none: the models
-        list includes the files off the surface, the model GET returns them with
-        their text, and the query route runs them and their hidden sources, as
+        list includes the files off the surface, the model GET returns them, and
+        the query route runs any model path the request names, including a
+        dashboard or notebook file, against every source, as
         `queryableSources: "all"` does for every request. `#(authorize)` and
         `#(access_filter)` still apply: it lifts curation, never the lock.
-        Notebooks, dashboards and MCP tools stay held to the surface.
+
+        The model GET goes one step further than `queryableSources: "all"`: it
+        returns the file's `sourceText` even when that text names a source the
+        file does not publish. That text can include `#(authorize)`
+        expressions, `given:` defaults, connection names and raw SQL.
+
+        Only the models list, the model GET and the query route read it. The
+        notebook-cell route, the dashboards route, the MCP tools, and the legacy
+        `/projects/...` aliases of these routes ignore it.
 
         Like every route on this server, it is unauthenticated. A deployment
         that authenticates in front of Publisher decides who may send it, and
