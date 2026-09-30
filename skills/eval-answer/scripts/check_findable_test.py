@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_findable  # noqa: E402
@@ -181,10 +182,12 @@ class CompiledModel(unittest.TestCase):
         self.assertEqual(self.find("measure:flights:flight_count",
                                    "dimension:airports:state"), [])
 
-    def test_a_malformed_id_is_left_to_the_other_check(self):
-        # `check` reports it before any search; reporting it twice reads as
-        # two defects.
-        self.assertEqual(self.find("flight_count"), [])
+    def test_a_malformed_id_is_reported(self):
+        # run_baseline's lint calls only this, so skipping it here dropped the
+        # id there. main() dedups on the id, so the CLI still says it once.
+        out = self.find("flight_count")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(check_findable.finding_id(out[0]), "flight_count")
 
     def test_a_finding_is_identified_by_its_whole_entity_id(self):
         # Splitting on the bare colon returns the KIND, and deduplicating the
@@ -321,43 +324,81 @@ class Staleness(unittest.TestCase):
         # silently treating the model as current.
         self.assertIsNone(check_findable.stale_packages("http://127.0.0.1:9"))
 
+    def test_current_entities_refuses_a_stale_package(self):
+        # run_baseline read the compiled model with no staleness check, so an
+        # entity deleted since the last good compile read as declared.
+        with mock.patch.object(check_findable, "stale_packages",
+                               return_value={("e", "p")}), \
+             mock.patch.object(check_findable, "compiled_entities") as compiled:
+            declared, warning = check_findable.current_entities("http://x", "e", "p")
+        self.assertIsNone(declared)
+        self.assertIn("STALE", warning)
+        compiled.assert_not_called()
+
+    def test_current_entities_passes_a_current_package_through(self):
+        with mock.patch.object(check_findable, "stale_packages", return_value=set()), \
+             mock.patch.object(check_findable, "compiled_entities",
+                               return_value={"s": {"source:s"}}):
+            self.assertEqual(check_findable.current_entities("http://x", "e", "p"),
+                             ({"s": {"source:s"}}, None))
+
 
 class DottedJoinPaths(unittest.TestCase):
-    """A dotted name is a join path, resolved on the joined source.
+    """A dotted name is a join path, checked hop by hop against the joins the
+    source declares.
 
-    `declared[src]` holds a source's OWN fields, so every dotted id read as a
-    field the source does not declare. On the storefront tour set that was five
-    of eight reported misses, each one an id get_context returns as its top
-    result -- and the check ends by telling you to fix the key, so a false miss
-    here sends you to break an answer key that is correct.
+    Reading only a source's OWN fields made every dotted id a miss: on the
+    storefront tour set, five of eight reported misses, each one an id
+    get_context returns as its top result. Resolving only the LAST hop, as a
+    source name, then passed a bogus first hop and failed an aliased join.
     """
 
-    DECLARED = {
-        "order_items": {"source:order_items", "measure:total_sales"},
-        "products": {"source:products", "dimension:brand", "measure:product_count"},
-    }
+    PRODUCTS = [{"kind": "dimension", "name": "brand"},
+                {"kind": "measure", "name": "product_count"}]
+    # The shape the server returns: a join field carries the joined schema.
+    FIELDS = [{"kind": "measure", "name": "total_sales"},
+              {"kind": "join", "name": "products", "relationship": "one",
+               "schema": {"fields": PRODUCTS}},
+              {"kind": "join", "name": "buyer", "relationship": "one",
+               "schema": {"fields": [{"kind": "dimension", "name": "state"}]}}]
 
     def findings(self, eid):
+        declared = {"order_items": {"source:order_items"}}
+        check_findable.add_fields(declared["order_items"], self.FIELDS)
         cases = [{"qid": "q1", "expectedEntities": {"required": [eid]}}]
-        return check_findable.declared_findings(cases, self.DECLARED)
+        return check_findable.declared_findings(cases, declared)
 
     def test_a_reachable_join_path_is_not_a_finding(self):
         self.assertEqual(self.findings("dimension:order_items:products.brand"), [])
 
+    def test_a_join_named_other_than_its_source_is_reachable(self):
+        # `join_one: buyer is customers`: no source is called `buyer`.
+        self.assertEqual(self.findings("dimension:order_items:buyer.state"), [])
+
     def test_the_kind_still_has_to_match_on_the_joined_source(self):
         out = self.findings("measure:order_items:products.brand")
         self.assertEqual(len(out), 1)
-        self.assertIn("declares no measure 'brand'", out[0])
+        self.assertIn("reaches no measure 'brand'", out[0])
 
     def test_an_unknown_hop_is_named_as_the_hop(self):
         out = self.findings("dimension:order_items:suppliers.name")
         self.assertEqual(len(out), 1)
-        self.assertIn("'suppliers'", out[0])
+        self.assertIn("has no join 'suppliers'", out[0])
+
+    def test_a_bogus_first_hop_is_caught_even_when_the_last_hop_exists(self):
+        out = self.findings("dimension:order_items:nowhere.products.brand")
+        self.assertEqual(len(out), 1)
+        self.assertIn("has no join 'nowhere'", out[0])
 
     def test_a_field_missing_on_the_joined_source_is_a_finding(self):
         out = self.findings("dimension:order_items:products.colour")
         self.assertEqual(len(out), 1)
         self.assertIn("'colour'", out[0])
+
+    def test_a_malformed_id_is_reported_not_dropped(self):
+        out = self.findings("dimension:brand")
+        self.assertEqual(len(out), 1)
+        self.assertIn("not a kind:source:name id", out[0])
 
 
 if __name__ == "__main__":

@@ -60,7 +60,7 @@ sys.path.insert(0, str(HERE))
 import config  # noqa: E402
 from json_scan import json_objects  # noqa: E402
 from verify_goldens import model_text as local_model_text  # noqa: E402
-from check_findable import compiled_entities  # noqa: E402
+from check_findable import current_entities  # noqa: E402
 
 # The `claude -p` invocation lives once, in the harness, rather than being
 # rewritten here. It costs this script a reach into a sibling skill, which the
@@ -159,16 +159,20 @@ def compiled_surface(base: str, environment: str, package: str) -> str:
     reads those as absent and returns MISSING on a question the model answers
     -- measured, two of this skill's three false gaps on one set.
 
-    Empty string when the compiled model cannot be read, which is honest: the
-    prompt then says the list is unavailable rather than implying the text is
-    the whole surface.
+    Empty string when the compiled model cannot be read, or is stale, which is
+    honest: the prompt then says the list is unavailable rather than implying
+    the text is the whole surface.
     """
-    declared = compiled_entities(base, environment, package)
+    declared, warning = current_entities(base, environment, package)
+    if warning:
+        print(f"! {warning}", file=sys.stderr)
     if not declared:
         return ""
     lines = []
     for src in sorted(declared):
-        fields = sorted(f for f in declared[src] if not f.startswith("source:"))
+        # Own fields only: each joined source is listed under its own name.
+        fields = sorted(f for f in declared[src]
+                        if not f.startswith("source:") and "." not in f)
         if fields:
             lines.append(f"{src}: " + ", ".join(fields))
     return "\n".join(lines)

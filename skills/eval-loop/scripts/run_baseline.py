@@ -2852,6 +2852,13 @@ def resolve_config(a: argparse.Namespace) -> config.Config:
         a.label = a.label or next_run_label(runs / "_", cfg.set_name, a.phase)
         a.out = runs / a.label
         print(f"run directory: {a.out}")
+    outer = config.enclosing_package(a.out)
+    if outer:
+        raise SystemExit(
+            f"Invalid --out {a.out}: it is inside the Malloy package {outer}. "
+            f"The run writes a model.malloy snapshot there, which puts that "
+            f"package into loadErrors. Fix: pass an --out outside any package, "
+            f"or omit it for {cfg.workdir() / 'runs'}")
     return cfg
 
 
@@ -3328,9 +3335,12 @@ def main(argv: list[str] | None = None) -> int:
     # model does not declare is a stale set, not a retrieval miss, and both
     # VideoAmp platform runs carried five of them (the set was written against
     # a later package) which read as misses until someone checked by hand.
-    declared = (check_findable.compiled_entities(a.publisher, a.environment,
-                                                 a.package)
-                if a.target != "platform" and a.publisher else None)
+    declared = None
+    if a.target != "platform" and a.publisher:
+        declared, warning = check_findable.current_entities(
+            a.publisher, a.environment, a.package)
+        if warning:
+            print(f"  ! expected entities: {warning}")
     stale, lint = expected_entity_lint(cases, declared, model_src)
     for line in lint:
         print(line)

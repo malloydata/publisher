@@ -440,10 +440,10 @@ class CompiledSurface(unittest.TestCase):
     """
 
     def test_it_lists_fields_per_source(self):
-        with mock.patch.object(cc, "compiled_entities", return_value={
+        with mock.patch.object(cc, "current_entities", return_value=({
                 "products": {"source:products", "dimension:retail_price",
                              "dimension:cost"},
-                "customers": {"source:customers", "dimension:signup_date"}}):
+                "customers": {"source:customers", "dimension:signup_date"}}, None)):
             out = cc.compiled_surface("http://p", "env", "pkg")
         self.assertIn("products: dimension:cost, dimension:retail_price", out)
         self.assertIn("customers: dimension:signup_date", out)
@@ -451,7 +451,9 @@ class CompiledSurface(unittest.TestCase):
         self.assertNotIn("source:products", out)
 
     def test_an_unreadable_model_is_empty_not_a_guess(self):
-        with mock.patch.object(cc, "compiled_entities", return_value=None):
+        with mock.patch.object(cc, "current_entities",
+                               return_value=(None, "could not be read")), \
+             mock.patch("builtins.print"):
             self.assertEqual(cc.compiled_surface("http://p", "env", "pkg"), "")
 
 
@@ -537,11 +539,11 @@ class MainWiring(unittest.TestCase):
             prompts[qid] = prompt
             return [{"type": "assistant"}], json.dumps(replies[qid]), "", 1, 0.1
 
-        entities = mock.Mock(side_effect=surface_raises, return_value=surface)
+        entities = mock.Mock(side_effect=surface_raises, return_value=(surface, None))
         err = []
         with mock.patch.object(cc, "rest_model_text",
                                return_value="source: products is t"), \
-             mock.patch.object(cc, "compiled_entities", entities), \
+             mock.patch.object(cc, "current_entities", entities), \
              mock.patch.object(cc, "run_cli", side_effect=fake_cli), \
              mock.patch("builtins.print",
                         lambda *a, **k: err.append(" ".join(map(str, a)))

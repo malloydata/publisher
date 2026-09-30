@@ -1111,6 +1111,15 @@ class ResolveConfig(unittest.TestCase):
         self.assertEqual(a.truth_publisher, "http://localhost:4881")
         self.assertEqual(a.out, (d / "w" / "runs" / "s-baseline-01").resolve())
 
+    def test_an_out_inside_a_package_is_refused(self):
+        # The old tour README said `--out examples/storefront/evals/.../runs/x`,
+        # and a cached copy of that command still drops a model.malloy there.
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        (d / "publisher.json").write_text("{}")
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, out=d / "runs" / "x"))
+        self.assertIn(f"inside the Malloy package {d.resolve()}", str(e.exception))
+
     def test_no_truth_section_leaves_the_truth_server_unset(self):
         # Not a guessed 4881: nothing there would score every golden drifted.
         d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
@@ -1980,7 +1989,9 @@ class ExpectedEntityLint(unittest.TestCase):
         "dimension:order_items:customers.customer_id",
         "dimension:customers:signup_date",
         "measure:order_items:total_sales"]}}]
+    # A joined field is recorded under its path, as compiled_entities does.
     DECLARED = {"order_items": {"source:order_items", "join:customers",
+                                "dimension:customers.customer_id",
                                 "measure:total_sales"},
                 "customers": {"source:customers", "dimension:customer_id",
                               "dimension:signup_date"}}

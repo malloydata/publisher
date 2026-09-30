@@ -549,20 +549,6 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             "steps": len(steps_rows)}
 
 
-def enclosing_package(out: pathlib.Path) -> pathlib.Path | None:
-    """The Malloy package `out` would sit inside, if any.
-
-    The built package is itself a Malloy package. Nested in another one, its
-    model resolves `data/*.csv` against the OUTER package's root, and the outer
-    package goes into loadErrors and serves nothing. That happened to
-    `storefront` once.
-    """
-    for parent in out.resolve().parents:
-        if (parent / "publisher.json").exists():
-            return parent
-    return None
-
-
 def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
                   out: pathlib.Path, on_model_server: bool = False) -> list[str]:
     """The registration command and both URLs, which are in different path spaces.
@@ -641,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load(a.set_dir)
     out = a.out or cfg.workdir() / "packages" / f"eval-{a.run[0].name}"
 
-    outer = enclosing_package(out)
+    outer = config.enclosing_package(out)
     if outer:
         raise SystemExit(
             f"{out} is inside the Malloy package {outer}. Built there, it puts "
