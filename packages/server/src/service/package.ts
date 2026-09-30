@@ -2724,11 +2724,11 @@ export class Package {
       // unaffected (see listNotebooks) — they are always public.
       //
       // `includeHiddenFilesAndSources` lists the hidden files too, each marked
-      // `onSurface: false`. Running them takes the same option on the query
+      // `isHidden: true`. Running them takes the same option on the query
       // route (Model.getQueryResults).
       const exploreSet = this.exploreSet();
-      const onSurface = (modelPath: string) =>
-         !exploreSet || exploreSet.has(modelPath);
+      const isHidden = (modelPath: string) =>
+         !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
@@ -2758,7 +2758,7 @@ export class Package {
                   environmentName: this.environmentName,
                   path: modelPath,
                   packageName: this.packageName,
-                  onSurface: onSurface(modelPath),
+                  isHidden: isHidden(modelPath),
                   error,
                };
             }),
