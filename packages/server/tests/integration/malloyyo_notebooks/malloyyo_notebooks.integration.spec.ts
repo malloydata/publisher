@@ -241,9 +241,10 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
             "Orders in the US only.",
             "### Orders by region\nExcludes refunds.",
          ]);
-         expect(body.notebookCells?.[3].text).toStartWith(
-            "# bar_chart\n#|(markdown)",
-         );
+         // `text` is the exact source slice, so a CRLF checkout keeps its `\r`.
+         expect(
+            body.notebookCells?.[3].text.replace(/\r\n/g, "\n"),
+         ).toStartWith("# bar_chart\n#|(markdown)");
          expect(body.notebookCells?.map((cell) => cell.proseLines)).toEqual([
             [],
             [[0, 0]],

@@ -252,6 +252,19 @@ export type CompileScope = (typeof COMPILE_SCOPES)[number];
  *  problems from every file share one array. */
 export type TaggedLogMessage = LogMessage & { model?: string };
 
+/** The package-relative model path of a file inside the package, `/`-separated on every platform; undefined outside it. */
+export function packageRelativeModelPath(
+   packagePath: string,
+   filePath: string,
+   pathModule: Pick<typeof path, "relative" | "isAbsolute" | "sep"> = path,
+): string | undefined {
+   const rel = pathModule.relative(packagePath, filePath);
+   if (rel === "" || rel.startsWith("..") || pathModule.isAbsolute(rel)) {
+      return undefined;
+   }
+   return rel.split(pathModule.sep).join("/");
+}
+
 async function denyHiddenAsNotQueryable(
    convert: () => void | Promise<void>,
    gate: () => Promise<void>,
@@ -815,10 +828,10 @@ export class Environment {
                let model: string | undefined;
                if (url && url.startsWith("file:")) {
                   try {
-                     const rel = path.relative(packagePath, fileURLToPath(url));
-                     if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
-                        model = rel;
-                     }
+                     model = packageRelativeModelPath(
+                        packagePath,
+                        fileURLToPath(url),
+                     );
                   } catch {
                      // Not a resolvable file URL — leave the tag off.
                   }
