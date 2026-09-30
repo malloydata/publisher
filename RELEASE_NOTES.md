@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — Publisher serves `.malloy` notebooks
+## [0.8.4] — Publisher serves `.malloy` notebooks
 
 A `.malloy` file directly under a package's top-level `notebooks/` whose model-level notes include
 `## artifact { kind=notebook … }` is now a served notebook. Its cells are read from the file in order:
@@ -73,7 +73,7 @@ Behavior changes to know about:
   `publisher_notebook_cell_executions_total{format,kind,outcome}` and
   `publisher_notebook_cell_execution_duration_ms{format,outcome}`.
 
-## [Unreleased] — `dashboard_columns` is read again, as a deprecated alias
+## [0.8.4] — `dashboard_columns` is read again, as a deprecated alias
 
 The 0.2.1 note that said `dashboard_columns` is gone is superseded.
 `dashboard { columns=N }` beside the artifact tag stays the canonical grid width, and
