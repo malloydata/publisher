@@ -1,0 +1,19 @@
+##" Shared orders model — this note must never appear as a notebook cell.
+// An untagged include: every notebook here imports it, and a reader that folded
+// imported notes into cells would show the line above in each of them.
+source: orders is duckdb.table('data/orders.csv') extend {
+   primary_key: id
+
+   measure: order_count is count()
+   measure: total_amount is sum(amount)
+
+   view: by_month is {
+      group_by: order_month is ordered_at.month
+      aggregate: total_amount
+   }
+
+   // Aggregate-only, so it runs as a single row of KPI cards.
+   view: kpis is {
+      aggregate: order_count, total_amount
+   }
+}

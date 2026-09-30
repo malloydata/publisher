@@ -1,0 +1,9 @@
+##! experimental.givens
+## artifact { kind=notebook title="Definitions only" }
+import "../models/orders.malloy"
+
+source: us_orders is orders extend {
+   where: region = 'US'
+}
+
+given: BRAND :: filter<string> is f''

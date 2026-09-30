@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import CloseIcon from "@mui/icons-material/Close";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CodeIcon from "@mui/icons-material/Code";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
@@ -19,7 +21,7 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useId, useState } from "react";
 import type { Given } from "../../client";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
@@ -34,6 +36,7 @@ import ResultContainer from "../RenderedResult/ResultContainer";
 import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard } from "../styles";
+import { cellCaption, definitionSummary, stripProse } from "./cellKind";
 import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
@@ -43,7 +46,8 @@ interface NotebookCellProps {
    expandEmbedding?: boolean;
    hideEmbeddingIcon?: boolean;
    resourceUri: string;
-   index: number;
+   /** Whether this is the notebook's first markdown cell, which carries the copy-link icon. */
+   showCopyLink?: boolean;
    maxResultSize?: number;
    isExecuting?: boolean;
    /**
@@ -98,7 +102,7 @@ export function NotebookCell({
    hideCodeCellIcon,
    hideEmbeddingIcon,
    resourceUri,
-   index,
+   showCopyLink,
    maxResultSize,
    isExecuting,
    pendingRerun,
@@ -121,6 +125,8 @@ export function NotebookCell({
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
 
+   const [definitionOpen, setDefinitionOpen] = useState(false);
+   const definitionRegionId = useId();
    const [copyMessage, setCopyMessage] = useState("");
 
    const { environmentName, packageName, modelPath } =
@@ -169,14 +175,6 @@ export function NotebookCell({
    // Regex to extract model path from import statements
    const IMPORT_MODEL_PATH_REGEX =
       /import\s*(?:\{[^}]*\}\s*from\s*)?['"`]([^'"`]+)['"`]/;
-
-   // Filter out lines starting with ## from Malloy code
-   const filterMalloyCode = (code: string): string => {
-      return code
-         .split("\n")
-         .filter((line) => !line.trimStart().startsWith("##"))
-         .join("\n");
-   };
 
    const hasValidImport =
       !!cell.text &&
@@ -243,7 +241,7 @@ export function NotebookCell({
    const { mode } = usePublisherTheme();
    useEffect(() => {
       if (cell.type === "code")
-         highlight(filterMalloyCode(cell.text), "malloy", mode).then((code) => {
+         highlight(stripProse(cell), "malloy", mode).then((code) => {
             setHighlightedMalloyCode(code);
          });
    }, [cell, mode]);
@@ -254,6 +252,13 @@ export function NotebookCell({
       });
    }, [queryResultCodeSnippet, mode]);
 
+   const caption = cell.kind === "query" ? cellCaption(cell) : undefined;
+   const header = cell.markdown ? (
+      <Prose variant="document" links={links}>
+         {cell.markdown}
+      </Prose>
+   ) : null;
+
    const copyToClipboard = () => {
       const url = window.location.href;
       navigator.clipboard
@@ -262,11 +267,62 @@ export function NotebookCell({
          .catch(() => setCopyMessage("Failed to copy URL"));
    };
 
+   const codeDialog = (
+      <Dialog
+         open={codeDialogOpen}
+         onClose={() => setCodeDialogOpen(false)}
+         maxWidth="lg"
+         fullWidth
+      >
+         <DialogTitle
+            sx={{
+               display: "flex",
+               justifyContent: "space-between",
+               alignItems: "center",
+            }}
+         >
+            Malloy Code
+            <IconButton
+               onClick={() => setCodeDialogOpen(false)}
+               sx={{ color: "text.secondary" }}
+            >
+               <CloseIcon />
+            </IconButton>
+         </DialogTitle>
+         <DialogContent>
+            <Box
+               sx={(theme) => ({
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: "8px",
+                  padding: "16px",
+                  fontFamily: "monospace",
+                  fontSize: "14px",
+                  lineHeight: "1.5",
+                  overflow: "auto",
+                  maxHeight: "70vh",
+                  backgroundColor: theme.palette.background.paper,
+                  color: theme.palette.text.primary,
+               })}
+            >
+               <pre
+                  className="code-display"
+                  style={{
+                     margin: 0,
+                  }}
+                  dangerouslySetInnerHTML={{
+                     __html: highlightedMalloyCode,
+                  }}
+               />
+            </Box>
+         </DialogContent>
+      </Dialog>
+   );
+
    return (
       (cell.type === "markdown" && (
          <Box>
             <Box>
-               {index === 0 ? (
+               {showCopyLink ? (
                   <Stack
                      direction="row"
                      alignItems="flex-start"
@@ -301,8 +357,62 @@ export function NotebookCell({
             </Box>
          </Box>
       )) ||
+      (cell.kind === "definition" && (
+         <Box>
+            {header}
+            <Box
+               component="button"
+               type="button"
+               aria-expanded={definitionOpen}
+               aria-controls={definitionRegionId}
+               onClick={() => setDefinitionOpen((open) => !open)}
+               sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  p: 0,
+                  border: 0,
+                  background: "none",
+                  cursor: "pointer",
+                  fontFamily: "monospace",
+                  fontSize: "13px",
+                  color: "text.secondary",
+               }}
+            >
+               {definitionOpen ? (
+                  <ExpandMoreIcon fontSize="small" />
+               ) : (
+                  <ChevronRightIcon fontSize="small" />
+               )}
+               {definitionSummary(cell)}
+            </Box>
+            {definitionOpen && (
+               <CleanMetricCard
+                  id={definitionRegionId}
+                  sx={{ mt: 1, padding: "12px 24px" }}
+               >
+                  <pre
+                     className="code-display"
+                     style={{ margin: 0, overflow: "auto" }}
+                     dangerouslySetInnerHTML={{
+                        __html: highlightedMalloyCode ?? "",
+                     }}
+                  />
+               </CleanMetricCard>
+            )}
+         </Box>
+      )) ||
       (cell.type === "code" && (
          <Box>
+            {header}
+            {caption && (
+               <Typography
+                  variant="body2"
+                  sx={{ color: "text.secondary", mb: 1 }}
+               >
+                  {caption}
+               </Typography>
+            )}
             {(!hideCodeCellIcon ||
                (!hideEmbeddingIcon && cell.result) ||
                (cell.newSources && cell.newSources.length > 0)) && (
@@ -370,56 +480,7 @@ export function NotebookCell({
                startingGivens={givens}
             />
 
-            {/* Code Dialog */}
-            <Dialog
-               open={codeDialogOpen}
-               onClose={() => setCodeDialogOpen(false)}
-               maxWidth="lg"
-               fullWidth
-            >
-               <DialogTitle
-                  sx={{
-                     display: "flex",
-                     justifyContent: "space-between",
-                     alignItems: "center",
-                  }}
-               >
-                  Malloy Code
-                  <IconButton
-                     onClick={() => setCodeDialogOpen(false)}
-                     sx={{ color: "text.secondary" }}
-                  >
-                     <CloseIcon />
-                  </IconButton>
-               </DialogTitle>
-               <DialogContent>
-                  <Box
-                     sx={(theme) => ({
-                        border: `1px solid ${theme.palette.divider}`,
-                        borderRadius: "8px",
-                        padding: "16px",
-                        fontFamily: "monospace",
-                        fontSize: "14px",
-                        lineHeight: "1.5",
-                        overflow: "auto",
-                        maxHeight: "70vh",
-                        backgroundColor: theme.palette.background.paper,
-                        color: theme.palette.text.primary,
-                     })}
-                  >
-                     <pre
-                        className="code-display"
-                        style={{
-                           margin: 0,
-                        }}
-                        dangerouslySetInnerHTML={{
-                           __html: highlightedMalloyCode,
-                        }}
-                     />
-                  </Box>
-               </DialogContent>
-            </Dialog>
-
+            {codeDialog}
             {/* Embedding Dialog */}
             <Dialog
                open={embeddingDialogOpen}

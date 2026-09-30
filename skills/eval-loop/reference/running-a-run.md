@@ -121,7 +121,7 @@ Three layers, in this order, and the order is what makes it readable:
 4. **DEEP DIVE.** A run directory is JSONL, which is a record and not a
    report, so this layer is the two commands that turn it into something you
    read: `build_run_package.py` (a Malloy model over the run's CSVs,
-   `eval_run.malloynb` for the aggregate tables, and an in-package HTML app for
+   `notebooks/eval_run.malloy` for the aggregate tables, and an in-package HTML app for
    the case matrix and its per-case drawer), then a `POST .../packages` that
    registers it on the Publisher already running, with no restart. It prints
    the resulting URL with the run's own paths filled in.

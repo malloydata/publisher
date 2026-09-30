@@ -150,8 +150,8 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Fix template:** three paths:
   1. Pick a different (or composite) PK that *is* unique. For composite keys in Malloy, derive a single dimension that concatenates the key columns and use that as `primary_key:`.
   2. Add a source-level `where:` that makes the existing PK unique within the filtered set (acceptable when the filter is the source's intended scope).
-  3. Declare a `#(filter) … required` annotation per the publisher filter mechanism so consumers must supply the discriminating filter (your documentation guidance on the `#(filter)` Tag, Declare Parameterizable Filters).
-- **See:** `malloy-model/reference/bridge-tables.md` § Cardinality Verification · your documentation guidance (#(filter) Tag, Declare Parameterizable Filters) (for the `required` filter remediation path)
+  3. Declare a `given:` with **no default** for the discriminating column and pin it in the source's `where:` (e.g. `given: EVENT_DATE :: date` and `where: event_date = $EVENT_DATE`), so every query must supply it. Do not suggest `#(filter) … required`: `#(filter)` is deprecated.
+- **See:** `malloy-model/reference/bridge-tables.md` § Cardinality Verification · `malloy-model` § Parameterizing sources with `given:` (for the required-given remediation path)
 
 ---
 

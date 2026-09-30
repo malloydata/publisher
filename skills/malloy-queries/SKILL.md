@@ -131,9 +131,14 @@ where: order_date >= @2020-01-01
 
 Available truncations: `.year`, `.quarter`, `.month`, `.week`, `.day`, `.hour`, `.minute`, `.second`.
 
-### `month`, `year`, `day`, `quarter` are reserved as names
+Anything else is an extraction function, not an accessor: `day_of_year()`, `day_of_week()` (1 = Sunday), `day()`, `week()`, `month()`, `quarter()`, `year()`, `hour()`, `minute()`, `second()`.
 
-They cannot name an output field. The functions are fine: `month(order_date)` extracts 1-12 anywhere, including `where:`.
+Wrong: `group_by: created_at.day_of_year`  →  `'created_at' cannot contain a 'day_of_year'`
+Right: `group_by: doy is day_of_year(created_at)`
+
+### `month`, `year`, `day`, `date`, `count` and friends are reserved as names
+
+They cannot name an output field. The set is wider than it looks: the timeframes and their plurals (`day`/`days`, `month`/`months`, `year`/`years`, ...), type names (`date`, `timestamp`, `number`, `string`), aggregate names (`count`, `sum`, `avg`, `min`, `max`, `all`), and `now`, `source`, `table`, `by`, `on`, `is`, `asc`, `desc`. The functions are fine: `month(order_date)` extracts 1-12 anywhere, including `where:`.
 
 Wrong: `group_by: month is order_date.month`  →  `'month' is a reserved word, so to use it as a name you must quote it`
 Right: `group_by: order_month is order_date.month`
@@ -157,6 +162,17 @@ Bounded `>=`/`<` with two literals also works and is sometimes clearer:
 where: order_date >= @2025-06-01 and order_date < @2025-09-01
 ```
 
+Every bound names the field, and a range only goes with `?`:
+
+| Wrong | Error | Right |
+|---|---|---|
+| `d > @2021 and < @2022` | `unexpected '<'` | `d ? @2021`, or `d >= @2021-01-01 and d < @2022-01-01` |
+| `d > @2021 and @2022` | `'logical operator' Can't use type date` | same |
+| `d = (@2021 to @2022)` | `A Range is not a value` | `d ? @2021 to @2022` |
+| `ts > @2021 to @2022` | **none** - it compiles, and dropped a 2021-03-04 row | `ts ? @2021 to @2022` |
+
+The last one is the dangerous one: a comparison operator in front of a range is accepted, so nothing warns you and the count is simply wrong. `Cannot compare a timestamp to a boolean` means the right-hand side of a comparison is itself a condition; split it into one comparison per bound.
+
 ## Aggregates vs Dimensions
 
 **`where:` filters rows before aggregation. `having:` filters aggregate results.** Picking the wrong one is the single most common query error.
@@ -177,8 +193,13 @@ having: count() > 20
 
 **Don't put aggregates in `group_by:`, or dimensions in `aggregate:`.**
 
-Wrong: `group_by: total_sales` (where `total_sales` is `sum(price)`)
+Wrong: `group_by: total_sales` (where `total_sales` is `sum(price)`)  →  `Cannot use an aggregate field in a group_by operation`
 Right: `group_by: category; aggregate: total_sales`
+
+A measure is not a `calculate:` field either. `calculate:` takes a window function over an aggregate, not the aggregate itself.
+
+Wrong: `calculate: t is total_sales`  →  `Cannot use an aggregate field in a calculate operation`
+Right: `aggregate: total_sales` (or `calculate: prev is lag(total_sales)` for a window)
 
 **Scalar functions are not aggregates.** `concat()`, `substr()`, arithmetic on raw fields, etc. belong in `group_by:` or `select:`, never `aggregate:`.
 
@@ -266,7 +287,8 @@ Read the error against the tables above and below. Most failures match a known p
 | `unexpected '<field>', expected 'not' or 'null'` | A **reserved word used as a name**, in a multi-line `aggregate:` / `group_by:` list. `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` are reserved. On its own line the compiler says so plainly (`'second' is a reserved word, so to use it as a name you must quote it`), but as a later entry in a multi-line list the parser has already committed, and the error points at the NEXT field instead - so you read it as a problem with the line below. Rename the field or backtick it. Verified against the compiler both ways. |
 | `'logical operator' Can't use type <string\|date\|...>` | **Any `?` apply combined with `and` needs parentheses**, not just the alternation form. `where: t ? 'a' | 'b' and flag` swallows `and flag` into the alternation list, and `where: d ? @2015 and x = 'y'` fails the same way with `Can't use type date`. Wrap the apply: `where: (d ? @2015) and x = 'y'`. The error names the *type on the left of the apply*, so it points at a clause that is perfectly fine and tells you nothing about the missing parentheses; on a date column it can also surface a spurious second error about `!= null` on an unrelated line. |
 | `Circular reference to '<name>' in definition` | A **measure aliased to its own name** (`aggregate: games is games`), which compiles fine until a `having:` references it. Alias to a different name, or drop the alias entirely. |
-| `Unknown function '<name>'. Use '<name>!(...)' to call a SQL function directly.` | The function does not exist in Malloy (`substring` is `substr`; there is no `median`). **In an ad-hoc query the suggested fix is a dead end**: a query sent to a server is compiled in restricted mode, so `median!(...)` then fails with "direct SQL function calls are not permitted" and following the error message costs two round trips. A saved model file is not compiled that way, so the same call is allowed there and fails only on its own merits. Use the Malloy spelling, or express it another way (an ordered `limit` for a median-like value); reach for `!(...)` only in a model file, and only knowing it pins you to one dialect. |
+| `Unknown function '<name>'. Use '<name>!(...)' to call a SQL function directly.` | The function does not exist in Malloy (`substring` is `substr`; there is no `median`, and no `percentile`, either as `percentile(x, 0.5)` or as `x.percentile(50)`). If `get_context` lists a percentile or median measure, use that. **In an ad-hoc query the suggested fix is a dead end**: a query sent to a server is compiled in restricted mode, so `median!(...)` then fails with "direct SQL function calls are not permitted" and following the error message costs two round trips. A saved model file is not compiled that way, so the same call is allowed there and fails only on its own merits. Use the Malloy spelling, or express it another way (an ordered `limit` for a median-like value); reach for `!(...)` only in a model file, and only knowing it pins you to one dialect. |
+| `Required filter "<name>" (dimension: <dim>) was not provided` | The source declares a required `#(filter)`. `get_context` lists it under `source_info.filter_params` with its `name`, `type` and `required`; pass a value through `execute_query`'s filter-parameters argument, keyed by the filter's `name` (not the dimension). A `where:` on the dimension does not satisfy it. |
 | `'<field_name>' is not defined` | Field doesn't exist in the source. Re-check against the model definition; you may have stripped a join prefix. |
 | `field is a bar chart, but is not a repeated record` | Chart annotation placed inside `{ }`. Move `# bar_chart` above `run:` / `view:` / `nest:`. |
 | `Parser enountered unexpected statement` | Spelled that way by the compiler. Most often a chart annotation left as the last line inside `{ }` - move it above `run:`. Also syntax Malloy doesn't allow in that position (e.g., `pick` inside a nested view). |

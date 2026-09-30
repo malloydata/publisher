@@ -38,6 +38,7 @@ describe("get_status", () => {
                initialized: true,
                frozenConfig: false,
                operationalState: "serving",
+               version: "9.9.9",
                environments: [
                   {
                      name: "local",
@@ -60,6 +61,7 @@ describe("get_status", () => {
       expect(payload).toEqual({
          operationalState: "serving",
          initialized: true,
+         version: "9.9.9",
          environments: [{ name: "local", packages: ["spotify"] }],
          loadErrors: [
             {
@@ -89,6 +91,27 @@ describe("get_status", () => {
       });
       const payload = parse(await handler());
       expect("loadErrors" in payload).toBe(false);
+      expect("emptyReason" in payload).toBe(false);
+   });
+
+   it("passes emptyReason through, since serving alone reads as healthy", async () => {
+      const reason =
+         "Serving with no environments: no publisher.config.json was found at /srv/publisher.config.json.";
+      const handler = captureHandler({
+         getStatus: async () =>
+            ({
+               timestamp: 1,
+               initialized: true,
+               frozenConfig: false,
+               operationalState: "serving",
+               version: "9.9.9",
+               environments: [],
+               emptyReason: reason,
+            }) as never,
+      });
+      const payload = parse(await handler());
+      expect(payload.emptyReason).toBe(reason);
+      expect(payload.environments).toEqual([]);
    });
 
    it("surfaces a store failure as a tool error payload", async () => {

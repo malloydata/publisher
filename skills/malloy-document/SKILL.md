@@ -1,6 +1,6 @@
 ---
 name: malloy-document
-description: 'Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to "add documentation", "add doc tags", "document the model", or wants fields and sources described for natural-language search and discovery. For declaring parameterizable filters with #(filter), see the malloy-model skill. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag.'
+description: 'Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to "add documentation", "add doc tags", "document the model", or wants fields and sources described for natural-language search and discovery. For runtime filters, declare given: parameters (see the malloy-model skill); #(filter) is deprecated. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag.'
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -14,7 +14,7 @@ Add `#(doc)` tags to describe sources and fields in plain language so they are e
 | Tag | Purpose | Goes on |
 |-----|---------|---------|
 | `#(doc)` | Plain-language description for natural-language search | source, dimension, measure, view, join |
-| `#(filter)` | Deprecated, prefer `given:`. Parameterizable filter (runtime/modeling concern, see `malloy-model`) | source |
+| `#(filter)` | Deprecated. Never add one; declare a `given:` instead (see `malloy-model`) | source |
 
 `#(doc)` is a standard Malloy annotation. It documents a field or source with a human-readable description that downstream tools can surface and search against.
 
@@ -77,11 +77,11 @@ Do not hedge measured facts: `avg_energy is avg(energy)` needs no caveat. Hedge 
 
 ## #(filter): deprecated, see `malloy-model`
 
-`#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters.
+`#(filter)` is deprecated. Never add a `#(filter)` annotation: every use, including `required`, `implicit`, and date/number ranges, has a `given:` form. See `skill:malloy-model` § Parameterizing sources with `given:`.
 
-`#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. The full reference (syntax, filter types, `required` / `implicit` flags, and when each applies) lives in `malloy-model` § Legacy: Parameterizable Filters alongside the other source-authoring constructs, next to the `given:` guidance that replaces it.
+`#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. How to read and migrate an existing one lives in `malloy-model` § Legacy: reading an existing `#(filter)` model.
 
-One rule worth knowing here: filters live on the source, never on the consumer. Ad-hoc reports and notebooks that import a source inherit its filters automatically; they do not (and cannot) declare new ones.
+One rule worth knowing here: filters live on the source, never on the consumer. Ad-hoc reports and notebooks that import a source inherit its givens automatically; they do not (and cannot) declare new ones.
 
 ## `internal:` and `private:`: column-level access in a source
 

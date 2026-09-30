@@ -23,7 +23,7 @@ Publisher is the analytics engine for [Malloy](https://malloydata.dev), created 
 - Review Malloy for correctness with the `malloy-review` skill.
 - Measure whether an agent can actually answer questions against a model, with the `eval-loop` skill: it scores answers against verified goldens, reports which entities retrieval delivered, diagnoses each failure and who owns it, and builds a servable report. [`examples/storefront/evals/storefront-tour`](examples/storefront/evals/storefront-tour) is a worked example over the bundled `storefront` package: twelve questions and an answer key, each golden derived twice. Its [README](examples/storefront/evals/storefront-tour/README.md) has the exact commands. The set is the questions and the key; running it, and whatever the run produces, is yours.
 - Build a dashboard: a tagged `dashboards/*.malloy` file in a package is the dashboard, with filter controls, a grid layout, and drill click-through, no code and no build step. People who want the classic drag-and-drop feel can build the same file in the Console instead — drag a tile to move it, its edge to resize it — and the two are interchangeable, because the builder splices the file rather than owning a layout document of its own. The `malloy-dashboards` skill covers it; [docs/dashboards.md](docs/dashboards.md) is the reference.
-- Write a notebook: a `.malloynb` file in a package mixes prose and queries and runs on the same governed endpoints. The `malloy-notebooks` skill covers it; [docs/choosing-a-surface.md](docs/choosing-a-surface.md) says when to pick a notebook, a dashboard, or a data app.
+- Write a notebook: a `notebooks/*.malloy` file in a package (a legacy `.malloynb` is read, not authored) mixes prose and queries and runs on the same governed endpoints. The `malloy-notebooks` skill covers it; [docs/choosing-a-surface.md](docs/choosing-a-surface.md) says when to pick a notebook, a dashboard, or a data app.
 - Govern access: [givens](docs/givens.md) declare runtime parameters that drive filter widgets, [row-level access](docs/row-level-access.md) decides which rows a caller sees, [`#(authorize)`](docs/authorize.md) decides whether a caller may query a source at all, and [discovery curation](docs/discovery-and-access.md) — a package's `index.malloy` — decides what is visible, and queryable, in the first place. The bundled `governed-analytics` package shows all four together.
 - Materialize for cost and speed: one `#@ persist` annotation turns an expensive source into a table, rebuilt on demand, from the `malloy-pub` CLI, or on a cron with the opt-in scheduler; `#@ preaggregate` rolls a measure up to a coarse grain. The `malloy-materialization` skill covers it; [docs/materialization.md](docs/materialization.md) and [docs/preaggregation.md](docs/preaggregation.md) are the references.
 - Model a warehouse from scratch: add a [connection](docs/connections.md) (BigQuery, Snowflake, Postgres, MySQL, Trino, Databricks, MotherDuck, DuckLake, and more), then `search_database_schema` ranks its tables against a plain-English description and hands back the `source:` line for each. DuckDB is built in for CSV, Parquet, JSON, and Excel files.
@@ -36,6 +36,8 @@ All of it runs against a local server you start in step 1 and reach over MCP in 
 The MCP tools talk to a running server, so nothing works until it is up.
 
 **Requirements.** Node.js 20 or newer for `npx` and for a clone. Building from a clone also needs [Bun](https://bun.sh/) 1.3.13 or newer. The Docker image carries its own runtime and needs neither. The bundled example packages are all DuckDB-backed, so no database credentials are needed for anything in this file.
+
+**Package names.** Everything here is scoped: the server is `@malloy-publisher/server`, the scaffolder `@malloy-publisher/create-malloy-package`, and the language itself `@malloydata/malloy`. The unscoped `malloy` on npm is an unrelated logging library, so `npm install malloy` installs nothing you want.
 
 The fastest way, with nothing cloned and no Bun installed:
 
@@ -62,7 +64,7 @@ Once it is serving, the Publisher Console is at **http://localhost:4000** and th
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
 
-Keep the `@latest`. `npx` resolves through a shared cache and will happily re-run a build it downloaded weeks ago, so a bare `npx @malloy-publisher/server` can serve an old version while looking like a fresh start. The server does not report its own version, so a stale build is invisible until it behaves like one — a fixed bug that appears to still be there is the usual first sign.
+Keep the `@latest`. `npx` resolves through a shared cache and will happily re-run a build it downloaded weeks ago, so a bare `npx @malloy-publisher/server` can serve an old version while looking like a fresh start. To see which build answered, read `version` from `GET /api/v0/status` (or `get_status`); a fixed bug that appears to still be there is the usual first sign of a stale one.
 
 On startup the server creates a `.mcp.json` in the directory it was run in, naming the MCP port it bound, which is why a session started in that directory finds the Malloy tools with no registration step. **It does not always create one**, so do not promise a user the file exists without checking: it skips an existing file, git working trees, the home directory, and a few other cases ([the full list](docs/configuration.md#the-mcpjson-the-server-writes)). Read the startup log rather than assuming, and `ls -a` if you need certainty. Whenever it skips, it prints the `claude mcp add` command that connects an agent anyway; use it as printed, because it is deliberately local scope and `-s user` would be shadowed by the very file that caused the message. The file also outlives the server and is never corrected, so a stale one does not merely fail: another process may hold that port and answer from the wrong data. Comparing URLs does not settle that, since two Publishers on one port give the same URL; call `list_packages`, which names what you are actually talking to. Never delete a `.mcp.json` you did not create. `--no-mcp-config` turns it off, and the Docker image sets `PUBLISHER_NO_MCP_CONFIG=1`.
 
@@ -260,9 +262,36 @@ curl -s -X POST \
   -d '{"query":"run: order_items -> by_category","compactJson":true}' | jq -r .result
 ```
 
+The same query from Python, with only the standard library. There is no Python SDK on PyPI to install: `packages/python-client` is generated from the OpenAPI spec but not published, and an unrelated `malloy-publisher-client` there is a third-party project.
+
+```python
+import json
+import urllib.error
+import urllib.request
+
+URL = ("http://localhost:4000/api/v0/environments/examples/packages/storefront"
+       "/models/storefront.malloy/query")
+
+def query(malloy: str) -> list[dict]:
+    body = json.dumps({"query": malloy, "compactJson": True}).encode()
+    req = urllib.request.Request(
+        URL, data=body, headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            payload = json.load(resp)
+    except urllib.error.HTTPError as err:
+        # The body carries the Malloy diagnostics; print it, don't swallow it.
+        raise SystemExit(f"{err.code}: {err.read().decode()}")
+    # `result` is a JSON string, not an object: parse it a second time.
+    return json.loads(payload["result"])
+
+for row in query("run: order_items -> by_category"):
+    print(row)
+```
+
 The map:
 
-- `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded, and the REST equivalent of `get_status`). Re-check it after every edit-and-reload: an entry with `stale: true` names a package that is still answering, from the model it compiled before your last save.
+- `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded, and the REST equivalent of `get_status`). Re-check `loadErrors` after every edit-and-reload: an entry with `stale: true` names a package that is still answering, from the model it compiled before your last save. An `emptyReason` means the server found no config at startup (or the `--config` path was missing) and is serving nothing; it names the path it checked. `version` is the server release.
 - `GET /api/v0/environments`: the environment names every other path needs (the bundled one is `examples`).
 - `GET /api/v0/environments/{env}/packages`, then `…/packages/{pkg}/models`: what exists.
 - `GET …/models/{path}`: the discovery step. The response's `sources` (each with its `views`), `queries`, and `givens` are the names you can run. Use them verbatim; never guess.
