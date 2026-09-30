@@ -1665,11 +1665,19 @@ app.get(
          return;
       }
 
+      const includeOffSurface = booleanParamOr400(
+         req,
+         res,
+         "includeOffSurface",
+      );
+      if (includeOffSurface === undefined) return;
+
       try {
          res.status(200).json(
             await modelController.listModels(
                req.params.environmentName,
                req.params.packageName,
+               { includeOffSurface },
             ),
          );
       } catch (error) {
@@ -1688,6 +1696,13 @@ app.get(
          return;
       }
 
+      const includeOffSurface = booleanParamOr400(
+         req,
+         res,
+         "includeOffSurface",
+      );
+      if (includeOffSurface === undefined) return;
+
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
@@ -1696,6 +1711,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                modelPath,
+               { includeOffSurface },
             ),
          );
       } catch (error) {
@@ -1933,6 +1949,12 @@ app.post(
          setVersionIdError(res);
          return;
       }
+      const includeOffSurface = booleanParamOr400(
+         req,
+         res,
+         "includeOffSurface",
+      );
+      if (includeOffSurface === undefined) return;
 
       try {
          // Express stores wildcard matches in params['0']
@@ -1960,6 +1982,7 @@ app.post(
             // deployment must strip it at its edge. See
             // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
             readBypassAuthorize(req),
+            includeOffSurface,
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,

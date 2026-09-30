@@ -1567,11 +1567,16 @@ paths:
       operationId: list-models
       summary: List package models
       description: |
-        Retrieves a list of all Malloy models within the specified package. Each model entry
-        includes the relative path, package name, and any compilation errors. This endpoint
-        is useful for discovering available models and checking their status. Served
-        notebooks (`.malloy` files under `notebooks/` that carry an `## artifact` note) are
-        not models here, with or without a surface; they are listed by list-notebooks.
+        Retrieves the Malloy models within the specified package. Each model entry includes
+        the relative path, package name, whether the file is on the package's surface, and any
+        compilation errors.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
+        files on that surface are listed, unless `includeOffSurface` is true. With it, every
+        model file is listed and `onSurface` marks the ones on the surface. Dashboard files
+        are listed by the dashboards route either way. Served notebooks (`.malloy` files under
+        `notebooks/` that carry an `## artifact` note) are not models here, with or without a
+        surface; they are listed by list-notebooks.
       parameters:
         - name: environmentName
           in: path
@@ -1591,6 +1596,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeOffSurface"
       responses:
         "200":
           description: A list of models in the package
@@ -1623,14 +1629,16 @@ paths:
         provides access to the model's structure, sources, and named queries for use in applications.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
-        that surface answers 404 with the same message a query to it gets. Dashboard files and
-        served notebooks (`notebooks/*.malloy` with an `## artifact` note) are always returned.
-        A package with no surface, or with `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
+        that surface answers 404 with the same message a query to it gets, unless
+        `includeOffSurface` is true. With it, the file is returned with its `sourceText`, whatever
+        sources the text names. Dashboard files and served notebooks (`notebooks/*.malloy` with
+        an `## artifact` note) are always returned. A package with no surface, or with
+        `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. A join to a hidden source
         keeps only its name and the names and types of its fields. `sourceText` is left out
-        when the text names a source the file does not publish; the text of a dashboard or a
-        served notebook is always returned.
+        when the text names a source the file does not publish; the text of a dashboard is
+        always returned.
       parameters:
         - name: environmentName
           in: path
@@ -1656,6 +1664,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeOffSurface"
       responses:
         "200":
           description: Compiled Malloy model
@@ -1810,6 +1819,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/includeOffSurface"
       requestBody:
         required: true
         content:
@@ -3807,6 +3817,14 @@ components:
         path:
           type: string
           description: Relative path to the model file within its package directory
+        onSurface:
+          type: boolean
+          description: |
+            Whether the file is on the package's surface: the files this route lists without
+            `includeOffSurface`. True for every file of a package with no surface. It does not
+            say whether a query can reach the file, which `queryableSources: "all"` also
+            decides. False only on a file listed because the
+            request set `includeOffSurface`.
         error:
           type: string
           description: Error message if the model failed to compile or load
@@ -7306,6 +7324,38 @@ components:
             gate rejects anyway.
 
   parameters:
+    includeOffSurface:
+      name: includeOffSurface
+      in: query
+      required: false
+      description: |
+        When true, a package with a surface (a root `index.malloy`, or a legacy
+        `explores`) is served to this request as if it had none: the models
+        list includes the files off the surface, the model GET returns them, and
+        the query route runs any model path the request names, including a
+        dashboard or notebook file, against every source, as
+        `queryableSources: "all"` does for every request. `#(authorize)` and
+        `#(access_filter)` still apply: it lifts curation, never the lock.
+
+        The model GET goes one step further than `queryableSources: "all"`: it
+        returns the file's `sourceText` even when that text names a source the
+        file does not publish. That text can include `#(authorize)`
+        expressions, `given:` defaults, connection names and raw SQL.
+
+        Only the models list, the model GET and the query route read it. The
+        notebook-cell route, the dashboards route, the MCP tools, and the legacy
+        `/projects/...` aliases of these routes ignore it.
+
+        Like every route on this server, it is unauthenticated. A deployment
+        that authenticates in front of Publisher decides who may send it, and
+        should pass it only for callers allowed to work with a package's hidden
+        files, such as its authors.
+
+        Only `true` and `false` are accepted. Any other value is refused with
+        400.
+      schema:
+        type: boolean
+        default: false
     environmentName:
       name: environmentName
       in: path
