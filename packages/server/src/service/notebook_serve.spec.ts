@@ -317,7 +317,7 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/nb.malloy",
-         `## artifact { title="T" }\n##" a markdown cell, not a description\n${BASE}`,
+         `## artifact { title="T" }\n##(markdown) a markdown cell, not a description\n${BASE}`,
       );
       await withPackage(async (pkg) => {
          const [nb] = await pkg.listNotebooks();
@@ -377,7 +377,7 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/nb.malloy",
-         `## artifact {}\n##" a markdown cell\n${BASE}`,
+         `## artifact {}\n##(markdown) a markdown cell\n${BASE}`,
       );
       await withPackage(async (pkg) => {
          const [nb] = await pkg.listNotebooks();

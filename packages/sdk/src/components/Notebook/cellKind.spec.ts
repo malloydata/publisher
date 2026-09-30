@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { cellCaption, cellRuns, definitionSummary } from "./cellKind";
+import {
+   cellCaption,
+   cellRuns,
+   definitionSummary,
+   stripProse,
+} from "./cellKind";
 
 describe("cellRuns", () => {
    it("runs a .malloynb code cell and skips its markdown", () => {
@@ -42,6 +47,38 @@ describe("cellCaption", () => {
       expect(cellCaption('// why\n#" Shown\nrun: q')).toBe("Shown");
    });
 
+   it("finds the caption below an attached markdown block", () => {
+      expect(
+         cellCaption(
+            '#|(markdown)\n### Revenue by month\nExcludes refunds.\n|#\n#" Caption line\n# bar_chart\nrun: sales -> by_month',
+         ),
+      ).toBe("Caption line");
+   });
+
+   it("finds the caption above an attached markdown block", () => {
+      expect(
+         cellCaption('#" Caption line\n#|(markdown)\nBody text\n|#\nrun: q'),
+      ).toBe("Caption line");
+   });
+
+   it("skips a #(markdown) line and a ##|(markdown) block", () => {
+      expect(
+         cellCaption(
+            '#(markdown) note\n##|(markdown) x\n## body\n|##\n#" Shown\nrun: q',
+         ),
+      ).toBe("Shown");
+   });
+
+   it("does not swallow the cell when a markdown block never closes", () => {
+      expect(cellCaption('#|(markdown)\n#" Shown\nrun: q')).toBe("Shown");
+   });
+
+   it("does not read a caption out of a markdown block body", () => {
+      expect(cellCaption('#|(markdown)\n#" not a caption\n|#\nrun: q')).toBe(
+         undefined,
+      );
+   });
+
    it("is undefined when there is no caption", () => {
       expect(cellCaption("# bar_chart\nrun: q")).toBeUndefined();
       expect(cellCaption("")).toBeUndefined();
@@ -65,8 +102,38 @@ describe("definitionSummary", () => {
       );
    });
 
+   it("skips an attached markdown block above the statement", () => {
+      expect(
+         definitionSummary(
+            "#|(markdown)\nThe orders source.\n|#\nsource: o is t",
+         ),
+      ).toBe("source: o");
+   });
+
    it("falls back to the first line for a statement it does not recognize", () => {
       expect(definitionSummary("export { a }")).toBe("export");
       expect(definitionSummary("// note\nmystery thing")).toBe("mystery thing");
+   });
+});
+
+describe("stripProse", () => {
+   it("drops ## lines and ##| blocks, including body lines that do not start with ##", () => {
+      expect(
+         stripProse("##|(markdown)\nintro\n## heading\n|##\n## title\nrun: q"),
+      ).toBe("run: q");
+   });
+
+   it("drops #(markdown) lines and #|(markdown) spans but keeps other tags", () => {
+      expect(
+         stripProse(
+            '#|(markdown)\nBody\n|#\n#" Caption\n#(markdown) note\n# bar_chart\nrun: q',
+         ),
+      ).toBe('#" Caption\n# bar_chart\nrun: q');
+   });
+
+   it("leaves a non-markdown #| block alone", () => {
+      expect(stripProse('#|"\ncaption\n|#\nrun: q')).toBe(
+         '#|"\ncaption\n|#\nrun: q',
+      );
    });
 });

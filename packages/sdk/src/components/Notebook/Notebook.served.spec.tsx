@@ -116,3 +116,56 @@ it("keeps the copy-link icon off a .malloynb that opens with a code cell", async
    await screen.findByText("Legacy prose");
    expect(screen.queryAllByTestId("LinkOutlinedIcon")).toHaveLength(0);
 });
+
+it("renders a query cell's markdown above its caption, without repeating it in the code", async () => {
+   current = {
+      format: "malloy",
+      notebookCells: [
+         {
+            type: "code",
+            kind: "query",
+            text: '#|(markdown)\n### Revenue by month\n|#\n#" Shown caption\nrun: orders -> by_month',
+            markdown: "### Revenue by month",
+         },
+      ],
+   } as RawNotebook;
+   const { container } = render(<Notebook resourceUri={URI} />, {
+      wrapper: serverWrapper,
+   });
+
+   const heading = await screen.findByText("Revenue by month");
+   const caption = await screen.findByText("Shown caption");
+   expect(
+      heading.compareDocumentPosition(caption) &
+         Node.DOCUMENT_POSITION_FOLLOWING,
+   ).toBeTruthy();
+   expect(container.textContent?.split("Revenue by month")).toHaveLength(2);
+});
+
+it("shows a folded definition cell's markdown above the fold", async () => {
+   current = {
+      format: "malloy",
+      notebookCells: [
+         {
+            type: "code",
+            kind: "definition",
+            text: "#|(markdown)\nThe orders source.\n|#\nsource: o is t",
+            markdown: "The orders source.",
+         },
+      ],
+   } as RawNotebook;
+   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+
+   const prose = await screen.findByText("The orders source.");
+   const toggle = await screen.findByRole("button", { name: /source: o/ });
+   expect(toggle.getAttribute("aria-expanded")).toBe("false");
+   expect(
+      prose.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING,
+   ).toBeTruthy();
+
+   fireEvent.click(toggle);
+   await waitFor(() =>
+      expect(toggle.getAttribute("aria-expanded")).toBe("true"),
+   );
+   expect(screen.getAllByText("The orders source.")).toHaveLength(1);
+});

@@ -7,7 +7,7 @@ info:
   description: |
     The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
     A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
-    notebooks (`.malloynb` files and Malloyyo `.malloy` files under `notebooks/`), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    notebooks (`.malloynb` files and `.malloy` files under `notebooks/`), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
     under `public/`.
 
     ## Key Features
@@ -3235,16 +3235,22 @@ components:
             The same family carries findings on files under `notebooks/` and
             `dashboards/`, each naming its line and the fix; they are computed
             at discovery and are also returned by `/compile` at file and
-            package scope. Six codes are `error` and fail `/compile`:
+            package scope. Nine codes are `error` and fail `/compile`:
             `notebook-statement-above-artifact` and `notebook-tag-above-artifact`
             (a statement or a tag above a served notebook's `## artifact`),
-            `notebook-columns-conflict` (a tiled dashboard's `dashboard_columns`
-            disagrees with `dashboard { columns }`), `notebook-text-block-name`
-            (a dashboard's `(text)` block has an invalid or missing name),
-            `notebook-artifact-unparsed` (an `## artifact` tag does not parse),
-            and `notebook-cells-unreadable` (the reader could not read a served
-            notebook's cells). The rest are `warn` (a mistyped prose-block opener, a missing
-            `kind=notebook`, a block that never closes, and similar).
+            `notebook-markdown-above-artifact` (a `(markdown)` annotation above
+            it), `notebook-columns-conflict` (a tiled dashboard's
+            `dashboard_columns` disagrees with `dashboard { columns }`),
+            `notebook-old-prose-spelling` (a `"` note below a notebook's tag or
+            a `(text)` note, the spellings `(markdown)` replaced, which are
+            dropped), `notebook-markdown-opener-text` (more than a
+            name after `(markdown)` on a block's opener),
+            `notebook-markdown-attached-nowhere` (a `#(markdown)` annotation
+            with no statement to take it), `notebook-artifact-unparsed` (an
+            `## artifact` tag does not parse), and `notebook-cells-unreadable`
+            (the reader could not read a served notebook's cells). The rest are
+            `warn` (a mistyped `(markdown)` opener, a missing `kind=notebook`, a
+            block that never closes, and similar).
             Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
@@ -3833,8 +3839,8 @@ components:
           type: string
           description:
             The notebook's doc comment, when it has one. For a `.malloy`
-            notebook that is the `"` notes above the `## artifact` line; a
-            `##"` note below it is a cell, not description.
+            notebook that is the `"` notes above the `## artifact` line; prose
+            below it is a `##(markdown)` or `##|(markdown)` cell.
         error:
           type: string
           description: Error message if the notebook failed to compile or load
@@ -4106,7 +4112,7 @@ components:
             The file format the notebook is written in. `malloynb` is the
             cell-separated format; `malloy` is a `.malloy` file under
             `notebooks/` with a model-level `## artifact` note, whose cells are
-            its statements and prose notes in file order.
+            its statements and its floating `(markdown)` notes in file order.
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
@@ -4122,9 +4128,8 @@ components:
           type: array
           description:
             Array of file-level (##) annotations attached to the notebook. For
-            a `.malloy` notebook, every own note that is not on the `"` prose
-            route, wherever it sits, plus the `"` notes above the `## artifact`
-            line, in file order, each note once.
+            a `.malloy` notebook, every own note that is not a floating
+            `(markdown)` cell, in file order, each note once.
           items:
             type: string
         startingGivens:
@@ -4626,6 +4631,15 @@ components:
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
+        markdown:
+          type: string
+          description:
+            On a `.malloy` notebook's code cell, the prose written on the
+            `(markdown)` route in its own tag lines (`#(markdown) text` lines,
+            `#|(markdown)` … `|#` blocks), which `text` still contains. Blocks
+            join with a blank line, adjacent lines with a newline. Author
+            prose, so it is served even when `queryInfo` is withheld. Absent
+            when the cell has none.
         newSources:
           type: array
           description:
@@ -4655,6 +4669,11 @@ components:
         text:
           type: string
           description: Text contents of the notebook cell
+        markdown:
+          type: string
+          description:
+            A `.malloy` notebook code cell's own `(markdown)` prose, as on
+            `NotebookCell`. Absent when the cell has none.
         result:
           type: string
           description: JSON string containing the execution result for this cell

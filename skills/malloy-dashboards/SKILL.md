@@ -127,6 +127,19 @@ Three things the form costs, so you are not surprised by them:
 - **Filtering lives on the tiles**, not on the page: each view's `+ { where: ... }` names the
   controls it answers to. Below is why, and the one thing that does not work.
 
+### Text tiles: prose between tiles (decided, not rendered yet)
+
+Prose between tiles is a named `(markdown)` block that `tiles=` lists with `kind=text`:
+
+```malloy
+## artifact { title="Storefront overview" tiles=[intro { kind=text colspan=12 }, "overview -> kpis"] } dashboard { columns=12 }
+##|(markdown) intro
+## How to read this page
+|##
+```
+
+The name is one bare word on the opener line, the body starts on the next line, and the `|##` closer sits at the opener's column. Keep the parentheses: `##|markdown` draws a malformed-route warning. Publisher does not render text tiles yet, so a listed block is left out of the page and the lint says so; write one when the page needs the prose, and expect the tile to appear once rendering ships. A `(markdown)` block that no `tiles` entry names is a lint finding too, so delete it rather than leave it. The dashboard's own description is separate: the unnamed `"` notes above `## artifact`. The `(text)` spelling, which `(markdown)` replaced, is dropped, and the lint reports it as an error.
+
 ### Also served: `# artifact` on a `query:`
 
 One query whose result is the whole page, laid out by `@malloydata/render` from the query's own

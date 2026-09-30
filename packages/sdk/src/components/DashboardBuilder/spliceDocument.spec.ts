@@ -2282,3 +2282,79 @@ source: a is scoped_orders extend {
       );
    });
 });
+
+describe("spliceDashboardDocument: the (markdown) route", () => {
+   const TEXT_TILE = `##" Above
+## artifact { title="T" tiles=[intro { kind=text colspan=12 }, "a -> x"] }
+##(markdown) a floating one-liner
+import "../m.malloy"
+
+##|(markdown) intro
+## How to read this page
+|##
+
+source: a is one extend {
+  #|(markdown)
+  # Lead tile
+  |#
+  # colspan=6
+  view: x is vx
+}`;
+
+   it("round-trips a text-tile dashboard, heading line and markdown lines included, byte for byte", async () => {
+      const doc = await openDocument(TEXT_TILE);
+      expect(doc.title).toBe("T");
+      expect(doc.description).toBe("Above");
+      expect(doc.tiles.find((t) => t.name === "x")?.colspan).toBe(6);
+      const result = await spliceDashboardDocument(TEXT_TILE, doc);
+      if (spliceFailed(result)) throw new Error(result.reason);
+      expect(result.source).toBe(TEXT_TILE);
+   });
+
+   it("still refuses a tile-list edit over the text tile", async () => {
+      const reason = await refused(TEXT_TILE, (d) => {
+         d.tiles.pop();
+      });
+      expect(reason).toContain("text tile");
+   });
+
+   it("rewrites a description and a tile's colspan without touching the markdown around them", async () => {
+      const out = await spliced(TEXT_TILE, (d) => {
+         d.description = "New";
+         d.tiles.find((t) => t.name === "x")!.colspan = 4;
+      });
+      expect(out).toContain('##" New\n## artifact');
+      expect(out).toContain("##(markdown) a floating one-liner\n");
+      expect(out).toContain(
+         "##|(markdown) intro\n## How to read this page\n|##\n",
+      );
+      expect(out).toContain(
+         "  #|(markdown)\n  # Lead tile\n  |#\n  # colspan=4\n",
+      );
+   });
+
+   it("takes an attached markdown block away with the given it describes", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+#|(markdown)
+# About the category filter
+|#
+# label="Category"
+given: CATEGORY :: filter<string> is f''
+# label="Since"
+given: SINCE :: date is @2023-01-01
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "CATEGORY",
+         );
+      });
+      expect(out).not.toContain("About the category filter");
+      expect(out).toContain('# label="Since"\ngiven: SINCE');
+   });
+});

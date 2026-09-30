@@ -9,4 +9,4 @@ run: orders -> by_month
 
 run: orders -> kpis
 
-##" Trailing prose is a model note, so it may end the file.
+##(markdown) Trailing prose is a model note, so it may end the file.

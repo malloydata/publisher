@@ -7,11 +7,15 @@ import {
    callAccessor,
    codePointMap,
    isArtifactNoteText,
+   isMarkdownNote,
    isNotebookModelPath,
    isRuleNode,
+   MARKDOWN_ROUTE,
    NOTEBOOKS_DIR,
-   parseTextOpener,
-   readTextBlocks,
+   OLD_PROSE_SPELLINGS,
+   parseMarkdownOpener,
+   readMarkdownBlocks,
+   routeOfNote,
    translateToParse,
    type ParseNode,
    type ParseToken,
@@ -38,6 +42,10 @@ export interface NotebookLintFinding {
 
 /** `text` is reserved for the dashboard text tile; it is not an unknown kind. */
 const KNOWN_KINDS = ["notebook", "dashboard", "text"];
+
+/** An old prose spelling is an error while notebooks drop it and a warning once they read it. */
+const OLD_SPELLING_SEVERITY =
+   OLD_PROSE_SPELLINGS === "dropped" ? "error" : "warn";
 
 const ARTIFACT_KIND_FIX = "Fix: write `## artifact { kind=notebook }`.";
 
@@ -145,9 +153,27 @@ export function lintNotebookText(
             []) as ParseNode[];
          for (const note of notes) {
             const noteText = nodeText(note);
+            const route = routeOfNote(noteText);
+            const first = noteText.split("\n", 1)[0];
+            const isBlock = /^##\|/.test(noteText);
             // A block note ends at its closer, which is not part of the tag text.
             const bodyText = noteText.replace(/\r?\n\|##[^\n]*\n?$/, "");
             modelNotes.push(bodyText);
+            if (route === "text") {
+               add(
+                  lineOfNode(note),
+                  "notebook-old-prose-spelling",
+                  `\`${quoted(first)}\` is on the \`(text)\` route, ${OLD_PROSE_SPELLINGS === "dropped" ? "which Publisher does not read, so it is dropped" : "the spelling `(markdown)` replaced"}. Fix: use \`${isBlock ? "##|(markdown) name" : "##(markdown)"}\`.`,
+                  OLD_SPELLING_SEVERITY,
+               );
+            } else if (artifact && inNotebooks && route === '"') {
+               add(
+                  lineOfNode(note),
+                  "notebook-old-prose-spelling",
+                  `\`${quoted(first)}\` is a \`"\` note below the \`## artifact\` tag, ${OLD_PROSE_SPELLINGS === "dropped" ? "which a notebook drops, so its prose is not shown" : "the spelling `(markdown)` replaced"}. Fix: use \`${isBlock ? "##|(markdown)" : "##(markdown)"}\` in place of \`${isBlock ? '##|"' : '##"'}\`.`,
+                  OLD_SPELLING_SEVERITY,
+               );
+            }
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
             docNotes.push({ line: lineOfNode(note), text: bodyText });
@@ -158,12 +184,17 @@ export function lintNotebookText(
                   startIndex: note.start.startIndex,
                };
             } else if (!artifact && inNotebooks) {
-               const first = noteText.split("\n", 1)[0];
-               // Flags, the `"` route (a description) and `(text)` blocks (found on their own) may sit in the header.
-               if (
+               if (route === MARKDOWN_ROUTE) {
+                  aboveArtifact.push({
+                     line: lineOfNode(note),
+                     code: "notebook-markdown-above-artifact",
+                     what: quoted(first),
+                  });
+                  // Flags and the `"` route (a description) may sit in the header; `(text)` is reported on its own.
+               } else if (
                   !/^##!/.test(noteText) &&
                   !/^#{1,2}\|?"/.test(noteText) &&
-                  !parseTextOpener(first)
+                  route !== "text"
                ) {
                   aboveArtifact.push({
                      line: lineOfNode(note),
@@ -182,17 +213,37 @@ export function lintNotebookText(
       if (callAccessor(child, "defineGivenStatement")) {
          firstGiven ??= keywordLine(child, "GIVEN");
       }
-      if (inNotebooks && callAccessor(child, "ignoredObjectAnnotations")) {
-         const next = children[index + 1];
-         const nextRun = children
-            .slice(index + 1)
-            .find((sibling) => callAccessor(sibling, "runStatement"));
-         add(
-            lineOfNode(child),
-            "notebook-orphaned-tag",
-            `this # tag is followed by ${describeNext(next)}, not by a run:, so it annotates nothing. Render tags sit directly above their run:. Fix: move the tag, and any #" caption, directly above ${nextRun ? `the run: on line ${keywordLine(nextRun, "RUN")}` : "its run:"}.`,
-         );
+      if (callAccessor(child, "ignoredObjectAnnotations")) {
+         const notes = leadingNotes(child);
+         for (const note of notes.filter((n) => isMarkdownNote(n.text))) {
+            add(
+               note.line,
+               "notebook-markdown-attached-nowhere",
+               `\`${quoted(note.text)}\` annotates no statement, since an import and an export take no annotations and nothing else follows it. Fix: use \`##|(markdown)\` for prose that stands on its own, or move it directly above the statement it describes.`,
+               "error",
+            );
+         }
+         if (inNotebooks && notes.some((n) => !isMarkdownNote(n.text))) {
+            const next = children[index + 1];
+            const nextRun = children
+               .slice(index + 1)
+               .find((sibling) => callAccessor(sibling, "runStatement"));
+            add(
+               lineOfNode(child),
+               "notebook-orphaned-tag",
+               `this # tag is followed by ${describeNext(next)}, not by a run:, so it annotates nothing. Render tags sit directly above their run:. Fix: move the tag, and any #" caption, directly above ${nextRun ? `the run: on line ${keywordLine(nextRun, "RUN")}` : "its run:"}.`,
+            );
+         }
       } else if (inNotebooks && !artifact) {
+         for (const note of leadingNotes(child).filter((n) =>
+            isMarkdownNote(n.text),
+         )) {
+            aboveArtifact.push({
+               line: note.line,
+               code: "notebook-markdown-above-artifact",
+               what: quoted(note.text),
+            });
+         }
          const first = firstCodeToken(child);
          aboveArtifact.push({
             line: first?.line ?? lineOfNode(child),
@@ -234,7 +285,7 @@ export function lintNotebookText(
    }
 
    if (artifact) lintArtifact(artifact);
-   if (artifact && !inNotebooks) lintUnreferencedTextBlocks(artifact);
+   if (artifact && !inNotebooks) lintUnreferencedMarkdownBlocks(artifact);
    if (artifact && !inNotebooks) lintDescriptionBelow(artifact.line);
 
    if (inNotebooks && artifact) lintComments(artifact.startIndex);
@@ -284,9 +335,33 @@ export function lintNotebookText(
          add(
             token.line,
             "notebook-comment-not-shown",
-            'this comment sits directly above a cell but is not part of it, so the notebook does not show it. Fix: write it as a `##"` prose note, or move it inside the statement it describes.',
+            "this comment sits directly above a cell but is not part of it, so the notebook does not show it. Fix: write it as a `##(markdown)` prose note, or move it inside the statement it describes.",
          );
       });
+   }
+
+   /** The `#` notes a statement opens with, up to its first token that is not one; a block's is its opener line. */
+   function leadingNotes(node: ParseNode): { text: string; line: number }[] {
+      const from = node.start?.startIndex ?? 0;
+      const to = node.stop?.stopIndex ?? -1;
+      const notes: { text: string; line: number }[] = [];
+      for (const token of tokens as ParseToken[]) {
+         if (token.startIndex < from) continue;
+         if (token.startIndex > to) break;
+         if (token.channel !== 0) continue;
+         const name = symbolOf(token);
+         if (name === "ANNOTATION" || name === "BLOCK_ANNOTATION_BEGIN") {
+            notes.push({
+               text: tokenText(token).replace(/\r?\n$/, ""),
+               line: token.line,
+            });
+         } else if (
+            name !== "BLOCK_ANNOTATION_TEXT" &&
+            name !== "BLOCK_ANNOTATION_END"
+         )
+            break;
+      }
+      return notes;
    }
 
    function describeNext(next: ParseNode | undefined): string {
@@ -342,6 +417,17 @@ export function lintNotebookText(
             );
             continue;
          }
+         if (
+            /^##\(?markdown\)?(?=[ \t]|$)/i.test(line) &&
+            !isMarkdownNote(line)
+         ) {
+            add(
+               token.line,
+               "notebook-markdown-opener",
+               `\`${quoted(line)}\` is not on the \`(markdown)\` route, so it is not shown as prose. Did you mean \`##(markdown)\`?`,
+            );
+            continue;
+         }
          const content = /^##[ \t]+(\S.*)$/.exec(line)?.[1];
          if (
             content &&
@@ -351,7 +437,7 @@ export function lintNotebookText(
             add(
                token.line,
                "notebook-heading-line",
-               `\`${quoted(line)}\` is read as model tags, not shown as prose. Did you mean \`##"\`?`,
+               `\`${quoted(line)}\` is read as model tags, not shown as prose. Did you mean \`##(markdown)\`?`,
             );
          }
       }
@@ -360,42 +446,58 @@ export function lintNotebookText(
    function lintBlocks(): void {
       const list = tokens as ParseToken[];
       for (let i = 0; i < list.length; i++) {
-         if (symbolOf(list[i]) !== "DOC_BLOCK_ANNOTATION_BEGIN") continue;
+         const begin = symbolOf(list[i]);
+         if (
+            begin !== "DOC_BLOCK_ANNOTATION_BEGIN" &&
+            begin !== "BLOCK_ANNOTATION_BEGIN"
+         )
+            continue;
          const opener = tokenText(list[i]).replace(/\r?\n$/, "");
-         if (!opener.startsWith("##|")) continue;
+         // `##|` is a floating note, `#|` one attached to the statement below it.
+         const sigil = begin === "DOC_BLOCK_ANNOTATION_BEGIN" ? "##" : "#";
+         if (!opener.startsWith(`${sigil}|`)) continue;
+         const closer = `|${sigil}`;
          const line = list[i].line;
-         const rest = opener.slice(3);
-         const textOpener = parseTextOpener(opener);
-         if (/^("|\(text\))\S/.test(rest)) {
+         const rest = opener.slice(sigil.length + 1);
+         const markdown = parseMarkdownOpener(opener);
+         if (/^("|\(markdown\))\S/.test(rest)) {
             add(
                line,
                "notebook-block-opener-spacing",
-               `\`${quoted(opener)}\` has no space after the route, so Malloy drops the note. Did you mean \`##|(text) name\` or \`##|"\`?`,
+               `\`${quoted(opener)}\` has no space after the route, so Malloy drops the note. Fix: put a space after the route, as in \`${sigil}|(markdown)\`${sigil === "##" ? ' for a cell or `##|"` for a description' : ""}.`,
             );
-         } else if (textOpener) {
-            if (inNotebooks) {
+         } else if (markdown) {
+            const opensText = markdown.rest !== "" && !markdown.name;
+            if (opensText) {
                add(
                   line,
-                  "notebook-text-block",
-                  `a \`(text)\` block is a dashboard text tile, and a notebook does not show it. Fix: write \`##|"\` to make it a markdown cell, or move the file to ${DASHBOARDS_DIR}/.`,
+                  "notebook-markdown-opener-text",
+                  `\`${quoted(markdown.rest)}\` follows \`${sigil}|(markdown)\` on its opener line, where only one bare word may go (a name), so the block would show it as its first line. Fix: move it into the body, on the line below the opener.`,
+                  "error",
                );
-            }
-            if (textOpener.name === undefined) {
+            } else if (markdown.name && (sigil === "#" || inNotebooks)) {
                add(
                   line,
-                  "notebook-text-block-name",
-                  textOpener.rest === ""
-                     ? "a `(text)` block needs a name, the tile's entry in `tiles=[…]`. Fix: write `##|(text) name`, where the name is a bare word of letters, digits and underscores."
-                     : `\`${quoted(textOpener.rest)}\` is not a valid name for a \`(text)\` block, which takes exactly one bare word. Fix: write \`##|(text) name\`, where the name is letters, digits and underscores and does not start with a digit.`,
-                  // A notebook ignores the block either way; a dashboard cannot use it.
-                  inNotebooks ? "warn" : "error",
+                  "notebook-markdown-block-named",
+                  `the name \`${markdown.name}\` on this \`(markdown)\` block means nothing ${sigil === "#" ? "on a block attached to a statement" : "in a notebook, which shows every block as a cell"}, and it is not shown. Fix: remove the name.`,
+               );
+            } else if (
+               !markdown.name &&
+               !opensText &&
+               sigil === "##" &&
+               !inNotebooks
+            ) {
+               add(
+                  line,
+                  "notebook-markdown-block-unnamed",
+                  "an unnamed `(markdown)` block is not shown on a dashboard, whose text tiles are named blocks listed in `tiles=[…]` (text tiles do not render yet). Fix: write `##|(markdown) name` and list `name` in `tiles`, or delete the block.",
                );
             }
-         } else if (rest.replace(/[\s()]/g, "").toLowerCase() === "markdown") {
+         } else if (/^[ \t]*\(?markdown\)?(?=[ \t]|$)/i.test(rest)) {
             add(
                line,
                "notebook-markdown-opener",
-               `\`${opener.trim()}\` opens a block that is not a prose block, so its body is not a ${inNotebooks ? "markdown cell" : "text tile"}. Did you mean \`##|"\`?`,
+               `\`${opener.trim()}\` opens a block that is not on the \`(markdown)\` route, so its body is not ${sigil === "#" ? "the statement's prose" : inNotebooks ? "a markdown cell" : "a text tile"}. Did you mean \`${sigil}|(markdown)\`?`,
             );
          }
          let j = i + 1;
@@ -407,8 +509,9 @@ export function lintNotebookText(
          ) {
             if (!firstRun && /^\s*run\s*:/.test(tokenText(list[j])))
                firstRun = list[j];
-            // An indented `##|` is quoted prose; a missed closer leaves the next opener at column 0.
-            if (!nested && /^##\|/.test(tokenText(list[j]))) nested = list[j];
+            // An indented opener is quoted prose; a missed closer leaves the next opener at column 0.
+            if (!nested && tokenText(list[j]).startsWith(`${sigil}|`))
+               nested = list[j];
             j++;
          }
          const end =
@@ -422,7 +525,7 @@ export function lintNotebookText(
             add(
                line,
                "notebook-unterminated-block",
-               `this block is never closed, so it runs to the end of the file and everything after the opener is prose${swallowed}. Fix: add a \`|##\` line where the prose ends.`,
+               `this block is never closed, so it runs to the end of the file and everything after the opener is prose${swallowed}. Fix: add a \`${closer}\` line where the prose ends.`,
             );
             continue;
          }
@@ -430,15 +533,15 @@ export function lintNotebookText(
             add(
                line,
                "notebook-block-swallows-run",
-               `this block runs to the \`|##\` on line ${end.line}, and line ${nested.line} inside it opens another block, so a \`|##\` was probably missed before it. Fix: add \`|##\` before line ${nested.line}.`,
+               `this block runs to the \`${closer}\` on line ${end.line}, and line ${nested.line} inside it opens another block, so a \`${closer}\` was probably missed before it. Fix: add \`${closer}\` before line ${nested.line}.`,
             );
          }
-         const trailing = tokenText(end).replace(/^\|##/, "").trim();
-         if (tokenText(end).startsWith("|##") && trailing) {
+         const trailing = tokenText(end).replace(closer, "").trim();
+         if (tokenText(end).startsWith(closer) && trailing) {
             add(
                end.line,
                "notebook-text-after-closer",
-               `the text after the closing \`|##\` (\`${trailing}\`) is dropped, not shown. Fix: put it on its own \`##"\` line, or inside the block.`,
+               `the text after the closing \`${closer}\` (\`${trailing}\`) is dropped, not shown. Fix: put it ${sigil === "##" ? "on its own `##(markdown)` line, or " : ""}inside the block.`,
             );
          }
       }
@@ -460,18 +563,18 @@ export function lintNotebookText(
       );
    }
 
-   /** A `(text)` block is a tile only when `tiles` names it. */
-   function lintUnreferencedTextBlocks(tagNote: { text: string }): void {
+   /** A `(markdown)` block is a tile only when `tiles` names it. */
+   function lintUnreferencedMarkdownBlocks(tagNote: { text: string }): void {
       const tiles = motlyTag([tagNote.text])
          ?.tag("artifact")
          ?.array("tiles")
          ?.map((tile) => tagText(tile));
-      for (const block of readTextBlocks(notebookParse, text)) {
+      for (const block of readMarkdownBlocks(notebookParse, text)) {
          if (block.name === undefined || tiles?.includes(block.name)) continue;
          add(
             block.line,
-            "notebook-text-block-unreferenced",
-            `the \`(text)\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.`,
+            "notebook-markdown-block-unreferenced",
+            `the \`(markdown)\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.`,
          );
       }
    }

@@ -3,6 +3,6 @@
 ## artifact { kind=notebook title="Imported prose" }
 import "../models/orders.malloy"
 
-##" The only prose cell in this notebook.
+##(markdown) The only prose cell in this notebook.
 
 run: orders -> kpis

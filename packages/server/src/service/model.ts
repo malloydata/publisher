@@ -413,6 +413,8 @@ export interface RunnableNotebookCell {
    /** Set on a served notebook's cells; a `.malloynb` cell has none. */
    kind?: NotebookCellKind;
    text: string;
+   /** A served code cell's own `#(markdown)` prose; author text, so it is served whatever the surface withholds of `queryInfo`. */
+   markdown?: string;
    /** A served query cell's index into `modelInfo.anonymous_queries`. */
    queryIndex?: number;
    runnable?: QueryMaterializer;
@@ -450,6 +452,7 @@ export interface NotebookCellRunResult {
    type: "code" | "markdown";
    kind?: NotebookCellKind;
    text: string;
+   markdown?: string;
    queryName?: string;
    result?: string;
    newSources?: string[];
@@ -5974,6 +5977,7 @@ export class Model {
                   type: "code",
                   kind: "definition",
                   text: cell.text,
+                  markdown: cell.markdown,
                   modelDef,
                };
             }
@@ -5984,6 +5988,7 @@ export class Model {
                type: "code",
                kind: "query",
                text: cell.text,
+               markdown: cell.markdown,
                queryIndex: cell.queryIndex,
                runnable: materializer.loadQuery(cell.text),
                modelMaterializer: materializer,
@@ -8493,6 +8498,7 @@ export class Model {
             type: cell.type,
             kind: cell.kind,
             text: cell.text,
+            markdown: cell.markdown,
             newSources: this.serializeNewSources(cell.newSources, index),
             queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
          } as ApiNotebookCell);
@@ -9067,6 +9073,7 @@ export class Model {
                   type: "code",
                   kind: cell.kind,
                   text: cell.text,
+                  markdown: cell.markdown,
                };
             } else {
                logger.error("Error message: ", errorMessage);
@@ -9079,6 +9086,7 @@ export class Model {
          type: cell.type,
          kind: cell.kind,
          text: cell.text,
+         markdown: cell.markdown,
          queryName: queryName,
          result: queryResult,
          newSources: this.serializeNewSources(cell.newSources, cellIndex),

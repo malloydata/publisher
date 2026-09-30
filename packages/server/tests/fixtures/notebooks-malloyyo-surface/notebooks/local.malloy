@@ -6,7 +6,7 @@ import "../models/hidden.malloy"
 
 given: REGION :: string is 'US'
 
-##" A source over the surface, then one over the hidden file.
+##(markdown) A source over the surface, then one over the hidden file.
 
 source: on_surface is orders extend { measure: n is count() }
 
@@ -18,4 +18,5 @@ run: orders -> { aggregate: order_count }
 
 run: on_surface -> { aggregate: n }
 
+#(markdown) Reads the hidden file, so a surface withholds its queryInfo but not this prose.
 run: loc -> { aggregate: secret_total }

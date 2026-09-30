@@ -37,6 +37,7 @@ interface Cell {
    kind?: string;
    text?: string;
    queryInfo?: string;
+   markdown?: string;
    result?: string;
 }
 
@@ -89,6 +90,12 @@ const KINDS: Record<string, string[]> = {
       "query",
    ],
    "notebooks/tagged_runs.malloy": ["definition", "query", "query", "markdown"],
+   "notebooks/attached_prose.malloy": [
+      "definition",
+      "definition",
+      "definition",
+      "query",
+   ],
    "notebooks/named_runs.malloy": [
       "definition",
       "definition",
@@ -220,6 +227,21 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
             ).toEqual(body.notebookCells?.map((cell) => cell.type));
          });
       }
+
+      it("serves a cell's own (markdown) prose beside its exact text", async () => {
+         const { body } = await getJson<{ notebookCells?: Cell[] }>(
+            pkgUrl(PLAIN, "/notebooks/notebooks/attached_prose.malloy"),
+         );
+         expect(body.notebookCells?.map((cell) => cell.markdown)).toEqual([
+            undefined,
+            "The region filter.",
+            "Orders in the US only.",
+            "### Orders by region\nExcludes refunds.",
+         ]);
+         expect(body.notebookCells?.[3].text).toStartWith(
+            "# bar_chart\n#|(markdown)",
+         );
+      });
 
       it("runs a query cell over the include's CSV, which resolves from the package root", async () => {
          const { status, body } = await runCell(

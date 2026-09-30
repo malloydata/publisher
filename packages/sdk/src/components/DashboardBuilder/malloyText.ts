@@ -45,6 +45,18 @@ export function blockLines(lines: string[]): Set<number> {
    return out;
 }
 
+/** The `#(markdown)` lines and `#|(markdown)` blocks: prose attached to a declaration, not tags. */
+export function markdownLines(lines: string[]): Set<number> {
+   const out = new Set<number>();
+   for (const [from, to] of blockSpans(lines))
+      if (/^[ \t]*#\|\(markdown\)/.test(lines[from]))
+         for (let i = from; i <= to; i++) out.add(i);
+   lines.forEach((l, i) => {
+      if (/^[ \t]*#\(markdown\)/.test(l)) out.add(i);
+   });
+   return out;
+}
+
 /** The line carrying the model-level `## artifact` tag, or -1. */
 export const artifactLine = (lines: string[]) => {
    const inBlock = blockLines(lines);

@@ -3,11 +3,11 @@
 import "../models/orders.malloy"
 
 // The second opener follows the first closer directly, with no blank line between them, which is style only.
-##|"
+##|(markdown)
 ## A heading
 The first block's body starts with a markdown heading.
 |##
-##|"
+##|(markdown)
 The second block follows with no statement between them.
 |##
 

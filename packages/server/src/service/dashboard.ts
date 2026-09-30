@@ -40,7 +40,7 @@ import type {
 } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
-import { dashboardDescriptionNotes } from "./notebook";
+import { dashboardDescriptionNotes, isMarkdownNote } from "./notebook";
 import {
    readGivenControlSpec,
    type GivenControlKind,
@@ -854,8 +854,9 @@ function givenSpec(
       // Do not read this as a note to widen later. The API `annotations`
       // narrowing is permanent: Credible's app consumes that field from another
       // repo, so widening reintroduces a live bug this repo cannot see.
-      annotations: declaration.annotations.filter((text) =>
-         /^##?\(/.test(text),
+      // `(markdown)` is a notebook cell's own prose, not helper text for the control.
+      annotations: declaration.annotations.filter(
+         (text) => /^##?\(/.test(text) && !isMarkdownNote(text),
       ),
       ...control,
    };

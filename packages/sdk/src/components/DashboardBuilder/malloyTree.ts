@@ -20,6 +20,8 @@
  * minifiers leave alone.
  */
 
+import { markdownLines } from "./malloyText";
+
 /** A half-open range of UTF-16 offsets into the source text. */
 export interface Span {
    start: number;
@@ -172,6 +174,8 @@ export interface ParsedMalloy {
     * middle of a `/* … *\/`, whose text is prose however it begins.
     */
    commentLine(line: number): boolean;
+   /** Whether `line` is part of a `#(markdown)` line or a `#|(markdown)` block, which are prose, not tags. */
+   proseLine(line: number): boolean;
    /**
     * The `#`/comment block immediately above `line`, stopping at a blank line —
     * the unit that travels with a declaration when it moves.
@@ -289,6 +293,8 @@ class Reader {
     * makes the writer rewrite a line inside a comment.
     */
    commentLines: ReadonlySet<number> = new Set();
+   /** `(markdown)` annotation lines, whose body can start with `#` without being a tag. */
+   proseLines: ReadonlySet<number> = new Set();
 
    constructor(readonly text: string) {
       this.map = codePointMap(text);
@@ -470,7 +476,7 @@ function readTags(
    const first = r.line(statement.start);
    const last = r.line(declStart);
    for (let i = first; i < last; i++) {
-      if (r.commentLines.has(i)) continue;
+      if (r.commentLines.has(i) || r.proseLines.has(i)) continue;
       const text: string = r.text
          .slice(r.lineStarts[i], r.lineStarts[i + 1] ?? r.text.length)
          .trim();
@@ -776,6 +782,7 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
    // and a source is read through it.
    const comments = commentIndex(r, tokenStream);
    r.commentLines = comments.lines;
+   r.proseLines = markdownLines(text.split("\n"));
    const sources = readSources(r, root);
 
    // The shape assertion, on real content rather than on the API's presence:
@@ -800,6 +807,7 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
          trailingComment: (line) => comments.trailing.get(line),
          comments: comments.all,
          commentLine: (line) => comments.lines.has(line),
+         proseLine: (line) => r.proseLines.has(line),
          commentIn: (span) =>
             comments.all.find(
                (at) => at.start >= span.start && at.start < span.end,
@@ -939,11 +947,21 @@ function blockStart(
    commentLines: Set<number>,
    line: number,
 ): number {
-   let start = line;
-   for (let i = line - 1; i >= 0; i--) {
-      const text = r.text
+   const lineText = (i: number) =>
+      r.text
          .slice(r.lineStarts[i], r.lineStarts[i + 1] ?? r.text.length)
          .trim();
+   let start = line;
+   for (let i = line - 1; i >= 0; i--) {
+      const text = lineText(i);
+      // A `#|` ... `|#` block's body lines are not `#` lines, so a closer pulls in the whole block.
+      if (text.startsWith("|#") && !text.startsWith("|##")) {
+         let open = i;
+         while (open >= 0 && !lineText(open).startsWith("#|")) open--;
+         if (open < 0) break;
+         start = i = open;
+         continue;
+      }
       // A blank line is the boundary -- unless it is inside a block comment,
       // where it is the author's paragraph break rather than their separator.
       if (text === "" && !commentLines.has(i)) break;

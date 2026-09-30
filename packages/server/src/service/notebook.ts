@@ -3,6 +3,8 @@
 
 import {
    MalloyTranslator,
+   payloadOf,
+   routeOf,
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
@@ -26,6 +28,37 @@ export function isNotebookModelPath(modelPath: string): boolean {
 }
 
 const ARTIFACT_NOTE = /^##[ \t]*artifact\b/;
+
+/** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
+export const MARKDOWN_ROUTE = "markdown";
+
+/** Malloy's own routing for one note: its route, empty for a plain tag, `undefined` when the prefix is malformed. */
+export function routeOfNote(text: string): string | undefined {
+   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
+}
+
+/** Whether a note is on the `(markdown)` route, at either level and in either form. */
+export function isMarkdownNote(text: string): boolean {
+   return routeOfNote(text) === MARKDOWN_ROUTE;
+}
+
+/**
+ * What a notebook or dashboard does with the spellings `(markdown)` replaced (a `"` or `(text)` note
+ * below the tag): "dropped" (the lint errors) or "accepted" (read as prose, the lint warns).
+ */
+export const OLD_PROSE_SPELLINGS: "dropped" | "accepted" = "dropped";
+
+export function isOldProseRoute(route: string | undefined): boolean {
+   return route === '"' || route === "text";
+}
+
+/** Whether a floating note is prose: `(markdown)`, plus the old spellings when they are accepted. */
+export function isProseRoute(route: string | undefined): boolean {
+   return (
+      route === MARKDOWN_ROUTE ||
+      (OLD_PROSE_SPELLINGS === "accepted" && isOldProseRoute(route))
+   );
+}
 
 export function isArtifactNoteText(text: string): boolean {
    return ARTIFACT_NOTE.test(text);
@@ -116,8 +149,10 @@ export type NotebookCellKind = "markdown" | "query" | "definition";
 export interface NotebookCellSpan {
    kind: NotebookCellKind;
    type: "markdown" | "code";
-   /** Markdown: the prose without sigils. Code: the statement verbatim, from its first tag line. */
+   /** Markdown: the prose without sigils. Code: the statement verbatim, from its first tag line, `(markdown)` annotations included. */
    text: string;
+   /** A code cell's own `#(markdown)` prose, read out of its tag lines; blocks join with a blank line. */
+   markdown?: string;
    /** 1-based and inclusive. */
    startLine: number;
    endLine: number;
@@ -135,8 +170,9 @@ export interface NotebookReadResult {
    /** Empty whenever `error` is set: a notebook is never served with part of its cells. */
    cells: NotebookCellSpan[];
    /**
-    * Every own note that is not on the `"` route, plus the `"` notes above the
-    * artifact tag, each once, in file order.
+    * Every own note that is not a floating markdown cell, each once, in file
+    * order. A `"` note below the artifact tag is never listed (see
+    * OLD_PROSE_SPELLINGS), so none can read as a description.
     */
    annotations: string[];
    error?: NotebookReaderError;
@@ -195,9 +231,6 @@ const STATEMENT_ACCESSORS: readonly [string, "run" | "notes" | "definition"][] =
       ["defineUserTypeStatement", "definition"],
       ["exportStatement", "definition"],
    ];
-
-// Malloy reads `##"word` as a malformed route and drops it, so a space, tab or line end must follow.
-const PROSE_NOTE = /^##\|?"([ \t\r\n]|$)/;
 
 const NOTEBOOK_PARSE_URL = "file:///publisher-notebook-reader/notebook.malloy";
 
@@ -280,8 +313,8 @@ export function codePointMap(text: string): Int32Array {
 
 interface ReaderNote {
    text: string;
-   prose: boolean;
-   /** The prose without sigils; set only on a `"` note. */
+   route: string | undefined;
+   /** The prose without sigils; set only on a `(markdown)` note. */
    body?: string;
    block: boolean;
    startLine: number;
@@ -293,10 +326,31 @@ type ReaderItem =
         kind: "statement";
         run: boolean;
         text: string;
+        markdown?: string;
         startLine: number;
         endLine: number;
      }
    | { kind: "note"; note: ReaderNote };
+
+/** A `(markdown)` block's body: text on its opener line is prose too, except a lone bare word, which names it. */
+function markdownBlockBody(opener: string, bodyLines: string[]): string {
+   const rest = payloadOf({ value: opener } as Parameters<
+      typeof payloadOf
+   >[0]).trim();
+   // Only a `(markdown)` or `(text)` opener names its block; a `"` opener's text is always prose.
+   const onOpener =
+      routeOfNote(opener) !== '"' && TEXT_BLOCK_NAME.test(rest) ? "" : rest;
+   return normalizeNewlines(
+      [onOpener && `${onOpener}\n`, ...bodyLines].join(""),
+   ).replace(/\n$/, "");
+}
+
+/** A `(markdown)` line note's prose: what follows the route and its one separator. */
+function markdownLineBody(noteText: string): string {
+   return normalizeNewlines(
+      payloadOf({ value: noteText } as Parameters<typeof payloadOf>[0]),
+   ).replace(/\n$/, "");
+}
 
 /**
  * A served notebook's cells, read off Malloy's parse tree and token stream.
@@ -380,13 +434,88 @@ export function readNotebookCells(
    };
    const tokenText = (token: ParseToken) =>
       text.slice(map[token.startIndex], map[token.stopIndex + 1]);
+   const firstTokenAt = (cp: number): number => {
+      let lo = 0;
+      let hi = tokens.length;
+      while (lo < hi) {
+         const mid = (lo + hi) >> 1;
+         if (tokens[mid].startIndex < cp) lo = mid + 1;
+         else hi = mid;
+      }
+      return lo;
+   };
+   // The `#` notes a statement opens with, up to its first token that is not one.
+   const leadingObjectNotes = (startCp: number, stopCp: number) => {
+      const notes: {
+         text: string;
+         block: boolean;
+         bodyTexts: string[];
+         line: number;
+      }[] = [];
+      for (let i = firstTokenAt(startCp); i < tokens.length; i++) {
+         const token = tokens[i];
+         if (token.startIndex > stopCp) break;
+         if (token.channel !== 0) continue;
+         const name = symbolOf(token);
+         if (name === "ANNOTATION") {
+            notes.push({
+               text: normalizeNewlines(tokenText(token)),
+               block: false,
+               bodyTexts: [],
+               line: token.line,
+            });
+         } else if (name === "BLOCK_ANNOTATION_BEGIN") {
+            const bodyTexts: string[] = [];
+            let end = i + 1;
+            while (
+               end < tokens.length &&
+               symbolOf(tokens[end]) === "BLOCK_ANNOTATION_TEXT"
+            )
+               bodyTexts.push(tokenText(tokens[end++]));
+            if (
+               end < tokens.length &&
+               symbolOf(tokens[end]) === "BLOCK_ANNOTATION_END"
+            )
+               end++;
+            notes.push({
+               text: normalizeNewlines(tokenText(token)),
+               block: true,
+               bodyTexts,
+               line: token.line,
+            });
+            i = end - 1;
+         } else break;
+      }
+      return notes;
+   };
+   const attachedMarkdown = (
+      notes: ReturnType<typeof leadingObjectNotes>,
+   ): string | undefined => {
+      const segments: string[] = [];
+      let lineEnd = -2;
+      for (const note of notes) {
+         if (!isMarkdownNote(note.text)) {
+            lineEnd = -2;
+         } else if (note.block) {
+            segments.push(markdownBlockBody(note.text, note.bodyTexts));
+            lineEnd = -2;
+         } else {
+            const body = markdownLineBody(note.text);
+            if (note.line === lineEnd + 1)
+               segments[segments.length - 1] += `\n${body}`;
+            else segments.push(body);
+            lineEnd = note.line;
+         }
+      }
+      return segments.length > 0 ? segments.join("\n\n") : undefined;
+   };
 
    const covered: [number, number][] = [];
    const items: ReaderItem[] = [];
    const unclassifiable = (line: number, what: string): NotebookReadResult =>
       refuse({
          line,
-         message: `Line ${line}: ${what}, which no notebook cell can hold, so the notebook is not shown. Fix: remove it, or rewrite it as an import, source:, query:, given:, type: or export statement, a run:, or a ##" / ##|" prose note.`,
+         message: `Line ${line}: ${what}, which no notebook cell can hold, so the notebook is not shown. Fix: remove it, or rewrite it as an import, source:, query:, given:, type: or export statement, a run:, or a \`##(markdown)\` / \`##|(markdown)\` prose note.`,
       });
 
    for (let i = 0; i < (root.childCount ?? 0); i++) {
@@ -410,9 +539,14 @@ export function readNotebookCells(
          ([accessor]) => callAccessor(child, accessor) !== undefined,
       );
       if (!match && callAccessor(child, "ignoredObjectAnnotations")) {
+         const prose = leadingObjectNotes(span.startCp, span.stopCp).some(
+            (note) => isMarkdownNote(note.text),
+         );
          return refuse({
             line: span.startLine,
-            message: `Line ${span.startLine}: a # tag that annotates no statement, so the notebook is not shown. Fix: move the tag directly above its run:, or make trailing prose a ##" note.`,
+            message: prose
+               ? `Line ${span.startLine}: a \`#(markdown)\` annotation that annotates no statement (an import and an export take none), so the notebook is not shown. Fix: use \`##|(markdown)\` for prose that stands on its own, or move it directly above the statement it describes.`
+               : `Line ${span.startLine}: a # tag that annotates no statement, so the notebook is not shown. Fix: move the tag directly above its run:, or write trailing prose as a \`##(markdown)\` note.`,
          });
       }
       if (!match) {
@@ -432,6 +566,9 @@ export function readNotebookCells(
             kind: "statement",
             run: kind === "run",
             text: text.slice(span.start, span.end),
+            markdown: attachedMarkdown(
+               leadingObjectNotes(span.startCp, span.stopCp),
+            ),
             startLine: span.startLine,
             endLine: span.endLine,
          });
@@ -466,27 +603,21 @@ export function readNotebookCells(
                     .replace(/\r?\n$/, "")
                : text.slice(noteSpan.start, noteSpan.end),
          );
-         const prose = PROSE_NOTE.test(noteText);
+         const route = routeOfNote(noteText);
          let body: string | undefined;
-         if (prose && block) {
-            // Text on the opener line is prose too; only a `(text)` opener carries a name.
-            const onOpener = noteText
-               .split("\n", 1)[0]
-               .replace(/^##\|" ?/, "")
-               .trim();
-            body = normalizeNewlines(
-               [onOpener && `${onOpener}\n`, ...bodyTokens.map(tokenText)].join(
-                  "",
-               ),
-            ).replace(/\n$/, "");
-         } else if (prose) {
-            body = noteText.replace(/^##" ?/, "").replace(/\n$/, "");
+         if (isProseRoute(route)) {
+            body = block
+               ? markdownBlockBody(
+                    noteText.split("\n", 1)[0],
+                    bodyTokens.map(tokenText),
+                 )
+               : markdownLineBody(noteText);
          }
          items.push({
             kind: "note",
             note: {
                text: noteText,
-               prose,
+               route,
                body,
                block,
                startLine: noteSpan.startLine,
@@ -532,7 +663,7 @@ export function readNotebookCells(
 
    const cells: NotebookCellSpan[] = [];
    const annotations: string[] = [];
-   // The markdown cell a contiguous `##"` run is building, which the next adjacent line joins.
+   // The markdown cell a contiguous `##(markdown)` run is building, which the next adjacent line joins.
    let lineRun: NotebookCellSpan | undefined;
    let runsSeen = 0;
    items.forEach((item, index) => {
@@ -547,6 +678,9 @@ export function readNotebookCells(
                     kind: "query",
                     type: "code",
                     text: item.text,
+                    ...(item.markdown !== undefined && {
+                       markdown: item.markdown,
+                    }),
                     startLine: item.startLine,
                     endLine: item.endLine,
                     queryIndex,
@@ -555,6 +689,9 @@ export function readNotebookCells(
                     kind: "definition",
                     type: "code",
                     text: item.text,
+                    ...(item.markdown !== undefined && {
+                       markdown: item.markdown,
+                    }),
                     startLine: item.startLine,
                     endLine: item.endLine,
                  },
@@ -562,8 +699,11 @@ export function readNotebookCells(
          return;
       }
       const { note } = item;
-      if (!note.prose || !belowTag) annotations.push(note.text);
-      if (!note.prose || !belowTag || note.body === undefined) {
+      const floating = belowTag && note.body !== undefined;
+      // A dropped old-spelling note is not listed, so a `"` one can never read as the description.
+      if (!floating && !(belowTag && isOldProseRoute(note.route)))
+         annotations.push(note.text);
+      if (!floating || note.body === undefined) {
          lineRun = undefined;
          return;
       }
@@ -588,20 +728,37 @@ export function readNotebookCells(
 /** A dashboard text tile's name: a MOTLY bare word, as `tiles=[…]` spells its entries. */
 export const TEXT_BLOCK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** What follows `##|(text)` on a `(text)` block's opener, and the name when it is a lone bare word; undefined when the opener is not a `(text)` one. */
-export function parseTextOpener(
+/**
+ * What follows `##|(markdown)` or `#|(markdown)` on a block's opener, and the
+ * name when it is a lone bare word; undefined when the opener is not a
+ * `(markdown)` block opener.
+ */
+export function parseMarkdownOpener(
    opener: string,
-): { rest: string; name?: string } | undefined {
-   const match = /^##\|\(text\)(?=[ \t\r]|$)(.*)$/.exec(
-      opener.replace(/\r?\n$/, ""),
-   );
-   if (!match) return undefined;
-   const rest = match[1].trim();
-   return { rest, name: TEXT_BLOCK_NAME.test(rest) ? rest : undefined };
+): { level: 1 | 2; rest: string; name?: string } | undefined {
+   const line = opener.replace(/\r?\n$/, "");
+   const sigil = /^(#{1,2})\|/.exec(line);
+   if (!sigil) return undefined;
+   // Only a `(text)` tile opener is an old spelling read here: a `"` block above a tag is a description.
+   const route = routeOfNote(line);
+   const prose =
+      route === MARKDOWN_ROUTE ||
+      (sigil[1] === "##" &&
+         OLD_PROSE_SPELLINGS === "accepted" &&
+         route === "text");
+   if (!prose) return undefined;
+   const rest = payloadOf({ value: line } as Parameters<
+      typeof payloadOf
+   >[0]).trim();
+   return {
+      level: sigil[1].length as 1 | 2,
+      rest,
+      name: TEXT_BLOCK_NAME.test(rest) ? rest : undefined,
+   };
 }
 
-/** A `##|(text) name` … `|##` block: a dashboard text tile. */
-export interface NotebookTextBlock {
+/** A floating `##|(markdown) [name]` … `|##` block; in a dashboard, a text tile. */
+export interface NotebookMarkdownBlock {
    /** Undefined when the opener has no name or more than one bare word. */
    name?: string;
    /** 1-based opener line and closer line (the last body line when unclosed). */
@@ -609,11 +766,11 @@ export interface NotebookTextBlock {
    endLine: number;
 }
 
-/** The `(text)` blocks of a parsed file, in file order. */
-export function readTextBlocks(
+/** The floating `(markdown)` blocks of a parsed file, in file order. */
+export function readMarkdownBlocks(
    parse: NotebookParse,
    text: string,
-): NotebookTextBlock[] {
+): NotebookMarkdownBlock[] {
    const stream = parse.tokenStream as TokenStreamShape | undefined;
    const vocabulary = stream?.tokenSource?.vocabulary;
    const tokens =
@@ -622,14 +779,14 @@ export function readTextBlocks(
    const map = codePointMap(text);
    const tokenText = (token: ParseToken) =>
       text.slice(map[token.startIndex], map[token.stopIndex + 1]);
-   const blocks: NotebookTextBlock[] = [];
+   const blocks: NotebookMarkdownBlock[] = [];
    for (let i = 0; i < tokens.length; i++) {
       if (
          vocabulary.getSymbolicName(tokens[i].type) !==
          "DOC_BLOCK_ANNOTATION_BEGIN"
       )
          continue;
-      const opener = parseTextOpener(tokenText(tokens[i]));
+      const opener = parseMarkdownOpener(tokenText(tokens[i]));
       if (!opener) continue;
       const body: string[] = [];
       let endLine = tokens[i].line;

@@ -40,7 +40,7 @@ describe("a .malloynb cell with no hydrated query", () => {
    });
 
    /** The notebook GET's last cell after dropping that cell's runnable. */
-   const lastCellOf = async (withSurface: boolean) => {
+   const lastCellOf = async (withSurface: boolean, notebook = NOTEBOOK) => {
       const dir = fs.mkdtempSync(
          path.join(os.tmpdir(), "publisher-nb-unhydrated-"),
       );
@@ -54,8 +54,8 @@ describe("a .malloynb cell with no hydrated query", () => {
          dir,
          new MalloyConfig({ connections: {} }),
       );
-      const model = pkg.getModel(NOTEBOOK);
-      if (!model) throw new Error(`${NOTEBOOK} is not in the package`);
+      const model = pkg.getModel(notebook);
+      if (!model) throw new Error(`${notebook} is not in the package`);
       const cells = (
          model as unknown as {
             runnableNotebookCells: {
@@ -77,5 +77,11 @@ describe("a .malloynb cell with no hydrated query", () => {
 
    it("shows its queryInfo when nothing is curated", async () => {
       expect((await lastCellOf(false))?.queryInfo).toContain("order_count");
+   });
+
+   it("keeps a served notebook cell's own markdown under a surface, whose queryInfo it withholds", async () => {
+      const cell = await lastCellOf(true, "notebooks/local.malloy");
+      expect(cell?.queryInfo).toBeUndefined();
+      expect(cell?.markdown).toStartWith("Reads the hidden file");
    });
 });

@@ -683,7 +683,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
       // removed declaration is the exception and takes every tag with it: a
       // `#` line left behind does not lapse, it attaches to whatever is
       // declared next, so an orphaned `#(secure)` would silently move.
-      const { tags } = blockAbove(parsed, lines, at.line);
+      const { tags, prose } = blockAbove(parsed, lines, at.line);
       const owned =
          want === undefined
             ? tags
@@ -691,9 +691,14 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
                  const key = tagKey(tag.text);
                  return key !== undefined && MODELLED_GIVEN_TAG_KEYS.has(key);
               });
-      for (const tag of owned) {
-         edits.push({ ...wholeLine(tag.line), text: "" });
-         removedLines.add(tag.line);
+      // Prose leaves with a removed declaration for the same reason.
+      const ownedLines = [
+         ...owned.map((tag) => tag.line),
+         ...(want === undefined ? prose : []),
+      ];
+      for (const line of ownedLines) {
+         edits.push({ ...wholeLine(line), text: "" });
+         removedLines.add(line);
       }
       // A declaration can run past its first line -- `NAME :: string is` with
       // its default below it is ordinary Malloy -- so the lines to take come
@@ -709,7 +714,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
          for (let l = at.line; l <= lastLine; l++) removedLines.add(l);
          // A declaration set off by blank lines takes one of them with it, or
          // the two separators meet and the file gains an empty line per edit.
-         const first = Math.min(at.line, ...tags.map((tag) => tag.line));
+         const first = Math.min(at.line, ...ownedLines);
          const above = at.blockHeader ?? first;
          const belowIsBlank = (lines[lastLine + 1] ?? "x").trim() === "";
          const aboveIsBlank = above === 0 || lines[above - 1].trim() === "";

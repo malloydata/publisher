@@ -329,7 +329,7 @@ line per event under `[publisher.dashboard]`, `warn` on a refusal or a failed
 query. A deployment that wants metrics forwards from there; nothing server-side
 was added, by the no-API-change rule.
 
-## 7. The notebook: a Malloyyo format, not `.malloynb`
+## 7. The notebook: a `.malloy` format, not `.malloynb`
 
 A dashboard is a grid; a notebook is a line — prose and queries in author order,
 read top to bottom, results rendered as tables or charts, under the same
@@ -346,22 +346,27 @@ decision of 2026-09-13, reaffirmed 2026-09-15, is **not** to build on it:
   that is not going away. The viewer leaves when the authored format below can
   carry those readers, and not before; removing it earlier would strand every
   package that has a `.malloynb` in it today. Its authoring side upstream has
-  had maintenance commits only since April 2026, Malloyyo has no notebook format
-  at all, and the Workbook editor's private JSON was retired (PR #1146) rather
-  than become a third one.
-- **The authored notebook is a Malloyyo-style format**: a Malloy file, in the
+  had maintenance commits only since April 2026, and the Workbook editor's private
+  JSON was retired (PR #1146) rather than become a third one.
+- **The authored notebook is a `.malloy` format**: a Malloy file, in the
   family the dashboard already belongs to, whose cells are the file's own
   statements and annotations in order. It is git-native and agent-authorable,
   compiles as one model so every cell shares the file's definitions, is visible
   to the MCP surface like any model, and — because a cell is a contiguous block
   of Malloy — is read and written by the same splice discipline as a dashboard.
 
-**The format (decided 2026-09-29, Kyle).** A notebook is a
-`notebooks/<slug>.malloy` file. Its prose is a doc string on Malloy's built-in
-`"` route, written as a `##"` line or a `##|"` … `|##` block, and Malloy
-accepts either between any two statements. The format therefore needs no
-change to the Malloy language. The fixtures in
-`packages/server/tests/fixtures/notebooks-malloyyo/` hold both examples below,
+**The format (decided 2026-09-29, Kyle; prose spelling revised on review).** A
+notebook is a `notebooks/<slug>.malloy` file. Its prose is an annotation on the
+`(markdown)` route, and the number of `#` says what the prose belongs to.
+**Floating** markdown is its own cell: `##|(markdown)` … `|##` (the body starts
+on the next line and the closer sits at the opener's column) or
+`##(markdown) text`, and adjacent lines merge. **Attached** markdown,
+`#|(markdown)` … `|#` or `#(markdown) text`, belongs to the statement below it
+(`run:`, `source:`, `query:`, `given:`, `type:`) and renders with that cell: on a
+`run:` it is a markdown header above the result, and above the `#"` caption when
+both are present. Malloy accepts an annotation between any two statements, so
+the format needs no change to the language. The fixtures in
+`packages/server/tests/fixtures/notebooks-malloyyo/` hold the examples below,
 adapted to an `orders` model, and
 `packages/server/src/service/notebook_format.spec.ts` pins the compiler behavior
 the format rests on: where each note lands, what an import contributes, how
@@ -373,7 +378,7 @@ changes it fails CI.
 ## artifact { kind=notebook title="Revenue review" }
 import "../models/sales.malloy"
 
-##|"
+##|(markdown)
 # Where revenue came from
 Prose in **markdown**, any length.
 |##
@@ -381,21 +386,22 @@ Prose in **markdown**, any length.
 # label="Region" control=select suggest { source=sales dimension=region }
 given: REGION :: filter<string> is f''
 
-##" A single line of prose is a cell too.
+##(markdown) A single line of prose is a cell too.
 
-#" Caption: a doc string on the run, shown above its result.
+#(markdown) ### Revenue by month
+#" Caption: a doc string on the run, shown below the header and above the result.
 # bar_chart
 # label="Revenue by month"
 run: sales -> by_month + { where: region ~ $REGION }
 ```
 
-A dashboard text tile is a `(text)` block, named by one bare word on its opener
-and referenced from `tiles=`. The format is decided; Publisher does not render
-text tiles yet, so the lint says an entry is left out of the page:
+A dashboard text tile is a named `(markdown)` block: the name is one bare word on
+its opener, and `tiles=` references it. The format is decided; Publisher does not
+render text tiles yet, so the lint says an entry is left out of the page:
 
 ```malloy
 ## artifact { title="Storefront" tiles=[intro { kind=text colspan=12 }, "overview -> kpis"] } dashboard { columns=12 }
-##|(text) intro
+##|(markdown) intro
 ## How to read this page
 |##
 ```
@@ -406,37 +412,44 @@ text tiles yet, so the lint says an entry is left out of the page:
   query. An untagged file is a shared include. `kind=notebook` is checked by lint: a notebook tag
   under `dashboards/` is a finding, and so are `tiles=` under `notebooks/`.
 - **Cells**, in file order, from the file's own notes only, never imported
-  ones. Each `"`-route note after the artifact tag is a markdown cell, except
-  that contiguous `##"` lines (no blank line or other line between them) form
-  one cell, joined with `\n`; a `##|"` block is always its own cell, and text on
-  its opener line is prose like the rest. Each `run:` together with its contiguous
-  `#` tag block is a query cell; a `#"` directly above the run is its caption, a
-  chart is a render tag on it (`# bar_chart`), and `# label` titles it. Each
+  ones. Each floating `(markdown)` note after the artifact tag is a markdown
+  cell, except that contiguous `##(markdown)` lines (no blank line or other line
+  between them) form one cell, joined with `\n`; a `##|(markdown)` block is
+  always its own cell. Each `run:` together with its contiguous `#` tag block is
+  a query cell; attached `(markdown)` in that block is a header above the result
+  and above the `#"` caption, a `#"` directly above the run is its caption, a
+  chart is a render tag on it (`# bar_chart`), and `# label` titles it. Attached
+  markdown is not a cell of its own, and one above an `import` or `export`, which
+  take no annotations, is an error (`notebook-markdown-attached-nowhere`); write
+  `##|(markdown)` there. Each
   other statement (`import`, `source:`, `query:`, `given:`, `export`, `type:`)
   is a definition cell of its own, one cell per statement, shown as code or
   folded and read by every cell below it. Cell index is a wire contract, so
   statements are never merged into a run. The
   **header** is not a cell, and in a notebook it holds only `##!` flags, `//`
   comments and unnamed `"` notes above `## artifact`. A statement above the
-  tag (import, source, given, query, run) is an error finding. A `# tag` above
-  it is a warning (`notebook-orphaned-tag`), and the reader then refuses the
-  file; a `##|(text)` block above it is a warning (`notebook-text-block`). A
-  dashboard may still put statements above its tag.
+  tag (import, source, given, query, run) is an error finding, and so is a `# tag`
+  (`notebook-tag-above-artifact`) or a `(markdown)` note
+  (`notebook-markdown-above-artifact`) above it. A dashboard may still put
+  statements above its tag.
 - **Description**: the file's unnamed `"` notes above the artifact tag, for
   both notebooks and dashboards. A dashboard with none above its tag still reads
   the ones below it, as it did before, and the lint asks for them to move above.
   With no `title=`, the description's first non-empty line is the title and the
   rest is the description.
-- **Text blocks.** `##|(text) name` … `|##` is a dashboard text tile. The name
-  is the sole token after `(text)` on the opener, a bare word
-  (`[A-Za-z_][A-Za-z0-9_]*`). Planned for the follow-up that renders text tiles:
-  the reader strips that opener and the body is the tile's markdown. Today the
-  block is left out of the page. `##|"` is always unnamed prose. A `(text)` block with a
-  missing or invalid name is an error in a dashboard and a warning in a
-  notebook, which ignores the block either way. One that no `tiles` entry
-  references is a finding, and a `(text)` block in a notebook is a finding. Written without the
-  space (`##|"name`, `##|(text)name`) Malloy drops the note as `malformed-route`
-  (verified on 0.0.432), and the lint says how to spell it.
+- **Text tiles.** `##|(markdown) name` … `|##` is a dashboard text tile. The name
+  is the sole token after `(markdown)` on the opener, a bare word
+  (`[A-Za-z_][A-Za-z0-9_]*`), and more than that on the opener is an error
+  (`notebook-markdown-opener-text`). Planned for the follow-up that renders text
+  tiles: the reader strips that opener and the body is the tile's markdown. Today
+  the block is left out of the page. A name on a notebook block means nothing and
+  is a warning; an unnamed block on a dashboard, or one that no `tiles` entry
+  references, is a finding. The parentheses are required: `##| markdown` reads
+  its prose as ordinary tags, and `##|markdown` and `##|(markdown)name` (no space)
+  are dropped by Malloy as `malformed-route` (verified on 0.0.432), and the lint
+  says how to spell them. `##"` and `##|"` after the tag and `##|(text) name`
+  tiles, the spellings `(markdown)` replaced, are dropped and each is reported as
+  the error `notebook-old-prose-spelling`.
 - **Kinds.** `kind=dashboard` at model scope is the explicit default for a file
   under `dashboards/`, and a tile entry may carry `kind=query`. `kind=notebook`
   under `dashboards/` is a finding.
@@ -452,10 +465,12 @@ text tiles yet, so the lint says an entry is left out of the page:
 
 **Authoring rules.** Five, and the lint below holds a file to them:
 
-1. The header is `##!` flags, `//` comments and unnamed `"` notes, then
+1. The header is `##!` flags, `//` comments and unnamed `"` notes (the
+   description), then
    `## artifact { kind=notebook … }`. Nothing else goes above the tag.
-2. Prose is `##"` or `##|"` … `|##`, with the closer at the opener's column. No
-   body line starts with `|##`. A `## Heading` line is model tags, not prose;
+2. Prose is `##(markdown)` or `##|(markdown)` … `|##`, with the body on the next
+   line and the closer at the opener's column. No body line starts with `|##`.
+   A `## Heading` line is model tags, not prose;
    the lint flags one whose text starts with a letter and has a second word
    and no `=` or `{`, and does not flag a single word or a line starting with
    a digit.
@@ -469,23 +484,24 @@ text tiles yet, so the lint says an entry is left out of the page:
 4. `given:` uses `NAME :: filter<T> is f''`, bound with `~`, declared before
    first use. This is identical to the dashboard skill, and the compiler, not
    the lint, enforces it.
-5. Trailing prose is `##"`, never `#"`.
+5. Trailing prose is `##(markdown)`, never `#(markdown)` or `#"`.
 
-Rule 5 has a compiler reason: a `#"` belongs to the statement below it, and at
-the end of a file there is none, so Malloy refuses it as
-`orphaned-object-annotation`.
+Rule 5 has a compiler reason: a `#(markdown)` or `#"` belongs to the statement
+below it, and at the end of a file there is none, so Malloy refuses the `#"` as
+`orphaned-object-annotation` and the lint reports the `#(markdown)`.
 
 **What the format guarantees.** The load-time lint, which follows this
 decision, reports each of these with a fix-it: `##| markdown` or `##|markdown`
-("did you mean `##|"`"); a missing `##!` flag, printing the exact line to add;
+("did you mean `##|(markdown)`"); a missing `##!` flag, printing the exact line to add;
 a `|##` body line, and trailing text on a closer; a tag separated from its
-`run:`; an unknown `kind`; a statement or tag above `## artifact`; a `(text)`
-block with a bad name (an error in a dashboard, a warning in a notebook), in a
-notebook, or that no tile references; a multi-word `## ` heading line; a `//`
+`run:`; an unknown `kind`; a statement or tag above `## artifact`; a
+`(markdown)` block with more than a name on its opener, with a name in a notebook,
+unnamed on a dashboard, or that no tile references, and `#(markdown)` with no
+statement to take it; a multi-word `## ` heading line; a `//`
 or `/* */` comment directly above a cell (`notebook-comment-not-shown`); a
 notebook artifact tag with no `kind` (`notebook-kind-missing`); an
 `## artifact { … }` that does not parse; a route glued to its word
-(`##|"name`); and a grid width given two ways.
+(`##|(markdown)name`); and a grid width given two ways.
 
 **What authors lose.** `.malloy` has no VS Code notebook UI the way `.malloynb`
 does. The Console notebook builder and the agent replace it.
@@ -529,22 +545,22 @@ parameter values. Every notebook in the repository opens and writes back
 unchanged, as the dashboard suite already proves for dashboards.
 
 **Decisions this records.** `.malloynb` read-only, never extended (2026-09-13).
-The narrative surface is delivered by the Malloyyo family and not by a
+The narrative surface is a `.malloy` notebook and not a
 `.malloynb` editor; a grid with prose is a dashboard with text tiles, a linear
 document is a notebook, and both stand on the same block. On 2026-09-29 (Kyle):
-the format above, spelled on the existing `"` doc-string route with no grammar
-extension; text tiles as `##|(text) name` blocks referenced by a `kind=text`
-tile entry (agreed with Malloyyo the same day, replacing a one-word `##|" name`
-opener);
-the description as the notes above the artifact tag, for both surfaces; and
-`.malloynb` files converted per file, on demand. The spelling is agreed with
-the Malloyyo project.
+the format above, with no grammar extension; text tiles as `##|(markdown) name`
+blocks referenced by a `kind=text` tile entry; the description as the notes above
+the artifact tag, for both surfaces; and `.malloynb` files converted per file, on
+demand. The prose spelling was revised on review. It was first written on Malloy's
+`"` doc-string route (`##"`, `##|"`, `##|(text)`), and moved to `(markdown)` for two
+reasons: `##` reads as file-level, so prose that belongs to one statement needs a
+`#` spelling of its own, and a comment would never reach the compiled model, where
+the reader and every other consumer of it look.
 [choosing-a-surface.md](choosing-a-surface.md) is
 revised when the reader ships, so that "notebook" there means this one.
 
-**Steps.** (1) Done 2026-09-29: the format is decided on the `"` route and
-agreed with Malloyyo, text tile included; G1, tabs, G3 and G6
-remain for the grammar package proposal (§8). (2) Generalize the editor
+**Steps.** (1) Done 2026-09-29: the format is decided, text tile included; G1,
+tabs, G3 and G6 remain for the grammar package proposal (§8). (2) Generalize the editor
 core and the host flow out of the dashboard builder (no behaviour change; the
 dashboard specs are the guard) — the one step that needs no agreement and can
 start now. (3) The notebook reader and load-time lint on the server, against
@@ -561,8 +577,8 @@ host, one browser spec on the page.
 
 Each step names the extension, who has to agree, and the Publisher work that
 follows. The venue for every grammar item is the shared grammar package with
-Malloyyo. The notebook artifact and `kind=text` go first, on their own; the
-rest go together, since they interact.
+Malloyyo. The notebook artifact and `kind=text` are decided (§7) and need no
+proposal; the rest go together, since they interact.
 
 ### G1 · Positional layout and tile heights
 
@@ -584,20 +600,19 @@ _Extension:_ a markdown block that can sit between statements (the one element
 §7's notebook and a dashboard's text tile both need), `kind=` on a tile entry
 with `text` first (`tiles=[intro { kind=text }, kpis]`), a notebook artifact
 kind whose cells are the file's statements in order, and tabs as a grouping over
-tiles. The block's spelling is decided (2026-09-29): a notebook's prose is the `"`
-doc-string route Malloy already has, and a text tile is a `##|(text) name` …
-`|##` block, a route of its own, that a tile references by name, so neither is
+tiles. The block's spelling is decided (2026-09-29): a notebook's prose is a
+`##(markdown)` or `##|(markdown)` annotation, and a text tile is a named
+`##|(markdown) name` … `|##` block that a tile references by name, so neither is
 a grammar extension. Text tiles are format decided, not rendered yet. `kind=text`
-and the notebook artifact are proposed on their own, ahead of tabs. _Who
-agrees:_ Malloyyo, same venue. _Renderer:_ none for text; a `button` or `image`
+and the notebook artifact are decided (§7) and need no agreement; tabs go with G1.
+_Who agrees:_ Malloyyo, same venue, for tabs. _Renderer:_ none for text; a `button` or `image`
 kind is Publisher UI. _Steps:_ (1) decide the block's spelling (decided
-2026-09-29); (2) propose `kind=text` and the notebook artifact as their own
-issue, and `tab=` with G1; (3) Publisher renders markdown blocks through the
+2026-09-29); (2) propose `tab=` with G1; (3) Publisher renders markdown blocks through the
 same path as the page description, in a grid as a text tile and in a notebook
 as a cell; (4) the dashboard builder gets an "Add text" action and tab
 management, and the notebook builder of §7 follows;
 (5) revise [choosing-a-surface.md](choosing-a-surface.md) so "notebook" means
-the Malloyyo-style one and `.malloynb` is the import.
+the `.malloy` one and `.malloynb` is the import.
 
 ### G3 · Layout on the tile entry, not the view
 
@@ -660,10 +675,9 @@ splice approach no longer needs one.
 
 1. Land PR #1158; keep the round-trip suite green over every dashboard in the
    repository. _Done except the merge._
-2. Propose the notebook artifact and `kind=text` to Malloyyo as their own
-   issue, on the existing `"` route, ahead of the combined grammar proposal.
-   Then open the rest of the grammar conversation with G1, tabs, G3 and G6 as
-   one proposal, with the control-tag names alongside.
+2. Open the grammar conversation with G1, tabs, G3 and G6 as one proposal, with
+   the control-tag names alongside. The notebook artifact and `kind=text` are
+   decided (§7) and do not wait on it.
 3. The control tags and settings that ride on the `Given` schema (§8), now
    that API changes are in scope again — the write path (§5.2) has landed.
 4. The notebook (§7): the format is decided (2026-09-29), and nothing in it

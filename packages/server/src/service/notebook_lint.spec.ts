@@ -28,19 +28,47 @@ describe("notebook lint", () => {
    it.each([
       ["##| markdown", "##| markdown"],
       ["##|markdown", "##|markdown"],
-      ["##|(markdown)", "##|(markdown)"],
-      ["##|(Markdown)", "##|(Markdown)"],
-   ])("suggests the prose opener for %s", (opener, shown) => {
+      ["##| Markdown", "##| Markdown"],
+   ])("suggests the (markdown) opener for the slip %s", (opener, shown) => {
       expect(lint(`${HEADER}${opener}\nhi\n|##\n`)).toEqual([
          {
             line: 2,
             code: "notebook-markdown-opener",
-            message: `Line 2: \`${shown}\` opens a block that is not a prose block, so its body is not a markdown cell. Did you mean \`##|"\`?`,
+            message: `Line 2: \`${shown}\` opens a block that is not on the \`(markdown)\` route, so its body is not a markdown cell. Did you mean \`##|(markdown)\`?`,
          },
       ]);
    });
 
-   it("says text tile, not markdown cell, for the opener on a dashboard", () => {
+   it("does not tell a (markdown) opener to use the old prose spelling", () => {
+      expect(lint(`${HEADER}##|(markdown)\nhi\n|##\n`)).toEqual([]);
+      expect(lint(`${HEADER}##(markdown) hi\n`)).toEqual([]);
+   });
+
+   it("suggests the line form for the slip ##markdown", () => {
+      expect(lint(`${HEADER}##markdown hi\n${SOURCE}`)).toEqual([
+         {
+            line: 2,
+            code: "notebook-markdown-opener",
+            message:
+               "Line 2: `##markdown hi` is not on the `(markdown)` route, so it is not shown as prose. Did you mean `##(markdown)`?",
+         },
+      ]);
+   });
+
+   it.each(["#|markdown", "#| markdown"])(
+      "suggests the attached form for the slip %s",
+      (opener) => {
+         expect(lint(`${HEADER}${SOURCE}${opener}\nhi\n|#\n${RUN}`)).toEqual([
+            {
+               line: 3,
+               code: "notebook-markdown-opener",
+               message: `Line 3: \`${opener}\` opens a block that is not on the \`(markdown)\` route, so its body is not the statement's prose. Did you mean \`#|(markdown)\`?`,
+            },
+         ]);
+      },
+   );
+
+   it("says text tile, not markdown cell, for the slip on a dashboard", () => {
       expect(
          lint(
             `## artifact { tiles=[a] }\n##| markdown\nhi\n|##\n${SOURCE}`,
@@ -51,7 +79,7 @@ describe("notebook lint", () => {
             line: 2,
             code: "notebook-markdown-opener",
             message:
-               'Line 2: `##| markdown` opens a block that is not a prose block, so its body is not a text tile. Did you mean `##|"`?',
+               "Line 2: `##| markdown` opens a block that is not on the `(markdown)` route, so its body is not a text tile. Did you mean `##|(markdown)`?",
          },
       ]);
    });
@@ -63,94 +91,234 @@ describe("notebook lint", () => {
       },
    );
 
-   it.each(['##|" intro', '##|" two words'])(
-      'leaves text on a ##|" opener alone, since it is prose: %s',
-      (opener) => {
-         expect(lint(`${HEADER}${opener}\nhi\n|##\n`)).toEqual([]);
-      },
-   );
-
-   it("says a (text) block in a notebook is a dashboard text tile", () => {
-      expect(lint(`${HEADER}##|(text) intro\nhi\n|##\n`)).toEqual([
+   it("errors on text after the opener of more than one bare word, and says to move it into the body", () => {
+      expect(lint(`${HEADER}##|(markdown) two words\nhi\n|##\n`)).toEqual([
          {
             line: 2,
-            code: "notebook-text-block",
+            code: "notebook-markdown-opener-text",
             message:
-               'Line 2: a `(text)` block is a dashboard text tile, and a notebook does not show it. Fix: write `##|"` to make it a markdown cell, or move the file to dashboards/.',
+               "Line 2: `two words` follows `##|(markdown)` on its opener line, where only one bare word may go (a name), so the block would show it as its first line. Fix: move it into the body, on the line below the opener.",
          },
       ]);
-   });
-
-   it("errors on a (text) block with no name", () => {
       expect(
-         lint(
-            `## artifact { tiles=[a] }\n##|(text)\nhi\n|##\n${SOURCE}`,
-            "dashboards/d.malloy",
-         ),
-      ).toEqual([
+         lintNotebookText(
+            "notebooks/n.malloy",
+            `${HEADER}##|(markdown) two words\nhi\n|##\n`,
+         ).map((f) => f.severity),
+      ).toEqual(["error"]);
+   });
+
+   it("warns that a name on a notebook's (markdown) block is not shown", () => {
+      expect(lint(`${HEADER}##|(markdown) intro\nhi\n|##\n`)).toEqual([
          {
             line: 2,
-            code: "notebook-text-block-name",
+            code: "notebook-markdown-block-named",
             message:
-               "Line 2: a `(text)` block needs a name, the tile's entry in `tiles=[…]`. Fix: write `##|(text) name`, where the name is a bare word of letters, digits and underscores.",
+               "Line 2: the name `intro` on this `(markdown)` block means nothing in a notebook, which shows every block as a cell, and it is not shown. Fix: remove the name.",
          },
       ]);
    });
 
-   it.each(["two words", "9lives", "has-dash", "in.tile"])(
-      "errors on the invalid (text) block name %j",
-      (name) => {
-         expect(
-            lint(
-               `## artifact { tiles=[a] }\n##|(text) ${name}\nhi\n|##\n${SOURCE}`,
-               "dashboards/d.malloy",
-            ),
-         ).toEqual([
+   it("errors on a (markdown) annotation above the artifact tag, block or line", () => {
+      const found = lintNotebookText(
+         "notebooks/n.malloy",
+         `##(markdown) up here\n${HEADER}`,
+      );
+      expect(found.map((f) => [f.code, f.severity, f.line])).toEqual([
+         ["notebook-markdown-above-artifact", "error", 1],
+      ]);
+      expect(
+         lint(`##|(markdown)\nup here\n|##\n${HEADER}`).map((f) => f.code),
+      ).toEqual(["notebook-markdown-above-artifact"]);
+   });
+
+   it("errors on (markdown) attached to a statement above the artifact tag", () => {
+      const found = lintNotebookText(
+         "notebooks/n.malloy",
+         `#(markdown) up here\n${SOURCE}${HEADER}`,
+      );
+      expect(found.map((f) => [f.code, f.severity, f.line])).toEqual([
+         ["notebook-markdown-above-artifact", "error", 1],
+         ["notebook-statement-above-artifact", "error", 2],
+      ]);
+   });
+
+   // Flip together with OLD_PROSE_SPELLINGS in notebook.ts: these describe the spellings as dropped.
+   describe("the old prose spellings after the tag", () => {
+      const severities = (text: string, modelPath: string) =>
+         lintNotebookText(modelPath, text).map((f) => [f.code, f.severity]);
+
+      it("errors on a ##\" note below a notebook's tag, and says to use ##(markdown)", () => {
+         expect(lint(`${HEADER}##" a cell\n${SOURCE}`)).toEqual([
             {
                line: 2,
-               code: "notebook-text-block-name",
-               message: `Line 2: \`${name}\` is not a valid name for a \`(text)\` block, which takes exactly one bare word. Fix: write \`##|(text) name\`, where the name is letters, digits and underscores and does not start with a digit.`,
+               code: "notebook-old-prose-spelling",
+               message:
+                  'Line 2: `##" a cell` is a `"` note below the `## artifact` tag, which a notebook drops, so its prose is not shown. Fix: use `##(markdown)` in place of `##"`.',
             },
          ]);
-      },
-   );
+         expect(
+            severities(`${HEADER}##" a cell\n${SOURCE}`, "notebooks/n.malloy"),
+         ).toEqual([["notebook-old-prose-spelling", "error"]]);
+      });
+
+      it("errors on a ##|\" block below a notebook's tag, and says to use ##|(markdown)", () => {
+         expect(lint(`${HEADER}##|" intro\nhi\n|##\n${SOURCE}`)).toEqual([
+            {
+               line: 2,
+               code: "notebook-old-prose-spelling",
+               message:
+                  'Line 2: `##|" intro` is a `"` note below the `## artifact` tag, which a notebook drops, so its prose is not shown. Fix: use `##|(markdown)` in place of `##|"`.',
+            },
+         ]);
+      });
+
+      it("errors on a (text) block in a notebook, and says to use ##|(markdown) name", () => {
+         expect(lint(`${HEADER}##|(text) intro\nhi\n|##\n`)).toEqual([
+            {
+               line: 2,
+               code: "notebook-old-prose-spelling",
+               message:
+                  "Line 2: `##|(text) intro` is on the `(text)` route, which Publisher does not read, so it is dropped. Fix: use `##|(markdown) name`.",
+            },
+         ]);
+         expect(
+            severities(
+               `${HEADER}##|(text) intro\nhi\n|##\n`,
+               "notebooks/n.malloy",
+            ),
+         ).toEqual([["notebook-old-prose-spelling", "error"]]);
+      });
+
+      it("errors on a (text) tile block in a dashboard, and on a ##(text) line", () => {
+         expect(
+            severities(
+               `## artifact { tiles=[intro { kind=text }] }\n##|(text) intro\nhi\n|##\n${SOURCE}`,
+               "dashboards/d.malloy",
+            ),
+         ).toEqual([["notebook-old-prose-spelling", "error"]]);
+         expect(lint(`${HEADER}##(text) a line\n${SOURCE}`)[0]).toMatchObject({
+            code: "notebook-old-prose-spelling",
+            message:
+               "Line 2: `##(text) a line` is on the `(text)` route, which Publisher does not read, so it is dropped. Fix: use `##(markdown)`.",
+         });
+      });
+   });
 
    it.each([
       ['##|"intro', '##|"intro'],
-      ["##|(text)intro", "##|(text)intro"],
+      ["##|(markdown)intro", "##|(markdown)intro"],
    ])("says how to space %s", (opener, shown) => {
       expect(lint(`${HEADER}${opener}\nhi\n|##\n`)).toEqual([
          {
             line: 2,
             code: "notebook-block-opener-spacing",
-            message: `Line 2: \`${shown}\` has no space after the route, so Malloy drops the note. Did you mean \`##|(text) name\` or \`##|"\`?`,
+            message: `Line 2: \`${shown}\` has no space after the route, so Malloy drops the note. Fix: put a space after the route, as in \`##|(markdown)\` for a cell or \`##|"\` for a description.`,
          },
       ]);
    });
 
-   it("leaves a named (text) block alone in a dashboard that lists it as a tile", () => {
+   it("leaves a named (markdown) block alone in a dashboard that lists it as a tile", () => {
       expect(
          lint(
-            `## artifact { tiles=[intro { kind=text }] }\n##|(text) intro\nhi\n|##\n${SOURCE}`,
+            `## artifact { tiles=[intro { kind=text }] }\n##|(markdown) intro\nhi\n|##\n${SOURCE}`,
             "dashboards/d.malloy",
          ),
       ).toEqual([]);
    });
 
-   it("warns about a (text) block no tiles entry names", () => {
+   it("warns about a (markdown) block no tiles entry names", () => {
       expect(
          lint(
-            `## artifact { tiles=["a -> v", other { kind=text }] }\n${SOURCE}##|(text) intro\nhi\n|##\n`,
+            `## artifact { tiles=["a -> v", other { kind=text }] }\n${SOURCE}##|(markdown) intro\nhi\n|##\n`,
             "dashboards/d.malloy",
          ),
       ).toEqual([
          {
             line: 3,
-            code: "notebook-text-block-unreferenced",
+            code: "notebook-markdown-block-unreferenced",
             message:
-               "Line 3: the `(text)` block `intro` is not named by any entry in `tiles=[…]`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.",
+               "Line 3: the `(markdown)` block `intro` is not named by any entry in `tiles=[…]`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.",
          },
       ]);
+   });
+
+   it("warns about an unnamed floating (markdown) block in a dashboard", () => {
+      expect(
+         lint(
+            `## artifact { tiles=["a -> v"] }\n${SOURCE}##|(markdown)\nhi\n|##\n`,
+            "dashboards/d.malloy",
+         ),
+      ).toEqual([
+         {
+            line: 3,
+            code: "notebook-markdown-block-unnamed",
+            message:
+               "Line 3: an unnamed `(markdown)` block is not shown on a dashboard, whose text tiles are named blocks listed in `tiles=[…]` (text tiles do not render yet). Fix: write `##|(markdown) name` and list `name` in `tiles`, or delete the block.",
+         },
+      ]);
+   });
+
+   it("reads #(markdown) above a run: or a source: as clean, and errors above an import, an export or nothing", () => {
+      expect(lint(`${HEADER}#(markdown) about it\n${SOURCE}`)).toEqual([]);
+      expect(
+         lint(`${HEADER}${SOURCE}# bar_chart\n#|(markdown)\nabout\n|#\n${RUN}`),
+      ).toEqual([]);
+      const nowhere = (statement: string) =>
+         lintNotebookText(
+            "notebooks/n.malloy",
+            `${HEADER}#(markdown) about it\n${statement}`,
+         ).map((f) => [f.line, f.code, f.severity]);
+      expect(nowhere('import "x.malloy"\n')).toEqual([
+         [2, "notebook-markdown-attached-nowhere", "error"],
+      ]);
+      expect(nowhere("export { a }\n")).toEqual([
+         [2, "notebook-markdown-attached-nowhere", "error"],
+      ]);
+      expect(nowhere("")).toEqual([
+         [2, "notebook-markdown-attached-nowhere", "error"],
+      ]);
+   });
+
+   it("says what a dangling #(markdown) needs, with the compile error beside it", () => {
+      expect(lint(`${HEADER}${SOURCE}#(markdown) trailing\n`)).toEqual([
+         {
+            line: 3,
+            code: "notebook-markdown-attached-nowhere",
+            message:
+               "Line 3: `#(markdown) trailing` annotates no statement, since an import and an export take no annotations and nothing else follows it. Fix: use `##|(markdown)` for prose that stands on its own, or move it directly above the statement it describes.",
+         },
+      ]);
+   });
+
+   it("checks an attached #|(markdown) block's closer and body like a floating one", () => {
+      expect(
+         lint(`${HEADER}${SOURCE}#|(markdown)\nhi\n${RUN}`).filter(
+            (f) => f.code === "notebook-unterminated-block",
+         ),
+      ).toEqual([
+         {
+            line: 3,
+            code: "notebook-unterminated-block",
+            message:
+               "Line 3: this block is never closed, so it runs to the end of the file and everything after the opener is prose, including the run: on line 5, which is prose here and never runs. Fix: add a `|#` line where the prose ends.",
+         },
+      ]);
+      expect(
+         lint(`${HEADER}${SOURCE}#|(markdown)\nhi\n|# extra\n${RUN}`).map(
+            (f) => [f.code, f.message],
+         ),
+      ).toEqual([
+         [
+            "notebook-text-after-closer",
+            "Line 5: the text after the closing `|#` (`extra`) is dropped, not shown. Fix: put it inside the block.",
+         ],
+      ]);
+      expect(
+         lint(
+            `${HEADER}${SOURCE}#|(markdown)\nhi\n#|(markdown)\nsecond\n|#\n${RUN}`,
+         ).map((f) => f.code),
+      ).toEqual(["notebook-block-swallows-run"]);
    });
 
    it("warns when a dashboard's description sits only below its artifact tag", () => {
@@ -188,7 +356,7 @@ describe("notebook lint", () => {
    });
 
    it("does not flag prose below the tag of a notebook, where it is a cell", () => {
-      expect(lint(`${HEADER}##" a cell\n${SOURCE}`)).toEqual([]);
+      expect(lint(`${HEADER}##(markdown) a cell\n${SOURCE}`)).toEqual([]);
    });
 
    it("reads a text tile entry with kind=query, and a dashboard with kind=dashboard, as clean", () => {
@@ -211,7 +379,7 @@ describe("notebook lint", () => {
             line: 2,
             code: "notebook-heading-line",
             message:
-               'Line 2: `## How to read this page` is read as model tags, not shown as prose. Did you mean `##"`?',
+               "Line 2: `## How to read this page` is read as model tags, not shown as prose. Did you mean `##(markdown)`?",
          },
       ]);
       expect(
@@ -269,7 +437,7 @@ describe("notebook lint", () => {
 
    it("names the line of a |## that closes a block early", () => {
       expect(
-         lint(`${HEADER}##|"\nhi\n|##\nmore prose here\n\n${SOURCE}`),
+         lint(`${HEADER}##|(markdown)\nhi\n|##\nmore prose here\n\n${SOURCE}`),
       ).toEqual([
          {
             line: 4,
@@ -281,18 +449,20 @@ describe("notebook lint", () => {
    });
 
    it("names the line of text after a closer", () => {
-      expect(lint(`${HEADER}##|"\nhi\n|## extra text\n\n${SOURCE}`)).toEqual([
+      expect(
+         lint(`${HEADER}##|(markdown)\nhi\n|## extra text\n\n${SOURCE}`),
+      ).toEqual([
          {
             line: 4,
             code: "notebook-text-after-closer",
             message:
-               'Line 4: the text after the closing `|##` (`extra text`) is dropped, not shown. Fix: put it on its own `##"` line, or inside the block.',
+               "Line 4: the text after the closing `|##` (`extra text`) is dropped, not shown. Fix: put it on its own `##(markdown)` line, or inside the block.",
          },
       ]);
    });
 
    it("flags an unterminated block at its opener and says it runs to the end", () => {
-      expect(lint(`${HEADER}##|"\nhi\n${SOURCE}${RUN}`)).toEqual([
+      expect(lint(`${HEADER}##|(markdown)\nhi\n${SOURCE}${RUN}`)).toEqual([
          {
             line: 2,
             code: "notebook-unterminated-block",
@@ -303,7 +473,9 @@ describe("notebook lint", () => {
    });
 
    it("says where a block that swallows another opener actually ends", () => {
-      expect(lint(`${HEADER}##|"\nhi\n##|"\nsecond\n|##\n`)).toEqual([
+      expect(
+         lint(`${HEADER}##|(markdown)\nhi\n##|(markdown)\nsecond\n|##\n`),
+      ).toEqual([
          {
             line: 2,
             code: "notebook-block-swallows-run",
@@ -316,25 +488,25 @@ describe("notebook lint", () => {
    it("leaves a fenced example or an indented run: inside prose alone", () => {
       const body =
          "Try it:\n```malloy\nrun: a -> { select: x }\n```\n  run: a -> { select: x }\n";
-      expect(lint(`${HEADER}##|"\n${body}|##\n`)).toEqual([]);
+      expect(lint(`${HEADER}##|(markdown)\n${body}|##\n`)).toEqual([]);
    });
 
    it("leaves an indented block example inside prose alone", () => {
-      const body = 'See:\n    ##|"\n    example\n    |##\nmore\n';
-      expect(lint(`${HEADER}##|"\n${body}|##\n`)).toEqual([]);
+      const body = "See:\n    ##|(markdown)\n    example\n    |##\nmore\n";
+      expect(lint(`${HEADER}##|(markdown)\n${body}|##\n`)).toEqual([]);
    });
 
    it("says render tags sit directly above the run they annotate", () => {
-      expect(lint(`${HEADER}${SOURCE}# bar_chart\n##" a note\n${RUN}`)).toEqual(
-         [
-            {
-               line: 3,
-               code: "notebook-orphaned-tag",
-               message:
-                  'Line 3: this # tag is followed by a note, not by a run:, so it annotates nothing. Render tags sit directly above their run:. Fix: move the tag, and any #" caption, directly above the run: on line 5.',
-            },
-         ],
-      );
+      expect(
+         lint(`${HEADER}${SOURCE}# bar_chart\n##(markdown) a note\n${RUN}`),
+      ).toEqual([
+         {
+            line: 3,
+            code: "notebook-orphaned-tag",
+            message:
+               'Line 3: this # tag is followed by a note, not by a run:, so it annotates nothing. Render tags sit directly above their run:. Fix: move the tag, and any #" caption, directly above the run: on line 5.',
+         },
+      ]);
    });
 
    it("names the end of the file for a tag with nothing after it", () => {
@@ -349,7 +521,9 @@ describe("notebook lint", () => {
    });
 
    it("names the token that follows a tag, not the end of the file, when text follows it", () => {
-      const found = lint(`${HEADER}##|"\nhi\n|##\n# Heading\nmore words\n`);
+      const found = lint(
+         `${HEADER}##|(markdown)\nhi\n|##\n# Heading\nmore words\n`,
+      );
       const orphan = found.find((f) => f.code === "notebook-orphaned-tag");
       expect(orphan?.message).toContain("is followed by `more`");
    });
@@ -593,7 +767,7 @@ describe("notebook lint", () => {
             line: 4,
             code: "notebook-comment-not-shown",
             message:
-               'Line 4: this comment sits directly above a cell but is not part of it, so the notebook does not show it. Fix: write it as a `##"` prose note, or move it inside the statement it describes.',
+               "Line 4: this comment sits directly above a cell but is not part of it, so the notebook does not show it. Fix: write it as a `##(markdown)` prose note, or move it inside the statement it describes.",
          },
       ]);
    });
@@ -611,12 +785,14 @@ describe("notebook lint", () => {
    });
 
    it("keeps a comment inside a statement, above the artifact tag, or in a block quiet", () => {
-      const text = `// header comment\n${HEADER}${SOURCE}# bar_chart\n// between tag and run\n${RUN}##|"\n// prose that looks like a comment\n|##\n`;
+      const text = `// header comment\n${HEADER}${SOURCE}# bar_chart\n// between tag and run\n${RUN}##|(markdown)\n// prose that looks like a comment\n|##\n`;
       expect(lint(text)).toEqual([]);
    });
 
    it("gives a file that does not compile the fix-it for its compile error", () => {
-      const found = lint(`${HEADER}given: G :: string is 'a'\n##|"\nhi\n`);
+      const found = lint(
+         `${HEADER}given: G :: string is 'a'\n##|(markdown)\nhi\n`,
+      );
       expect(found.map((f) => f.code)).toEqual([
          "notebook-givens-not-enabled",
          "notebook-unterminated-block",
@@ -698,14 +874,18 @@ describe("notebook lint", () => {
             )
                continue;
             const full = path.join(dir, entry.name);
+            // Forward slashes so the match and the expected paths hold on Windows too.
+            const posix = full.split(path.sep).join("/");
             if (entry.isDirectory()) walk(full, base);
-            else if (/\/dashboards\/[^/]+\.malloy$/.test(full)) {
-               const rel = full.slice(full.lastIndexOf("/dashboards/") + 1);
+            else if (/\/dashboards\/[^/]+\.malloy$/.test(posix)) {
+               const rel = posix.slice(posix.lastIndexOf("/dashboards/") + 1);
                for (const f of lintNotebookText(
                   rel,
                   fs.readFileSync(full, "utf8"),
                ))
-                  found.push(`${path.relative(base, full)} ${f.code}`);
+                  found.push(
+                     `${path.relative(base, full).split(path.sep).join("/")} ${f.code}`,
+                  );
             }
          }
       };
@@ -758,17 +938,20 @@ describe("notebook lint", () => {
       expect(found.map((f) => f.code)).toEqual(["notebook-columns-conflict"]);
    });
 
-   it("makes a bad (text) name a warn in a notebook and an error in a dashboard", () => {
+   it("errors on opener text of more than one word in a notebook and a dashboard alike", () => {
       const severity = (text: string, modelPath: string) =>
          lintNotebookText(modelPath, text)
-            .filter((f) => f.code === "notebook-text-block-name")
+            .filter((f) => f.code === "notebook-markdown-opener-text")
             .map((f) => f.severity);
       expect(
-         severity(`${HEADER}##|(text)\nhi\n|##\n`, "notebooks/n.malloy"),
-      ).toEqual(["warn"]);
+         severity(
+            `${HEADER}##|(markdown) a b\nhi\n|##\n`,
+            "notebooks/n.malloy",
+         ),
+      ).toEqual(["error"]);
       expect(
          severity(
-            `## artifact { tiles=[a] }\n##|(text)\nhi\n|##\n${SOURCE}`,
+            `## artifact { tiles=[a] }\n##|(markdown) a b\nhi\n|##\n${SOURCE}`,
             "dashboards/d.malloy",
          ),
       ).toEqual(["error"]);

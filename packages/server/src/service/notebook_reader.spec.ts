@@ -17,7 +17,7 @@ import {
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
-   readTextBlocks,
+   readMarkdownBlocks,
    type NotebookCellSpan,
    type NotebookReadResult,
 } from "./notebook";
@@ -48,7 +48,16 @@ const query = (
    endLine: number,
    text: string,
    queryIndex: number,
-) => ({ kind: "query", type: "code", text, startLine, endLine, queryIndex });
+   markdown?: string,
+) => ({
+   kind: "query",
+   type: "code",
+   text,
+   ...(markdown !== undefined && { markdown }),
+   startLine,
+   endLine,
+   queryIndex,
+});
 
 /** Every fixture notebook's cells, written out literally so a misread fails with a readable diff. */
 const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
@@ -148,6 +157,38 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       annotations: [
          "##! experimental.givens\n",
          '## artifact { kind=notebook title="Tagged runs" }\n',
+      ],
+   },
+   "notebooks/attached_prose.malloy": {
+      cells: [
+         def(3, 3, IMPORT),
+         {
+            ...def(
+               5,
+               6,
+               "#(markdown) The region filter.\ngiven: REGION :: filter<string> is f''",
+            ),
+            markdown: "The region filter.",
+         },
+         {
+            ...def(
+               8,
+               9,
+               "#(markdown) Orders in the US only.\nsource: us_orders is orders extend { where: region = 'US' }",
+            ),
+            markdown: "Orders in the US only.",
+         },
+         query(
+            11,
+            17,
+            '# bar_chart\n#|(markdown)\n### Orders by region\nExcludes refunds.\n|#\n# label="Orders"\nrun: us_orders -> { aggregate: order_count }',
+            0,
+            "### Orders by region\nExcludes refunds.",
+         ),
+      ],
+      annotations: [
+         "##! experimental.givens\n",
+         '## artifact { kind=notebook title="Attached prose" }\n',
       ],
    },
    "notebooks/named_runs.malloy": {
@@ -295,53 +336,58 @@ describe("readNotebookCells over the fixture notebooks", () => {
 
 describe("readNotebookCells on inline text", () => {
    it.each([
-      ['##|"intro\nbody\n|##\n', '##|"intro\nbody'],
-      ['##"word\n', '##"word\n'],
+      ["##|(markdown)intro\nbody\n|##\n", "##|(markdown)intro\nbody"],
+      ["##(markdown)word\n", "##(markdown)word\n"],
    ])("does not serve %j as prose, since Malloy drops it", (note, kept) => {
       const result = readText(`## artifact {}\n${note}run: a -> b\n`, 1);
       expect(result.cells.map((cell) => cell.kind)).toEqual(["query"]);
       expect(result.annotations).toContain(kept);
    });
 
-   it('adds no whitespace-only first line for a ##|" opener with trailing spaces', () => {
+   it("adds no whitespace-only first line for a ##|(markdown) opener with trailing spaces", () => {
       const result = readText(
-         '## artifact {}\n##|"   \nbody\n|##\nrun: a -> b\n',
+         "## artifact {}\n##|(markdown)   \nbody\n|##\nrun: a -> b\n",
          1,
       );
       expect(result.cells[0]).toEqual(md(2, 4, "body") as NotebookCellSpan);
    });
 
-   it('never strips or names the first line of a ##|" block, whatever it holds', () => {
-      const onOpener = readText(
-         '## artifact {}\n##|" intro\nbody\n|##\nrun: a -> b\n',
+   it("strips a lone bare word after the opener as the block's name, and keeps any other opener text as its first line", () => {
+      const named = readText(
+         "## artifact {}\n##|(markdown) intro\nbody\n|##\nrun: a -> b\n",
          1,
       );
-      expect(onOpener.cells[0]).toEqual(
-         md(2, 4, "intro\nbody") as NotebookCellSpan,
+      expect(named.cells[0]).toEqual(md(2, 4, "body") as NotebookCellSpan);
+      const text = readText(
+         "## artifact {}\n##|(markdown) two words\nbody\n|##\nrun: a -> b\n",
+         1,
+      );
+      expect(text.cells[0]).toEqual(
+         md(2, 4, "two words\nbody") as NotebookCellSpan,
       );
       const below = readText(
-         '## artifact {}\n##|"\nintro\nbody\n|##\nrun: a -> b\n',
+         "## artifact {}\n##|(markdown)\n# intro\nbody\n|##\nrun: a -> b\n",
          1,
       );
       expect(below.cells[0]).toEqual(
-         md(2, 5, "intro\nbody") as NotebookCellSpan,
+         md(2, 5, "# intro\nbody") as NotebookCellSpan,
       );
    });
 
-   it('joins ##" lines that touch into one cell, and splits at a blank line, a comment or a block', () => {
+   it("joins ##(markdown) lines that touch into one cell, and splits at a blank line, a comment or a block", () => {
       const result = readText(
          [
             "## artifact {}",
-            '##" one',
-            '##" two',
+            "##(markdown) one",
+            "##(markdown) two",
             "",
-            '##" three',
+            "##(markdown) three",
             "// a comment",
-            '##" four',
-            '##|"',
+            "##(markdown) four",
+            "##|(markdown)",
             "block",
             "|##",
-            '##" five',
+            "##(markdown) five",
             "run: a -> b",
             "",
          ].join("\n"),
@@ -359,52 +405,192 @@ describe("readNotebookCells on inline text", () => {
       ]);
    });
 
-   it("leaves a (text) block out of a notebook's cells, as a note that is not prose", () => {
+   it("reads a floating block and a floating line at the end of the file", () => {
       const result = readText(
-         "## artifact {}\n##|(text) intro\nbody\n|##\nrun: a -> b\n",
+         "## artifact {}\nrun: a -> b\n##|(markdown)\nlast block\n|##\n##(markdown) last line\n",
          1,
       );
-      expect(result.cells.map((cell) => cell.kind)).toEqual(["query"]);
-      expect(result.annotations).toContain("##|(text) intro\nbody");
+      expect(result.cells.map((cell) => [cell.kind, cell.text])).toEqual([
+         ["query", "run: a -> b"],
+         ["markdown", "last block"],
+         ["markdown", "last line"],
+      ]);
+      expect(result.annotations).toEqual(["## artifact {}\n"]);
    });
 
-   it("reads a (text) block's name and the lines it spans", () => {
+   describe("attached (markdown) prose", () => {
+      it("reads a block above a run: with render tags above and below it, and keeps text the exact slice", () => {
+         const slice =
+            '# bar_chart\n#|(markdown)\n### Revenue by month\nExcludes refunds.\n|#\n# label="x"\nrun: a -> b';
+         const result = readText(`## artifact {}\n${slice}\n`, 1);
+         expect(result.error).toBeUndefined();
+         expect(result.cells).toEqual([
+            {
+               kind: "query",
+               type: "code",
+               text: slice,
+               markdown: "### Revenue by month\nExcludes refunds.",
+               startLine: 2,
+               endLine: 8,
+               queryIndex: 0,
+            },
+         ]);
+         expect(result.annotations).toEqual(["## artifact {}\n"]);
+      });
+
+      it("reads #(markdown) lines, joining adjacent lines with a newline and blocks with a blank line", () => {
+         const result = readText(
+            [
+               "## artifact {}",
+               "#(markdown) one",
+               "#(markdown) two",
+               "# bar_chart",
+               "#(markdown) three",
+               "#|(markdown)",
+               "four",
+               "|#",
+               "run: a -> b",
+               "",
+            ].join("\n"),
+            1,
+         );
+         expect(result.cells[0].markdown).toBe("one\ntwo\n\nthree\n\nfour");
+      });
+
+      it("normalizes a CRLF file's prose to LF and leaves code cells byte-exact", () => {
+         const result = readText(
+            "## artifact {}\r\n#|(markdown)\r\nfirst\r\nsecond\r\n|#\r\nrun: a -> b\r\n",
+            1,
+         );
+         expect(result.cells[0].markdown).toBe("first\nsecond");
+         expect(result.cells[0].text).toBe(
+            "#|(markdown)\r\nfirst\r\nsecond\r\n|#\r\nrun: a -> b",
+         );
+      });
+
+      it("reads a given: and a source: with their own prose", () => {
+         const result = readText(
+            [
+               "##! experimental.givens",
+               "## artifact {}",
+               "#(markdown) The region filter.",
+               "given: REGION :: filter<string> is f''",
+               "#(markdown) Orders, US only.",
+               "source: us is a extend { where: region = 'US' }",
+               "",
+            ].join("\n"),
+            0,
+         );
+         expect(result.error).toBeUndefined();
+         expect(result.cells.map((cell) => [cell.kind, cell.markdown])).toEqual(
+            [
+               ["definition", "The region filter."],
+               ["definition", "Orders, US only."],
+            ],
+         );
+      });
+
+      it("leaves markdown off a cell that has none", () => {
+         const result = readText(
+            "## artifact {}\n# bar_chart\nrun: a -> b\n",
+            1,
+         );
+         expect("markdown" in result.cells[0]).toBe(false);
+      });
+
+      it('does not read a #" caption as prose', () => {
+         const result = readText(
+            '## artifact {}\n#" a caption\n#(markdown) prose\nrun: a -> b\n',
+            1,
+         );
+         expect(result.cells[0].markdown).toBe("prose");
+      });
+
+      it.each([
+         ["an import", 'import "x.malloy"'],
+         ["an export", "export { a }"],
+      ])(
+         "refuses #(markdown) above %s, naming ##|(markdown)",
+         (_what, stmt) => {
+            const result = readText(
+               `## artifact {}\n#(markdown) prose\n${stmt}\nrun: a -> b\n`,
+               1,
+            );
+            expect(result.cells).toEqual([]);
+            expect(result.error?.line).toBe(2);
+            expect(result.error?.message).toContain("`##|(markdown)`");
+         },
+      );
+
+      it("refuses a dangling #(markdown) with nothing below it, naming ##|(markdown)", () => {
+         const result = readText(
+            "## artifact {}\nrun: a -> b\n#(markdown) trailing\n",
+            1,
+         );
+         expect(result.cells).toEqual([]);
+         expect(result.error?.line).toBe(3);
+         expect(result.error?.message).toContain("`##|(markdown)`");
+      });
+   });
+
+   // Flip together with OLD_PROSE_SPELLINGS in notebook.ts: these expectations describe "dropped".
+   describe('the old prose spellings after the tag (`"` and `(text)`)', () => {
+      it.each([
+         ['##" one line\n'],
+         ['##|"\nbody\n|##\n'],
+         ["##(text) one line\n"],
+         ["##|(text) name\nbody\n|##\n"],
+      ])("does not read %j as a markdown cell or list it as a note", (note) => {
+         const result = readText(`## artifact {}\n${note}run: a -> b\n`, 1);
+         expect(result.cells.map((cell) => cell.kind)).toEqual(["query"]);
+         expect(result.annotations).toEqual(["## artifact {}\n"]);
+      });
+
+      it("reads a dashboard tile block written (text) as no block at all", () => {
+         const text = "##|(text) intro\nbody\n|##\n";
+         const parse = parseNotebookText(text);
+         if (isNotebookReaderError(parse)) throw new Error(parse.message);
+         expect(readMarkdownBlocks(parse, text)).toEqual([]);
+      });
+   });
+
+   it("reads a (markdown) tile block's name and the lines it spans", () => {
       const text =
-         '##" d\n## artifact { tiles=[intro] }\n##|(text) intro\n## Heading\nBody\n|##\n##|(text) _b2\nMore\n|##\n';
+         '##" d\n## artifact { tiles=[intro] }\n##|(markdown) intro\n## Heading\nBody\n|##\n##|(markdown) _b2\nMore\n|##\n';
       const parse = parseNotebookText(text);
       if (isNotebookReaderError(parse)) throw new Error(parse.message);
-      expect(readTextBlocks(parse, text)).toEqual([
+      expect(readMarkdownBlocks(parse, text)).toEqual([
          { name: "intro", line: 3, endLine: 6 },
          { name: "_b2", line: 7, endLine: 9 },
       ]);
    });
 
    it.each([
-      ["##|(text)", undefined],
-      ["##|(text)   ", undefined],
-      ["##|(text) two words", undefined],
-      ["##|(text) 9lives", undefined],
-      ["##|(text) has-dash", undefined],
-      ["##|(text) ok_1", "ok_1"],
+      ["##|(markdown)", undefined],
+      ["##|(markdown)   ", undefined],
+      ["##|(markdown) two words", undefined],
+      ["##|(markdown) 9lives", undefined],
+      ["##|(markdown) has-dash", undefined],
+      ["##|(markdown) ok_1", "ok_1"],
    ])("reads the name of %j as %j", (opener, name) => {
       const text = `${opener}\nbody\n|##\n`;
       const parse = parseNotebookText(text);
       if (isNotebookReaderError(parse)) throw new Error(parse.message);
-      expect(readTextBlocks(parse, text).map((block) => block.name)).toEqual([
-         name,
-      ]);
+      expect(
+         readMarkdownBlocks(parse, text).map((block) => block.name),
+      ).toEqual([name]);
    });
 
-   it('does not read ##|" or ##|(filters) blocks as text blocks', () => {
+   it('does not read ##|" or ##|(filters) blocks as markdown blocks', () => {
       const text = '##|"\nprose\n|##\n##|(filters)\n["a"]\n|##\n';
       const parse = parseNotebookText(text);
       if (isNotebookReaderError(parse)) throw new Error(parse.message);
-      expect(readTextBlocks(parse, text)).toEqual([]);
+      expect(readMarkdownBlocks(parse, text)).toEqual([]);
    });
 
    it("gives a tag block after the artifact tag Malloy's own note text, which MOTLY can read", () => {
       const text =
-         '## artifact {}\n##|\nautorun=false\n|##\n##" prose\nrun: a -> b\n';
+         "## artifact {}\n##|\nautorun=false\n|##\n##(markdown) prose\nrun: a -> b\n";
       const result = readText(text, 1);
       expect(result.annotations).toEqual([
          "## artifact {}\n",
@@ -452,7 +638,7 @@ describe("readNotebookCells on inline text", () => {
 
    it("keeps an emoji-bearing line whole, slicing by code point", () => {
       const result = readText(
-         '## artifact {}\n##" Sales 📈 up\nrun: a -> b\n',
+         "## artifact {}\n##(markdown) Sales 📈 up\nrun: a -> b\n",
          1,
       );
       expect(result.cells[0]).toEqual(

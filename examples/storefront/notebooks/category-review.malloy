@@ -9,7 +9,7 @@
 ## artifact { kind=notebook title="Category review" }
 import { order_items, products } from "../storefront.malloy"
 
-##|"
+##|(markdown)
 # Category review
 
 Pick a **Category** in the controls above and every chart below re-runs for it.
@@ -20,21 +20,21 @@ Leave the control empty to read the whole catalog.
 # label="Category" control=select suggest { source=products dimension=category }
 given: CATEGORY :: filter<string> is f''
 
-##" The monthly trend says which way revenue is moving.
+##(markdown) The monthly trend says which way revenue is moving.
 
 #" Revenue by month for the selected category
 # line_chart
 # label="Revenue by month"
 run: order_items -> sales_by_month + { where: category ~ $CATEGORY }
 
-##" The brand ranking says who is behind those numbers.
+##(markdown) The brand ranking says who is behind those numbers.
 
 #" The eight brands with the most revenue in the selected category
 # bar_chart
 # label="Top brands"
 run: order_items -> top_brands + { where: category ~ $CATEGORY }
 
-##" Last, the best-selling products, defined once as a named query and then run.
+##(markdown) Last, the best-selling products, defined once as a named query and then run.
 
 query: top_products_in_category is order_items -> top_products + { where: category ~ $CATEGORY }
 

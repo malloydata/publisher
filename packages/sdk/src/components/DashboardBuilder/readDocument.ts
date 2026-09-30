@@ -80,6 +80,8 @@ export interface Block {
     * needs the numbers to patch a tag in place; the reader only needs the text.
     */
    tags: Array<{ line: number; text: string }>;
+   /** The `(markdown)` annotation lines in the block, which are not tags but leave with the declaration they describe. */
+   prose: number[];
 }
 
 /**
@@ -105,7 +107,12 @@ export function blockAbove(
 ): Block {
    const start = parsed.blockStart(declLine);
    const tags: Array<{ line: number; text: string }> = [];
+   const prose: number[] = [];
    for (let i = start; i < declLine; i++) {
+      if (parsed.proseLine(i)) {
+         prose.push(i);
+         continue;
+      }
       // Inside a `/* … */`, where a line beginning `#` is prose. Rewriting one
       // would put an edit inside a comment.
       if (parsed.commentLine(i)) continue;
@@ -115,7 +122,7 @@ export function blockAbove(
       if (text.startsWith("#") && !text.startsWith("##"))
          tags.push({ line: i, text });
    }
-   return { start, tags };
+   return { start, tags, prose };
 }
 
 /** Just the text of a block's tags, which is what `parseAnnotation` takes. */
@@ -134,7 +141,8 @@ function modelLines(lines: string[]): {
       if (
          text.startsWith("##") &&
          !text.startsWith('##"') &&
-         !text.startsWith("##!")
+         !text.startsWith("##!") &&
+         !text.startsWith("##(markdown)")
       )
          artifact.push(text);
    }

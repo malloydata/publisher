@@ -2,6 +2,6 @@
 ## artifact { title="Text tiles" tiles=[intro { kind=text colspan=12 }, "orders -> kpis"] } dashboard { columns=12 }
 import "../models/orders.malloy"
 
-##|(text) intro
+##|(markdown) intro
 ## How to read this page
 |##

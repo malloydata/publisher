@@ -871,6 +871,28 @@ describe("suggestGivenLookup", () => {
    });
 });
 
+describe("malloyGivenToApi: annotations", () => {
+   const note = (route: string, text: string) => ({ route, text });
+   const givenWith = (notes: { route: string; text: string }[]) =>
+      ({
+         name: "REGION",
+         type: { type: "filter expression", filterType: "string" },
+         annotations: { forRoute: () => notes },
+      }) as unknown as MalloyGiven;
+
+   it("carries app-route notes, and drops reserved ones and the given's own (markdown) prose", () => {
+      const api = malloyGivenToApi(
+         givenWith([
+            note("description", '#(description="Which region")\n'),
+            note("", '# label="Region"\n'),
+            note("markdown", "#(markdown) The region filter.\n"),
+         ]),
+      );
+      expect(api.annotations).toEqual(['#(description="Which region")\n']);
+      expect(api.label).toBe("Region");
+   });
+});
+
 describe("malloyGivenToApi: array type rendering", () => {
    // A set-valued given is how a `#(secure)` attribute is declared — a scalar
    // cannot be one, because it has no value that fails closed. So this is the

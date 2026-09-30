@@ -123,7 +123,8 @@ query: overview is order_items -> {
   object and at model level there is none — a `#"` there fails the package load with "Object
   annotation not connected to any object". On the single-query form it is `#"`, attached to the
   `query:`. Prose next to one tile is that tile's `# subtitle`, which is a tag string and therefore
-  one line; prose BETWEEN tiles is not something the format can express.
+  one line. Prose BETWEEN tiles is a text tile: a `##|(markdown) name` block listed in `tiles=[name { kind=text }, …]`.
+  The format is decided but Publisher does not render text tiles yet, so the lint reports a listed one as left out of the page.
 - `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.

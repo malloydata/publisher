@@ -2,7 +2,7 @@
 ## artifact { kind=notebook title="Revenue review" }
 import "../models/orders.malloy"
 
-##|"
+##|(markdown)
 # Where revenue came from
 Prose in **markdown**, any length.
 |##
@@ -10,7 +10,7 @@ Prose in **markdown**, any length.
 # label="Region" control=select suggest { source=orders dimension=region }
 given: REGION :: filter<string> is f''
 
-##" A single line of prose is a cell too.
+##(markdown) A single line of prose is a cell too.
 
 #" Caption: a doc string on the run, shown above its result.
 # bar_chart

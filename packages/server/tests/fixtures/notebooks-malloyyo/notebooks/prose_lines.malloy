@@ -2,9 +2,9 @@
 ## artifact { kind=notebook title="Prose lines" }
 import "../models/orders.malloy"
 
-##" Two contiguous lines of prose
-##" are one markdown cell.
+##(markdown) Two contiguous lines of prose
+##(markdown) are one markdown cell.
 
-##" A blank line above starts a second cell.
+##(markdown) A blank line above starts a second cell.
 
 run: orders -> kpis

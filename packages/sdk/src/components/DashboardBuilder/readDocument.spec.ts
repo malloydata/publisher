@@ -86,6 +86,25 @@ describe("blockAbove", () => {
       expect(at.tags).toEqual([]);
    });
 
+   it("leaves an attached markdown block and line out of the tags, whatever its body starts with", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  #|(markdown)",
+         "  # Lead tile",
+         "  |#",
+         "  #(markdown) a note",
+         "  # colspan=6",
+         "  view: revenue is sales",
+         "}",
+      ].join("\n");
+      const at = await block(source, 7);
+      expect(at.start).toBe(2);
+      expect(at.tags.map((t) => t.text)).toEqual(["# colspan=6"]);
+      expect(at.tags.map((t) => t.line)).toEqual([6]);
+      expect(at.prose).toEqual([2, 3, 4, 5]);
+   });
+
    it("does not collect a `#` line written inside a block comment", async () => {
       const source = [
          "source: s is a extend {",
@@ -237,6 +256,21 @@ describe("readDashboardDocument", () => {
             `##|(text) intro\n##" not a note\n|##\n${ARTIFACT}\n${rest}`,
          );
          expect(doc.description).toBeUndefined();
+      });
+
+      it("reads neither a ##(markdown) line nor a ##|(markdown) block as the description or the tag", async () => {
+         const doc = await read(
+            `##(markdown) not a note\n##|(markdown) intro\n## How to read\n##" also not a note\n|##\n##" Above\n${ARTIFACT}\n##(markdown) nor this\n${rest}`,
+         );
+         expect(doc.description).toBe("Above");
+         expect(doc.title).toBe("Probe");
+      });
+
+      it("falls back to a note below the tag past a ##(markdown) line", async () => {
+         const doc = await read(
+            `##(markdown) skip\n${ARTIFACT}\n##(markdown) skip too\n##" Legacy\n${rest}`,
+         );
+         expect(doc.description).toBe("Legacy");
       });
 
       it("has no description when the only note is a malformed route", async () => {

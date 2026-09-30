@@ -36,7 +36,7 @@ import ResultContainer from "../RenderedResult/ResultContainer";
 import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard } from "../styles";
-import { cellCaption, definitionSummary } from "./cellKind";
+import { cellCaption, definitionSummary, stripProse } from "./cellKind";
 import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
@@ -176,14 +176,6 @@ export function NotebookCell({
    const IMPORT_MODEL_PATH_REGEX =
       /import\s*(?:\{[^}]*\}\s*from\s*)?['"`]([^'"`]+)['"`]/;
 
-   // Filter out lines starting with ## from Malloy code
-   const filterMalloyCode = (code: string): string => {
-      return code
-         .split("\n")
-         .filter((line) => !line.trimStart().startsWith("##"))
-         .join("\n");
-   };
-
    const hasValidImport =
       !!cell.text &&
       (IMPORT_NAMES_REGEX.test(cell.text) ||
@@ -249,7 +241,7 @@ export function NotebookCell({
    const { mode } = usePublisherTheme();
    useEffect(() => {
       if (cell.type === "code")
-         highlight(filterMalloyCode(cell.text), "malloy", mode).then((code) => {
+         highlight(stripProse(cell.text), "malloy", mode).then((code) => {
             setHighlightedMalloyCode(code);
          });
    }, [cell, mode]);
@@ -261,6 +253,11 @@ export function NotebookCell({
    }, [queryResultCodeSnippet, mode]);
 
    const caption = cell.kind === "query" ? cellCaption(cell.text) : undefined;
+   const header = cell.markdown ? (
+      <Prose variant="document" links={links}>
+         {cell.markdown}
+      </Prose>
+   ) : null;
 
    const copyToClipboard = () => {
       const url = window.location.href;
@@ -362,6 +359,7 @@ export function NotebookCell({
       )) ||
       (cell.kind === "definition" && (
          <Box>
+            {header}
             <Box
                component="button"
                type="button"
@@ -406,6 +404,7 @@ export function NotebookCell({
       )) ||
       (cell.type === "code" && (
          <Box>
+            {header}
             {caption && (
                <Typography
                   variant="body2"

@@ -285,6 +285,20 @@ describe("comments", () => {
       ]);
    });
 
+   it("moves a declaration with the attached markdown block above its tags", async () => {
+      const source =
+         "source: s is a extend {\n\n  #|(markdown)\n  ### Lead tile\n  Excludes refunds.\n  |#\n  # colspan=6\n  view: v is x\n}\n";
+      const p = await parsed(source);
+      expect(p.blockStart(7)).toBe(2);
+   });
+
+   it("stops at a blank line above an attached markdown block", async () => {
+      const source =
+         "source: s is a extend {\n  dimension: d is 1\n\n  #|(markdown)\n  Notes\n\n  more\n  |#\n  view: v is x\n}\n";
+      const p = await parsed(source);
+      expect(p.blockStart(8)).toBe(3);
+   });
+
    // `--` starts a comment in Malloy exactly as `//` does.
    it("reads a dash comment as the block above a declaration", async () => {
       const p = await parsed(

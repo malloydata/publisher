@@ -533,6 +533,31 @@ describe("service/dashboard given specs (the control contract)", () => {
       expect(manifest?.givens[0].label).toBe("Region");
    });
 
+   it("leaves a given's own (markdown) prose out of its annotations, at either level", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["REGION"],
+               },
+            ],
+            givens: new Map([
+               given("REGION", "filter<string>", [
+                  '#(description="Which region") \n',
+                  "#(markdown) hi\n",
+                  "##(markdown) hi\n",
+                  "#|(markdown)\nhi",
+               ]),
+            ]),
+         }),
+      );
+      expect(manifest?.givens[0].annotations).toEqual([
+         '#(description="Which region") \n',
+      ]);
+   });
+
    it("ignores a control kind it does not recognize", () => {
       const manifest = build(
          facts({

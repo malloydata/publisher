@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Malloy Notebooks
 
-Files: `notebooks/<slug>.malloy` (a Malloyyo notebook). Existing `.malloynb` files are still read and served, but a new notebook is never a `.malloynb`.
+Files: `notebooks/<slug>.malloy`. Existing `.malloynb` files are still read and served, but a new notebook is never a `.malloynb`.
 
 ## Scope: when to use this skill vs `skill:malloy-analysis-report`
 
@@ -25,11 +25,11 @@ The file is ordinary Malloy: it compiles as one model, it is validated by the sa
 
 ## The five authoring rules
 
-1. **The header is `##!` flags, `//` comments and unnamed `"` notes, then `## artifact { kind=notebook … }`.** Nothing else goes above the tag. A statement or a tag above `## artifact` is an error, and the notebook is served with that error instead of opening.
-2. **Prose is `##"` (one line, or contiguous lines with no blank line between them) or a `##|"` … `|##` block.** The closer sits at the opener's column, no body line starts with `|##`, and a blank line follows it. A `## Heading` line is model tags, not prose: write a heading inside a `##|"` block.
-3. **Render tags sit directly above `run:`, with nothing between.** A `#"` directly above the `run:` is its caption; `# bar_chart`, `# label="..."` and the other render tags go in the same block.
+1. **The header is `##!` flags, `//` comments and unnamed `"` notes (the description), then `## artifact { kind=notebook … }`.** Nothing else goes above the tag. A statement or a tag above `## artifact` is an error, and the notebook is served with that error instead of opening.
+2. **Prose is a `(markdown)` annotation, and the number of `#` says what it belongs to.** Floating markdown is a cell of its own: `##(markdown) text` (contiguous lines with no blank line between them merge into one cell) or a `##|(markdown)` block, with the body starting on the next line and the `|##` closer at the opener's column. Attached markdown, `#(markdown) text` or a `#|(markdown)` … `|#` block, belongs to the statement below it and renders with that cell. Keep the parentheses: `##| markdown` reads its prose as ordinary tags, and `##|markdown` draws a malformed-route warning. No body line starts with `|##`, and a blank line follows the closer. A `## Heading` line is model tags, not prose: write a heading inside a `##|(markdown)` block.
+3. **Render tags sit directly above `run:`, with nothing between.** A `#"` directly above the `run:` is its caption; `# bar_chart`, `# label="..."` and the other render tags go in the same block. Attached `#(markdown)` goes above the `#"` caption when both are present, and renders as a header above the result.
 4. **`given:` uses `NAME :: filter<T> is f''`, bound with `~`, declared before first use.** Put `##! experimental.givens` at the top of the file.
-5. **Trailing prose is `##"`, never `#"`.** A `#"` belongs to the statement below it, and at the end of a file there is none, so Malloy refuses it.
+5. **Trailing prose is `##(markdown)`, never `#(markdown)` or `#"`.** Both belong to the statement below them, and at the end of a file there is none, so Malloy refuses a `#"` and the lint reports a `#(markdown)` as an error. An `import` or an `export` takes no annotation either, so prose above one is `##|(markdown)`.
 
 ## How the file becomes cells
 
@@ -38,12 +38,13 @@ Cells come from the file's own notes and statements, in file order (imported fil
 | In the file | Cell |
 |---|---|
 | `##!` lines, `## artifact`, and every `"` note above the tag | the header: no cell |
-| `##"` lines (contiguous) or a `##|"` block, after the tag | one markdown cell |
+| `##(markdown)` lines (contiguous) or a `##|(markdown)` block, after the tag | one markdown cell |
+| `#(markdown)` or a `#|(markdown)` block above a `run:`, `source:`, `query:`, `given:` or `type:` | no cell of its own: it renders with that statement's cell (on a `run:`, a header above the result and above the `#"` caption) |
 | `run:` with its contiguous `#` tag block, including `run: <named query>` | one query cell |
 | `import`, `source:`, `query:`, `given:`, `export { … }`, `type:` | one definition cell **per statement** |
 | a non-`"` `##` note after the tag (`## title=…`) | not a cell |
 
-The unnamed `"` notes above `## artifact` are the notebook's description. Definition cells render folded; only query cells run.
+The unnamed `"` notes above `## artifact` are the notebook's description. Definition cells render folded; only query cells run. The `##"` and `##|"` notes below the tag and the `##|(text) name` tiles, the spellings `(markdown)` replaced, are dropped, and the lint reports each as an error.
 
 ## Compile errors and checking a notebook
 
@@ -59,7 +60,7 @@ A notebook file compiles with **all** its `import`s in scope, so it can import s
 import "flights.malloy"
 import "carriers.malloy"
 
-##" Flights joined to carriers, across two imported files.
+##(markdown) Flights joined to carriers, across two imported files.
 
 run: flights extend {
   join_one: carriers on carrier = carriers.code
@@ -76,12 +77,14 @@ Imports are file-wide: declare them at the top, before the cells that use them. 
 **Notebooks must NOT contain findings about current data values.** Data refreshes will make these stale. Use markdown for framing questions and structural narrative, not for stating results.
 
 ```malloy
-##" WRONG: will become stale when data refreshes. Revenue spiked 23% in March.
+##(markdown) WRONG: will become stale when data refreshes. Revenue spiked 23% in March.
 
-##" RIGHT: frames the question and lets the query answer it. How is revenue trending?
+##(markdown) RIGHT: frames the question and lets the query answer it. How is revenue trending?
 ```
 
 ## A complete notebook
+
+One notebook with all three prose forms: floating markdown cells, attached markdown headers, and a `#"` caption.
 
 ```malloy
 ##! experimental.givens
@@ -89,7 +92,7 @@ Imports are file-wide: declare them at the top, before the cells that use them. 
 ## artifact { kind=notebook title="Category review" }
 import { order_items, products } from "../storefront.malloy"
 
-##|"
+##|(markdown)
 # Category review
 
 Pick a **Category** in the controls above and every chart below re-runs for it.
@@ -100,29 +103,30 @@ Leave the control empty to read the whole catalog.
 # label="Category" control=select suggest { source=products dimension=category }
 given: CATEGORY :: filter<string> is f''
 
-##" How is revenue trending for the selected category?
+##(markdown) How is revenue trending for the selected category?
 
+#(markdown) ### Revenue by month
 #" Revenue by month for the selected category
 # line_chart
 # label="Revenue by month"
 run: order_items -> sales_by_month + { where: category ~ $CATEGORY }
 
-##" Which brands are behind those numbers?
+##(markdown) Which brands are behind those numbers?
 
 #" The eight brands with the most revenue in the selected category
 # bar_chart
 # label="Top brands"
 run: order_items -> top_brands + { where: category ~ $CATEGORY }
 
-##" Last, the best-selling products, defined once as a named query and then run.
+##(markdown) Last, the best-selling products, defined once as a named query and then run.
 
 query: top_products_in_category is order_items -> top_products + { where: category ~ $CATEGORY }
 
-#" The ten best-selling products in the selected category
+#(markdown) ### Best sellers
 run: top_products_in_category
 ```
 
-The `##|"` block is one markdown cell, each `##"` line is a markdown cell, the `given:` and the `query:` are definition cells, and each `run:` is a query cell. The header ends at `## artifact`.
+The `##|(markdown)` block and each `##(markdown)` line are floating markdown cells. The two `#(markdown)` lines are attached: each renders as a header with the `run:` below it, and on the first the header sits above the `#"` caption. The second `run:` has only a caption. The `given:` and the `query:` are definition cells, and each `run:` is a query cell. The header ends at `## artifact`.
 
 ## Interactive Parameters (`given:`)
 
@@ -162,17 +166,17 @@ source: recalls is duckdb.table('data/auto_recalls.csv') extend {
 **Pattern:** Question, Query, Next Question, Drill
 
 ```malloy
-##" How is revenue trending?
+##(markdown) How is revenue trending?
 
 # line_chart
 run: orders -> { group_by: order_month; aggregate: revenue }
 
-##" What's driving the biggest changes?
+##(markdown) What's driving the biggest changes?
 
 # bar_chart
 run: orders -> { group_by: category; aggregate: revenue; order_by: revenue desc; limit: 10 }
 
-##" How does the top category break down?
+##(markdown) How does the top category break down?
 
 run: orders -> { aggregate: order_count, avg_order_value; where: category = 'Electronics' }
 ```
@@ -198,27 +202,27 @@ run: source -> my_view + { where: status = 'active', limit: 10 }
 ## artifact { kind=notebook title="[Title]" }
 import "model.malloy"
 
-##|"
+##|(markdown)
 # [Title]
 [Framing question: what are we trying to understand?]
 |##
 
-##" [First question: start broad]
+##(markdown) [First question: start broad]
 
 run: main_source -> [broad query]
 
-##" [Next question: motivated by what the first query reveals]
+##(markdown) [Next question: motivated by what the first query reveals]
 
 run: main_source -> [drill into finding]
 
-##" [Deeper question]
+##(markdown) [Deeper question]
 
 run: main_source -> [further breakdown]
 ```
 
 ## Existing `.malloynb` files
 
-A `.malloynb` notebook (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format. Publisher keeps read-only support so existing notebooks still open and run, and the bundled examples no longer ship one. **Do not create a new `.malloynb`.** To give a story a new home, write a Malloyyo notebook as above. Two things to know when maintaining an existing one:
+A `.malloynb` notebook (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format. Publisher keeps read-only support so existing notebooks still open and run, and the bundled examples no longer ship one. **Do not create a new `.malloynb`.** To give a story a new home, write a `.malloy` notebook as above. Two things to know when maintaining an existing one:
 
 - **Compile errors in `.malloynb` files are NOT shown in the IDE linter**, and the notebook lint above does not cover them. You only see errors when cells are executed, so test queries in the model first.
 - Imports are notebook-wide and belong in a setup cell at the top, never inside a `run:` cell.
@@ -230,12 +234,16 @@ A `.malloynb` notebook (cells delimited by `>>>markdown` and `>>>malloy`) is a d
 | `view_name { limit: 10 }` | Use `+`: `view_name + { limit: 10 }` |
 | `# currency` on non-money | Only use `# currency` for monetary values |
 | A statement or a `#` tag above `## artifact` | Only `##!` flags, `//` comments and unnamed `"` notes go in the header. Move the statement below the tag. |
-| `## Heading` for a section title | That line is model tags, not prose. Write the title inside a `##|"` block. |
-| `##"word` or `##|"word` (no space after the route) | Malloy drops the note. Write `##" word`. |
+| `## Heading` for a section title | That line is model tags, not prose. Write the title inside a `##|(markdown)` block. |
+| `##| markdown` or `##|markdown` (no parentheses) | Write `##|(markdown)`. |
+| `##(markdown)text` or `##|(markdown)text` (no space after the route) | Malloy drops the note. Write `##(markdown) text`. |
+| `##"` or `##|"` prose below the tag | Write `##(markdown)` or `##|(markdown)`. |
+| Text on the opener line after `##|(markdown)` | Only a name may follow it, and a notebook has no use for one. Put the text on the next line. |
+| `#(markdown)` above an `import` or `export` | Those take no annotation. Write `##|(markdown)`. |
 | A `#` tag separated from its `run:` by another statement | Render tags sit directly above the `run:`. Move the tag. |
-| `#"` as the last thing in the file | Trailing prose is `##"`; a `#"` needs a statement below it. |
+| `#(markdown)` or `#"` as the last thing in the file | Trailing prose is `##(markdown)`; both need a statement below them. |
 | `given:` used before it is declared | A cell reads only the givens declared above it. Move the `given:` up. |
-| `##|(text) name` block in a notebook | A `(text)` block is a dashboard tile and a notebook ignores it. Use `##|"`. |
+| `##|(markdown) name` block in a notebook | A name means something only on a dashboard, where the block is a text tile. Drop it: `##|(markdown)`. |
 | `#(filter) {"type": "Star"}` (JSON-blob form, on a dimension) | Unsupported legacy syntax. `#(filter)` goes **above the source** with key=value parameters (`name=`, `dimension=`, `type=`). See the `malloy-model` skill's Parameterizable Filters section. |
 | Data-specific insights in markdown | Don't write "Revenue grew 23%." Frame questions instead. Data refreshes will make findings stale. |
 | `import` inside a `run:` cell | Imports are file-wide, put them at the top. An in-query import is rejected: `file imports are not permitted in a restricted query`. |
@@ -243,7 +251,7 @@ A `.malloynb` notebook (cells delimited by `>>>markdown` and `>>>malloy`) is a d
 
 ## Best Practices
 
-1. Start with markdown framing the question
+1. Start with markdown framing the question (`##|(markdown)` for the title block, `##(markdown)` for each question)
 2. Import each model the notebook needs at the top; cells can reference and join sources across all imports (see Multiple Models & Cross-Model Joins)
 3. Each query should follow from what the previous one could reveal
 4. One query per cell

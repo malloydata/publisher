@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The Malloyyo notebook format needs no Malloy language change: prose is a doc
- * string on Malloy's built-in `"` route, as a `##"` line or a `##|"` … `|##`
- * block, and both are legal between any two statements. This spec pins that
+ * The Malloyyo notebook format needs no Malloy language change: prose is a note
+ * on the `(markdown)` route, as a `##(markdown)` line or a `##|(markdown)` …
+ * `|##` block, and both are legal between any two statements. This spec pins that
  * claim against the compiler, so a Malloy upgrade that breaks it fails here
  * rather than in the notebook reader built on it.
  *
@@ -36,14 +36,14 @@ const FIXTURE_DIR = path.resolve(
    "../../tests/fixtures/notebooks-malloyyo",
 );
 
-/** A `"`-route note as the spec states it: 1-based file line, text prefix. */
+/** A prose-route note as the spec states it: 1-based file line, text prefix. */
 interface ExpectedNote {
    line: number;
    textStartsWith: string;
 }
 
 /**
- * Every fixture and the `"`-route notes it owns, in file order. Written out
+ * Every fixture and the `"` and `(markdown)` notes it owns, in file order. Written out
  * literally so a moved or reclassified note fails with a readable diff.
  */
 const EXPECTED_OWN_NOTES: Record<string, ExpectedNote[]> = {
@@ -51,37 +51,47 @@ const EXPECTED_OWN_NOTES: Record<string, ExpectedNote[]> = {
       { line: 1, textStartsWith: '##" Shared orders model' },
    ],
    "notebooks/revenue_review.malloy": [
-      { line: 5, textStartsWith: '##|"\n# Where revenue came from\n' },
-      { line: 13, textStartsWith: '##" A single line of prose is a cell too.' },
+      {
+         line: 5,
+         textStartsWith: "##|(markdown)\n# Where revenue came from\n",
+      },
+      {
+         line: 13,
+         textStartsWith: "##(markdown) A single line of prose is a cell too.",
+      },
    ],
    "notebooks/definitions_only.malloy": [],
    "notebooks/adjacent_blocks.malloy": [
-      { line: 6, textStartsWith: '##|"\n## A heading\n' },
-      { line: 10, textStartsWith: '##|"\nThe second block' },
+      { line: 6, textStartsWith: "##|(markdown)\n## A heading\n" },
+      { line: 10, textStartsWith: "##|(markdown)\nThe second block" },
    ],
    "notebooks/prose_lines.malloy": [
-      { line: 5, textStartsWith: '##" Two contiguous lines of prose' },
-      { line: 6, textStartsWith: '##" are one markdown cell.' },
-      { line: 8, textStartsWith: '##" A blank line above starts' },
+      { line: 5, textStartsWith: "##(markdown) Two contiguous lines of prose" },
+      { line: 6, textStartsWith: "##(markdown) are one markdown cell." },
+      { line: 8, textStartsWith: "##(markdown) A blank line above starts" },
    ],
    "notebooks/tagged_runs.malloy": [
-      { line: 12, textStartsWith: '##" Trailing prose is a model note' },
+      {
+         line: 12,
+         textStartsWith: "##(markdown) Trailing prose is a model note",
+      },
    ],
    "notebooks/imported_prose.malloy": [
       { line: 2, textStartsWith: '##" Order totals, described above' },
-      { line: 6, textStartsWith: '##" The only prose cell' },
+      { line: 6, textStartsWith: "##(markdown) The only prose cell" },
    ],
    "dashboards/text_tiles.malloy": [
       { line: 1, textStartsWith: '##" A dashboard whose first tile is prose.' },
+      { line: 5, textStartsWith: "##|(markdown) intro\n## How to read" },
    ],
 };
 
-/** `"`-route notes on one annotation bundle, sorted by where they start. */
+/** `"` and `(markdown)` notes on one annotation bundle, sorted by where they start. */
 function docStringNotes(
    annote: ReturnType<typeof ownModelAnnotations>,
 ): { line: number; text: string }[] {
-   return new Annotations(annote)
-      .forRoute('"')
+   const notes = new Annotations(annote);
+   return [...notes.forRoute('"'), ...notes.forRoute("markdown")]
       .map((note) => ({ line: note.at.range.start.line + 1, text: note.text }))
       .sort((a, b) => a.line - b.line);
 }
@@ -124,7 +134,7 @@ describe("Malloyyo notebook format (compiler contract)", () => {
             expect(defOf(modelPath).modelID).toEndWith(modelPath);
          });
 
-         it('puts each ##" line and ##|" block on the doc-string route at its own line, in file order', () => {
+         it("puts each ##(markdown) line and ##|(markdown) block on its route at its own line, in file order", () => {
             const actual = docStringNotes(
                ownModelAnnotations(defOf(modelPath)),
             );
@@ -138,7 +148,7 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       });
    }
 
-   it("keeps an imported include's prose out of a notebook's own notes", () => {
+   it("keeps an imported include's description out of a notebook's own notes", () => {
       const def = defOf("notebooks/imported_prose.malloy");
       const isSharedNote = (text: string) =>
          text.startsWith('##" Shared orders model');
@@ -185,11 +195,11 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       expect(new Annotations(bare.annotations).texts()).toEqual([]);
    });
 
-   it("puts a (text) block on its own route, with its name on the opener line of the note text", () => {
+   it("puts a (markdown) tile block on its own route, with its name on the opener line of the note text", () => {
       const own = ownModelAnnotations(defOf("dashboards/text_tiles.malloy"));
-      const blocks = new Annotations(own).forRoute("text");
+      const blocks = new Annotations(own).forRoute("markdown");
       expect(blocks.map((note) => note.at.range.start.line + 1)).toEqual([5]);
-      expect(blocks[0].text).toStartWith("##|(text) intro\n## How to read");
+      expect(blocks[0].text).toStartWith("##|(markdown) intro\n## How to read");
    });
 
    it("parses a text tile entry and a quoted tile side by side in tiles=", () => {
@@ -237,11 +247,14 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       return runtime.loadModel(new URL(`${root}${fixture}`)).getModel();
    };
 
-   it('refuses a trailing #" with nothing after it, which is why trailing prose is ##"', async () => {
+   it("refuses a trailing #(markdown) with nothing after it, which is why trailing prose is ##(markdown)", async () => {
       let error: unknown;
       try {
          await compileVariant("notebooks/tagged_runs.malloy", (text) =>
-            text.replace('##" Trailing prose', '#" Trailing prose'),
+            text.replace(
+               "##(markdown) Trailing prose",
+               "#(markdown) Trailing prose",
+            ),
          );
       } catch (caught) {
          error = caught;
@@ -255,30 +268,55 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       );
    });
 
-   it("accepts a (text) opener of more than one word without a compile problem (the lint reports it)", async () => {
+   it.each([
+      ["an import", "notebooks/imported_prose.malloy", "import "],
+      ["an export", "notebooks/structure.malloy", "export {"],
+   ])(
+      "refuses #(markdown) above %s as a compile error",
+      async (_what, fixture, statement) => {
+         let error: unknown;
+         try {
+            await compileVariant(fixture, (text) =>
+               text.replace(statement, `#(markdown) x\n${statement}`),
+            );
+         } catch (caught) {
+            error = caught;
+         }
+         expect(error).toBeInstanceOf(MalloyError);
+         expect(
+            (error as MalloyError).problems.map((problem) => problem.code),
+         ).toContain("orphaned-object-annotation");
+      },
+   );
+
+   it("accepts a (markdown) opener of more than one word without a compile problem (the lint reports it)", async () => {
       const model = await compileVariant(
          "dashboards/text_tiles.malloy",
-         (text) => text.replace("##|(text) intro\n", "##|(text) intro extra\n"),
+         (text) =>
+            text.replace(
+               "##|(markdown) intro\n",
+               "##|(markdown) intro extra\n",
+            ),
       );
       expect(model.problems).toEqual([]);
       const [block] = new Annotations(
          ownModelAnnotations(model._modelDef),
-      ).forRoute("text");
-      expect(block.text).toStartWith("##|(text) intro extra\n");
+      ).forRoute("markdown");
+      expect(block.text).toStartWith("##|(markdown) intro extra\n");
    });
 
-   it.each(["##|(text)intro\n", '##|"intro\n'])(
+   it.each(["##|(markdown)intro\n", '##|"intro\n'])(
       "drops a block whose route touches its word (%j), as malformed-route",
       async (glued) => {
          const model = await compileVariant(
             "dashboards/text_tiles.malloy",
-            (text) => text.replace("##|(text) intro\n", glued),
+            (text) => text.replace("##|(markdown) intro\n", glued),
          );
          expect(model.problems.map((problem) => problem.code)).toContain(
             "malformed-route",
          );
          const own = new Annotations(ownModelAnnotations(model._modelDef));
-         expect(own.forRoute("text")).toEqual([]);
+         expect(own.forRoute("markdown")).toEqual([]);
          expect(
             docStringNotes(ownModelAnnotations(model._modelDef)),
          ).toHaveLength(1);
@@ -293,10 +331,10 @@ describe("Malloyyo notebook format (compiler contract)", () => {
       expect(model.problems).toEqual([]);
       const notes = new Annotations(
          ownModelAnnotations(model._modelDef),
-      ).forRoute("text");
+      ).forRoute("markdown");
       expect(notes).toHaveLength(1);
       expect(notes[0].text).toStartWith(
-         "##|(text) intro\n## How to read this page",
+         "##|(markdown) intro\n## How to read this page",
       );
    });
 });

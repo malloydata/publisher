@@ -5,7 +5,7 @@
 
 import "../models/orders.malloy"
 
-##|"
+##|(markdown)
 # Not a name
 The first line under the opener is prose, whatever it holds.
 |##
