@@ -1,0 +1,3 @@
+## artifact { title="Legacy" tiles=["a -> v"] }
+##" Described from below the tag.
+source: a is duckdb.sql("select 1 as x") extend { view: v is { select: x } }

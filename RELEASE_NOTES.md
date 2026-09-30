@@ -31,6 +31,69 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Publisher serves `.malloy` notebooks
+
+A `.malloy` file directly under a package's top-level `notebooks/` whose model-level notes include
+`## artifact { kind=notebook … }` is now a served notebook. Its cells are read from the file in order:
+floating `(markdown)` notes, one query cell per `run:` with its tag block, and one definition
+cell per other statement. List-notebooks includes served notebooks beside `.malloynb` files. Get-notebook returns
+one with a `format` (`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or
+`definition`). A code cell also carries a `markdown` field when `(markdown)` prose is attached to its
+statement, a `proseLines` field naming the lines of its `text` that hold that prose (0-based,
+inclusive `[start, end]` pairs, `[]` when none), a `codeLine` field with the line where its
+statement's code starts, and a `caption` field with its leading `#"` text when it has one. The Console opens one at `notebooks/<slug>`. A served notebook keeps
+`modelType: model`, so the model GET, `/compile`, MCP `execute_query` and the declared-givens fetch
+treat it as any model.
+
+Behavior changes to know about:
+
+- **list-models excludes served notebooks**, with or without a surface, so they are absent from MCP
+  `get_context` as well. Use list-notebooks.
+- **Notebook prose is an annotation on the `(markdown)` route, and the number of `#` says what it
+  belongs to.** `##|(markdown)` … `|##` (the body starts on the next line) or `##(markdown) text` is
+  a cell of its own, and adjacent lines merge. `#(markdown) text` or `#|(markdown)` … `|#` belongs
+  to the statement below it (`run:`, `source:`, `query:`, `given:`, `type:`) and renders with that
+  cell, as a header above a `run:`'s result and above its `#"` caption. It cannot sit above an
+  `import` or `export`, which take no annotations; use `##|(markdown)` there. Earlier
+  spellings are still read: `##"`, `##|"`, `##(text)` and `##|(text)` notes below a notebook's tag
+  are markdown cells too, with no lint finding (a name on a block draws a warning).
+- **A notebook's description is the unnamed `"` notes above `## artifact`.** A dashboard's is the
+  same, and when it has none above it still reads the ones below the tag, with a lint warning to
+  move them above. The in-repo dashboards already put theirs above. On a dashboard, `##|(text) name`
+  is still a text tile, with no lint finding.
+- **`notebooks` is a segment the Console owns.** `/<env>/<pkg>/notebooks/<file.ext>` no longer reaches
+  a package's `public/notebooks/`.
+- **The published-names filter now applies to `modelInfo.anonymous_queries` on the model GET for every
+  curated model**, and to a `.malloynb` GET's `anonymous_queries` under a surface: only runs over
+  published sources are returned.
+- **`/compile` reports new lint problems on files under `notebooks/` and `dashboards/`**, each naming
+  its line and the fix, and they appear in package warnings. A served notebook whose cells cannot be
+  read is an `error`.
+- **New metrics**: `publisher_notebook_discovery_total{format,outcome}`,
+  `publisher_notebook_cell_executions_total{format,kind,outcome}` and
+  `publisher_notebook_cell_execution_duration_ms{format,outcome}`.
+
+## [Unreleased] — `dashboard_columns` is read again, as a deprecated alias
+
+The 0.2.1 note that said `dashboard_columns` is gone is superseded.
+`dashboard { columns=N }` beside the artifact tag stays the canonical grid width, and
+`dashboard_columns=N` inside the artifact tag is a deprecated alias that Publisher reads when
+`columns` is absent. It draws a warning, and when the two disagree it is an error naming both values
+and `columns` is what is served. A package that spelled the alias and got the default width now gets
+the width it wrote.
+
+`kind=dashboard` on a `dashboards/` file's artifact tag and `kind=query` on a tile entry are accepted
+as the explicit defaults. A text tile is a named `##|(markdown) name` block listed in `tiles` with
+`kind=text`; the format is decided, but text tiles are not rendered yet. Eight finding codes fail
+`/compile` regardless: `notebook-statement-above-artifact`, `notebook-tag-above-artifact` and
+`notebook-markdown-above-artifact` (a statement, a tag or a `(markdown)` note above a served
+notebook's `## artifact`), `notebook-columns-conflict` (a tiled dashboard's `dashboard_columns`
+disagrees with `dashboard { columns }`), `notebook-markdown-opener-text` (more than a name after
+`(markdown)` on a block's opener), `notebook-markdown-attached-nowhere` (a `#(markdown)` note with no
+statement to take it), `notebook-artifact-unparsed` (an `## artifact` tag that does not parse), and
+`notebook-cells-unreadable` (a served notebook's cells could not be read).
+Package-scope `/compile` fails when any file in the package has one.
+
 ## [0.8.3] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
 
 A `#@ persist partition=` build of a wide source with many partition values failed against the

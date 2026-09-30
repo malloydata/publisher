@@ -601,6 +601,16 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
                                "eval-run-package", *parts)) as fh:
             return fh.read()
 
+    def notebook_text(self):
+        """The notebook, at its `.malloy` path or the legacy `.malloynb` one that
+        run packages built before the switch still carry."""
+        for parts in (("notebooks", "eval_run.malloy"), ("eval_run.malloynb",)):
+            try:
+                return self.package_file(*parts)
+            except FileNotFoundError:
+                continue
+        raise FileNotFoundError("eval-run-package has no notebook")
+
     def emitted(self):
         from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,
                                      NOT_RETURNED, REFUSAL, UNMEASURED)
@@ -611,7 +621,7 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
         """The legend is what a reader consults to interpret the column, so a
         label missing from it is worse than no legend. It named `documentation`
         -- a value that never appears -- and omitted `never asked` entirely."""
-        text = self.package_file("eval_run.malloynb")
+        text = self.notebook_text()
         for label in self.emitted():
             self.assertIn(f"**{label}**", text, label)
 
@@ -643,11 +653,11 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
 
     def test_no_retired_label_survives_in_the_package(self):
         # Each of these was a real value once; each now matches nothing.
-        for f in (("eval_run.malloy",), ("eval_run.malloynb",),
-                  ("public", "app.js"), ("README.md",)):
-            text = self.package_file(*f)
+        for text in (self.package_file("eval_run.malloy"), self.notebook_text(),
+                     self.package_file("public", "app.js"),
+                     self.package_file("README.md")):
             for retired in ("query construction", "retrieval ranking"):
-                self.assertNotIn(retired, text, f"{f}: {retired}")
+                self.assertNotIn(retired, text, retired)
 
 
 class Summary(unittest.TestCase):

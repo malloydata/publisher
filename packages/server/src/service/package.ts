@@ -38,6 +38,7 @@ import {
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
+import { recordNotebookDiscovery } from "../notebook_metrics";
 import {
    recordBuildPlanComputeDuration,
    recordBuildPlanComputeFailed,
@@ -95,6 +96,12 @@ import {
 } from "./materialization_config_validation";
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
+import {
+   claimsToBeANotebook,
+   hasArtifactLineOutsideBlocks,
+   isNotebookModelPath,
+} from "./notebook";
+import { lintNotebookText } from "./notebook_lint";
 import {
    buildDashboardManifest,
    COMPONENT_FILE_SUFFIXES,
@@ -274,6 +281,8 @@ export class Package {
    // Load-time dashboard lint findings, on the same read-only warnings surface
    // as the render-tag ones. Refreshed with the dashboards on load and reload.
    private dashboardWarnings: ApiPackageWarning[] = [];
+   /** Served notebooks whose cells the reader refused; set by {@link discoverDashboards}. */
+   private notebookWarnings: ApiPackageWarning[] = [];
    // Dashboards discovered in `dashboards/`, keyed by slug, in path order.
    // Computed once per load/reload rather than per request: the artifact tag is
    // a property of the compiled model, so it can only change when the models do.
@@ -524,6 +533,8 @@ export class Package {
             // it. An untagged file under dashboards/ is not a dashboard, so a
             // listing publishes it like any other file.
             if (this.isServedDashboard(modelPath)) continue;
+            // A served notebook reads the surface and never adds to it.
+            if (this.isServedNotebook(modelPath)) continue;
             for (const source of model.getSources() ?? []) {
                add(sources, source.name, model.definitionIdentity(source.name));
             }
@@ -544,19 +555,23 @@ export class Package {
       for (const [modelPath, model] of this.models) {
          const dashboardText = this.dashboardFileText.get(modelPath);
          const dashboard = dashboardText !== undefined;
+         const notebookText = this.notebookFileText.get(modelPath);
+         const notebook = notebookText !== undefined;
          model.setQueryBoundary({
             mode,
             exploresDeclared,
-            // A discovered dashboard is always an entry point: it is always
-            // listed, and the model marks it as admitting nothing of its own.
+            // A discovered dashboard or notebook is always an entry point: it
+            // is always listed, and the model marks it as admitting nothing of
+            // its own.
             isQueryEntryPoint: exploreSet
-               ? exploreSet.has(modelPath) || dashboard
+               ? exploreSet.has(modelPath) || dashboard || notebook
                : true,
             packageCuratedSources,
             packageCuratedQueries,
             offSurface,
             dashboard,
-            derivationText: dashboardText,
+            notebook,
+            derivationText: dashboardText ?? notebookText,
          });
       }
    }
@@ -574,6 +589,20 @@ export class Package {
     *  `explores` lists is published like any other. */
    private isServedDashboard(modelPath: string): boolean {
       return this.dashboardFileText.has(modelPath);
+   }
+
+   /**
+    * The compiled text of each served notebook, keyed by file: a `.malloy`
+    * directly under `notebooks/` with a model-level `## artifact` note. Filled
+    * by {@link discoverDashboards} in the same pass and before the same
+    * boundary re-application as the dashboards. A reloaded model carries the
+    * flag from the previous map until that discovery pass replaces it.
+    */
+   private notebookFileText = new Map<string, string>();
+
+   /** Whether discovery made this file a served notebook. */
+   public isServedNotebook(modelPath: string): boolean {
+      return this.notebookFileText.has(modelPath);
    }
 
    /**
@@ -1262,6 +1291,7 @@ export class Package {
       const allWarnings = [
          ...this.renderTagWarnings,
          ...this.dashboardWarnings,
+         ...this.notebookWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A `#@ persist` the compile-time gate refused. Without this the
@@ -1741,7 +1771,10 @@ export class Package {
       );
       const problems: { entry: string; reason: string }[] = [];
       for (const entry of declared) {
-         if (entry.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         if (
+            entry.endsWith(NOTEBOOK_FILE_SUFFIX) ||
+            this.isServedNotebook(entry)
+         ) {
             problems.push({
                entry,
                reason:
@@ -2253,6 +2286,7 @@ export class Package {
       const warnings: Array<{ model: string; message: string }> = [];
       for (const [modelPath, model] of this.models) {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         if (this.isServedNotebook(modelPath)) continue;
          if (exploreSet && !exploreSet.has(modelPath)) continue;
          // A dashboard exports nothing by design; it reads the surface.
          if (exploreSet && this.isServedDashboard(modelPath)) continue;
@@ -2317,7 +2351,8 @@ export class Package {
          ([modelPath]) =>
             modelPath.endsWith(MODEL_FILE_SUFFIX) &&
             exploreSet.has(modelPath) &&
-            !this.isServedDashboard(modelPath),
+            !this.isServedDashboard(modelPath) &&
+            !this.isServedNotebook(modelPath),
       );
       if (surface.length === 0) return [];
       // Only when NOTHING on the surface compiled. One broken file beside a
@@ -2327,13 +2362,16 @@ export class Package {
          return [];
       }
       // Models off the surface that compiled FINE, which is the count worth
-      // reporting: they are the ones refused for someone else's typo. A hidden
+      // reporting: they are the ones refused for someone else's typo. Served
+      // dashboards and notebooks are not on the surface and not refused. A hidden
       // model that failed to compile of its own accord was not taken down by
       // this, and has its own error on the listing.
       const collateral = Array.from(this.models.entries()).filter(
          ([modelPath, model]) =>
             modelPath.endsWith(MODEL_FILE_SUFFIX) &&
             !exploreSet.has(modelPath) &&
+            !this.isServedDashboard(modelPath) &&
+            !this.isServedNotebook(modelPath) &&
             !model.getCompilationError(),
       ).length;
       // ONE message, however many files the surface spans. Emitting it per
@@ -2695,6 +2733,8 @@ export class Package {
          Array.from(this.models.keys())
             .filter((modelPath) => {
                if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+               // A served notebook is listed as a notebook, surface or not.
+               if (this.isServedNotebook(modelPath)) return false;
                // A dashboard file is not a model on the surface even when
                // `explores` lists it: it is listed as a dashboard instead.
                if (!exploreSet) return true;
@@ -2779,7 +2819,29 @@ export class Package {
             safeJoinUnderRoot(this.packagePath, modelPath),
             "utf8",
          );
-         return /^[ \t]*##?[ \t]*artifact\b/m.test(source);
+         return hasArtifactLineOutsideBlocks(source, /^##?[ \t]*artifact\b/);
+      } catch {
+         return false;
+      }
+   }
+
+   /**
+    * Whether a candidate under `notebooks/` is a served notebook: it carries a
+    * model-level `## artifact` note, read off the compiled model or, for a file
+    * that did not compile, off its text. Never throws.
+    */
+   private async claimsToBeAServedNotebook(
+      model: Model,
+      modelPath: string,
+   ): Promise<boolean> {
+      try {
+         if (model.getModelDef()) return model.carriesNotebookArtifactNote();
+         if (!model.getCompilationError()) return false;
+         const source = await fs.readFile(
+            safeJoinUnderRoot(this.packagePath, modelPath),
+            "utf8",
+         );
+         return claimsToBeANotebook(source);
       } catch {
          return false;
       }
@@ -2822,6 +2884,7 @@ export class Package {
       // against this, so a drop does not also turn a correct
       // `# drill { to=... }` into "not a dashboard in this package".
       const dashboardSlugs = new Set<string>();
+      const notebookPaths: string[] = [];
       for (const modelPath of Array.from(this.models.keys()).sort()) {
          const model = this.models.get(modelPath);
          if (!model) continue;
@@ -2838,6 +2901,12 @@ export class Package {
             });
          }
 
+         if (isNotebookModelPath(modelPath)) {
+            if (await this.claimsToBeAServedNotebook(model, modelPath)) {
+               notebookPaths.push(modelPath);
+            }
+            continue;
+         }
          if (!isDashboardModelPath(modelPath)) continue;
          const name = dashboardSlug(modelPath);
 
@@ -2981,7 +3050,28 @@ export class Package {
          }
       }
       this.dashboardFileText = dashboardFileText;
+      const notebookFileText = new Map<string, string>();
+      for (const modelPath of notebookPaths) {
+         const model = this.models.get(modelPath);
+         if (!model) continue;
+         try {
+            // The compiled text when the loader recorded it, so a reader slicing
+            // IR ranges never sees a file newer than the compile.
+            notebookFileText.set(
+               modelPath,
+               model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath)),
+            );
+         } catch {
+            notebookFileText.set(modelPath, "");
+         }
+      }
+      this.notebookFileText = notebookFileText;
       this.applyQueryBoundaryToModels();
+      this.notebookWarnings = [
+         ...this.attachNotebookCells(),
+         ...(await this.lintNotebookFiles()),
+      ];
       this.lintInputs = {
          factsByPath,
          allFacts,
@@ -2990,6 +3080,89 @@ export class Package {
          droppedByError,
       };
       await this.relintDashboards();
+   }
+
+   /**
+    * Read every served notebook's cells and count every notebook, both formats.
+    * A reader refusal is the notebook's error; it is returned as a finding and
+    * logged, because the model still compiles and nothing else would say so.
+    */
+   private attachNotebookCells(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            recordNotebookDiscovery(
+               "malloynb",
+               model.getCompilationError() ? "broken" : "ok",
+            );
+            continue;
+         }
+         const text = this.notebookFileText.get(modelPath);
+         if (text === undefined) continue;
+         const outcome = model.attachServedNotebookCells(text);
+         recordNotebookDiscovery("malloy", outcome);
+         const refusal = model.getNotebookReaderRefusal();
+         if (outcome !== "refused" || !refusal) continue;
+         logger.warn("Notebook cells could not be read", {
+            packageName: this.packageName,
+            modelPath,
+            line: refusal.line,
+            detail: refusal.message,
+         });
+         warnings.push({
+            model: modelPath,
+            message: refusal.message,
+            severity: "error",
+         });
+      }
+      return warnings;
+   }
+
+   /**
+    * Lint every served notebook and every file under `dashboards/`, including
+    * one that failed to compile, since its fix-it is the part that explains the
+    * compile error. Read from the compiled text when the loader recorded it.
+    */
+   private async lintNotebookFiles(): Promise<ApiPackageWarning[]> {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of Array.from(this.models).sort(
+         ([a], [b]) => (a < b ? -1 : 1),
+      )) {
+         if (
+            !this.isServedNotebook(modelPath) &&
+            !isDashboardModelPath(modelPath)
+         )
+            continue;
+         let text = this.notebookFileText.get(modelPath);
+         if (text === undefined) {
+            try {
+               text =
+                  model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath));
+            } catch {
+               continue;
+            }
+         }
+         for (const finding of lintNotebookText(modelPath, text)) {
+            // A dashboard whose tag does not parse is already reported by the dashboard lint.
+            if (
+               finding.code === "notebook-artifact-unparsed" &&
+               !this.isServedNotebook(modelPath)
+            )
+               continue;
+            logger.warn("Notebook lint", {
+               packageName: this.packageName,
+               model: modelPath,
+               detail: finding.message,
+            });
+            warnings.push({
+               model: modelPath,
+               message: finding.message,
+               severity: finding.severity,
+            });
+         }
+      }
+      return warnings;
    }
 
    /** What {@link discoverDashboards} found, kept so the lint can re-run
@@ -3046,7 +3219,9 @@ export class Package {
       const surfaceIsIndex = this.surfaceIsIndexModel();
       const listedModel = (this.packageMetadata.explores ?? []).find(
          (entry) =>
-            entry.endsWith(MODEL_FILE_SUFFIX) && !this.isServedDashboard(entry),
+            entry.endsWith(MODEL_FILE_SUFFIX) &&
+            !this.isServedDashboard(entry) &&
+            !this.isServedNotebook(entry),
       );
       const unexported = surfaceIsIndex
          ? `which ${INDEX_MODEL_NAME} doesn't export`
@@ -3361,7 +3536,10 @@ export class Package {
       return await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
-               return modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
+               return (
+                  modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
+                  this.isServedNotebook(modelPath)
+               );
             })
             .map(async (modelPath) => {
                const model = this.models.get(modelPath);

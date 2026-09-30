@@ -17,7 +17,7 @@ SPDX-License-Identifier: MIT
 |---|---|
 | A hand-authored HTML/JS dashboard, no toolchain | this skill (an HTML data app) |
 | A React app with managed components | the Publisher React SDK (out of scope here) |
-| An analyst notebook with charts | a Malloy notebook (`.malloynb`) |
+| An analyst notebook with charts | a Malloy notebook (`notebooks/<slug>.malloy`) |
 | Point-and-click exploration, no code | the Publisher Explorer |
 
 Pick an HTML data app when the user wants full control of the markup and only plain web files.
@@ -168,7 +168,7 @@ If you did not start the server (someone handed you a running one), **probe befo
 }
 ```
 
-A local package uses a filesystem `location` (`"./<pkg>"`, relative to the directory holding `publisher.config.json`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a `.malloynb` whose cells each `import "x.malloy"`, the notebook compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once in the first cell.)
+A local package uses a filesystem `location` (`"./<pkg>"`, relative to the directory holding `publisher.config.json`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a notebook that imports `x.malloy` more than once, such as a `.malloynb` whose cells each `import "x.malloy"`, compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once, at the top.)
 
 ### Publishing
 

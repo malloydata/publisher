@@ -102,6 +102,7 @@ import {
    annotationTexts,
    ownLevelNotes,
    ownModelAnnotations,
+   ownModelNoteObjects,
    ownModelNotes,
    type AnnotationNote,
 } from "./annotations";
@@ -122,6 +123,20 @@ import {
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
+import {
+   docNotesAboveArtifact,
+   isArtifactNoteText,
+   isNotebookReaderError,
+   parseNotebookText,
+   readNotebookCells,
+   type NotebookCellKind,
+   type NotebookReaderError,
+} from "./notebook";
+import {
+   recordNotebookCellExecution,
+   type NotebookDiscoveryOutcome,
+   type NotebookFormat,
+} from "../notebook_metrics";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -380,9 +395,33 @@ interface CellDeclaredGivens {
    names: ReadonlySet<string>;
 }
 
-interface RunnableNotebookCell {
+function declaredGivensPerCell(
+   cells: readonly RunnableNotebookCell[],
+): (CellDeclaredGivens | undefined)[] {
+   return cells.map((cell) => {
+      if (!cell.modelDef) return undefined;
+      const registry = cell.modelDef.givens ?? {};
+      return {
+         ids: new Set(Object.keys(registry)),
+         names: new Set(Object.values(registry).map((g) => g.name)),
+      };
+   });
+}
+
+export interface RunnableNotebookCell {
    type: "code" | "markdown";
+   /** Set on a served notebook's cells; a `.malloynb` cell has none. */
+   kind?: NotebookCellKind;
    text: string;
+   /** A served code cell's own `#(markdown)` prose; author text, so it is served whatever the surface withholds of `queryInfo`. */
+   markdown?: string;
+   /** The 0-based inclusive lines of `text` that hold `markdown`, as the reader saw them. */
+   proseLines?: [number, number][];
+   codeLine?: number;
+   /** The joined text of the statement's leading `#"` lines. */
+   caption?: string;
+   /** A served query cell's index into `modelInfo.anonymous_queries`. */
+   queryIndex?: number;
    runnable?: QueryMaterializer;
    /** Retained so we can rebuild the query with filter refinements at execution time. */
    modelMaterializer?: ModelMaterializer;
@@ -411,6 +450,20 @@ interface RunnableNotebookCell {
    modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
+}
+
+/** What running one notebook cell answers; `kind` only on a served notebook's cell. */
+export interface NotebookCellRunResult {
+   type: "code" | "markdown";
+   kind?: NotebookCellKind;
+   text: string;
+   markdown?: string;
+   proseLines?: [number, number][];
+   codeLine?: number;
+   caption?: string;
+   queryName?: string;
+   result?: string;
+   newSources?: string[];
 }
 
 /**
@@ -639,7 +692,8 @@ export class Model {
    private preaggregatePlansVersion = 0;
    /**
     * The model file's text as the compile that produced {@link modelDef} read
-    * it, when the loader shipped it (worker package loads of `.malloy` files).
+    * it: shipped by the worker on a package load, read by `Model.create`
+    * in-process.
     *
     * Held on the Model, not re-read on demand, because it is only meaningful
     * paired with THIS compile's `DocumentLocation` coordinates. A Model is
@@ -654,6 +708,10 @@ export class Model {
    private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
+   /** Why the reader refused this served notebook's cells; the model itself still compiled and serves. */
+   private notebookReaderRefusal: NotebookReaderError | undefined;
+   /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
+   private notebookAnnotations: string[] | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. Malloy's
@@ -729,9 +787,14 @@ export class Model {
        *  entry point, but like a notebook it admits nothing of its own: its
        *  tiles read only the package surface. */
       dashboard?: boolean;
-      /** The dashboard's own file text, so a source it declares on top of a
-       *  surface source (`source: big is orders extend {...}`) can be proven
-       *  to derive from it. Author text, not caller text. */
+      /** This file is a served notebook: a `.malloy` under `notebooks/` with a
+       *  model-level `## artifact` note. It keeps `modelType` "model" and, like
+       *  a `.malloynb`, admits nothing of its own. */
+      notebook?: boolean;
+      /** The dashboard's or served notebook's own compiled file text, so a
+       *  source it declares on top of a surface source
+       *  (`source: big is orders extend {...}`) can be proven to derive from
+       *  it. Author text, not caller text. */
       derivationText?: string;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
@@ -913,15 +976,8 @@ export class Model {
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
       this.givens = givens;
-      this.notebookCellDeclaredGivens = (this.runnableNotebookCells ?? []).map(
-         (cell) => {
-            if (!cell.modelDef) return undefined;
-            const registry = cell.modelDef.givens ?? {};
-            return {
-               ids: new Set(Object.keys(registry)),
-               names: new Set(Object.values(registry).map((g) => g.name)),
-            };
-         },
+      this.notebookCellDeclaredGivens = declaredGivensPerCell(
+         this.runnableNotebookCells ?? [],
       );
       // One walk, both consumers. `collectEntryPointGates` is the single
       // definition of "what gates this source as an entry point" — it follows
@@ -1165,6 +1221,10 @@ export class Model {
       cellIndex: number,
       runnable: QueryMaterializer,
    ): Promise<{ graftScope: GraftScope | undefined; usesOwnScope: boolean }> {
+      // A served notebook's query cell is a bare `run:` over the whole compiled file, so it declares nothing to collide with.
+      if (this.isNotebook() && this.notebookFormat() === "malloy") {
+         return { graftScope: this.defaultGraftScope(), usesOwnScope: false };
+      }
       const selfScope = this.selfGraftScopeForCell(cellIndex);
       const earlierScope = this.graftScopeForCell(cellIndex);
       if (!earlierScope) return { graftScope: selfScope, usesOwnScope: true };
@@ -4247,13 +4307,19 @@ export class Model {
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
-      const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(
-            packagePath,
-            modelPath,
-            malloyConfig,
-            options,
-         );
+      const {
+         runtime,
+         modelURL,
+         importBaseURL,
+         dataStyles,
+         modelType,
+         compiledTextFor,
+      } = await Model.getModelRuntime(
+         packagePath,
+         modelPath,
+         malloyConfig,
+         options,
+      );
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -4418,6 +4484,7 @@ export class Model {
          // internal Malloy method this file's public `Runtime` import doesn't
          // declare, but it is the same underlying `Runtime` instance either way.
          model.setGateRuntime(runtime as HydrationRuntime);
+         model.compiledSourceText = compiledTextFor(modelURL);
          return model;
       } catch (error) {
          let computedError = error;
@@ -4813,9 +4880,8 @@ export class Model {
    }
 
    /**
-    * The model file's text as this model's compile read it, or undefined when
-    * the loader did not ship it (a notebook, a compile failure, or an
-    * in-process `Model.create`).
+    * The model file's text as this model's compile read it, or undefined when there is
+    * none (a `.malloynb`, a compile failure, or an unreadable file).
     *
     * The only safe input for slicing a `DocumentLocation` out of: the ranges in
     * {@link getModelDef}'s IR index THIS text. Callers must not fall back to
@@ -4882,7 +4948,9 @@ export class Model {
    public hasEmptyDiscoverySurface(): boolean {
       // No curation (no `explores`) ⇒ legacy listings include imported sources.
       if (!this.discoveryCurationEnabled) return false;
-      if (this.modelType !== "model" || !this.modelDef) return false;
+      if (this.modelType !== "model" || this.isNotebook() || !this.modelDef) {
+         return false;
+      }
       return (
          (this.getSources()?.length ?? 0) === 0 &&
          (this.getQueries()?.length ?? 0) === 0
@@ -4898,6 +4966,7 @@ export class Model {
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
       offSurface?: OffSurfaceContext;
       dashboard?: boolean;
+      notebook?: boolean;
       derivationText?: string;
    }): void {
       this.queryBoundary = policy;
@@ -5425,8 +5494,30 @@ export class Model {
       return current;
    }
 
-   private isNotebook(): boolean {
-      return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
+   /** A `.malloynb`, or a `.malloy` the package discovered as a served notebook. */
+   public isNotebook(): boolean {
+      return (
+         this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
+         this.queryBoundary.notebook === true
+      );
+   }
+
+   /** The file format this notebook is written in; `malloy` for a served notebook. */
+   private notebookFormat(): NotebookFormat {
+      return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)
+         ? "malloynb"
+         : "malloy";
+   }
+
+   /** Whether this compiled model has the own `## artifact` note that makes a
+    *  candidate under `notebooks/` a served notebook. */
+   public carriesNotebookArtifactNote(): boolean {
+      return (
+         this.modelDef !== undefined &&
+         ownModelNoteObjects(this.modelDef).some((note) =>
+            isArtifactNoteText(note.text),
+         )
+      );
    }
 
    private isDashboard(): boolean {
@@ -5796,7 +5887,7 @@ export class Model {
    }
 
    public getNotebookError(): MalloyError | Error | undefined {
-      return this.getCompilationError();
+      return this.getCompilationError() ?? this.notebookReaderError();
    }
 
    /**
@@ -5817,7 +5908,10 @@ export class Model {
     * caller; a title equal to the path would just be noise on the wire.
     */
    public getNotebookListing(): { title?: string; description?: string } {
-      if (this.modelType !== "notebook") return {};
+      if (!this.isNotebook()) return {};
+      if (!this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         return this.getServedNotebookListing();
+      }
       // This notebook's own `##` only: a title belongs to one document, so an
       // imported model's `## title=` or `#"` doc comment must not become it.
       const annotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
@@ -5831,6 +5925,122 @@ export class Model {
          title: doc.title ?? this.firstMarkdownHeading(),
          description: doc.description,
       };
+   }
+
+   /**
+    * A served notebook's listing: `title` in the artifact tag, then the first
+    * line of the `"` notes above the artifact line, then the first markdown
+    * heading when no prose precedes it. Notes below the tag are cells, not
+    * description.
+    */
+   private getServedNotebookListing(): {
+      title?: string;
+      description?: string;
+   } {
+      const notes = this.modelDef ? ownModelNoteObjects(this.modelDef) : [];
+      const artifact = motlyTag(notes.map((note) => note.text))?.tag(
+         "artifact",
+      );
+      const doc = docCommentTitleAndDescription(
+         docNotesAboveArtifact(notes),
+         tagText(artifact, "title"),
+      );
+      return {
+         title: doc.title ?? this.firstMarkdownHeading(),
+         description: doc.description,
+      };
+   }
+
+   /**
+    * Attach the cells of a served notebook, which is only known to be one after
+    * discovery, and recompute the givens each cell may name.
+    */
+   public setNotebookCells(cells: RunnableNotebookCell[]): void {
+      this.runnableNotebookCells = cells;
+      this.notebookCellDeclaredGivens = declaredGivensPerCell(cells);
+   }
+
+   /**
+    * Read a served notebook's cells out of `text`, the text this model compiled,
+    * and attach them. A reader refusal becomes this notebook's error and leaves
+    * it with no cells; the model itself keeps serving.
+    */
+   public attachServedNotebookCells(text: string): NotebookDiscoveryOutcome {
+      this.notebookReaderRefusal = undefined;
+      this.notebookAnnotations = undefined;
+      const modelDef = this.modelDef;
+      const materializer = this.modelMaterializer;
+      if (this.compilationError || !modelDef || !materializer) {
+         this.setNotebookCells([]);
+         return "broken";
+      }
+      const refuse = (error: NotebookReaderError) => {
+         this.notebookReaderRefusal = error;
+         this.setNotebookCells([]);
+         return "refused" as const;
+      };
+      const parse = parseNotebookText(text);
+      if (isNotebookReaderError(parse)) return refuse(parse);
+      const read = readNotebookCells(parse, modelDef, text);
+      if (read.error) return refuse(read.error);
+      const anonymousQueries = this.modelInfo?.anonymous_queries ?? [];
+      this.notebookAnnotations = read.annotations;
+      this.setNotebookCells(
+         read.cells.map((cell): RunnableNotebookCell => {
+            if (cell.kind === "markdown") {
+               return { type: "markdown", kind: "markdown", text: cell.text };
+            }
+            if (cell.kind === "definition") {
+               return {
+                  type: "code",
+                  kind: "definition",
+                  text: cell.text,
+                  markdown: cell.markdown,
+                  proseLines: cell.proseLines,
+                  codeLine: cell.codeLine,
+                  caption: cell.caption,
+                  modelDef,
+               };
+            }
+            const k = cell.queryIndex ?? -1;
+            const anonymous = anonymousQueries[k];
+            const compiled = modelDef.queryList[k] as NamedQueryDef | undefined;
+            return {
+               type: "code",
+               kind: "query",
+               text: cell.text,
+               markdown: cell.markdown,
+               proseLines: cell.proseLines,
+               codeLine: cell.codeLine,
+               caption: cell.caption,
+               queryIndex: cell.queryIndex,
+               runnable: materializer.loadQuery(cell.text),
+               modelMaterializer: materializer,
+               // Whole-file given scope: 0.0.432 refuses a forward `$GIVEN`, so no cell reads a later one.
+               modelDef,
+               queryInfo: anonymous && {
+                  ...anonymous,
+                  name: compiled?.as || compiled?.name || "",
+               },
+            };
+         }),
+      );
+      return "ok";
+   }
+
+   /** Why the reader refused this served notebook's cells, if it did. */
+   public getNotebookReaderRefusal(): NotebookReaderError | undefined {
+      return this.notebookReaderRefusal;
+   }
+
+   /** The reader's refusal as the error a notebook that did not compile fails with. */
+   private notebookReaderError(): ModelCompilationError | undefined {
+      const refusal = this.notebookReaderRefusal;
+      return refusal
+         ? new ModelCompilationError({
+              message: `${this.modelPath}: ${refusal.message}`,
+           })
+         : undefined;
    }
 
    /**
@@ -5859,11 +6069,13 @@ export class Model {
       if (this.compilationError) {
          throw this.compilationError;
       }
-      if (this.modelType === "notebook") {
+      if (this.isNotebook()) {
+         const readerError = this.notebookReaderError();
+         if (readerError) throw readerError;
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy under notebooks/ with a ## artifact note.`,
          );
       }
    }
@@ -8070,7 +8282,11 @@ export class Model {
          // export-curated by Malloy; `keep` adds a dashboard's surface rule.
          modelInfo: JSON.stringify(
             this.modelInfo
-               ? { ...this.modelInfo, entries: keep(this.modelInfo.entries) }
+               ? {
+                    ...this.modelInfo,
+                    entries: keep(this.modelInfo.entries),
+                    anonymous_queries: this.publishedRuns(published),
+                 }
                : {},
          ),
          sourceInfos: keep(this.getSourceInfos())?.map((sourceInfo) =>
@@ -8091,8 +8307,8 @@ export class Model {
     *
     * For an ordinary file, its export closure, the same set
     * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
-    * its own, only the exported names that trace to the package surface: a
-    * source it may read, or a query over one.
+    * its own (as does a served notebook), only the exported names that trace
+    * to the package surface: a source it may read, or a query over one.
     */
    private publishedNames(): Set<string> | undefined {
       if (!this.discoveryCurationEnabled) return undefined;
@@ -8100,7 +8316,11 @@ export class Model {
       if (!Array.isArray(exports)) return undefined;
       const names = new Set<string>(exports);
       const { mode, exploresDeclared } = this.queryBoundary;
-      if (!this.isDashboard() || mode === "all" || !exploresDeclared) {
+      if (
+         !(this.isDashboard() || this.isNotebook()) ||
+         mode === "all" ||
+         !exploresDeclared
+      ) {
          return names;
       }
       const readable = (source: string) =>
@@ -8130,15 +8350,8 @@ export class Model {
       // can see; `queryList` holds the file's top-level `run:` statements, each
       // with the source it reads inline. `modelAnnotations`, `dependencies`
       // and `imports` are keyed by file, not by source, and are kept.
-      const runsPublished = (query: unknown) => {
-         const ref = (query as { structRef?: unknown }).structRef;
-         const name =
-            typeof ref === "string"
-               ? ref
-               : ((ref as { as?: string; name?: string } | undefined)?.as ??
-                 (ref as { name?: string } | undefined)?.name);
-         return name !== undefined && published.has(name);
-      };
+      const runsPublished = (query: unknown) =>
+         runReadsPublished(query, published);
       return {
          ...this.modelDef,
          contents: Object.fromEntries(
@@ -8163,13 +8376,29 @@ export class Model {
    }
 
    /**
+    * `modelInfo.anonymous_queries` limited to the runs `publishedModelDef`
+    * keeps in `queryList`: each run's schema lists every column it returns.
+    */
+   private publishedRuns(
+      published: Set<string> | undefined,
+   ): Malloy.ModelInfo["anonymous_queries"] | undefined {
+      const runs = this.modelInfo?.anonymous_queries;
+      if (!published || !runs) return runs;
+      const queryList = this.modelDef?.queryList ?? [];
+      // Index-aligned with `queryList`; when they disagree, show none.
+      if (queryList.length !== runs.length) return [];
+      return runs.filter((_, k) => runReadsPublished(queryList[k], published));
+   }
+
+   /**
     * Whether the model GET may return this file's text. Not when the text
     * names a source the file does not publish, whether it declares it, runs
     * it, or builds on it: the text would show that name and how it is used.
     * Reads identifiers outside comments and string literals, so an import
     * path or a note does not count, and reads a backticked name whole. A
-    * dashboard's text is always returned, because the dashboard editor needs
-    * it to save.
+    * dashboard's text is always returned, because its editor saves through
+    * it; a served notebook has no editor, and its cells' text comes from the
+    * notebook GET.
     */
    public showsFileText(text: string): boolean {
       if (this.isDashboard()) return true;
@@ -8246,7 +8475,8 @@ export class Model {
       cellIndex: number,
       cell: RunnableNotebookCell,
    ): Promise<boolean> {
-      if (!cell.runnable) return true;
+      // Nothing to check an unhydrated cell against, so under a surface it shows nothing.
+      if (!cell.runnable) return this.notebookReadable(cellIndex) === undefined;
       try {
          await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
          return true;
@@ -8256,19 +8486,59 @@ export class Model {
       }
    }
 
+   /**
+    * Which of `modelInfo.anonymous_queries` a cell whose `queryInfo` is shown
+    * describes. A served notebook's query cell names its run; a `.malloynb`'s
+    * model info is its last code cell's compile, whose final run is that cell's
+    * `queryInfo`. A run no shown cell describes is withheld.
+    */
+   private shownRunIndexes(
+      cells: readonly RunnableNotebookCell[],
+      shownCells: ReadonlySet<number>,
+   ): Set<number> {
+      const shown = new Set<number>();
+      if (this.notebookFormat() === "malloy") {
+         cells.forEach((cell, index) => {
+            if (cell.queryIndex !== undefined && shownCells.has(index))
+               shown.add(cell.queryIndex);
+         });
+         return shown;
+      }
+      const last = cells.findLastIndex(
+         (cell) => cell.type === "code" && cell.modelDef !== undefined,
+      );
+      const runs = cells[last]?.modelDef?.queryList.length ?? 0;
+      if (
+         last >= 0 &&
+         shownCells.has(last) &&
+         runs > 0 &&
+         runs === (this.modelInfo?.anonymous_queries?.length ?? 0)
+      ) {
+         shown.add(runs - 1);
+      }
+      return shown;
+   }
+
    private async getNotebookModel(): Promise<ApiRawNotebook> {
       // Return raw cell contents without executing them
-      const cells = this.runnableNotebookCells as RunnableNotebookCell[];
+      const cells = this.runnableNotebookCells ?? [];
       const notebookCells: ApiNotebookCell[] = [];
+      const shownCells = new Set<number>();
       for (const [index, cell] of cells.entries()) {
+         const shown =
+            cell.queryInfo !== undefined &&
+            (await this.showsCellQueryInfo(index, cell));
+         if (shown) shownCells.add(index);
          notebookCells.push({
             type: cell.type,
+            kind: cell.kind,
             text: cell.text,
+            markdown: cell.markdown,
+            proseLines: cell.proseLines,
+            codeLine: cell.codeLine,
+            caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
-            queryInfo:
-               cell.queryInfo && (await this.showsCellQueryInfo(index, cell))
-                  ? JSON.stringify(cell.queryInfo)
-                  : undefined,
+            queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
          } as ApiNotebookCell);
       }
 
@@ -8276,14 +8546,21 @@ export class Model {
       // fold the import lineage the way `modelAnnotations` (`./annotations`)
       // does, so a shared include carrying its own `##(filters)` does not
       // configure the filter panel of every notebook that imports it.
-      const allAnnotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
+      // A served notebook's `"` notes below the tag are its markdown cells, so they are not annotations too.
+      const served = this.notebookFormat() === "malloy";
+      const allAnnotations = served
+         ? (this.notebookAnnotations ?? [])
+         : this.modelDef
+           ? ownModelNotes(this.modelDef)
+           : [];
 
       // `allAnnotations` is already this notebook's own `##` only (see above),
       // which is exactly the scope these three describe: `title`, `autorun` and
       // the starting `givens` belong to one document, and reading them off the
       // folded import lineage would let a shared include set them for every
-      // notebook importing it.
-      const notebookTag = motlyTag(allAnnotations);
+      // notebook importing it. A served notebook declares them in its artifact tag.
+      const ownTag = motlyTag(allAnnotations);
+      const notebookTag = served ? ownTag?.tag("artifact") : ownTag;
 
       // No `as` cast. The literal used to carry `type`, `modelPath`,
       // `modelInfo`, and `queries`, which `RawNotebook` did not declare, so it
@@ -8298,8 +8575,12 @@ export class Model {
       const readable = this.notebookReadable(notebookCells.length - 1);
       const shownSource = (name: string | undefined) =>
          !readable || (name !== undefined && readable(name));
+      const shownRuns = readable
+         ? this.shownRunIndexes(cells, shownCells)
+         : undefined;
       const notebook: ApiRawNotebook = {
          type: "notebook",
+         format: this.notebookFormat(),
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
@@ -8310,6 +8591,12 @@ export class Model {
                     entries: this.modelInfo.entries?.filter((entry) =>
                        entry.kind === "source" ? shownSource(entry.name) : true,
                     ),
+                    // The same surface filter each cell's `queryInfo` gets.
+                    anonymous_queries: shownRuns
+                       ? this.modelInfo.anonymous_queries?.filter((_, k) =>
+                            shownRuns.has(k),
+                         )
+                       : this.modelInfo.anonymous_queries,
                  }
                : {},
          ),
@@ -8332,9 +8619,8 @@ export class Model {
          // holds for an ordinary malformed `##` line, because nothing calls
          // `motlyParseErrors` on a notebook's model-level tags at all, so the
          // parse error it already produces has no reader. Dashboards report both
-         // through the package lint; notebooks have no equivalent channel yet.
-         // Not closed here: it needs a notebook warnings surface, which is its
-         // own change. Filed as a follow-up.
+         // through the package lint; a served notebook's model-level tags are
+         // linted by notebook_lint.ts, but a `.malloynb` has no equivalent channel.
          autorun: readAutorun(notebookTag),
          startingGivens: readStartingGivens(
             notebookTag,
@@ -8358,16 +8644,63 @@ export class Model {
       // field to hand one back on, and an id nobody can read costs the result
       // cache for nothing.
       queryMetadataInput?: ModelQueryMetadataInput,
-   ): Promise<{
-      type: "code" | "markdown";
-      text: string;
-      queryName?: string;
-      result?: string;
-      newSources?: string[];
-   }> {
+   ): Promise<NotebookCellRunResult> {
+      const started = performance.now();
+      const cell = this.runnableNotebookCells?.[cellIndex];
+      // A served run that names no cell (out of range, or refused by the reader) is `none`, never `.malloynb`'s `code`.
+      const kind =
+         this.notebookFormat() === "malloy"
+            ? (cell?.kind ?? "none")
+            : cell?.type === "markdown"
+              ? "markdown"
+              : "code";
+      try {
+         const result = await this.runNotebookCell(
+            cellIndex,
+            filterParams,
+            bypassFilters,
+            givens,
+            abortSignal,
+            queryMetadataInput,
+         );
+         recordNotebookCellExecution(
+            this.notebookFormat(),
+            kind,
+            "ok",
+            performance.now() - started,
+         );
+         return result;
+      } catch (error) {
+         recordNotebookCellExecution(
+            this.notebookFormat(),
+            kind,
+            error instanceof AccessDeniedError
+               ? "denied"
+               : error instanceof NotQueryableError
+                 ? "not_queryable"
+                 : error instanceof BadRequestError ||
+                     error instanceof MalloyError
+                   ? "bad_request"
+                   : "error",
+            performance.now() - started,
+         );
+         throw error;
+      }
+   }
+
+   private async runNotebookCell(
+      cellIndex: number,
+      filterParams: FilterParams | undefined,
+      bypassFilters: boolean | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      abortSignal: AbortSignal | undefined,
+      queryMetadataInput: ModelQueryMetadataInput | undefined,
+   ): Promise<NotebookCellRunResult> {
       if (this.compilationError) {
          throw this.compilationError;
       }
+      const readerError = this.notebookReaderError();
+      if (readerError) throw readerError;
 
       if (!this.runnableNotebookCells) {
          throw new BadRequestError("No notebook cells available");
@@ -8384,6 +8717,7 @@ export class Model {
       if (cell.type === "markdown") {
          return {
             type: cell.type,
+            kind: cell.kind,
             text: cell.text,
          };
       }
@@ -8775,7 +9109,12 @@ export class Model {
             if (errorMessage.trim() === "Model has no queries.") {
                return {
                   type: "code",
+                  kind: cell.kind,
                   text: cell.text,
+                  markdown: cell.markdown,
+                  proseLines: cell.proseLines,
+                  codeLine: cell.codeLine,
+                  caption: cell.caption,
                };
             } else {
                logger.error("Error message: ", errorMessage);
@@ -8786,7 +9125,12 @@ export class Model {
 
       return {
          type: cell.type,
+         kind: cell.kind,
          text: cell.text,
+         markdown: cell.markdown,
+         proseLines: cell.proseLines,
+         codeLine: cell.codeLine,
+         caption: cell.caption,
          queryName: queryName,
          result: queryResult,
          newSources: this.serializeNewSources(cell.newSources, cellIndex),
@@ -8816,6 +9160,9 @@ export class Model {
       importBaseURL: URL;
       dataStyles: DataStyles;
       modelType: ModelType;
+      /** The bytes the compiler read for the model's own `url`, first read
+       *  winning; undefined until a compile has read it, and for any other url. */
+      compiledTextFor: (url: URL) => string | undefined;
    }> {
       // Contain the caller-supplied model path inside the package directory;
       // a path that resolves outside it is reported as a missing model, which
@@ -8849,14 +9196,28 @@ export class Model {
       const baseUrl = new URL(".", modelURL);
       const importBaseURL = baseUrl;
       const overlay = options?.overlay;
-      const urlReader = new HackyDataStylesAccumulator(
+      const inner =
          overlay && overlay.size > 0
             ? {
                  readURL: async (url: URL) =>
                     overlay.get(url.href) ?? (await URL_READER.readURL(url)),
               }
-            : URL_READER,
-      );
+            : URL_READER;
+      // Only the model's own text: the Runtime lives as long as the Model, and imports' text is never asked for.
+      let modelText: string | undefined;
+      const urlReader = new HackyDataStylesAccumulator({
+         readURL: async (url: URL) => {
+            const contents = await inner.readURL(url);
+            if (
+               modelText === undefined &&
+               url.toString() === modelURL.toString()
+            ) {
+               modelText =
+                  typeof contents === "string" ? contents : contents.contents;
+            }
+            return contents;
+         },
+      });
 
       // Request runtimes borrow the cached package MalloyConfig. The package
       // owns release; callers must not release this runtime per request.
@@ -8868,7 +9229,15 @@ export class Model {
             : undefined,
       });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
-      return { runtime, modelURL, importBaseURL, dataStyles, modelType };
+      return {
+         runtime,
+         modelURL,
+         importBaseURL,
+         dataStyles,
+         modelType,
+         compiledTextFor: (url: URL) =>
+            url.toString() === modelURL.toString() ? modelText : undefined,
+      };
    }
 
    private static toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
@@ -9259,6 +9628,20 @@ function hydrateMarkdownOnlyCells(
       // A code cell without a hydratable scope — surface text only.
       return { type: "code", text: sc.text };
    });
+}
+
+/** Whether a top-level `run:` reads a source named in `published`. */
+function runReadsPublished(
+   query: unknown,
+   published: ReadonlySet<string>,
+): boolean {
+   const ref = (query as { structRef?: unknown }).structRef;
+   const name =
+      typeof ref === "string"
+         ? ref
+         : ((ref as { as?: string; name?: string } | undefined)?.as ??
+           (ref as { name?: string } | undefined)?.name);
+   return name !== undefined && published.has(name);
 }
 
 /** The keys of a compiled struct that hold a `name@file` identity of another
