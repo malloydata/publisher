@@ -204,10 +204,13 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       });
 
       it("describes every run on the model GET, over imports it does not export too", async () => {
-         const { status, body } = await getJson<{ modelInfo?: string }>(
-            pkgUrl(PLAIN, "/models/notebooks/tagged_runs.malloy"),
-         );
+         const { status, body } = await getJson<{
+            modelInfo?: string;
+            sourceText?: string;
+         }>(pkgUrl(PLAIN, "/models/notebooks/tagged_runs.malloy"));
          expect(status).toBe(200);
+         // With no surface nothing is unpublished, so the file text comes back.
+         expect(body.sourceText).toContain("## artifact");
          const info = JSON.parse(body.modelInfo ?? "{}") as {
             anonymous_queries?: unknown[];
          };
@@ -455,6 +458,14 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          // Positive control: a run over a curated source is still described.
          expect(columns).toContain("order_count");
          expect(modelInfo).not.toContain("secret_total");
+      });
+
+      it("lists only the named queries over readable sources on the notebook GET", async () => {
+         const { body } = await getJson<{ queries?: { name?: string }[] }>(
+            pkgUrl(SURFACE, `/notebooks/${CELLS}`),
+         );
+         // `hidden_q` reads the hidden source, so only `own_cells_query` is listed.
+         expect(body.queries?.map((q) => q.name)).toEqual(["own_cells_query"]);
       });
 
       it("applies the cells' surface filter to a .malloynb GET's model info", async () => {

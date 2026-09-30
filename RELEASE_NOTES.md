@@ -75,7 +75,7 @@ Behavior changes to know about:
 
 ## [Unreleased] — `dashboard_columns` is read again, as a deprecated alias
 
-The 0.8.x note that said `dashboard_columns` is gone is superseded.
+The 0.2.1 note that said `dashboard_columns` is gone is superseded.
 `dashboard { columns=N }` beside the artifact tag stays the canonical grid width, and
 `dashboard_columns=N` inside the artifact tag is a deprecated alias that Publisher reads when
 `columns` is absent. It draws a warning, and when the two disagree it is an error naming both values

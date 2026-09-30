@@ -28,7 +28,7 @@ put the server behind your own gateway before exposing it beyond localhost.
     │   ├── /models/{path}              a .malloy model
     │   │   ├── /query                  POST — run a Malloy query
     │   │   └── /compile                POST — compile to SQL / metadata
-    │   ├── /notebooks/{path}           a .malloynb notebook
+    │   ├── /notebooks/{path}           a notebooks/*.malloy notebook, or a legacy .malloynb
     │   │   └── /cells/{index}          GET — run one notebook cell
     │   ├── /dashboards                 `# artifact` dashboards in dashboards/
     │   │   └── /{name}                 GET, one dashboard's manifest

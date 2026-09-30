@@ -19,8 +19,8 @@ branch `sdk/dashboard-document`) at `…/dashboards/<slug>/edit`, edits real
 package dashboards, saves into the browser's document storage, and exports the
 file. Every item in §5 that needs no API, renderer or format change has
 shipped; the rest is deferred by decision, with the reason recorded beside it.
-On 2026-09-29 the notebook format was decided (§7); its server reader,
-renderer and builder are in progress.
+On 2026-09-29 the notebook format was decided (§7); the server reader and
+renderer have shipped, and the builder is in progress.
 
 ## 1. What the research established
 
@@ -104,7 +104,7 @@ one by inventing structure it does not report.
 | Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                                                                                                                                                                                  |
 | Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says; each tile has "Explore from here" into the model explorer.                                                                                                                                                   |
 | Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, rows shown, explored — each with outcome and duration. The Console logs them structured.                                                                                                                                                                                |
-| Notebooks                  | `.malloynb` is deprecated: viewed read-only (`Notebook`), never written, and gone from the bundled examples. The authored notebook is a `notebooks/*.malloy` file whose format was decided 2026-09-29 (§7); the reader, renderer and builder are in progress.                                                                                |
+| Notebooks                  | `.malloynb` is deprecated: viewed read-only (`Notebook`), never written, and gone from the bundled examples. The authored notebook is a `notebooks/*.malloy` file whose format was decided 2026-09-29 (§7); the reader and renderer have shipped, and the builder is in progress.                                                                                |
 | Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page and package page (Add dashboard, Drafts); the write path `PUT …/models/dashboards/<slug>.malloy`.                                                                                                                                                                |
 
 ## 3. Gaps against the state of the art

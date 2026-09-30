@@ -153,12 +153,11 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(runColumns(body.modelInfo)).toEqual([["order_count"], ["n"]]);
    });
 
-   it("still returns the declared givens and the file text", async () => {
+   it("still returns the declared givens, and withholds file text that names a hidden-derived source", async () => {
       const body = await getModel();
       expect(body.givens?.map((g) => g.name)).toEqual(["REGION"]);
-      // The text names the hidden-derived `loc`; a notebook's text is returned
-      // anyway, as a dashboard's is.
-      expect(body.sourceText).toContain("source: loc is hidden extend {}");
+      // The text names the hidden-derived `loc`, so the model GET withholds it as it would any model's.
+      expect(body.sourceText).toBeUndefined();
    });
 
    it("does not list the notebook as a model, and lists it as a notebook", async () => {

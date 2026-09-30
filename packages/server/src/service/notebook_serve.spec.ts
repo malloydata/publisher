@@ -115,6 +115,30 @@ describe("hasArtifactLineOutsideBlocks", () => {
          false,
       );
    });
+
+   it("closes a block only where the lexer does: at the opener's column, and `|#` not as `|##`", () => {
+      // A `|##` body line does not close a `#|` block, so the tag-like line after it stays prose.
+      expect(
+         hasArtifactLineOutsideBlocks(
+            "#|(markdown)\n|## x\n## artifact {}\n|#\nrun: x",
+            TAG,
+         ),
+      ).toBe(false);
+      // A closer indented past the opener's column does not close it either.
+      expect(
+         hasArtifactLineOutsideBlocks(
+            "##|(markdown)\n  |##\n## artifact {}\n|##\nrun: x",
+            TAG,
+         ),
+      ).toBe(false);
+      // Positive control: the closer at the opener's column ends the block.
+      expect(
+         hasArtifactLineOutsideBlocks(
+            "#|(markdown)\nprose\n|#\n## artifact {}\nrun: x",
+            TAG,
+         ),
+      ).toBe(true);
+   });
 });
 
 describe("served notebooks (worker path)", () => {

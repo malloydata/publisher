@@ -10,6 +10,7 @@ import {
 } from "@malloydata/malloy";
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
+import { closesBlock } from "./query_text";
 import { docCommentText } from "./motly";
 
 /** The package-relative directory a served notebook must live in. */
@@ -96,7 +97,7 @@ export function dashboardDescriptionNotes(
 }
 
 /**
- * Whether raw file text has a line matching `artifact` outside a `##|"` (or
+ * Whether raw file text has a line matching `artifact` outside a `##|` (or
  * `#|`) block body, whose prose could otherwise pass for a tag. For a file that
  * did not compile, where no note can be read.
  */
@@ -111,9 +112,10 @@ export function hasArtifactLineOutsideBlocks(
       if (opener) {
          const wanted = `|${opener[1]}`;
          if (trimmed.includes(wanted, opener[0].length)) continue;
+         const column = lines[i].length - trimmed.length;
          let end = -1;
          for (let at = i + 1; at < lines.length; at++)
-            if (lines[at].trimStart().startsWith(wanted)) {
+            if (closesBlock(lines[at], 0, column, wanted)) {
                end = at;
                break;
             }

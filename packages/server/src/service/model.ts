@@ -8376,11 +8376,12 @@ export class Model {
     * it, or builds on it: the text would show that name and how it is used.
     * Reads identifiers outside comments and string literals, so an import
     * path or a note does not count, and reads a backticked name whole. A
-    * dashboard's or served notebook's text is always returned, because the
-    * editor needs it to save.
+    * dashboard's text is always returned, because its editor saves through
+    * it; a served notebook has no editor, and its cells' text comes from the
+    * notebook GET.
     */
    public showsFileText(text: string): boolean {
-      if (this.isDashboard() || this.isNotebook()) return true;
+      if (this.isDashboard()) return true;
       const published = this.publishedNames();
       if (!published) return true;
       const unpublished = new Set(
