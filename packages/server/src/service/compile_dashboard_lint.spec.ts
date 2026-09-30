@@ -187,6 +187,19 @@ describe("compile_model, package scope: curation findings", () => {
       expect(refused.map((p) => p.model)).toContain("dashboards/tiles.malloy");
    });
 
+   it("reports only the intended findings for a well-formed convention package", async () => {
+      await install("dashboards-convention");
+      const { problems } = await compilePackage("dashboards-convention");
+
+      // The fixture's artifact tags are well formed, so the only findings are
+      // the three tiles the surface withholds. A malformed tag shows up here as
+      // an "Unknown render tag" on the dashboard.
+      expect(problems.map((p) => p.message)).toHaveLength(3);
+      expect(
+         problems.some((p) => p.message.includes("Unknown render tag")),
+      ).toBe(false);
+   });
+
    it("reports nothing of the kind for a package with no curated surface", async () => {
       await install("dashboards-lint");
       const { problems } = await compilePackage("dashboards-lint");
