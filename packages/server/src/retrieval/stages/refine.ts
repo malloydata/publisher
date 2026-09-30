@@ -11,6 +11,7 @@ import {
    refineLine,
 } from "../prompts/refine";
 import type { EgressClasses, RelevanceLevel, RetrievalConfig } from "../retrieval_config";
+import { mapWithLimit } from "../pool";
 import type { RunLlm } from "../run";
 import { finalizeRelevance, levelBelow, levelValue, round4 } from "../scoring";
 import type {
@@ -61,26 +62,6 @@ function describe<T extends StageRow>(
    if (!egress.docs) return "";
    const text = rep.embedDoc || rep.keyphrase || "";
    return text.length > cfg.descChars ? `${text.slice(0, cfg.descChars)}…` : text;
-}
-
-/** `items.map(fn)` with at most `limit` calls running at once; results keep their order. */
-async function mapWithLimit<T, R>(
-   items: readonly T[],
-   limit: number,
-   fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-   const out = new Array<R>(items.length);
-   let next = 0;
-   const worker = async () => {
-      while (next < items.length) {
-         const i = next++;
-         out[i] = await fn(items[i]);
-      }
-   };
-   await Promise.all(
-      Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker),
-   );
-   return out;
 }
 
 function sha(parts: string[]): string {
@@ -316,13 +297,17 @@ export async function runRefine<T extends StageRow>(args: {
             }
          }
          // A field reached through a join is a step further from the question.
-         // Only the similarity part is discounted: the service damped the whole
-         // score, so a HIGH one join away scored like a MEDIUM at home, which
-         // undid the rating the LLM had just given.
+         // By default only the similarity part is discounted (`fraction`): the
+         // service's code damps the whole score (`whole`), so a HIGH one join
+         // away scores like a MEDIUM at home, which undoes the rating the LLM
+         // just gave. Both are here so the two can be compared.
          const hops = r.joinPath ? r.joinPath.split(".").length : 0;
          const damping = config.scoring.joinDepthDamping;
-         const similarity = hops > 0 && damping < 1 ? cosine * damping ** hops : cosine;
-         const raw = levelValue(level) + similarity;
+         const damp = hops > 0 && damping < 1 ? damping ** hops : 1;
+         const raw =
+            config.scoring.joinDampingMode === "whole"
+               ? (levelValue(level) + cosine) * damp
+               : levelValue(level) + cosine * damp;
          targetScores.set(t, round4(finalizeRelevance(raw, config.scoring.knots)));
          if (reason) reasons.set(t, reason);
          if (raw > bestRaw) {

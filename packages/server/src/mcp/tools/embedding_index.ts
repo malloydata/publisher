@@ -4,6 +4,7 @@
 import { createHash } from "crypto";
 import { E_ALREADY_LOCKED, Mutex, tryAcquire } from "async-mutex";
 import { logger } from "../../logger";
+import { getRetrievalConfig } from "../../retrieval/retrieval_config";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { Package } from "../../service/package";
 import {
@@ -167,13 +168,15 @@ export function embeddingText(entity: EmbeddableEntity): string {
 export const NAME_FACET = "name";
 /** The LLM keyphrase facet, and the prefix of a source's LLM summary facets. */
 export const KEYPHRASE_FACET = "kw";
+/** The single row per entity under `embedding.representation: "single"`. */
+export const ONE_FACET = "one";
 export const SUMMARY_FACET_PREFIX = "sum:";
 /**
  * The facet FAMILIES a query-time allow-list can name. `doc` and `sum` are
  * families (doc:0, doc:1, ...) and match by prefix; `name` and `kw` match
  * exactly.
  */
-export const FACET_FAMILIES = ["name", "doc", "kw", "sum"] as const;
+export const FACET_FAMILIES = ["name", "doc", "kw", "sum", "one"] as const;
 
 /**
  * Target and hard ceiling for one doc chunk, in characters, and the most
@@ -336,8 +339,17 @@ export function chunkDoc(doc: string): string[] {
 export function entityFacets(
    entity: EmbeddableEntity,
    extras?: FacetExtras,
+   representation: "facets" | "single" = getRetrievalConfig().embedding.representation,
 ): EntityFacet[] {
    const name = humanizeName(entity.name) || entity.name;
+   if (representation === "single") {
+      // One vector per entity, as Credible's hosted retrieval embeds it: the
+      // generated keyphrase when there is one, else the entity's own doc, else
+      // its name. The name is NOT added to the doc, and no summary is embedded.
+      const text =
+         extras?.keyphrase?.trim() || entity.embedDoc.replace(/\s+/g, " ").trim() || name;
+      return [{ facet: ONE_FACET, text: splitToFit(text, MAX_EMBED_INPUT_CHARS)[0] }];
+   }
    const facets: EntityFacet[] = [{ facet: NAME_FACET, text: name }];
    // The prefix is only known here, so this is the only place that can tell
    // whether a chunk will fit the provider's input cap. A chunk that does not
@@ -1333,6 +1345,13 @@ export async function trySemanticSearch(args: {
     */
    queries: Array<{ targetIndex: number; text: string; kinds: string[] }>;
    limit: number;
+   /**
+    * Also keep at most this many rows of each source per target (the best of
+    * each). With it, a source that matches weakly still contributes its best
+    * rows instead of being crowded out of `limit`; omit it for the plain
+    * package-wide window.
+    */
+   perSourceLimit?: number;
    sourceName?: string;
    /**
     * The (kind, source, name) triples the caller's scope admits, when it
@@ -1610,12 +1629,15 @@ export async function trySemanticSearch(args: {
                       -- name in several sources scores identically, and
                       -- without them DuckDB's parallel scan decides which
                       -- one falls inside the window.
-                      -- Source and kind break a tie on name: the same field
-                      -- name in several sources scores identically, and
-                      -- without them DuckDB's parallel scan decides which
-                      -- one falls inside the window.
                       ORDER BY score DESC, entity_name, entity_source, entity_kind
-                   ) AS rn
+                   ) AS rn,
+                   -- The same order within one source, for the per-source
+                   -- window: the best rows of EACH source, so a source that
+                   -- matches weakly still contributes its best.
+                   ROW_NUMBER() OVER (
+                      PARTITION BY target_idx, entity_source
+                      ORDER BY score DESC, entity_name, entity_kind
+                   ) AS rn_src
             FROM scored
             WHERE score >= ?
          ),
@@ -1627,7 +1649,7 @@ export async function trySemanticSearch(args: {
               ON p.entity_kind = h.entity_kind
              AND p.entity_source = h.entity_source
              AND p.entity_name = h.entity_name
-            WHERE h.rn <= ?
+            WHERE h.rn <= ? AND h.rn_src <= ?
          )
          SELECT agg.total, agg.below,
                 h.entity_kind, h.entity_source, h.entity_name, h.best,
@@ -1655,6 +1677,7 @@ export async function trySemanticSearch(args: {
             floor,
             floor,
             limit,
+            args.perSourceLimit ?? 1_000_000_000,
          ],
       );
 

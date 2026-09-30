@@ -144,7 +144,10 @@ export function beginRun(
    }
 
    const fingerprint = retrievalConfigFingerprint(config);
-   const llmStagesOn = config.refine.enabled || config.rerank.enabled;
+   const llmStagesOn =
+      config.refine.enabled ||
+      config.rerank.enabled ||
+      (config.dimensionalValues.mode !== "off" && config.dimensionalValues.refine.enabled);
    const runner = llmStagesOn ? getLlmRunner(config) : null;
    return {
       ok: true,

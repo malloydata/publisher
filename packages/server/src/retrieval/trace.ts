@@ -22,6 +22,7 @@ export type GateName =
    | "index"
    | "candidate"
    | "value_attach"
+   | "value_refine"
    | "refine"
    | "rerank"
    | "gap_cut"

@@ -51,6 +51,11 @@ What is new, each behind its own switch in a `retrieval` block in `publisher.con
 - **Hybrid fusion.** Merges the lunr ranking into the embedding ranking (`hybrid.mode`).
 - **Embedding prefixes.** `embedding.queryPrefix` and `documentPrefix` for models that expect a
   different prefix for a short question than for a document.
+- **Settings that match Credible's hosted retrieval,** so a result found locally carries over:
+  `embedding.representation: single` (one vector per entity), `candidates.window: per-source` (the best
+  rows of each source), `dimensionalValues.refine` (an LLM rates matched values), and
+  `scoring.joinDampingMode: whole`. See
+  [docs/configuration.md](docs/configuration.md#matching-credibles-hosted-retrieval).
 
 To try it: set `LLM_API_BASE` (and `LLM_MODEL`, and `LLM_API_KEY` if the endpoint needs one), then
 switch stages on in the `retrieval` block. A server with only `EMBEDDING_API_BASE` set now also

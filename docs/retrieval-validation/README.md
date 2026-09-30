@@ -64,9 +64,14 @@ Each of these showed up as a result that did not match the design. All are fixed
 8. **The rerank prompt never got the generated source summary or the matched dimension values,** although
    the prompt has a place for both. Both are wired, each behind its own egress class.
 
-**Removed because nothing used them:** `egress.sampleValues`, `egress.userPrompt`,
-`dimensionalValues.sampleCount`, and `dimensionalValues.refine` (an LLM step for values that was planned
-and not built).
+**Removed because nothing used them:** `egress.sampleValues`, `egress.userPrompt` and
+`dimensionalValues.sampleCount`.
+
+**Added afterwards, to match Credible's hosted retrieval** (after comparing the two code bases):
+`dimensionalValues.refine` (an LLM rates matched values; an earlier version of this guide wrongly called it
+an unbuilt extra and removed it), `candidates.window: per-source`, `embedding.representation: single`, and
+`scoring.joinDampingMode: whole`. These were added after the runs described below, so **none of the numbers
+in this guide include them**. They are in [../configuration.md](../configuration.md#matching-credibles-hosted-retrieval).
 
 Also corrected in the docs: a stage switched on with no LLM at all is a startup *warning*, not an error;
 keyphrases are written for fields with **no doc or a long doc**, not a short one; `schemaContext` sends
@@ -414,6 +419,52 @@ Tag a dimension `#(index)` and a question naming one of its values finds the dim
 - At start-up, a wrong key, a wrong value or an out-of-range number stops the server with a message naming
   the setting and a suggested fix (including "Did you mean ..." for typos).
 - `trace.defaultLevel: summary` adds a `retrieval_trace` with no header; by default there is none.
+
+## The settings that match Credible's hosted retrieval
+
+Added after the runs above, and run once against the same real models (`scenario_parity.py`). Same seven
+questions, so the columns mean what they did in "Reading the numbers".
+
+| setting | entities | chars | found | rank | LLM calls |
+|---|---|---|---|---|---|
+| facets, global window (Publisher's defaults) | 50.4 | 35,700 | 6/6 | 15.2 | 0 |
+| facets, `per-source` window | 78.7 | 48,400 | 6/6 | 16.2 | 0 |
+| facets, `per-source`, refine | 11.3 | 11,300 | 6/6 | 4.2 | 47 |
+| `single`, global window | 52.4 | 37,900 | 6/6 | 13.2 | 0 |
+| `single`, `per-source` window | 73.9 | 47,400 | 6/6 | 13.2 | 0 |
+| **`single`, `per-source`, refine (Credible-like)** | 10.1 | 10,500 | 6/6 | 4.0 | 43 |
+| `single`, `per-source`, refine, rerank `drop` | 7.3 | 7,900 | 5/6 | 4.8 | 49 |
+
+- **`per-source` widens the pool, not the answer.** Each source's best rows are kept, so 50 entities become
+  79. The answer does not move up. Its value shows on a package where a weakly matching source would
+  otherwise be crowded out, and refine is what brings the size back down.
+- **`single` makes no visible difference to the answer** on this package (rank 13.2 against 15.2), but it
+  changed one thing: the unrelated "weather" question returned nothing, where the facets index returned 6
+  entities. With one vector per entity there is no separate name row to match on by accident. It also
+  halves the index (400 rows against 739).
+- **Credible-like (`single` + `per-source` + refine)** matches Publisher's own best (facets + refine) on this
+  package: 10 entities, all six found. On these seven questions the two representations are a wash; the
+  difference should show on a larger, less clean set, which is what the eval datasets are for.
+- **Rerank `drop` lost an answer again** (5/6), as before.
+- **Fresh indexes are not bit-identical.** `facets, global` scored rank 15.2 here and 14.8 in the earlier run,
+  with the same entities and characters. A hosted embedding model returns slightly different vectors on
+  each call, which reorders near-ties. Not confirmed directly. Treat differences under about a position as
+  noise until an A/A run sets the band.
+
+**Value refine** (`dimensionalValues.refine`, `gpt-4o-mini`, one call per question):
+
+| phrase | values without | values with | what was kept |
+|---|---|---|---|
+| `Jeans` | 20 in 2 dimensions | 10 in 2 | `Jeans`, `Pants`; the brands containing "Jeans" |
+| `Denim` | 20 in 2 | 2 in 1 | `Jeans`, `Pants` (a meaning match survives) |
+| `Organic` | 22 in 4 | 1 in 1 | `Organic` |
+| `Female` | 23 in 4 | 3 in 3 | `Female`, and `Maternity` |
+| `Nonexistent` | 15 in 4 | **0** | nothing, which is the right answer |
+| `Men` | 25 in 4 | 1 in 1 | `Male` |
+| `Levi` | 18 in 3 | 1 in 1 | `Levi's` |
+
+This is the step that fixes the noisy value hits described earlier: a loose similarity floor no longer
+matters much, because the model rejects what only looks similar. It costs one call per value question.
 
 ## Which setting for which goal
 

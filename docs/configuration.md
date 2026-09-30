@@ -392,6 +392,11 @@ value-indexed, because its values differ per caller and the index is shared.
 values, most frequent first. Lookup needs no embedding endpoint: exact, prefix and near-spelling
 matches work without one. With embeddings on, a value is also found by meaning.
 
+Left alone, a value search returns everything that looks a little like the phrase. Turn on
+`dimensionalValues.refine` and an LLM rates each matched value LOW, MEDIUM or HIGH against the phrase,
+keeping only MEDIUM and up (batches of 15, at most 10 per source and 120 in all, as Credible does). It
+sends the candidate values to the LLM, so it also needs `egress.dimensionalValues`.
+
 A value hit comes back as the dimension that holds it, with the matching values under it in
 `values`. `values_indexed` says a dimension has an index. `values_truncated` says it was cut at a
 cap, so a missing value is not proof it does not exist.
@@ -432,11 +437,12 @@ request, so one warm server can serve every point of a sweep.
 
 | Group | Main knobs |
 |---|---|
-| `embedding` | `minSimilarity`, `queryPrefix`, `documentPrefix`, `extraBody`, `queryExtraBody`, `facets` (which of `name`, `doc`, `kw`, `sum` to score) |
-| `candidates` | `perTargetLimit` |
+| `embedding` | `minSimilarity`, `queryPrefix`, `documentPrefix`, `extraBody`, `queryExtraBody`, `facets` (which of `name`, `doc`, `kw`, `sum`, `one` to score), `representation` (`facets` or `single`) |
+| `candidates` | `perTargetLimit`, `window` (`global` or `per-source`), `perSourceLimit` (10) |
 | `refine` | `enabled`, `minLevel` (`MEDIUM`), `dropOmitted`, `unscoredLevel`, `maxPerSource`, `maxCandidates`, `batchSize`, `skipIfAtMost`, `onLexical` |
 | `rerank` | `enabled`, `topSources` (8), `minScore` (2), `beyondTop` (`keep` or `drop`), `maxEntityLines`, `skipIfAtMost` |
-| `scoring` | `knots`, `joinDepthDamping`, `sourceRelevance` (`best-hit` or `coverage`) |
+| `scoring` | `knots`, `joinDepthDamping`, `joinDampingMode` (`fraction` or `whole`), `sourceRelevance` (`best-hit` or `coverage`) |
+| `dimensionalValues.refine` | `enabled`, `minLevel` (`MEDIUM`), `batchSize` (15), `maxPerSource` (10), `maxCandidates` (120) |
 | `response` | `maxEntitiesPerSourceTarget` (10), `maxChars`, `gapCut`, `matchReason`, `surfaceGenerated` |
 | `hybrid` | `mode` (`off`, `rerank-only`, `union`), `rrfK` (60) |
 | `llm` | `model`, `models` (per stage), `temperature`, `seed`, `timeoutMs`, `concurrency`, `jsonMode`, `extraBody`, `cache` |
@@ -453,6 +459,40 @@ re-embeds on the next question.
 `hybrid.mode` `rerank-only` reorders what the embedding search already found, so
 `below_cutoff_count` keeps its meaning. `union` also returns entities only lunr found, which have no
 `relevance` of their own.
+
+### Matching Credible's hosted retrieval
+
+Publisher's defaults are its own. Four settings reproduce what Credible's hosted `get_context` does, so a
+result found locally can be carried over. Each is a separate setting, so each can also be compared with
+Publisher's default:
+
+| Credible does | Setting | Default | Credible-like |
+|---|---|---|---|
+| Embeds one vector per entity: the keyphrase, else the doc | `embedding.representation` | `facets` (name, doc chunks, keyphrase, summary; best facet wins) | `single` (with `enrichment` on so keyphrases exist) |
+| Keeps the best 10 rows of each source | `candidates.window`, `perSourceLimit` | `global`, cut across the package | `per-source`, `10` |
+| Rates matched dimension values with an LLM and drops the omitted | `dimensionalValues.refine.enabled` | off | on (needs `egress.dimensionalValues`) |
+| Drops sources past the top 8 after reranking | `rerank.beyondTop` | `keep` | `drop` |
+| Damps the whole score by 0.9 per join | `scoring.joinDepthDamping`, `joinDampingMode` | `1`, `fraction` | `0.9`, `whole` |
+
+```jsonc
+{
+  "retrieval": {
+    "embedding": { "representation": "single" },
+    "candidates": { "window": "per-source", "perSourceLimit": 10 },
+    "enrichment": { "enabled": true },
+    "refine": { "enabled": true },
+    "rerank": { "enabled": true, "beyondTop": "drop" },
+    "scoring": { "joinDepthDamping": 0.9, "joinDampingMode": "whole" },
+    "dimensionalValues": { "mode": "annotated", "refine": { "enabled": true } },
+    "egress": { "dimensionalValues": true }
+  }
+}
+```
+
+`single` changes what is embedded, so a package re-embeds when it changes. In `single` mode the source
+summary is not embedded, so `enrichment.sourceSummary` only costs calls. Not reproduced: Credible fails a
+request when refine or rerank fails (Publisher keeps its input order and says so), its separate LLM pass
+for `source` targets, and its withheld-values card for gated sources.
 
 ### Changing settings for one request
 

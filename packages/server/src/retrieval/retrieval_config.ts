@@ -36,6 +36,7 @@ export interface RetrievalConfig {
          rerank: string | null;
          keyphrase: string | null;
          summary: string | null;
+      valueRefine: string | null;
       };
       temperature: number;
       seed: number;
@@ -76,12 +77,29 @@ export interface RetrievalConfig {
       extraBody: Record<string, unknown>;
       /** Merged over extraBody for query requests only (e.g. a query task type). */
       queryExtraBody: Record<string, unknown>;
-      /** Query-time allow-list of facets to score: name, doc, kw, sum. */
+      /** Query-time allow-list of facets to score: name, doc, kw, sum (or one). */
       facets: string[] | null;
+      /**
+       * What is embedded for an entity. `facets` (default): its name, its doc in
+       * chunks, and any generated keyphrase and summary, scored as the best of
+       * them. `single`: ONE vector per entity, the generated keyphrase if there
+       * is one, else its doc, else its name. That is what Credible's hosted
+       * retrieval embeds, so `single` is the setting to compare against it.
+       * Part of the index: changing it re-embeds the package.
+       */
+      representation: "facets" | "single";
    };
    candidates: {
       /** null: min(150, limit * 3), as before. */
       perTargetLimit: number | null;
+      /**
+       * How the candidates a target may claim are cut. `global` (default): the
+       * best `perTargetLimit` rows of the whole package. `per-source`: the best
+       * `perSourceLimit` of EACH source, so a weakly matching source still
+       * contributes its best rows (Credible's window).
+       */
+      window: "global" | "per-source";
+      perSourceLimit: number;
    };
    refine: {
       enabled: boolean;
@@ -117,8 +135,15 @@ export interface RetrievalConfig {
    scoring: {
       /** Piecewise-linear map from the raw [0,4] score to the wire [0,1]. */
       knots: Array<[number, number]>;
-      /** Multiplier per join hop on the fractional part only. 1 = off. */
+      /** Multiplier per join hop. 1 = off. */
       joinDepthDamping: number;
+      /**
+       * What the multiplier applies to. `fraction` (default): the similarity
+       * part only, so a HIGH rating stays HIGH one join away. `whole`: the whole
+       * level-plus-similarity score, as Credible's code does, which can push a
+       * joined hit down a level.
+       */
+      joinDampingMode: "fraction" | "whole";
       sourceRelevance: "best-hit" | "coverage";
    };
    response: {
@@ -166,6 +191,19 @@ export interface RetrievalConfig {
       minSimilarity: number | null;
       maxHitsPerTarget: number;
       template: string;
+      /**
+       * An LLM rates each matched value against the phrase, as Credible's
+       * hosted retrieval does, and drops the ones it leaves out or rates below
+       * `minLevel`. Sends the candidate values to the LLM, so it needs
+       * `egress.dimensionalValues`.
+       */
+      refine: {
+         enabled: boolean;
+         minLevel: RelevanceLevel;
+         batchSize: number;
+         maxPerSource: number;
+         maxCandidates: number;
+      };
    };
    hybrid: { mode: "off" | "rerank-only" | "union"; rrfK: number };
    trace: { defaultLevel: "off" | "summary" | "full" };
@@ -180,6 +218,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
          rerank: null,
          keyphrase: null,
          summary: null,
+         valueRefine: null,
       },
       temperature: 0,
       seed: 7,
@@ -209,8 +248,9 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
       extraBody: {},
       queryExtraBody: {},
       facets: null,
+      representation: "facets",
    },
-   candidates: { perTargetLimit: null },
+   candidates: { perTargetLimit: null, window: "global", perSourceLimit: 10 },
    refine: {
       enabled: false,
       minLevel: "MEDIUM",
@@ -245,6 +285,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
          [4, 1],
       ],
       joinDepthDamping: 1,
+      joinDampingMode: "fraction",
       sourceRelevance: "best-hit",
    },
    response: {
@@ -288,6 +329,14 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
       minSimilarity: null,
       maxHitsPerTarget: 40,
       template: "{value}",
+      // Credible's numbers: batches of 15, at most 10 per source, 120 in all.
+      refine: {
+         enabled: false,
+         minLevel: "MEDIUM",
+         batchSize: 15,
+         maxPerSource: 10,
+         maxCandidates: 120,
+      },
    },
    hybrid: { mode: "off", rrfK: 60 },
    trace: { defaultLevel: "off" },
@@ -332,6 +381,7 @@ const SCHEMA: Node = g({
          rerank: nstr,
          keyphrase: nstr,
          summary: nstr,
+         valueRefine: nstr,
       }),
       temperature: { t: "num", min: 0, max: 2 },
       seed: int(0, 2_147_483_647),
@@ -361,8 +411,13 @@ const SCHEMA: Node = g({
       extraBody: { t: "record" },
       queryExtraBody: { t: "record" },
       facets: { t: "strList", nullable: true },
+      representation: { t: "enum", values: ["facets", "single"] },
    }),
-   candidates: g({ perTargetLimit: int(1, 1_000, true) }),
+   candidates: g({
+      perTargetLimit: int(1, 1_000, true),
+      window: { t: "enum", values: ["global", "per-source"] },
+      perSourceLimit: int(1, 200),
+   }),
    refine: g({
       enabled: bool,
       minLevel: { t: "enum", values: LEVELS },
@@ -391,6 +446,7 @@ const SCHEMA: Node = g({
    scoring: g({
       knots: { t: "knots" },
       joinDepthDamping: { t: "num", min: 0, max: 1 },
+      joinDampingMode: { t: "enum", values: ["fraction", "whole"] },
       sourceRelevance: { t: "enum", values: ["best-hit", "coverage"] },
    }),
    response: g({
@@ -434,6 +490,13 @@ const SCHEMA: Node = g({
       minSimilarity: { t: "num", min: 0, max: 1, maxExclusive: true, nullable: true },
       maxHitsPerTarget: int(1, 1_000),
       template: { t: "str" },
+      refine: g({
+         enabled: bool,
+         minLevel: { t: "enum", values: LEVELS },
+         batchSize: int(1, 100),
+         maxPerSource: int(1, 1_000),
+         maxCandidates: int(1, 2_000),
+      }),
    }),
    hybrid: g({
       mode: { t: "enum", values: ["off", "rerank-only", "union"] },
@@ -686,6 +749,7 @@ const OVERRIDABLE_PREFIXES = [
    "llm.cache.",
    "dimensionalValues.minSimilarity",
    "dimensionalValues.maxHitsPerTarget",
+   "dimensionalValues.refine.",
 ];
 
 function leafPaths(v: unknown, prefix: string, out: string[]): void {

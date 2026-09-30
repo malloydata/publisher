@@ -316,6 +316,55 @@ describe("fingerprint", () => {
    });
 });
 
+describe("the Credible-parity settings", () => {
+   it("default to Publisher's own behavior, so an unconfigured server is unchanged", () => {
+      const c = resolveRetrievalConfig(undefined);
+      expect(c.embedding.representation).toBe("facets");
+      expect(c.candidates).toEqual({ perTargetLimit: null, window: "global", perSourceLimit: 10 });
+      expect(c.scoring.joinDampingMode).toBe("fraction");
+      expect(c.dimensionalValues.refine).toEqual({
+         enabled: false,
+         minLevel: "MEDIUM",
+         batchSize: 15,
+         maxPerSource: 10,
+         maxCandidates: 120,
+      });
+   });
+
+   it("accept the values that match Credible", () => {
+      const c = resolveRetrievalConfig({
+         embedding: { representation: "single" },
+         candidates: { window: "per-source", perSourceLimit: 10 },
+         scoring: { joinDepthDamping: 0.9, joinDampingMode: "whole" },
+         dimensionalValues: { mode: "annotated", refine: { enabled: true } },
+         llm: { models: { valueRefine: "small-model" } },
+      });
+      expect(c.embedding.representation).toBe("single");
+      expect(c.dimensionalValues.refine.enabled).toBe(true);
+      expect(c.llm.models.valueRefine).toBe("small-model");
+   });
+
+   it("reject a bad value with the setting's name", () => {
+      expect(problems({ embedding: { representation: "double" } })[0]).toContain(
+         "retrieval.embedding.representation",
+      );
+      expect(problems({ candidates: { window: "local" } })[0]).toContain("retrieval.candidates.window");
+      expect(problems({ candidates: { perSourceLimit: 0 } })[0]).toContain("retrieval.candidates.perSourceLimit");
+      expect(problems({ scoring: { joinDampingMode: "all" } })[0]).toContain("retrieval.scoring.joinDampingMode");
+      expect(problems({ dimensionalValues: { refine: { batchSize: 0 } } })[0]).toContain(
+         "retrieval.dimensionalValues.refine.batchSize",
+      );
+   });
+
+   it("let a request change the window and value refine, but not the index's representation", () => {
+      const base = resolveRetrievalConfig({});
+      expect(applyOverride(base, { candidates: { window: "per-source" } }).errors).toEqual([]);
+      expect(applyOverride(base, { dimensionalValues: { refine: { enabled: true } } }).errors).toEqual([]);
+      const bad = applyOverride(base, { embedding: { representation: "single" } });
+      expect(bad.errors[0]).toContain("embedding.representation");
+   });
+});
+
 describe("retrievalOverridesEnabled", () => {
    it("is off unless the gate is set", () => {
       expect(retrievalOverridesEnabled({})).toBe(false);

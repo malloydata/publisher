@@ -64,6 +64,35 @@ const run = (
       egress: resolveEgress(config),
    });
 
+describe("scoring.joinDampingMode", () => {
+   // A HIGH-rated field two joins away, similarity 0.5, damped 0.9 per hop.
+   async function published(mode: "fraction" | "whole"): Promise<number> {
+      const config = resolveRetrievalConfig({
+         refine: { enabled: true },
+         scoring: { joinDepthDamping: 0.9, joinDampingMode: mode },
+         llm: { model: "m", cache: { enabled: false } },
+      });
+      const llm = llmFor((req) => JSON.stringify([{ index: idxOf(req, "zip"), score: "HIGH", reason: "x" }]), [], config);
+      const out = await run(
+         [row("zip", { 0: 0.5 }, { joinPath: "users.address" })],
+         [{ targetIndex: 0, text: "postal code" }],
+         llm,
+         config,
+      );
+      return out.rows[0].score!;
+   }
+
+   it("fraction (the default) damps only the similarity, so HIGH stays HIGH", async () => {
+      // 3 + 0.5 * 0.81 = 3.405, which the knots publish as 0.9405.
+      expect(await published("fraction")).toBe(0.9405);
+   });
+
+   it("whole damps the level too, as Credible's code does, and can push a hit down a level", async () => {
+      // (3 + 0.5) * 0.81 = 2.835, which the knots publish as 0.867.
+      expect(await published("whole")).toBe(0.867);
+   });
+});
+
 describe("refine.concurrency", () => {
    /** The most batches ever in flight at once, for six one-row batches. */
    async function peak(refineConcurrency: number | null): Promise<number> {

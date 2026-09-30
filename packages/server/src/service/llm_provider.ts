@@ -11,7 +11,8 @@ export type LlmStageName =
    | "refine"
    | "rerank"
    | "keyphrase"
-   | "summary";
+   | "summary"
+   | "valueRefine";
 
 export interface LlmRequest {
    stage: LlmStageName;

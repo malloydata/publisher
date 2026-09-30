@@ -8,7 +8,8 @@ export type LlmStage =
    | "refine"
    | "rerank"
    | "keyphrase"
-   | "summary";
+   | "summary"
+   | "valueRefine";
 
 /**
  * Whether the LLM stages can run at all: an endpoint is configured in the
@@ -39,6 +40,8 @@ export function enabledStages(config: RetrievalConfig): LlmStage[] {
       stages.push("keyphrase");
    if (config.enrichment.enabled && config.enrichment.sourceSummary.enabled)
       stages.push("summary");
+   if (config.dimensionalValues.mode !== "off" && config.dimensionalValues.refine.enabled)
+      stages.push("valueRefine");
    return stages;
 }
 

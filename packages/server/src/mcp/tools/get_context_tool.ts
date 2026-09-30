@@ -37,6 +37,7 @@ import {
 import { rrfFuse } from "../../retrieval/hybrid";
 import { runRefine } from "../../retrieval/stages/refine";
 import { runRerank } from "../../retrieval/stages/rerank";
+import { runValueRefine } from "../../retrieval/stages/value_refine";
 import type { LlmUsage } from "../../service/llm_runner";
 import {
    getEnrichmentStatus,
@@ -2865,6 +2866,8 @@ async function runContextQuery(
    let valueHits: ValueHit[] = [];
    let truncation: TruncationMap = new Map();
    const valueWarnings: string[] = [];
+   /** How the value refine stage ended, for `retrieval_stages`. */
+   let valueRefineStatus: string | undefined;
    if (valueCfg.mode !== "off") {
       const db = environmentStore.storageManager.getDuckDbConnection();
       truncation = await loadTruncation(db, environmentName, packageName);
@@ -2888,6 +2891,38 @@ async function runContextQuery(
                   provider?.minSimilarity ??
                   DEFAULT_EMBEDDING_MIN_SIMILARITY,
             });
+            // An LLM rates each matched value against its phrase and drops the
+            // ones it leaves out (Credible's value refine).
+            if (valueCfg.refine.enabled && valueHits.length > 0) {
+               const before = run?.llm ? { ...run.llm.budget.usage } : undefined;
+               const started = Date.now();
+               const outcome = await runValueRefine({
+                  hits: valueHits,
+                  searches: request.valueSearches.map((v) => ({
+                     targetIndex: v.targetIndex,
+                     text: v.text,
+                  })),
+                  config: cfg,
+                  llm: run?.llm ?? null,
+                  egress: resolveEgress(cfg),
+               });
+               valueRefineStatus = outcome.status;
+               valueWarnings.push(...outcome.warnings);
+               const applied =
+                  outcome.status === "ok" || outcome.status.startsWith("partial");
+               trace?.gate(
+                  "value_refine",
+                  outcome.rowsIn,
+                  applied ? outcome.hits.length : outcome.rowsIn,
+                  applied ? outcome.dropped : {},
+                  {
+                     status: outcome.status,
+                     ms: Date.now() - started,
+                     ...llmDelta(before, run?.llm?.budget.usage),
+                  },
+               );
+               if (applied) valueHits = outcome.hits;
+            }
          } catch (error) {
             logger.warn("[MCP Tool getContext] Value search failed", {
                environmentName,
@@ -3047,9 +3082,20 @@ async function runContextQuery(
                   // one source and return a single card where `max` were
                   // asked for. A drill-down is confined to one source, so
                   // there the extra rows are waste.
+                  //
+                  // `per-source` is Credible's window: the best rows of EACH
+                  // source, with no package-wide cap unless one is set, so a
+                  // source that matches weakly still contributes.
                   limit:
                      cfg.candidates.perTargetLimit ??
-                     (scoped ? max : Math.min(MAX_LIMIT, max * 3)),
+                     (cfg.candidates.window === "per-source"
+                        ? 1_000_000
+                        : scoped
+                          ? max
+                          : Math.min(MAX_LIMIT, max * 3)),
+                  ...(cfg.candidates.window === "per-source"
+                     ? { perSourceLimit: cfg.candidates.perSourceLimit }
+                     : {}),
                   // Null in the config means "the provider's own floor", so
                   // the default call is unchanged.
                   ...(cfg.embedding.minSimilarity !== null
@@ -3332,6 +3378,7 @@ async function runContextQuery(
          : withValues;
       const stageWarnings: string[] = [...valueWarnings];
       const stageStatus: Record<string, string> = {};
+      if (valueRefineStatus) stageStatus.valueRefine = valueRefineStatus;
 
       // Entity refine: an LLM rates each candidate against each phrase.
       if (cfg.refine.enabled) {

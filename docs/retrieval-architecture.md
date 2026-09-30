@@ -87,6 +87,11 @@ optional when a base URL is set.
 
 ### Index time
 
+**Representation.** By default (`embedding.representation: facets`) each entity is stored as several rows,
+described next. With `single` it is stored as ONE row: the generated keyphrase if there is one, else its
+doc, else its name. That is what Credible's hosted retrieval embeds, so `single` is the setting to compare
+against it. Changing it re-embeds the package.
+
 **Entity facets** (`mcp/tools/embedding_index.ts`). Each entity is stored as several rows in
 `entity_embeddings`: `name`, one or more `doc:N` chunks, and, when enrichment has written them, `kw`
 (keyphrase) and `sum:N` (summary). An entity scores as its best facet, so more text can add recall and
@@ -116,14 +121,17 @@ built from `#(doc)` lines only, and field code has every `#` annotation line str
 ### Query time: `mcp/tools/get_context_tool.ts` and `retrieval/`
 
 1. **Candidates.** One SQL pass scores every entity against every search target, keeps its best facet,
-   applies the similarity floor, and cuts a per-target window. Ties break on name, source, then kind so
+   applies the similarity floor, and cuts a per-target window: the best rows of the whole package
+   (`candidates.window: global`), or the best rows of each source (`per-source`, Credible's window, so a weak
+   source still contributes). Ties break on name, source, then kind so
    the answer is the same every time. `below_cutoff_count` against `total_entities` is what lets an empty
    result mean "the package does not model that".
 2. **Hybrid** (`retrieval/hybrid.ts`). Optionally ranks the same entities by lunr word match too and fuses
    the two lists by rank. In `rerank-only` mode it only reorders; in `union` mode it can add entities only
    the word match found.
 3. **Values.** Value targets are matched against the value index and attached to the dimension that holds
-   them.
+   them. Optionally an LLM rates each matched value against its phrase and drops the omitted ones
+   (`retrieval/stages/value_refine.ts`, Credible's value refine), before the values are attached.
 4. **Refine** (`retrieval/stages/refine.ts`). Sends each target's candidates to the LLM in batches and gets
    back LOW, MEDIUM or HIGH plus a one-line reason for each. Candidates under `minLevel`, or left out of the
    reply, are dropped. The score becomes level plus similarity, so the level decides and similarity breaks
