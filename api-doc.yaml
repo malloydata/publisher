@@ -1568,12 +1568,12 @@ paths:
       summary: List package models
       description: |
         Retrieves the Malloy models within the specified package. Each model entry includes
-        the relative path, package name, whether the file is on the package's surface, and any
+        the relative path, package name, whether the package hides the file, and any
         compilation errors.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
         files on that surface are listed, unless `includeHiddenFilesAndSources` is true. With it, every
-        model file is listed and `onSurface` marks the ones on the surface. Dashboard files
+        model file is listed, and `isHidden` marks the ones the package hides. Dashboard files
         are listed by the dashboards route either way. Served notebooks (`.malloy` files under
         `notebooks/` that carry an `## artifact` note) are not models here, with or without a
         surface; they are listed by list-notebooks.
@@ -3817,14 +3817,15 @@ components:
         path:
           type: string
           description: Relative path to the model file within its package directory
-        onSurface:
+        isHidden:
           type: boolean
           description: |
-            Whether the file is on the package's surface: the files this route lists without
-            `includeHiddenFilesAndSources`. True for every file of a package with no surface. It does not
-            say whether a query can reach the file, which `queryableSources: "all"` also
-            decides. False only on a file listed because the
-            request set `includeHiddenFilesAndSources`.
+            True for a file this route lists only because the request set
+            `includeHiddenFilesAndSources`: a file the package's `index.malloy` (or a
+            legacy `explores`) does not expose. False for every other file, so every
+            entry is false without that option. It says whether the file is hidden, not
+            whether a query can reach it: under `queryableSources: "all"` a hidden file
+            can still be queried.
         error:
           type: string
           description: Error message if the model failed to compile or load
