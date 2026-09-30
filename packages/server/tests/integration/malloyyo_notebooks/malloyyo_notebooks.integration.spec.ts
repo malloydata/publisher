@@ -460,12 +460,15 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(modelInfo).not.toContain("secret_total");
       });
 
-      it("lists only the named queries over readable sources on the notebook GET", async () => {
-         const { body } = await getJson<{ queries?: { name?: string }[] }>(
+      it("describes only the named queries over readable sources in the notebook GET's model info", async () => {
+         const { body } = await getJson<{ modelInfo?: string }>(
             pkgUrl(SURFACE, `/notebooks/${CELLS}`),
          );
-         // `hidden_q` reads the hidden source, so only `own_cells_query` is listed.
-         expect(body.queries?.map((q) => q.name)).toEqual(["own_cells_query"]);
+         const info = JSON.parse(body.modelInfo ?? "{}") as {
+            entries?: { name?: string }[];
+         };
+         // `hidden_q` reads the hidden source, so only `own_cells_query` is described.
+         expect(info.entries?.map((e) => e.name)).toEqual(["own_cells_query"]);
       });
 
       it("applies the cells' surface filter to a .malloynb GET's model info", async () => {
