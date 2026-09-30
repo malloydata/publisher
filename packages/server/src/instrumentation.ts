@@ -77,11 +77,11 @@ function instrument() {
             ),
          ],
          logRecordProcessors: [
-            new BatchLogRecordProcessor(
-               new OTLPLogExporter({
+            new BatchLogRecordProcessor({
+               exporter: new OTLPLogExporter({
                   url: `${otelCollectorUrl}/v1/logs`,
                }),
-            ),
+            }),
          ],
       }),
    });
