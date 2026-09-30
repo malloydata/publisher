@@ -137,3 +137,62 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
       expect(problems.some((p) => p.severity === "error")).toBe(true);
    });
 });
+
+/**
+ * The findings that depend on how the package is SERVED rather than on what
+ * compiles: a package whose `index.malloy` curates the surface refuses a tile
+ * reading a source that file does not export. The compiler cannot see it, and
+ * it needs Package state, which is why the dry run loads the outcome into a
+ * scratch package instead of re-deriving the surface.
+ */
+describe("compile_model, package scope: curation findings", () => {
+   let rootDir: string;
+   let env: Environment;
+
+   const install = async (fixture: string) => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-curate-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage(fixture, async (stagingPath) => {
+         await fs.cp(path.join(FIXTURE, "..", fixture), stagingPath, {
+            recursive: true,
+         });
+      });
+   };
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   const compilePackage = (fixture: string) =>
+      env.compileSource(
+         fixture,
+         "index.malloy",
+         undefined,
+         false,
+         undefined,
+         "package",
+      );
+
+   it("reports a tile reading a source the package's surface does not export", async () => {
+      await install("dashboards-convention");
+      const { problems } = await compilePackage("dashboards-convention");
+      const refused = problems.filter((p) =>
+         p.message.includes("orders_staging"),
+      );
+
+      expect(refused.length).toBeGreaterThan(0);
+      for (const finding of refused) expect(finding.severity).toBe("warn");
+      expect(refused.map((p) => p.model)).toContain("dashboards/tiles.malloy");
+   });
+
+   it("reports nothing of the kind for a package with no curated surface", async () => {
+      await install("dashboards-lint");
+      const { problems } = await compilePackage("dashboards-lint");
+
+      expect(
+         problems.filter((p) => p.message.includes("doesn't export")),
+      ).toEqual([]);
+   });
+});
