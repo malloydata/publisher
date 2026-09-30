@@ -2357,4 +2357,97 @@ source: a is one extend {
       expect(out).not.toContain("About the category filter");
       expect(out).toContain('# label="Since"\ngiven: SINCE');
    });
+
+   // A closer-looking line inside a block comment is comment text, not the end of the
+   // previous declaration's markdown block.
+   const WITH_COMMENTED_CLOSER = `## artifact { title="T" tiles=["a -> u", "a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  #|(markdown)
+  # Prev
+  |#
+  view: u is vu
+
+  # colspan=6
+  /*
+  |# looks like a closer
+  */
+  view: x is vx
+}`;
+
+   it("changes a tile's width when a block comment above it holds a closer-looking line", async () => {
+      const out = await spliced(WITH_COMMENTED_CLOSER, (d) => {
+         d.tiles.find((t) => t.name === "x")!.colspan = 4;
+      });
+      expect(out).toContain("  # colspan=4\n  /*\n  |# looks like a closer\n");
+      expect(out).not.toContain("colspan=6");
+      expect(out).toContain(
+         "  #|(markdown)\n  # Prev\n  |#\n  view: u is vu\n",
+      );
+   });
+
+   it("removes a tile without taking the previous tile's markdown block with it", async () => {
+      const out = await spliced(WITH_COMMENTED_CLOSER, (d) => {
+         d.tiles = d.tiles.filter((t) => t.name !== "x");
+      });
+      expect(out).not.toContain("view: x");
+      expect(out).toContain("  #|(markdown)\n  # Prev\n  |#\n  view: u is vu");
+   });
+
+   it("leaves a comment holding `#(markdown)` text in place when its given is removed", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+/*
+#(markdown) only a comment
+*/
+# label="Since"
+given: SINCE :: date is @2023-01-01
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "SINCE",
+         );
+      });
+      expect(out).not.toContain("SINCE");
+      expect(out).toContain("/*\n#(markdown) only a comment\n*/");
+   });
+
+   it("does not bleed a control from the given above a comment holding a closer-looking line", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+#|(markdown)
+# About
+|#
+# label="Category" control=select
+given: CATEGORY :: filter<string> is f''
+
+/*
+|# looks like a closer
+*/
+# label="Since"
+given: SINCE :: date is @2023-01-01
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const doc = await openDocument(source);
+      const since = doc.localGivens?.find((g) => g.name === "SINCE");
+      expect(since?.label).toBe("Since");
+      expect(since?.control).toBeUndefined();
+      const out = await spliced(source, (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "SINCE",
+         );
+      });
+      expect(out).not.toContain("SINCE");
+      expect(out).toContain("given: CATEGORY");
+   });
 });

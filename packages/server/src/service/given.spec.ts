@@ -12,6 +12,7 @@ import {
    type MalloyGiven,
    type MalloyGivenApi,
 } from "./given";
+import { routeOfNote } from "./notebook";
 import {
    motlyTag,
    quoteFilterLiterals,
@@ -872,8 +873,9 @@ describe("suggestGivenLookup", () => {
 });
 
 describe("malloyGivenToApi: annotations", () => {
-   const note = (route: string, text: string) => ({ route, text });
-   const givenWith = (notes: { route: string; text: string }[]) =>
+   // The route is Malloy's own parse of the note, not a label the spec picks.
+   const note = (text: string) => ({ route: routeOfNote(text), text });
+   const givenWith = (notes: { route?: string; text: string }[]) =>
       ({
          name: "REGION",
          type: { type: "filter expression", filterType: "string" },
@@ -883,12 +885,21 @@ describe("malloyGivenToApi: annotations", () => {
    it("carries app-route notes, and drops reserved ones and the given's own (markdown) prose", () => {
       const api = malloyGivenToApi(
          givenWith([
-            note("description", '#(description="Which region")\n'),
-            note("", '# label="Region"\n'),
-            note("markdown", "#(markdown) The region filter.\n"),
+            note("#(description) Which region\n"),
+            note('# label="Region"\n'),
+            note("#(markdown) The region filter.\n"),
+            note("#[markdown] In brackets.\n"),
+            note("#(doc) Survives\n"),
+            note("#(markdown_help) Near miss\n"),
+            note("#(Markdown) Near miss, cased\n"),
          ]),
       );
-      expect(api.annotations).toEqual(['#(description="Which region")\n']);
+      expect(api.annotations).toEqual([
+         "#(description) Which region\n",
+         "#(doc) Survives\n",
+         "#(markdown_help) Near miss\n",
+         "#(Markdown) Near miss, cased\n",
+      ]);
       expect(api.label).toBe("Region");
    });
 });

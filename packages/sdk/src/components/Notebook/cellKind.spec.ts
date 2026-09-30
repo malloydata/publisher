@@ -137,3 +137,63 @@ describe("stripProse", () => {
       );
    });
 });
+
+describe("prose, by Malloy's rules", () => {
+   it("keeps a note nested inside the statement in the code", () => {
+      const nested =
+         "source: s is a extend {\n  #(markdown) about v\n  view: v is x\n}";
+      expect(stripProse(nested)).toBe(nested);
+      const block =
+         "source: s is a extend {\n  #|(markdown)\n  about\n  |#\n  view: v is x\n}";
+      expect(stripProse(block)).toBe(block);
+   });
+
+   it("strips only the leading tag block, not a note after the first line of code", () => {
+      expect(stripProse("#(markdown) lead\nrun: q\n#(markdown) later")).toBe(
+         "run: q\n#(markdown) later",
+      );
+   });
+
+   it("does not close a block on a `|#` indented past its opener", () => {
+      const cell = '#" Cap\n#|(markdown)\n  |# an example\nBody\n|#\nrun: q';
+      expect(stripProse(cell)).toBe('#" Cap\nrun: q');
+      expect(cellCaption(cell)).toBe("Cap");
+   });
+
+   it("does not close a `#|` block on `|##`, but closes a `##|` block on it", () => {
+      expect(stripProse("#|(markdown)\n|## not a closer\n|#\nrun: q")).toBe(
+         "run: q",
+      );
+      expect(stripProse("##|(markdown)\nbody\n|##\nrun: q")).toBe("run: q");
+   });
+
+   it("takes a closer in column 0 for a first line whose indentation was lost", () => {
+      expect(stripProse("#|(markdown)\n  |# an example\n|#\nrun: q")).toBe(
+         "run: q",
+      );
+      expect(stripProse("#|(markdown)\n  body\n  |#\nrun: q")).toBe("run: q");
+   });
+
+   it("recognizes the bracket spellings of the route", () => {
+      expect(
+         stripProse("#[markdown] a\n#<markdown> b\n#{markdown} c\nrun: q"),
+      ).toBe("run: q");
+      expect(stripProse("#|[markdown]\nbody\n|#\nrun: q")).toBe("run: q");
+      expect(stripProse("##<markdown> floating\nrun: q")).toBe("run: q");
+   });
+
+   it("leaves a malformed route alone: no separator, another route, a near miss", () => {
+      for (const note of [
+         "#(markdown)hi",
+         "#(markdown_help) x",
+         "#(doc) x",
+         "#markdown x",
+         "#(Markdown) x",
+      ])
+         expect(stripProse(`${note}\nrun: q`)).toBe(`${note}\nrun: q`);
+   });
+
+   it("reads a caption past a comment and a blank line in the tag block", () => {
+      expect(cellCaption('/* why */\n\n-- and\n#" Cap\nrun: q')).toBe("Cap");
+   });
+});

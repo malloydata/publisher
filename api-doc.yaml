@@ -4129,7 +4129,8 @@ components:
           description:
             Array of file-level (##) annotations attached to the notebook. For
             a `.malloy` notebook, every own note that is not a floating
-            `(markdown)` cell, in file order, each note once.
+            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
+            note below the `## artifact` tag is dropped and not listed.
           items:
             type: string
         startingGivens:

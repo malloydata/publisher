@@ -48,6 +48,12 @@ export function isMarkdownNote(text: string): boolean {
  */
 export const OLD_PROSE_SPELLINGS: "dropped" | "accepted" = "dropped";
 
+/** The fix for a `(markdown)` note that annotates no statement: it stands alone, or moves above one. */
+export const attachedNowhereFix = (block: boolean) =>
+   block
+      ? "write it as a floating `##|(markdown)` block closed by `|##` for prose that stands on its own, or move it directly above the statement it describes."
+      : "write it as a floating `##(markdown)` line for prose that stands on its own, or move it directly above the statement it describes.";
+
 export function isOldProseRoute(route: string | undefined): boolean {
    return route === '"' || route === "text";
 }
@@ -171,7 +177,7 @@ export interface NotebookReadResult {
    cells: NotebookCellSpan[];
    /**
     * Every own note that is not a floating markdown cell, each once, in file
-    * order. A `"` note below the artifact tag is never listed (see
+    * order. A `"` or `(text)` note below the artifact tag is never listed (see
     * OLD_PROSE_SPELLINGS), so none can read as a description.
     */
    annotations: string[];
@@ -539,13 +545,13 @@ export function readNotebookCells(
          ([accessor]) => callAccessor(child, accessor) !== undefined,
       );
       if (!match && callAccessor(child, "ignoredObjectAnnotations")) {
-         const prose = leadingObjectNotes(span.startCp, span.stopCp).some(
+         const prose = leadingObjectNotes(span.startCp, span.stopCp).find(
             (note) => isMarkdownNote(note.text),
          );
          return refuse({
             line: span.startLine,
             message: prose
-               ? `Line ${span.startLine}: a \`#(markdown)\` annotation that annotates no statement (an import and an export take none), so the notebook is not shown. Fix: use \`##|(markdown)\` for prose that stands on its own, or move it directly above the statement it describes.`
+               ? `Line ${span.startLine}: a \`#(markdown)\` annotation that annotates no statement (an import and an export take none), so the notebook is not shown. Fix: ${attachedNowhereFix(prose.block)}`
                : `Line ${span.startLine}: a # tag that annotates no statement, so the notebook is not shown. Fix: move the tag directly above its run:, or write trailing prose as a \`##(markdown)\` note.`,
          });
       }

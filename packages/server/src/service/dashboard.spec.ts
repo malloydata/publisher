@@ -545,16 +545,21 @@ describe("service/dashboard given specs (the control contract)", () => {
             ],
             givens: new Map([
                given("REGION", "filter<string>", [
-                  '#(description="Which region") \n',
+                  "#(doc) Which region\n",
                   "#(markdown) hi\n",
                   "##(markdown) hi\n",
                   "#|(markdown)\nhi",
+                  "#[markdown] hi\n",
+                  "#(markdown_help) near miss\n",
+                  "#(Markdown) near miss, cased\n",
                ]),
             ]),
          }),
       );
       expect(manifest?.givens[0].annotations).toEqual([
-         '#(description="Which region") \n',
+         "#(doc) Which region\n",
+         "#(markdown_help) near miss\n",
+         "#(Markdown) near miss, cased\n",
       ]);
    });
 

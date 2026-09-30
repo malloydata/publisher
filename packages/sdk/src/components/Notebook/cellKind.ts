@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { NotebookCell } from "../../client";
+import { closesBlock, markdownNote } from "../DashboardBuilder/malloyText";
 
 /**
  * Whether the viewer sends a cell to the server to run. A served notebook's
@@ -11,44 +12,68 @@ export function cellRuns(cell: Pick<NotebookCell, "type" | "kind">): boolean {
    return cell.kind ? cell.kind === "query" : cell.type === "code";
 }
 
-const MARKDOWN_BLOCK_OPEN = "#|(markdown)";
-const MARKDOWN_LINE = "#(markdown)";
+/** The line closing the block opened on line `from`, by Malloy's column rule; -1 when there is none. */
+function closerAfter(lines: string[], from: number, closer: "|#" | "|##") {
+   // A cell's first line has lost its indentation, so its column is unknown: prefer a closer in
+   // column 0, else take any indent.
+   const columns =
+      from === 0 ? [0, undefined] : [/^[ \t]*/.exec(lines[from])[0].length];
+   for (const column of columns)
+      for (let j = from + 1; j < lines.length; j++)
+         if (closesBlock(lines[j], column, closer)) return j;
+   return -1;
+}
 
 /**
- * Calls `visit` on each line outside prose: a `#(markdown)` line, a
- * `#|(markdown)` ... `|#` block, and `##` lines and `##|` ... `|##` blocks are
- * skipped, so a block's body lines are never mistaken for tags or code.
- * `visit` returns false to stop.
+ * Calls `visit` on each line of a cell that is not prose. Prose is what the server reads off the
+ * statement's LEADING tag block: `##` lines and `##|` blocks, and `(markdown)` lines and
+ * `#|(markdown)` blocks. It stops at the first line of code, so a note nested in the statement
+ * stays visible. A comment line, and the body of a non-markdown `#|` block, reach `visit` with
+ * `opaque` set: they are neither tags nor code. `visit` returns false to stop.
  */
 function forEachNonProseLine(
    text: string,
-   visit: (raw: string, trimmed: string) => boolean | void,
+   visit: (raw: string, trimmed: string, opaque: boolean) => boolean | void,
 ): void {
    const lines = text.split("\n");
-   // A closer is a line that starts with it; an opener with none is not a block.
-   const closerAfter = (from: number, closer: string) => {
-      for (let j = from + 1; j < lines.length; j++)
-         if (lines[j].trim().startsWith(closer)) return j;
-      return -1;
-   };
+   let leading = true;
+   let inComment = false;
    for (let i = 0; i < lines.length; i++) {
       const raw = lines[i];
       const line = raw.trim();
-      if (line.startsWith("##|")) {
-         const end = closerAfter(i, "|##");
-         if (end >= 0) i = end;
+      if (inComment || /^(\/\/|--|\/\*)/.test(line)) {
+         inComment = inComment
+            ? !line.includes("*/")
+            : line.startsWith("/*") && !line.includes("*/", 2);
+         if (visit(raw, line, true) === false) return;
          continue;
       }
-      if (line.startsWith("##")) continue;
-      if (line.startsWith(MARKDOWN_BLOCK_OPEN)) {
-         const end = closerAfter(i, "|#");
-         if (end >= 0) {
-            i = end;
+      if (leading && line.startsWith("#")) {
+         const note = markdownNote(line);
+         if (line.startsWith("##")) {
+            // An unterminated `##|` opener is dropped alone.
+            if (line.startsWith("##|")) {
+               const end = closerAfter(lines, i, "|##");
+               if (end >= 0) i = end;
+            }
             continue;
          }
-      }
-      if (line.startsWith(MARKDOWN_LINE)) continue;
-      if (visit(raw, line) === false) return;
+         if (line.startsWith("#|")) {
+            const end = closerAfter(lines, i, "|#");
+            if (end >= 0) {
+               if (note?.level === 1) {
+                  i = end;
+                  continue;
+               }
+               if (visit(raw, line, false) === false) return;
+               for (i++; i <= end; i++)
+                  if (visit(lines[i], lines[i].trim(), true) === false) return;
+               i = end;
+               continue;
+            }
+         } else if (note) continue;
+      } else if (line !== "") leading = false;
+      if (visit(raw, line, false) === false) return;
    }
 }
 
@@ -58,8 +83,8 @@ function forEachNonProseLine(
  */
 export function cellCaption(text: string | undefined): string | undefined {
    const lines: string[] = [];
-   forEachNonProseLine(text ?? "", (_raw, line) => {
-      if (line.startsWith("//")) return;
+   forEachNonProseLine(text ?? "", (_raw, line, opaque) => {
+      if (opaque || line === "") return;
       if (!line.startsWith("#")) return false;
       if (line.startsWith('#"')) lines.push(line.slice(2).trim());
    });
@@ -78,8 +103,8 @@ export function stripProse(code: string): string {
 /** One-line label for a folded definition cell: its statement kind and name. */
 export function definitionSummary(text: string | undefined): string {
    let line = "";
-   forEachNonProseLine(text ?? "", (_raw, l) => {
-      if (!l || l.startsWith("#") || l.startsWith("//")) return;
+   forEachNonProseLine(text ?? "", (_raw, l, opaque) => {
+      if (opaque || !l || l.startsWith("#")) return;
       line = l;
       return false;
    });

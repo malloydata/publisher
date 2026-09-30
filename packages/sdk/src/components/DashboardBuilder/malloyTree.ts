@@ -20,7 +20,7 @@
  * minifiers leave alone.
  */
 
-import { markdownLines } from "./malloyText";
+import { blockSpans, markdownLines } from "./malloyText";
 
 /** A half-open range of UTF-16 offsets into the source text. */
 export interface Span {
@@ -295,6 +295,8 @@ class Reader {
    commentLines: ReadonlySet<number> = new Set();
    /** `(markdown)` annotation lines, whose body can start with `#` without being a tag. */
    proseLines: ReadonlySet<number> = new Set();
+   /** The `#|`/`##|` blocks with a closer, as [opener line, closer line]; a comment's lines open none. */
+   blocks: [number, number][] = [];
 
    constructor(readonly text: string) {
       this.map = codePointMap(text);
@@ -782,7 +784,10 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
    // and a source is read through it.
    const comments = commentIndex(r, tokenStream);
    r.commentLines = comments.lines;
-   r.proseLines = markdownLines(text.split("\n"));
+   const textLines = text.split("\n");
+   const inComment = (line: number) => comments.lines.has(line);
+   r.proseLines = markdownLines(textLines, inComment);
+   r.blocks = blockSpans(textLines, inComment);
    const sources = readSources(r, root);
 
    // The shape assertion, on real content rather than on the API's presence:
@@ -954,12 +959,10 @@ function blockStart(
    let start = line;
    for (let i = line - 1; i >= 0; i--) {
       const text = lineText(i);
-      // A `#|` ... `|#` block's body lines are not `#` lines, so a closer pulls in the whole block.
-      if (text.startsWith("|#") && !text.startsWith("|##")) {
-         let open = i;
-         while (open >= 0 && !lineText(open).startsWith("#|")) open--;
-         if (open < 0) break;
-         start = i = open;
+      // A block's body lines are not `#` lines, so its closer pulls in the whole block.
+      const block = r.blocks.find(([, to]) => to === i);
+      if (block) {
+         start = i = block[0];
          continue;
       }
       // A blank line is the boundary -- unless it is inside a block comment,

@@ -105,6 +105,40 @@ describe("blockAbove", () => {
       expect(at.prose).toEqual([2, 3, 4, 5]);
    });
 
+   it("starts a markdown block at its own opener, not at a body line that begins `#|`", async () => {
+      const source = [
+         "source: s is a extend {",
+         "  dimension: d is 1",
+         "  #|(markdown)",
+         "  Notes",
+         "",
+         "  #| a body line",
+         "  |#",
+         "  # colspan=6",
+         "  view: v is x",
+         "}",
+      ].join("\n");
+      const at = await block(source, 8);
+      expect(at.start).toBe(2);
+      expect(at.prose).toEqual([2, 3, 4, 5, 6]);
+   });
+
+   it("does not call `#(markdown)` text inside a block comment prose", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  /*",
+         "  #(markdown) only a comment",
+         "  */",
+         "  # colspan=6",
+         "  view: v is x",
+         "}",
+      ].join("\n");
+      const at = await block(source, 6);
+      expect(at.start).toBe(2);
+      expect(at.prose).toEqual([]);
+   });
+
    it("does not collect a `#` line written inside a block comment", async () => {
       const source = [
          "source: s is a extend {",

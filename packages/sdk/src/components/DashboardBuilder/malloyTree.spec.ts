@@ -299,6 +299,27 @@ describe("comments", () => {
       expect(p.blockStart(8)).toBe(3);
    });
 
+   it("does not take a closer-looking line in a block comment for a block's end", async () => {
+      const source =
+         "source: s is a extend {\n  #|(markdown)\n  Prev\n  |#\n  view: u is x\n\n  # colspan=6\n  /*\n  |# not a closer\n  */\n  view: v is x\n}\n";
+      const p = await parsed(source);
+      expect(p.blockStart(10)).toBe(6);
+   });
+
+   it("starts a block at its opener when a body line begins `#|`", async () => {
+      const source =
+         "source: s is a extend {\n  dimension: d is 1\n  #|(markdown)\n  Notes\n\n  #| body\n  |#\n  view: v is x\n}\n";
+      const p = await parsed(source);
+      expect(p.blockStart(7)).toBe(2);
+   });
+
+   it("does not close a `#|` block on `|##` or an indented `|#`", async () => {
+      const source =
+         "source: s is a extend {\n  dimension: d is 1\n  #|(markdown)\n  |## not it\n    |# nor this\n  |#\n  view: v is x\n}\n";
+      const p = await parsed(source);
+      expect(p.blockStart(6)).toBe(2);
+   });
+
    // `--` starts a comment in Malloy exactly as `//` does.
    it("reads a dash comment as the block above a declaration", async () => {
       const p = await parsed(

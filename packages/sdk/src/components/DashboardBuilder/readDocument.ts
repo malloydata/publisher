@@ -20,6 +20,7 @@ import {
    ARTIFACT_LINE,
    blockLines,
    descriptionNotes,
+   markdownNote,
    tileSteps,
 } from "./malloyText";
 
@@ -109,13 +110,13 @@ export function blockAbove(
    const tags: Array<{ line: number; text: string }> = [];
    const prose: number[] = [];
    for (let i = start; i < declLine; i++) {
+      // Inside a `/* … */`, where a line beginning `#` is prose. Rewriting one
+      // would put an edit inside a comment, and `(markdown)` text there is no annotation.
+      if (parsed.commentLine(i)) continue;
       if (parsed.proseLine(i)) {
          prose.push(i);
          continue;
       }
-      // Inside a `/* … */`, where a line beginning `#` is prose. Rewriting one
-      // would put an edit inside a comment.
-      if (parsed.commentLine(i)) continue;
       const text = lines[i].trim();
       // `##` at this indent level is a MODEL annotation and never belongs to a
       // declaration; only single-`#` object tags do.
@@ -138,11 +139,12 @@ function modelLines(lines: string[]): {
    for (const [i, raw] of lines.entries()) {
       if (inside.has(i)) continue;
       const text = raw.trim();
+      const note = markdownNote(text);
       if (
          text.startsWith("##") &&
          !text.startsWith('##"') &&
          !text.startsWith("##!") &&
-         !text.startsWith("##(markdown)")
+         !(note?.level === 2 && !note.block)
       )
          artifact.push(text);
    }

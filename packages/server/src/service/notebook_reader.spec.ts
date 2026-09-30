@@ -510,7 +510,7 @@ describe("readNotebookCells on inline text", () => {
          ["an import", 'import "x.malloy"'],
          ["an export", "export { a }"],
       ])(
-         "refuses #(markdown) above %s, naming ##|(markdown)",
+         "refuses #(markdown) above %s, naming ##(markdown) for a line",
          (_what, stmt) => {
             const result = readText(
                `## artifact {}\n#(markdown) prose\n${stmt}\nrun: a -> b\n`,
@@ -518,18 +518,31 @@ describe("readNotebookCells on inline text", () => {
             );
             expect(result.cells).toEqual([]);
             expect(result.error?.line).toBe(2);
-            expect(result.error?.message).toContain("`##|(markdown)`");
+            expect(result.error?.message).toContain("`##(markdown)`");
+            expect(result.error?.message).not.toContain("`##|(markdown)`");
          },
       );
 
-      it("refuses a dangling #(markdown) with nothing below it, naming ##|(markdown)", () => {
+      it("refuses a dangling #(markdown) with nothing below it, naming ##(markdown)", () => {
          const result = readText(
             "## artifact {}\nrun: a -> b\n#(markdown) trailing\n",
             1,
          );
          expect(result.cells).toEqual([]);
          expect(result.error?.line).toBe(3);
-         expect(result.error?.message).toContain("`##|(markdown)`");
+         expect(result.error?.message).toContain("`##(markdown)`");
+      });
+
+      it("names ##|(markdown) and its closer for a dangling #|(markdown) block", () => {
+         const result = readText(
+            "## artifact {}\nrun: a -> b\n#|(markdown)\ntrailing\n|#\n",
+            1,
+         );
+         expect(result.cells).toEqual([]);
+         expect(result.error?.line).toBe(3);
+         expect(result.error?.message).toContain(
+            "`##|(markdown)` block closed by `|##`",
+         );
       });
    });
 
