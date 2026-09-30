@@ -309,6 +309,24 @@ That asymmetry is the argument for one shared artifact over one per tenant. Both
 cost; the per-tenant arrangement also has one build, one schedule and one freshness story *per
 tenant*, all of which can drift apart.
 
+**Build memory follows the table's width times the partitions in flight, not its row count.** The
+build is DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager and
+charges the appender one vector per column for every partition it has met. So for a passthrough-sourced
+build (Postgres, BigQuery, Snowflake) the publisher orders the insert's SELECT by the partition columns —
+at the top of the INSERT statement, leaving the SELECT it was handed, and so what the warehouse runs,
+its query tag and what the source is addressed by, unchanged — runs that insert on one thread, since a
+DuckDB-side sort is read in parallel and several appenders each meet every partition again, and sets
+`partitioned_write_flush_threshold` on the build session (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`,
+default 8192 rows) so it flushes long before DuckDB's own half-million-row default. Without those, a
+308-partition, 120-column source fails against a 768MB `memory_limit` before or shortly after its first
+rows, from Postgres and from BigQuery alike; with them it builds in seconds. The sort is DuckDB's, out of
+core against the build's spill directory, and it reads the whole result before the first partition file is
+written — memory traded for local disk and wall-clock. That disk is the build's working directory under the
+process temp directory; in a container with no volume there, a large spill is an ephemeral-storage
+eviction rather than a caught error, so give the worker a volume or a limit before building at that scale. `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD=off`
+turns all three off. An incremental delta into a laid-out table gets the threshold and the single thread
+through its session, not the ordered read. A chained build is not changed.
+
 `partition=` is part of the source's content address, so changing it rebuilds the table. A source
 that declares none addresses exactly as it did before the key existed, so nothing already
 materialized is disturbed by this feature.
