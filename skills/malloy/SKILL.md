@@ -34,6 +34,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-model` | Writing base and joined source .malloy files, review, curate (includes normalized schema support) |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
 | `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
+| `skill:malloy-powerbi-review` | Prior-art adapter for Power BI (TMDL tables and relationships, DAX measure classification, RLS roles, docs) |
 
 **Analysis and presentation**
 
