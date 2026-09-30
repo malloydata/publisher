@@ -417,6 +417,7 @@ export interface RunnableNotebookCell {
    markdown?: string;
    /** The 0-based inclusive lines of `text` that hold `markdown`, as the reader saw them. */
    proseLines?: [number, number][];
+   codeLine?: number;
    /** The joined text of the statement's leading `#"` lines. */
    caption?: string;
    /** A served query cell's index into `modelInfo.anonymous_queries`. */
@@ -458,6 +459,7 @@ export interface NotebookCellRunResult {
    text: string;
    markdown?: string;
    proseLines?: [number, number][];
+   codeLine?: number;
    caption?: string;
    queryName?: string;
    result?: string;
@@ -5985,6 +5987,7 @@ export class Model {
                   text: cell.text,
                   markdown: cell.markdown,
                   proseLines: cell.proseLines,
+                  codeLine: cell.codeLine,
                   caption: cell.caption,
                   modelDef,
                };
@@ -5998,6 +6001,7 @@ export class Model {
                text: cell.text,
                markdown: cell.markdown,
                proseLines: cell.proseLines,
+               codeLine: cell.codeLine,
                caption: cell.caption,
                queryIndex: cell.queryIndex,
                runnable: materializer.loadQuery(cell.text),
@@ -8510,6 +8514,7 @@ export class Model {
             text: cell.text,
             markdown: cell.markdown,
             proseLines: cell.proseLines,
+            codeLine: cell.codeLine,
             caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
             queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
@@ -9087,6 +9092,7 @@ export class Model {
                   text: cell.text,
                   markdown: cell.markdown,
                   proseLines: cell.proseLines,
+                  codeLine: cell.codeLine,
                   caption: cell.caption,
                };
             } else {
@@ -9102,6 +9108,7 @@ export class Model {
          text: cell.text,
          markdown: cell.markdown,
          proseLines: cell.proseLines,
+         codeLine: cell.codeLine,
          caption: cell.caption,
          queryName: queryName,
          result: queryResult,

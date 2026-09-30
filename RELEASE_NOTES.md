@@ -38,9 +38,10 @@ A `.malloy` file directly under a package's top-level `notebooks/` whose model-l
 floating `(markdown)` notes, one query cell per `run:` with its tag block, and one definition
 cell per other statement. List-notebooks includes served notebooks beside `.malloynb` files. Get-notebook returns
 one with a `format` (`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or
-`definition`). A cell also carries a `markdown` field when `(markdown)` prose is attached to its
+`definition`). A code cell also carries a `markdown` field when `(markdown)` prose is attached to its
 statement, a `proseLines` field naming the lines of its `text` that hold that prose (0-based,
-inclusive `[start, end]` pairs), and a `caption` field with its leading `#"` text. The Console opens one at `notebooks/<slug>`. A served notebook keeps
+inclusive `[start, end]` pairs, `[]` when none), a `codeLine` field with the line where its
+statement's code starts, and a `caption` field with its leading `#"` text when it has one. The Console opens one at `notebooks/<slug>`. A served notebook keeps
 `modelType: model`, so the model GET, `/compile`, MCP `execute_query` and the declared-givens fetch
 treat it as any model.
 
@@ -54,11 +55,12 @@ Behavior changes to know about:
   to the statement below it (`run:`, `source:`, `query:`, `given:`, `type:`) and renders with that
   cell, as a header above a `run:`'s result and above its `#"` caption. It cannot sit above an
   `import` or `export`, which take no annotations; use `##|(markdown)` there. Earlier
-  spellings are still read: `##"` and `##|"` notes below the tag are markdown cells and
-  `##|(text) name` is a text tile, with no lint finding.
+  spellings are still read: `##"`, `##|"`, `##(text)` and `##|(text)` notes below a notebook's tag
+  are markdown cells too, with no lint finding (a name on a block draws a warning).
 - **A notebook's description is the unnamed `"` notes above `## artifact`.** A dashboard's is the
   same, and when it has none above it still reads the ones below the tag, with a lint warning to
-  move them above. The in-repo dashboards already put theirs above.
+  move them above. The in-repo dashboards already put theirs above. On a dashboard, `##|(text) name`
+  is still a text tile, with no lint finding.
 - **`notebooks` is a segment the Console owns.** `/<env>/<pkg>/notebooks/<file.ext>` no longer reaches
   a package's `public/notebooks/`.
 - **The published-names filter now applies to `modelInfo.anonymous_queries` on the model GET for every

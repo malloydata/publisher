@@ -36,10 +36,23 @@ const md = (startLine: number, endLine: number, text: string) => ({
    startLine,
    endLine,
 });
-const def = (startLine: number, endLine: number, text: string) => ({
+const def = (
+   startLine: number,
+   endLine: number,
+   text: string,
+   extra: {
+      markdown?: string;
+      proseLines?: [number, number][];
+      codeLine?: number;
+      caption?: string;
+   } = {},
+) => ({
    kind: "definition",
    type: "code",
    text,
+   proseLines: [],
+   codeLine: 0,
+   ...extra,
    startLine,
    endLine,
 });
@@ -51,12 +64,15 @@ const query = (
    extra: {
       markdown?: string;
       proseLines?: [number, number][];
+      codeLine?: number;
       caption?: string;
    } = {},
 ) => ({
    kind: "query",
    type: "code",
    text,
+   proseLines: [],
+   codeLine: 0,
    ...extra,
    startLine,
    endLine,
@@ -101,6 +117,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             10,
             11,
             "# label=\"Region\" control=select suggest { source=orders dimension=region }\ngiven: REGION :: filter<string> is f''",
+            { codeLine: 1 },
          ),
          md(13, 13, "A single line of prose is a cell too."),
          query(
@@ -111,6 +128,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             {
                caption:
                   "Caption: a doc string on the run, shown above its result.",
+               codeLine: 3,
             },
          ),
       ],
@@ -182,7 +200,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             8,
             '#" Revenue for each month.\n# bar_chart\n# label="Revenue by month"\nrun: orders -> by_month',
             0,
-            { caption: "Revenue for each month." },
+            { caption: "Revenue for each month.", codeLine: 3 },
          ),
          query(10, 10, "run: orders -> kpis", 1),
          md(12, 12, "Trailing prose is a model note, so it may end the file."),
@@ -203,6 +221,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             ),
             markdown: "The region filter.",
             proseLines: [[0, 0]],
+            codeLine: 1,
          },
          {
             ...def(
@@ -212,6 +231,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             ),
             markdown: "Orders in the US only.",
             proseLines: [[0, 0]],
+            codeLine: 1,
          },
          query(
             11,
@@ -221,6 +241,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             {
                markdown: "### Orders by region\nExcludes refunds.",
                proseLines: [[1, 4]],
+               codeLine: 6,
             },
          ),
       ],
@@ -234,7 +255,9 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
          def(3, 3, IMPORT),
          def(5, 5, "query: q is orders -> kpis"),
          query(7, 7, "run: q", 0),
-         query(9, 10, "# bar_chart\nrun: q -> { select: order_count }", 1),
+         query(9, 10, "# bar_chart\nrun: q -> { select: order_count }", 1, {
+            codeLine: 1,
+         }),
          query(12, 12, "run: q + { limit: 1 }", 2),
       ],
       annotations: [
@@ -330,8 +353,13 @@ describe("readNotebookCells over the fixture notebooks", () => {
       let checked = 0;
       for (const modelPath of Object.keys(EXPECTED)) {
          for (const cell of read(modelPath).cells) {
+            if (cell.type === "code") {
+               expect(cell.text.split("\n")[cell.codeLine ?? -1]).toMatch(
+                  /^\s*(source|query|run|given|import|export|type)\b/,
+               );
+            }
             if (cell.markdown === undefined) {
-               expect(cell.proseLines).toBeUndefined();
+               if (cell.type === "code") expect(cell.proseLines).toEqual([]);
                continue;
             }
             checked++;
@@ -484,6 +512,7 @@ describe("readNotebookCells on inline text", () => {
                text: slice,
                markdown: "### Revenue by month\nExcludes refunds.",
                proseLines: [[1, 4]],
+               codeLine: 6,
                startLine: 2,
                endLine: 8,
                queryIndex: 0,
@@ -544,13 +573,13 @@ describe("readNotebookCells on inline text", () => {
          );
       });
 
-      it("leaves markdown, proseLines and caption off a cell that has none", () => {
+      it("leaves markdown and caption off a cell that has none, and serves an empty proseLines", () => {
          const result = readText(
             "## artifact {}\n# bar_chart\nrun: a -> b\n",
             1,
          );
          expect("markdown" in result.cells[0]).toBe(false);
-         expect("proseLines" in result.cells[0]).toBe(false);
+         expect(result.cells[0].proseLines).toEqual([]);
          expect("caption" in result.cells[0]).toBe(false);
       });
 
@@ -647,6 +676,88 @@ describe("readNotebookCells on inline text", () => {
             expect(cell.caption).toBe("cap");
             expect(cell.text.split("\n")).toHaveLength(6);
             expect(proseOf(cell)).toEqual(markdownLines(cell));
+         });
+
+         it("counts code points, not UTF-16 units, before a statement", () => {
+            const cell = readText(
+               [
+                  "## artifact {}",
+                  "run: a -> b // \u{1F600}\u{1F600}",
+                  "#(markdown) \u{1F600}\u{1F600} wide",
+                  "# bar_chart",
+                  "#|(markdown)",
+                  "\u{1F600} body",
+                  "|#",
+                  "run: a -> b",
+                  "",
+               ].join("\n"),
+               2,
+            ).cells[1];
+            expect(cell.proseLines).toEqual([
+               [0, 0],
+               [2, 4],
+            ]);
+            expect(cell.codeLine).toBe(5);
+         });
+
+         it("reads a #(markdown) after a `;` on the previous statement's line as the next statement's prose", () => {
+            const cell = readText(
+               "## artifact {}\nrun: a -> b; #(markdown) y\nrun: a -> b\n",
+               2,
+            ).cells[1];
+            expect(cell.text).toBe("#(markdown) y\nrun: a -> b");
+            expect(cell.proseLines).toEqual([[0, 0]]);
+            expect(cell.codeLine).toBe(1);
+         });
+
+         describe("codeLine", () => {
+            it.each([
+               ["no tags", ["run: a -> b"], 0],
+               ["a line note", ["#(markdown) hi", "run: a -> b"], 1],
+               ["a block", ["#|(markdown)", "x", "|#", "run: a -> b"], 3],
+               [
+                  'a leading non-markdown #|" block',
+                  ['#|"', "Region to filter by", "|#", "run: a -> b"],
+                  3,
+               ],
+               [
+                  "a comment between the tags and the code",
+                  ["# bar_chart", "// why", "run: a -> b"],
+                  2,
+               ],
+               [
+                  "a /* */ comment between the tags and the code",
+                  ["# bar_chart", "/* one", "two */", "run: a -> b"],
+                  3,
+               ],
+               [
+                  "an indented statement",
+                  ["   #(markdown) x", "   run: a -> b"],
+                  1,
+               ],
+            ])("is the keyword's line past %s", (_what, lines, expected) => {
+               const cell = cellOf(lines);
+               expect(cell.codeLine).toBe(expected);
+               expect(cell.text.split("\n")[cell.codeLine ?? -1].trim()).toBe(
+                  "run: a -> b",
+               );
+            });
+
+            it("starts each `;`-joined statement's count at its own first token", () => {
+               const cells = readText(
+                  "## artifact {}\nrun: a -> b; # bar_chart\nrun: c -> d\n",
+                  2,
+               ).cells;
+               expect(cells.map((cell) => cell.codeLine)).toEqual([0, 1]);
+            });
+
+            it("points a definition at its keyword, past a #| block", () => {
+               const [definition] = readText(
+                  '## artifact {}\n#|\nlabel="Orders"\n|#\nsource: s is a\n',
+                  0,
+               ).cells;
+               expect(definition.codeLine).toBe(3);
+            });
          });
 
          it('joins the #" lines into a caption, apart from prose and other tags', () => {
@@ -765,8 +876,8 @@ describe("readNotebookCells on inline text", () => {
          const parse = parseNotebookText(text);
          if (isNotebookReaderError(parse)) throw new Error(parse.message);
          expect(readMarkdownBlocks(parse, text)).toEqual([
-            { name: "intro", line: 1, endLine: 3 },
-            { name: undefined, line: 4, endLine: 6 },
+            { name: "intro", route: "text", line: 1, endLine: 3 },
+            { name: undefined, route: "text", line: 4, endLine: 6 },
          ]);
       });
 
@@ -784,8 +895,8 @@ describe("readNotebookCells on inline text", () => {
       const parse = parseNotebookText(text);
       if (isNotebookReaderError(parse)) throw new Error(parse.message);
       expect(readMarkdownBlocks(parse, text)).toEqual([
-         { name: "intro", line: 3, endLine: 6 },
-         { name: "_b2", line: 7, endLine: 9 },
+         { name: "intro", route: "markdown", line: 3, endLine: 6 },
+         { name: "_b2", route: "markdown", line: 7, endLine: 9 },
       ]);
    });
 

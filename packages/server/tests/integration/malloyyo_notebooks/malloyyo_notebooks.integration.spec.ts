@@ -39,6 +39,7 @@ interface Cell {
    queryInfo?: string;
    markdown?: string;
    proseLines?: [number, number][];
+   codeLine?: number;
    caption?: string;
    result?: string;
 }
@@ -244,10 +245,13 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
             "# bar_chart\n#|(markdown)",
          );
          expect(body.notebookCells?.map((cell) => cell.proseLines)).toEqual([
-            undefined,
+            [],
             [[0, 0]],
             [[0, 0]],
             [[1, 4]],
+         ]);
+         expect(body.notebookCells?.map((cell) => cell.codeLine)).toEqual([
+            0, 1, 1, 6,
          ]);
       });
 

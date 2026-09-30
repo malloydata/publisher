@@ -146,8 +146,10 @@ export interface NotebookCellSpan {
    text: string;
    /** A code cell's own `#(markdown)` prose, read out of its tag lines; blocks join with a blank line. */
    markdown?: string;
-   /** The 0-based inclusive `[start, end]` lines of `text` (split on `\n`) that hold that prose; absent with no `markdown`. */
+   /** The 0-based inclusive `[start, end]` lines of `text` (split on `\n`) that hold that prose; `[]` on a code cell with none. */
    proseLines?: [number, number][];
+   /** The 0-based line of `text` where the statement's code starts, past its leading notes and comments; set on every code cell. */
+   codeLine?: number;
    /** The joined text of the statement's leading `#"` lines; absent when it has none. */
    caption?: string;
    /** 1-based and inclusive. */
@@ -308,6 +310,13 @@ export function codePointMap(text: string): Int32Array {
    return map;
 }
 
+const NOTE_TOKENS = new Set([
+   "ANNOTATION",
+   "BLOCK_ANNOTATION_BEGIN",
+   "BLOCK_ANNOTATION_TEXT",
+   "BLOCK_ANNOTATION_END",
+]);
+
 interface ReaderNote {
    text: string;
    route: string | undefined;
@@ -324,7 +333,8 @@ type ReaderItem =
         run: boolean;
         text: string;
         markdown?: string;
-        proseLines?: [number, number][];
+        proseLines: [number, number][];
+        codeLine: number;
         caption?: string;
         startLine: number;
         endLine: number;
@@ -494,7 +504,7 @@ export function readNotebookCells(
    const attachedProse = (
       notes: ReturnType<typeof leadingObjectNotes>,
       firstLine: number,
-   ): { markdown?: string; proseLines?: [number, number][] } => {
+   ): { markdown?: string; proseLines: [number, number][] } => {
       const segments: string[] = [];
       const proseLines: [number, number][] = [];
       let lineEnd = -2;
@@ -517,7 +527,17 @@ export function readNotebookCells(
       }
       return segments.length > 0
          ? { markdown: segments.join("\n\n"), proseLines }
-         : {};
+         : { proseLines };
+   };
+   // The first default-channel token that is not a note; comments sit on a hidden channel.
+   const codeLineOf = (startCp: number, stopCp: number): number | undefined => {
+      for (let i = firstTokenAt(startCp); i < tokens.length; i++) {
+         const token = tokens[i];
+         if (token.startIndex > stopCp) break;
+         if (token.channel !== 0) continue;
+         if (!NOTE_TOKENS.has(symbolOf(token) ?? "")) return token.line;
+      }
+      return undefined;
    };
    const attachedCaption = (
       notes: ReturnType<typeof leadingObjectNotes>,
@@ -588,6 +608,9 @@ export function readNotebookCells(
             run: kind === "run",
             text: text.slice(span.start, span.end),
             ...attachedProse(leading, span.startLine),
+            codeLine:
+               (codeLineOf(span.startCp, span.stopCp) ?? span.startLine) -
+               span.startLine,
             ...(caption !== undefined && { caption }),
             startLine: span.startLine,
             endLine: span.endLine,
@@ -700,8 +723,9 @@ export function readNotebookCells(
                     text: item.text,
                     ...(item.markdown !== undefined && {
                        markdown: item.markdown,
-                       proseLines: item.proseLines,
                     }),
+                    proseLines: item.proseLines,
+                    codeLine: item.codeLine,
                     ...(item.caption !== undefined && {
                        caption: item.caption,
                     }),
@@ -715,8 +739,9 @@ export function readNotebookCells(
                     text: item.text,
                     ...(item.markdown !== undefined && {
                        markdown: item.markdown,
-                       proseLines: item.proseLines,
                     }),
+                    proseLines: item.proseLines,
+                    codeLine: item.codeLine,
                     ...(item.caption !== undefined && {
                        caption: item.caption,
                     }),
@@ -761,7 +786,7 @@ export const TEXT_BLOCK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 export function parseMarkdownOpener(
    opener: string,
-): { level: 1 | 2; rest: string; name?: string } | undefined {
+): { level: 1 | 2; route: string; rest: string; name?: string } | undefined {
    const line = opener.replace(/\r?\n$/, "");
    const sigil = /^(#{1,2})\|/.exec(line);
    if (!sigil) return undefined;
@@ -774,6 +799,7 @@ export function parseMarkdownOpener(
    >[0]).trim();
    return {
       level: sigil[1].length as 1 | 2,
+      route,
       rest,
       name: TEXT_BLOCK_NAME.test(rest) ? rest : undefined,
    };
@@ -783,6 +809,8 @@ export function parseMarkdownOpener(
 export interface NotebookMarkdownBlock {
    /** Undefined when the opener has no name or more than one bare word. */
    name?: string;
+   /** The route the opener is spelled with: `markdown`, or `text` on a floating block. */
+   route: string;
    /** 1-based opener line and closer line (the last body line when unclosed). */
    line: number;
    endLine: number;
@@ -829,6 +857,7 @@ export function readMarkdownBlocks(
          endLine = closer.line;
       blocks.push({
          name: opener.name,
+         route: opener.route,
          line: tokens[i].line,
          endLine,
       });

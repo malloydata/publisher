@@ -44,7 +44,7 @@ Cells come from the file's own notes and statements, in file order (imported fil
 | `import`, `source:`, `query:`, `given:`, `export { … }`, `type:` | one definition cell **per statement** |
 | a non-`"` `##` note after the tag (`## title=…`) | not a cell |
 
-The unnamed `"` notes above `## artifact` are the notebook's description. Definition cells render folded; only query cells run. Earlier spellings are still read: `##"` and `##|"` notes below the tag are markdown cells, like `(markdown)`. Write `(markdown)`.
+The unnamed `"` notes above `## artifact` are the notebook's description. Definition cells render folded; only query cells run. Earlier spellings are still read: `##"`, `##|"`, `##(text)` and `##|(text)` notes below the tag are markdown cells, like `(markdown)`. Write `(markdown)`.
 
 ## Compile errors and checking a notebook
 
@@ -237,7 +237,7 @@ A `.malloynb` notebook (cells delimited by `>>>markdown` and `>>>malloy`) is a d
 | `## Heading` for a section title | That line is model tags, not prose. Write the title inside a `##|(markdown)` block. |
 | `##| markdown` or `##|markdown` (no parentheses) | Write `##|(markdown)`. |
 | `##(markdown)text` or `##|(markdown)text` (no space after the route) | Malloy drops the note. Write `##(markdown) text`. |
-| `##"` or `##|"` prose below the tag | Write `##(markdown)` or `##|(markdown)`. |
+| `##"`, `##|"`, `##(text)` or `##|(text)` prose below the tag | Still read as markdown cells; prefer `##(markdown)` or `##|(markdown)`. |
 | Text on the opener line after `##|(markdown)` | Only a name may follow it, and a notebook has no use for one. Put the text on the next line. |
 | `#(markdown)` above an `import` or `export` | Those take no annotation. Write `##|(markdown)`. |
 | A `#` tag separated from its `run:` by another statement | Render tags sit directly above the `run:`. Move the tag. |

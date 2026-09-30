@@ -84,5 +84,6 @@ describe("a .malloynb cell with no hydrated query", () => {
       expect(cell?.queryInfo).toBeUndefined();
       expect(cell?.markdown).toStartWith("Reads the hidden file");
       expect(cell?.proseLines).toEqual([[0, 0]]);
+      expect(cell?.codeLine).toBe(1);
    });
 });

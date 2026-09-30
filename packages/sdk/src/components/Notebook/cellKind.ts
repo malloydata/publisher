@@ -11,7 +11,11 @@ export function cellRuns(cell: Pick<NotebookCell, "type" | "kind">): boolean {
    return cell.kind ? cell.kind === "query" : cell.type === "code";
 }
 
-type CellLines = Pick<NotebookCell, "text" | "proseLines">;
+type CellLines = Pick<NotebookCell, "text" | "proseLines" | "codeLine">;
+
+/** Only a served `.malloy` cell carries `proseLines`, `[]` included; a `.malloynb` or an older server sends none. */
+const isServed = (cell: Pick<NotebookCell, "proseLines">): boolean =>
+   cell.proseLines !== undefined;
 
 /** The lines of a cell the server did not name as prose; all of them when it named none. */
 function codeLines({ text, proseLines }: CellLines): string[] {
@@ -24,12 +28,13 @@ function codeLines({ text, proseLines }: CellLines): string[] {
 }
 
 /**
- * A query cell's caption: the server's, or on a cell without one (a `.malloynb`, an older
- * server) the `#"` lines in the tag block above its `run:`.
+ * A query cell's caption. A served cell's is the server's alone, absent meaning none; on an
+ * unserved cell (a `.malloynb`, an older server) it is the `#"` lines in the tag block above its `run:`.
  */
 export function cellCaption(
-   cell: Pick<NotebookCell, "text" | "caption" | "proseLines">,
+   cell: Pick<NotebookCell, "text" | "caption" | "proseLines" | "codeLine">,
 ): string | undefined {
+   if (isServed(cell)) return cell.caption;
    if (cell.caption !== undefined) return cell.caption;
    const lines: string[] = [];
    for (const raw of codeLines(cell)) {
@@ -42,11 +47,11 @@ export function cellCaption(
 }
 
 /**
- * A cell's code without its prose, which renders separately. The server names the prose lines
- * of a served cell; without them (a `.malloynb`, an older server) it drops `##` lines.
+ * A cell's code without its prose, which renders separately. A served cell loses exactly the
+ * lines the server named; an unserved one (a `.malloynb`, an older server) loses its `##` lines.
  */
 export function stripProse(cell: CellLines): string {
-   if (cell.proseLines) return codeLines(cell).join("\n");
+   if (isServed(cell)) return codeLines(cell).join("\n");
    return cell.text
       .split("\n")
       .filter((line) => !line.trimStart().startsWith("##"))
@@ -56,9 +61,12 @@ export function stripProse(cell: CellLines): string {
 /** One-line label for a folded definition cell: its statement kind and name. */
 export function definitionSummary(cell: CellLines): string {
    const line =
-      codeLines(cell)
-         .map((raw) => raw.trim())
-         .find((l) => l && !l.startsWith("#") && !l.startsWith("//")) ?? "";
+      cell.codeLine !== undefined
+         ? (cell.text.split("\n")[cell.codeLine] ?? "").trim()
+         : (codeLines(cell)
+              .map((raw) => raw.trim())
+              .find((l) => l && !l.startsWith("#") && !l.startsWith("//")) ??
+           "");
    const named = /^(source|query|given|type):?\s+([A-Za-z_]\w*)/.exec(line);
    if (named) return `${named[1]}: ${named[2]}`;
    const keyword = /^(import|export)\b/.exec(line);

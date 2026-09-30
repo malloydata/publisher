@@ -129,6 +129,17 @@ describe("notebook lint", () => {
       ]);
    });
 
+   it("names the (text) route on a (text) block's warning, not (markdown)", () => {
+      expect(lint(`${HEADER}##|(text) intro\nhi\n|##\n`)).toEqual([
+         {
+            line: 2,
+            code: "notebook-markdown-block-named",
+            message:
+               "Line 2: the name `intro` on this `(text)` block means nothing in a notebook, which shows every block as a cell, and it is not shown. Fix: remove the name.",
+         },
+      ]);
+   });
+
    it("errors on a (markdown) annotation above the artifact tag, block or line", () => {
       const found = lintNotebookText(
          "notebooks/n.malloy",

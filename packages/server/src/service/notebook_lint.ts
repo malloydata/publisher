@@ -143,7 +143,7 @@ export function lintNotebookText(
             add(
                closerLine,
                "notebook-block-closed-early",
-               closedEarly("|##", token.line),
+               closedEarly(token.line),
             );
             closerLine = undefined;
          }
@@ -512,8 +512,8 @@ export function lintNotebookText(
       }
    }
 
-   function closedEarly(closer: string, strayLine: number): string {
-      return `this \`${closer}\` closes the block, so the text after it on line ${strayLine} is not prose and does not compile. Fix: a body line cannot start with \`${closer}\`, so reword it if the block should go on, or delete the stray text if the block is over.`;
+   function closedEarly(strayLine: number): string {
+      return `this \`|##\` closes the block, so the text after it on line ${strayLine} is not prose and does not compile. Fix: a body line cannot start with \`|##\`, so reword it if the block should go on, or delete the stray text if the block is over.`;
    }
 
    function nestedMarkdownMessage(note: string): string {
@@ -552,6 +552,7 @@ export function lintNotebookText(
          const line = list[i].line;
          const rest = opener.slice(sigil.length + 1);
          const markdown = parseMarkdownOpener(opener);
+         const spelled = `(${markdown?.route})`;
          // Only a top-level statement's leading notes are read; a note nested in a statement is not.
          const topLevel = sigil === "##" || leadingNoteLines.has(line);
          const dashboardTile = sigil === "##" && !inNotebooks;
@@ -591,27 +592,27 @@ export function lintNotebookText(
                add(
                   line,
                   "notebook-markdown-opener-text",
-                  `\`${quoted(markdown.rest)}\` is not a valid name for a \`(markdown)\` tile, which takes one bare word of letters, digits and underscores that does not start with a digit. Fix: ${tileEntryFix(asTileName(markdown.rest))}.`,
+                  `\`${quoted(markdown.rest)}\` is not a valid name for a \`${spelled}\` tile, which takes one bare word of letters, digits and underscores that does not start with a digit. Fix: ${tileEntryFix(asTileName(markdown.rest))}.`,
                   "error",
                );
             } else if (opensText) {
                add(
                   line,
                   "notebook-markdown-opener-text",
-                  `\`${quoted(markdown.rest)}\` follows \`${sigil}|(markdown)\` on its opener line, where only one bare word may go (a name), so the block would show it as its first line. Fix: ${dashboardTile ? tileBlockFix("name", markdown.rest) : "move it into the body, on the line below the opener"}.${placement(sigil, line)}`,
+                  `\`${quoted(markdown.rest)}\` follows \`${sigil}|${spelled}\` on its opener line, where only one bare word may go (a name), so the block would show it as its first line. Fix: ${dashboardTile ? tileBlockFix("name", markdown.rest) : "move it into the body, on the line below the opener"}.${placement(sigil, line)}`,
                   "error",
                );
             } else if (markdown.name && (sigil === "#" || inNotebooks)) {
                add(
                   line,
                   "notebook-markdown-block-named",
-                  `the name \`${markdown.name}\` on this \`(markdown)\` block means nothing ${sigil === "#" ? "on a block attached to a statement" : "in a notebook, which shows every block as a cell"}, and it is not shown. Fix: remove the name.`,
+                  `the name \`${markdown.name}\` on this \`${spelled}\` block means nothing ${sigil === "#" ? "on a block attached to a statement" : "in a notebook, which shows every block as a cell"}, and it is not shown. Fix: remove the name.`,
                );
             } else if (!markdown.name && dashboardTile) {
                add(
                   line,
                   "notebook-markdown-block-unnamed",
-                  `an unnamed \`(markdown)\` block is not shown on a dashboard, whose text tiles are named blocks listed in \`tiles=[…]\` (text tiles do not render yet). Fix: ${tileEntryFix("name")}, or delete the block.`,
+                  `an unnamed \`${spelled}\` block is not shown on a dashboard, whose text tiles are named blocks listed in \`tiles=[…]\` (text tiles do not render yet). Fix: ${tileEntryFix("name")}, or delete the block.`,
                );
             }
          } else if (/^[ \t]*\(?markdown\)?(?=[ \t]|$)/i.test(rest)) {
@@ -703,7 +704,7 @@ export function lintNotebookText(
          add(
             block.line,
             "notebook-markdown-block-unreferenced",
-            `the \`(markdown)\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.`,
+            `the \`(${block.route})\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.`,
          );
       }
    }

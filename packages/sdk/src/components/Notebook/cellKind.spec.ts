@@ -153,3 +153,39 @@ describe("stripProse", () => {
       expect(stripProse({ text: cell })).toBe(cell);
    });
 });
+
+describe("a served cell trusts only the server", () => {
+   it("keeps a ## line inside a multi-line string when it has no prose", () => {
+      const text = 'run: duckdb.sql("""\n## not prose\nselect 1""")';
+      expect(stripProse({ text, proseLines: [], codeLine: 0 })).toBe(text);
+   });
+
+   it("shows no caption the server did not send", () => {
+      for (const text of [
+         '#"x\nrun: q',
+         '#"\u00a0nbsp\nrun: q',
+         '#|\nlabel="a"\n#" hidden\n|#\nrun: q',
+      ]) {
+         expect(cellCaption({ text, proseLines: [], codeLine: 0 })).toBe(
+            undefined,
+         );
+      }
+   });
+
+   it("labels a definition by the line the server points at", () => {
+      expect(
+         definitionSummary({
+            text: '#|"\nRegion to filter by\n|#\ngiven: REGION :: string is "x"',
+            proseLines: [],
+            codeLine: 3,
+         }),
+      ).toBe("given: REGION");
+      expect(
+         definitionSummary({
+            text: '#|\nlabel="Orders"\n|#\nsource: s is a',
+            proseLines: [],
+            codeLine: 3,
+         }),
+      ).toBe("source: s");
+   });
+});

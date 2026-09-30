@@ -4642,24 +4642,34 @@ components:
         proseLines:
           type: array
           description:
-            On a `.malloy` notebook's code cell with `markdown`, the lines of
-            `text` that hold it, as `[start, end]` pairs in file order. Lines
-            are 0-based and inclusive, counted on `text` split at `\n`. Strip
-            exactly these lines to get the cell's code without its prose; do
-            not re-derive them from `text`, whose first line has lost its
-            indentation. Absent when the cell has no `markdown`.
+            Present on every code cell of a `.malloy` notebook, and absent on
+            a `.malloynb` or from a server that predates it. The lines of
+            `text` that hold `markdown`, as `[start, end]` pairs in file order;
+            `[]` when the cell has none. Lines are 0-based and inclusive,
+            counted on `text` split at `\n`. Strip exactly these lines to get
+            the cell's code without its prose; do not re-derive them from
+            `text`, whose first line has lost its indentation.
           items:
             type: array
             minItems: 2
             maxItems: 2
             items:
               type: integer
+        codeLine:
+          type: integer
+          description:
+            Present on every code cell of a `.malloy` notebook, as `proseLines`
+            is. The 0-based line of `text` (split at `\n`) where the
+            statement's code starts, its first token that is neither a note nor
+            a comment, so the `source`, `run`, `given` or `import` keyword sits
+            on it.
         caption:
           type: string
           description:
             On a `.malloy` notebook's code cell, the joined text of its leading
             `#"` lines (space-joined, trimmed). Author prose, so it is served
-            even when `queryInfo` is withheld. Absent when the cell has none.
+            even when `queryInfo` is withheld. Absent when the cell has none,
+            which is authoritative wherever `proseLines` is present.
         newSources:
           type: array
           description:
@@ -4696,13 +4706,16 @@ components:
             `NotebookCell`. Absent when the cell has none.
         proseLines:
           type: array
-          description: The lines of `text` that hold `markdown`, as on `NotebookCell`.
+          description: The lines of `text` that hold `markdown`, as on `NotebookCell`; `[]` when none.
           items:
             type: array
             minItems: 2
             maxItems: 2
             items:
               type: integer
+        codeLine:
+          type: integer
+          description: The line of `text` where the statement's code starts, as on `NotebookCell`.
         caption:
           type: string
           description: The cell's leading `#"` caption, as on `NotebookCell`. Absent when the cell has none.
