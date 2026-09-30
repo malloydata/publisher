@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { PooledPostgresConnection } from "@malloydata/db-postgres";
 import {
    afterAll,
    afterEach,
@@ -1988,6 +1989,80 @@ describe("connection integration tests", () => {
                }
             }
          });
+
+         it(
+            "should resolve a plain environment-level Postgres connection as pooled and capped",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // Regression test for the registry fallthrough building an
+               // unpooled, uncapped PostgresConnection for a plain (non-
+               // proxied) Postgres connection: pg.Pool's own default (max:
+               // 10) applied regardless of what the caller asked for, and a
+               // failed query never closed its session at all.
+               // buildEnvironmentPostgresConnection routes this case through
+               // EnvironmentPooledPostgresConnection instead; this asserts
+               // both that it is pooled at all, and that the pool's real,
+               // resolved size is the server-owned cap, not pg's default.
+               const config = buildEnvironmentMalloyConfig(
+                  [
+                     {
+                        name: "pg_pooled",
+                        type: "postgres",
+                        postgresConnection: {
+                           host: process.env.POSTGRES_TEST_HOST,
+                           port: parseInt(
+                              process.env.POSTGRES_TEST_PORT || "5432",
+                           ),
+                           userName: process.env.POSTGRES_TEST_USER!,
+                           password: process.env.POSTGRES_TEST_PASSWORD!,
+                           databaseName: process.env.POSTGRES_TEST_DATABASE,
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  expect(connection.isPool()).toBe(true);
+                  // isPool() narrows to Malloy's generic PooledConnection,
+                  // which has no getPool(); the concrete runtime type built
+                  // by buildEnvironmentPostgresConnection is
+                  // PooledPostgresConnection, which does.
+                  const pooled =
+                     connection as unknown as PooledPostgresConnection;
+                  const pool = await pooled.getPool();
+                  // The actual defect: without the buildClientConfig
+                  // override, this reads 10 (pg's own default) no matter
+                  // what the caller passed.
+                  expect(pool.options.max).toBe(5);
+                  expect(pool.options.application_name).toBe(
+                     "credible-publisher",
+                  );
+
+                  // Prove the pool is real, not just correctly configured: a
+                  // live query against the actual test container. Wrapped in
+                  // row_to_json because runSQL de-JSONs each row via
+                  // row.row (see introspection_sql.ts's own note on this).
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
+                  );
+                  expect(result.rows[0]).toEqual({ ok: 1 });
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
 
          it("should use environment-root-relative file paths for environment-level DuckDB", async () => {
             const insideCsvPath = path.join(testEnvironmentPath, "inside.csv");

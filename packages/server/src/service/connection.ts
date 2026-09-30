@@ -37,6 +37,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import type { PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
@@ -64,6 +65,7 @@ import {
 } from "../path_safety";
 import {
    assembleEnvironmentConnections,
+   buildPostgresConnectionString,
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
@@ -2318,6 +2320,89 @@ function buildProxiedPostgresConnection(
    });
 }
 
+// Per-pod cap on a plain (non-proxied) Postgres connection's pool. Server-owned,
+// not exposed via API, same posture as buildProxiedPostgresConnection's poolMax
+// above and buildSnowflakePrivateKeyConnection's poolOptions. Sized small: a
+// target database's role often holds a much lower CONNECTION LIMIT than a
+// worker fleet's own width, so the cap here bounds one pod's share, not a
+// promise about the fleet total -- pods x POSTGRES_POOL_MAX_PER_CONNECTION can
+// still exceed a tight role limit when an environment's package replication
+// count is high, or during the old/new generation overlap on a connection
+// update.
+const POSTGRES_POOL_MAX_PER_CONNECTION = 5;
+const POSTGRES_POOL_IDLE_TIMEOUT_MS = 10_000;
+const POSTGRES_POOL_CONNECTION_TIMEOUT_MS = 30_000;
+
+/**
+ * `PooledPostgresConnection` with pool options that actually reach `pg.Pool`.
+ *
+ * The base class's `buildClientConfig` forwards only
+ * `user/password/database/port/host/connectionString/ssl` -- any `poolMin`/
+ * `poolMax` passed into the constructor lands on `ConnectionConfig`'s index
+ * signature (so it type-checks) and is then silently dropped, and `pg.Pool`
+ * falls back to its own default (`max: 10`) regardless of what the caller
+ * asked for. This override is the only way today to make a pool size, an idle
+ * timeout, or `application_name` actually apply.
+ */
+class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
+   // The base method's declared return type is pg's `ClientConfig`, because
+   // the same method also builds a bare `Client` on the unpooled base class.
+   // `getPool()` (which is what actually calls this on a pool connection)
+   // passes the result straight to `new Pool(...)`, whose constructor accepts
+   // pg's `PoolConfig` -- a strict superset of `ClientConfig` that adds
+   // `max`/`min`/`idleTimeoutMillis`/`connectionTimeoutMillis`. Returning
+   // `PoolConfig` here is the accurate type for that call site, not a widened
+   // escape hatch.
+   protected buildClientConfig(
+      cfg: Parameters<PooledPostgresConnection["buildClientConfig"]>[0],
+   ): PoolConfig {
+      const base = super.buildClientConfig(cfg);
+      return {
+         ...base,
+         max: POSTGRES_POOL_MAX_PER_CONNECTION,
+         idleTimeoutMillis: POSTGRES_POOL_IDLE_TIMEOUT_MS,
+         connectionTimeoutMillis: POSTGRES_POOL_CONNECTION_TIMEOUT_MS,
+         // Lets the target database's own pg_stat_activity identify these
+         // sessions instead of showing a blank application_name.
+         application_name: "credible-publisher",
+      };
+   }
+}
+
+function buildEnvironmentPostgresConnection(
+   metadata: EnvironmentConnectionMetadata,
+): EnvironmentPooledPostgresConnection {
+   const name = metadata.apiConnection.name!;
+   const pg = metadata.apiConnection.postgresConnection;
+   if (!pg) {
+      throw new Error(
+         `Connection '${name}' has type 'postgres' but no postgresConnection config.`,
+      );
+   }
+   // Reuses the registry path's own connectionString builder rather than
+   // re-deriving one here: a direct (non-proxied) connection has no `ssl`
+   // field on the API (sslmode is proxy-only, per PostgresConnection's own
+   // schema doc) and instead picks up TLS from the deployment's PGSSLMODE
+   // env, which buildPostgresConnectionString already applies.
+   //
+   // buildPostgresConnectionString returns undefined when there is neither a
+   // raw connectionString on the config NOR a PGSSLMODE set -- the common
+   // case for a deployment with no forced sslmode. The individual fields are
+   // NOT redundant in that case: they are the only connection info at all.
+   // pg's own resolution prefers a truthy connectionString and falls back to
+   // host/port/user/password/database when it is undefined, so passing both
+   // here is correct rather than one shadowing the other.
+   return new EnvironmentPooledPostgresConnection({
+      name,
+      connectionString: buildPostgresConnectionString(pg),
+      host: pg.host,
+      port: pg.port,
+      username: pg.userName,
+      password: pg.password,
+      databaseName: pg.databaseName,
+   });
+}
+
 function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
@@ -2419,6 +2504,10 @@ export function buildEnvironmentMalloyConfig(
    const proxyConnectionCache = new Map<
       string,
       Promise<PooledPostgresConnection>
+   >();
+   const postgresConnectionCache = new Map<
+      string,
+      Promise<EnvironmentPooledPostgresConnection>
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
@@ -2580,6 +2669,39 @@ export function buildEnvironmentMalloyConfig(
                return connection;
             }
 
+            // Plain (non-proxied) Postgres. Everything above this line already
+            // claimed its own type (DuckLake, SSH-proxied Postgres, Snowflake
+            // with a private key, Azure-attached DuckDB) -- a bare `type ===
+            // "postgres"` check here does not shadow any of them, it only
+            // catches what would otherwise fall through to Malloy's registry,
+            // which builds the unpooled, uncapped PostgresConnection. See
+            // buildEnvironmentPostgresConnection and
+            // EnvironmentPooledPostgresConnection above for why that path
+            // leaks and has no real cap.
+            if (metadata?.apiConnection.type === "postgres") {
+               let connectionPromise = postgresConnectionCache.get(name!);
+               if (!connectionPromise) {
+                  connectionPromise = Promise.resolve(
+                     buildEnvironmentPostgresConnection(metadata),
+                  );
+                  postgresConnectionCache.set(name!, connectionPromise);
+                  // Drop a rejected build from the cache so a later lookup can
+                  // retry (mirrors proxyConnectionCache's eviction above) --
+                  // otherwise a transient bad connectionString would replay a
+                  // stale rejection until the environment reloads.
+                  connectionPromise.catch(() => {
+                     if (
+                        postgresConnectionCache.get(name!) === connectionPromise
+                     ) {
+                        postgresConnectionCache.delete(name!);
+                     }
+                  });
+               }
+               const connection = await connectionPromise;
+               await attachOnce(connection, metadata);
+               return connection;
+            }
+
             const connection = await base.lookupConnection(name);
             if (metadata) {
                await attachOnce(connection, metadata);
@@ -2619,6 +2741,7 @@ export function buildEnvironmentMalloyConfig(
             ...snowflakeJwtCache.values(),
             ...azureDuckDBCache.values(),
             ...proxyConnectionCache.values(),
+            ...postgresConnectionCache.values(),
          ];
          const closeResults = await Promise.allSettled([
             malloyConfig.shutdown("close"),
@@ -2639,6 +2762,7 @@ export function buildEnvironmentMalloyConfig(
          snowflakeJwtCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
+         postgresConnectionCache.clear();
          proxyEndpoints.clear();
 
          const failures = [...closeResults, ...endpointResults].filter(
