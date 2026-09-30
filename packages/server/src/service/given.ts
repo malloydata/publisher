@@ -32,6 +32,7 @@ import {
 import { BadRequestError } from "../errors";
 import { isReservedRoute } from "./annotations";
 import { referencedGivenNames } from "./authorize";
+import { MARKDOWN_ROUTE } from "./notebook";
 import type { Tag } from "@malloydata/malloy-tag";
 import { motlyTag, tagNumeric, tagText } from "./motly";
 
@@ -277,7 +278,11 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
       name: given.name,
       type: renderedType,
       annotations: allNotes
-         .filter((note) => !isReservedRoute(note.route))
+         // `(markdown)` is a notebook cell's own prose, not part of the given.
+         .filter(
+            (note) =>
+               !isReservedRoute(note.route) && note.route !== MARKDOWN_ROUTE,
+         )
          .map((note) => note.text),
       // Reads the reserved plain-`#` notes the line above drops, which is where
       // the control tags live.

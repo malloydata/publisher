@@ -114,6 +114,13 @@ describe("staleScaffolderWarning", () => {
       // never prints a warning it cannot justify.
       expect(staleScaffolderWarning("unknown", "0.0.2")).toBeUndefined();
       expect(staleScaffolderWarning("0.0.1", "0.0.2-rc.1")).toBeUndefined();
+      // The committed manifest's version is now a fixed dev placeholder
+      // ("0.0.0-dev"), never a real release, so this is the running version
+      // in a checkout and in every test run: it must never be told it is
+      // stale. Covered by the same unparseable-version rule above, not a
+      // special case, but worth asserting directly since this is the one
+      // shape "running" always takes outside a real npm install.
+      expect(staleScaffolderWarning("0.0.0-dev", "0.0.2")).toBeUndefined();
    });
 });
 

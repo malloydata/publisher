@@ -232,24 +232,24 @@ For complete chart reference including scatter_chart, shape_map, sparklines, and
 | `# hidden` | Internal/helper fields |
 | `# duration=seconds` | Time durations |
 
-# NOTEBOOKS (.malloynb)
+# NOTEBOOKS (.malloy)
 
-Cells delimited by `>>>markdown` or `>>>malloy`. **Never use `>>>malloysql`.**
+A notebook is `notebooks/<slug>.malloy` with `## artifact { kind=notebook title="..." }`. Prose is `##(markdown) text` or a `##|(markdown)` ... `|##` block; each `run:` is a query cell.
 
-```
->>>markdown
+```malloy
+## artifact { kind=notebook title="Sales analysis" }
+import "../order_analysis.malloy"
+
+##|(markdown)
 # Sales Analysis
+|##
 
->>>malloy
-import "order_analysis.malloy"
-
->>>malloy
 run: order_analysis -> summary
 ```
 
-**Compile errors in `.malloynb` are NOT shown in the linter**: only visible on cell execution.
+**A `.malloy` notebook compiles as a model**, so the linter and `/compile` report its errors before you save. An existing `.malloynb` is not covered: its errors show only when a cell runs. Never write a new `.malloynb`.
 
-A notebook is also the home for a polished, narrated report: alternate `>>>markdown` cells (the story) with `>>>malloy` cells (the views), and let the malloy cells carry the chart tags. For the full cell-shape and report-authoring conventions, see `skill:malloy-notebooks`.
+A notebook is also the home for a polished, narrated report: alternate `##(markdown)` prose (the story) with `run:` cells (the views), and let each `run:` carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
 
 ### Interactive Filters
 

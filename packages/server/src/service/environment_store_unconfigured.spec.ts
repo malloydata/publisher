@@ -15,6 +15,7 @@ import * as path from "path";
 import { getUnresolvedPublisherConfigPath } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { logger } from "../logger";
+import packageJson from "../../package.json";
 
 /**
  * A server that loads nothing reports `serving` with `environments=0
@@ -113,9 +114,10 @@ describe("getUnresolvedPublisherConfigPath", () => {
    });
 
    it("names the path it looked for when no config is present", () => {
-      expect(getUnresolvedPublisherConfigPath(serverRootPath)).toBe(
-         path.join(serverRootPath, "publisher.config.json"),
-      );
+      expect(getUnresolvedPublisherConfigPath(serverRootPath)).toEqual({
+         path: path.join(serverRootPath, "publisher.config.json"),
+         explicit: false,
+      });
    });
 
    it("returns null once a config exists at the server root", () => {
@@ -126,13 +128,24 @@ describe("getUnresolvedPublisherConfigPath", () => {
       expect(getUnresolvedPublisherConfigPath(serverRootPath)).toBeNull();
    });
 
-   it("stays quiet for an explicit --config, even a missing one", () => {
-      // getPublisherConfig already logs that case at error. Reporting the same
-      // mistake twice in two different shapes helps nobody.
-      process.env.PUBLISHER_CONFIG_PATH = path.join(
-         serverRootPath,
-         "nowhere.json",
+   it("flags a missing --config path as explicit", () => {
+      // A typo in the flag is the likelier way to boot empty, so it must not
+      // read as "a config was found".
+      const missing = path.join(serverRootPath, "nowhere.json");
+      process.env.PUBLISHER_CONFIG_PATH = missing;
+      expect(getUnresolvedPublisherConfigPath(serverRootPath)).toEqual({
+         path: missing,
+         explicit: true,
+      });
+   });
+
+   it("returns null for a --config path that exists", () => {
+      const present = path.join(serverRootPath, "elsewhere.json");
+      writeFileSync(
+         present,
+         JSON.stringify({ frozenConfig: false, environments: [] }),
       );
+      process.env.PUBLISHER_CONFIG_PATH = present;
       expect(getUnresolvedPublisherConfigPath(serverRootPath)).toBeNull();
    });
 });
@@ -184,6 +197,13 @@ describe("unconfigured boot notice", () => {
       // The two ways out, both of which a reader needs to act on it.
       expect(notices[0]).toContain("--config");
       expect(notices[0]).toContain("runtime");
+
+      // The log line reaches an operator. A caller polling /status sees only
+      // "serving" and an empty list unless the same sentence is there too.
+      const status = await store.getStatus();
+      expect(status.environments).toHaveLength(0);
+      expect(status.emptyReason).toBe(notices[0]);
+      expect(status.version).toBe(packageJson.version);
    });
 
    it("can still create an environment at runtime, as the notice claims", async () => {
@@ -197,6 +217,8 @@ describe("unconfigured boot notice", () => {
       await store.finishedInitialization;
       assertInitialized();
       expect(noticeLines()).toHaveLength(1);
+      // Set before, so its absence after is the runtime environment's doing.
+      expect((await store.getStatus()).emptyReason).toBe(noticeLines()[0]);
 
       await store.addEnvironment({ name: "created-at-runtime" });
 
@@ -204,6 +226,8 @@ describe("unconfigured boot notice", () => {
       expect(environments.map((environment) => environment.name)).toContain(
          "created-at-runtime",
       );
+      // The server is no longer empty, so the reason it was empty is stale.
+      expect((await store.getStatus()).emptyReason).toBeUndefined();
    });
 
    it("stays quiet when the database held an environment that did not load", async () => {
@@ -221,6 +245,37 @@ describe("unconfigured boot notice", () => {
 
       assertInitialized();
       expect(noticeLines()).toHaveLength(0);
+      // Same gate on /status: blaming a missing config here would point at
+      // the wrong fix, right after the log line naming the real cause.
+      expect((await store.getStatus()).emptyReason).toBeUndefined();
+   });
+
+   it("reports a missing --config path on /status without logging it twice", async () => {
+      const missing = path.join(serverRootPath, "nowhere.json");
+      process.env.PUBLISHER_CONFIG_PATH = missing;
+      const errorSpy = spyOn(logger, "error").mockImplementation(() => logger);
+      try {
+         const store = new EnvironmentStore(serverRootPath);
+         await store.finishedInitialization;
+
+         assertInitialized();
+         // getPublisherConfig logs the miss at error; no info line repeats it.
+         expect(noticeLines()).toHaveLength(0);
+         const errorLines = errorSpy.mock.calls.map((call) => String(call[0]));
+         expect(
+            errorLines.some((line) =>
+               line.includes(`--config path not found: ${missing}`),
+            ),
+         ).toBe(true);
+
+         const status = await store.getStatus();
+         expect(status.environments).toHaveLength(0);
+         expect(status.emptyReason).toContain(missing);
+         expect(status.emptyReason).toContain("--config");
+      } finally {
+         errorSpy.mockRestore();
+         delete process.env.PUBLISHER_CONFIG_PATH;
+      }
    });
 
    it("stays quiet when a config resolved, however empty", async () => {
@@ -236,5 +291,6 @@ describe("unconfigured boot notice", () => {
 
       assertInitialized();
       expect(noticeLines()).toHaveLength(0);
+      expect((await store.getStatus()).emptyReason).toBeUndefined();
    });
 });

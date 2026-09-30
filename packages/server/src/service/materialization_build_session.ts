@@ -14,6 +14,7 @@ import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError, MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import { getPartitionedWriteFlushThreshold } from "../config";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
@@ -116,6 +117,44 @@ export function wrapPassthrough(
          );
       }
    }
+}
+
+/**
+ * The SELECT a partitioned insert reads, ordered by the partition columns.
+ *
+ * DuckDB's partitioned COPY -- which is what a DuckLake insert into a laid-out
+ * table plans -- charges each appender one vector per column for every
+ * partition it has met, at first sight, before any row of it is flushed. Rows
+ * that arrive in partition order keep that set at one or two partitions; rows
+ * that arrive interleaved bring every partition into it within the first few
+ * chunks, and a 308-partition, 120-column insert then fails against the
+ * session's `memory_limit` before it has flushed anything, at any threshold.
+ *
+ * Applied at the top level of a passthrough-sourced partitioned INSERT and
+ * nowhere else: the SELECT it wraps is exactly the passthrough the CTAS would
+ * have read, so what the warehouse runs, what is attributed to it and what the
+ * source is addressed by are all unchanged. Sorted here rather than by the
+ * warehouse because a warehouse that reads its result over several streams
+ * (BigQuery) re-interleaves a sorted result on the way in. The sort is
+ * DuckDB's, out of core against the session's spill directory. Wrapped as a
+ * subselect so the SELECT is not parsed.
+ */
+export function orderByPartitionColumns(
+   selectSQL: string,
+   partitionColumns: readonly string[],
+   dialect: string,
+): string {
+   if (partitionColumns.length === 0) {
+      return selectSQL;
+   }
+   const order = partitionColumns
+      .map((name) => quoteIdentifier(name, dialect))
+      .join(", ");
+   // A compiled SELECT carries no terminator, but one would end the subselect
+   // early, so it is not left to chance. The closing paren goes on its own
+   // line: a SELECT that ends in a `--` comment would otherwise swallow it.
+   const inner = selectSQL.replace(/[\s;]+$/, "");
+   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${order}`;
 }
 
 /**
@@ -906,12 +945,40 @@ export async function buildSourceIntoStorage(params: {
       // CTAS — because the plan has to probe this destination to decide, and a
       // seed then continues below on the same session.
       if (params.incremental) {
-         const refreshed = await params.incremental.plan({
-            session,
-            sourceType,
-            handle: federated.handle,
-            quotedTablePath: target,
-         });
+         // A delta into a laid-out table is the same partitioned COPY as the
+         // seed, and its width x partitions is what decides its memory, not its
+         // row count. The threshold and the single appender reach it through
+         // the session; its statements are composed elsewhere, so the ordered
+         // read is the seed's alone (see createTableAndDescribe).
+         const partitioned = (params.partitionColumns?.length ?? 0) > 0;
+         const flushThreshold = getPartitionedWriteFlushThreshold();
+         const boundDelta = partitioned && flushThreshold !== undefined;
+         if (boundDelta) {
+            await session.runSQL(
+               `SET partitioned_write_flush_threshold = ${flushThreshold}`,
+            );
+            await session.runSQL("SET threads = 1");
+         }
+         let refreshed;
+         try {
+            refreshed = await params.incremental.plan({
+               session,
+               sourceType,
+               handle: federated.handle,
+               quotedTablePath: target,
+            });
+         } finally {
+            if (boundDelta) {
+               try {
+                  await session.runSQL("RESET threads");
+                  await session.runSQL(
+                     "RESET partitioned_write_flush_threshold",
+                  );
+               } catch {
+                  // best-effort, as in createTableAndDescribe
+               }
+            }
+         }
          if (refreshed) {
             return {
                storageDestinationName: destinationName,
@@ -944,6 +1011,7 @@ export async function buildSourceIntoStorage(params: {
          target,
          passthrough.selectSQL,
          params.partitionColumns ?? [],
+         { sourceType },
       );
       // The table now holds a full snapshot, so record where that snapshot
       // reaches: this is what turns the NEXT refresh into a delta. On this
@@ -1407,6 +1475,22 @@ export async function createTableAndDescribe(
    quotedTablePath: string,
    selectSQL: string,
    partitionColumns: readonly string[] = [],
+   options: {
+      /**
+       * Set by the single-source build, naming the passthrough engine its
+       * SELECT reads from; absent from a chained build. Its presence is what
+       * the memory bounds on the partitioned path below -- the ordered insert,
+       * the single thread and the flush threshold -- key on: they apply to a
+       * passthrough source and to nothing else, and a chained build issues
+       * exactly the statements it did before. The engine itself does not
+       * change the treatment. The failure is the writer's, not the source's:
+       * measured on Postgres and on BigQuery, whose multi-stream read
+       * interleaves partitions even from a sorted result, the same interleaved
+       * insert dies and the same ordered, single-threaded insert completes.
+       * Snowflake is covered by the same reasoning, unmeasured.
+       */
+      sourceType?: FederatedSourceType;
+   } = {},
 ): Promise<WireColumn[]> {
    if (partitionColumns.length === 0) {
       await session.runSQL(
@@ -1440,6 +1524,35 @@ export async function createTableAndDescribe(
    const columns = partitionColumns
       .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
       .join(", ");
+   // `off` on the threshold turns the whole treatment off -- one switch, because
+   // the three parts only work together and a source that built fine before is
+   // better served by none of them than by the sort alone.
+   const flushThreshold = getPartitionedWriteFlushThreshold();
+   const bounded =
+      options.sourceType !== undefined && flushThreshold !== undefined;
+   if (bounded) {
+      // Before the transaction, and only on this path: it bounds the rows each
+      // appender thread holds before flushing them to the partition files,
+      // which is the term an ordered stream leaves. See
+      // getPartitionedWriteFlushThreshold for the measurement; the session is
+      // this build's own instance, so the setting reaches nothing else.
+      await session.runSQL(
+         `SET partitioned_write_flush_threshold = ${flushThreshold}`,
+      );
+      // One appender. The ORDER BY below is DuckDB's, and a sorted result is
+      // read in parallel, so with several threads each one meets every
+      // partition again and the same insert fails at 768MB that completes on
+      // one thread (measured: 616k rows x 122 columns into 308 partitions, 4
+      // threads fails at 7 s, 1 thread completes in 9.5 s against 8.4 s for the
+      // same rows pre-sorted by the warehouse). What this gives up depends on
+      // the read: `postgres_query`, `snowflake_query` and `bigquery_query` are
+      // one stream, but the labelled BigQuery split reads its result table
+      // with `bigquery_scan`, which is multi-stream, and there the single
+      // thread costs real scan parallelism. This session is the build's own
+      // instance; `SET threads` is NOT transactional, so the RESET in the
+      // finally is what gives the count back after a rollback, not tidiness.
+      await session.runSQL("SET threads = 1");
+   }
    let schema: WireColumn[];
    await session.runSQL("BEGIN TRANSACTION");
    try {
@@ -1449,7 +1562,18 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
       );
-      await session.runSQL(`INSERT INTO ${quotedTablePath} (${selectSQL})`);
+      // Ordered by the partition columns here, and only here: see
+      // orderByPartitionColumns for why the rows must arrive partition by
+      // partition, and why that is done at the top of this statement rather
+      // than in the SELECT the build was handed.
+      const inserted = bounded
+         ? orderByPartitionColumns(
+              selectSQL,
+              partitionColumns,
+              STORAGE_TARGET_DIALECT,
+           )
+         : selectSQL;
+      await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
       // Read back INSIDE the transaction, and this is the reason rather than
       // tidiness. `describeOrDrop` DROPS the table when the read-back fails, and
       // the physical name is stable across generations — so after a COMMIT that
@@ -1477,6 +1601,18 @@ export async function createTableAndDescribe(
          );
       }
       throw buildErr;
+   } finally {
+      // Best-effort, on both outcomes: the thread count is this session's, and
+      // neither a committed generation nor the build's own error is worth
+      // reporting differently because giving it back failed. The session is
+      // disposed with the build; a stuck setting dies with it.
+      if (bounded) {
+         try {
+            await session.runSQL("RESET threads");
+         } catch {
+            // see above
+         }
+      }
    }
    return schema;
 }

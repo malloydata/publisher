@@ -1,0 +1,2 @@
+## artifact { title="Conflict" tiles=["a -> v"] dashboard_columns=8 } dashboard { columns=12 }
+source: a is duckdb.sql("select 1 as x") extend { view: v is { select: x } }

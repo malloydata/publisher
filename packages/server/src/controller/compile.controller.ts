@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { GivenValue } from "@malloydata/malloy";
+import { BadRequestError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";
 
@@ -16,11 +17,16 @@ export class CompileController {
       environmentName: string,
       packageName: string,
       modelName: string,
-      source: string | undefined,
+      source: unknown,
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
    ): Promise<{ status: string; problems: TaggedLogMessage[]; sql?: string }> {
+      // A JSON body can send an object with its own `length`, which the text readers would loop to.
+      let text: string | undefined;
+      if (typeof source === "string") text = source;
+      else if (source !== undefined)
+         throw new BadRequestError("`source` must be a string of Malloy text.");
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -28,7 +34,7 @@ export class CompileController {
       const { problems, sql } = await environment.compileSource(
          packageName,
          modelName,
-         source,
+         text,
          includeSql,
          givens,
          scope,
