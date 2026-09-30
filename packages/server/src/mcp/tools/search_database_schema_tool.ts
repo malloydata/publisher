@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { ConnectionController } from "../../controller/connection.controller";
 import { EnvironmentStore } from "../../service/environment_store";
 import { schemaEmbeddingEnabled } from "../../config";

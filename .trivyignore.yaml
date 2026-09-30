@@ -39,9 +39,20 @@
 #   package.json  "basic-ftp": "^5.3.1", "protobufjs": "^7.5.5"
 #     In range for every parent; they only move the lockfile. Retire at the next
 #     refresh that resolves those versions without them.
+#   package.json  "axios": "~1.18.1"
+#     Two jobs. The floor: @malloydata/db-trino 0.0.432 reaches trino-client 0.2.8,
+#     which exact-pins axios 1.11.0 (vulnerable; fixes run to 1.16.0). The ceiling:
+#     axios 1.19.0 added a `unique symbol` to AxiosResponse's types, and the SDK's
+#     generated client (packages/sdk/src/client/common.ts) then fails `tsc` with
+#     TS2527; @openapitools/openapi-generator-cli is held at ^2.40.1 because 2.41
+#     requires axios ^1.19. Malloy 0.0.434 replaces trino-client with
+#     @trinodb/trino-js-client, which exact-pins axios 1.19.0, so that bump needs the
+#     SDK typecheck fixed first; retire this entry then.
 #   packages/server/k6-tests/package.json  "orval": "^7.21.0", "handlebars": "^4.7.9"
 #     Retire with the orval entries below, when k6-tests moves to an
 #     @grafana/openapi-to-k6 release that supports orval 8.
+#   packages/server/k6-tests/package.json  "js-yaml": "^4.3.2"
+#     orval 7.21.0 exact-pins js-yaml 4.1.1. Retire with the orval entries.
 vulnerabilities:
   # Eleven CRITICALs and one HIGH in orval 7.21.0, reached as k6-tests -> @grafana/openapi-to-k6 ->
   # orval. The fix is 8.21.0-only (no 7.x backport), and no @grafana/openapi-to-k6
@@ -74,8 +85,8 @@ vulnerabilities:
   #      2026-08-12, so today it runs only when someone generates the clients by hand.
   #      k6-tests has its own lockfile outside the root workspace, so it is in no
   #      Publisher image.
-  # HIGH, accepted so the SARIF upload (which reads this file) stops reporting it:
-  # GitHub's Code Scanning check on pull requests fails on new HIGH alerts.
+  # HIGH, accepted so the SARIF upload (which reads this file) stops reporting it in
+  # Code Scanning.
   - id: CVE-2026-62680
     paths: ["packages/server/k6-tests/bun.lock"]
     expired_at: 2026-12-01
@@ -199,5 +210,87 @@ vulnerabilities:
       Publisher server or its image. The only input schema is ours. Fix is
       8.21.0-only and no @grafana/openapi-to-k6 release admits 8.x yet; tracking
       https://github.com/grafana/openapi-to-k6/pull/156.
+  # HIGH, accepted so the SARIF upload stops reporting it. Same parent and retirement
+  # as the orval entries above.
+  - id: CVE-2026-73231
+    paths: ["packages/server/k6-tests/bun.lock"]
+    expired_at: 2026-12-01
+    statement: >
+      @faker-js/faker 9.9.0, transitive via @grafana/openapi-to-k6 (^9.2.0). RCE
+      through an attacker-controlled template passed to faker.helpers.fake, which
+      @grafana/openapi-to-k6 never calls: dist/generator/k6ScriptBuilder.js uses only
+      faker.word, faker.number and faker.datatype to fill sample values. Build-time
+      codegen only; not part of the Publisher server or its image. Fix is 10.5.0 and
+      no @grafana/openapi-to-k6 release admits 10.x; retires with the orval entries.
+  # HIGH, runtime. extract-zip 2.0.1 is the latest release and neither CVE has a fix.
+  # Both need a symlink entry in the archive, and unzipEnvironment in
+  # packages/server/src/service/environment_store.ts refuses any archive containing
+  # one before it is written (environment_store_unzip.spec.ts), which is the
+  # compensating control. The expiry forces a decision on replacing extract-zip with
+  # yauzl directly rather than carrying the guard indefinitely.
+  - id: CVE-2026-19693
+    paths: ["bun.lock", "publisher/node_modules/extract-zip/package.json"]
+    expired_at: 2027-03-31
+    statement: >
+      extract-zip 2.0.1, a direct dependency of packages/server, used to unzip
+      environment and package archives. Arbitrary file write through a symlink entry
+      followed by a same-named file. Mitigated, not fixed: the server rejects any
+      archive with a symlink entry before extracting it, and removes the partial
+      extract. No patched extract-zip release exists.
+  - id: CVE-2026-56876
+    paths: ["bun.lock", "publisher/node_modules/extract-zip/package.json"]
+    expired_at: 2027-03-31
+    statement: >
+      extract-zip 2.0.1, a direct dependency of packages/server, used to unzip
+      environment and package archives. Symlink targets are not validated, so a
+      symlink entry can point outside the destination. Mitigated, not fixed: the
+      server rejects any archive with a symlink entry before extracting it. No patched
+      extract-zip release exists.
+  # HIGH, runtime, held by Malloy's exact pins: @malloydata/db-databricks 0.0.434 (the
+  # latest) pins @databricks/sql 1.15.0, whose ^0.16.0 admits no fixed thrift, and
+  # @databricks/sql moved to thrift ^0.23.0 only in 2.0.0. Retire when
+  # @malloydata/db-databricks moves to @databricks/sql 2.x.
+  - id: CVE-2026-41636
+    paths: ["bun.lock", "publisher/node_modules/thrift/package.json"]
+    expired_at: 2026-12-31
+    statement: >
+      thrift 0.16.0, via @malloydata/db-databricks -> @databricks/sql 1.15.0.
+      Uncontrolled recursion in the Node.js skip(), reached only when decoding a
+      response from a Databricks endpoint, which an operator configures on a
+      Databricks connection. Denial of service by a malicious or compromised
+      warehouse, not by a query caller. Fixed in thrift 0.23.0, unreachable until the
+      Malloy Databricks driver moves to @databricks/sql 2.x.
+  - id: CVE-2026-43870
+    paths: ["bun.lock", "publisher/node_modules/thrift/package.json"]
+    expired_at: 2026-12-31
+    statement: >
+      thrift 0.16.0, via @malloydata/db-databricks -> @databricks/sql 1.15.0.
+      Resource-consumption, path-traversal, origin-validation and CRLF-injection
+      weaknesses before 0.23.0. Publisher runs no thrift server, and the Databricks
+      client sends only operator-configured headers to the operator-configured
+      warehouse host. Fixed in thrift 0.23.0, unreachable until the Malloy Databricks
+      driver moves to @databricks/sql 2.x.
+  # HIGH, runtime package, unreached code: toml ^3.0.0 is declared by
+  # @malloydata/db-snowflake and by snowflake-sdk 2.3.1, which it exact-pins. Retire
+  # when @malloydata/db-snowflake moves to a snowflake-sdk on toml 4.2+ and drops its
+  # own toml ^3.
+  - id: CVE-2026-63376
+    paths: ["bun.lock", "publisher/node_modules/toml/package.json"]
+    expired_at: 2026-12-31
+    statement: >
+      toml 3.0.0, via @malloydata/db-snowflake and snowflake-sdk 2.3.1. Prototype
+      pollution in toml.parse. Both packages call it only to read a local
+      connections.toml (SnowflakeExecutor.getConnectionOptionsFromToml and
+      snowflake-sdk's loadConnectionConfiguration); Publisher calls neither and builds
+      Snowflake connOptions explicitly in packages/server/src/service/connection.ts.
+      Fixed in toml 4.1.2, a major the parents do not admit.
+  - id: CVE-2026-77465
+    paths: ["bun.lock", "publisher/node_modules/toml/package.json"]
+    expired_at: 2026-12-31
+    statement: >
+      toml 3.0.0, via @malloydata/db-snowflake and snowflake-sdk 2.3.1. Unbounded
+      recursion in toml.parse on deeply nested input. Reached only through the
+      connections.toml loaders, which Publisher never calls (see CVE-2026-63376).
+      Fixed in toml 4.2.0, a major the parents do not admit.
 misconfigurations: []
 secrets: []

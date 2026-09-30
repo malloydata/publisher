@@ -60,6 +60,29 @@ Choose the floor from the fixed version and keep it inside every consumer's decl
 consumer is moved across a major. The lockfile diff should then touch only those packages and
 their own dependencies; if it touches more, the command did more than you asked.
 
+When the package sits on several majors (`minimatch` 3, 5, 9 and 10 here), a
+permanent resolution would force every copy onto one of them. Refresh each copy in
+its own range instead, and leave no resolution behind:
+
+1. Add a temporary exact resolution to the fixed release of one line
+   (`"minimatch": "3.1.5"`) and run `bun install --lockfile-only`.
+2. Delete it and run `bun install --lockfile-only` again.
+
+Every consumer the temporary pin broke re-resolves to the newest release its own
+range admits, so each major lands on its latest patch, and Bun keeps those versions
+because they satisfy the ranges. A third refresh should leave `bun.lock` unchanged.
+An exact pin inside a parent (`@microsoft/api-extractor` pinning `minimatch` 10.0.3)
+survives this; move that parent the same way (`"@microsoft/api-extractor": "7.59.3"`,
+then delete). `bun update <direct-dep>` in a workspace leaves the old copy behind
+when another workspace still declares the old range, so move every declaring
+workspace, then check for leftover copies with the scan.
+
+Moving one copy can split a pair that must match. In `packages/server/k6-tests`,
+moving `@stoplight/spectral-core` gave it a nested `ajv` 8.20.0 while the hoisted
+`ajv-errors` still resolved the root `ajv` 8.17.1, and `bun run generate-clients`
+died with "Unexpected token ':'" in `ajv`'s compiled code. Unifying `ajv` the same
+way fixed it. Run the consumer after every refresh, not only at the end.
+
 Two approaches that look equivalent and are not:
 
 - `bun update <transitive-pkg>` adds the package to the root `dependencies` at its latest major

@@ -106,6 +106,7 @@
     "@malloydata/malloy-tag": "^0.0.432",
     "basic-ftp": "^5.3.1",
     "protobufjs": "^7.5.5",
-    "fast-xml-parser": "^5.5.6"
+    "fast-xml-parser": "^5.5.6",
+    "axios": "~1.18.1"
   }
 }

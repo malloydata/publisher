@@ -42,7 +42,9 @@ Concretely:
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
   who can register a package can already read the data directly. Set `"frozenConfig": true` to
-  close registration on a deployment where that matters.
+  close registration on a deployment where that matters. A `.zip` environment or package that
+  contains a symlink entry is refused, and nothing from it is left on disk, because the
+  extractor would otherwise follow the link out of the destination directory.
 - **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
   dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
   kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
