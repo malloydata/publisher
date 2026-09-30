@@ -2749,6 +2749,8 @@ export class Model {
       phase: "boundary" | "locks",
       /** Locked names this request already decided; each one decided here is added. */
       decided: Set<string> = new Set(),
+      /** The request lifted the surface: a refusal stays the lock's 403. */
+      includeOffSurface = false,
    ): Promise<void> {
       const joins = buildJoinBaseMap(query);
       if (joins.size === 0) return;
@@ -2812,7 +2814,7 @@ export class Model {
                // A 403 naming a hidden source over this join's alias confirms
                // it exists; convert on the source actually gated, the same
                // way the other early lock passes do.
-               if (error instanceof AccessDeniedError) {
+               if (error instanceof AccessDeniedError && !includeOffSurface) {
                   this.assertQueryBoundaryEarly(name, undefined, undefined);
                }
                throw error;
@@ -3960,6 +3962,8 @@ export class Model {
       givens: Record<string, GivenValue>,
       bypassAuthorize: boolean,
       decided: Set<string>,
+      /** The request lifted the surface: a refusal stays the lock's 403. */
+      includeOffSurface = false,
    ): Promise<void> {
       if (!this.declaresAnyGate()) return;
       for (const name of collectIdentifierNames(text)) {
@@ -3979,7 +3983,7 @@ export class Model {
             // A 403 that names a hidden source confirms it exists. Convert on
             // the source actually gated, the same way the derivation walk does:
             // a hidden one is a 404, and a curated one keeps the 403.
-            if (error instanceof AccessDeniedError) {
+            if (error instanceof AccessDeniedError && !includeOffSurface) {
                this.assertQueryBoundaryEarly(source, undefined, undefined);
             }
             throw error;
@@ -6607,6 +6611,15 @@ export class Model {
        * before forwarding it.
        */
       bypassAuthorize = false,
+      /**
+       * Lift the package's surface for this one request, as `queryableSources:
+       * "all"` does for every request: a file off the surface, and a hidden
+       * source, can be run. For the people who may edit the package, so they can
+       * try the files they author. Publisher does not decide who that is; the
+       * gateway in front of it does. `#(authorize)` and `#(access_filter)` still
+       * apply: this lifts curation, never the lock.
+       */
+      includeOffSurface = false,
    ): Promise<{
       result: Malloy.Result;
       /**
@@ -6732,11 +6745,9 @@ export class Model {
       // non-existent source (see notQueryable).
       // "deferred" means the early gate couldn't pin the target; the compiled
       // backstop below settles it against the source the query actually runs.
-      const boundary = this.assertQueryBoundaryEarly(
-         sourceName,
-         queryName,
-         query,
-      );
+      const boundary = includeOffSurface
+         ? "cleared"
+         : this.assertQueryBoundaryEarly(sourceName, queryName, query);
       // The caller's own text, when it wrote any; its joins are checked as if
       // each were an extra run target. Text carrying an annotation is left to
       // the forgery rejecter below, whose refusal is the specific one.
@@ -6746,7 +6757,8 @@ export class Model {
             : undefined;
       const readCallerJoinText =
          !!callerRegion && !hasCallerAuthorizeAnnotation(callerRegion.text);
-      if (readCallerJoinText) {
+      // Under `includeOffSurface` there is no boundary to check a join against.
+      if (readCallerJoinText && !includeOffSurface) {
          await this.assertCallerJoinBasesEarly(
             callerRegion.text,
             givens ?? {},
@@ -6796,6 +6808,7 @@ export class Model {
             givens ?? {},
             "locks",
             decided,
+            includeOffSurface,
          );
       }
       // Every other locked name the text mentions, wherever it sits: an alias,
@@ -6810,6 +6823,7 @@ export class Model {
             givens ?? {},
             bypassAuthorize,
             decided,
+            includeOffSurface,
          );
       }
 
