@@ -39,15 +39,11 @@
 #   package.json  "basic-ftp": "^5.3.1", "protobufjs": "^7.5.5"
 #     In range for every parent; they only move the lockfile. Retire at the next
 #     refresh that resolves those versions without them.
-#   package.json  "axios": "~1.18.1"
-#     Two jobs. The floor: @malloydata/db-trino 0.0.432 reaches trino-client 0.2.8,
-#     which exact-pins axios 1.11.0 (vulnerable; fixes run to 1.16.0). The ceiling:
-#     axios 1.19.0 added a `unique symbol` to AxiosResponse's types, and the SDK's
-#     generated client (packages/sdk/src/client/common.ts) then fails `tsc` with
-#     TS2527; @openapitools/openapi-generator-cli is held at ^2.40.1 because 2.41
-#     requires axios ^1.19. Malloy 0.0.434 replaces trino-client with
-#     @trinodb/trino-js-client, which exact-pins axios 1.19.0, so that bump needs the
-#     SDK typecheck fixed first; retire this entry then.
+#   package.json  "axios": "^1.20.0"
+#     @malloydata/db-trino 0.0.432 reaches trino-client 0.2.8, which exact-pins axios
+#     1.11.0; fixes for its advisories run to 1.20.0. Retire when the workspace moves
+#     to @malloydata/* 0.0.434 or later, where db-trino swaps trino-client for
+#     @trinodb/trino-js-client and the lockfile resolves axios 1.20 without this.
 #   packages/server/k6-tests/package.json  "orval": "^7.21.0", "handlebars": "^4.7.9"
 #     Retire with the orval entries below, when k6-tests moves to an
 #     @grafana/openapi-to-k6 release that supports orval 8.
