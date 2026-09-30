@@ -31,13 +31,13 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — The generated SDK client is built by OpenAPI Generator 7.25.0
+## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
 `@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.
 
 Each request now sends its own `Accept` header (`application/json` for every operation the SDK calls) in place of axios's default `application/json, text/plain, */*`. Publisher does not negotiate on `Accept`, so responses are unchanged.
 
-## [Unreleased] — Model listings mark a hidden file with `isHidden`, not `onSurface`
+## [0.8.5] — Model listings mark a hidden file with `isHidden`, not `onSurface`
 
 0.8.4 added `onSurface` to each entry of `GET …/models`. It is renamed to `isHidden`, with the
 meaning flipped to match `includeHiddenFilesAndSources`: `true` for a file the listing includes
@@ -107,7 +107,7 @@ statement to take it), `notebook-artifact-unparsed` (an `## artifact` tag that d
 `notebook-cells-unreadable` (a served notebook's cells could not be read).
 Package-scope `/compile` fails when any file in the package has one.
 
-## [Unreleased] — an MCP tool call with invalid arguments returns a tool error, and zipped packages may not contain symlinks
+## [0.8.5] — an MCP tool call with invalid arguments returns a tool error, and zipped packages may not contain symlinks
 
 The MCP SDK moves from 1.18 to 1.31 to clear three advisories, and with it one wire behavior
 changes. A tool call whose arguments fail the tool's input schema, such as `execute_query` without
