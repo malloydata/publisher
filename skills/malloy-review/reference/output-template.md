@@ -51,7 +51,7 @@ Risk formula: `(touches join|PK|access) × LOC × public-surface-membership × (
   - **Rule:** Declared `primary_key:` is not unique in the data
   - **Current:** `join_one: customers on customer_id = customers.id`; the `customers.id` column has duplicates (verified: `pk_verified=false` from SKILL.md step 3).
   - **Why it matters:** Malloy's symmetric-aggregation SQL relies on the declared PK being unique. When it isn't, the `DISTINCT` step collapses what shouldn't and aggregations across this join return hash-collision-sized garbage (~10²¹).
-  - **Suggested fix:** Pick a different / composite PK that IS unique, OR add a source-level `where:` that scopes `customers` to a uniquely-keyed subset, OR declare a `#(filter) ... required` annotation so consumers must supply the discriminating filter.
+  - **Suggested fix:** Pick a different / composite PK that IS unique, OR add a source-level `where:` that scopes `customers` to a uniquely-keyed subset, OR declare a `given:` with no default for the discriminating column and pin it in the source's `where:`, so every query must supply it.
   - **Source:** rubric-correctness.md (rule C-12); pk_verified=false from SKILL.md step 3.
 
 ## Detailed Findings by File
@@ -136,7 +136,7 @@ This review covers 10,173 lines across 47 files. Only ~1,500 lines were deep-rev
       "rule": "C-12 declared primary_key is not unique in the data",
       "current": "join_one: customers on customer_id = customers.id; customers.id has duplicates (pk_verified=false)",
       "expected": "customers.id is unique per row, or the customers source carries a where: that scopes to a uniquely-keyed subset",
-      "suggested_fix": "Aggregations across this join will silently return hash-collision-sized garbage. Pick a different / composite PK that IS unique, OR add a source-level where: that makes id unique within the filtered set, OR declare a #(filter) ... required annotation.",
+      "suggested_fix": "Aggregations across this join will silently return hash-collision-sized garbage. Pick a different / composite PK that IS unique, OR add a source-level where: that makes id unique within the filtered set, OR declare a given: with no default for the discriminating column and pin it in the source's where:.",
       "confidence": 95,
       "evidence": "rubric-correctness C-12; pk_verified=false from SKILL.md step 3 execute_query check",
       "source": "rule"
