@@ -39,7 +39,8 @@ floating `(markdown)` notes, one query cell per `run:` with its tag block, and o
 cell per other statement. List-notebooks includes served notebooks beside `.malloynb` files. Get-notebook returns
 one with a `format` (`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or
 `definition`). A cell also carries a `markdown` field when `(markdown)` prose is attached to its
-statement. The Console opens one at `notebooks/<slug>`. A served notebook keeps
+statement, a `proseLines` field naming the lines of its `text` that hold that prose (0-based,
+inclusive `[start, end]` pairs), and a `caption` field with its leading `#"` text. The Console opens one at `notebooks/<slug>`. A served notebook keeps
 `modelType: model`, so the model GET, `/compile`, MCP `execute_query` and the declared-givens fetch
 treat it as any model.
 

@@ -29,6 +29,7 @@ const SERVED = {
          type: "code",
          kind: "query",
          text: '#" Revenue by month\n# bar_chart\nrun: orders -> by_month',
+         caption: "Revenue by month",
       },
    ],
 } as RawNotebook;
@@ -126,6 +127,8 @@ it("renders a query cell's markdown above its caption, without repeating it in t
             kind: "query",
             text: '#|(markdown)\n### Revenue by month\n|#\n#" Shown caption\nrun: orders -> by_month',
             markdown: "### Revenue by month",
+            proseLines: [[0, 2]],
+            caption: "Shown caption",
          },
       ],
    } as RawNotebook;
@@ -151,6 +154,7 @@ it("shows a folded definition cell's markdown above the fold", async () => {
             kind: "definition",
             text: "#|(markdown)\nThe orders source.\n|#\nsource: o is t",
             markdown: "The orders source.",
+            proseLines: [[0, 2]],
          },
       ],
    } as RawNotebook;

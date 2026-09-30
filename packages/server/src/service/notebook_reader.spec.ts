@@ -48,16 +48,44 @@ const query = (
    endLine: number,
    text: string,
    queryIndex: number,
-   markdown?: string,
+   extra: {
+      markdown?: string;
+      proseLines?: [number, number][];
+      caption?: string;
+   } = {},
 ) => ({
    kind: "query",
    type: "code",
    text,
-   ...(markdown !== undefined && { markdown }),
+   ...extra,
    startLine,
    endLine,
    queryIndex,
 });
+
+/**
+ * The prose a cell's `proseLines` name, as lines: a line note's text after its route, a block's
+ * body between opener and closer. Compared with `markdown` after trimming, so de-indent is ignored.
+ */
+const proseOf = (cell: NotebookCellSpan): string[] => {
+   const lines = cell.text.split("\n");
+   return (cell.proseLines ?? [])
+      .flatMap(([start, end]) =>
+         lines[start].trim().startsWith("#|")
+            ? lines.slice(
+                 start + 1,
+                 lines[end].trim().startsWith("|#") ? end : end + 1,
+              )
+            : [lines[start].replace(/^\s*#\(markdown\) ?/, "")],
+      )
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+};
+const markdownLines = (cell: NotebookCellSpan): string[] =>
+   (cell.markdown ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
 
 /** Every fixture notebook's cells, written out literally so a misread fails with a readable diff. */
 const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
@@ -80,6 +108,10 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             18,
             '#" Caption: a doc string on the run, shown above its result.\n# bar_chart\n# label="Revenue by month"\nrun: orders -> by_month + { where: region ~ $REGION }',
             0,
+            {
+               caption:
+                  "Caption: a doc string on the run, shown above its result.",
+            },
          ),
       ],
       annotations: [
@@ -150,6 +182,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             8,
             '#" Revenue for each month.\n# bar_chart\n# label="Revenue by month"\nrun: orders -> by_month',
             0,
+            { caption: "Revenue for each month." },
          ),
          query(10, 10, "run: orders -> kpis", 1),
          md(12, 12, "Trailing prose is a model note, so it may end the file."),
@@ -169,6 +202,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
                "#(markdown) The region filter.\ngiven: REGION :: filter<string> is f''",
             ),
             markdown: "The region filter.",
+            proseLines: [[0, 0]],
          },
          {
             ...def(
@@ -177,13 +211,17 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
                "#(markdown) Orders in the US only.\nsource: us_orders is orders extend { where: region = 'US' }",
             ),
             markdown: "Orders in the US only.",
+            proseLines: [[0, 0]],
          },
          query(
             11,
             17,
             '# bar_chart\n#|(markdown)\n### Orders by region\nExcludes refunds.\n|#\n# label="Orders"\nrun: us_orders -> { aggregate: order_count }',
             0,
-            "### Orders by region\nExcludes refunds.",
+            {
+               markdown: "### Orders by region\nExcludes refunds.",
+               proseLines: [[1, 4]],
+            },
          ),
       ],
       annotations: [
@@ -287,6 +325,21 @@ describe("readNotebookCells over the fixture notebooks", () => {
          expect(read(modelPath).annotations).toEqual(expected.annotations);
       });
    }
+
+   it("names, for every fixture cell, exactly the lines that hold its markdown", () => {
+      let checked = 0;
+      for (const modelPath of Object.keys(EXPECTED)) {
+         for (const cell of read(modelPath).cells) {
+            if (cell.markdown === undefined) {
+               expect(cell.proseLines).toBeUndefined();
+               continue;
+            }
+            checked++;
+            expect(proseOf(cell)).toEqual(markdownLines(cell));
+         }
+      }
+      expect(checked).toBeGreaterThan(0);
+   });
 
    it("maps every query cell to its own compiled run, in order", () => {
       for (const modelPath of Object.keys(EXPECTED)) {
@@ -430,6 +483,7 @@ describe("readNotebookCells on inline text", () => {
                type: "code",
                text: slice,
                markdown: "### Revenue by month\nExcludes refunds.",
+               proseLines: [[1, 4]],
                startLine: 2,
                endLine: 8,
                queryIndex: 0,
@@ -490,12 +544,135 @@ describe("readNotebookCells on inline text", () => {
          );
       });
 
-      it("leaves markdown off a cell that has none", () => {
+      it("leaves markdown, proseLines and caption off a cell that has none", () => {
          const result = readText(
             "## artifact {}\n# bar_chart\nrun: a -> b\n",
             1,
          );
          expect("markdown" in result.cells[0]).toBe(false);
+         expect("proseLines" in result.cells[0]).toBe(false);
+         expect("caption" in result.cells[0]).toBe(false);
+      });
+
+      describe("proseLines and caption", () => {
+         const cellOf = (lines: string[], runs = 1) =>
+            readText(["## artifact {}", ...lines, ""].join("\n"), runs)
+               .cells[0];
+
+         it("names a line note's own line", () => {
+            const cell = cellOf(["#(markdown) hi", "run: a -> b"]);
+            expect(cell.proseLines).toEqual([[0, 0]]);
+            expect(cell.caption).toBeUndefined();
+         });
+
+         it("spans a block from its opener to its closer", () => {
+            const cell = cellOf([
+               "# bar_chart",
+               "#|(markdown)",
+               "one",
+               "two",
+               "|#",
+               "run: a -> b",
+            ]);
+            expect(cell.proseLines).toEqual([[1, 4]]);
+            expect(proseOf(cell)).toEqual(markdownLines(cell));
+         });
+
+         it("gives each adjacent line its own range, and each block its own", () => {
+            const cell = cellOf([
+               "#(markdown) one",
+               "#(markdown) two",
+               "# bar_chart",
+               "#(markdown) three",
+               "#|(markdown)",
+               "four",
+               "|#",
+               "run: a -> b",
+            ]);
+            expect(cell.proseLines).toEqual([
+               [0, 0],
+               [1, 1],
+               [3, 3],
+               [4, 6],
+            ]);
+            expect(cell.markdown).toBe("one\ntwo\n\nthree\n\nfour");
+         });
+
+         it("counts from the statement's first token, so a column-0 |# body line in an indented statement stays prose", () => {
+            const cell = cellOf([
+               "   #|(markdown)",
+               "   prose",
+               "|# not a closer",
+               "   more",
+               "   |#",
+               "   # bar_chart",
+               "   run: a -> b",
+            ]);
+            expect(cell.text.split("\n")[0]).toBe("#|(markdown)");
+            expect(cell.proseLines).toEqual([[0, 4]]);
+            expect(cell.markdown).toContain("|# not a closer");
+            expect(cell.markdown).toContain("more");
+            expect(cell.markdown).not.toContain("# bar_chart");
+         });
+
+         it("names only the leading block when an indented source nests its own", () => {
+            const cell = cellOf(
+               [
+                  "#|(markdown)",
+                  "lead",
+                  "|#",
+                  "   source: s is a extend {",
+                  "      #|(markdown)",
+                  "      nested",
+                  "      |#",
+                  "      view: v is x",
+                  "   }",
+               ],
+               0,
+            );
+            expect(cell.proseLines).toEqual([[0, 2]]);
+            expect(cell.markdown).toBe("lead");
+         });
+
+         it("counts lines the same in a CRLF file, and keeps the text byte-exact", () => {
+            const result = readText(
+               '## artifact {}\r\n#(markdown) a\r\n#|(markdown)\r\nb\r\n|#\r\n#" cap\r\nrun: a -> b\r\n',
+               1,
+            );
+            const [cell] = result.cells;
+            expect(cell.proseLines).toEqual([
+               [0, 0],
+               [1, 3],
+            ]);
+            expect(cell.caption).toBe("cap");
+            expect(cell.text.split("\n")).toHaveLength(6);
+            expect(proseOf(cell)).toEqual(markdownLines(cell));
+         });
+
+         it('joins the #" lines into a caption, apart from prose and other tags', () => {
+            const cell = cellOf([
+               '#" First',
+               "# bar_chart",
+               '#" second  ',
+               "#(markdown) prose",
+               "run: a -> b",
+            ]);
+            expect(cell.caption).toBe("First second");
+            expect(cell.proseLines).toEqual([[3, 3]]);
+         });
+
+         it('reads a caption on a definition too, and none from a #|" block or a nested note', () => {
+            const [definition] = readText(
+               '## artifact {}\n#" About s\nsource: s is a extend {\n   #" inner\n   view: v is x\n}\n',
+               0,
+            ).cells;
+            expect(definition.caption).toBe("About s");
+            const [blocked] = readText(
+               '## artifact {}\n#|"\nblock caption\n|#\nrun: a -> b\n',
+               1,
+            ).cells;
+            expect("caption" in blocked).toBe(false);
+         });
       });
 
       it('does not read a #" caption as prose', () => {

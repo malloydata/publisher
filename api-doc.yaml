@@ -4639,6 +4639,27 @@ components:
             join with a blank line, adjacent lines with a newline. Author
             prose, so it is served even when `queryInfo` is withheld. Absent
             when the cell has none.
+        proseLines:
+          type: array
+          description:
+            On a `.malloy` notebook's code cell with `markdown`, the lines of
+            `text` that hold it, as `[start, end]` pairs in file order. Lines
+            are 0-based and inclusive, counted on `text` split at `\n`. Strip
+            exactly these lines to get the cell's code without its prose; do
+            not re-derive them from `text`, whose first line has lost its
+            indentation. Absent when the cell has no `markdown`.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: integer
+        caption:
+          type: string
+          description:
+            On a `.malloy` notebook's code cell, the joined text of its leading
+            `#"` lines (space-joined, trimmed). Author prose, so it is served
+            even when `queryInfo` is withheld. Absent when the cell has none.
         newSources:
           type: array
           description:
@@ -4673,6 +4694,18 @@ components:
           description:
             A `.malloy` notebook code cell's own `(markdown)` prose, as on
             `NotebookCell`. Absent when the cell has none.
+        proseLines:
+          type: array
+          description: The lines of `text` that hold `markdown`, as on `NotebookCell`.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: integer
+        caption:
+          type: string
+          description: The cell's leading `#"` caption, as on `NotebookCell`. Absent when the cell has none.
         result:
           type: string
           description: JSON string containing the execution result for this cell

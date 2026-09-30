@@ -75,15 +75,8 @@ export function lintNotebookText(
    const inNotebooks = isNotebookModelPath(modelPath);
    if (!inNotebooks && !isDashboardModelPath(modelPath)) return [];
    let parse;
-   let syntaxLines: Set<number>;
    try {
-      const translated = translateToParse(text);
-      parse = translated.parse;
-      syntaxLines = new Set(
-         translated.problems
-            .filter((p) => p.code === "syntax-error" && p.at)
-            .map((p) => p.at!.range.start.line + 1),
-      );
+      parse = translateToParse(text).parse;
    } catch {
       return [];
    }
@@ -114,7 +107,6 @@ export function lintNotebookText(
    const lineOfNode = (node: ParseNode) =>
       (node.start as { line?: number } | undefined)?.line ?? 1;
    const findings: NotebookLintFinding[] = [];
-   const closedEarlyOpeners = new Set<number>();
    const add = (
       line: number,
       code: string,
@@ -298,16 +290,7 @@ export function lintNotebookText(
 
    if (inNotebooks && artifact) lintComments(artifact.startIndex);
 
-   // The closed-early finding says why the block ended, so an attached-nowhere error on it would contradict it.
-   return findings
-      .filter(
-         (f) =>
-            !(
-               f.code === "notebook-markdown-attached-nowhere" &&
-               closedEarlyOpeners.has(f.line)
-            ),
-      )
-      .sort((a, b) => a.line - b.line);
+   return findings.sort((a, b) => a.line - b.line);
 
    /** Comments no cell holds, when they sit directly above the cell they read as describing. */
    function lintComments(from: number): void {
@@ -689,17 +672,6 @@ export function lintNotebookText(
                "notebook-text-after-closer",
                `the text after the closing \`${closer}\` (\`${trailing}\`) is dropped, not shown. Fix: put it ${own}inside the block.`,
             );
-         } else if (sigil === "#" && tokenText(end).startsWith(closer)) {
-            // The tree check covers a `##|` block; for a `#|` block only Malloy's own syntax error proves the text is stray.
-            const stray = list.slice(j + 1).find((t) => t.channel === 0);
-            if (stray && syntaxLines.has(stray.line)) {
-               closedEarlyOpeners.add(line);
-               add(
-                  end.line,
-                  "notebook-block-closed-early",
-                  closedEarly(closer, stray.line),
-               );
-            }
          }
       }
    }

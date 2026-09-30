@@ -415,6 +415,10 @@ export interface RunnableNotebookCell {
    text: string;
    /** A served code cell's own `#(markdown)` prose; author text, so it is served whatever the surface withholds of `queryInfo`. */
    markdown?: string;
+   /** The 0-based inclusive lines of `text` that hold `markdown`, as the reader saw them. */
+   proseLines?: [number, number][];
+   /** The joined text of the statement's leading `#"` lines. */
+   caption?: string;
    /** A served query cell's index into `modelInfo.anonymous_queries`. */
    queryIndex?: number;
    runnable?: QueryMaterializer;
@@ -453,6 +457,8 @@ export interface NotebookCellRunResult {
    kind?: NotebookCellKind;
    text: string;
    markdown?: string;
+   proseLines?: [number, number][];
+   caption?: string;
    queryName?: string;
    result?: string;
    newSources?: string[];
@@ -5978,6 +5984,8 @@ export class Model {
                   kind: "definition",
                   text: cell.text,
                   markdown: cell.markdown,
+                  proseLines: cell.proseLines,
+                  caption: cell.caption,
                   modelDef,
                };
             }
@@ -5989,6 +5997,8 @@ export class Model {
                kind: "query",
                text: cell.text,
                markdown: cell.markdown,
+               proseLines: cell.proseLines,
+               caption: cell.caption,
                queryIndex: cell.queryIndex,
                runnable: materializer.loadQuery(cell.text),
                modelMaterializer: materializer,
@@ -8499,6 +8509,8 @@ export class Model {
             kind: cell.kind,
             text: cell.text,
             markdown: cell.markdown,
+            proseLines: cell.proseLines,
+            caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
             queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
          } as ApiNotebookCell);
@@ -9074,6 +9086,8 @@ export class Model {
                   kind: cell.kind,
                   text: cell.text,
                   markdown: cell.markdown,
+                  proseLines: cell.proseLines,
+                  caption: cell.caption,
                };
             } else {
                logger.error("Error message: ", errorMessage);
@@ -9087,6 +9101,8 @@ export class Model {
          kind: cell.kind,
          text: cell.text,
          markdown: cell.markdown,
+         proseLines: cell.proseLines,
+         caption: cell.caption,
          queryName: queryName,
          result: queryResult,
          newSources: this.serializeNewSources(cell.newSources, cellIndex),

@@ -83,5 +83,6 @@ describe("a .malloynb cell with no hydrated query", () => {
       const cell = await lastCellOf(true, "notebooks/local.malloy");
       expect(cell?.queryInfo).toBeUndefined();
       expect(cell?.markdown).toStartWith("Reads the hidden file");
+      expect(cell?.proseLines).toEqual([[0, 0]]);
    });
 });

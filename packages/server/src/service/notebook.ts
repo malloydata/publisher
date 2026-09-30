@@ -146,6 +146,10 @@ export interface NotebookCellSpan {
    text: string;
    /** A code cell's own `#(markdown)` prose, read out of its tag lines; blocks join with a blank line. */
    markdown?: string;
+   /** The 0-based inclusive `[start, end]` lines of `text` (split on `\n`) that hold that prose; absent with no `markdown`. */
+   proseLines?: [number, number][];
+   /** The joined text of the statement's leading `#"` lines; absent when it has none. */
+   caption?: string;
    /** 1-based and inclusive. */
    startLine: number;
    endLine: number;
@@ -320,6 +324,8 @@ type ReaderItem =
         run: boolean;
         text: string;
         markdown?: string;
+        proseLines?: [number, number][];
+        caption?: string;
         startLine: number;
         endLine: number;
      }
@@ -444,6 +450,7 @@ export function readNotebookCells(
          block: boolean;
          bodyTexts: string[];
          line: number;
+         endLine: number;
       }[] = [];
       for (let i = firstTokenAt(startCp); i < tokens.length; i++) {
          const token = tokens[i];
@@ -456,6 +463,7 @@ export function readNotebookCells(
                block: false,
                bodyTexts: [],
                line: token.line,
+               endLine: token.line,
             });
          } else if (name === "BLOCK_ANNOTATION_BEGIN") {
             const bodyTexts: string[] = [];
@@ -475,21 +483,28 @@ export function readNotebookCells(
                block: true,
                bodyTexts,
                line: token.line,
+               endLine: lineOf(map[tokens[end - 1].stopIndex]),
             });
             i = end - 1;
          } else break;
       }
       return notes;
    };
-   const attachedMarkdown = (
+   // One pass over the markdown notes builds both fields, so `proseLines` can never disagree with `markdown`.
+   const attachedProse = (
       notes: ReturnType<typeof leadingObjectNotes>,
-   ): string | undefined => {
+      firstLine: number,
+   ): { markdown?: string; proseLines?: [number, number][] } => {
       const segments: string[] = [];
+      const proseLines: [number, number][] = [];
       let lineEnd = -2;
       for (const note of notes) {
          if (!isMarkdownNote(note.text)) {
             lineEnd = -2;
-         } else if (note.block) {
+            continue;
+         }
+         proseLines.push([note.line - firstLine, note.endLine - firstLine]);
+         if (note.block) {
             segments.push(markdownBlockBody(note.text, note.bodyTexts));
             lineEnd = -2;
          } else {
@@ -500,7 +515,18 @@ export function readNotebookCells(
             lineEnd = note.line;
          }
       }
-      return segments.length > 0 ? segments.join("\n\n") : undefined;
+      return segments.length > 0
+         ? { markdown: segments.join("\n\n"), proseLines }
+         : {};
+   };
+   const attachedCaption = (
+      notes: ReturnType<typeof leadingObjectNotes>,
+   ): string | undefined => {
+      const lines = notes
+         .filter((note) => !note.block && routeOfNote(note.text) === '"')
+         .map((note) => markdownLineBody(note.text).trim())
+         .filter((line) => line !== "");
+      return lines.length > 0 ? lines.join(" ") : undefined;
    };
 
    const covered: [number, number][] = [];
@@ -555,13 +581,14 @@ export function readNotebookCells(
       covered.push([span.startCp, span.stopCp]);
       const [accessor, kind] = match;
       if (kind !== "notes") {
+         const leading = leadingObjectNotes(span.startCp, span.stopCp);
+         const caption = attachedCaption(leading);
          items.push({
             kind: "statement",
             run: kind === "run",
             text: text.slice(span.start, span.end),
-            markdown: attachedMarkdown(
-               leadingObjectNotes(span.startCp, span.stopCp),
-            ),
+            ...attachedProse(leading, span.startLine),
+            ...(caption !== undefined && { caption }),
             startLine: span.startLine,
             endLine: span.endLine,
          });
@@ -673,6 +700,10 @@ export function readNotebookCells(
                     text: item.text,
                     ...(item.markdown !== undefined && {
                        markdown: item.markdown,
+                       proseLines: item.proseLines,
+                    }),
+                    ...(item.caption !== undefined && {
+                       caption: item.caption,
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
@@ -684,6 +715,10 @@ export function readNotebookCells(
                     text: item.text,
                     ...(item.markdown !== undefined && {
                        markdown: item.markdown,
+                       proseLines: item.proseLines,
+                    }),
+                    ...(item.caption !== undefined && {
+                       caption: item.caption,
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,

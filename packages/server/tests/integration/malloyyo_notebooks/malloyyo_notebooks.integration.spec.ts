@@ -38,6 +38,8 @@ interface Cell {
    text?: string;
    queryInfo?: string;
    markdown?: string;
+   proseLines?: [number, number][];
+   caption?: string;
    result?: string;
 }
 
@@ -241,6 +243,24 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(body.notebookCells?.[3].text).toStartWith(
             "# bar_chart\n#|(markdown)",
          );
+         expect(body.notebookCells?.map((cell) => cell.proseLines)).toEqual([
+            undefined,
+            [[0, 0]],
+            [[0, 0]],
+            [[1, 4]],
+         ]);
+      });
+
+      it("serves a query cell's #\" caption as its own field", async () => {
+         const { body } = await getJson<{ notebookCells?: Cell[] }>(
+            pkgUrl(PLAIN, "/notebooks/notebooks/tagged_runs.malloy"),
+         );
+         expect(body.notebookCells?.map((cell) => cell.caption)).toEqual([
+            undefined,
+            "Revenue for each month.",
+            undefined,
+            undefined,
+         ]);
       });
 
       it("runs a query cell over the include's CSV, which resolves from the package root", async () => {

@@ -1113,30 +1113,12 @@ describe("notebook lint: attached #| blocks and one-line slips", () => {
       ]);
    });
 
-   it("catches a #| block that closes early, as it does a ##| block", () => {
-      expect(
-         lint(`${HEADER}#|(markdown)\nhi\n|#\nmore prose\n${RUN}`).filter(
-            (f) => f.code === "notebook-block-closed-early",
-         ),
-      ).toEqual([
-         {
-            line: 4,
-            code: "notebook-block-closed-early",
-            message:
-               "Line 4: this `|#` closes the block, so the text after it on line 5 is not prose and does not compile. Fix: a body line cannot start with `|#`, so reword it if the block should go on, or delete the stray text if the block is over.",
-         },
-      ]);
-      expect(
-         lint(`${HEADER}#|(markdown)\nhi\n|#\n${RUN}`).map((f) => f.code),
-      ).toEqual([]);
-   });
-
-   it("reports a #| block that closes early once, without an attached-nowhere error beside it", () => {
+   it("reports a #| block followed by stray text as attached nowhere, once", () => {
       expect(
          lint(`${HEADER}#|(markdown)\nhi\n|#\nmore prose\n${RUN}`).map(
             (f) => f.code,
          ),
-      ).toEqual(["notebook-block-closed-early"]);
+      ).toEqual(["notebook-markdown-attached-nowhere"]);
    });
 
    it("does not say no statement follows a #(markdown) that a model-level note separates from its run:", () => {
@@ -1147,6 +1129,10 @@ describe("notebook lint: attached #| blocks and one-line slips", () => {
    });
 
    it.each([
+      [
+         "text after a closed #| block",
+         `${HEADER}#|(markdown)\nhi\n|#\nmore prose\n${RUN}`,
+      ],
       [
          "a block-form given's description",
          `##! experimental.givens\n${HEADER}given:\n#|"\nthe description\n|#\nG :: string is "x"\n${RUN}`,
@@ -1159,7 +1145,7 @@ describe("notebook lint: attached #| blocks and one-line slips", () => {
          "a (markdown) block before an item in group_by",
          `${HEADER}run: a -> {\ngroup_by:\n#|(markdown)\nabout x\n|#\nx\n}\n`,
       ],
-   ])("does not call %s a block that closed early", (_name, text) => {
+   ])("reports no closed-early finding on %s", (_name, text) => {
       expect(
          lint(text).filter((f) => f.code === "notebook-block-closed-early"),
       ).toEqual([]);
@@ -1506,14 +1492,6 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
          code: "notebook-unterminated-block",
          fix: "add a `|##` line where the prose ends",
          apply: (t) => `${t}|##\n`,
-      },
-      {
-         name: "a #| block that closes early",
-         path: NB,
-         text: `${HEADER}#|(markdown)\nhi\n|#\nmore prose\n${RUN}`,
-         code: "notebook-block-closed-early",
-         fix: "delete the stray text if the block is over",
-         apply: sub("more prose\n", ""),
       },
       {
          name: "a dangling #(markdown) line",

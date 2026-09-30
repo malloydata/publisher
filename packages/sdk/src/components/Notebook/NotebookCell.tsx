@@ -241,7 +241,7 @@ export function NotebookCell({
    const { mode } = usePublisherTheme();
    useEffect(() => {
       if (cell.type === "code")
-         highlight(stripProse(cell.text), "malloy", mode).then((code) => {
+         highlight(stripProse(cell), "malloy", mode).then((code) => {
             setHighlightedMalloyCode(code);
          });
    }, [cell, mode]);
@@ -252,7 +252,7 @@ export function NotebookCell({
       });
    }, [queryResultCodeSnippet, mode]);
 
-   const caption = cell.kind === "query" ? cellCaption(cell.text) : undefined;
+   const caption = cell.kind === "query" ? cellCaption(cell) : undefined;
    const header = cell.markdown ? (
       <Prose variant="document" links={links}>
          {cell.markdown}
@@ -384,7 +384,7 @@ export function NotebookCell({
                ) : (
                   <ChevronRightIcon fontSize="small" />
                )}
-               {definitionSummary(cell.text)}
+               {definitionSummary(cell)}
             </Box>
             {definitionOpen && (
                <CleanMetricCard
