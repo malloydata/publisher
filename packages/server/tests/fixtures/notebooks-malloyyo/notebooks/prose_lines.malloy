@@ -1,0 +1,10 @@
+##! experimental.givens
+## artifact { kind=notebook title="Prose lines" }
+import "../models/orders.malloy"
+
+##(markdown) Two contiguous lines of prose
+##(markdown) are one markdown cell.
+
+##(markdown) A blank line above starts a second cell.
+
+run: orders -> kpis

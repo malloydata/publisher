@@ -180,7 +180,8 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Ask in plain English.** An agent grounds itself with `get_context`, runs
   `execute_query`, and answers from the model, never from raw tables. Analysis skills teach it the
   pitfalls and how to write up a finding — [docs/ai-agents.md](docs/ai-agents.md).
-- **Work in notebooks.** `.malloynb` notebooks live inside a package, mix prose and queries, and run on
+- **Work in notebooks.** Notebooks are `notebooks/*.malloy` files (a legacy `.malloynb` is read, not
+  authored); they live inside a package, mix prose and queries, and run on
   the same governed endpoints — [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
 - **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
   every action generates valid Malloy, so metrics stay correct across joins.

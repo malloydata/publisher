@@ -50,13 +50,15 @@ const NOTEBOOK: RawNotebook = {
    ],
 };
 
+let current: RawNotebook = NOTEBOOK;
+
 const getNotebook = mock(
    (
       _environmentName: string,
       _packageName: string,
       _notebookPath: string,
       _versionId?: string,
-   ) => Promise.resolve({ data: NOTEBOOK }),
+   ) => Promise.resolve({ data: current }),
 );
 const executeQueryModel = mock(
    (
@@ -69,7 +71,14 @@ const executeQueryModel = mock(
 // The notebook's real run path for a code cell, distinct from
 // `executeQueryModel`: without it, the cell this spec adds (for the "Data
 // sources" dialog) fails with "not a function" on every render.
-const executeNotebookCell = mock(() => pending());
+const executeNotebookCell = mock(
+   (
+      _environmentName: string,
+      _packageName: string,
+      _notebookPath: string,
+      _cellIndex: number,
+   ) => pending(),
+);
 
 // Stubbed rather than let the cell's "Data sources" dialog reach the real
 // ModelExplorer: that pulls in the lazy-loaded, WASM-backed
@@ -104,6 +113,7 @@ const URI =
    "publisher://environments/env/packages/pkg/models/notebooks/ops.malloynb";
 
 beforeEach(() => {
+   current = NOTEBOOK;
    clearCache();
    getNotebook.mockClear();
    executeQueryModel.mockClear();
@@ -149,4 +159,25 @@ it("opens a cell's 'Data sources' dialog with the notebook's current values", as
    expect(lastCall?.data?.givens?.map((given) => given.name)).toContain(
       "TENANT",
    );
+});
+
+it("renders a .malloynb as before: runs every code cell, no caption, no folded definition", async () => {
+   current = {
+      notebookCells: [
+         { type: "markdown", text: "Prose" },
+         { type: "code", text: "run: a -> b" },
+         { type: "code", text: '#" x\nrun: a -> c' },
+      ],
+   } as RawNotebook;
+   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+
+   await screen.findByText("Prose");
+   await waitFor(() => expect(executeNotebookCell).toHaveBeenCalledTimes(2));
+   expect(executeNotebookCell.mock.calls.map((call) => call[3])).toEqual([
+      1, 2,
+   ]);
+   expect(screen.queryByText("x")).toBeNull();
+   expect(
+      screen.queryByRole("button", { name: /^(run|source|import)/ }),
+   ).toBeNull();
 });

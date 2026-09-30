@@ -11,6 +11,7 @@
 import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
 import { PackageManifestError } from "../errors";
 import { isDashboardModelPath } from "./dashboard";
+import { isNotebookModelPath } from "./notebook";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -542,9 +543,10 @@ function listFiles(files: readonly string[]): string {
 
 /**
  * The deprecation for a non-empty `explores`, with the edit that replaces it.
- * Entries for index.malloy and for dashboards need no replacement: the file is
- * the surface, and every dashboard is served. What is left is what index.malloy
- * has to import.
+ * Entries for index.malloy, for dashboards and for notebooks need no
+ * replacement: the file is the surface, and every dashboard and notebook is
+ * served. Dashboards and notebooks are recognized by path alone here. What is
+ * left is what index.malloy has to import.
  */
 function exploresDeprecation(
    declared: readonly string[],
@@ -552,7 +554,10 @@ function exploresDeprecation(
 ): string {
    const lead = `"explores" in publisher.json is deprecated.`;
    const files = declared.filter(
-      (entry) => entry !== INDEX_MODEL_NAME && !isDashboardModelPath(entry),
+      (entry) =>
+         entry !== INDEX_MODEL_NAME &&
+         !isDashboardModelPath(entry) &&
+         !isNotebookModelPath(entry),
    );
    if (files.length > 0) {
       return hasIndexModel

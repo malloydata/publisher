@@ -42,7 +42,9 @@ Concretely:
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
   who can register a package can already read the data directly. Set `"frozenConfig": true` to
-  close registration on a deployment where that matters.
+  close registration on a deployment where that matters. A `.zip` environment or package that
+  contains a symlink entry is refused, and nothing from it is left on disk, because the
+  extractor would otherwise follow the link out of the destination directory.
 - **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
   dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
   kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
@@ -125,8 +127,8 @@ same origin as the REST API. The consequences follow from that and are all inten
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
   lexically and again through `realpath`, and a symlink escaping the directory returns 403.
 
-**Notebooks and dashboards carry no author-written JavaScript file.** A `.malloynb` is markdown
-and Malloy cells; a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which
+**Notebooks and dashboards carry no author-written JavaScript file.** A notebook (`notebooks/*.malloy`, or a
+legacy `.malloynb`) is markdown and Malloy cells; a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which
 is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
 deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
 declarative artifact still carries author-controlled HTML.

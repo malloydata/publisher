@@ -4,7 +4,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
-import { extractPreamble, extractPreambleFromSource } from "./environment";
+import { isDashboardModelPath } from "./dashboard";
+import {
+   extractPreamble,
+   extractPreambleFromSource,
+   packageRelativeModelPath,
+} from "./environment";
+import { isNotebookModelPath } from "./notebook";
 
 describe("extractPreambleFromSource", () => {
    it("should extract pragmas and imports before a source definition", () => {
@@ -196,5 +202,43 @@ describe("extractPreamble (file-based)", () => {
          path.join(testDir, "nonexistent.malloy"),
       );
       expect(result).toBe("");
+   });
+});
+
+describe("packageRelativeModelPath", () => {
+   it("joins a Windows-separated path with `/` so notebook and dashboard classification recognize it", () => {
+      const notebook = packageRelativeModelPath(
+         "C:\\pkg",
+         "C:\\pkg\\notebooks\\refused.malloy",
+         path.win32,
+      );
+      expect(notebook).toBe("notebooks/refused.malloy");
+      expect(isNotebookModelPath(notebook!)).toBe(true);
+      const dashboard = packageRelativeModelPath(
+         "C:\\pkg",
+         "C:\\pkg\\dashboards\\sales.malloy",
+         path.win32,
+      );
+      expect(dashboard).toBe("dashboards/sales.malloy");
+      expect(isDashboardModelPath(dashboard!)).toBe(true);
+   });
+
+   it("is undefined outside the package", () => {
+      expect(
+         packageRelativeModelPath("C:\\pkg", "C:\\other\\x.malloy", path.win32),
+      ).toBeUndefined();
+      expect(
+         packageRelativeModelPath("/pkg", "/other/x.malloy", path.posix),
+      ).toBeUndefined();
+   });
+
+   it("leaves a POSIX path unchanged", () => {
+      expect(
+         packageRelativeModelPath(
+            "/pkg",
+            "/pkg/notebooks/x.malloy",
+            path.posix,
+         ),
+      ).toBe("notebooks/x.malloy");
    });
 });

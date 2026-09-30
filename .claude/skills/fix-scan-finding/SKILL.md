@@ -35,11 +35,16 @@ cloud credentials are needed -- everything here is local and read-only against p
 
 Each job uploads its full SARIF to Code Scanning, then runs a second scan scoped to CRITICAL with
 `exit-code: 1`. CRITICAL fails the job, and the secret gate fails on HIGH as well: a committed
-credential is an incident whatever its rating. Other HIGH findings do not fail a Trivy step, but
-GitHub's Code Scanning check fails a same-repository pull request on a new HIGH alert in the
-uploaded SARIF, so a HIGH can still need a fix or an acceptance. Every job reads the same
-`.trivyignore.yaml`. On a pull request from a fork the SARIF upload is skipped (the token is
-read-only), but the gate still runs, so read the job log there.
+credential is an incident whatever its rating. GitHub's own "Trivy" Code Scanning check on a pull
+request is set, in the repository's code scanning settings, to fail only on critical alerts. It
+treats every alert in a file the PR touches as new, and a lockfile is one file, so at a high
+threshold every dependency PR went red on alerts already open on `main`. If that check goes red on
+high again, the setting was changed; that is the fix, not a lockfile edit. GitHub rates an alert
+by the SARIF's CVSS score, not Trivy's label, so the two can disagree: a Trivy MEDIUM can show as
+high, and a Trivy HIGH with CVSS 9.0 or more is critical to GitHub and still fails the check. HIGHs
+still land in Code Scanning, and one with a reachable fix is still worth fixing. Every job reads
+the same `.trivyignore.yaml`. On a pull request from a fork the SARIF upload is skipped (the token
+is read-only), but the gate still runs, so read the job log there.
 
 ## The rule
 
@@ -234,6 +239,10 @@ image) -- removing an unused parent package is option 4 of the rule, and is how 
   the default local scan passes that flag. When sweeping one vulnerable chain repo-wide, re-run with
   it before concluding a lockfile is unaffected -- a clean default scan is not evidence the chain is
   absent, only that nothing in it is a production dependency.
+- **A clean `bun.lock` scan can still hide nested copies.** After this repo's lockfile refresh
+  reported zero HIGH, the image scan of the same tree still found nested `lodash` 4.17.21,
+  `ip-address` 10.0.1 and `ws` 5.2.4 that the filesystem scan never listed. Scan the built image
+  before calling a Node finding gone, or list every lockfile key still at the vulnerable version.
 - **A production dependency's peers ship.** `@vitejs/plugin-react` in `packages/app` `dependencies`
   pulled `vite`, and through it `esbuild` (with a Go stdlib CVE in its binary), into the image
   despite `bun install --production`. `bun why <pkg>` inside the built image names the path.

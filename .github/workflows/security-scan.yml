@@ -20,9 +20,11 @@ name: Security Scan
 # fails the build. The two steps are separate on purpose -- `format: sarif` emits
 # every severity regardless of the `severity:` input, so putting `exit-code` on the
 # SARIF step would gate on LOW/MEDIUM findings too. The vulnerability and config
-# gates fail on CRITICAL only; the secret gate fails on HIGH as well. Separately,
-# GitHub's Code Scanning check fails a same-repository pull request on a new HIGH
-# alert from the uploaded SARIF.
+# gates fail on CRITICAL only; the secret gate fails on HIGH as well. GitHub's own
+# "Trivy" Code Scanning check is set in the repository's code scanning settings to
+# fail only on CRITICAL, to match. It counts every alert in a file a pull request
+# touches as new, and a lockfile is one file, so at HIGH it would fail every
+# dependency change on alerts already open on main.
 #
 # Criticals accepted today are enumerated in .trivyignore.yaml. Anything that will be
 # fixed carries an `expired_at` so the acceptance lapses instead of becoming permanent;

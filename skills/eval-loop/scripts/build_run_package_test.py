@@ -79,6 +79,7 @@ class SourcesMatchTheCsvs(unittest.TestCase):
             capture_output=True, text=True, timeout=300)
         assert p.returncode == 0, p.stderr
         cls.data = out / "data"
+        cls.out = out
 
     @classmethod
     def tearDownClass(cls):
@@ -95,6 +96,10 @@ class SourcesMatchTheCsvs(unittest.TestCase):
         found = SOURCE.findall(MALLOY.read_text())
         self.assertTrue(found, "no duckdb.table sources parsed from the model")
         return found
+
+    def test_the_package_carries_the_notebook_at_its_malloy_path(self):
+        self.assertTrue((self.out / "notebooks" / "eval_run.malloy").exists())
+        self.assertFalse((self.out / "eval_run.malloynb").exists())
 
     def test_every_declared_column_is_actually_written(self):
         for name, stem, block in self.sources():
@@ -215,7 +220,7 @@ class RefusalsAndServing(unittest.TestCase):
         p = self.build("--out", str(out), "--no-register")
         self.assertEqual(p.returncode, 0, p.stderr)
         want = ["# case matrix: http://localhost:4881/environments/truth/packages/pkg/",
-                "# notebook:    http://localhost:4881/truth/pkg/eval_run.malloynb"]
+                "# notebook:    http://localhost:4881/truth/pkg/notebooks/eval_run"]
         for line in want:
             self.assertIn(line, p.stdout)
             self.assertIn(line, (out / "README.md").read_text())

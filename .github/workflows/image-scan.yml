@@ -21,9 +21,8 @@ name: Image Scan
 #
 # Enforcement matches security-scan.yml: the full SARIF (all severities) uploads to
 # Code Scanning, then a second CRITICAL-scoped scan with `exit-code: 1` fails the
-# job. As there, Code Scanning's own check also fails a same-repository pull
-# request on a new HIGH alert. Acceptances live in the same .trivyignore.yaml as
-# the source-tree scans.
+# job, and Code Scanning's own check is held to CRITICAL as described there.
+# Acceptances live in the same .trivyignore.yaml as the source-tree scans.
 
 on:
   push:

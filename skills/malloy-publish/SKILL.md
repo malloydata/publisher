@@ -19,7 +19,7 @@ Once the package is in shape, self-hosters publish it through their own host: co
 
 ## Prerequisites
 
-- Malloy model (`.malloy`) and/or notebook (`.malloynb`) files ready
+- Malloy model (`.malloy`) and/or notebook (`notebooks/<slug>.malloy`) files ready
 - The Publisher MCP tools configured (used by the modeling and analysis skills, not by a publish step)
 
 ## Connections: a flat-file package needs none
@@ -79,6 +79,22 @@ What it exports is what agents discover **and** what may be queried. Everything 
 
 **About `export { … }`:** the surface filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, and the two compose. You usually don't write it in a leaf model: a file with **no** `export` exposes all of its own top-level sources. It must appear after the definitions it names. See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
 
+**Givens reach callers through `index.malloy`'s imports, not its `export`.** A `given:` is a name like a source. A caller can set it only if `index.malloy` has it in scope, and you never list givens in `export { … }`. How you import decides it:
+
+- `import "orders.malloy"` (the whole file) brings every given `orders.malloy` declares. Use this form, then `export` only the curated sources.
+- `import { orders } from "orders.malloy"` brings only `orders`. Its givens stay behind. Name them too: `import { orders, REGION } from "orders.malloy"`.
+- Imports don't chain. If `orders.malloy` gets its givens from a `givens.malloy`, import `givens.malloy` into `index.malloy` as well, or list the givens in `orders.malloy`'s own `export { … }`.
+
+A given `index.malloy` leaves out fails in one of three ways, depending on how it is declared:
+
+| the given | what happens |
+| --- | --- |
+| has a default | the source runs on the default, and a caller who sets the given gets `400 unknown given 'REGION'. Model surfaces [...]`. Agents never learn it exists |
+| has no default | a query on the source answers `400 ... references given MIN_AMT ..., which is not surfaced in this model and has no default`, even when the caller sends a value. A query that joins the source in its own text gets `404 Query target is not queryable` instead, which reads like curation; `compile_model` on that query shows the real cause |
+| is read by an `#(authorize)` or `#(access_filter)` gate | the package does not load: `$GROUPS references a given named GROUPS, which is not declared in this model` |
+
+To check, fetch `index.malloy`'s model: its `givens` should list every given a published source reads.
+
 ### The older manifest fields
 
 `publisher.json` has two older keys for this, `explores` and `queryableSources`. A new package uses neither: `index.malloy` does the job.
@@ -106,7 +122,7 @@ With a valid `publisher.json` in place, confirm the package is in the flat, publ
 
 ## Package Structure
 
-All `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet).
+All model `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet). Notebooks are the exception: they live under `notebooks/`.
 
 ```
 <package-name>/
@@ -116,12 +132,13 @@ All `.malloy` files must be in the package root (flat layout: the publisher does
   user_order_facts.malloy       # Computed source
   order_analysis.malloy         # Source file (joins base sources)
   customer_health.malloy        # Source file
-  monthly_report.malloynb       # Notebook (optional)
+  notebooks/
+    monthly_report.malloy       # Notebook (optional)
 ```
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- `.malloynb` files - Notebooks for exploration/documentation (see `skill:malloy-notebooks`)
+- `notebooks/*.malloy` files with an `## artifact { kind=notebook }` tag - Notebooks for exploration/documentation (see `skill:malloy-notebooks`). An existing `.malloynb` is still served; never write a new one.
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management

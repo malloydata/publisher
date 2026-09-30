@@ -73,7 +73,7 @@ It gives you two things to link:
 | Artifact | What it is | URL |
 |---|---|---|
 | The case matrix app | Every question, its verdict, which needed entities retrieval delivered, and a drawer per case holding the reference answer, the judge's reasoning, the re-executed rows and every query the answerer ran | `<publisher>/environments/<env>/packages/eval-<label>/` |
-| `eval_run.malloynb` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | `<publisher>/<env>/eval-<label>/eval_run.malloynb` |
+| `notebooks/eval_run.malloy` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | `<publisher>/<env>/eval-<label>/notebooks/eval_run` |
 
 **Those two URLs are in different path spaces, and guessing costs a 404.** The
 app is served by the in-package `public/` handler, which owns

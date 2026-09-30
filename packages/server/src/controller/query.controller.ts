@@ -56,6 +56,8 @@ export class QueryController {
        * Orthogonal to {@link bypassFilters} — see {@link Model.getQueryResults}.
        */
       bypassAuthorize?: boolean,
+      /** Lift the package's surface for this request (see {@link Model.getQueryResults}). */
+      includeHiddenFilesAndSources?: boolean,
    ): Promise<ApiQuery> {
       let requestMetadata: QueryMetadata | undefined;
       let queryClass: QueryClass | undefined;
@@ -151,6 +153,7 @@ export class QueryController {
                   // request came to be refused on bytes it would never receive.
                   compactJson ? "compact" : "full",
                   bypassAuthorize,
+                  includeHiddenFilesAndSources,
                ),
             getQueryTimeoutMs(),
          );
