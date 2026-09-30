@@ -62,10 +62,12 @@ class Pub:
     def __init__(self, name: str, retrieval: dict | None = None,
                  embeddings: bool = True, llm: bool = True, gate: bool = True,
                  env: dict | None = None, package: pathlib.Path = PKG,
+                 package_name: str = PACKAGE,
                  embedding_model: str = "mock-embed"):
         self.name, self.retrieval = name, retrieval
         self.embeddings, self.llm, self.gate = embeddings, llm, gate
         self.extra_env, self.package = env or {}, package
+        self.package_name = package_name
         self.embedding_model = embedding_model
         self.root = ROOTS / name
         self.proc: subprocess.Popen | None = None
@@ -75,7 +77,7 @@ class Pub:
     def config(self) -> dict:
         cfg: dict = {"frozenConfig": False, "environments": [{
             "name": ENV, "connections": [],
-            "packages": [{"name": PACKAGE, "location": str(self.package)}]}]}
+            "packages": [{"name": self.package_name, "location": str(self.package)}]}]}
         if self.retrieval is not None:
             cfg["retrieval"] = self.retrieval
         return cfg
@@ -136,7 +138,7 @@ class Pub:
         deadline = time.time() + wait
         while time.time() < deadline:
             try:
-                http(f"http://127.0.0.1:{self.port}/api/v0/environments/{ENV}/packages/{PACKAGE}",
+                http(f"http://127.0.0.1:{self.port}/api/v0/environments/{ENV}/packages/{self.package_name}",
                      timeout=5)
                 return self
             except Exception:  # noqa: BLE001
@@ -179,7 +181,7 @@ class Pub:
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
             "name": "get_context",
             "arguments": {"search_targets": tg,
-                          "scopes": [{"environment": ENV, "package": PACKAGE, **(scope or {})}]}}}
+                          "scopes": [{"environment": ENV, "package": self.package_name, **(scope or {})}]}}}
         env = http(f"http://127.0.0.1:{self.mcp_port}/mcp", body, headers, timeout)
         result = env.get("result") or {}
         for chunk in result.get("content") or []:
@@ -195,7 +197,7 @@ class Pub:
         return {"_error": env.get("error") or env}
 
     def package_status(self) -> dict:
-        p = http(f"http://127.0.0.1:{self.port}/api/v0/environments/{ENV}/packages/{PACKAGE}")
+        p = http(f"http://127.0.0.1:{self.port}/api/v0/environments/{ENV}/packages/{self.package_name}")
         return p.get("embeddingIndex") or {}
 
     def warm(self, timeout: int = 240, settle: int = 3) -> dict:

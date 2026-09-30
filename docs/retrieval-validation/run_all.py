@@ -14,7 +14,7 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = pathlib.Path(os.environ.get("VAL_OUT", "/tmp/llm-val/results"))
 OUT.mkdir(parents=True, exist_ok=True)
-ALL = ["core", "scoring", "settings", "enrich", "values", "privacy", "failures", "prefix"]
+ALL = ["core", "scoring", "settings", "enrich", "values", "privacy", "failures", "prefix", "parity", "storefront"]
 
 for name in sys.argv[1:] or ALL:
     t0 = time.time()
