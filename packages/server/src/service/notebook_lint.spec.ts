@@ -153,108 +153,69 @@ describe("notebook lint", () => {
       ]);
    });
 
-   // Flip together with OLD_PROSE_SPELLINGS in notebook.ts: these describe the spellings as dropped.
-   describe("the old prose spellings after the tag", () => {
-      const severities = (text: string, modelPath: string) =>
-         lintNotebookText(modelPath, text).map((f) => [f.code, f.severity]);
+   describe("the earlier prose spellings after the tag", () => {
+      const DASH_INTRO = "## artifact { tiles=[intro { kind=text }] }\n";
 
-      it("errors on a ##\" note below a notebook's tag, and says to use ##(markdown)", () => {
-         expect(lint(`${HEADER}##" a cell\n${SOURCE}`)).toEqual([
-            {
-               line: 2,
-               code: "notebook-old-prose-spelling",
-               message:
-                  'Line 2: `##" a cell` is a `"` note below the `## artifact` tag, which a notebook drops, so its prose is not shown. Fix: use `##(markdown)` in place of `##"`.',
-            },
-         ]);
-         expect(
-            severities(`${HEADER}##" a cell\n${SOURCE}`, "notebooks/n.malloy"),
-         ).toEqual([["notebook-old-prose-spelling", "error"]]);
+      it.each([
+         ['a ##" line', `${HEADER}##" a cell\n${SOURCE}`],
+         ['a bare ##|" block', `${HEADER}##|"\nhi\n|##\n${SOURCE}`],
+         [
+            'a ##|" block with text on its opener',
+            `${HEADER}##|" Revenue grew fast\nhi\n|##\n${SOURCE}`,
+         ],
+         [
+            'a ##|" block with a single word on its opener',
+            `${HEADER}##|" Summary\nhi\n|##\n${SOURCE}`,
+         ],
+         ["a ##(text) line", `${HEADER}##(text) a line\n${SOURCE}`],
+         ["a bare ##|(text) block", `${HEADER}##|(text)\nhi\n|##\n${SOURCE}`],
+      ])("reads %s in a notebook as a cell, with no finding", (_name, text) => {
+         expect(lint(text)).toEqual([]);
       });
 
-      it("errors on a ##|\" block below a notebook's tag, and says to use ##|(markdown)", () => {
-         expect(lint(`${HEADER}##|"\nhi\n|##\n${SOURCE}`)).toEqual([
-            {
-               line: 2,
-               code: "notebook-old-prose-spelling",
-               message:
-                  'Line 2: `##|"` is a `"` note below the `## artifact` tag, which a notebook drops, so its prose is not shown. Fix: use `##|(markdown)` in place of `##|"`.',
-            },
-         ]);
-      });
-
-      it("moves the opener's text onto the line below when a ##|\" block has some", () => {
+      it("reads a (text) tile block in a dashboard as a tile, with no finding", () => {
          expect(
-            lint(`${HEADER}##|" Revenue grew fast\nhi\n|##\n${SOURCE}`),
-         ).toEqual([
-            {
-               line: 2,
-               code: "notebook-old-prose-spelling",
-               message:
-                  'Line 2: `##|" Revenue grew fast` is a `"` note below the `## artifact` tag, which a notebook drops, so its prose is not shown. Fix: write `##|(markdown)` and move `Revenue grew fast` onto the line below it.',
-            },
-         ]);
-         expect(
-            lint(`${HEADER}##|" Summary\nhi\n|##\n${SOURCE}`)[0].message,
-         ).toContain(
-            "Fix: write `##|(markdown)` and move `Summary` onto the line below it.",
-         );
-      });
-
-      it("errors on a (text) block in a notebook, and says to use plain ##|(markdown)", () => {
-         expect(lint(`${HEADER}##|(text) intro\nhi\n|##\n`)).toEqual([
-            {
-               line: 2,
-               code: "notebook-old-prose-spelling",
-               message:
-                  "Line 2: `##|(text) intro` is on the `(text)` route, which Publisher does not read, so it is dropped. Fix: use `##|(markdown)`.",
-            },
-         ]);
-         expect(
-            lint(`${HEADER}##|(text) two words\nhi\n|##\n`)[0].message,
-         ).toContain(
-            "Fix: write `##|(markdown)` and move `two words` onto the line below it.",
-         );
-         expect(
-            severities(
-               `${HEADER}##|(text) intro\nhi\n|##\n`,
-               "notebooks/n.malloy",
-            ),
-         ).toEqual([["notebook-old-prose-spelling", "error"]]);
-      });
-
-      it("errors on a (text) tile block in a dashboard, and on a ##(text) line", () => {
-         expect(
-            severities(
-               `## artifact { tiles=[intro { kind=text }] }\n##|(text) intro\nhi\n|##\n${SOURCE}`,
-               "dashboards/d.malloy",
-            ),
-         ).toEqual([["notebook-old-prose-spelling", "error"]]);
-         expect(lint(`${HEADER}##(text) a line\n${SOURCE}`)[0]).toMatchObject({
-            code: "notebook-old-prose-spelling",
-            message:
-               "Line 2: `##(text) a line` is on the `(text)` route, which Publisher does not read, so it is dropped. Fix: use `##(markdown)`.",
-         });
-      });
-
-      it("keeps a dashboard (text) block's real name in the fix, and never suggests a line a dashboard hides", () => {
-         const dash = (body: string) =>
             lint(
-               `## artifact { tiles=[intro { kind=text }] }\n${body}${SOURCE}`,
+               `${DASH_INTRO}##|(text) intro\nhi\n|##\n${SOURCE}`,
                "dashboards/d.malloy",
-            )[0].message;
-         expect(dash("##|(text) intro\nhi\n|##\n")).toContain(
-            "Fix: write `##|(markdown) intro` and list `intro { kind=text }` in `tiles`.",
-         );
-         expect(dash("##|(text)\nhi\n|##\n")).toContain(
-            "Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`.",
-         );
-         expect(dash("##|(text) two words\nhi\n|##\n")).toContain(
-            "Fix: write `##|(markdown) name`, put `two words` on the line below it, and list `name { kind=text }` in `tiles`.",
-         );
-         expect(dash("##(text) a line\n")).toContain(
-            'with the text as its body, or move it above the `## artifact` tag and write `##"`.',
-         );
+            ),
+         ).toEqual([]);
+      });
+
+      it("still flags a (text) tile block no tiles entry names, and a (text) line in a dashboard", () => {
+         expect(
+            lintNotebookText(
+               "dashboards/d.malloy",
+               `## artifact { tiles=["a -> v"] }\n${SOURCE}##|(text) intro\nhi\n|##\n`,
+            ).map((f) => f.code),
+         ).toEqual(["notebook-markdown-block-unreferenced"]);
+         expect(
+            lintNotebookText(
+               "dashboards/d.malloy",
+               `## artifact { tiles=["a -> v"] }\n##(text) a line\n${SOURCE}`,
+            ).map((f) => f.code),
+         ).toEqual(["notebook-markdown-block-unnamed"]);
+      });
+
+      it("applies the block rules to a (text) block as it does to a (markdown) one", () => {
+         expect(
+            lintNotebookText(
+               "notebooks/n.malloy",
+               `${HEADER}##|(text) intro\nhi\n`,
+            ).map((f) => f.code),
+         ).toEqual([
+            "notebook-markdown-block-named",
+            "notebook-unterminated-block",
+         ]);
+      });
+
+      it("moves a (text) note above the tag as it does a (markdown) one", () => {
+         expect(
+            lintNotebookText(
+               "notebooks/n.malloy",
+               `##(text) a line\n${HEADER}${SOURCE}`,
+            ).map((f) => [f.code, f.severity]),
+         ).toEqual([["notebook-markdown-above-artifact", "error"]]);
       });
    });
 
@@ -1313,146 +1274,6 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
       apply: (text: string) => string;
    };
    const cases: Case[] = [
-      {
-         name: 'a ##|" block with several words on its opener',
-         path: NB,
-         text: `${HEADER}##|" Revenue grew fast\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: "write `##|(markdown)` and move `Revenue grew fast` onto the line below it",
-         apply: sub(
-            '##|" Revenue grew fast',
-            "##|(markdown)\nRevenue grew fast",
-         ),
-      },
-      {
-         name: 'a ##|" block with one word on its opener',
-         path: NB,
-         text: `${HEADER}##|" Summary\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: "write `##|(markdown)` and move `Summary` onto the line below it",
-         apply: sub('##|" Summary', "##|(markdown)\nSummary"),
-      },
-      {
-         name: 'a bare ##|" block',
-         path: NB,
-         text: `${HEADER}##|"\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: 'use `##|(markdown)` in place of `##|"`',
-         apply: sub('##|"', "##|(markdown)"),
-      },
-      {
-         name: 'a ##" line',
-         path: NB,
-         text: `${HEADER}##" a cell\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: 'use `##(markdown)` in place of `##"`',
-         apply: sub('##"', "##(markdown)"),
-      },
-      {
-         name: "a (text) block with a name in a notebook",
-         path: NB,
-         text: `${HEADER}##|(text) intro\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: "use `##|(markdown)`",
-         apply: sub("##|(text) intro", "##|(markdown)"),
-      },
-      {
-         name: "a (text) block with several words in a notebook",
-         path: NB,
-         text: `${HEADER}##|(text) two words\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: "write `##|(markdown)` and move `two words` onto the line below it",
-         apply: sub("##|(text) two words", "##|(markdown)\ntwo words"),
-      },
-      {
-         name: "a (text) line in a notebook",
-         path: NB,
-         text: `${HEADER}##(text) a line\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: "use `##(markdown)`",
-         apply: sub("##(text)", "##(markdown)"),
-      },
-      {
-         name: "a (text) block in a dashboard",
-         path: DASH,
-         text: `${DASH_INTRO}##|(text) intro\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: "write `##|(markdown) intro` and list `intro { kind=text }` in `tiles`",
-         apply: sub("##|(text) intro", "##|(markdown) intro"),
-      },
-      {
-         name: "an unlisted (text) block in a dashboard",
-         path: DASH,
-         text: `${DASH_TAG}##|(text) intro\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: "write `##|(markdown) intro` and list `intro { kind=text }` in `tiles`",
-         apply: steps(
-            sub("##|(text) intro", "##|(markdown) intro"),
-            listTile("intro"),
-         ),
-      },
-      {
-         name: "a (text) block with several words in a dashboard",
-         path: DASH,
-         text: `${DASH_TAG}##|(text) two words\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: TWO_WORDS,
-         apply: steps(
-            sub("##|(text) two words", "##|(markdown) name\ntwo words"),
-            listTile("name"),
-         ),
-      },
-      {
-         name: "a nameless (text) block in a dashboard",
-         path: DASH,
-         text: `${DASH_TAG}##|(text)\nhi\n|##\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: TILE,
-         apply: steps(sub("##|(text)", "##|(markdown) name"), listTile("name")),
-      },
-      {
-         name: "a (text) line below a dashboard tag",
-         path: DASH,
-         text: `${DASH_TAG}##(text) a line\n${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: `${TILE} with the text as its body`,
-         apply: steps(
-            sub("##(text) a line", "##|(markdown) name\na line\n|##"),
-            listTile("name"),
-         ),
-      },
-      {
-         name: "a (text) line above a dashboard tag",
-         path: DASH,
-         text: `##(text) a line\n${DASH_TAG}${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: 'use `##"`',
-         apply: sub("##(text)", '##"'),
-      },
-      {
-         name: "a (text) line above a notebook tag",
-         path: NB,
-         text: `##(text) a line\n${HEADER}${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: 'use `##"`, or move it below the `## artifact` tag and write `##(markdown)`',
-         apply: sub("##(text)", '##"'),
-      },
-      {
-         name: "a (text) block above a notebook tag",
-         path: NB,
-         text: `##|(text) intro\nhi\n|##\n${HEADER}${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: 'write `##|"` and move `intro` onto the line below it',
-         apply: sub("##|(text) intro", '##|"\nintro'),
-      },
-      {
-         name: "a nameless (text) block above a notebook tag",
-         path: NB,
-         text: `##|(text)\nhi\n|##\n${HEADER}${SOURCE}`,
-         code: "notebook-old-prose-spelling",
-         fix: 'use `##|"`',
-         apply: sub("##|(text)", '##|"'),
-      },
       {
          name: 'a ##"word line below a notebook tag',
          path: NB,

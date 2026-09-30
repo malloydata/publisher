@@ -42,28 +42,15 @@ export function isMarkdownNote(text: string): boolean {
    return routeOfNote(text) === MARKDOWN_ROUTE;
 }
 
-/**
- * What a notebook or dashboard does with the spellings `(markdown)` replaced (a `"` or `(text)` note
- * below the tag): "dropped" (the lint errors) or "accepted" (read as prose, the lint warns).
- */
-export const OLD_PROSE_SPELLINGS: "dropped" | "accepted" = "dropped";
-
 /** The fix for a `(markdown)` note that annotates no statement: it stands alone, or moves above one. */
 export const attachedNowhereFix = (block: boolean) =>
    block
       ? "write it as a floating `##|(markdown)` block closed by `|##` for prose that stands on its own, or move it directly above the statement it describes."
       : "write it as a floating `##(markdown)` line for prose that stands on its own, or move it directly above the statement it describes.";
 
-export function isOldProseRoute(route: string | undefined): boolean {
-   return route === '"' || route === "text";
-}
-
-/** Whether a floating note is prose: `(markdown)`, plus the old spellings when they are accepted. */
+/** Whether a floating note is prose: `(markdown)`, or the `"` and `(text)` spellings it replaced. */
 export function isProseRoute(route: string | undefined): boolean {
-   return (
-      route === MARKDOWN_ROUTE ||
-      (OLD_PROSE_SPELLINGS === "accepted" && isOldProseRoute(route))
-   );
+   return route === MARKDOWN_ROUTE || route === '"' || route === "text";
 }
 
 export function isArtifactNoteText(text: string): boolean {
@@ -177,8 +164,8 @@ export interface NotebookReadResult {
    cells: NotebookCellSpan[];
    /**
     * Every own note that is not a floating markdown cell, each once, in file
-    * order. A `"` or `(text)` note below the artifact tag is never listed (see
-    * OLD_PROSE_SPELLINGS), so none can read as a description.
+    * order. A `"` or `(text)` note below the artifact tag is a cell, so it is
+    * never listed and never reads as a description.
     */
    annotations: string[];
    error?: NotebookReaderError;
@@ -706,9 +693,7 @@ export function readNotebookCells(
       }
       const { note } = item;
       const floating = belowTag && note.body !== undefined;
-      // A dropped old-spelling note is not listed, so a `"` one can never read as the description.
-      if (!floating && !(belowTag && isOldProseRoute(note.route)))
-         annotations.push(note.text);
+      if (!floating) annotations.push(note.text);
       if (!floating || note.body === undefined) {
          lineRun = undefined;
          return;
@@ -745,14 +730,10 @@ export function parseMarkdownOpener(
    const line = opener.replace(/\r?\n$/, "");
    const sigil = /^(#{1,2})\|/.exec(line);
    if (!sigil) return undefined;
-   // Only a `(text)` tile opener is an old spelling read here: a `"` block above a tag is a description.
+   // A `"` block is a description above a tag, so only `(text)` is read here as a tile.
    const route = routeOfNote(line);
-   const prose =
-      route === MARKDOWN_ROUTE ||
-      (sigil[1] === "##" &&
-         OLD_PROSE_SPELLINGS === "accepted" &&
-         route === "text");
-   if (!prose) return undefined;
+   if (route !== MARKDOWN_ROUTE && !(sigil[1] === "##" && route === "text"))
+      return undefined;
    const rest = payloadOf({ value: line } as Parameters<
       typeof payloadOf
    >[0]).trim();

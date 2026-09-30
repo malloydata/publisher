@@ -447,9 +447,9 @@ render text tiles yet, so the lint says an entry is left out of the page:
   references, is a finding. The parentheses are required: `##| markdown` reads
   its prose as ordinary tags, and `##|markdown` and `##|(markdown)name` (no space)
   are dropped by Malloy as `malformed-route` (verified on 0.0.432), and the lint
-  says how to spell them. `##"` and `##|"` after the tag and `##|(text) name`
-  tiles, the spellings `(markdown)` replaced, are dropped and each is reported as
-  the error `notebook-old-prose-spelling`.
+  says how to spell them. Earlier spellings are still read: `##"` and `##|"` after
+  the tag are markdown cells, and `##|(text) name` is a text tile, with no lint
+  finding.
 - **Kinds.** `kind=dashboard` at model scope is the explicit default for a file
   under `dashboards/`, and a tile entry may carry `kind=query`. `kind=notebook`
   under `dashboards/` is a finding.
@@ -555,7 +555,8 @@ demand. The prose spelling was revised on review. It was first written on Malloy
 `"` doc-string route (`##"`, `##|"`, `##|(text)`), and moved to `(markdown)` for two
 reasons: `##` reads as file-level, so prose that belongs to one statement needs a
 `#` spelling of its own, and a comment would never reach the compiled model, where
-the reader and every other consumer of it look.
+the reader and every other consumer of it look. Earlier spellings are still read,
+so a file written to the first draft keeps its prose.
 [choosing-a-surface.md](choosing-a-surface.md) is
 revised when the reader ships, so that "notebook" there means this one.
 

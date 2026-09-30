@@ -546,21 +546,55 @@ describe("readNotebookCells on inline text", () => {
       });
    });
 
-   // Flip together with OLD_PROSE_SPELLINGS in notebook.ts: these expectations describe "dropped".
-   describe('the old prose spellings after the tag (`"` and `(text)`)', () => {
+   describe('the earlier prose spellings after the tag (`"` and `(text)`)', () => {
       it.each([
-         ['##" one line\n'],
-         ['##|"\nbody\n|##\n'],
-         ["##(text) one line\n"],
-         ["##|(text) name\nbody\n|##\n"],
-      ])("does not read %j as a markdown cell or list it as a note", (note) => {
+         ['##" one line\n', md(2, 2, "one line")],
+         ['##|"\nbody\n|##\n', md(2, 4, "body")],
+         ['##|" first\nbody\n|##\n', md(2, 4, "first\nbody")],
+         ['##|" Summary\nbody\n|##\n', md(2, 4, "Summary\nbody")],
+         ["##(text) one line\n", md(2, 2, "one line")],
+         ["##|(text) name\nbody\n|##\n", md(2, 4, "body")],
+         ["##|(text) two words\nbody\n|##\n", md(2, 4, "two words\nbody")],
+      ])("reads %j as a markdown cell, not a note", (note, cell) => {
+         const lines = note.split("\n").length - 1;
          const result = readText(`## artifact {}\n${note}run: a -> b\n`, 1);
-         expect(result.cells.map((cell) => cell.kind)).toEqual(["query"]);
+         expect(result.cells).toEqual([
+            cell,
+            query(2 + lines, 2 + lines, "run: a -> b", 0),
+         ] as NotebookCellSpan[]);
          expect(result.annotations).toEqual(["## artifact {}\n"]);
       });
 
-      it("reads a dashboard tile block written (text) as no block at all", () => {
-         const text = "##|(text) intro\nbody\n|##\n";
+      it('never reads a `"` note below the tag as the description', () => {
+         const result = readText('## artifact {}\n##" prose\nrun: a -> b\n', 1);
+         expect(result.annotations).toEqual(["## artifact {}\n"]);
+      });
+
+      it('keeps a `"` note above the tag as the description', () => {
+         const result = readText(
+            '##" description\n## artifact {}\nrun: a -> b\n',
+            1,
+         );
+         expect(result.annotations).toEqual([
+            '##" description\n',
+            "## artifact {}\n",
+         ]);
+         expect(result.cells.map((cell) => cell.kind)).toEqual(["query"]);
+      });
+
+      it("reads a dashboard tile block written (text) as a tile, named by its lone bare word", () => {
+         const text =
+            "##|(text) intro\nbody\n|##\n##|(text) two words\nb\n|##\n";
+         const parse = parseNotebookText(text);
+         if (isNotebookReaderError(parse)) throw new Error(parse.message);
+         expect(readMarkdownBlocks(parse, text)).toEqual([
+            { name: "intro", line: 1, endLine: 3 },
+            { name: undefined, line: 4, endLine: 6 },
+         ]);
+      });
+
+      it('never reads a ##|" block as a tile, whatever its opener says', () => {
+         const text = '##|" intro\nbody\n|##\n';
          const parse = parseNotebookText(text);
          if (isNotebookReaderError(parse)) throw new Error(parse.message);
          expect(readMarkdownBlocks(parse, text)).toEqual([]);

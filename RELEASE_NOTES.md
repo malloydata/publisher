@@ -52,9 +52,9 @@ Behavior changes to know about:
   a cell of its own, and adjacent lines merge. `#(markdown) text` or `#|(markdown)` … `|#` belongs
   to the statement below it (`run:`, `source:`, `query:`, `given:`, `type:`) and renders with that
   cell, as a header above a `run:`'s result and above its `#"` caption. It cannot sit above an
-  `import` or `export`, which take no annotations; use `##|(markdown)` there. The `##"` and `##|"`
-  notes below the tag and the `##|(text) name` tiles, the spellings `(markdown)` replaced, are
-  dropped, and each is reported as the error `notebook-old-prose-spelling`.
+  `import` or `export`, which take no annotations; use `##|(markdown)` there. Earlier
+  spellings are still read: `##"` and `##|"` notes below the tag are markdown cells and
+  `##|(text) name` is a text tile, with no lint finding.
 - **A notebook's description is the unnamed `"` notes above `## artifact`.** A dashboard's is the
   same, and when it has none above it still reads the ones below the tag, with a lint warning to
   move them above. The in-repo dashboards already put theirs above.

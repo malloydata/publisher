@@ -44,7 +44,7 @@ Cells come from the file's own notes and statements, in file order (imported fil
 | `import`, `source:`, `query:`, `given:`, `export { … }`, `type:` | one definition cell **per statement** |
 | a non-`"` `##` note after the tag (`## title=…`) | not a cell |
 
-The unnamed `"` notes above `## artifact` are the notebook's description. Definition cells render folded; only query cells run. The `##"` and `##|"` notes below the tag and the `##|(text) name` tiles, the spellings `(markdown)` replaced, are dropped, and the lint reports each as an error.
+The unnamed `"` notes above `## artifact` are the notebook's description. Definition cells render folded; only query cells run. Earlier spellings are still read: `##"` and `##|"` notes below the tag are markdown cells, like `(markdown)`. Write `(markdown)`.
 
 ## Compile errors and checking a notebook
 

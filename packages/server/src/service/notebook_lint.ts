@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { payloadOf, type LogMessage } from "@malloydata/malloy";
+import { type LogMessage } from "@malloydata/malloy";
 import { DASHBOARDS_DIR, isDashboardModelPath } from "./dashboard";
 import {
    attachedNowhereFix,
@@ -13,7 +13,6 @@ import {
    isRuleNode,
    MARKDOWN_ROUTE,
    NOTEBOOKS_DIR,
-   OLD_PROSE_SPELLINGS,
    parseMarkdownOpener,
    readMarkdownBlocks,
    routeOfNote,
@@ -45,18 +44,10 @@ export interface NotebookLintFinding {
 /** `text` is reserved for the dashboard text tile; it is not an unknown kind. */
 const KNOWN_KINDS = ["notebook", "dashboard", "text"];
 
-/** An old prose spelling is an error while notebooks drop it and a warning once they read it. */
-const OLD_SPELLING_SEVERITY =
-   OLD_PROSE_SPELLINGS === "dropped" ? "error" : "warn";
-
 const ARTIFACT_KIND_FIX = "Fix: write `## artifact { kind=notebook }`.";
 
 /** The first `max` characters of a line, for quoting it in a message. */
 const quoted = (line: string, max = 60) => line.trim().slice(0, max);
-
-/** What follows a note's route and its separator on one line. */
-const payloadText = (line: string) =>
-   payloadOf({ value: line } as Parameters<typeof payloadOf>[0]).trim();
 
 /** A name a text tile can take, made from a token that is not one. */
 const asTileName = (token: string) => {
@@ -179,25 +170,9 @@ export function lintNotebookText(
             const noteText = nodeText(note);
             const route = routeOfNote(noteText);
             const first = noteText.split("\n", 1)[0];
-            const isBlock = /^##\|/.test(noteText);
             // A block note ends at its closer, which is not part of the tag text.
             const bodyText = noteText.replace(/\r?\n\|##[^\n]*\n?$/, "");
             modelNotes.push(bodyText);
-            if (route === "text") {
-               add(
-                  lineOfNode(note),
-                  "notebook-old-prose-spelling",
-                  `\`${quoted(first)}\` is on the \`(text)\` route, ${OLD_PROSE_SPELLINGS === "dropped" ? "which Publisher does not read, so it is dropped" : "the spelling `(markdown)` replaced"}. Fix: ${oldSpellingFix("text", isBlock, first, artifact !== undefined)}.`,
-                  OLD_SPELLING_SEVERITY,
-               );
-            } else if (artifact && inNotebooks && route === '"') {
-               add(
-                  lineOfNode(note),
-                  "notebook-old-prose-spelling",
-                  `\`${quoted(first)}\` is a \`"\` note below the \`## artifact\` tag, ${OLD_PROSE_SPELLINGS === "dropped" ? "which a notebook drops, so its prose is not shown" : "the spelling `(markdown)` replaced"}. Fix: ${oldSpellingFix('"', isBlock, first, true)}.`,
-                  OLD_SPELLING_SEVERITY,
-               );
-            }
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
             docNotes.push({ line: lineOfNode(note), text: bodyText });
@@ -208,17 +183,16 @@ export function lintNotebookText(
                   startIndex: note.start.startIndex,
                };
             } else if (!artifact && inNotebooks) {
-               if (route === MARKDOWN_ROUTE) {
+               if (route === MARKDOWN_ROUTE || route === "text") {
                   aboveArtifact.push({
                      line: lineOfNode(note),
                      code: "notebook-markdown-above-artifact",
                      what: quoted(first),
                   });
-                  // Flags and the `"` route (a description) may sit in the header; `(text)` is reported on its own.
+                  // Flags and the `"` route (a description) may sit in the header.
                } else if (
                   !/^##!/.test(noteText) &&
-                  !/^#{1,2}\|?"/.test(noteText) &&
-                  route !== "text"
+                  !/^#{1,2}\|?"/.test(noteText)
                ) {
                   aboveArtifact.push({
                      line: lineOfNode(note),
@@ -407,43 +381,6 @@ export function lintNotebookText(
       return notes;
    }
 
-   /** The fix for an old prose spelling, worded so that applying it literally lints clean where the note sits. */
-   function oldSpellingFix(
-      route: "text" | '"',
-      isBlock: boolean,
-      first: string,
-      below: boolean,
-   ): string {
-      const text = isBlock ? payloadText(first) : "";
-      const moveText = (opener: string) =>
-         `write \`${opener}\` and move \`${text}\` onto the line below it`;
-      const bare = text === "" || TEXT_BLOCK_NAME.test(text);
-      if (!inNotebooks) {
-         if (isBlock)
-            return bare
-               ? tileEntryFix(text || "name")
-               : tileBlockFix("name", text);
-         return below
-            ? `${tileEntryFix("name")} with the text as its body, or move it above the \`## artifact\` tag and write \`##"\``
-            : 'use `##"`';
-      }
-      if (!isBlock) {
-         if (route === '"') return 'use `##(markdown)` in place of `##"`';
-         return below
-            ? "use `##(markdown)`"
-            : 'use `##"`, or move it below the `## artifact` tag and write `##(markdown)`';
-      }
-      if (route === '"')
-         return text === ""
-            ? 'use `##|(markdown)` in place of `##|"`'
-            : moveText("##|(markdown)");
-      if (!below) {
-         const description = text === "" ? 'use `##|"`' : moveText('##|"');
-         return `${description}, or move it below the \`## artifact\` tag and write \`##|(markdown)\``;
-      }
-      return bare ? "use `##|(markdown)`" : moveText("##|(markdown)");
-   }
-
    function describeNext(next: ParseNode | undefined): string {
       if (!next) return "the end of the file";
       if (!isRuleNode(next)) {
@@ -534,11 +471,14 @@ export function lintNotebookText(
             );
             continue;
          }
-         if (!inNotebooks && isMarkdownNote(line)) {
+         if (
+            !inNotebooks &&
+            (isMarkdownNote(line) || routeOfNote(line) === "text")
+         ) {
             add(
                token.line,
                "notebook-markdown-block-unnamed",
-               `\`${quoted(line)}\` is a floating \`(markdown)\` line, which a dashboard does not show, since its text tiles are named blocks listed in \`tiles=[…]\` (text tiles do not render yet). Fix: ${tileEntryFix("name")}, or delete the line.`,
+               `\`${quoted(line)}\` is a floating \`(${routeOfNote(line)})\` line, which a dashboard does not show, since its text tiles are named blocks listed in \`tiles=[…]\` (text tiles do not render yet). Fix: ${tileEntryFix("name")}, or delete the line.`,
             );
             continue;
          }

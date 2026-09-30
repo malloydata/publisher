@@ -3235,15 +3235,13 @@ components:
             The same family carries findings on files under `notebooks/` and
             `dashboards/`, each naming its line and the fix; they are computed
             at discovery and are also returned by `/compile` at file and
-            package scope. Nine codes are `error` and fail `/compile`:
+            package scope. Eight codes are `error` and fail `/compile`:
             `notebook-statement-above-artifact` and `notebook-tag-above-artifact`
             (a statement or a tag above a served notebook's `## artifact`),
             `notebook-markdown-above-artifact` (a `(markdown)` annotation above
             it), `notebook-columns-conflict` (a tiled dashboard's
             `dashboard_columns` disagrees with `dashboard { columns }`),
-            `notebook-old-prose-spelling` (a `"` note below a notebook's tag or
-            a `(text)` note, the spellings `(markdown)` replaced, which are
-            dropped), `notebook-markdown-opener-text` (more than a
+            `notebook-markdown-opener-text` (more than a
             name after `(markdown)` on a block's opener),
             `notebook-markdown-attached-nowhere` (a `#(markdown)` annotation
             with no statement to take it), `notebook-artifact-unparsed` (an
