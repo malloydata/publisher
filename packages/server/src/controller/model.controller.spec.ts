@@ -120,7 +120,7 @@ describe("ModelController.getModel", () => {
       });
 
       const result = await controller.getModel("env", "faa", "orders.malloy", {
-         includeOffSurface: true,
+         includeHiddenFilesAndSources: true,
       });
 
       // The compiled body is the model's own, curated as ever; only the 404
@@ -130,7 +130,7 @@ describe("ModelController.getModel", () => {
       expect(showsFileText.called).toBe(false);
    });
 
-   it("keeps both checks when includeOffSurface is false", async () => {
+   it("keeps both checks when includeHiddenFilesAndSources is false", async () => {
       const refusal = new NotQueryableError(
          'No queryable model "orders.malloy".',
       );
@@ -144,7 +144,7 @@ describe("ModelController.getModel", () => {
 
       await expect(
          controller.getModel("env", "faa", "orders.malloy", {
-            includeOffSurface: false,
+            includeHiddenFilesAndSources: false,
          }),
       ).rejects.toBe(refusal);
    });

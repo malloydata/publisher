@@ -1572,7 +1572,7 @@ paths:
         compilation errors.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
-        files on that surface are listed, unless `includeOffSurface` is true. With it, every
+        files on that surface are listed, unless `includeHiddenFilesAndSources` is true. With it, every
         model file is listed and `onSurface` marks the ones on the surface. Dashboard files
         are listed by the dashboards route either way. Served notebooks (`.malloy` files under
         `notebooks/` that carry an `## artifact` note) are not models here, with or without a
@@ -1596,7 +1596,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
-        - $ref: "#/components/parameters/includeOffSurface"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: A list of models in the package
@@ -1630,7 +1630,7 @@ paths:
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
         that surface answers 404 with the same message a query to it gets, unless
-        `includeOffSurface` is true. With it, the file is returned with its `sourceText`, whatever
+        `includeHiddenFilesAndSources` is true. With it, the file is returned with its `sourceText`, whatever
         sources the text names. Dashboard files and served notebooks (`notebooks/*.malloy` with
         an `## artifact` note) are always returned. A package with no surface, or with
         `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
@@ -1664,7 +1664,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
-        - $ref: "#/components/parameters/includeOffSurface"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: Compiled Malloy model
@@ -1819,7 +1819,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
-        - $ref: "#/components/parameters/includeOffSurface"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       requestBody:
         required: true
         content:
@@ -3821,10 +3821,10 @@ components:
           type: boolean
           description: |
             Whether the file is on the package's surface: the files this route lists without
-            `includeOffSurface`. True for every file of a package with no surface. It does not
+            `includeHiddenFilesAndSources`. True for every file of a package with no surface. It does not
             say whether a query can reach the file, which `queryableSources: "all"` also
             decides. False only on a file listed because the
-            request set `includeOffSurface`.
+            request set `includeHiddenFilesAndSources`.
         error:
           type: string
           description: Error message if the model failed to compile or load
@@ -7324,8 +7324,8 @@ components:
             gate rejects anyway.
 
   parameters:
-    includeOffSurface:
-      name: includeOffSurface
+    includeHiddenFilesAndSources:
+      name: includeHiddenFilesAndSources
       in: query
       required: false
       description: |
