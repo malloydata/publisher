@@ -379,8 +379,8 @@ describe("service/package", () => {
                   environmentName: "testProject",
                   packageName: "testPackage",
                   path: "model1.malloy",
-                  // No surface in this package, so every model is on it.
-                  onSurface: true,
+                  // No surface in this package, so it hides no model.
+                  isHidden: false,
                   error: undefined,
                },
             ]);

@@ -31,6 +31,13 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Model listings mark a hidden file with `isHidden`, not `onSurface`
+
+0.8.4 added `onSurface` to each entry of `GET …/models`. It is renamed to `isHidden`, with the
+meaning flipped to match `includeHiddenFilesAndSources`: `true` for a file the listing includes
+only because the request set that option. Every other entry is `false`, and a server that sends no
+field at all reads the same way. A client reading `onSurface` should read `isHidden` instead.
+
 ## [Unreleased] — Publisher serves `.malloy` notebooks
 
 A `.malloy` file directly under a package's top-level `notebooks/` whose model-level notes include
