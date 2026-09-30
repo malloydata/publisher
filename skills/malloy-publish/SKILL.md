@@ -19,7 +19,7 @@ Once the package is in shape, self-hosters publish it through their own host: co
 
 ## Prerequisites
 
-- Malloy model (`.malloy`) and/or notebook (`.malloynb`) files ready
+- Malloy model (`.malloy`) and/or notebook (`notebooks/<slug>.malloy`) files ready
 - The Publisher MCP tools configured (used by the modeling and analysis skills, not by a publish step)
 
 ## Connections: a flat-file package needs none
@@ -106,7 +106,7 @@ With a valid `publisher.json` in place, confirm the package is in the flat, publ
 
 ## Package Structure
 
-All `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet).
+All model `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet). Notebooks are the exception: they live under `notebooks/`.
 
 ```
 <package-name>/
@@ -116,12 +116,13 @@ All `.malloy` files must be in the package root (flat layout: the publisher does
   user_order_facts.malloy       # Computed source
   order_analysis.malloy         # Source file (joins base sources)
   customer_health.malloy        # Source file
-  monthly_report.malloynb       # Notebook (optional)
+  notebooks/
+    monthly_report.malloy       # Notebook (optional)
 ```
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- `.malloynb` files - Notebooks for exploration/documentation (see `skill:malloy-notebooks`)
+- `notebooks/*.malloy` files with an `## artifact { kind=notebook }` tag - Notebooks for exploration/documentation (see `skill:malloy-notebooks`). An existing `.malloynb` is still served; never write a new one.
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management
