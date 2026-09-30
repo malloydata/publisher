@@ -31,6 +31,12 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — The generated SDK client is built by OpenAPI Generator 7.25.0
+
+`@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.
+
+Each request now sends its own `Accept` header (`application/json` for every operation the SDK calls) in place of axios's default `application/json, text/plain, */*`. Publisher does not negotiate on `Accept`, so responses are unchanged.
+
 ## [Unreleased] — Model listings mark a hidden file with `isHidden`, not `onSurface`
 
 0.8.4 added `onSurface` to each entry of `GET …/models`. It is renamed to `isHidden`, with the

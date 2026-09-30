@@ -12,7 +12,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -t ../sdk/openapi-templates -o src/api/generated --additional-properties=supportsES6=true,withSeparateModelsAndApi=true,apiPackage=api,modelPackage=models,stringEnums=true",
+    "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/api/generated --additional-properties=supportsES6=true,withSeparateModelsAndApi=true,apiPackage=api,modelPackage=models,stringEnums=true",
     "prebuild": "bun run generate-api-types",
     "build": "bun build src/index.ts --outdir dist --target node --format esm && chmod +x dist/index.js",
     "dev": "bun run src/index.ts --",
