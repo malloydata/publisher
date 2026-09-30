@@ -21,7 +21,10 @@ import {
 import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
-import { getPackageLoadPool } from "../package_load/package_load_pool";
+import {
+   getPackageLoadPool,
+   type LoadPackageOutcome,
+} from "../package_load/package_load_pool";
 import {
    API_PREFIX,
    INDEX_MODEL_NAME,
@@ -129,7 +132,7 @@ type ApiNotebook = components["schemas"]["Notebook"];
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 export type ApiPackage = components["schemas"]["Package"];
-type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+export type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -180,6 +183,47 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
       return "pool_unavailable";
    }
    return "error";
+}
+
+/**
+ * The package's API metadata as a load reads it from the worker's outcome.
+ * Shared by the real load and by {@link Package.dryRunFindings}, so a dry run
+ * resolves `explores` and `queryableSources` exactly as the load would.
+ */
+function packageConfigFromOutcome(
+   environmentName: string,
+   packageName: string,
+   outcome: LoadPackageOutcome,
+): ApiPackage {
+   return {
+      name: outcome.packageMetadata.name,
+      description: outcome.packageMetadata.description,
+      resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
+      explores: outcome.packageMetadata.explores,
+      queryableSources: outcome.packageMetadata.queryableSources,
+      manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
+      // Always surface a non-null `materialization` object once the package
+      // has loaded (schedule null when the manifest declares no policy). The
+      // control plane treats object-present as the authoritative "this is
+      // what the manifest says" signal and object-absent as "metadata not
+      // available this request" — so it must never be dropped to null on a
+      // successfully loaded package, or the CP can misread a transient
+      // absence as a schedule removal. See `parsePackageMaterialization`.
+      materialization: outcome.packageMetadata.materialization ?? {
+         schedule: null,
+         freshness: null,
+      },
+      // The canonical home for the package's declared tags, mirrored from the
+      // block above — which is where the wire originally carried them. Both
+      // are populated for as long as the deprecated home is supported, so a
+      // client migrates when it chooses rather than when this ships.
+      queryMetadata:
+         outcome.packageMetadata.materialization?.queryMetadata ?? null,
+      // Package-level persist scope mode, applied uniformly to every persist
+      // source/index. Defaults to "package" (cross-version reuse) when the
+      // manifest omits it.
+      scope: outcome.packageMetadata.scope ?? "package",
+   };
 }
 
 export class Package {
@@ -818,35 +862,11 @@ export class Package {
       // Override the manifest-derived resource URI — the worker only
       // returns name/description from publisher.json, but the rest of
       // the API surface expects a `resource` field too.
-      const packageConfig: ApiPackage = {
-         name: outcome.packageMetadata.name,
-         description: outcome.packageMetadata.description,
-         resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
-         explores: outcome.packageMetadata.explores,
-         queryableSources: outcome.packageMetadata.queryableSources,
-         manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
-         // Always surface a non-null `materialization` object once the package
-         // has loaded (schedule null when the manifest declares no policy). The
-         // control plane treats object-present as the authoritative "this is
-         // what the manifest says" signal and object-absent as "metadata not
-         // available this request" — so it must never be dropped to null on a
-         // successfully loaded package, or the CP can misread a transient
-         // absence as a schedule removal. See `parsePackageMaterialization`.
-         materialization: outcome.packageMetadata.materialization ?? {
-            schedule: null,
-            freshness: null,
-         },
-         // The canonical home for the package's declared tags, mirrored from the
-         // block above — which is where the wire originally carried them. Both
-         // are populated for as long as the deprecated home is supported, so a
-         // client migrates when it chooses rather than when this ships.
-         queryMetadata:
-            outcome.packageMetadata.materialization?.queryMetadata ?? null,
-         // Package-level persist scope mode, applied uniformly to every persist
-         // source/index. Defaults to "package" (cross-version reuse) when the
-         // manifest omits it.
-         scope: outcome.packageMetadata.scope ?? "package",
-      };
+      const packageConfig = packageConfigFromOutcome(
+         environmentName,
+         packageName,
+         outcome,
+      );
 
       // Build live `Model`s from worker output. Any per-model compile
       // failure aborts the load — matches the historical behaviour of
@@ -2845,6 +2865,81 @@ export class Package {
       } catch {
          return false;
       }
+   }
+
+   /**
+    * The findings a package would carry if this compile outcome were loaded,
+    * without loading it: the renderer-tag warnings and the dashboard lint, from
+    * the same code a real load runs.
+    *
+    * Builds a scratch Package that nothing holds a reference to, so it is never
+    * served, and runs the load's own discovery over it. That is why curation
+    * findings (a dashboard held back by `explores`, a tile reading a source the
+    * surface refuses) are reported here at all: they depend on Package state,
+    * and this is the one place that state is derived. A failed model goes in as
+    * a placeholder, as it does on a reload, so a dashboard that does not compile
+    * still counts as a dashboard that exists.
+    *
+    * Never throws on a finding. A scratch package that cannot be built says
+    * nothing rather than costing the caller the compiler diagnostics.
+    */
+   static async dryRunFindings(
+      environmentName: string,
+      packageName: string,
+      packagePath: string,
+      malloyConfig: MalloyConfig,
+      outcome: LoadPackageOutcome,
+   ): Promise<ApiPackageWarning[]> {
+      const models = new Map<string, Model>();
+      const renderTagWarnings: ApiPackageWarning[] = [];
+      for (const sm of outcome.models) {
+         if (sm.compilationError) {
+            models.set(
+               sm.modelPath,
+               Model.fromCompilationError(
+                  packageName,
+                  sm.modelPath,
+                  sm.modelType,
+                  Model.deserializeCompilationError(sm.compilationError),
+               ),
+            );
+            continue;
+         }
+         const model = Model.fromSerialized(
+            packageName,
+            packagePath,
+            malloyConfig,
+            sm,
+         );
+         models.set(sm.modelPath, model);
+         try {
+            for (const w of await model.validateRenderTags()) {
+               renderTagWarnings.push({
+                  model: sm.modelPath,
+                  subject: w.subject,
+                  message: w.message,
+                  severity: w.severity,
+               });
+            }
+         } catch (err) {
+            logger.warn("Render-tag validation failed during compile", {
+               packageName,
+               modelPath: sm.modelPath,
+               error: errMessage(err),
+            });
+         }
+      }
+      const scratch = new Package(
+         environmentName,
+         packageName,
+         packagePath,
+         packageConfigFromOutcome(environmentName, packageName, outcome),
+         [],
+         models,
+         malloyConfig,
+      );
+      await scratch.discoverDashboards();
+      return [...renderTagWarnings, ...scratch.dashboardWarnings];
    }
 
    /**
