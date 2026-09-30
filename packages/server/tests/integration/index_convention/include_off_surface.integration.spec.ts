@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `includeOffSurface` on the model routes: show the files a root `index.malloy`
- * hides, without making them queryable.
+ * `includeOffSurface` on the model routes: list, show and run the files a root
+ * `index.malloy` hides.
  *
  * A package's authors need to read every file, including the ones its surface
  * leaves out. Publisher does not decide who is an author, so it takes a
  * request option and leaves that decision to the gateway in front of it. This
- * pins what the option changes (the listing, the 404, the withheld text) and
- * what it must not change (a query to a hidden file still answers 404).
+ * pins what the option changes (the listing, the 404, the withheld text, a query
+ * to a hidden file) and that a request without it is answered as before.
  *
  * Over HTTP against the real app, because the option is read at the route.
  */
@@ -120,15 +120,19 @@ describe("includeOffSurface on the model routes", () => {
       );
    });
 
-   it("still refuses a query to the hidden file", async () => {
-      const res = await fetch(
-         `${pkgApi()}/models/internal.malloy/query?includeOffSurface=true`,
-         {
+   it("runs a query to the hidden file only when asked", async () => {
+      const query = async (q: string) =>
+         fetch(`${pkgApi()}/models/internal.malloy/query${q}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ query: "run: internal_scratch -> v" }),
-         },
-      );
-      expect(res.status).toBe(404);
+         });
+      expect((await query("")).status).toBe(404);
+      const res = await query("?includeOffSurface=true");
+      expect(res.status).toBe(200);
+      const rows = JSON.parse(((await res.json()) as { result: string }).result)
+         .data.array_value;
+      expect(rows.length).toBe(1);
+      expect((await query("?includeOffSurface=maybe")).status).toBe(400);
    });
 });

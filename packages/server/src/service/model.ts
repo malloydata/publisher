@@ -6607,6 +6607,15 @@ export class Model {
        * before forwarding it.
        */
       bypassAuthorize = false,
+      /**
+       * Lift the package's surface for this one request, as `queryableSources:
+       * "all"` does for every request: a file off the surface, and a hidden
+       * source, can be run. For the people who may edit the package, so they can
+       * try the files they author. Publisher does not decide who that is; the
+       * gateway in front of it does. `#(authorize)` and `#(access_filter)` still
+       * apply: this lifts curation, never the lock.
+       */
+      includeOffSurface = false,
    ): Promise<{
       result: Malloy.Result;
       /**
@@ -6732,11 +6741,9 @@ export class Model {
       // non-existent source (see notQueryable).
       // "deferred" means the early gate couldn't pin the target; the compiled
       // backstop below settles it against the source the query actually runs.
-      const boundary = this.assertQueryBoundaryEarly(
-         sourceName,
-         queryName,
-         query,
-      );
+      const boundary = includeOffSurface
+         ? "cleared"
+         : this.assertQueryBoundaryEarly(sourceName, queryName, query);
       // The caller's own text, when it wrote any; its joins are checked as if
       // each were an extra run target. Text carrying an annotation is left to
       // the forgery rejecter below, whose refusal is the specific one.

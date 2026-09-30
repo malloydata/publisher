@@ -1949,6 +1949,12 @@ app.post(
          setVersionIdError(res);
          return;
       }
+      const includeOffSurface = booleanParamOr400(
+         req,
+         res,
+         "includeOffSurface",
+      );
+      if (includeOffSurface === undefined) return;
 
       try {
          // Express stores wildcard matches in params['0']
@@ -1976,6 +1982,7 @@ app.post(
             // deployment must strip it at its edge. See
             // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
             readBypassAuthorize(req),
+            includeOffSurface,
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,

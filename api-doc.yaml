@@ -1629,7 +1629,7 @@ paths:
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
         that surface answers 404 with the same message a query to it gets, unless
         `includeOffSurface` is true. With it, the file is returned with its `sourceText`, whatever
-        sources the text names; a query to that file still answers 404. Dashboard files are
+        sources the text names. Dashboard files are
         always returned. A package with no surface, or with `queryableSources: "all"`, returns
         every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
@@ -1817,6 +1817,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/includeOffSurface"
       requestBody:
         required: true
         content:
@@ -7203,13 +7204,16 @@ components:
       required: false
       description: |
         When true, a package with a surface (a root `index.malloy`, or a legacy
-        `explores`) also returns the files off that surface. It changes what is
-        shown, never what can be queried: the query, notebook and dashboard
-        routes stay held to the surface.
+        `explores`) is served to this request as if it had none: the models
+        list includes the files off the surface, the model GET returns them with
+        their text, and the query route runs them and their hidden sources, as
+        `queryableSources: "all"` does for every request. `#(authorize)` and
+        `#(access_filter)` still apply: it lifts curation, never the lock.
+        Notebooks, dashboards and MCP tools stay held to the surface.
 
         Like every route on this server, it is unauthenticated. A deployment
         that authenticates in front of Publisher decides who may send it, and
-        should pass it only for callers allowed to read a package's hidden
+        should pass it only for callers allowed to work with a package's hidden
         files, such as its authors.
 
         Only `true` and `false` are accepted. Any other value is refused with

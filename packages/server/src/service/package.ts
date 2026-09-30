@@ -2686,7 +2686,8 @@ export class Package {
       // unaffected (see listNotebooks) — they are always public.
       //
       // `includeOffSurface` lists the hidden files too, each marked
-      // `onSurface: false`. It shows them; it does not make them queryable.
+      // `onSurface: false`. Running them takes the same option on the query
+      // route (Model.getQueryResults).
       const exploreSet = this.exploreSet();
       const onSurface = (modelPath: string) =>
          !exploreSet || exploreSet.has(modelPath);

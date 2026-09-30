@@ -35,7 +35,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
-import { NotQueryableError } from "../errors";
+import { AccessDeniedError, NotQueryableError } from "../errors";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -269,7 +269,7 @@ export { customers }`,
       }
    });
 
-   it("lists the files off the surface only when asked, marked onSurface: false, and keeps them unqueryable", async () => {
+   it("lists the files off the surface only when asked, marked onSurface: false", async () => {
       writeManifest(); // the root index.malloy is the surface
       writeLayeredModels();
 
@@ -286,7 +286,8 @@ export { customers }`,
             byPath(await pkg.listModels({ includeOffSurface: true })),
          ).toEqual({ "base.malloy": false, "index.malloy": true });
 
-         // Listing it does not open it: the query route still refuses it.
+         // Listing it does not open it: without the option on the query too,
+         // the query route still refuses it.
          await expect(
             pkg
                .getModel("base.malloy")!
@@ -296,6 +297,65 @@ export { customers }`,
                   "run: base_source -> { select: * }",
                ),
          ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("runs a hidden file and a hidden source with includeOffSurface, and keeps the #(authorize) lock", async () => {
+      writeManifest(); // the root index.malloy is the surface
+      writeLayeredModels();
+      fs.writeFileSync(
+         path.join(tempDir, "locked.malloy"),
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id")`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const run = (
+            file: string,
+            query: string,
+            includeOffSurface: boolean,
+         ) =>
+            pkg
+               .getModel(file)!
+               .getQueryResults(
+                  undefined,
+                  undefined,
+                  query,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  "full",
+                  false,
+                  includeOffSurface,
+               );
+
+         // A hidden file, and a source index.malloy doesn't export, both run.
+         const hiddenFile = await run(
+            "base.malloy",
+            "run: base_source -> { select: * }",
+            true,
+         );
+         expect(hiddenFile.result.data).toBeDefined();
+         const hiddenSource = await run(
+            "index.malloy",
+            "run: helper -> { select: * }",
+            true,
+         );
+         expect(hiddenSource.result.data).toBeDefined();
+         // Without the option, the same hidden source is refused.
+         await expect(
+            run("index.malloy", "run: helper -> { select: * }", false),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+         // The option lifts curation, never the lock.
+         await expect(
+            run("locked.malloy", "run: locked -> { select: * }", true),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }
