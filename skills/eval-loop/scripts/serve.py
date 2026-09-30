@@ -562,8 +562,20 @@ def main(argv: list[str] | None = None) -> int:
                     return 3
             return 0
         time.sleep(1)
-    print(f"no answer on port {a.port} after {a.wait}s; server still running as "
-          f"pid {p.pid}, log {root / 'publisher.log'}")
+    # Stopped, not left running. A server still starting may or may not have
+    # read the new config yet, and restoring the file under a live one would
+    # leave a store nobody can name. Stopped with the old file back, the next
+    # start sees the change and passes --init again.
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+        p.wait(timeout=15)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        pass
+    pidfile.unlink(missing_ok=True)
+    if changed:
+        restore_config(root, previous)
+    print(f"no answer on port {a.port} after {a.wait}s, so the server was "
+          f"stopped; see {root / 'publisher.log'}. Fix: pass a longer --wait")
     return 1
 
 

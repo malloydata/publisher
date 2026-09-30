@@ -62,6 +62,13 @@ def check_cases(cfg: config.Config) -> tuple[list[str], list[str]]:
 
 def check_model(cfg: config.Config) -> list[str]:
     problems = []
+    # eval.toml wins over set.json, so a disagreement runs a package the set
+    # does not say it measures, with nothing to show a choice was made.
+    here, there = cfg.data.get("model", {}).get("package"), cfg.set_meta.get("targetPackage")
+    if here and there and here != there:
+        problems.append(f"{cfg.file_hint} [model] package is {here!r} but "
+                        f"set.json targetPackage is {there!r}; eval.toml wins, "
+                        f"so runs would measure {here!r}. Fix: make them agree")
     for key in ("environment", "package"):
         if cfg.get("model", key) is None:
             problems.append(f"no [model] {key}. Fix: add `{key} = \"<value>\"` "
@@ -165,6 +172,11 @@ def report(set_dir: pathlib.Path) -> tuple[list[str], list[str]]:
     p, n = check_ports(cfg)
     problems += p
     notes += n
+    old = cfg.set_dir / "runs"
+    if old.is_dir() and any(old.iterdir()):
+        notes.append(f"{old} holds runs from before runs moved to the workdir; "
+                     f"nothing reads them now. Move them to "
+                     f"{cfg.workdir() / 'runs'} to compare against them")
     if cfg.publisher_dir() is None:
         problems.append("no built Publisher in this clone. Fix: `bun install "
                         "&& bun run build`, or set [paths] publisher_dir")

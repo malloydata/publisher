@@ -84,8 +84,33 @@ class Paths(unittest.TestCase):
 
     def test_the_workdir_is_outside_the_repository_by_default(self):
         cfg = config.load(make_set({"set.json": json.dumps({"name": "tour"})}))
-        self.assertEqual(cfg.workdir(),
-                         pathlib.Path.home() / ".malloy-eval" / "tour")
+        self.assertEqual(cfg.workdir().parent, pathlib.Path.home() / ".malloy-eval")
+        self.assertRegex(cfg.workdir().name, r"^tour-[0-9a-f]{8}$")
+
+    def test_two_sets_with_one_name_get_two_workdirs(self):
+        meta = {"set.json": json.dumps({"name": "tour"})}
+        a, b = config.load(make_set(meta)), config.load(make_set(meta))
+        self.assertNotEqual(a.workdir(), b.workdir())
+        self.assertEqual(a.workdir(), config.load(a.set_dir).workdir())
+
+
+class Within(unittest.TestCase):
+    def test_inside_and_at_are_within_and_a_sibling_is_not(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="within-test-"))
+        (root / "pkg" / "t").mkdir(parents=True)
+        (root / "other").mkdir()
+        self.assertTrue(config.within(root / "pkg" / "t", root / "pkg"))
+        self.assertTrue(config.within(root / "pkg", root / "pkg"))
+        self.assertTrue(config.within(root / "pkg" / "not-yet", root / "pkg"))
+        self.assertFalse(config.within(root / "other", root / "pkg"))
+
+    def test_a_case_difference_does_not_hide_containment(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="within-test-"))
+        (root / "pkg" / "t").mkdir(parents=True)
+        if not (root / "PKG").exists():
+            self.skipTest("this filesystem is case-sensitive")
+        self.assertTrue(config.within(root / "pkg" / "t", root / "PKG"))
+        self.assertTrue(config.within(root / "PKG" / "t", root / "pkg"))
 
 
 class Formats(unittest.TestCase):

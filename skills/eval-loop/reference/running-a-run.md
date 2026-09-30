@@ -29,10 +29,11 @@ mcp_port    = 4882
 
 No script defaults to any particular set's environment or package. A missing
 one stops with the key to add. Runs, built packages and server roots go under
-`~/.malloy-eval/<set>/` unless `[paths] workdir` says otherwise, never inside
+`~/.malloy-eval/<set>-<hash>/` unless `[paths] workdir` says otherwise, never inside
 the repository: a run holds a `model.malloy` snapshot and a built package is a
 Malloy package, and nested in the package under test either can put that
-package into `loadErrors`. Each command below is `python3 skills/eval-loop/scripts/eval.py`,
+package into `loadErrors`. The hash is of the set's path, so two sets with one
+name never share a `runs/`. Each command below is `python3 skills/eval-loop/scripts/eval.py`,
 and any flag the underlying script takes passes through.
 
 ```bash

@@ -85,6 +85,23 @@ class Report(unittest.TestCase):
         problems, _ = self.report(d)
         self.assertEqual(problems, [])
 
+    def test_eval_toml_and_set_json_naming_two_packages_is_a_problem(self):
+        d = a_set(MODEL, [CASE])
+        meta = json.loads((d / "set.json").read_text())
+        (d / "set.json").write_text(json.dumps({**meta, "targetPackage": "q"}))
+        problems, _ = self.report(d)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("[model] package is 'p' but set.json targetPackage is 'q'",
+                      problems[0])
+
+    def test_runs_left_in_the_set_directory_are_noted(self):
+        d = a_set(MODEL, [CASE])
+        (d / "runs" / "baseline-01").mkdir(parents=True)
+        problems, notes = self.report(d)
+        self.assertEqual(problems, [])
+        self.assertTrue(any("from before runs moved to the workdir" in n
+                            for n in notes))
+
     def test_a_case_the_importer_refuses_is_a_problem(self):
         bad = {**CASE, "golden": {**CASE["golden"], "value": 1}}
         problems, _ = self.report(a_set(MODEL, [bad]))

@@ -41,6 +41,7 @@ from here. A bypass written into a file is on for every run that follows.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import sys
@@ -73,13 +74,50 @@ BUILTIN: dict[tuple[str, str], Any] = {
 
 
 def within(path: pathlib.Path, directory: pathlib.Path) -> bool:
-    """`path` is `directory` itself or anywhere under it, both resolved first."""
+    """`path` is `directory` itself or anywhere under it, both resolved first.
+
+    Compared by file identity where both exist, not only by spelling. macOS
+    volumes are case-insensitive by default and `resolve()` keeps the case it
+    was given, so `../PKG` and `../pkg/t` named one directory and compared as
+    unrelated, which let the model server serve a truth package. `normcase`
+    does not help: it only folds case on Windows.
+    """
     path, directory = pathlib.Path(path).resolve(), pathlib.Path(directory).resolve()
-    return path == directory or directory in path.parents
+    if path == directory or directory in path.parents:
+        return True
+    try:
+        target = directory.stat()
+    except OSError:
+        return False
+    for p in (path, *path.parents):
+        try:
+            st = p.stat()
+        except OSError:
+            continue    # not created yet, e.g. an --out about to be written
+        if (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino):
+            return True
+    return False
+
+
+def enclosing_package(out: pathlib.Path) -> pathlib.Path | None:
+    """The Malloy package `out` would sit inside, if any.
+
+    A run directory holds a `model.malloy` snapshot and a built report is a
+    Malloy package. Nested in another package, either one puts that package
+    into loadErrors, and it serves nothing. That happened to `storefront` once.
+    """
+    for parent in pathlib.Path(out).resolve().parents:
+        if (parent / "publisher.json").exists():
+            return parent
+    return None
 
 
 class ConfigError(SystemExit):
-    """A config that cannot be used. A SystemExit so a CLI prints just the text."""
+    """A config that cannot be used. A SystemExit so a CLI prints just the text.
+
+    Uncaught, it exits 1, because Python prints a SystemExit's text only when
+    its code is not an int. `eval.py` catches it and exits 3.
+    """
 
 
 class Config:
@@ -163,9 +201,18 @@ class Config:
         A run's directory holds a `model.malloy` snapshot and a built report
         package is a Malloy package; nested inside the package under test,
         either can put that package into `loadErrors`.
+
+        The default carries a hash of the set's path as well as its name. Two
+        sets called `tour` in different projects otherwise shared one `runs/`,
+        where run labels number from their siblings, so the second set's first
+        run came out as `-03` and a comparison of `-02` against `-03` compared
+        two different sets as if they were two arms.
         """
-        return (self.get("paths", "workdir")
-                or pathlib.Path.home() / ".malloy-eval" / self.set_name)
+        given = self.get("paths", "workdir")
+        if given:
+            return given
+        tag = hashlib.sha256(str(self.set_dir).encode()).hexdigest()[:8]
+        return pathlib.Path.home() / ".malloy-eval" / f"{self.set_name}-{tag}"
 
     def server_root(self, role: str) -> pathlib.Path:
         """The SERVER_ROOT `serve.py --role <role>` uses, so later steps find it."""

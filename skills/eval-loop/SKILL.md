@@ -309,7 +309,7 @@ the run measure something other than what it names:
 
    **Look for a set and for prior runs before you author either.** A minute of
    `find . -name cases.jsonl`, a glance at the set's workdir (`<workdir>/runs/`,
-   `~/.malloy-eval/<set>/runs/` unless `eval.toml` moves it) and at your host's
+   `~/.malloy-eval/<set>-<hash>/runs/` unless `eval.toml` moves it) and at your host's
    own transcripts for this repo. Two sessions fourteen minutes apart built the
    same 29-case answer key from scratch, because the first had committed
    nothing before it was deleted and the second had no way to know it existed.
@@ -334,7 +334,7 @@ the run measure something other than what it names:
    **Runs go in the set's workdir, never inside the model package.** A run
    directory holds a `model.malloy` snapshot, and a built report is a Malloy
    package; inside the package under test, either puts that package into
-   `loadErrors`. The default workdir, `~/.malloy-eval/<set>/`, is outside git,
+   `loadErrors`. The default workdir, `~/.malloy-eval/<set>-<hash>/`, is outside git,
    which suits a measure-only run. A run that will improve and checkpoint needs
    its ledger kept: set `[paths] workdir` in `eval.toml` to a directory in the
    model's repository but outside the package, and gitignore its `servers/`

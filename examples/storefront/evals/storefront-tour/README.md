@@ -129,8 +129,8 @@ and a score that cannot separate those from wrong answers is not worth much.
 python3 $EVAL run --set $SET --label baseline-01 --max-turns 40 --parallel 4
 ```
 
-The run goes to `~/.malloy-eval/storefront-tour/runs/baseline-01`, outside
-this repository. It holds the transcripts, the verdicts and the pins, and the
+The run goes to `~/.malloy-eval/storefront-tour-<hash>/runs/baseline-01`,
+outside this repository. The hash is of the set's path. It holds the transcripts, the verdicts and the pins, and the
 path is printed at the start.
 
 **4. Diagnose what failed.** About $0.45 and three minutes per failed case: an

@@ -4,8 +4,8 @@
 
 `examples/storefront/evals/storefront-tour` is a finished set. This is the path
 to one of your own: which files a set needs, what writes each one, and the
-order they go in. Every command is `skills/eval-loop/scripts/eval.py` (`bun run
-eval --` from the Publisher clone) unless it names another script.
+order they go in. Every command is `python3 skills/eval-loop/scripts/eval.py`,
+run from the Publisher clone, unless it names another script.
 
 `eval.py check --set <set>` reads everything below and names every gap at once,
 without starting a server or calling a model. Run it after each step; the set is
@@ -96,6 +96,10 @@ package_dir = "<path to the truth package>"
 port        = 4881
 mcp_port    = 4882
 ```
+
+`package` here and `targetPackage` in `set.json` must name the same package.
+Where both are set, `eval.toml` wins, and `check` refuses the set until they
+agree.
 
 Pick ports nothing else on the machine holds; `check` names any that are taken.
 Every later step reads them from this file, so change them here rather than

@@ -35,7 +35,7 @@ evals/<set>/                # the set, in the model's repository
   cases.jsonl               # one case per line
   judge-regressions.jsonl   # judge verdicts a human overruled
 
-<workdir>/                  # [paths] workdir, default ~/.malloy-eval/<set>/
+<workdir>/                  # [paths] workdir, default ~/.malloy-eval/<set>-<hash>/
   runs/<runId>/
     run.json                # run config, the attribution pins
     events.jsonl            # append-only event lines

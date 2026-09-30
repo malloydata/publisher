@@ -371,6 +371,28 @@ class Roles(unittest.TestCase):
         self.assertIn(str(pathlib.Path("no/such/server").resolve()),
                       str(e.exception))
 
+    def test_a_start_that_never_answers_is_stopped_and_the_config_restored(self):
+        """A timeout ends like a crash: nothing left running, the old config back."""
+        d = a_set(TOML)
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        (root / "publisher.config.json").write_text('{"old": true}\n')
+        pub = pathlib.Path(tempfile.mkdtemp(prefix="serve-pub-"))
+        (pub / "dist").mkdir()
+        (pub / "dist" / "server.mjs").write_text("")
+        # A process that outlives --wait without binding, the way a stuck start does.
+        stuck = [sys.executable, "-c", "import time; time.sleep(60)"]
+        with mock.patch.object(serve, "listening", return_value=False), \
+             mock.patch.object(serve, "alive", return_value=False), \
+             mock.patch.object(serve, "server_cmd", return_value=stuck):
+            code = serve.main(["--role", "model", "--set", str(d),
+                               "--server-root", str(root),
+                               "--publisher-dir", str(pub), "--wait", "1",
+                               "--no-warm-retrieval"])
+        self.assertEqual(code, 1)
+        self.assertEqual((root / "publisher.config.json").read_text(),
+                         '{"old": true}\n')
+        self.assertFalse((root / "publisher.pid").exists())
+
 
 
 class WarmByDefault(unittest.TestCase):
