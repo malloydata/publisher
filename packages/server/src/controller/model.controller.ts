@@ -16,12 +16,12 @@ type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 
 /**
- * `includeOffSurface`: also show the files a package's surface hides. It
+ * `includeHiddenFilesAndSources`: also show the files a package's surface hides. It
  * changes what the model routes show, never what a query can reach, and
  * Publisher does not decide who may ask: the gateway in front of it does.
  */
 export interface ModelReadOptions {
-   includeOffSurface?: boolean;
+   includeHiddenFilesAndSources?: boolean;
 }
 
 export class ModelController {
@@ -62,7 +62,8 @@ export class ModelController {
       modelPath: string,
       options: ModelReadOptions = {},
    ): Promise<ApiCompiledModel> {
-      const includeOffSurface = options.includeOffSurface === true;
+      const includeHiddenFilesAndSources =
+         options.includeHiddenFilesAndSources === true;
       try {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
@@ -79,7 +80,7 @@ export class ModelController {
          // A file nobody can query is not shown either: same rule, same 404
          // text as the query route. Inert with no surface and under "all",
          // and skipped when the caller asked to see the files off the surface.
-         if (!includeOffSurface) model.assertFileOnSurface();
+         if (!includeHiddenFilesAndSources) model.assertFileOnSurface();
          // The compiled view and the file's own text, together: the file is on
          // disk beside the package, and a client showing code next to the model
          // otherwise has no way to fetch it. The read stays on `getPackage`'s
@@ -96,7 +97,7 @@ export class ModelController {
             p
                .getModelFileText(modelPath)
                .then((text) =>
-                  includeOffSurface || model.showsFileText(text)
+                  includeHiddenFilesAndSources || model.showsFileText(text)
                      ? text
                      : undefined,
                )

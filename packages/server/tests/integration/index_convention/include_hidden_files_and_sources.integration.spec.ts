@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `includeOffSurface` on the model routes: list, show and run the files a root
+ * `includeHiddenFilesAndSources` on the model routes: list, show and run the files a root
  * `index.malloy` hides.
  *
  * A package's authors need to read every file, including the ones its surface
@@ -30,7 +30,7 @@ const fixtureDir = path.resolve(
    "../../fixtures/index-convention-test",
 );
 
-describe("includeOffSurface on the model routes", () => {
+describe("includeHiddenFilesAndSources on the model routes", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 
@@ -88,10 +88,10 @@ describe("includeOffSurface on the model routes", () => {
 
    it("lists only the surface by default, and every file when asked", async () => {
       expect(await listing()).toEqual({ "index.malloy": true });
-      expect(await listing("?includeOffSurface=false")).toEqual({
+      expect(await listing("?includeHiddenFilesAndSources=false")).toEqual({
          "index.malloy": true,
       });
-      expect(await listing("?includeOffSurface=true")).toEqual({
+      expect(await listing("?includeHiddenFilesAndSources=true")).toEqual({
          "index.malloy": true,
          "internal.malloy": false,
          "orders.malloy": false,
@@ -100,8 +100,8 @@ describe("includeOffSurface on the model routes", () => {
 
    it("refuses a value that is not true or false, on both routes", async () => {
       for (const url of [
-         `${pkgApi()}/models?includeOffSurface=yes`,
-         `${pkgApi()}/models/internal.malloy?includeOffSurface=1`,
+         `${pkgApi()}/models?includeHiddenFilesAndSources=yes`,
+         `${pkgApi()}/models/internal.malloy?includeHiddenFilesAndSources=1`,
       ]) {
          const res = await fetch(url);
          expect(res.status).toBe(400);
@@ -112,7 +112,7 @@ describe("includeOffSurface on the model routes", () => {
       const hidden = `${pkgApi()}/models/internal.malloy`;
       expect((await fetch(hidden)).status).toBe(404);
 
-      const res = await fetch(`${hidden}?includeOffSurface=true`);
+      const res = await fetch(`${hidden}?includeHiddenFilesAndSources=true`);
       expect(res.status).toBe(200);
       const body = (await res.json()) as { sourceText?: string };
       expect(body.sourceText).toBe(
@@ -128,11 +128,13 @@ describe("includeOffSurface on the model routes", () => {
             body: JSON.stringify({ query: "run: internal_scratch -> v" }),
          });
       expect((await query("")).status).toBe(404);
-      const res = await query("?includeOffSurface=true");
+      const res = await query("?includeHiddenFilesAndSources=true");
       expect(res.status).toBe(200);
       const rows = JSON.parse(((await res.json()) as { result: string }).result)
          .data.array_value;
       expect(rows.length).toBe(1);
-      expect((await query("?includeOffSurface=maybe")).status).toBe(400);
+      expect((await query("?includeHiddenFilesAndSources=maybe")).status).toBe(
+         400,
+      );
    });
 });

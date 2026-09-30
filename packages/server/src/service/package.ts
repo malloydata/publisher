@@ -2676,7 +2676,7 @@ export class Package {
    }
 
    public async listModels(
-      options: { includeOffSurface?: boolean } = {},
+      options: { includeHiddenFilesAndSources?: boolean } = {},
    ): Promise<ApiModel[]> {
       // When the package resolved a surface — an `explores` in publisher.json
       // or a root `index.malloy` — only those models are listed; every other
@@ -2685,7 +2685,7 @@ export class Package {
       // note that means no surface, not merely no manifest key. Notebooks are
       // unaffected (see listNotebooks) — they are always public.
       //
-      // `includeOffSurface` lists the hidden files too, each marked
+      // `includeHiddenFilesAndSources` lists the hidden files too, each marked
       // `onSurface: false`. Running them takes the same option on the query
       // route (Model.getQueryResults).
       const exploreSet = this.exploreSet();
@@ -2699,7 +2699,10 @@ export class Package {
                // `explores` lists it: it is listed as a dashboard instead.
                if (!exploreSet) return true;
                if (this.isServedDashboard(modelPath)) return false;
-               return options.includeOffSurface || exploreSet.has(modelPath);
+               return (
+                  options.includeHiddenFilesAndSources ||
+                  exploreSet.has(modelPath)
+               );
             })
             .map(async (modelPath) => {
                let error: string | undefined;

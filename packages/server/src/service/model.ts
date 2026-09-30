@@ -2750,7 +2750,7 @@ export class Model {
       /** Locked names this request already decided; each one decided here is added. */
       decided: Set<string> = new Set(),
       /** The request lifted the surface: a refusal stays the lock's 403. */
-      includeOffSurface = false,
+      includeHiddenFilesAndSources = false,
    ): Promise<void> {
       const joins = buildJoinBaseMap(query);
       if (joins.size === 0) return;
@@ -2814,7 +2814,10 @@ export class Model {
                // A 403 naming a hidden source over this join's alias confirms
                // it exists; convert on the source actually gated, the same
                // way the other early lock passes do.
-               if (error instanceof AccessDeniedError && !includeOffSurface) {
+               if (
+                  error instanceof AccessDeniedError &&
+                  !includeHiddenFilesAndSources
+               ) {
                   this.assertQueryBoundaryEarly(name, undefined, undefined);
                }
                throw error;
@@ -3963,7 +3966,7 @@ export class Model {
       bypassAuthorize: boolean,
       decided: Set<string>,
       /** The request lifted the surface: a refusal stays the lock's 403. */
-      includeOffSurface = false,
+      includeHiddenFilesAndSources = false,
    ): Promise<void> {
       if (!this.declaresAnyGate()) return;
       for (const name of collectIdentifierNames(text)) {
@@ -3983,7 +3986,10 @@ export class Model {
             // A 403 that names a hidden source confirms it exists. Convert on
             // the source actually gated, the same way the derivation walk does:
             // a hidden one is a 404, and a curated one keeps the 403.
-            if (error instanceof AccessDeniedError && !includeOffSurface) {
+            if (
+               error instanceof AccessDeniedError &&
+               !includeHiddenFilesAndSources
+            ) {
                this.assertQueryBoundaryEarly(source, undefined, undefined);
             }
             throw error;
@@ -6619,7 +6625,7 @@ export class Model {
        * gateway in front of it does. `#(authorize)` and `#(access_filter)` still
        * apply: this lifts curation, never the lock.
        */
-      includeOffSurface = false,
+      includeHiddenFilesAndSources = false,
    ): Promise<{
       result: Malloy.Result;
       /**
@@ -6745,7 +6751,7 @@ export class Model {
       // non-existent source (see notQueryable).
       // "deferred" means the early gate couldn't pin the target; the compiled
       // backstop below settles it against the source the query actually runs.
-      const boundary = includeOffSurface
+      const boundary = includeHiddenFilesAndSources
          ? "cleared"
          : this.assertQueryBoundaryEarly(sourceName, queryName, query);
       // The caller's own text, when it wrote any; its joins are checked as if
@@ -6757,8 +6763,8 @@ export class Model {
             : undefined;
       const readCallerJoinText =
          !!callerRegion && !hasCallerAuthorizeAnnotation(callerRegion.text);
-      // Under `includeOffSurface` there is no boundary to check a join against.
-      if (readCallerJoinText && !includeOffSurface) {
+      // Under `includeHiddenFilesAndSources` there is no boundary to check a join against.
+      if (readCallerJoinText && !includeHiddenFilesAndSources) {
          await this.assertCallerJoinBasesEarly(
             callerRegion.text,
             givens ?? {},
@@ -6808,7 +6814,7 @@ export class Model {
             givens ?? {},
             "locks",
             decided,
-            includeOffSurface,
+            includeHiddenFilesAndSources,
          );
       }
       // Every other locked name the text mentions, wherever it sits: an alias,
@@ -6823,7 +6829,7 @@ export class Model {
             givens ?? {},
             bypassAuthorize,
             decided,
-            includeOffSurface,
+            includeHiddenFilesAndSources,
          );
       }
 
