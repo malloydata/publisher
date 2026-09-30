@@ -8,12 +8,23 @@ import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
+import type { NotebookCellRunResult } from "../service/model";
 import type { GivenValue } from "@malloydata/malloy";
 
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
+
+/**
+ * `includeOffSurface`: also show the files a package's surface hides. It
+ * changes what the model routes show, never what a query can reach, and
+ * Publisher does not decide who may ask: the gateway in front of it does.
+ */
+export interface ModelReadOptions {
+   includeOffSurface?: boolean;
+}
+
 export class ModelController {
    private environmentStore: EnvironmentStore;
 
@@ -24,13 +35,14 @@ export class ModelController {
    public async listModels(
       environmentName: string,
       packageName: string,
+      options: ModelReadOptions = {},
    ): Promise<ApiModel[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
       const p = await environment.getPackage(packageName, false);
-      return p.listModels();
+      return p.listModels(options);
    }
 
    public async listNotebooks(
@@ -49,7 +61,9 @@ export class ModelController {
       environmentName: string,
       packageName: string,
       modelPath: string,
+      options: ModelReadOptions = {},
    ): Promise<ApiCompiledModel> {
+      const includeOffSurface = options.includeOffSurface === true;
       try {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
@@ -64,8 +78,9 @@ export class ModelController {
             throw new ModelNotFoundError(`${modelPath} is a notebook`);
          }
          // A file nobody can query is not shown either: same rule, same 404
-         // text as the query route. Inert with no surface and under "all".
-         model.assertFileOnSurface();
+         // text as the query route. Inert with no surface and under "all",
+         // and skipped when the caller asked to see the files off the surface.
+         if (!includeOffSurface) model.assertFileOnSurface();
          // The compiled view and the file's own text, together: the file is on
          // disk beside the package, and a client showing code next to the model
          // otherwise has no way to fetch it. The read stays on `getPackage`'s
@@ -76,10 +91,16 @@ export class ModelController {
          // never the compiled model the spec marks it optional beside.
          const [compiled, sourceText] = await Promise.all([
             model.getModel(),
-            // Withheld when the text names a source the file does not publish.
+            // Withheld when the text names a source the file does not publish,
+            // unless the caller asked to see the files off the surface: then
+            // the text is the point, and the compiled body stays curated.
             p
                .getModelFileText(modelPath)
-               .then((text) => (model.showsFileText(text) ? text : undefined))
+               .then((text) =>
+                  includeOffSurface || model.showsFileText(text)
+                     ? text
+                     : undefined,
+               )
                .catch((error: unknown) => {
                   logger.warn("getModel: model source text unavailable", {
                      environmentName,
@@ -123,7 +144,7 @@ export class ModelController {
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
       }
-      if (model.getType() === "model") {
+      if (!model.isNotebook()) {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
@@ -138,13 +159,7 @@ export class ModelController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
-   ): Promise<{
-      type: "code" | "markdown";
-      text: string;
-      queryName?: string;
-      result?: string;
-      newSources?: string[];
-   }> {
+   ): Promise<NotebookCellRunResult> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -158,7 +173,7 @@ export class ModelController {
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
       }
-      if (model.getType() === "model") {
+      if (!model.isNotebook()) {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 

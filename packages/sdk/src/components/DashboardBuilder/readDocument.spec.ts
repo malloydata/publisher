@@ -86,6 +86,59 @@ describe("blockAbove", () => {
       expect(at.tags).toEqual([]);
    });
 
+   it("leaves an attached markdown block and line out of the tags, whatever its body starts with", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  #|(markdown)",
+         "  # Lead tile",
+         "  |#",
+         "  #(markdown) a note",
+         "  # colspan=6",
+         "  view: revenue is sales",
+         "}",
+      ].join("\n");
+      const at = await block(source, 7);
+      expect(at.start).toBe(2);
+      expect(at.tags.map((t) => t.text)).toEqual(["# colspan=6"]);
+      expect(at.tags.map((t) => t.line)).toEqual([6]);
+      expect(at.prose).toEqual([2, 3, 4, 5]);
+   });
+
+   it("starts a markdown block at its own opener, not at a body line that begins `#|`", async () => {
+      const source = [
+         "source: s is a extend {",
+         "  dimension: d is 1",
+         "  #|(markdown)",
+         "  Notes",
+         "",
+         "  #| a body line",
+         "  |#",
+         "  # colspan=6",
+         "  view: v is x",
+         "}",
+      ].join("\n");
+      const at = await block(source, 8);
+      expect(at.start).toBe(2);
+      expect(at.prose).toEqual([2, 3, 4, 5, 6]);
+   });
+
+   it("does not call `#(markdown)` text inside a block comment prose", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  /*",
+         "  #(markdown) only a comment",
+         "  */",
+         "  # colspan=6",
+         "  view: v is x",
+         "}",
+      ].join("\n");
+      const at = await block(source, 6);
+      expect(at.start).toBe(2);
+      expect(at.prose).toEqual([]);
+   });
+
    it("does not collect a `#` line written inside a block comment", async () => {
       const source = [
          "source: s is a extend {",
@@ -134,6 +187,132 @@ describe("blockAbove", () => {
 });
 
 describe("readDashboardDocument", () => {
+   it("reads a width spelled only as the dashboard_columns alias", async () => {
+      const doc = await read(
+         SIMPLE.replace(
+            '"a -> by_cat"] givens { CATEGORY="Jeans" } } dashboard { columns=12 }',
+            '"a -> by_cat"] givens { CATEGORY="Jeans" } dashboard_columns=8 }',
+         ),
+      );
+      expect(doc.columns).toBe(8);
+   });
+
+   describe("a width written badly", () => {
+      const withTag = (tagLine: string) =>
+         SIMPLE.replace(/^## artifact.*$/m, tagLine);
+
+      it("lets a written columns win even when it is not a width", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8 } dashboard { columns=1.5 }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+
+      it("reads the alias, spaced round its =, when no columns is written", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns = 8 }',
+            ),
+         );
+         expect(doc.columns).toBe(8);
+      });
+
+      it("takes text that only begins with digits as no width", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8px }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+   });
+
+   describe("the description, by the server's rule", () => {
+      const rest = SIMPLE.split("\n").slice(5).join("\n");
+      const ARTIFACT = '## artifact { title="Probe" tiles=["a -> by_cat"] }';
+
+      it("reads the notes above the tag and ignores those below", async () => {
+         const doc = await read(`##" Above\n${ARTIFACT}\n##" Below\n${rest}`);
+         expect(doc.description).toBe("Above");
+      });
+
+      it("falls back to the notes below the tag when nothing above has prose", async () => {
+         const doc = await read(
+            `##"\n${ARTIFACT}\n##" Legacy\n##" text\n${rest}`,
+         );
+         expect(doc.description).toBe("Legacy\ntext");
+      });
+
+      it("finds the tag past a note whose prose says artifact", async () => {
+         const doc = await read(
+            `##" This artifact shows revenue\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBe("This artifact shows revenue");
+         expect(doc.title).toBe("Probe");
+      });
+
+      it('reads a ##|" block above the tag, not the note below it', async () => {
+         const doc = await read(
+            `##|"\nBlock prose\n|##\n${ARTIFACT}\n##" Legacy\n${rest}`,
+         );
+         expect(doc.description).toBe("Block prose");
+      });
+
+      it('does not count an empty ##|" block above the tag as prose', async () => {
+         const doc = await read(`##|"\n|##\n${ARTIFACT}\n##" Legacy\n${rest}`);
+         expect(doc.description).toBe("Legacy");
+      });
+
+      it("does not take an artifact line inside a block for the tag", async () => {
+         const doc = await read(
+            `##|(text) intro\n## artifact { title="Fake" tiles=["x -> y"] }\n|##\n##" Above\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.title).toBe("Probe");
+         expect(doc.description).toBe("Above");
+      });
+
+      it("ends a block only at a closer in the opener's column", async () => {
+         const doc = await read(
+            `##|"\nBlock prose\n  |##\nstill inside\n|##\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBe("Block prose\n|##\nstill inside");
+      });
+
+      it('takes a ##|" block below the tag as the fallback description, like the server', async () => {
+         const doc = await read(`${ARTIFACT}\n##|"\nBelow block\n|##\n${rest}`);
+         expect(doc.description).toBe("Below block");
+      });
+
+      it('ignores a ##" line inside a block', async () => {
+         const doc = await read(
+            `##|(text) intro\n##" not a note\n|##\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBeUndefined();
+      });
+
+      it("reads neither a ##(markdown) line nor a ##|(markdown) block as the description or the tag", async () => {
+         const doc = await read(
+            `##(markdown) not a note\n##|(markdown) intro\n## How to read\n##" also not a note\n|##\n##" Above\n${ARTIFACT}\n##(markdown) nor this\n${rest}`,
+         );
+         expect(doc.description).toBe("Above");
+         expect(doc.title).toBe("Probe");
+      });
+
+      it("falls back to a note below the tag past a ##(markdown) line", async () => {
+         const doc = await read(
+            `##(markdown) skip\n${ARTIFACT}\n##(markdown) skip too\n##" Legacy\n${rest}`,
+         );
+         expect(doc.description).toBe("Legacy");
+      });
+
+      it("has no description when the only note is a malformed route", async () => {
+         const doc = await read(`##"word\n${ARTIFACT}\n${rest}`);
+         expect(doc.description).toBeUndefined();
+      });
+   });
+
    it("reads the whole shape", async () => {
       const doc = await read(SIMPLE);
       expect(doc.title).toBe("Probe");
@@ -630,7 +809,7 @@ describe("every composite dashboard in the repository opens", () => {
       const name = path.relative(REPO, file);
       // The lint fixtures exist to BE broken; they are exercised by the refusal
       // tests above rather than expected to open.
-      const expectBroken = name.includes("dashboards-lint");
+      const expectBroken = /-lint[\\/]/.test(name);
       it(`${expectBroken ? "refuses" : "opens"} ${name}`, async () => {
          const result = await readDashboardDocument(
             fs.readFileSync(file, "utf8"),

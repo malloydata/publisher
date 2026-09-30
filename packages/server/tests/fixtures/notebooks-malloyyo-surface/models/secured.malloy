@@ -1,0 +1,15 @@
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+// A row-level gate, grafted onto whatever runs over this source.
+#(access_filter) id in $GROUPS
+source: gated is duckdb.table('data/orders.csv') extend {
+   measure: n is count()
+}
+
+#(filter) name=region dimension=region type=equal
+source: filtered is duckdb.table('data/orders.csv') extend {
+   measure: n is count()
+}

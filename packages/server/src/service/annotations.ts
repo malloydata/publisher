@@ -151,6 +151,11 @@ function foldModelAnnotations(
  * failure drops a document's own tags rather than folding an import's in.
  */
 export function ownModelNotes(modelDef: ModelDef): string[] {
+   return ownModelNoteObjects(modelDef).map((note) => note.text);
+}
+
+/** {@link ownModelNotes} with each note's location, for callers that need where it sits. */
+export function ownModelNoteObjects(modelDef: ModelDef): AnnotationNote[] {
    const registry = modelDef.modelAnnotations ?? {};
 
    // One document can span several compilation nodes. A `.malloynb` is compiled
@@ -170,7 +175,7 @@ export function ownModelNotes(modelDef: ModelDef): string[] {
       id === modelDef.modelID || id.startsWith("internal://");
 
    const seen = new Set<string>();
-   const texts: string[] = [];
+   const notes: AnnotationNote[] = [];
    const visit = (id: string): void => {
       if (seen.has(id) || !isSameDocument(id)) return;
       seen.add(id);
@@ -179,10 +184,10 @@ export function ownModelNotes(modelDef: ModelDef): string[] {
       // Ancestral-first, matching `Annotations.texts()`, so a later cell's tag
       // wins over an earlier one the way a later line does within a file.
       for (const dep of entry.inheritsFrom) visit(dep);
-      texts.push(...ownLevelNoteTexts(entry.ownNotes));
+      notes.push(...ownLevelNotes(entry.ownNotes));
    };
    visit(modelDef.modelID);
-   return texts;
+   return notes;
 }
 
 /**

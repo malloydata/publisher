@@ -1122,8 +1122,8 @@ export function sliceRange(
  * `execute_query` that still runs the old one. An edit that is never reloaded
  * at all produces the same disagreement without ever being marked stale.
  *
- * A model with no snapshot (a notebook, a compile failure, a Model built
- * in-process) yields no view code. Nothing else on the card changes.
+ * A model with no snapshot (a `.malloynb`, a compile failure) yields no view
+ * code. Nothing else on the card changes.
  */
 function makeSourceTextReader(
    pkg: Package,

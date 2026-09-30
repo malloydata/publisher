@@ -1,0 +1,7 @@
+##! experimental { givens compilerTestExperimentParse compilerTestExperimentTranslate }
+## artifact { kind=notebook title="Refused" }
+import "../models/orders.malloy"
+
+run: orders -> kpis
+
+;;[ "a compiler test statement no notebook cell can hold" ]

@@ -27,6 +27,7 @@ describe("service/model", () => {
          importBaseURL: new URL("file://mockBaseURL/"),
          dataStyles: {},
          modelType: "model",
+         compiledTextFor: () => undefined,
       });
 
       sinon.stub(Model, "getModelMaterializer").resolves({
