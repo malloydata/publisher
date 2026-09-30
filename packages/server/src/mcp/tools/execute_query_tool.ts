@@ -3,7 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { getQueryTimeoutMs } from "../../config";
 import { logger } from "../../logger";

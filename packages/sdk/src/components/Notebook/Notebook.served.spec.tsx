@@ -90,7 +90,11 @@ it("folds a definition cell to a one-line summary and expands it to the code", a
    fireEvent.click(toggle);
 
    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-   await waitFor(() => expect(container.textContent).toContain("year = 2025"));
+   // The code appears once Shiki's first highlight() resolves, which loads its
+   // grammar and can take past waitFor's 1s default on a cold CI runner.
+   await waitFor(() => expect(container.textContent).toContain("year = 2025"), {
+      timeout: 10_000,
+   });
    const region = container.querySelector(
       `[id="${toggle.getAttribute("aria-controls")}"]`,
    );

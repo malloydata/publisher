@@ -1775,13 +1775,33 @@ export class EnvironmentStore {
       // hundred-MB packages to fail Kubernetes liveness probes mid-extract.
       let entryCount = 0;
       let totalUncompressedBytes = 0;
-      await extract(absoluteEnvironmentPath, {
-         dir: path.resolve(unzippedEnvironmentPath),
-         onEntry: (entry) => {
-            entryCount += 1;
-            totalUncompressedBytes += entry.uncompressedSize ?? 0;
-         },
-      });
+      try {
+         await extract(absoluteEnvironmentPath, {
+            dir: path.resolve(unzippedEnvironmentPath),
+            onEntry: (entry) => {
+               // extract-zip 2.0.1 never validates a symlink entry's target, so a
+               // crafted archive can write outside `dir` (CVE-2026-19693,
+               // CVE-2026-56876, no upstream fix). Throwing here cancels the extract.
+               if (
+                  ((entry.externalFileAttributes >>> 16) & 0o170000) ===
+                  0o120000
+               ) {
+                  throw new BadRequestError(
+                     `Refusing to unzip "${absoluteEnvironmentPath}": entry "${entry.fileName}" is a symbolic link`,
+                  );
+               }
+               entryCount += 1;
+               totalUncompressedBytes += entry.uncompressedSize ?? 0;
+            },
+         });
+      } catch (error) {
+         // Leave no partial extract behind for a later load to pick up.
+         await fs.promises.rm(unzippedEnvironmentPath, {
+            recursive: true,
+            force: true,
+         });
+         throw error;
+      }
 
       const mib = (totalUncompressedBytes / (1024 * 1024)).toFixed(1);
       logger.info(

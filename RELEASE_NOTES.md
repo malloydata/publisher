@@ -101,6 +101,20 @@ statement to take it), `notebook-artifact-unparsed` (an `## artifact` tag that d
 `notebook-cells-unreadable` (a served notebook's cells could not be read).
 Package-scope `/compile` fails when any file in the package has one.
 
+## [Unreleased] — an MCP tool call with invalid arguments returns a tool error, and zipped packages may not contain symlinks
+
+The MCP SDK moves from 1.18 to 1.31 to clear three advisories, and with it one wire behavior
+changes. A tool call whose arguments fail the tool's input schema, such as `execute_query` without
+`modelPath`, used to be rejected with a JSON-RPC `InvalidParams` error. It now resolves as a tool
+result with `isError: true` and the text `MCP error -32602: Input validation error: …`, the same
+shape Publisher already used for errors raised inside a tool, so an agent reads the message and
+retries with corrected arguments. A client that branched on the JSON-RPC error code for bad
+arguments should check `isError` instead.
+
+A `.zip` environment or package that contains a symbolic link entry is now refused, and nothing from
+it is left on disk. The bundled extractor does not validate where a link points, so an archive could
+otherwise write outside its destination directory.
+
 ## [0.8.3] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
 
 A `#@ persist partition=` build of a wide source with many partition values failed against the
