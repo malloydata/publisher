@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
+## [0.8.3] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
 
 A `#@ persist partition=` build of a wide source with many partition values failed against the
 build session's `memory_limit` — `Out of Memory Error: failed to pin block of size 256.0 KiB` —
@@ -57,7 +57,7 @@ with the bound completes in 9.5 s; from BigQuery, interleaved fails at 54 s and 
 completes in 36 s. An unpartitioned build, and a chained build, are byte-identical to what they
 were.
 
-## [Unreleased] — /status names the server version, and says why it is empty
+## [0.8.3] — /status names the server version, and says why it is empty
 
 `GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and
 the MCP handshake reports the same value instead of `0.0.1`. A stale copy from the `npx` cache is
@@ -68,7 +68,7 @@ deployments start empty and create environments over the API. It now also report
 naming the path it checked. It is set for a mistyped `--config` path too. The field is absent once
 any environment exists, and absent when a config was found but lists none.
 
-## [Unreleased] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
+## [0.8.3] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
 
 **Reloading a package no longer costs you a lexically-ranked answer.** A reload
 never dropped a package's vectors — they are keyed by package name in
@@ -129,7 +129,7 @@ Unrelated to the above, and unchanged: `--init` still drops the vector cache
 along with the rest of persisted storage. It resets the server root, and it
 remains the reclaim path for rows orphaned by a configuration change.
 
-## [Unreleased] — a given the query reads is no longer silently replaced by its default
+## [0.8.3] — a given the query reads is no longer silently replaced by its default
 
 Publisher withholds a given the entry model doesn't surface when a gate is the only thing reading
 it, so the gate can still evaluate. It also withheld it when the query itself read a given of the
@@ -140,7 +140,7 @@ same name, such as a `where:` on a source from another file that declares its ow
 request that used to return rows at the default now fails with a 400. To fix the model, import the
 given at the entry model.
 
-## [Unreleased] — a gate on a joined field checks what the join reads
+## [0.8.3] — a gate on a joined field checks what the join reads
 
 The filter-binding check introduced in 0.8.1 now also compares, for a gate on a joined field such
 as `#(access_filter) child.org_id in $GROUPS`, what decides which joined row each row reaches. That
