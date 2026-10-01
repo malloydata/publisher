@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DragDropProvider } from "@dnd-kit/react";
-import { Alert, Box, Stack } from "@mui/material";
+import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import {
    useCallback,
    useEffect,
@@ -494,6 +494,7 @@ export function DashboardBuilder({
    })();
    // And, while a drag is live, the empty end of every row as a drop target.
    // Not otherwise: a gap is only a place to land while something is in hand.
+   const empty = editor.document.tiles.length === 0;
    const entries = dragging ? withGaps(shown, columns) : shown.map(tileEntry);
    return (
       // The padding is for the SELECTION RING. An outline is painted outside
@@ -535,15 +536,43 @@ export function DashboardBuilder({
                   : {})}
             />
 
-            <FilterStrip
-               controls={controlList}
-               tileCount={editor.document.tiles.length}
-               unknownFieldsOf={unknownFieldsOf}
-               onEdit={(control) => setFilterDialog({ control })}
-               onAdd={() => setFilterDialog({})}
-            >
-               {controls}
-            </FilterStrip>
+            {empty ? (
+               <Stack
+                  sx={{
+                     alignItems: "flex-start",
+                     gap: 1,
+                     py: 3,
+                     px: 2,
+                     border: 1,
+                     borderStyle: "dashed",
+                     borderColor: "divider",
+                     borderRadius: 1,
+                  }}
+               >
+                  <Typography variant="body2">
+                     This dashboard is not served until it has a tile.
+                  </Typography>
+                  {catalog && (
+                     <Button
+                        size="small"
+                        variant="contained"
+                        onClick={() => setAddingTile(true)}
+                     >
+                        Add tile
+                     </Button>
+                  )}
+               </Stack>
+            ) : (
+               <FilterStrip
+                  controls={controlList}
+                  tileCount={editor.document.tiles.length}
+                  unknownFieldsOf={unknownFieldsOf}
+                  onEdit={(control) => setFilterDialog({ control })}
+                  onAdd={() => setFilterDialog({})}
+               >
+                  {controls}
+               </FilterStrip>
+            )}
 
             {editor.error && (
                // The edit is still here; the message says what stopped it reaching

@@ -812,7 +812,7 @@ source: a is one extend {
       expect(out).toContain(
          `import { one, products } from "../m.malloy"
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=products dimension="category" }
 given: CATEGORY :: filter<string> is f''
 `,
       );

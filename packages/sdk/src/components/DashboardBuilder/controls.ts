@@ -254,7 +254,7 @@ export function newLocalGiven(spec: {
    range?: { min: number; max: number };
 }): LocalGiven {
    const label = spec.label.trim() || spec.name;
-   const dimension = spec.field.split(".").at(-1) ?? spec.field;
+   const dimension = spec.field;
    switch (spec.kind) {
       case "select":
       case "multiselect":

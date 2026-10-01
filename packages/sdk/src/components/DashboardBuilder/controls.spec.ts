@@ -95,7 +95,7 @@ describe("givenNameFor", () => {
 });
 
 describe("newLocalGiven", () => {
-   it("declares a picker that suggests over the field's own source", () => {
+   it("declares a picker that suggests over the field's own source, keeping a joined path whole", () => {
       expect(
          newLocalGiven({
             name: "REGION",
@@ -110,7 +110,7 @@ describe("newLocalGiven", () => {
          default: "f''",
          label: "Region",
          control: "select",
-         suggest: { source: "order_items", dimension: "region" },
+         suggest: { source: "order_items", dimension: "regions.region" },
       });
    });
 

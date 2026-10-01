@@ -27,13 +27,15 @@ source: a is scoped_orders extend {
   view: by_cat is by_category
 }`;
 
+let served = PACKAGE_FILE;
+
 const getModel = mock((_env: string, _pkg: string, path: string) =>
    path === "broken.malloy"
       ? Promise.reject(new Error("reloading"))
       : Promise.resolve({
            data:
               path === "dashboards/overview.malloy"
-                 ? { modelPath: path, sourceText: PACKAGE_FILE }
+                 ? { modelPath: path, sourceText: served }
                  : {
                       modelPath: path,
                       sources: [
@@ -116,6 +118,8 @@ const button = (name: string | RegExp) =>
 beforeEach(() => {
    clearCache();
    localStorage.clear();
+   served = PACKAGE_FILE;
+   getDashboard.mockClear();
 });
 
 describe("DashboardEditor", () => {
@@ -134,6 +138,23 @@ describe("DashboardEditor", () => {
          ).toBe(true),
       );
       await screen.findByRole("button", { name: "Add tile", hidden: true });
+   });
+
+   it("opens a dashboard with no tiles without asking for a manifest the server would 404", async () => {
+      served = PACKAGE_FILE.replace('tiles=["a -> by_cat"]', "tiles=[]");
+      mount();
+      expect(
+         await screen.findByText(/not served until it has a tile/),
+      ).toBeDefined();
+      expect(
+         (
+            await screen.findAllByRole("button", {
+               name: "Add tile",
+               hidden: true,
+            })
+         ).length,
+      ).toBe(2);
+      expect(getDashboard).not.toHaveBeenCalled();
    });
 
    it("keeps the catalog when one published model fails to load", async () => {

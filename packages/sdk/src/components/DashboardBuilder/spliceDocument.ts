@@ -231,7 +231,7 @@ function givenTagLine(given: LocalGiven): string | undefined {
               ? `query=${given.suggest.query}`
               : undefined;
       parts.push(
-         `suggest { ${by ? `${by} ` : ""}dimension=${given.suggest.dimension} }`,
+         `suggest { ${by ? `${by} ` : ""}dimension=${quoted(given.suggest.dimension)} }`,
       );
    }
    if (given.rangeMin !== undefined) parts.push(`range_min=${given.rangeMin}`);
@@ -430,6 +430,13 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
             ok: false,
             reason:
                "The `tiles=[…]` list holds an entry the builder does not model, such as a text tile, and rewriting the list would drop it. Reorder, add and remove tiles in the file's text.",
+         };
+      }
+      if (nextKeys.size === 0 && currentKeys.size > 0) {
+         return {
+            ok: false,
+            reason:
+               "A dashboard with no tiles is not served, so the last tile cannot be removed. Add another tile first.",
          };
       }
       const written = [...lines[artifactAt].matchAll(/"([^"]+)"/g)].map(

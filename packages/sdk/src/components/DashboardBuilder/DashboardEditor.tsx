@@ -715,6 +715,8 @@ function Surface({
             slug,
             versionId,
          ),
+      // The server does not serve a dashboard with no tiles, so asking would 404.
+      enabled: opened.document.tiles.length > 0,
    });
    const manifest = data?.data;
 

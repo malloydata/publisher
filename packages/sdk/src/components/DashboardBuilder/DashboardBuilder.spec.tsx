@@ -254,7 +254,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         '# label="Brand" control=select suggest { source=scoped_orders dimension=brand }\n' +
+         '# label="Brand" control=select suggest { source=scoped_orders dimension="brand" }\n' +
             "given: BRAND :: filter<string> is f''",
       );
       expect(written).toContain(

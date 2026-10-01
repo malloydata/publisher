@@ -273,15 +273,20 @@ function gridWidth(
    return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
-/** The `tiles=[…]` entries, in order, as written. */
-function tileEntries(artifactLine: string): string[] {
+/**
+ * The `tiles=[…]` entries, in order, as written. An absent or unclosed list,
+ * and one holding only entries that are not quoted (a text tile), are
+ * `undefined`: only an explicit, blank `tiles=[]` is a dashboard with no tiles.
+ */
+function tileEntries(artifactLine: string): string[] | undefined {
    const key = artifactLine.search(/tiles\s*=\s*\[/);
-   if (key < 0) return [];
+   if (key < 0) return undefined;
    const open = artifactLine.indexOf("[", key);
    const close = artifactLine.indexOf("]", open);
-   if (close < 0) return [];
+   if (close < 0) return undefined;
    const list = artifactLine.slice(open + 1, close);
-   return [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+   const entries = [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+   return entries.length === 0 && list.trim() !== "" ? undefined : entries;
 }
 
 export async function readDashboardDocument(
@@ -312,11 +317,11 @@ export async function readDashboardDocument(
    const tag = parseAnnotation([artifactLine.replace(/^##\s*/, "# ")]).tag;
    const artifactTag = tag?.tag("artifact");
    const entries = tileEntries(artifactLine);
-   if (entries.length === 0) {
+   if (entries === undefined) {
       return {
          ok: false,
          reason:
-            "The `## artifact` tag names no tiles, so there is nothing to lay out.",
+            "The `## artifact` tag has no `tiles=[…]` list the builder can read.",
       };
    }
 
