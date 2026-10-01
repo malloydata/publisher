@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Re-derive every golden from the truth package and report what no longer holds.
 
-  python3 verify_goldens.py --set evals/ecommerce --publisher http://localhost:4811
+  python3 verify_goldens.py --set <set-dir>   # truth server from the set's eval.toml
   python3 verify_goldens.py --set ... --qid ecom_profit          # one case
   python3 verify_goldens.py --set ... --refresh                  # rewrite drifted values
   python3 verify_goldens.py --set ... --promote                  # provisional -> verified
@@ -148,6 +148,7 @@ import traceback
 import urllib.parse
 from typing import Any
 
+import config
 from check_must_not_use import candidate as must_not_use_candidate
 from json_scan import json_objects  # noqa: E402
 from publisher_rest import get_json, try_query  # the direct paths to a Publisher
@@ -1459,28 +1460,33 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
 CANNOT_RUN = 3
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    # No default, and not required. It WAS http://localhost:4811, which the
-    # ecommerce set's own README assigns to the ANSWERER's server, so the
-    # default and the documented ports named different servers and the wrong
-    # one self-certifies goldens. Omitting it now skips the value check the
-    # same way a set with no truthPackage does -- exit 3, "did not happen" --
-    # rather than quietly querying a port nobody chose. Both in-tree callers
-    # pass it explicitly.
+    # No built-in port. A fixed default once named the ANSWERER's server, so
+    # the wrong one self-certified goldens. The only fallback is a [truth]
+    # section in the set's eval.toml, which is the server `serve.py --role
+    # truth` started. With neither, the value check is skipped the same way a
+    # set with no truthPackage is -- exit 3, "did not happen" -- rather than
+    # querying a port nobody chose.
     ap.add_argument("--publisher", default=None,
                     help="the Publisher serving the TRUTH package, and ONLY "
-                         "that package. Omit to run just the checks that need "
-                         "no server; the value check then reports as not run")
-    ap.add_argument("--environment", default="samples")
+                         "that package. Default: the [truth] server in the "
+                         "set's eval.toml. With neither, only the checks that "
+                         "need no server run, and the value check reports as "
+                         "not run")
+    ap.add_argument("--environment", default=None,
+                    help="the environment on the TRUTH server. Default: "
+                         "[truth] environment in eval.toml")
     ap.add_argument("--qid", action="append", help="verify only these cases")
     ap.add_argument("--cases", default="cases.jsonl",
                     help="case file to verify, relative to the set dir")
     ap.add_argument("--model", type=pathlib.Path, default=None,
                     help="the model under test (file or package dir), for the "
-                         "stale-rubric audit")
+                         "stale-rubric and entity-id audits. Not defaulted: the "
+                         "entity audit greps the model text, and a column a "
+                         "source exposes implicitly reads as missing")
     ap.add_argument("--refresh", action="store_true",
                     help="rewrite each drifted golden's value from the fresh rows "
                          "and bump its goldenRevision. For drift, not for a wrong "
@@ -1512,13 +1518,26 @@ def main() -> int:
                     help="print every rubric-figure review item, not the first five")
     ap.add_argument("--target-package",
                     help="the package under test, for the isolation guard. "
-                         "Falls back to set.json's `targetPackage`")
+                         "Default: [model] package in eval.toml, then set.json's "
+                         "`targetPackage`")
     ap.add_argument("--definitions", type=pathlib.Path, default=None,
                     help="a definition ledger (verify_definitions.py). With no "
                          "truth server, a set whose every value-bearing case "
                          "rests on validated definitions exits 0 instead of 3, "
                          "and --promote may promote through it")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    # A config that cannot be read means nothing was checked: 3, never 1,
+    # which says a golden drifted.
+    try:
+        cfg = config.load(args.set_dir)
+        args.publisher = args.publisher or cfg.truth_publisher()
+        args.target_package = args.target_package or cfg.get("model", "package")
+        if args.publisher:
+            args.environment = cfg.need(args.environment, "truth",
+                                        "environment", "--environment")
+    except config.ConfigError as e:
+        print(e, file=sys.stderr)
+        return CANNOT_RUN
     if args.attest is not None and (not args.promote or not args.attest.strip()):
         ap.error("--attest needs --promote and non-empty text naming who "
                  "checked, when, and how")

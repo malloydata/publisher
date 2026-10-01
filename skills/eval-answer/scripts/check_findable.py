@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Can a right-typed search actually retrieve each `required` entity? Stdlib only.
 
+  python3 check_findable.py --set <set-dir>   # server and names from its eval.toml
   python3 check_findable.py --set evals/faa-v1 --mcp-url http://localhost:4045/mcp \
       --environment samples --package faa
 
@@ -58,6 +59,7 @@ import urllib.request
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import config  # noqa: E402
 from mcp_payload import entity_hits  # noqa: E402
 
 # An entity kind, and the target type that can return it. The inverse of the
@@ -102,6 +104,24 @@ def get_context(mcp_url: str, targets: list[dict[str, str]],
     content = d["result"]["content"]
     text = content[0].get("text") or content[0].get("resource", {}).get("text")
     return json.loads(text)
+
+
+def add_fields(bucket: set[str], fields: list[Any], prefix: str = "") -> None:
+    """Every field as `kind:name`, and every field reached through a join as
+    `kind:join.name`, the dotted path get_context names it by.
+
+    A join field carries the joined source's schema, so each hop of a path is
+    checked against the join the source actually declares. Looking the last
+    hop up as a source name instead passed a bogus first hop, and failed a
+    join whose name is not its source's (`join_one: buyer is customers`).
+    """
+    for f in fields:
+        if not (isinstance(f, dict) and f.get("name") and f.get("kind")):
+            continue
+        bucket.add(f"{f['kind']}:{prefix}{f['name']}")
+        if f["kind"] == "join":
+            add_fields(bucket, (f.get("schema") or {}).get("fields") or [],
+                       f"{prefix}{f['name']}.")
 
 
 def compiled_entities(rest_url: str, environment: str,
@@ -161,9 +181,7 @@ def compiled_entities(rest_url: str, environment: str,
                 continue
             bucket = out.setdefault(src, set())
             bucket.add(f"source:{src}")
-            for f in fields:
-                if isinstance(f, dict) and f.get("name") and f.get("kind"):
-                    bucket.add(f"{f['kind']}:{f['name']}")
+            add_fields(bucket, fields)
         for q in doc.get("queries") or []:
             if not isinstance(q, dict):
                 continue
@@ -224,14 +242,46 @@ def stale_packages(rest_url: str, timeout: int = 30) -> set[tuple[str, str]] | N
             if isinstance(e, dict) and e.get("stale")}
 
 
+def current_entities(rest_url: str, environment: str,
+                     package: str) -> tuple[dict[str, set[str]] | None, str | None]:
+    """`compiled_entities`, unless the package is stale, and a warning if any.
+
+    Staleness first. A stale package answers the models endpoint normally
+    while describing the compile BEFORE the last save, so an entity deleted
+    since then reads as declared. Refusing to check says so; checking anyway
+    would be one more number nobody had earned. Every caller that treats the
+    compiled model as the authority goes through here.
+    """
+    stale = stale_packages(rest_url)
+    if stale and (environment, package) in stale:
+        return None, (f"{environment}/{package} is serving a STALE model (its "
+                      f"last reload failed to compile), so the compiled model "
+                      f"is not the authority on what exists; existence and "
+                      f"kind were NOT checked. Fix the model and reload, then "
+                      f"re-run.")
+    declared = compiled_entities(rest_url, environment, package)
+    if declared is None:
+        return None, ("the compiled model could not be read; existence and "
+                      "kind were NOT checked")
+    if stale is None:
+        return declared, ("the server's status could not be read, so "
+                          "staleness is unknown; treating the compiled model "
+                          "as current")
+    return declared, None
+
+
 def declared_findings(cases: list[dict[str, Any]],
                       declared: dict[str, set[str]]) -> list[str]:
     """Ids the compiled model does not declare, or declares as another kind."""
     out = []
     for eid, qids in sorted(required_ids(cases).items()):
         parts = eid.split(":", 2)
-        if len(parts) < 3:
-            continue          # malformed; `check` reports it on its own
+        if len(parts) < 3 or not all(parts):
+            # Reported here as well as by `check`: the in-run lint calls only
+            # this, and an id it skips is one no retrieval can ever match.
+            out.append(f"{eid}: not a kind:source:name id "
+                       f"(required by {', '.join(qids)})")
+            continue
         kind, src, name = parts
         if src not in declared:
             out.append(f"{eid}: the compiled model has no source {src!r} "
@@ -239,25 +289,23 @@ def declared_findings(cases: list[dict[str, Any]],
             continue
         if f"{kind}:{name}" in declared[src]:
             continue
-        # A DOTTED name is a join path, not a field name. `declared[src]` holds
-        # the source's OWN fields, so `dimension:order_items:products.brand`
-        # never matched and every dotted id was reported as a missing field --
-        # five of them on one set, against a get_context that returns each as
-        # its top result. Resolve it where it lives: the last segment is the
-        # field, the segment before it names the joined source.
+        # A DOTTED name is a join path. `compiled_entities` records every
+        # field reached through a join under its path, so a miss above means a
+        # hop or the leaf is wrong. Name the first hop that does not exist.
         if "." in name:
             *path, leaf = name.split(".")
-            hop = path[-1]
-            if hop in declared and f"{kind}:{leaf}" in declared[hop]:
-                continue
-            if hop not in declared:
-                out.append(f"{eid}: the join path names {hop!r}, which the "
-                           f"compiled model has no source for "
-                           f"(required by {', '.join(qids)})")
+            reached = ""
+            for hop in path:
+                if f"join:{reached}{hop}" not in declared[src]:
+                    out.append(f"{eid}: the compiled {src} source has no join "
+                               f"{reached + hop!r} (required by "
+                               f"{', '.join(qids)})")
+                    break
+                reached += hop + "."
             else:
-                out.append(f"{eid}: the compiled {hop} source declares no "
-                           f"{kind} {leaf!r} to reach through that join "
-                           f"(required by {', '.join(qids)})")
+                out.append(f"{eid}: the join {'.'.join(path)!r} from {src} "
+                           f"reaches no {kind} {leaf!r} (required by "
+                           f"{', '.join(qids)})")
             continue
         other = sorted(k.split(":", 1)[0] for k in declared[src]
                        if k.split(":", 1)[1] == name)
@@ -341,11 +389,15 @@ def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--mcp-url", required=True,
+    ap.add_argument("--mcp-url", default=None,
                     help="the MCP endpoint of the model UNDER TEST, not the "
-                         "truth server")
-    ap.add_argument("--environment", required=True)
-    ap.add_argument("--package", required=True)
+                         "truth server. Default: from [model] in the set's "
+                         "eval.toml")
+    ap.add_argument("--environment", default=None,
+                    help="Default: [model] environment in the set's eval.toml")
+    ap.add_argument("--package", default=None,
+                    help="Default: [model] package in the set's eval.toml, then "
+                         "set.json's targetPackage")
     ap.add_argument("--publisher", default=None,
                     help="REST URL of the same server, e.g. "
                          "http://localhost:4811. With it, each id is also "
@@ -361,6 +413,10 @@ def main(argv: list[str] | None = None) -> int:
                          "wait, which risks reading the lexical matcher as a "
                          "missing entity")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    a.environment = cfg.need(a.environment, "model", "environment", "--environment")
+    a.package = cfg.need(a.package, "model", "package", "--package")
+    a.mcp_url = a.mcp_url or cfg.model_mcp_url()
 
     f = a.set_dir / "cases.jsonl"
     if not f.exists():
@@ -419,29 +475,10 @@ def main(argv: list[str] | None = None) -> int:
 
     declared_out: list[str] = []
     if a.publisher:
-        # Staleness first. A stale package answers the models endpoint normally
-        # while describing the compile BEFORE the last save, so reading it as
-        # the authority prints findings nobody can act on: the id may be fine
-        # and the served model simply old. Refusing to check says so; checking
-        # anyway would be one more number the harness had not earned.
-        stale = stale_packages(a.publisher)
-        if stale is None:
-            print("! the server's status could not be read, so staleness is "
-                  "unknown; treating the compiled model as current",
-                  file=sys.stderr)
-        is_stale = bool(stale) and (a.environment, a.package) in stale
-        declared = (None if is_stale
-                    else compiled_entities(a.publisher, a.environment, a.package))
-        if is_stale:
-            print(f"! {a.environment}/{a.package} is serving a STALE model "
-                  f"(its last reload failed to compile), so the compiled model "
-                  f"is not the authority on what exists; existence and kind "
-                  f"were NOT checked. Fix the model and reload, then re-run.",
-                  file=sys.stderr)
-        elif declared is None:
-            print("! the compiled model could not be read; existence and kind "
-                  "were NOT checked", file=sys.stderr)
-        else:
+        declared, warning = current_entities(a.publisher, a.environment, a.package)
+        if warning:
+            print(f"! {warning}", file=sys.stderr)
+        if declared is not None:
             declared_out = declared_findings(cases, declared)
             print(f"compiled model: {sum(len(v) for v in declared.values())} "
                   f"entities across {len(declared)} sources")

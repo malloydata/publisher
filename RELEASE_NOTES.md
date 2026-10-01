@@ -31,13 +31,34 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — The generated SDK client is built by OpenAPI Generator 7.25.0
+## [Unreleased] — The Docker image runs the server as a non-root user
+
+`ms2data/malloy-publisher` now runs the server as `bun`, uid 1000 and gid 1000, instead of root. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`. The DuckDB CLI and the baked extensions move from `/root/.duckdb/` to `/home/bun/.duckdb/`, and the image sets `HOME=/home/bun`.
+
+**If you persist `/publisher/publisher_data` in a named volume that an earlier image wrote to, chown it before you upgrade.** That volume holds root-owned files the new server cannot write to. The server still reports `serving`, but each environment it cannot write is missing, and `GET /api/v0/status` lists it under `loadErrors` with `EACCES: permission denied`. The fix:
+
+```bash
+# docker run: name the volume you mount
+docker run --rm --user 0 --entrypoint chown \
+  -v publisher_data:/publisher/publisher_data \
+  ms2data/malloy-publisher -R 1000:1000 /publisher/publisher_data
+
+# Compose: run it through the service, from the directory holding docker-compose.yml
+docker compose run --rm --no-deps --user 0 --entrypoint chown \
+  publisher -R 1000:1000 /publisher/publisher_data
+```
+
+Use the Compose form under Compose. Compose names the volume `<project>_publisher_data`, so the `docker run` form would chown a new, empty `publisher_data` volume, exit 0, and leave the real one root-owned.
+
+A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it from the image, ownership included. It is the only writable mount point the image prepares. A new named volume anywhere else, such as a local DuckLake `bucketUrl`, starts root-owned and must be chowned to uid 1000 first; DuckDB reports that case as `No such file or directory`, not `EACCES`. A bind mount the server writes to must be writable by uid 1000. A read-only mount, such as the config file, only has to be readable. Until you can change the ownership, `--user 0` runs the server as root, as before. [`packages/server/README.docker.md`](packages/server/README.docker.md#the-server-runs-as-a-non-root-user) has the details.
+
+## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
 `@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.
 
 Each request now sends its own `Accept` header (`application/json` for every operation the SDK calls) in place of axios's default `application/json, text/plain, */*`. Publisher does not negotiate on `Accept`, so responses are unchanged.
 
-## [Unreleased] — Model listings mark a hidden file with `isHidden`, not `onSurface`
+## [0.8.5] — Model listings mark a hidden file with `isHidden`, not `onSurface`
 
 0.8.4 added `onSurface` to each entry of `GET …/models`. It is renamed to `isHidden`, with the
 meaning flipped to match `includeHiddenFilesAndSources`: `true` for a file the listing includes
@@ -107,7 +128,7 @@ statement to take it), `notebook-artifact-unparsed` (an `## artifact` tag that d
 `notebook-cells-unreadable` (a served notebook's cells could not be read).
 Package-scope `/compile` fails when any file in the package has one.
 
-## [Unreleased] — an MCP tool call with invalid arguments returns a tool error, and zipped packages may not contain symlinks
+## [0.8.5] — an MCP tool call with invalid arguments returns a tool error, and zipped packages may not contain symlinks
 
 The MCP SDK moves from 1.18 to 1.31 to clear three advisories, and with it one wire behavior
 changes. A tool call whose arguments fail the tool's input schema, such as `execute_query` without

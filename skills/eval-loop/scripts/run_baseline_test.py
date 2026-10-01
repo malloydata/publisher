@@ -742,8 +742,7 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
                     human=0, doubted=[], vetoed=[], alt_path=0, unscorable=0,
                     retrieval_mode="semantic",
                     tally={"semantic": 1, "lexical": 0, "unreported": 0},
-                    rs={}, answerer_cost=0.0, judge_cost=0.0, publisher="",
-                    environment="e")
+                    rs={}, answerer_cost=0.0, judge_cost=0.0)
         return "\n".join(rb.summary_lines(**{**base, **kw}))
 
     def test_the_summary_names_the_cases_it_could_not_read(self):
@@ -1082,6 +1081,61 @@ class PlatformMcpUrl(unittest.TestCase):
 
 
 
+class ResolveConfig(unittest.TestCase):
+    """Unset flags come from the set's eval.toml, except on a platform run."""
+
+    def ns(self, set_dir, **kw):
+        base = dict(set_dir=set_dir, out=None, label=None, phase="baseline",
+                    target="local", environment=None, package=None,
+                    mcp_url=None, publisher=None, model_repo=None,
+                    truth_publisher=None, truth_environment=None,
+                    skills_root=None)
+        return argparse.Namespace(**{**base, **kw})
+
+    def set_dir(self, toml):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="rb-config-"))
+        (d / "set.json").write_text(json.dumps({"name": "s"}))
+        (d / "eval.toml").write_text(toml)
+        return d
+
+    def test_a_local_run_takes_its_servers_and_run_dir_from_the_file(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n'
+                         'port = 4000\nmcp_port = 4040\n[truth]\n[paths]\n'
+                         'workdir = "w"\n')
+        a = self.ns(d)
+        with mock.patch("builtins.print"):
+            rb.resolve_config(a)
+        self.assertEqual((a.environment, a.package, a.publisher, a.mcp_url),
+                         ("e", "p", "http://localhost:4000",
+                          "http://localhost:4040/mcp"))
+        self.assertEqual(a.truth_publisher, "http://localhost:4881")
+        self.assertEqual(a.out, (d / "w" / "runs" / "s-baseline-01").resolve())
+
+    def test_an_out_inside_a_package_is_refused(self):
+        # The old tour README said `--out examples/storefront/evals/.../runs/x`,
+        # and a cached copy of that command still drops a model.malloy there.
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        (d / "publisher.json").write_text("{}")
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, out=d / "runs" / "x"))
+        self.assertIn(f"inside the Malloy package {d.resolve()}", str(e.exception))
+
+    def test_no_truth_section_leaves_the_truth_server_unset(self):
+        # Not a guessed 4881: nothing there would score every golden drifted.
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        a = self.ns(d)
+        with mock.patch("builtins.print"):
+            rb.resolve_config(a)
+        self.assertIsNone(a.truth_publisher)
+        self.assertIsNone(a.truth_environment)
+
+    def test_a_platform_run_never_takes_its_organization_from_the_file(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, target="platform", out=d / "o"))
+        self.assertIn("--target platform needs --environment", str(e.exception))
+
+
 class RetrievalPrecisionIsReportedHonestly(unittest.TestCase):
     """Precision was computed and thrown away; the run printed recall alone.
 
@@ -1218,8 +1272,7 @@ class RunSummary(unittest.TestCase):
             rs={"retrieval_scored": 49, "mean_recall": 0.842,
                 "complete_retrievals": 41,
                 "failures_by_where_to_fix": {"model": 8}},
-            answerer_cost=4.0, judge_cost=0.5,
-            publisher="http://localhost:4811", environment="samples")
+            answerer_cost=4.0, judge_cost=0.5)
         args.update(over)
         return rb.summary_lines(**args)
 
@@ -1351,26 +1404,18 @@ class RunSummary(unittest.TestCase):
         self.assertIn("check_coverage.py", block)
         self.assertIn("--set evals/e", block)
 
-    def test_the_deep_dive_ends_in_a_url_a_human_can_open(self):
+    def test_the_deep_dive_names_diagnose_before_package(self):
         # The point of the layer: a run directory is JSONL, and the reader
-        # needs the served app, not the record it was built from.
-        block = "\n".join(self.lines())
-        self.assertIn("build_run_package.py", block)
-        self.assertIn("--run results/r1", block)
-        self.assertIn(
-            "http://localhost:4811/environments/samples/packages/eval-r1/",
-            block)
-
-    def test_the_deep_dive_registers_the_package_it_just_built(self):
-        # The URL only resolves after the POST, and the two have to name the
-        # same package and the same directory or the link 404s.
-        block = "\n".join(self.lines())
-        self.assertIn("--out /tmp/eval-r1", block)
-        self.assertIn('"name":"eval-r1"', block)
-        self.assertIn('"location":"/tmp/eval-r1"', block)
-        self.assertIn(
-            "POST http://localhost:4811/api/v0/environments/samples/packages",
-            block.replace("-sS -X ", ""))
+        # needs the served report. The builder refuses an undiagnosed run,
+        # so the two commands come in that order, for this run.
+        lines = self.lines()
+        diag = [l for l in lines if "eval.py diagnose" in l]
+        pkg = [l for l in lines if "eval.py package" in l]
+        self.assertEqual(len(diag), 1)
+        self.assertEqual(len(pkg), 1)
+        self.assertIn("--run results/r1", diag[0])
+        self.assertIn("--run results/r1", pkg[0])
+        self.assertLess(lines.index(diag[0]), lines.index(pkg[0]))
 
     def test_the_deep_dive_still_names_the_raw_events(self):
         self.assertIn("events.jsonl", "\n".join(self.lines()))
@@ -1928,6 +1973,50 @@ class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
         self.assertEqual(len(guard), 1)
         below = [l for l in src[guard[0]:] if l.startswith(("class ", "def "))]
         self.assertEqual(below, [], f"defined below the main guard: {below}")
+
+
+
+class ExpectedEntityLint(unittest.TestCase):
+    """The lint reads the compiled model, not the model text.
+
+    On the storefront tour the text search reported `retail_price`,
+    `signup_date` and `customers.customer_id` as a stale set: two columns the
+    sources expose without declaring, and a joined field named by its path.
+    All three exist, and the message told the reader to edit the set.
+    """
+
+    CASES = [{"qid": "q1", "expectedEntities": {"required": [
+        "dimension:order_items:customers.customer_id",
+        "dimension:customers:signup_date",
+        "measure:order_items:total_sales"]}}]
+    # A joined field is recorded under its path, as compiled_entities does.
+    DECLARED = {"order_items": {"source:order_items", "join:customers",
+                                "dimension:customers.customer_id",
+                                "measure:total_sales"},
+                "customers": {"source:customers", "dimension:customer_id",
+                              "dimension:signup_date"}}
+
+    def test_implicit_columns_and_join_paths_are_not_stale(self):
+        stale, lines = rb.expected_entity_lint(self.CASES, self.DECLARED, "")
+        self.assertEqual((stale, lines), ([], []))
+
+    def test_an_id_the_model_lacks_is_named_with_why(self):
+        cases = [{"qid": "q2", "expectedEntities": {"required": [
+            "dimension:customers:shipped_at"]}}]
+        stale, lines = rb.expected_entity_lint(cases, self.DECLARED, "")
+        self.assertEqual(stale, ["dimension:customers:shipped_at"])
+        self.assertIn("1 expected entity the served model does not declare",
+                      lines[0])
+        self.assertIn("declares no field 'shipped_at'", lines[1])
+
+    def test_without_the_compiled_model_the_text_search_says_it_may_be_wrong(self):
+        stale, lines = rb.expected_entity_lint(
+            self.CASES, None, "source: order_items is x extend { measure: total_sales is 1 }")
+        self.assertEqual(stale, ["customers.customer_id", "signup_date"])
+        self.assertIn("The compiled model could not be read", lines[0])
+
+    def test_nothing_to_lint_against_is_none_not_empty(self):
+        self.assertEqual(rb.expected_entity_lint(self.CASES, None, ""), (None, []))
 
 
 if __name__ == "__main__":
