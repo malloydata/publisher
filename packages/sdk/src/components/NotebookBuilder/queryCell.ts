@@ -6,6 +6,10 @@ import {
    isChartPick,
    type ChartState,
 } from "../DashboardBuilder/chartLine";
+import {
+   annotationTextProblem,
+   AUTHORIZE_TAG_LIKE,
+} from "../DashboardBuilder/annotationText";
 import { isIdentifier } from "../DashboardBuilder/malloyText";
 
 /** What a query cell the builder adds runs: a view of a source, and an optional caption. */
@@ -15,20 +19,17 @@ export interface QueryRun {
    caption?: string;
 }
 
-/** A copy of the server's `AUTHORIZE_TAG_LIKE`, kept in step by a parity spec; a caption is a note the server's caller guard reads anywhere. */
-export const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:(?:(?:row|source)[-_]?)?authorize|access[-_]?filter)(?=[)\]}>]|[ \t]|$)`;
+export { AUTHORIZE_TAG_LIKE };
 
 const malloyName = (name: string) =>
    isIdentifier(name) ? name : `\`${name}\``;
 
 /** Why a caption cannot be written, or undefined when it can. */
 export function captionProblem(caption: string): string | undefined {
-   if (/[\r\n]/.test(caption))
-      return "A caption is one line; it cannot hold a line break.";
-   if (caption.trim() === "") return "A caption cannot be empty.";
-   if (new RegExp(AUTHORIZE_TAG_LIKE, "iu").test(caption))
-      return "A caption cannot contain what reads as an access-control tag (authorize, row_authorize, source_authorize or access_filter).";
-   return undefined;
+   return (
+      annotationTextProblem("caption", caption) ??
+      (caption.trim() === "" ? "A caption cannot be empty." : undefined)
+   );
 }
 
 /** Why `run` cannot be written, or undefined when it can. */

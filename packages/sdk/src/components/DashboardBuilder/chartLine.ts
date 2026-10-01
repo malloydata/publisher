@@ -100,3 +100,10 @@ export function chartStateOf(lines: string[]): ChartState {
    const parts = parseChartLine(lines[0]);
    return parts ? chartStateOfParts(parts) : "custom";
 }
+
+/** What a tile's `#` lines say about its chart: nothing (undefined), a state, or "custom" when any line names a chart tag the builder does not model. */
+export function chartStateOfTagLines(lines: string[]): ChartState | undefined {
+   const ours = lines.filter((line) => parseChartLine(line));
+   if (lines.some(mentionsChartTag)) return "custom";
+   return ours.length === 0 ? undefined : chartStateOf(ours);
+}

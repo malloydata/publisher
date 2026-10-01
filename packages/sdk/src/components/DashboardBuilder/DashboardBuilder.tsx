@@ -291,6 +291,23 @@ export function DashboardBuilder({
          filterableFields(catalog, tile.source),
       [fieldsBySource, catalog],
    );
+   // The catalog's view behind the tile whose menu is open, for the charts the
+   // picker may offer; an inline or opaque tile has none.
+   const menuTile =
+      menu === undefined ? undefined : editor.document.tiles[menu.index];
+   const menuView = (() => {
+      if (!menuTile || !catalog) return undefined;
+      const base =
+         editor.document.sources.find((s) => s.name === menuTile.source)
+            ?.base ?? menuTile.source;
+      const viewName =
+         menuTile.declaration.kind === "reference"
+            ? menuTile.declaration.from
+            : menuTile.name;
+      return catalog.sources
+         .find((s) => s.name === base)
+         ?.views.find((v) => v.name === viewName);
+   })();
    // Bindings a tile's source cannot take, per control — a field it does not
    // have, or one of a type the given cannot compare: marked on the chip, so a
    // broken binding is seen before the package refuses it.
@@ -397,6 +414,7 @@ export function DashboardBuilder({
             declaration: { kind: "reference", from: tile.view },
             colspan: tile.colspan,
             ...(tile.label ? { label: tile.label } : {}),
+            ...(tile.chart ? { chart: tile.chart } : {}),
          });
       });
       setSelected(editor.document.tiles.length);
@@ -621,6 +639,7 @@ export function DashboardBuilder({
                   if (menu !== undefined) removeTile(menu.index);
                }}
                columns={columns}
+               view={menuView}
                onDrills={() => {
                   if (menu !== undefined)
                      setDrillSource(editor.document.tiles[menu.index]?.source);

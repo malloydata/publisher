@@ -70,7 +70,8 @@ export function docOf(annotations: string[] | undefined): string | undefined {
 /** `# bar_chart\n` -> `bar_chart`. Only the renderer's own chart tags count. */
 export function chartOf(annotations: string[] | undefined): string | undefined {
    for (const raw of annotations ?? []) {
-      const name = /^#\s*([a-z_]+)/.exec(raw.trim())?.[1];
+      // A `-name` removes a tag, so it is never the chart the view declares.
+      const name = /^#\s*(?:-[A-Za-z_]+\s+)*([a-z_]+)/.exec(raw.trim())?.[1];
       if (name && CHART_TAGS.includes(name)) return name;
    }
    return undefined;

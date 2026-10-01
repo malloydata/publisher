@@ -1,6 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { annotationTextProblem } from "./annotationText";
+import { isIdentifier } from "./malloyText";
+
 /**
  * A new dashboard file, the way the builder would have written it: the
  * dashboard-declared-givens convention with no givens yet, one extension of
@@ -25,7 +28,31 @@ export function slugFor(title: string): string {
       .slice(0, 80);
 }
 
-export function newDashboardSource({
+/** Why this dashboard cannot be written as a file, or undefined when it can. */
+export function newDashboardProblem({
+   title,
+   modelPath,
+   source,
+   view,
+}: NewDashboard): string | undefined {
+   for (const [what, name] of [
+      ["source", source],
+      ["view", view],
+   ] as const)
+      if (!isIdentifier(name))
+         return `The ${what} name ${JSON.stringify(name)} cannot be written as a Malloy name.`;
+   if (/["\\\r\n]/.test(modelPath))
+      return `The model path ${JSON.stringify(modelPath)} cannot be written into an import.`;
+   return annotationTextProblem("title", title);
+}
+
+export function newDashboardSource(dashboard: NewDashboard): string {
+   const problem = newDashboardProblem(dashboard);
+   if (problem) throw new Error(problem);
+   return writeNewDashboard(dashboard);
+}
+
+function writeNewDashboard({
    title,
    modelPath,
    source,

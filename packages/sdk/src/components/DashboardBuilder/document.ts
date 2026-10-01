@@ -21,6 +21,8 @@
  * opening it half-understood. See {@link readDashboardDocument}.
  */
 
+import type { ChartState } from "./chartLine";
+
 /** One `import` line. The file needs both forms, and for different reasons. */
 export type DashboardImport =
    /** `import "../givens.malloy"` — the whole file's declarations. */
@@ -151,6 +153,12 @@ export interface DashboardTile {
    filters?: Array<{ field: string; given: string; op?: string }>;
    label?: string;
    subtitle?: string;
+   /**
+    * The chart line on the tile's wrapper. Absent and `"default"` both mean no
+    * line (the view's own chart shows); `"custom"` is a line the builder does
+    * not model, which it keeps and never writes.
+    */
+   chart?: ChartState;
    colspan?: number;
    break?: boolean;
    borderless?: boolean;

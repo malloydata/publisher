@@ -5,7 +5,9 @@ import { Button, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogSource, PackageCatalog } from "./catalog";
+import type { ChartPick } from "./chartLine";
 import type { DashboardDocument } from "./document";
+import { ChartPicker } from "../NotebookBuilder/ChartPicker";
 import { AppDialog } from "../AppDialog";
 import { SourceViewPicker } from "./SourceViewPicker";
 
@@ -31,6 +33,8 @@ export interface NewTile {
    /** The view, as the catalog names it. */
    view: string;
    label?: string;
+   /** A chart for the tile; absent keeps the view's own. */
+   chart?: ChartPick | "none";
    colspan: number;
 }
 
@@ -73,6 +77,9 @@ export function AddTileDialog({
    const [base, setBase] = useState<string>("");
    const [view, setView] = useState<string>("");
    const [label, setLabel] = useState("");
+   const [chart, setChart] = useState<ChartPick | "none" | "default">(
+      "default",
+   );
    const [colspan, setColspan] = useState<number>(Math.ceil(columns / 2));
 
    useEffect(() => {
@@ -82,10 +89,14 @@ export function AddTileDialog({
       setBase(document.sources[0]?.base ?? sources[0]?.name ?? "");
       setView("");
       setLabel("");
+      setChart("default");
       setColspan(Math.ceil(columns / 2));
    }, [open, document, sources, columns]);
 
    const canAdd = base !== "" && view !== "";
+   const picked = sources
+      .find((source) => source.name === base)
+      ?.views.find((candidate) => candidate.name === view);
 
    return (
       <AppDialog
@@ -104,6 +115,7 @@ export function AddTileDialog({
                         base,
                         view,
                         ...(label.trim() ? { label: label.trim() } : {}),
+                        ...(chart !== "default" ? { chart } : {}),
                         colspan,
                      })
                   }
@@ -130,7 +142,23 @@ export function AddTileDialog({
                         setBase(name);
                         setView("");
                      }}
-                     onView={setView}
+                     onView={(name) => {
+                        setView(name);
+                        setChart("default");
+                     }}
+                  />
+                  <ChartPicker
+                     state={chart}
+                     view={picked}
+                     cellLabel="new tile"
+                     {...(picked
+                        ? {}
+                        : {
+                             disabledReason: "Pick a view to choose its chart.",
+                          })}
+                     onChange={(next) =>
+                        setChart(next as ChartPick | "none" | "default")
+                     }
                   />
                   <Stack direction="row" sx={{ gap: 1.5 }}>
                      <TextField

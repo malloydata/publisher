@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { chartStateOfTagLines, type ChartState } from "./chartLine";
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -128,6 +129,12 @@ export function blockAbove(
 
 /** Just the text of a block's tags, which is what `parseAnnotation` takes. */
 const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
+
+/** The tile's `chart` property, absent when its wrapper carries no chart line. */
+function chartField(tags: Array<{ text: string }>): { chart?: ChartState } {
+   const chart = chartStateOfTagLines(tagText(tags));
+   return chart === undefined ? {} : { chart };
+}
 
 /** The model-level `##` lines, which are not symbols and must be read as text. */
 function modelLines(lines: string[]): {
@@ -415,6 +422,7 @@ export async function readDashboardDocument(
             ...(t?.numeric("colspan") !== undefined
                ? { colspan: t.numeric("colspan") as number }
                : {}),
+            ...chartField(view.tags),
             ...(t?.has("break") ? { break: true } : {}),
             ...(t?.has("borderless") ? { borderless: true } : {}),
          });
@@ -441,6 +449,7 @@ export async function readDashboardDocument(
          ...(t?.numeric("colspan") !== undefined
             ? { colspan: t.numeric("colspan") as number }
             : {}),
+         ...chartField(view.tags),
          ...(t?.has("break") ? { break: true } : {}),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });

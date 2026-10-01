@@ -11,7 +11,9 @@ import {
 } from "@mui/material";
 import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import type { CatalogView } from "./catalog";
 import type { DashboardTile } from "./document";
+import { ChartPicker } from "../NotebookBuilder/ChartPicker";
 
 /**
  * A tile's own settings, on the tile: a popover off its menu button, so
@@ -34,7 +36,14 @@ export interface TileMenuProps {
    columns: number;
    /** Open the clickable-cells window for this tile's source. */
    onDrills: () => void;
+   /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
+   view?: Pick<CatalogView, "chart" | "aggregateOnly">;
 }
+
+const CUSTOM_CHART =
+   "This tile has a chart line the builder does not model, so its chart cannot be changed here.";
+const INHERITED_CHART =
+   "This tile's view is declared on its source, so its chart is set in the model.";
 
 export function TileMenu({
    anchor,
@@ -44,6 +53,7 @@ export function TileMenu({
    onRemove,
    columns,
    onDrills,
+   view,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
    const { draft, patch, close, discard } = useDraft(
@@ -103,6 +113,20 @@ export function TileMenu({
                            })
                         }
                      />
+                     <ChartPicker
+                        state={draft.chart ?? "default"}
+                        view={view}
+                        cellLabel={`${draft.source} ${draft.name}`}
+                        {...(draft.chart === "custom"
+                           ? { disabledReason: CUSTOM_CHART }
+                           : {})}
+                        onChange={(next) =>
+                           patch((t) => {
+                              if (next === "default") delete t.chart;
+                              else t.chart = next;
+                           })
+                        }
+                     />
                      {/* Width presets, as fractions of this grid. A
                          tile's width is otherwise a drag, and a drag cannot
                          say "a third". */}
@@ -150,10 +174,22 @@ export function TileMenu({
                      </Stack>
                   </>
                ) : (
-                  <Typography variant="body2" sx={{ color: theme.tileTitle }}>
-                     Declared on its source, so its title and layout are set in
-                     the model. It can still be moved.
-                  </Typography>
+                  <>
+                     <Typography
+                        variant="body2"
+                        sx={{ color: theme.tileTitle }}
+                     >
+                        Declared on its source, so its title and layout are set
+                        in the model. It can still be moved.
+                     </Typography>
+                     <ChartPicker
+                        state="default"
+                        view={view}
+                        cellLabel={`${draft.source} ${draft.name}`}
+                        disabledReason={INHERITED_CHART}
+                        onChange={() => {}}
+                     />
+                  </>
                )}
                {draft?.declaration.kind === "opaque" && (
                   <Typography variant="body2" sx={{ color: theme.tileTitle }}>

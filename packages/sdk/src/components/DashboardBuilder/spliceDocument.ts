@@ -1,6 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { annotationTextProblem } from "./annotationText";
+import {
+   chartLineText,
+   isChartPick,
+   mentionsChartTag,
+   parseChartLine,
+   type ChartPick,
+} from "./chartLine";
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -12,6 +20,7 @@ import {
    artifactLine,
    descriptionNotes,
    hasNonQuotedTiles,
+   isIdentifier,
 } from "./malloyText";
 import {
    parseMalloy,
@@ -137,8 +146,14 @@ function applyEdits(source: string, edits: Edit[]): string {
    return out;
 }
 
+/** The chart a tile's `chart` asks the writer to put on its wrapper; `default` and `custom` ask for no line. */
+const writableChart = (
+   chart: DashboardTile["chart"],
+): ChartPick | "none" | undefined =>
+   chart === "none" || isChartPick(chart) ? chart : undefined;
+
 /** The `#` tags a tile's presentation implies, in the order they are written. */
-function tagsFor(tile: DashboardTile): string[] {
+function tagsFor(tile: DashboardTile, withChart = true): string[] {
    const tags: string[] = [];
    if (tile.colspan !== undefined) tags.push(`# colspan=${tile.colspan}`);
    if (tile.break) tags.push("# break");
@@ -146,6 +161,8 @@ function tagsFor(tile: DashboardTile): string[] {
    if (tile.label !== undefined) tags.push(`# label=${quoted(tile.label)}`);
    if (tile.subtitle !== undefined)
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
+   const chart = withChart ? writableChart(tile.chart) : undefined;
+   if (chart !== undefined) tags.push(chartLineText(chart));
    return tags;
 }
 
@@ -1072,7 +1089,11 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       const was = currentByKey.get(tileKey(tile));
       // Written whole above, tags and all.
       if (was === undefined) continue;
-      if (canonical(was) === canonical(tile)) continue;
+      if (
+         canonical(withoutDefaultChart(was)) ===
+         canonical(withoutDefaultChart(tile))
+      )
+         continue;
 
       // Declared in the model, not here, so there is nothing in this file to
       // patch -- saying so beats writing a tag that would land on the wrong
@@ -1102,15 +1123,46 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 
       const { tags } = blockAbove(parsed, lines, declLine);
       const indent = indentOf(declLine);
-      const wanted = tagsFor(tile);
+      const wanted = tagsFor(tile, false);
       const wantedByKey = new Map(
          wanted.map((text) => [tagKey(text) ?? text, text]),
       );
       const seen = new Set<string>();
 
+      // Only a changed chart touches a chart line, so a bare `# bar_chart` survives every other edit.
+      const wantChart = writableChart(tile.chart);
+      const chartChanged = chartOf(was) !== chartOf(tile);
+      if (chartChanged) {
+         const blockers = tags.filter((tag) => mentionsChartTag(tag.text));
+         const ours = tags.filter((tag) => parseChartLine(tag.text));
+         const stuck =
+            blockers.length > 0 ? blockers : ours.length > 1 ? ours : [];
+         if (stuck.length > 0) {
+            return {
+               ok: false,
+               reason:
+                  `\`${tile.source} -> ${tile.name}\` has a chart line the builder does not ` +
+                  `model (${stuck.map((tag) => tag.text).join(" and ")}), so its chart ` +
+                  `cannot be changed here.`,
+            };
+         }
+      }
+      let chartPlaced = false;
+
       // Existing tag lines are patched or removed IN PLACE, so anything else in
       // the block — a comment explaining the tile — keeps its position.
       for (const tag of tags) {
+         if (chartChanged && parseChartLine(tag.text)) {
+            if (wantChart === undefined)
+               edits.push({ ...wholeLine(tag.line), text: "" });
+            else if (tag.text !== chartLineText(wantChart))
+               edits.push({
+                  ...wholeLine(tag.line),
+                  text: `${indent}${chartLineText(wantChart)}\n`,
+               });
+            chartPlaced = true;
+            continue;
+         }
          const key = tagKey(tag.text);
          // Not a property this document models: not ours to touch.
          if (key === undefined || !MODELLED_TAG_KEYS.has(key)) continue;
@@ -1128,6 +1180,8 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // New tags go immediately above the declaration, which is where a reader
       // looks for them and where `blockAbove` will find them again.
       const added = wanted.filter((text) => !seen.has(tagKey(text) ?? text));
+      if (chartChanged && wantChart !== undefined && !chartPlaced)
+         added.push(chartLineText(wantChart));
       if (added.length > 0) {
          const at = starts[declLine];
          edits.push({
@@ -1166,6 +1220,88 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       if (clash) return collisionRefusal(tile.name, clash.given);
       const failure = planStageFilters(ctx, tile, view.body.stage);
       if (failure) return failure;
+   }
+   return undefined;
+}
+
+/** A tile's chart as the writer compares it: no line (absent or `default`) is one state. */
+const chartOf = (tile: DashboardTile) =>
+   tile.chart === "default" ? undefined : tile.chart;
+
+const withoutDefaultChart = (tile: DashboardTile): DashboardTile => {
+   if (tile.chart !== "default") return tile;
+   const { chart: _chart, ...rest } = tile;
+   return rest;
+};
+
+/** A name the writer emits unquoted, or why it cannot be written. */
+const nameProblem = (name: string) =>
+   isIdentifier(name)
+      ? undefined
+      : `The name ${JSON.stringify(name)} cannot be written as a Malloy name.`;
+
+/** Why `next` holds a chart, name or annotation text the writer must not emit; only what changed is judged, so an existing odd string does not block unrelated edits. */
+function unwritable(
+   current: DashboardDocument,
+   next: DashboardDocument,
+): string | undefined {
+   const was = new Map(current.tiles.map((t) => [tileKey(t), t]));
+   for (const tile of next.tiles) {
+      const before = was.get(tileKey(tile));
+      const chart = tile.chart;
+      if (
+         chart !== undefined &&
+         chart !== "default" &&
+         chart !== "none" &&
+         !isChartPick(chart) &&
+         !(chart === "custom" && before?.chart === "custom")
+      )
+         return `"${String(chart)}" is not a chart this editor writes.`;
+      if (before === undefined) {
+         const names = [tile.name, tile.source];
+         if (tile.declaration.kind === "reference")
+            names.push(tile.declaration.from);
+         for (const name of names) {
+            const problem = nameProblem(name);
+            if (problem) return problem;
+         }
+      }
+      for (const key of ["label", "subtitle"] as const) {
+         const text = tile[key];
+         if (text === undefined || text === before?.[key]) continue;
+         const problem = annotationTextProblem(`tile ${key}`, text);
+         if (problem) return problem;
+      }
+   }
+   const knownSources = new Set(current.sources.map((s) => s.name));
+   for (const source of next.sources) {
+      if (knownSources.has(source.name)) continue;
+      for (const name of [source.name, source.base]) {
+         const problem = nameProblem(name);
+         if (problem) return problem;
+      }
+   }
+   if (next.title !== current.title) {
+      const problem = annotationTextProblem("title", next.title);
+      if (problem) return problem;
+   }
+   const givens = new Map((current.localGivens ?? []).map((g) => [g.name, g]));
+   for (const given of next.localGivens ?? []) {
+      for (const key of ["label", "description"] as const) {
+         const text = given[key];
+         if (text === undefined || text === givens.get(given.name)?.[key])
+            continue;
+         const problem = annotationTextProblem(`given ${key}`, text);
+         if (problem) return problem;
+      }
+   }
+   for (const [name, value] of Object.entries(next.startingGivens ?? {})) {
+      if (value === current.startingGivens?.[name]) continue;
+      const problem = annotationTextProblem(
+         `starting value for ${name}`,
+         value,
+      );
+      if (problem) return problem;
    }
    return undefined;
 }
@@ -1482,6 +1618,8 @@ export async function spliceDashboardDocument(
    const current = before.document;
    const shape = checkShape(current, next);
    if ("reason" in shape) return shape;
+   const problem = unwritable(current, next);
+   if (problem) return { ok: false, reason: problem };
 
    const parse = await parseMalloy(sourceText);
    if (parseRefused(parse))
@@ -1538,9 +1676,9 @@ export async function spliceDashboardDocument(
    const comparable = (document: DashboardDocument): DashboardDocument => {
       const { drills, localGivens, ...rest } = document;
       const tiles = document.tiles.map((tile) => {
-         if (tile.filters?.length) return tile;
+         if (tile.filters?.length) return withoutDefaultChart(tile);
          const { filters: _filters, ...tileRest } = tile;
-         return tileRest as DashboardTile;
+         return withoutDefaultChart(tileRest as DashboardTile);
       });
       return {
          ...rest,
