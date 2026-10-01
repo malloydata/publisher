@@ -5,6 +5,8 @@
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
 
+FROM node:24.21.0-trixie-slim AS node-runtime
+
 FROM oven/bun:1.3.13-slim AS base-deps
 
 # `apt-get upgrade` because the Debian packages in oven/bun's layer are frozen at
@@ -36,11 +38,6 @@ RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
 # `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
 # by the CI consistency check.
 #
-# The server runs under Bun and never invokes npm or npx. The nodejs package
-# bundles npm with its own copy of tar and other install-time dependencies, so
-# the last command removes it to keep an unused package manager out of the
-# runtime image.
-#
 # The CLI and its extensions go under the home of `bun` (uid 1000, shipped by
 # the oven/bun base), the user the server runs as, because DuckDB resolves
 # ~/.duckdb from HOME. Installed as root with HOME pointed there, then handed to
@@ -50,11 +47,17 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
     ln -s /home/bun/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     HOME=/home/bun duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
-    chown -R bun:bun /home/bun/.duckdb && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/* && \
-    rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx
+    chown -R bun:bun /home/bun/.duckdb
+
+# A Node runtime for anything in the image that shells out to `node`. Taken as the
+# single binary from the official Node image rather than the NodeSource apt
+# package: that package hard-depends on python3, which would put the Debian
+# python3.13 packages (and their unfixed CVEs) into the runtime image for a
+# runtime nothing here uses. The binary needs only libc and libstdc++, both already
+# present. npm and npx are not copied, and the server runs under Bun and never
+# invokes them. Tracks the current LTS line; bump with the Node release schedule.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+RUN node --version
 
 # ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
 # compiler never reaches the runtime image and so a broken driver/shim pair
