@@ -189,6 +189,10 @@ export const ENV_REFERENCE_DROPPED =
  * `#` routes read here and for the `##!` and `#@` routes the compiler reads, so
  * the snapshot was removed. The pollution test in `given.spec.ts` stays, now
  * pointed at the parser.
+ *
+ * That safety now rests on `@malloydata/motly-ts-parser` 0.9.1 or later, which
+ * we reach only through `@malloydata/malloy-tag`. A dependency bump that pulls
+ * an older parser brings the pollution back, and `given.spec.ts` will fail.
  */
 function parseBounded(texts: readonly string[]): {
    tag: Tag | undefined;
