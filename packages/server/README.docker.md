@@ -76,9 +76,9 @@ For the same pattern as a complete Compose file (with a healthcheck against `/ap
 
 The image runs the server as `bun`, uid 1000 and gid 1000, the user the `oven/bun` base image ships. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`.
 
-The code under `/publisher/packages/` and `/publisher/node_modules/` is root-owned and read-only to the server. It writes to three places, all owned by uid 1000:
+Every application file is root-owned, so the server cannot modify one in place. It writes to three places, all owned by uid 1000:
 
-- `/publisher/`, the server root, where it creates `publisher.db`. Because the directory is the server's, it can also replace or remove the root-owned files at its top level, `package.json` and `bun.lock`, though not write to them in place.
+- `/publisher/`, the server root, where it creates `publisher.db`. Because it owns this directory, the server can also rename aside and replace any of its top-level entries: `package.json`, `bun.lock`, and the `packages/` and `node_modules/` directories. Such a change lasts as long as the container. Some storage drivers, Docker's default overlayfs among them, refuse to rename a directory that comes from an image layer, but that is the driver's limit, not the image's.
 - `/publisher/publisher_data/`.
 - `/home/bun/.duckdb/extensions/`, for an extension the image did not bake.
 

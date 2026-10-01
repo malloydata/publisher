@@ -170,12 +170,15 @@ FROM base-deps AS final
 WORKDIR /publisher
 
 # The server runs as `bun` (uid 1000), not root; USER is set just before CMD so
-# the build steps below still run as root. The code under packages/ and
-# node_modules/ stays root-owned and read-only to the server. The server root
+# the build steps below still run as root. Every application file stays
+# root-owned, so the server cannot modify one in place. The server root
 # directory itself is owned by uid 1000, because publisher.db is created
-# directly in it, so the root-owned files at its top level (package.json,
-# bun.lock) can be replaced or removed by the server, though not written in
-# place.
+# directly in it, and that lets the server rename aside and replace any of its
+# top-level entries: package.json, bun.lock, and the packages/ and
+# node_modules/ directories. Such a change lasts as long as the container. Some
+# storage drivers, Docker's default overlayfs among them, refuse to rename a
+# directory that comes from an image layer; that limit belongs to the driver,
+# not this image.
 #
 # publisher_data/ is created here, owned by that user, because Docker seeds a
 # new named volume from the image's directory, ownership included: a volume
