@@ -33,7 +33,9 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ## [Unreleased] - The Docker image no longer ships Node or Python, and refreshes Debian packages daily
 
-`ms2data/malloy-publisher` no longer installs Node.js from the NodeSource repository, which also removes the Debian `python3.13` packages that NodeSource's `nodejs` package depends on. The server runs under Bun and does not use either. A `node` command inside the image now resolves to the Bun-backed fallback that the `oven/bun` base provides, rather than `/usr/bin/node` (Node 20); `python3` is no longer present. A `FROM ms2data/malloy-publisher` image or a `docker exec` script that calls `/usr/bin/node` or `python3` by path needs to install it, or to use `/usr/bin/env node`, which still resolves.
+`ms2data/malloy-publisher` no longer installs Node.js from the NodeSource repository, which also removes the Debian `python3.13` packages that NodeSource's `nodejs` package depends on. The server runs under Bun and does not use either. Removing Python also drops `netbase` and `media-types`, which only Python pulled in, so `/etc/services`, `/etc/protocols` and `/etc/mime.types` are no longer in the image and `getent services https` fails; the server reads none of them.
+
+A `node` command inside the image now resolves to the Bun-backed fallback that the `oven/bun` base provides, rather than `/usr/bin/node` (Node 20). That wrapper runs `node file.js` and `node -e`, but it rejects `node --version` and `node -v` ("does not support a repl"), so a healthcheck or script that calls those needs to change. `python3` is no longer present either. A `FROM ms2data/malloy-publisher` image or a `docker exec` script that calls `/usr/bin/node` or `python3` by path needs to install it; `/usr/bin/env node` still finds the fallback.
 
 Image builds also pick up Debian security updates the day they are published, instead of waiting for the ISO week to roll over.
 
