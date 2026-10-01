@@ -168,7 +168,7 @@ job is red, as CI does (SKILL.md step A), before concluding anything.
   (`base-deps`). A Trivy `Status: fixed` means an upgrade clears it (`bind9-dnsutils`,
   `libgnutls30t64`, `perl*` here). The upgrade only helps while its layer is rebuilt: BuildKit caches
   a `RUN` by its parent layer and command text, so that `RUN` reads the `APT_REFRESH` build arg, and
-  the CI builds pass the ISO week. If a `fixed` package stays red after Debian ships the fix, check
+  the CI builds pass the UTC date. If a `fixed` package stays red after Debian ships the fix, check
   that the build passing `APT_REFRESH` actually ran rather than hitting the cache.
 - **Unfixed Debian packages (`Status: affected`): ask what installed them before accepting.**
   Debian has no fix yet, so no upgrade helps, but the package may be there only because of a parent

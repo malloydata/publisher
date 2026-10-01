@@ -31,6 +31,28 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] - The Docker image no longer ships Node or Python, and refreshes Debian packages daily
+
+`ms2data/malloy-publisher` no longer installs Node.js from the NodeSource repository, which also removes the Debian `python3.13` packages that NodeSource's `nodejs` package depends on. The server runs under Bun and does not use either. Removing Python also drops `netbase` and `media-types`, which only Python pulled in, so `/etc/services`, `/etc/protocols` and `/etc/mime.types` are no longer in the image and `getent services https` fails; the server reads none of them.
+
+A `node` command inside the image now resolves to the Bun-backed fallback that the `oven/bun` base provides, rather than `/usr/bin/node` (Node 20). That wrapper runs `node file.js` and `node -e`, but it rejects `node --version` and `node -v` ("does not support a repl"), so a healthcheck or script that calls those needs to change. `python3` is no longer present either. A `FROM ms2data/malloy-publisher` image or a `docker exec` script that calls `/usr/bin/node` or `python3` by path needs to install it; `/usr/bin/env node` still finds the fallback.
+
+Image builds also pick up Debian security updates the day they are published, instead of waiting for the ISO week to roll over.
+
+## [Unreleased] — Malloy 0.0.434: two security fixes, and changes that can break a model
+
+Publisher now builds on `@malloydata/*` 0.0.434, up from 0.0.432. Two of the changes are security fixes:
+
+- **An unsafe `timezone:` name is now a compile error** ([malloydata/malloy#3089](https://github.com/malloydata/malloy/pull/3089)). On 0.0.432 any ad-hoc query could put raw SQL in `timezone:`, and it ran past givens and `#(authorize)`. It now fails with `Invalid timezone`.
+- **The tag parser no longer writes onto `Object.prototype`** ([malloydata/malloy#3078](https://github.com/malloydata/malloy/pull/3078)). A model annotation such as `# __proto__ { a=b }` or `##! __proto__ { a=b }` used to write onto shared objects in the server process, after which every later tag parse failed, for every package on that worker. Publisher had a guard on the `#` annotations it reads itself. The parser fix makes it unnecessary, so it is removed. One effect: while anything had added an accessor to `Object.prototype`, the guard refused every given's filter control. That no longer happens.
+
+These can stop an existing model compiling, or change what a query returns:
+
+- **`select: *` leaves out private fields** ([malloydata/malloy#3051](https://github.com/malloydata/malloy/pull/3051)). A query that does `-> { select: * }` and then names a private field in a later stage stops compiling with `'<field>' is not defined`. A data-app page that read that column from the result now gets `undefined`, with no error.
+- **MySQL `TINYINT(1)` and `BOOLEAN` columns are integers, not booleans** ([malloydata/malloy#3058](https://github.com/malloydata/malloy/pull/3058)). A MySQL model with `where: is_active` stops compiling on reload; write `where: is_active = 1`. DECIMAL values are also cast differently.
+- **Generated SQL changes** for filtered joins, including how BigQuery packs them ([malloydata/malloy#3075](https://github.com/malloydata/malloy/pull/3075)), and for the ordering of multi-stage nests ([malloydata/malloy#3083](https://github.com/malloydata/malloy/pull/3083)). Results should not change; SQL you compare or cache will.
+- **The Trino driver moves to `@trinodb/trino-js-client`** ([malloydata/malloy#3066](https://github.com/malloydata/malloy/pull/3066)).
+
 ## [Unreleased] — The Docker image runs the server as a non-root user
 
 `ms2data/malloy-publisher` now runs the server as `bun`, uid 1000 and gid 1000, instead of root. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`. The DuckDB CLI and the baked extensions move from `/root/.duckdb/` to `/home/bun/.duckdb/`, and the image sets `HOME=/home/bun`.

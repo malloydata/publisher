@@ -18,8 +18,8 @@ FROM oven/bun:1.3.13-slim AS base-deps
 # APT_REFRESH exists to invalidate this layer. BuildKit caches a RUN by its
 # parent layer and its command text, so while the base tag keeps its digest the
 # upgrade would run once and its package versions would freeze in the build
-# cache. CI passes the ISO week (for example 2026-W40), so the layer, and every
-# layer after it, rebuilds at least weekly. A local build that passes nothing
+# cache. CI passes the UTC date (for example 2026-10-01), so the layer, and every
+# layer after it, rebuilds at least daily. A local build that passes nothing
 # caches as before.
 ARG APT_REFRESH=
 RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
@@ -36,11 +36,6 @@ RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
 # `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
 # by the CI consistency check.
 #
-# The server runs under Bun and never invokes npm or npx. The nodejs package
-# bundles npm with its own copy of tar and other install-time dependencies, so
-# the last command removes it to keep an unused package manager out of the
-# runtime image.
-#
 # The CLI and its extensions go under the home of `bun` (uid 1000, shipped by
 # the oven/bun base), the user the server runs as, because DuckDB resolves
 # ~/.duckdb from HOME. Installed as root with HOME pointed there, then handed to
@@ -50,11 +45,13 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
     ln -s /home/bun/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     HOME=/home/bun duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
-    chown -R bun:bun /home/bun/.duckdb && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/* && \
-    rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx
+    chown -R bun:bun /home/bun/.duckdb
+
+# No Node runtime. The server runs under Bun (CMD below) and nothing in it spawns
+# `node`; where a `node` command is needed, the oven/bun base provides one that
+# resolves to Bun. The NodeSource apt package is deliberately not installed: it
+# hard-depends on python3, which brings the Debian python3.13 packages and their
+# unfixed CVEs into the runtime image for a runtime nothing here uses.
 
 # ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
 # compiler never reaches the runtime image and so a broken driver/shim pair
