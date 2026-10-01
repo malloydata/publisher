@@ -18,7 +18,12 @@ import {
    type EmbeddingProvider,
 } from "../../service/embedding_provider";
 import { logger } from "../../logger";
-import { entityRowKey, trySemanticSearch } from "./embedding_index";
+import {
+   entityRowKey,
+   getEmbeddingIndexStatus,
+   trySemanticSearch,
+   type EmbeddingIndexStatus,
+} from "./embedding_index";
 import type { PipelineContext, Retriever } from "./get_context_pipeline";
 import {
    MAX_LIMIT,
@@ -57,6 +62,32 @@ function compareRanked(a: ResultEntity, b: ResultEntity): number {
    );
 }
 
+/**
+ * The package's index state, read to explain why a search could not be
+ * answered (progress while indexing, the last error and when the next try is).
+ * Undefined when it cannot be read; the caller then words the reason without it.
+ */
+async function indexStatusFor(
+   ctx: PipelineContext,
+   provider: EmbeddingProvider,
+): Promise<EmbeddingIndexStatus | undefined> {
+   const { request, environmentStore, pkgIndex } = ctx;
+   try {
+      return await getEmbeddingIndexStatus(
+         environmentStore.storageManager.getDuckDbConnection(),
+         provider,
+         request.environmentName,
+         request.packageName,
+         pkgIndex.retrievalEntities,
+      );
+   } catch (error) {
+      logger.warn("[MCP Tool getContext] Could not read the index state", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+   }
+}
+
 export const semanticRetriever: Retriever = {
    name: "semantic",
    async retrieve(ctx: PipelineContext) {
@@ -72,13 +103,12 @@ export const semanticRetriever: Retriever = {
       try {
          provider = getEmbeddingProvider();
       } catch (error) {
+         const message = error instanceof Error ? error.message : String(error);
          logger.warn(
-            "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
-            {
-               error: error instanceof Error ? error.message : String(error),
-            },
+            "[MCP Tool getContext] Embedding configuration invalid; semantic search unavailable",
+            { error: message },
          );
-         return { unavailable: "unavailable" };
+         return { unavailable: "unavailable", detail: message };
       }
       if (provider) {
          try {
@@ -228,19 +258,29 @@ export const semanticRetriever: Retriever = {
                   totalEntities: unionTotalEntities,
                };
             }
-            return { unavailable: searchFailure };
+            return {
+               unavailable: searchFailure,
+               status: await indexStatusFor(ctx, provider),
+            };
          } catch (error) {
             // Defensive: trySemanticSearch does not throw, but the
             // storage handle lookup can (e.g. before initialization
-            // or under a partial test double). Semantic retrieval
-            // must never take tier 4 down with it.
+            // or under a partial test double). Reported as unavailable
+            // rather than allowed to take the tool down.
+            const message =
+               error instanceof Error ? error.message : String(error);
             logger.warn(
-               "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
-               {
-                  error: error instanceof Error ? error.message : String(error),
-               },
+               "[MCP Tool getContext] Semantic retrieval unavailable",
+               { error: message },
             );
-            return { unavailable: "unavailable" };
+            // The cause goes to the log, not the response: it is an internal
+            // exception message, which differs by runtime and says nothing a
+            // caller can act on.
+            return {
+               unavailable: "unavailable",
+               detail:
+                  "the semantic index storage could not be reached (see the server log)",
+            };
          }
       }
       return { unavailable: "unconfigured" };

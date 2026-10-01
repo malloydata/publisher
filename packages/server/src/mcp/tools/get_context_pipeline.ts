@@ -17,6 +17,7 @@
  */
 
 import type { EnvironmentStore } from "../../service/environment_store";
+import type { EmbeddingIndexStatus } from "./embedding_index";
 import type {
    PackageIndex,
    ResolvedRequest,
@@ -89,10 +90,16 @@ export interface RetrievalResult {
 
 /**
  * A retriever that cannot answer says why. `unconfigured` means "no embedding
- * provider": the caller falls back silently, with no `retrieval_reason`.
+ * provider": the caller ranks lexically, which is the server's mode and not a
+ * fallback. Any other reason is a configured server that cannot answer a
+ * search right now, and the caller reports it instead of answering lexically.
  */
 export interface Unavailable {
    unavailable: RetrievalReason | "unconfigured";
+   /** The package's index state when the reason was found, for the message. */
+   status?: EmbeddingIndexStatus;
+   /** Reason-specific text the status cannot carry (an invalid configuration). */
+   detail?: string;
 }
 
 export interface Retriever {
@@ -103,8 +110,6 @@ export interface Retriever {
 /** The ranked rows plus how they were found, passed through RankStages. */
 export interface RankedState extends RetrievalResult {
    retrieval: Retriever["name"];
-   /** Why a configured server answered lexically, when it did. */
-   retrievalReason?: RetrievalReason;
 }
 
 /**
