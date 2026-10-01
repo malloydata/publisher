@@ -16,6 +16,18 @@
 # package clones and DuckDB extension cache across container
 # restarts, so the first-boot clone of sample packages from GitHub
 # only happens once.
+#
+# The server runs as uid 1000, not root. A new `publisher_data` volume
+# is created writable by it. One an earlier, root-run image created
+# needs a one-time chown through Compose, from this directory:
+#
+#   docker compose run --rm --no-deps --user 0 --entrypoint chown \
+#     publisher -R 1000:1000 /publisher/publisher_data
+#
+# Not `docker run -v publisher_data:...`: Compose names the volume
+# `<project>_publisher_data`, so that would chown a new, empty one.
+# Any other writable volume you add must be prepared for uid 1000 too;
+# packages/server/README.docker.md explains how.
 
 services:
   publisher:
