@@ -291,8 +291,21 @@ What to know before turning it on:
   otherwise do. After that, a read is two row counts and never waits on a sync, so polling it in a
   loop is cheap.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
-  to lexical (with a warning in the server log) and retries after a cool-down. A package with more
-  than 5,000 entities stays lexical.
+  to lexical (with a warning in the server log) and retries after a cool-down.
+- Entity cap (`retrieval.indexing.maxEntities`, default `5000`): a package with more entities than
+  this is not embedded, because its first index would take minutes of provider calls. Raise it in
+  `publisher.config.json` and restart the server:
+
+  ```json
+  { "retrieval": { "indexing": { "maxEntities": 20000 } } }
+  ```
+
+  It must be a positive integer; anything else stops the server at startup with
+  `Invalid retrieval.indexing.maxEntities: expected a positive integer, got X. Fix: set it to e.g.
+  20000`. It counts entities, not vectors: a documented entity costs a name vector plus one per
+  chunk of its documentation, so the number of provider calls on a first index is a small multiple
+  of the cap. A higher cap makes that first index take longer in proportion. The server reads the
+  value once, at startup.
 - Tuning the floor (`EMBEDDING_MIN_SIMILARITY`, default `0.2`): a match below the floor is dropped
   rather than returned as a weak hit, which is what lets an empty result mean "this package models
   nothing like that". The right value is a property of the embedding model, not of Publisher —

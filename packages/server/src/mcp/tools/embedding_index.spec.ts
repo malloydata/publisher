@@ -24,7 +24,8 @@ import {
    EmbeddableEntity,
    MAX_DOC_CHARS,
    MAX_DOC_CHUNKS,
-   MAX_EMBEDDED_ENTITIES,
+   getMaxEmbeddedEntities,
+   setMaxEmbeddedEntities,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
    chunkDoc,
    entityFacets,
@@ -574,7 +575,7 @@ describe("trySemanticSearch", () => {
       // shared include imported by ten files is 10x.
       expect(counts.get("alpha")).toBe(1);
       expect(ready.hits.map((h) => h.name)).toEqual(["alpha"]);
-      // Counted once too, so MAX_EMBEDDED_ENTITIES and totalEntities track
+      // Counted once too, so the entity cap and totalEntities track
       // the model rather than the number of files importing it.
       expect(ready.totalEntities).toBe(1);
 
@@ -931,13 +932,13 @@ describe("trySemanticSearch", () => {
          provider,
          "env",
          "huge",
-         Array.from({ length: MAX_EMBEDDED_ENTITIES + 1 }, (_, i) =>
+         Array.from({ length: getMaxEmbeddedEntities() + 1 }, (_, i) =>
             entity(`e${i}`, "src"),
          ),
       );
       expect(status.status).toBe("too-many-entities");
       expect(status.lastError?.message).toContain(
-         `${MAX_EMBEDDED_ENTITIES + 1} entities`,
+         `${getMaxEmbeddedEntities() + 1} entities`,
       );
    });
 
@@ -2301,5 +2302,55 @@ describe("sync saves each batch and retries transient failures", () => {
       await untilCooldown(baseArgs(provider));
       expect(requests).toBe(1);
       expect(slept).toEqual([]);
+   });
+});
+
+describe("the entity cap is the configured value", () => {
+   const args = (provider: EmbeddingProvider, count: number) => ({
+      db,
+      provider,
+      pkg: {} as unknown as Package,
+      environmentName: "env",
+      packageName: "capped",
+      entities: Array.from({ length: count }, (_, i) =>
+         entity(i === 0 ? "alpha" : `e${i}`, "src"),
+      ),
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      limit: 10,
+   });
+
+   it("refuses a package one entity over the cap, and embeds one at the cap", async () => {
+      setMaxEmbeddedEntities(3);
+      const { provider, counts } = mapProvider({
+         ...QUERY_VECTORS,
+         alpha: [1, 0, 0],
+         e1: [0, 1, 0],
+         e2: [0, 0, 1],
+      });
+      expect(await trySemanticSearch(args(provider, 4))).toEqual({
+         unavailable: "too-many-entities",
+      });
+      expect(counts.size).toBe(0);
+
+      const atCap = await searchReady(args(provider, 3));
+      expect("hits" in atCap).toBe(true);
+   });
+
+   it("says the count, the cap and how to raise it", async () => {
+      setMaxEmbeddedEntities(3);
+      const { provider } = mapProvider(QUERY_VECTORS);
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "capped",
+         args(provider, 4).entities,
+      );
+      expect(status.status).toBe("too-many-entities");
+      const message = status.lastError?.message ?? "";
+      expect(message).toContain("4 entities");
+      expect(message).toContain("cap of 3");
+      expect(message).toContain("retrieval.indexing.maxEntities");
+      expect(message).toContain("publisher.config.json");
    });
 });
