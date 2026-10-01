@@ -3921,6 +3921,7 @@ export class Model {
             undefined,
             undefined,
             alreadyProven,
+            compositeResolvedSourceDef ? struct : undefined,
          );
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", site);
