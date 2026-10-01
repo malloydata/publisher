@@ -101,7 +101,7 @@ Present a table of proposed fields.
 | order_size | total buckets (data-driven) | Distribution: min $5, p25 $35, median $85, p75 $150, p95 $450, max $2,400. Proposed breaks at p25/p75: <$35, $35-$150, >$150 | nice-to-have |
 | is_returned | returned_at is not null | 8% of orders have non-null returned_at | nice-to-have |
 
-**Data-driven tiers:** For bucketed dimensions like `order_size`, always derive boundaries from the actual data distribution (percentiles, natural breaks, clustering). Query `min`, `max`, `p25`, `p50`, `p75`, `p95` and propose boundaries based on the distribution. Show the evidence so the user can confirm or adjust. Never use arbitrary hardcoded thresholds unless the user explicitly provides them.
+**Data-driven tiers:** For bucketed dimensions like `order_size`, always derive boundaries from the actual data distribution (percentiles, natural breaks, clustering). Query `min`, `max`, `p25`, `p50`, `p75`, `p95` and propose boundaries based on the distribution. Malloy has no percentile function; use the **Tier boundaries** query in `skill:malloy-discover`. Show the evidence so the user can confirm or adjust. Never use arbitrary hardcoded thresholds unless the user explicitly provides them.
 
 **Measures:**
 

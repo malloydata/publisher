@@ -99,7 +99,7 @@ When reviewing tables and columns, capture:
 |-----------------|-------------|
 | **Denormalized vs joined values** | Compare pre-computed columns (e.g., `customers.order_count`) against the actual joined aggregate (`count()` from `orders`). Report discrepancy rate. If >0%, flag for user decision. |
 | **Candidate date fields** | When multiple date/timestamp columns exist, query both. What % of rows differ? By how much? This informs which is canonical. |
-| **Numeric column distributions** | Query min, max, avg, percentiles (p25, p50, p75, p95). These inform tier boundaries and detect outliers. |
+| **Numeric column distributions** | Query min, max, avg, percentiles (p25, p50, p75, p95). These inform tier boundaries and detect outliers. Malloy has no percentile function; use the **Tier boundaries** query below. |
 | **Categorical column cardinality** | Query distinct values. A `status` column with 5 values behaves differently from one with 500. |
 | **Column usefulness** | Query NULL rates. Columns that are >95% NULL are candidates for `internal`. |
 | **Join cardinality** | Query FK uniqueness: `group_by: fk_col, aggregate: row_count is count(), having: row_count > 1`. Determines `join_one` vs `join_many`. |
@@ -111,15 +111,25 @@ When reviewing tables and columns, capture:
 
 ### Example Queries
 
-**Tier boundaries**: query distribution, propose breaks from percentiles:
+**Tier boundaries**: query distribution, propose breaks from percentiles. Malloy has no percentile function (`sale_price.percentile(25)` fails with `Unknown function 'percentile'`), so compute them in two stages:
 ```malloy
 run: orders -> {
+  where: sale_price is not null
+  group_by: sale_price
+  aggregate: n is count(), total is all(count())
+  calculate: running is sum_cumulative(n)
+  order_by: sale_price
+} -> {
   aggregate:
-    min_val is min(sale_price), p25 is sale_price.percentile(25)
-    median_val is sale_price.percentile(50), p75 is sale_price.percentile(75)
-    p95 is sale_price.percentile(95), max_val is max(sale_price)
+    min_val is min(sale_price)
+    p25 is min(sale_price) { where: running >= total * 0.25 }
+    p50 is min(sale_price) { where: running >= total * 0.5 }
+    p75 is min(sale_price) { where: running >= total * 0.75 }
+    p95 is min(sale_price) { where: running >= total * 0.95 }
+    max_val is max(sale_price)
 }
 ```
+Stage one counts the rows for each distinct value and keeps a running total in value order. Stage two takes the smallest value whose running total reaches each fraction of all rows. The result is exact (the nearest-rank percentile). It uses no raw SQL, so it runs in an ad-hoc query on any dialect. Keep the `where: ... is not null`: NULL rows count toward `total` but never toward a value, and they push every percentile up. This is a query, not a measure. A percentile or median `measure:` cannot be expressed (see `skill:malloy-gotchas-modeling`).
 
 **Denormalized vs joined**: compare pre-computed column against real aggregate, report match rate:
 ```malloy
