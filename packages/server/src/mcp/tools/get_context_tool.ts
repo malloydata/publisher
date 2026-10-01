@@ -20,6 +20,7 @@ import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
+   enqueuePackageSync,
    entityRowKey,
    KEY_SEPARATOR,
    getEmbeddingIndexStatus,
@@ -2650,4 +2651,42 @@ export async function getPackageEmbeddingStatus(
       packageName,
       pkgIndex.retrievalEntities,
    );
+}
+
+/**
+ * Queue the semantic index for a package that has just loaded, so the vectors
+ * build before the first question. Only enqueues; see {@link enqueuePackageSync}.
+ * Wired to the environment store's package-loaded hook at server start.
+ */
+export function startPackageEmbeddingSync(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   pkg: Package,
+): void {
+   const packageName = pkg.getPackageName();
+   enqueuePackageSync({
+      pkg,
+      environmentName,
+      packageName,
+      prepare: async () => {
+         if (!embeddingConfigured()) return undefined;
+         // Throws on a malformed embedding configuration; the queue logs it,
+         // and the status endpoint reports it.
+         const provider = getEmbeddingProvider();
+         if (!provider) return undefined;
+         const pkgIndex = await getPackageIndex(
+            environmentStore,
+            environmentName,
+            packageName,
+         );
+         // The package was reloaded while this waited; the reload queued its
+         // own sync.
+         if (pkgIndex.pkg !== pkg) return undefined;
+         return {
+            db: environmentStore.storageManager.getDuckDbConnection(),
+            provider,
+            entities: pkgIndex.retrievalEntities,
+         };
+      },
+   });
 }

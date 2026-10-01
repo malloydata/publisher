@@ -250,38 +250,46 @@ What to know before turning it on:
   documentation re-embeds that documentation and leaves its name vector alone. `--init` wipes the
   cache along with the rest of persisted storage; the only cost of a wipe is re-embedding. A server
   upgrading from a release that embedded one vector per entity discards its cache once, on the
-  first boot after the upgrade, and re-embeds each package on its next question.
-- First query per package: the first question about content nothing has embedded yet kicks off the
-  embedding sync in the background and answers lexically; once the sync lands, later questions are
-  ranked semantically. A reload does not repeat that: `reload_package`, `?reload=true` and a
-  watch-mode save all keep the warm index as long as the saved files hash the same, so the next
-  question is ranked semantically on its first call. An edit re-syncs, and re-embeds only the parts
-  whose text changed. Responses carry a `retrieval` field (`"semantic"` or `"lexical"`) whenever the
-  provider is configured, and a lexical one adds `retrieval_reason` saying why: `indexing` (still
-  building — clears on its own, worth one retry), `cooldown` (a recent provider failure is being
-  short-circuited), `too-many-entities`, `provider-error`, or `unavailable`. Only `indexing` is
-  worth retrying.
+  first boot after the upgrade, and re-embeds each package as it loads.
+- When indexing starts: the server starts embedding a package in the background as soon as it
+  loads, at boot, on add or install, and on reload, without waiting for a question. Packages are
+  embedded one at a time across the whole server, because the provider and its rate limit are
+  shared. Each batch of up to 512 inputs is saved as it returns, so a failure part-way keeps what
+  was saved and the next try embeds only the rest. A 429, a 5xx or a timeout is retried up to five
+  times with exponential backoff and jitter, honouring `Retry-After`; a rejected key or another 4xx
+  fails at once. When the tries are used up the package waits out a cool-down (60 seconds) before
+  the next try, which a question after the window starts. A question asked before the index is
+  ready is answered lexically; once the sync lands, later questions are ranked semantically. A
+  reload does not repeat the work: `reload_package`, `?reload=true` and a watch-mode save all keep
+  the warm index as long as the saved files hash the same. An edit re-syncs, and re-embeds only the
+  parts whose text changed. Responses carry a `retrieval` field (`"semantic"` or `"lexical"`)
+  whenever the provider is configured, and a lexical one adds `retrieval_reason` saying why:
+  `indexing` (still building — clears on its own, worth one retry), `cooldown` (a recent provider
+  failure is being short-circuited), `too-many-entities`, `provider-error`, or `unavailable`. Only
+  `indexing` is worth retrying.
 - Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
   carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` /
-  `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows`, `totalEntities`,
-  `embeddedEntities`, and `lastSyncedAt`. Before measuring retrieval quality, send the package one
-  `get_context` question, then poll until `ready`, so you are not measuring a half-built index. Do
-  it in that order, and after every restart, not only for a new package. Only a question starts
-  the sync, and a restart forgets which syncs completed, so every package reads `indexing` after a
-  restart. A script that polls before asking anything waits forever. `ready` means the index is
-  warm, so the next question about the package is ranked semantically: it is decided by the same
-  completed sync the search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports
-  `indexing` until it has re-embedded, and a restart reports `indexing` until the first question re-establishes the
-  sync, even though the vectors are still on disk. It describes the index, not the next response —
-  a question whose own query embedding fails still falls back, with `retrieval_reason:
-  provider-error`. Do not read readiness off `embeddedEntities == totalEntities`: those count
-  coverage by entity name, so they can be equal while a doc edit is still unembedded. Nor off
-  `embeddedRows`, which counts every cached vector under the current model regardless of its
-  length, so a change to `EMBEDDING_DIMENSIONS` that no question has probed yet still counts the
-  old rows. The first read after a package loads or reloads builds that package's entity index
-  and its content fingerprint, which is work a plain metadata read would not otherwise do. After
-  that, a read is two row counts and never waits on a sync, so polling it in a loop is cheap. It is
-  absent when no provider is configured.
+  `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows` of `totalRows`
+  (progress while indexing), `totalEntities`, `embeddedEntities`, `lastSyncedAt`, `startedAt`
+  (when the running sync began), and, on `cooldown` or `too-many-entities`, `lastError`
+  (`message`, and `retryAt` when a retry is scheduled). The object is absent when no provider is
+  configured.
+  Poll until `ready` before measuring retrieval quality, so you are not measuring a half-built
+  index; there is no need to send a question first, because indexing starts when the package
+  loads. After a restart every package reads `indexing` until its turn in the queue has checked
+  its stored vectors, which is quick when nothing changed. `ready` means the index is warm, so the
+  next question about the package is ranked semantically: it is decided by the same completed sync
+  the search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports `indexing`
+  until it has re-embedded. It describes the index, not the next response — a question whose own
+  query embedding fails still falls back, with `retrieval_reason: provider-error`. Do not read
+  readiness off `embeddedEntities == totalEntities`: those count coverage by entity name, so they
+  can be equal while a doc edit is still unembedded. Nor off `embeddedRows`, which counts every
+  cached vector under the current model regardless of its length, so a change to
+  `EMBEDDING_DIMENSIONS` that no question has probed yet still counts the old rows. The first read
+  after a package loads builds that package's entity index and its content fingerprint (in
+  chunks, so other requests are not blocked), which is work a plain metadata read would not
+  otherwise do. After that, a read is two row counts and never waits on a sync, so polling it in a
+  loop is cheap.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
   to lexical (with a warning in the server log) and retries after a cool-down. A package with more
   than 5,000 entities stays lexical.

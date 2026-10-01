@@ -66,6 +66,7 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
 import {
    addCommand,
    ensureMcpConfig,
@@ -356,6 +357,12 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
+// Start the semantic index building as each package loads, rather than on the
+// first question. This only queues work (see startPackageEmbeddingSync); with
+// no embedding provider the queued job returns at once.
+environmentStore.setPackageLoadedHook((environmentName, pkg) =>
+   startPackageEmbeddingSync(environmentStore, environmentName, pkg),
+);
 const packageController = new PackageController(environmentStore);
 const dashboardController = new DashboardController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
