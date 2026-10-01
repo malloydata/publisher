@@ -125,6 +125,22 @@ export function takePlacement(
    return placement;
 }
 
+/** The span's whole-line comments (line or block), which the writer deletes with their cell. */
+function wholeLineComments(span: string): string[] {
+   const out: string[] = [];
+   let inBlock = false;
+   for (const line of span.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (inBlock || /^(\/\/|--|\/\*)/.test(trimmed)) {
+         out.push(line);
+         if (inBlock) inBlock = !trimmed.includes("*/");
+         else if (trimmed.startsWith("/*"))
+            inBlock = !trimmed.slice(2).includes("*/");
+      }
+   }
+   return out;
+}
+
 export function useNotebookEditor(options: {
    /** The file as read from storage. */
    source: string;
@@ -228,12 +244,11 @@ export function useNotebookEditor(options: {
          .filter((cell) => cell.kind !== "definition" && !kept.has(cell.id))
          .flatMap((cell) => {
             const span = text.slice(cell.span.start, cell.span.end);
-            const lines = (leadingComments(span) ?? "").split(/\r?\n/);
             // A query's span can also carry comments between its tags and its run.
-            if (cell.kind === "query")
-               lines.push(
-                  ...span.split(/\r?\n/).filter((l) => /^\s*(\/\/|--)/.test(l)),
-               );
+            const lines =
+               cell.kind === "query"
+                  ? wholeLineComments(span)
+                  : (leadingComments(span) ?? "").split(/\r?\n/);
             return [...new Set(lines.filter((line) => line.trim() !== ""))];
          });
    }, [document, source]);

@@ -20,6 +20,8 @@ const BODIES: Record<string, string> = {
    "bare line": `# line_chart\n${RUN}`,
    "table line": `${chartLineText("none")}\n${RUN}`,
    "caption, prose and comment": `// Why.\n#" Revenue\n#(markdown) Note.\n#|(markdown)\nnot a tag\n|#\n${RUN}`,
+   // `|#` indented past the opener does not close it, so the block runs on to the column-0 closer.
+   "prose block with an indented closer inside": `#|(markdown)\nnot a tag\n  |#\nstill prose\n|#\n${RUN}`,
    "caption and a line": `#" Revenue\n${chartLineText("line_chart")}\n// kept\n${RUN}`,
 };
 

@@ -199,6 +199,30 @@ describe("useNotebookEditor: query cells", () => {
       expect(comments).toEqual(["// Why."]);
    });
 
+   it("lists line and block comments above a query with no tags", async () => {
+      const { view } = await open(
+         ["a"],
+         `## artifact { kind=notebook }\n${DEF}\n\n// Line.\n/* One. */\n/*\n  Many.\n*/\n${RUN}\n`,
+      );
+      act(() =>
+         view.result.current.update((d) => {
+            const at = d.cells.findIndex((c) => c.kind === "query");
+            d.cells.splice(at, 1);
+         }),
+      );
+      let comments: string[] = [];
+      await act(async () => {
+         comments = await view.result.current.removedComments();
+      });
+      expect(comments).toEqual([
+         "// Line.",
+         "/* One. */",
+         "/*",
+         "  Many.",
+         "*/",
+      ]);
+   });
+
    it("disables moving an added query above a definition", async () => {
       const { view } = await open();
       addQuery(view);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { chartLineText, type ChartState } from "../DashboardBuilder/chartLine";
+import { closesBlock } from "../DashboardBuilder/malloyText";
 import type { NotebookSource } from "./readNotebookSource";
 
 /** Each read cell's exact text by id: what a query cell sends to run, byte for byte. */
@@ -29,41 +30,49 @@ export function cellQueries(source: NotebookSource): Map<string, string> {
    );
 }
 
+/**
+ * The lines of a cell's `#|(…)` prose blocks, opener to closer. The closer is Malloy's: at the
+ * opener's column, and not `|##`. An opener with no closer is not a block.
+ */
+function proseBlockLines(lines: string[]): Set<number> {
+   const inside = new Set<number>();
+   for (let i = 0; i < lines.length; i++) {
+      if (!/^[ \t]*#\|\(/.test(lines[i])) continue;
+      const column = /^[ \t]*/.exec(lines[i])![0].length;
+      for (let j = i + 1; j < lines.length; j++) {
+         if (!closesBlock(lines[j], column, "|#")) continue;
+         for (let k = i; k <= j; k++) inside.add(k);
+         i = j;
+         break;
+      }
+   }
+   return inside;
+}
+
 /** A query cell's code with its prose and caption lines taken out, since those render as prose. */
 export function queryCode(slice: string): string {
-   const out: string[] = [];
-   let inBlock = false;
-   for (const line of slice.replace(/\r\n/g, "\n").split("\n")) {
-      const trimmed = line.trim();
-      if (inBlock) {
-         if (trimmed.startsWith("|#")) inBlock = false;
-         continue;
-      }
-      if (/^#\|\(/.test(trimmed)) {
-         inBlock = true;
-         continue;
-      }
-      if (trimmed.startsWith('#"') || /^#\((markdown|text)\)/.test(trimmed))
-         continue;
-      out.push(line);
-   }
-   return out.join("\n").trim();
+   const lines = slice.replace(/\r\n/g, "\n").split("\n");
+   const blocks = proseBlockLines(lines);
+   return lines
+      .filter((line, i) => {
+         if (blocks.has(i)) return false;
+         const trimmed = line.trim();
+         return !(
+            trimmed.startsWith('#"') || /^#\((markdown|text)\)/.test(trimmed)
+         );
+      })
+      .join("\n")
+      .trim();
 }
 
 /** The `#"` caption lines in a query cell's tag block, joined; prose blocks and comments inside the block are skipped. */
 export function captionOf(slice: string): string | undefined {
    const lines: string[] = [];
-   let inBlock = false;
-   for (const line of slice.replace(/\r\n/g, "\n").split("\n")) {
+   const all = slice.replace(/\r\n/g, "\n").split("\n");
+   const blocks = proseBlockLines(all);
+   for (const [i, line] of all.entries()) {
+      if (blocks.has(i)) continue;
       const trimmed = line.trim();
-      if (inBlock) {
-         if (trimmed.startsWith("|#")) inBlock = false;
-         continue;
-      }
-      if (/^#\|\(/.test(trimmed)) {
-         inBlock = true;
-         continue;
-      }
       if (
          trimmed === "" ||
          trimmed.startsWith("//") ||
@@ -105,18 +114,13 @@ export function withChart(
       lines.splice(found, 1, ...fresh);
       return lines.join("");
    }
-   let inBlock = false;
+   const blocks = proseBlockLines(
+      lines.map((line) => line.replace(/\r?\n$/, "")),
+   );
    let at = lines.length;
    for (const [i, line] of lines.entries()) {
+      if (blocks.has(i)) continue;
       const trimmed = line.trim();
-      if (inBlock) {
-         if (trimmed.startsWith("|#")) inBlock = false;
-         continue;
-      }
-      if (/^#\|\(/.test(trimmed)) {
-         inBlock = true;
-         continue;
-      }
       if (!isHeaderLine(trimmed)) {
          at = i;
          break;
