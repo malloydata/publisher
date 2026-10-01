@@ -36,8 +36,8 @@ friction log, item 7) is caught here rather than 25 hours later.
 A restart PRESERVES the server root. `--init` is passed only to seed a fresh
 one, when `--reinit` asks for a wipe, or, with --role, when the config this
 script writes differs from the one on disk, because it drops every table
-including `entity_embeddings` and a restart that re-embeds silently answers the
-calls arriving during the sync from lexical retrieval instead. Reading
+including `entity_embeddings` and a restart that re-embeds makes every call
+during the sync answer `retrieval: "indexing"` instead of ranking. Reading
 `publisher.config.json` is the flag's other job, so without --role `--reinit`
 is how a hand edit to it takes effect. With --role, an eval.toml edit to the
 role's environment, package name, or package directory re-embeds on the next
@@ -45,15 +45,20 @@ start; a port edit does not. The start line says which mode it
 chose.
 
 `--warm-retrieval` closes the gap between "the server answers" and "the server
-answers SEMANTICALLY". The embedding sync is lazy: it is kicked by the first
-call that ranks, and calls arriving while it runs are answered lexically
-without recording that they were. So a run that starts measuring the moment
-the REST root replies measures the lexical matcher for its first few cases and
-reports the number as if it were the model's.
+answers SEMANTICALLY". With an embedding provider configured, the server
+indexes a package after it loads, and get_context does not rank during that
+sync: it returns `retrieval: "indexing"` (with `retrieval_progress`) and no
+sources, or `retrieval: "error"` with a `retrieval_reason` after a failure. A
+run that starts the moment the REST root replies would record those empty
+answers as retrieval misses.
 
-It drives one ranking call, then polls the package resource until
-`embeddingIndex.status` reaches a terminal value and prints it. Only `ready`
-licenses reading a run's discoverability findings.
+It drives one ranking call (older servers only started the sync on the first
+one), then polls the package resource until `embeddingIndex.status` reaches a
+terminal value and prints it. The values are `lexical` (no provider: a mode),
+`indexing` (the only non-terminal one), `ready`, and `error`, which carries a
+`reason` and `lastError.message` that are printed. Only `ready` licenses
+reading a run's discoverability findings. A package resource with no
+`embeddingIndex` at all comes from an older server and is reported as lexical.
 
 The status field is the readiness signal to poll; an earlier version of this
 script scraped the log for a "Synced entity embeddings" line instead and
@@ -73,8 +78,8 @@ open-source Publisher does not read: it has no trace store, and attribution
 reads each call's rankedSummary, copied at capture. The flag is kept so older
 commands still parse.
 
-A server started without EMBEDDING_API_KEY ranks get_context lexically, and
-the start line says so. A retrieval number from it is not comparable with a
+A server started without EMBEDDING_API_KEY has no provider (`lexical`): it
+ranks get_context with the lexical matcher, and the start line says so. A retrieval number from it is not comparable with a
 semantic run.
 """
 from __future__ import annotations
@@ -126,9 +131,10 @@ def listening(port: int) -> bool:
 # Passed on every start, as it was, each restart wiped the embedded facets and
 # the next `get_context` re-embedded all of them. The cost is real money and
 # ~180 log lines, but the reason this is a correctness bug rather than a slow
-# one is that the sync is lazy and NON-BLOCKING: calls arriving in that window
-# fall back to lexical retrieval and say nothing. A run measured across it
-# reads as a mix of semantic and lexical answers with no recorded cause, which
+# one is that the sync is NON-BLOCKING: calls arriving in that window get
+# `retrieval: "indexing"` and no sources (older servers answered lexically and
+# said nothing). A run measured across it reads as a mix of real answers and
+# empty ones with no recorded cause, which
 # is how four runs came back inconclusive. Publisher's own incremental sync is
 # content-addressed by `content_hash` and re-embeds only documents that
 # changed; the drop is what defeats it.
@@ -180,9 +186,10 @@ def init_decision(root: pathlib.Path, reinit: bool,
 # the fix.
 WARM_SEARCH_TEXT = "what data is in this package"
 
-# `indexing` is the only non-terminal one: the other three are all settled
-# answers, and two of them are settled bad news.
-TERMINAL_INDEX_STATES = frozenset({"ready", "cooldown", "oversize"})
+# `indexing` is the only non-terminal one. `lexical` (no provider configured)
+# and `error` (the reason says why) are settled answers, and `error` clears
+# only when something outside the poll changes.
+TERMINAL_INDEX_STATES = frozenset({"ready", "lexical", "error"})
 
 
 def warm_arguments(environment: str, package: str) -> dict:
@@ -197,8 +204,9 @@ def warm_arguments(environment: str, package: str) -> dict:
 def index_status(package_payload: dict) -> str | None:
     """`embeddingIndex.status` from a package resource, or None if absent.
 
-    Absent means the server has no embedding provider configured, which is a
-    different fact from `indexing` and must not be waited on.
+    Absent means a server older than the status field, which reported nothing
+    when it had no provider. That is a different fact from `indexing` and must
+    not be waited on.
     """
     index = package_payload.get("embeddingIndex")
     return index.get("status") if isinstance(index, dict) else None
@@ -227,7 +235,7 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
     url = (f"http://localhost:{port}/api/v0/environments/{environment}"
            f"/packages/{package}")
     deadline = time.time() + wait
-    status, last_error, read_one = None, None, False
+    status, last_error, read_one, index = None, None, False, {}
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=10) as r:
@@ -248,9 +256,10 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
         status = index_status(payload)
         if status is None:
             return None, ("no embeddingIndex on the package resource; this "
-                          "server has no embedding provider, so every run "
-                          "against it is LEXICAL -- do not report "
-                          "discoverability findings from it")
+                          "server has no embedding provider or predates the "
+                          "status field, so every run against it is LEXICAL "
+                          "-- do not report discoverability findings from it")
+        index = payload["embeddingIndex"]
         if status in TERMINAL_INDEX_STATES:
             break
         time.sleep(2)
@@ -261,11 +270,21 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
                       f"-- check the environment and package names first")
     if status == "ready":
         return status, "retrieval index ready: rankings are semantic"
-    if status in TERMINAL_INDEX_STATES:
-        return status, (f"retrieval index {status}: rankings are NOT semantic "
-                        f"-- do not report discoverability findings")
-    return status, (f"retrieval index still {status} after {wait}s; it may "
-                    f"settle later, but nothing measured now is semantic")
+    if status == "lexical":
+        return status, ("retrieval index lexical: no embedding provider is "
+                        "configured, so a run measures the lexical matcher "
+                        "-- do not report discoverability findings")
+    if status == "error":
+        last = index.get("lastError")
+        message = last.get("message") if isinstance(last, dict) else None
+        return status, (f"retrieval index error (reason: "
+                        f"{index.get('reason') or 'unknown'}): "
+                        f"{message or 'no message given'}. get_context "
+                        f"returns an error, not an answer -- do not report "
+                        f"discoverability findings")
+    return status, (f"retrieval index still {status} after {wait}s; "
+                    f"get_context returns 'indexing', not an answer, until "
+                    f"it settles, so nothing measured now is semantic")
 
 
 def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
@@ -385,10 +404,11 @@ def retrieval_note(env: dict[str, str]) -> str | None:
 def warm_by_default(role: str, opted_out: bool, env: dict[str, str]) -> bool:
     """Whether `--role` warms retrieval without being asked.
 
-    The model server's first ranking call starts the embedding sync, and calls
-    during it rank lexically without saying so. With a key, a run started
-    right after `serve` would measure that for its first cases. Without one
-    there is nothing to warm: every call ranks lexically, and
+    With a key, the model server indexes its package after it loads, and
+    calls during that answer `retrieval: "indexing"` with no sources. A run
+    started right after `serve` would record those as misses in its first
+    cases. Without a key there is nothing to warm: the status is `lexical`,
+    every call ranks lexically, and
     `retrieval_note` says so.
     """
     return (role == "model" and not opted_out
@@ -556,8 +576,9 @@ def main(argv: list[str] | None = None) -> int:
                                               a.package, a.wait)
                 print(f"  {line}")
                 # Not a server failure: it started and serves. The caller
-                # decides whether a lexical run is worth having, so say which
-                # it is and let the exit code mean "the server is up".
+                # decides whether a run without semantic retrieval is worth
+                # having, so say which state it is and let the exit code mean
+                # "the server is up".
                 if status != "ready":
                     return 3
             return 0
