@@ -40,11 +40,17 @@ RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
 # bundles npm with its own copy of tar and other install-time dependencies, so
 # the last command removes it to keep an unused package manager out of the
 # runtime image.
+#
+# The CLI and its extensions go under the home of `bun` (uid 1000, shipped by
+# the oven/bun base), the user the server runs as, because DuckDB resolves
+# ~/.duckdb from HOME. Installed as root with HOME pointed there, then handed to
+# that user in the same layer, so the chown adds no copy of the files.
 ARG DUCKDB_VERSION=1.5.5
-RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
-    ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
-    duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
+RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://install.duckdb.org | bash" && \
+    ln -s /home/bun/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
+    HOME=/home/bun duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
+    chown -R bun:bun /home/bun/.duckdb && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/* && \
@@ -163,6 +169,18 @@ RUN --mount=type=cache,target=/root/.bun \
 FROM base-deps AS final
 WORKDIR /publisher
 
+# The server runs as `bun` (uid 1000), not root; USER is set just before CMD so
+# the build steps below still run as root. The application files stay
+# root-owned and read-only to the server. What it writes is the server root
+# itself (publisher.db sits directly in it) and publisher_data/ beneath it.
+# publisher_data/ is created here, owned by that user, because Docker seeds a
+# new named volume from the image's directory, ownership included: a volume
+# mounted there on first run is writable without a chown. A volume an older,
+# root-run image already populated is not; packages/server/README.docker.md
+# has the one-time fix.
+RUN mkdir -p /publisher/publisher_data && \
+    chown bun:bun /publisher /publisher/publisher_data
+
 # OCI image metadata — surfaces in `docker inspect`, registry UIs
 # (Docker Hub / GHCR), and Docker Desktop. The description is kept short
 # (some tools truncate at 80–120 chars); the `documentation` URL points
@@ -193,7 +211,10 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 # fetch. Copying the baked cache from the builder keeps a single bake mechanism
 # (the server build) instead of re-running it here. The CLI (base-deps) and
 # runtime engine are pinned to the same DuckDB version, so all agree on one dir.
-COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
+# The bake ran as root in the builder, so its cache is under /root there; here
+# it lands in the runtime user's home, owned by that user so an INSTALL at run
+# time of an extension the bake did not cover can still write beside it.
+COPY --from=builder --chown=bun:bun /root/.duckdb/extensions /home/bun/.duckdb/extensions
 
 # The Snowflake extension is a wrapper over the ADBC Snowflake driver, and
 # `INSTALL snowflake FROM community` does NOT bring it — the extension ships
@@ -227,12 +248,12 @@ COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
 # iteration would otherwise pass. snowflake_version() cannot serve as a check,
 # being a scalar that never touches the driver.
 COPY --from=adbc-driver /out/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so /tmp/adbc/
-RUN find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
+RUN find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
       | while read -r d; do cp /tmp/adbc/libadbc_driver_snowflake.so /tmp/adbc/libadbc_driver_snowflake.real.so "$d/"; done && \
     rm -rf /tmp/adbc && \
-    ext=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
-    shim=$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
-    real=$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \
+    ext=$(find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
+    shim=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
+    real=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \
     test "$ext" -gt 0 && test "$shim" -eq "$ext" && test "$real" -eq "$ext"
 
 # ADBC-SHIM operator note. The shim is opt-in: with neither variable set it is a pure pass-through and
@@ -260,13 +281,17 @@ ENV NODE_ENV=production
 # server writes into its working directory could never be read. The git-working-
 # tree guard that would normally cover /publisher cannot fire here, because
 # .dockerignore excludes .git from the image. Left on, every boot would write a
-# root-owned file, which matters to anyone bind-mounting a project at /publisher.
+# file into it, which matters to anyone bind-mounting a project at /publisher.
 # Pass -e PUBLISHER_NO_MCP_CONFIG= to opt back in. Note the same emptiness is
 # reachable by accident: `docker run -e PUBLISHER_NO_MCP_CONFIG` with no value,
 # or a Compose `environment:` entry with none, deletes this ENV when the host
 # does not have the variable, which re-enables the write.
 ENV PUBLISHER_NO_MCP_CONFIG=1
-ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
+ENV PATH="/home/bun/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
+# Set rather than left to USER, which derives HOME from /etc/passwd: run as
+# `--user 0`, the server would otherwise resolve ~/.duckdb under /root and find
+# none of the baked extensions.
+ENV HOME=/home/bun
 RUN mkdir -p /etc/publisher
 
 # Trust the Amazon RDS root CAs so Postgres->RDS connections verify the server
@@ -291,4 +316,9 @@ EXPOSE 4000 4040
 # from GitHub at startup, blowing past the docker_smoke_test 90s timeout.
 # Operators that want a config provide it at /publisher/publisher.config.json
 # (mount as volume) or override CMD with --config <path>.
+#
+# Numeric, not `bun`: Kubernetes' runAsNonRoot can only verify a numeric USER,
+# and refuses to start an image whose USER is a name unless the pod also sets
+# runAsUser.
+USER 1000:1000
 CMD ["bun", "run", "./packages/server/dist/server.mjs", "--server_root", "/publisher"]

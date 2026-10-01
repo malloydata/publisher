@@ -343,6 +343,14 @@ jobs:
           echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
             || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
           echo "✓ .mcp.json creation suppressed in the image"
+          # The server runs as uid 1000, and the USER must stay numeric:
+          # Kubernetes' runAsNonRoot cannot verify a named user. A new final
+          # stage, or a USER line lost in a reorder, would put the server back
+          # on root with every other check here still passing.
+          user=$(docker inspect malloy-publisher:smoke-test --format='{{.Config.User}}')
+          [ "$user" = "1000:1000" ] \
+            || { echo "✗ Image USER is '${user:-<unset, root>}', expected 1000:1000"; exit 1; }
+          echo "✓ Image runs as uid 1000"
       - name: Verify baked DuckDB extensions
         run: |
           # The image bakes the DuckDB extensions the server loads at runtime
@@ -402,9 +410,9 @@ jobs:
           #    missing, which is the exact failure this step exists to catch. When the
           #    shim is removed, drop the .real.so line and this note.
           docker run --rm --entrypoint sh malloy-publisher:smoke-test -c '
-            n=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
+            n=$(find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
             [ "$n" -gt 0 ] || { echo "no snowflake.duckdb_extension in the image"; exit 1; }
-            find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
+            find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
               | while read -r d; do
                   [ -f "$d/libadbc_driver_snowflake.so" ] || { echo "no driver beside $d"; exit 1; }
                   [ -f "$d/libadbc_driver_snowflake.real.so" ] || { echo "no real driver beside $d (ADBC-SHIM)"; exit 1; }
@@ -445,8 +453,12 @@ jobs:
           echo "✓ All baked DuckDB extensions load offline"
       - name: Start container
         run: |
+          # A fresh named volume on publisher_data/, the way the Compose
+          # example runs it: Docker seeds it from the image's directory, so
+          # this boot is what shows the non-root server can write there.
           docker run -d --name malloy-publisher-smoke \
             -p 4000:4000 \
+            -v malloy-publisher-smoke-data:/publisher/publisher_data \
             malloy-publisher:smoke-test
           echo "Container ID: $(docker ps -q -f name=malloy-publisher-smoke)"
       - name: Wait for server to reach 'serving' state
@@ -507,6 +519,24 @@ jobs:
             | grep -q "Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json" \
             || { echo "✗ empty boot did not name its missing config"; echo "$logs" | tail -30; exit 1; }
           echo "✓ the empty boot names its missing config"
+      - name: Assert the server writes as uid 1000
+        run: |
+          # The image's USER says what the container starts as; this says what
+          # the running server actually wrote as. Both writable places are
+          # checked: the server root, where publisher.db lives, and the named
+          # volume. Reaching serving proves neither: a server denied
+          # publisher_data/ still serves, with the environment it could not
+          # write reported under loadErrors.
+          set -e
+          docker exec malloy-publisher-smoke sh -c '
+            for f in /publisher/publisher.db /publisher/publisher_data; do
+              [ -e "$f" ] || { echo "$f does not exist"; exit 1; }
+              owner=$(stat -c %u "$f")
+              [ "$owner" = 1000 ] || { echo "$f is owned by uid $owner"; exit 1; }
+            done
+            touch /publisher/publisher_data/.write-probe && rm /publisher/publisher_data/.write-probe' \
+            || { echo "✗ the server is not writing as uid 1000"; exit 1; }
+          echo "✓ publisher.db and the publisher_data volume are owned by uid 1000"
       - name: Container logs (always)
         if: always()
         run: docker logs malloy-publisher-smoke || true
@@ -514,6 +544,7 @@ jobs:
         if: always()
         run: |
           docker rm -f malloy-publisher-smoke || true
+          docker volume rm malloy-publisher-smoke-data || true
 
   cross_platform_test:
     name: Cross Platform Tests

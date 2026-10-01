@@ -139,7 +139,7 @@ Checklist:
 
 ```
 $ docker run --rm --entrypoint sh <image> -c \
-    'ls /root/.duckdb/extensions/*/*/libadbc_driver_snowflake*.so'
+    'ls /home/bun/.duckdb/extensions/*/*/libadbc_driver_snowflake*.so'
 …/libadbc_driver_snowflake.so        # the shim
 …/libadbc_driver_snowflake.real.so   # the driver
 ```
