@@ -53,3 +53,11 @@ export type {
    DashboardEvent,
    DashboardEventHandler,
 } from "./components/Dashboard/telemetry";
+export {
+   NotebookEditor,
+   type NotebookEditorProps,
+} from "./components/NotebookBuilder/NotebookEditor";
+export type {
+   NotebookEvent,
+   NotebookEventHandler,
+} from "./components/NotebookBuilder/telemetry";

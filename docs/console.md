@@ -77,6 +77,14 @@ is a Console convenience.
   view and label from its own menu, add filters from the strip above. The classic dashboard-building
   feel, over a file you can still read and review — Save writes the
   `dashboards/*.malloy` back into the package ([dashboards.md](dashboards.md#editing-in-the-console)).
+- **Edit a notebook** — a notebook page (a tagged `notebooks/*.malloy`, not a legacy `.malloynb`)
+  has the same **Edit** button. Click a text cell to rewrite it, add text above or below any cell,
+  remove a text cell, or drag cells into a new order (definitions stay put, and a query stays below
+  what it reads); query cells run as you edit. Save writes the file back into the package and leaves
+  the rest of the file as it was: an edited cell is written in the `(markdown)` spelling, and removing
+  a cell removes the comment lines directly above it. On a server that does not take writes, Save is
+  off. A notebook the editor cannot place cell by cell (for example two statements on one line, text
+  after a block closer, or a comment straddling a cell boundary) opens read-only and says why.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
 - **Read a notebook** — a `.malloynb` in a package renders its markdown and runs its query cells

@@ -647,10 +647,14 @@ settings popover gain the controls, which the writer already knows how to emit.
 
 ### The server write path
 
-Shipped 2026-09-15 (§5.2), scoped to dashboard files. What remains here is
-its generalisation, if ever wanted: a `DocumentStorage` provider over the
-endpoint for hosts other than the Console, and writes to other kinds of file,
-which would each need their own compile-first rule and a look at the security
+Shipped 2026-09-15 (§5.2), scoped to dashboard files, and widened to
+`notebooks/<slug>.malloy` for the notebook editor. Notebooks share the route
+because the same compile-first rule holds, the path is confined to the top of
+`notebooks/`, and a notebook must carry an `## artifact` tag (an untagged file
+there is a shared include, refused with 400). What remains here is its
+generalisation, if ever wanted: a `DocumentStorage` provider over the endpoint
+for hosts other than the Console, and writes to other kinds of file, which
+would each need their own compile-first rule and a look at the security
 posture.
 
 ### Renderer asks (`@malloydata/render`)

@@ -32,6 +32,7 @@
 import { type Counter } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 import {
+   lastCallerGuardRefusalWasWholeText,
    ROW_LEVEL_GATE_REJECTION_CAUSES,
    type RowLevelGateRejectionCause,
 } from "./service/authorize";
@@ -63,10 +64,13 @@ export function recordAuthorizeGuardRejection(
       "publisher_authorize_guard_rejected_total",
       {
          description:
-            "Requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text. Label: field ('query'|'source_name'|'query_name'|'compile_source').",
+            "Requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text. Labels: field ('query'|'source_name'|'query_name'|'compile_source'), match ('lexed' when Malloy's lexer placed a tag outside prose, 'whole_text' when the text could not be lexed cleanly or is a name).",
       },
    );
-   guardRejectionCounter.add(1, { field });
+   guardRejectionCounter.add(1, {
+      field,
+      match: lastCallerGuardRefusalWasWholeText() ? "whole_text" : "lexed",
+   });
 }
 
 /**

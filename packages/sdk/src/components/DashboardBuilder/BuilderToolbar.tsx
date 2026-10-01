@@ -38,8 +38,8 @@ export interface BuilderToolbarProps {
    actions?: ReactNode;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
-   /** Open the page's settings, anchored to the button that asked. */
-   onSettings: (anchor: HTMLElement) => void;
+   /** Open the page's settings, anchored to the button that asked. Absent, no Settings button. */
+   onSettings?: (anchor: HTMLElement) => void;
 }
 
 export function BuilderToolbar({
@@ -92,12 +92,14 @@ export function BuilderToolbar({
                Tile
             </Button>
          )}
-         <Button
-            startIcon={<TuneIcon />}
-            onClick={(event) => onSettings(event.currentTarget)}
-         >
-            Settings
-         </Button>
+         {onSettings && (
+            <Button
+               startIcon={<TuneIcon />}
+               onClick={(event) => onSettings(event.currentTarget)}
+            >
+               Settings
+            </Button>
+         )}
 
          {/* What happens to a change: take it back, or put it down. */}
          <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />

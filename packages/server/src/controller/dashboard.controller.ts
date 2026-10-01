@@ -13,17 +13,32 @@ import {
 } from "../errors";
 import {
    recordDashboardWrite,
+   type DashboardWriteKind,
    type DashboardWriteOutcome,
 } from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
+import { claimsToBeANotebook } from "../service/notebook";
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
+import type { Package } from "../service/package";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 type ApiModelSourceWrite = components["schemas"]["ModelSourceWriteRequest"];
 type ApiModelSourceWriteResult =
    components["schemas"]["ModelSourceWriteResult"];
+
+/** Served notebook as discovery judges it (a tag in a comment is no model note), and by its on-disk text too, which may postdate the load. */
+function currentIsANotebook(
+   current: string,
+   loaded: Package | undefined,
+   modelPath: string,
+): boolean {
+   const model = loaded?.getModel(modelPath);
+   if (model?.getModelDef() && !model.carriesNotebookArtifactNote())
+      return false;
+   return claimsToBeANotebook(current);
+}
 
 /**
  * Which outcome an error from the write path represents.
@@ -42,8 +57,8 @@ function outcomeOf(error: Error): DashboardWriteOutcome {
    return "refused";
 }
 
-/** The only files the write endpoint accepts: a dashboard, at the top of `dashboards/`. */
-const DASHBOARD_FILE = /^dashboards\/[^/]+\.malloy$/;
+/** The only files the write endpoint accepts: a dashboard or a notebook, at the top of its directory. */
+const DASHBOARD_FILE = /^(dashboards|notebooks)\/[^/]+\.malloy$/;
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>
@@ -98,9 +113,10 @@ export class DashboardController {
    }
 
    /**
-    * Write a dashboard file into the package and serve it: the builder's save.
+    * Write a dashboard or notebook file into the package and serve it: the builder's save.
     *
-    * In order — refuse under `frozenConfig`; accept only `dashboards/<slug>.malloy`;
+    * In order — refuse under `frozenConfig`; accept only `dashboards/<slug>.malloy`
+    * or a tagged `notebooks/<slug>.malloy`;
     * compile the text AS the file and refuse with the problems when it does not
     * compile, writing nothing; then, under one hold of the package lock, check
     * the caller's precondition and write atomically; reload the package in
@@ -128,22 +144,30 @@ export class DashboardController {
       // which are most of what is worth knowing here. Classified from the error
       // rather than at each throw site, so a branch added later cannot forget.
       const startedAt = Date.now();
+      // Tolerates a non-string path: the 400 for it comes from writeDashboardSource.
+      const kind: DashboardWriteKind =
+         typeof modelPath === "string" && modelPath.startsWith("notebooks/")
+            ? "notebook"
+            : "dashboard";
       try {
          const result = await this.writeDashboardSource(
             environmentName,
             packageName,
             modelPath,
             body,
+            kind,
          );
          recordDashboardWrite(
             result.created ? "created" : "replaced",
             Date.now() - startedAt,
+            kind,
          );
          return result;
       } catch (error) {
          recordDashboardWrite(
             outcomeOf(error as Error),
             Date.now() - startedAt,
+            kind,
          );
          throw error;
       }
@@ -154,22 +178,32 @@ export class DashboardController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
+      kind: DashboardWriteKind,
    ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
-            'Cannot write a dashboard: publisher.config.json has "frozenConfig": true.',
+            'Cannot write a dashboard or notebook: publisher.config.json has "frozenConfig": true.',
          );
       }
       assertSafeRelativeModelPath(modelPath);
       if (!DASHBOARD_FILE.test(modelPath)) {
          throw new BadRequestError(
-            `Only a dashboard file can be written here: \`dashboards/<slug>.malloy\`, ` +
+            `Only a dashboard or a notebook file can be written here: ` +
+               `\`dashboards/<slug>.malloy\` or \`notebooks/<slug>.malloy\`, ` +
                `not \`${modelPath}\`.`,
          );
       }
       if (typeof body?.source !== "string") {
          throw new BadRequestError(
             "The request body needs a `source`: the whole file's Malloy text.",
+         );
+      }
+      // An untagged file under notebooks/ is a shared include that other models import.
+      if (kind === "notebook" && !claimsToBeANotebook(body.source)) {
+         throw new BadRequestError(
+            `\`${modelPath}\` has no \`## artifact\` tag, so it is not a notebook. ` +
+               `Only a dashboard (\`dashboards/<slug>.malloy\`) or a tagged notebook ` +
+               `(\`notebooks/<slug>.malloy\`) can be written here.`,
          );
       }
       const environment = await this.environmentStore.getEnvironment(
@@ -191,7 +225,7 @@ export class DashboardController {
       const errors = problems.filter((problem) => problem.severity === "error");
       if (errors.length > 0) {
          throw new CompileRefusedError(
-            `The dashboard does not compile, so it was not written: ` +
+            `The ${kind} does not compile, so it was not written: ` +
                errors.map(formatProblem).join("; "),
          );
       }
@@ -204,7 +238,19 @@ export class DashboardController {
          packageName,
          modelPath,
          body.source,
-         (current) => {
+         (current, loaded) => {
+            // The incoming text's tag is not enough: a tagged write must not turn an
+            // existing shared include into a notebook.
+            if (
+               kind === "notebook" &&
+               current !== undefined &&
+               !currentIsANotebook(current, loaded, modelPath)
+            )
+               throw new BadRequestError(
+                  `\`${modelPath}\` exists in the package without an \`## artifact\` tag: ` +
+                     `it is a shared include that other models import, not a notebook, ` +
+                     `so it was not overwritten.`,
+               );
             if (body.expectedHash === undefined) {
                if (current !== undefined)
                   throw new WriteConflictError(
@@ -234,6 +280,11 @@ export class DashboardController {
                   `\`${modelPath}\` is not in the reloaded package`,
                );
             await written.getModel();
+            // The incoming text's tag check is textual; one inside a comment would land an unserved file.
+            if (kind === "notebook" && !written.carriesNotebookArtifactNote())
+               throw new Error(
+                  `\`${modelPath}\` has no \`## artifact\` note once compiled, so it would not be served as a notebook`,
+               );
          },
       );
       return {

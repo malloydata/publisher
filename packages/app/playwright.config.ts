@@ -30,12 +30,12 @@ export default defineConfig({
    // `notebook-readme-links` each write fixture files into
    // `publisher_data/examples/storefront` and POST `?reload=true` on that
    // package; they are the only three specs that do either. A second kind of
-   // contention is environment churn: `packages.spec`, `environments.spec` and
-   // `package-dashboards.spec` each create and delete a whole environment,
-   // which appears and vanishes from the listings other specs navigate
-   // through. All three, not just the first: anyone relaxing `workers: 1`
-   // reads this comment to find out what contends, so a short list is worse
-   // than none. Observed: a `notebook-givens` navigation timed out
+   // contention is environment churn: `packages.spec`, `environments.spec`,
+   // `package-dashboards.spec` and `notebook-builder.spec` each create and
+   // delete a whole environment, which appears and vanishes from the listings
+   // other specs navigate through. All four, not just the first: anyone
+   // relaxing `workers: 1` reads this comment to find out what contends, so a
+   // short list is worse than none. Observed: a `notebook-givens` navigation timed out
    // waiting for the storefront tile while another file was mid-reload. It
    // passes 9/9 in isolation, which is the tell that it is contention rather
    // than a broken assertion.

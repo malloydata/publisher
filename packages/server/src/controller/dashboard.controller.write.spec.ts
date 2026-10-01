@@ -33,6 +33,8 @@ import { contentHashOf, DashboardController } from "./dashboard.controller";
 const PATH = "dashboards/overview.malloy";
 const BEFORE = '## artifact { title="Before" tiles=["a -> x"] }';
 const AFTER = '## artifact { title="After" tiles=["a -> x"] }';
+const NOTEBOOK_PATH = "notebooks/tour.malloy";
+const NOTEBOOK = "## artifact { kind=notebook }\n##(markdown) Hello\n";
 
 function harness(
    options: {
@@ -40,6 +42,10 @@ function harness(
       current?: string;
       problems?: Array<{ severity: string; message: string }>;
       reloadCompiles?: boolean;
+      /** Whether the reloaded file carries a compiled `## artifact` note. */
+      reloadedNote?: boolean;
+      /** The compiled model the package held for the path before the write. */
+      loaded?: { note: boolean };
    } = {},
 ) {
    const model = {
@@ -47,8 +53,15 @@ function harness(
          options.reloadCompiles === false
             ? sinon.stub().rejects(new Error("Cannot redefine 'x'"))
             : sinon.stub().resolves({}),
+      carriesNotebookArtifactNote: () => options.reloadedNote ?? true,
    };
    const pkg = { getModel: sinon.stub().returns(model) };
+   const loaded = options.loaded && {
+      getModel: () => ({
+         getModelDef: () => ({}),
+         carriesNotebookArtifactNote: () => options.loaded?.note,
+      }),
+   };
    const environment = {
       getPackage: sinon.stub().resolves(pkg),
       compileSource: sinon
@@ -61,10 +74,10 @@ function harness(
                _pkg: string,
                _path: string,
                _source: string,
-               check: (current: string | undefined) => void,
+               check: (current: string | undefined, loaded: unknown) => void,
                verify: (reloaded: unknown) => Promise<unknown>,
             ) => {
-               check(options.current);
+               check(options.current, loaded);
                try {
                   return {
                      previous: options.current,
@@ -160,6 +173,112 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.writeModelFileTransactional.called).toBe(false);
    });
 
+   it("writes a tagged notebook at the top of notebooks/ through the same compile-first flow", async () => {
+      const { controller, environment } = harness();
+      const result = await controller.putDashboardSource(
+         "env",
+         "pkg",
+         NOTEBOOK_PATH,
+         { source: NOTEBOOK },
+      );
+      expect(result.path).toBe(NOTEBOOK_PATH);
+      expect(environment.compileSource.firstCall.args[1]).toBe(NOTEBOOK_PATH);
+      expect(environment.compileSource.firstCall.args[5]).toBe("file");
+      expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
+   });
+
+   it("refuses an untagged notebooks/ file, which is a shared include, before compiling", async () => {
+      const { controller, environment } = harness();
+      const error = await controller
+         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: "##(markdown) Hello\n",
+         })
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toContain("dashboards/<slug>.malloy");
+      expect(error.message).toContain("notebooks/<slug>.malloy");
+      expect(environment.compileSource.called).toBe(false);
+      expect(environment.writeModelFileTransactional.called).toBe(false);
+   });
+
+   it("refuses a tagged write over an existing untagged file, a shared include", async () => {
+      const include = "##(markdown) shared\n";
+      const { controller, environment } = harness({ current: include });
+      const error = await controller
+         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: NOTEBOOK,
+            expectedHash: contentHashOf(include),
+         })
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toContain("shared include");
+      expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
+   });
+
+   it("refuses a tagged write over an include whose only tag is inside a block comment, as discovery reads it", async () => {
+      const include =
+         "/*\n## artifact { kind=notebook }\n*/\nsource: s is duckdb.sql('select 1')\n";
+      const { controller } = harness({
+         current: include,
+         loaded: { note: false },
+      });
+      const error = await controller
+         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: NOTEBOOK,
+            expectedHash: contentHashOf(include),
+         })
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toContain("shared include");
+   });
+
+   it("replaces an existing notebook the loaded package serves", async () => {
+      const { controller } = harness({
+         current: NOTEBOOK,
+         loaded: { note: true },
+      });
+      const result = await controller.putDashboardSource(
+         "env",
+         "pkg",
+         NOTEBOOK_PATH,
+         {
+            source: NOTEBOOK.replace("Hello", "Hi"),
+            expectedHash: contentHashOf(NOTEBOOK),
+         },
+      );
+      expect(result.created).toBe(false);
+   });
+
+   it("rolls back a notebook write whose compiled model carries no artifact note", async () => {
+      const { controller } = harness({ reloadedNote: false });
+      await expect(
+         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: "/*\n*/\n## artifact { kind=notebook }\n",
+         }),
+      ).rejects.toBeInstanceOf(WriteRolledBackError);
+   });
+
+   it("answers a missing path with a BadRequestError, not a TypeError", async () => {
+      const { controller } = harness();
+      await expect(
+         controller.putDashboardSource("env", "pkg", undefined as never, {
+            source: AFTER,
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+   });
+
+   it("refuses a nested notebook path and a .malloynb", async () => {
+      const { controller, environment } = harness();
+      for (const bad of ["notebooks/nested/x.malloy", "notebooks/x.malloynb"]) {
+         await expect(
+            controller.putDashboardSource("env", "pkg", bad, {
+               source: NOTEBOOK,
+            }),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+      expect(environment.writeModelFileTransactional.called).toBe(false);
+   });
+
    it("refuses, without merging, when the file changed since it was opened", async () => {
       const { controller } = harness({ current: "changed" });
       await expect(
@@ -248,6 +367,49 @@ describe("putDashboardSource: what it reports", () => {
          { source: AFTER, expectedHash: contentHashOf(BEFORE) },
       );
       expect(await outcomeCount("replaced")).toBe(1);
+   });
+
+   it("labels a notebook write with its own kind", async () => {
+      await harness().controller.putDashboardSource(
+         "env",
+         "pkg",
+         NOTEBOOK_PATH,
+         { source: NOTEBOOK },
+      );
+      await harness().controller.putDashboardSource("env", "pkg", PATH, {
+         source: AFTER,
+      });
+      const count = (kind: string) =>
+         metrics.collectCounter("publisher_dashboard_writes_total", {
+            outcome: "created",
+            kind,
+         });
+      expect(await count("notebook")).toBe(1);
+      expect(await count("dashboard")).toBe(1);
+
+      await expect(
+         harness().controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: "no tag",
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(
+         await metrics.collectCounter("publisher_dashboard_writes_total", {
+            outcome: "refused",
+            kind: "notebook",
+         }),
+      ).toBe(1);
+   });
+
+   it("reports a missing path as refused, not a crash", async () => {
+      await expect(
+         harness().controller.putDashboardSource(
+            "env",
+            "pkg",
+            undefined as never,
+            { source: AFTER },
+         ),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(await outcomeCount("refused")).toBe(1);
    });
 
    it("reports a stale hash as a conflict", async () => {

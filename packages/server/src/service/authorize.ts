@@ -43,13 +43,15 @@
  * the entry point by `Model.authorizeAndBindRunnable`, and every probe this
  * module builds is COMPILED, never RUN — the package-load worker's
  * `ProxyConnection.runSQL` deliberately throws (`package_load_worker.ts`).
- * Kept light so it bundles cleanly into the package-load worker: its only
- * non-type imports are `../errors`, `./annotations` (which the worker already
- * bundles via `source_extraction.ts`) and `./authorize_routes`, which imports
- * nothing at all.
+ * Kept light so it bundles cleanly into the package-load worker: besides
+ * `@malloydata/malloy` (routing, and its lexer for the caller-text guard) and
+ * `module`, its only imports are `../errors`, `./annotations` (which the worker
+ * already bundles via `source_extraction.ts`) and `./authorize_routes`, which
+ * imports nothing at all.
  */
 
 import { payloadOf, routeOf } from "@malloydata/malloy";
+import { createRequire } from "module";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { type AnnotationNote } from "./annotations";
 import {
@@ -122,7 +124,7 @@ function notePayload(text: string): string {
  * a stem tracking only the current hyphenation would fail open the moment one
  * moved. This is why the rename lands in one commit with the pattern.
  */
-const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*[([{<]?[ \t]*(?:(?:(?:row|source)[-_]?)?authorize|access[-_]?filter)(?=[)\]}>]|[ \t]|$)`;
+export const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:(?:(?:row|source)[-_]?)?authorize|access[-_]?filter)(?=[)\]}>]|[ \t]|$)`;
 const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "iu");
 
 /**
@@ -225,9 +227,9 @@ function motlyAuthorizePayloadPattern(route: string): RegExp {
  * `undefined`: Malloy has refused to give this note a namespace at all, so
  * matching text cannot steal a route that belongs to somebody else.
  */
-function malformedAuthorizeAttemptPattern(route: string): RegExp {
+export function malformedAuthorizeAttemptPattern(route: string): RegExp {
    return new RegExp(
-      `^##?\\|?[ \\t]*[([{<]?[ \\t]*(?:${nearMissWordAlternation(route)})`,
+      `^##?\\|?[ \\t]*(?:[([{<][ \\t]*)?(?:${nearMissWordAlternation(route)})`,
       "iu",
    );
 }
@@ -265,6 +267,191 @@ export function authorizeAnnotationRoute(text: string): string | undefined {
    return authorizeNoteContent(text)?.route;
 }
 
+/** Note routes whose payload the compiler reads as prose. */
+const PROSE_ROUTES = new Set(["markdown", "text"]);
+
+interface LexedToken {
+   type: number;
+   startIndex: number;
+   stopIndex: number;
+}
+
+interface ErrorCounter {
+   errors: number;
+   syntaxError(): void;
+}
+
+type MakeMalloyParser = (
+   code: string,
+   options: {
+      lexerErrorListener: ErrorCounter;
+      parserErrorListener: ErrorCounter;
+   },
+) => {
+   tokenStream: {
+      getTokens(): LexedToken[];
+      tokenSource?: {
+         vocabulary?: {
+            getSymbolicName?: (type: number) => string | undefined;
+         };
+      };
+   };
+   parser: { malloyDocument(): unknown };
+};
+
+let makeMalloyParser: MakeMalloyParser | null | undefined;
+
+function loadMalloyParser(): MakeMalloyParser | null {
+   try {
+      // Not a public export: a release that moves it leaves the guard on its whole-text match.
+      const entry = createRequire(import.meta.url).resolve(
+         "@malloydata/malloy",
+      );
+      const loaded = createRequire(entry)("./lang/run-malloy-parser") as {
+         makeMalloyParser?: MakeMalloyParser;
+      };
+      return typeof loaded.makeMalloyParser === "function"
+         ? loaded.makeMalloyParser
+         : null;
+   } catch {
+      return null;
+   }
+}
+
+let parserLoader: () => MakeMalloyParser | null = loadMalloyParser;
+let warnedNoParser = false;
+
+/** Test seam: swaps the parser loader and forgets the cached factory and the one-time warning. */
+export function setMalloyParserLoaderForTest(
+   loader?: () => MakeMalloyParser | null,
+): void {
+   parserLoader = loader ?? loadMalloyParser;
+   makeMalloyParser = undefined;
+   warnedNoParser = false;
+}
+
+/** Malloy's lexer and parser as the translator builds them, with our listeners, so errors are counted and caller text never reaches stderr. */
+function malloyParserFactory(): MakeMalloyParser | undefined {
+   if (makeMalloyParser === undefined) makeMalloyParser = parserLoader();
+   return makeMalloyParser ?? undefined;
+}
+
+/** The query path asks about one text at several sites, so the last lex is kept. */
+let lastLexed: { text: string; prose: [number, number][] | undefined } = {
+   text: "",
+   prose: [],
+};
+
+let lastRefusalWasWholeText = false;
+
+/** Whether the guard's last refusal came from the whole-text match rather than a clean lex; read it synchronously after the guard call. */
+export function lastCallerGuardRefusalWasWholeText(): boolean {
+   return lastRefusalWasWholeText;
+}
+
+function proseRanges(text: string): [number, number][] | undefined {
+   if (lastLexed.text !== text)
+      lastLexed = { text, prose: lexProseRanges(text) };
+   return lastLexed.prose;
+}
+
+/**
+ * The ranges Malloy reads as prose: the body of a block note, and the payload
+ * of a line note, routed exactly to markdown or text. `undefined` (fail closed)
+ * on any lexer or parser error, a gap between a block's tokens, an unclosed
+ * block, or a token stream not of the expected shape.
+ */
+function lexProseRanges(text: string): [number, number][] | undefined {
+   const factory = malloyParserFactory();
+   if (!factory) {
+      // Without the lexer every prose-bearing notebook save and query answers 400, so say why once.
+      if (!warnedNoParser) {
+         warnedNoParser = true;
+         console.warn(
+            "Prose-aware caller-annotation guard disabled: @malloydata/malloy ./lang/run-malloy-parser could not be loaded; falling back to whole-text matching.",
+         );
+      }
+      return undefined;
+   }
+   try {
+      const counter = (): ErrorCounter => ({
+         errors: 0,
+         syntaxError() {
+            this.errors++;
+         },
+      });
+      const lexerErrors = counter();
+      const parserErrors = counter();
+      const { tokenStream, parser } = factory(text, {
+         lexerErrorListener: lexerErrors,
+         parserErrorListener: parserErrors,
+      });
+      parser.malloyDocument();
+      const vocabulary = tokenStream.tokenSource?.vocabulary;
+      if (
+         lexerErrors.errors > 0 ||
+         parserErrors.errors > 0 ||
+         typeof vocabulary?.getSymbolicName !== "function"
+      )
+         return undefined;
+      // ANTLR indexes code points; the regex runs over UTF-16 units.
+      const utf16: number[] = [];
+      for (let i = 0; i < text.length; ) {
+         utf16.push(i);
+         i += (text.codePointAt(i) as number) > 0xffff ? 2 : 1;
+      }
+      utf16.push(text.length);
+      const rangeOf = (token: LexedToken): [number, number] | undefined => {
+         const from = utf16[token.startIndex];
+         const to = utf16[token.stopIndex + 1];
+         return from === undefined || to === undefined || to < from
+            ? undefined
+            : [from, to];
+      };
+      const prose: [number, number][] = [];
+      let block: { prose: boolean; next: number } | undefined;
+      for (const token of tokenStream.getTokens()) {
+         const name = vocabulary.getSymbolicName(token.type);
+         const range = rangeOf(token);
+         if (
+            name === "BLOCK_ANNOTATION_TEXT" ||
+            name === "BLOCK_ANNOTATION_END"
+         ) {
+            // A lexer that dropped characters inside a block leaves a gap.
+            if (!block || !range || token.startIndex !== block.next)
+               return undefined;
+            if (name === "BLOCK_ANNOTATION_END") {
+               block = undefined;
+            } else {
+               if (block.prose) prose.push(range);
+               block.next = token.stopIndex + 1;
+            }
+            continue;
+         }
+         if (block) return undefined;
+         if (
+            name === "BLOCK_ANNOTATION_BEGIN" ||
+            name === "DOC_BLOCK_ANNOTATION_BEGIN"
+         ) {
+            if (!range) return undefined;
+            block = {
+               prose: PROSE_ROUTES.has(noteRoute(text.slice(...range)) ?? ""),
+               next: token.stopIndex + 1,
+            };
+         } else if (name === "ANNOTATION" || name === "DOC_ANNOTATION") {
+            if (!range) return undefined;
+            // One token to the end of the line, routed by its prefix, which cannot itself be a hit.
+            if (PROSE_ROUTES.has(noteRoute(text.slice(...range)) ?? ""))
+               prose.push([range[0] + 1, range[1]]);
+         }
+      }
+      // The lexer reads an unclosed block to the end of the text without complaint.
+      return block ? undefined : prose;
+   } catch {
+      return undefined;
+   }
+}
+
 /**
  * Reject caller-submitted Malloy text that declares an `authorize` annotation.
  *
@@ -299,6 +486,13 @@ export function authorizeAnnotationRoute(text: string): string | undefined {
  * the compiler would never read as a gate — inside a string literal, or in a
  * model an author is compile-checking through `/compile`. That is the intended
  * direction, so the message has to tell an author what to do instead.
+ *
+ * The one exception is prose, located by Malloy's own lexer: the body of a
+ * `#|(markdown)` / `#|(text)` block note and the payload of a `#(markdown)` /
+ * `#(text)` line note (either sigil), which the compiler reads as one prose
+ * note, never a gate; a notebook's prose names these tags. Every hit outside
+ * prose still refuses, and text with a lexer or parser error, a gap in a
+ * block's tokens, or an unclosed block falls back to the whole-text match.
  */
 /**
  * Whether {@link assertNoCallerAuthorizeAnnotation} would reject this text.
@@ -306,13 +500,59 @@ export function authorizeAnnotationRoute(text: string): string | undefined {
  * Exported so a caller that wants to defer to that rejection can ask with the
  * SAME predicate rather than a near-copy: a narrower one lets a spelling it
  * misses answer through the other path instead.
+ *
+ * `precedingText` is whatever the compiler reads before `callerText` in the
+ * same document, so the caller's text is lexed in the state that text leaves.
  */
-export function hasCallerAuthorizeAnnotation(callerText: string): boolean {
-   return AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText);
+export function hasCallerAuthorizeAnnotation(
+   callerText: string,
+   precedingText = "",
+): boolean {
+   if (!AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText)) return false;
+   const text = precedingText + callerText;
+   const bodies = proseRanges(text);
+   lastRefusalWasWholeText = bodies === undefined;
+   if (bodies === undefined) return true;
+   const sticky = new RegExp(AUTHORIZE_TAG_LIKE, "iuy");
+   const callerStart = precedingText.length;
+   // A hit never spans a newline, so one reaching the caller's text starts on its first line at the earliest.
+   const from = text.lastIndexOf("\n", callerStart - 1) + 1;
+   // Bodies and `#` positions both ascend, so one pointer keeps the scan linear.
+   let body = 0;
+   // Every `#` is a possible match start, so an overlapping hit cannot hide behind an exempt one.
+   for (
+      let at = text.indexOf("#", from);
+      at !== -1;
+      at = text.indexOf("#", at + 1)
+   ) {
+      sticky.lastIndex = at;
+      const hit = sticky.exec(text);
+      if (!hit) continue;
+      const end = at + hit[0].length;
+      if (end <= callerStart) continue;
+      while (body < bodies.length && bodies[body][1] <= at) body++;
+      const [start, stop] = bodies[body] ?? [Infinity, -Infinity];
+      if (!(start <= at && end <= stop)) return true;
+   }
+   return false;
 }
 
-export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
+export function assertNoCallerAuthorizeAnnotation(
+   callerText: string,
+   precedingText = "",
+): void {
+   if (hasCallerAuthorizeAnnotation(callerText, precedingText))
+      refuseCallerAuthorizeAnnotation();
+}
+
+/** The whole-text form, for a caller NAME that is interpolated mid-line and never lexed on its own. */
+export function assertNoAuthorizeTagLike(callerText: string): void {
    if (!AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText)) return;
+   lastRefusalWasWholeText = true;
+   refuseCallerAuthorizeAnnotation();
+}
+
+function refuseCallerAuthorizeAnnotation(): never {
    // A caller-input rejection, so 400 — not ModelCompilationError's 424, which
    // reads as "the package is broken".
    throw new BadRequestError(

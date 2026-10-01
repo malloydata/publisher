@@ -108,6 +108,7 @@ import {
 } from "./annotations";
 import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
+   assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -7067,7 +7068,10 @@ export class Model {
          ])[]) {
             if (!callerText) continue;
             try {
-               assertNoCallerAuthorizeAnnotation(callerText);
+               // A name is interpolated mid-line, so it is never lexed as text of its own.
+               if (field === "query")
+                  assertNoCallerAuthorizeAnnotation(callerText);
+               else assertNoAuthorizeTagLike(callerText);
             } catch (err) {
                // Recorded here, not at the throw: the parse `catch` below
                // rethrows a BadRequestError untouched and never reaches the

@@ -24,6 +24,11 @@ import {
    type TreeView,
 } from "./malloyTree";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import {
+   spliceFailed,
+   type SpliceFailure,
+   type SpliceResult,
+} from "./spliceResult";
 
 /**
  * The syntax errors Malloy's own parser reports for `text`, as a multiset of
@@ -77,16 +82,7 @@ export async function syntaxErrors(text: string): Promise<string[]> {
  * in the same block is left where it is.
  */
 
-export interface SpliceFailure {
-   ok: false;
-   reason: string;
-}
-
-export type SpliceResult = { ok: true; source: string } | SpliceFailure;
-
-/** Narrow to the failure arm; see {@link readFailed} for why a guard. */
-export const spliceFailed = (result: SpliceResult): result is SpliceFailure =>
-   result.ok === false;
+export { spliceFailed, type SpliceFailure, type SpliceResult };
 
 /**
  * A stable serialisation for comparing documents.

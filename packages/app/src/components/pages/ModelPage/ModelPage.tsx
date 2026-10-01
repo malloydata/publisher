@@ -18,6 +18,7 @@ import { useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import DashboardPage from "../DashboardPage/DashboardPage";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
+import NotebookEditPage from "../NotebookEditPage/NotebookEditPage";
 import NotebookPage from "../NotebookPage/NotebookPage";
 
 function ModelPage() {
@@ -98,6 +99,16 @@ function ModelPage() {
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
+      const slug = modelPath.slice("notebooks/".length);
+      if (slug.endsWith("/edit")) {
+         return (
+            <NotebookEditPage
+               environmentName={params.environmentName}
+               packageName={params.packageName}
+               notebookName={slug.slice(0, -"/edit".length)}
+            />
+         );
+      }
       return (
          <NotebookPage
             environmentName={params.environmentName}

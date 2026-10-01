@@ -367,9 +367,10 @@ query: regional_sales is order_items -> { … }
 - **Control state lives in the URL**, so a filtered dashboard is a shareable link. A URL parameter
   beats the dashboard's own starting values.
 
-All three behave identically in a notebook, which spells them at the file level (`## autorun=false`
-and `## givens { REGION=f'West' }`) and gets the same controls, the same URL state, and the same
-Apply button from the same code.
+All three behave identically in a served `.malloy` notebook, which spells the first two inside its
+own `## artifact { kind=notebook autorun=false givens { REGION=f'West' } }` tag (a legacy
+`.malloynb` takes them as file-level `## autorun=false` and `## givens { … }` lines), and gets the
+same controls, the same URL state, and the same Apply button from the same code.
 
 ## A dashboard: `tiles=[…]`
 

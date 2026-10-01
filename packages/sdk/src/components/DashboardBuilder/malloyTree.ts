@@ -198,14 +198,14 @@ export const parseRefused = (r: ParseResult): r is ParseRefusal =>
 /* Node identity                                                       */
 /* ------------------------------------------------------------------ */
 
-interface TokenStream {
+export interface TokenStream {
    tokenSource?: {
       vocabulary?: { getSymbolicName(type: number): string | undefined };
    };
    getTokens?(): Array<{ type: number; startIndex: number; stopIndex: number }>;
 }
 
-type Ctx = Record<string, unknown> & {
+export type Ctx = Record<string, unknown> & {
    ruleIndex?: number;
    childCount?: number;
    getChild(i: number): Ctx;
@@ -219,7 +219,7 @@ const has = (c: unknown, ...accessors: string[]): boolean =>
    );
 
 /** A rule context we can take a range from; terminals and empties are not. */
-const isRule = (c: Ctx | undefined): boolean =>
+export const isRule = (c: Ctx | undefined): boolean =>
    c !== undefined && c.ruleIndex !== undefined && (c.childCount ?? 0) > 0;
 
 const IS = {
@@ -283,7 +283,7 @@ function lineStartsOf(text: string): number[] {
 
 /* ------------------------------------------------------------------ */
 
-class Reader {
+export class Reader {
    private readonly map: Int32Array;
    readonly lineStarts: number[];
    /**
@@ -829,6 +829,8 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
 export interface MalloyProblem {
    code?: string;
    message?: string;
+   /** 0-based. */
+   at?: { range?: { start?: { line?: number } } };
 }
 
 /** One parse of one file, stopped at the parse step. */
@@ -882,7 +884,7 @@ export async function translate(
  * that follows code is a trailing comment, and anything appended to that line
  * has to go before it.
  */
-function commentIndex(
+export function commentIndex(
    r: Reader,
    tokenStream: TokenStream,
 ): { trailing: Map<number, Span>; lines: Set<number>; all: Span[] } {

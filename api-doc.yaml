@@ -1637,8 +1637,8 @@ paths:
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. A join to a hidden source
         keeps only its name and the names and types of its fields. `sourceText` is left out
-        when the text names a source the file does not publish; the text of a dashboard is
-        always returned.
+        when the text names a source the file does not publish, unless
+        `includeHiddenFilesAndSources` is true; the text of a dashboard is always returned.
       parameters:
         - name: environmentName
           in: path
@@ -1686,12 +1686,15 @@ paths:
       tags:
         - models
       operationId: update-model-source
-      summary: Write a dashboard file into the package
+      summary: Write a dashboard or notebook file into the package
       description: |
-        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy`,
-        the only paths this endpoint accepts — into the package, and reloads the
-        package in place so the dashboard is served from the new text. This is
-        the dashboard builder's save.
+        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy` —
+        or a notebook file — `notebooks/<slug>.malloy`, which must carry an
+        `## artifact` tag (an untagged file there is a shared include and is
+        refused with 400, and so is a write over an existing file the package
+        does not serve as a notebook) — the only paths this endpoint accepts,
+        into the package, and reloads the package in place so it is served from
+        the new text. This is the dashboard and notebook builder's save.
 
         The text is compiled first, as the file, and refused with its problems
         when it does not compile; nothing is written. The write is atomic (a
@@ -1700,16 +1703,21 @@ paths:
         a new file removed) and the package reloaded again, so a save never
         leaves the package serving less than it did.
 
-        `expectedHash` is the SHA-256 (hex) of the text the caller opened, as
-        `GET …/models/{path}` returned it in `sourceText`. When the file on disk
-        no longer hashes to it, the write is refused with 409 and nothing is
+        `expectedHash` is the SHA-256 (hex) of the file's text as the caller
+        opened it, as `GET …/models/{path}` returned it in `sourceText`. On a
+        package with a surface, that GET withholds `sourceText` only when the
+        text names a source the file does not publish, and returns it anyway
+        with `includeHiddenFilesAndSources=true`. When the file on disk no
+        longer hashes to it, the write is refused with 409 and nothing is
         merged: the caller re-opens and reapplies its change. Omit it to CREATE
-        the file: a file that already exists is then refused with 409 too, so an
-        unconditional overwrite is not something a caller can ask for by leaving
-        a field out. The check, the write, the reload and the restore all happen
-        under one hold of the package lock, so two saves racing on one file
-        cannot both pass the check, and a rollback cannot revert the other
-        writer's text instead of its own.
+        the file: a file that already exists is then refused with 409 too, so
+        an unconditional overwrite is not something a caller can ask for by
+        leaving a field out. A notebook path over an existing file the package
+        does not serve as a notebook answers 400 instead, with or without a
+        hash, because that check comes before the hash. The check, the write,
+        the reload and the restore all happen under one hold of the package
+        lock, so two saves racing on one file cannot both pass the check, and a
+        rollback cannot revert the other writer's text instead of its own.
 
         A create answers 201 and an update 200; `created` in the body says the
         same thing.
@@ -1732,7 +1740,7 @@ paths:
             type: string
         - name: path
           in: path
-          description: The dashboard file, `dashboards/<slug>.malloy`
+          description: The file, `dashboards/<slug>.malloy` or `notebooks/<slug>.malloy`
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
@@ -4233,7 +4241,8 @@ components:
             server-side warning) when the file cannot be read, so a compiled
             model is never withheld for want of its text; and omitted when the
             file text names a source it does not publish, on a package with a
-            surface. A dashboard's text is always returned.
+            surface, unless `includeHiddenFilesAndSources` is true. A
+            dashboard's text is always returned.
 
     View:
       type: object

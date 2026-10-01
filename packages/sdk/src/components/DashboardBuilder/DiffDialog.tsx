@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, Button } from "@mui/material";
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { foldUnchanged, lineDiff } from "./diff";
 import { AppDialog } from "../AppDialog";
@@ -21,12 +21,15 @@ export function DiffDialog({
    after,
    onConfirm,
    onClose,
+   description,
 }: {
    open: boolean;
    before: string;
    after: string;
    onConfirm: () => void;
    onClose: () => void;
+   /** What the change did, in the editor's own terms; defaults to the dashboard's. */
+   description?: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
    const lines = useMemo(
@@ -43,9 +46,13 @@ export function DiffDialog({
          title="Review the change to the file"
          description={
             <>
-               A tile was added or removed, which moves declarations. Lines the
-               builder does not own — comments, other Malloy — are left where
-               they were; check they still read right.{" "}
+               {description ?? (
+                  <>
+                     A tile was added or removed, which moves declarations.
+                     Lines the builder does not own — comments, other Malloy —
+                     are left where they were; check they still read right.
+                  </>
+               )}{" "}
                <Box
                   component="span"
                   sx={{ fontVariantNumeric: "tabular-nums" }}

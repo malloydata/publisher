@@ -45,12 +45,25 @@ Concretely:
   close registration on a deployment where that matters. A `.zip` environment or package that
   contains a symlink entry is refused, and nothing from it is left on disk, because the
   extractor would otherwise follow the link out of the destination directory.
-- **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
-  dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
-  kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
-  registration; it has no authentication of its own, so on a reachable server it sits behind the
-  same gateway or is closed by the same setting. An attacker who can reach it can already register
-  a package, so it opens no door that was shut.
+- **Writing a dashboard or a notebook is an operator action too.** `PUT …/models/dashboards/<slug>.malloy`
+  and `PUT …/models/notebooks/<slug>.malloy` — the builder's save — write a file into a package and
+  reload it. They accept only those two kinds of file, compile the text before writing, and are
+  gated by `frozenConfig` like package registration; they have no authentication of their own, so
+  on a reachable server they sit behind the same gateway or are closed by the same setting. An
+  attacker who can reach them can already register a package, so they open no door that was shut.
+  Notebooks share the route safely for three reasons: the same compile-first rule applies, the
+  path is confined to the top of `notebooks/`, and the text must carry an `## artifact` tag (an
+  untagged file there is a shared include that other models import, and is refused with 400). The
+  compile-first gate is per file, and the reload verify checks only the written model, so a model
+  that imports the written file is not checked; that is the same for dashboards today. The editor's
+  own edits are invisible to an importer, since markdown and `run:` order define nothing. The tag
+  is read as discovery reads it, off the compiled model (off the text only for a file that does not
+  compile): a write whose only `## artifact` sits inside a `/* */` comment or a string passes the
+  first textual check, but the reload verify finds no model-level note and rolls it back with a 500,
+  so no unserved file lands in `notebooks/`. A tagged write
+  over an existing file in `notebooks/` that the package does not serve as a notebook is refused
+  with 400, including one whose only tag is commented out, so a shared include cannot be
+  overwritten into a notebook. `dashboards/` has no tag gate at all.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:

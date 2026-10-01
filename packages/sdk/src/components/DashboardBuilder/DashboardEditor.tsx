@@ -35,8 +35,15 @@ import {
 import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument } from "./document";
 import { previewGivens, previewTileQuery } from "./preview";
+import {
+   apiErrorMessage,
+   chooseWorkspace,
+   expectedHashFor,
+   saveCaption,
+   saveTarget,
+   storageErrorMessage,
+} from "./documentSession";
 import { readDashboardDocument, readFailed } from "./readDocument";
-import { sha256Hex } from "../../utils/sha256";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -198,12 +205,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
             // Asking for writeable only would hide it and fall back to the
             // package, which on a server that takes writes means publishing a
             // deploy of the record over the record.
-            const all = await storage.listWorkspaces(false);
-            // The record when one declares itself, and otherwise the first
-            // writeable one, which is what the editor has always taken.
-            const chosen =
-               all.find((candidate) => candidate.authoritative) ??
-               all.find((candidate) => candidate.writeable);
+            const chosen = chooseWorkspace(await storage.listWorkspaces(false));
             if (stale) return;
             setWorkspace(chosen);
             if (chosen !== undefined) {
@@ -408,10 +410,10 @@ export function DashboardEditor(props: DashboardEditorProps) {
          // editing moves the fetch past that file, and a hash taken from it
          // would match, be accepted, and overwrite the change the reader was
          // just told about.
-         const base = packageBaseRef.current;
-         const expectedHash =
-            savedHashRef.current ??
-            (base === undefined ? undefined : await sha256Hex(base));
+         const expectedHash = await expectedHashFor(
+            savedHashRef.current,
+            packageBaseRef.current,
+         );
          if (expectedHash === undefined)
             throw new Error("The package file is still loading; try again.");
          let result;
@@ -489,35 +491,20 @@ export function DashboardEditor(props: DashboardEditorProps) {
          queryClient,
       ],
    );
-   // `authoritative` wins outright rather than breaking a tie: a host whose
-   // store is the record may well sit on a server that reports itself
-   // writable, and writing the package there would edit a deploy of the
-   // record instead of the record.
-   const savesTo = authoritative ? "host" : mutable ? "package" : "browser";
    const canWriteWorkspace = workspace?.writeable === true;
-   // A version is an immutable checkpoint, and `updateModelSource` cannot be
-   // told to write against one (the server answers 501). Without this guard,
-   // `expectedHash` would be the hash of the pinned text, the server would
-   // refuse every save against the current file, and the catch would refetch
-   // the same pinned text, so the "changed since you opened it" banner would
-   // never fire either: a dead end with no way out. Storage-backed saves are
-   // unaffected, since they never touch the package's compare-and-swap.
-   const pinnedPackageSave = versionId !== undefined && savesTo === "package";
-   const writer = authoritative
-      ? storage && locator && canWriteWorkspace
+   const { savesTo, pinnedPackageSave, writer } = saveTarget({
+      authoritative,
+      mutable,
+      ...(versionId !== undefined ? { versionId } : {}),
+      canStore: !!storage && !!locator && canWriteWorkspace,
+      readFailed: readFailure !== undefined,
+   });
+   const save =
+      writer === "storage"
          ? saveToStorage
-         : undefined
-      : pinnedPackageSave
-        ? undefined
-        : mutable
-          ? saveToPackage
-          : storage && locator && canWriteWorkspace
-            ? saveToStorage
-            : undefined;
-   // A copy that could not be read is not a copy that is not there. Saving on
-   // that belief is what rewinds the record, so Save is off until a reader can
-   // be told what actually happened.
-   const save = readFailure === undefined ? writer : undefined;
+         : writer === "package"
+           ? saveToPackage
+           : undefined;
    const workspaceName = workspace?.name;
    const reportEvent = useCallback(
       (event: DashboardEvent) => {
@@ -659,7 +646,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
                      />
                   )
                }
-               note={caption({
+               note={saveCaption({
                   authoritative,
                   mutable,
                   pinnedPackageSave,
@@ -671,41 +658,6 @@ export function DashboardEditor(props: DashboardEditorProps) {
          )}
       </Stack>
    );
-}
-
-/**
- * What the toolbar says about where Save goes, in the backend's own words
- * wherever it has any: a workspace carries a `description` precisely so the
- * editor does not have to guess, and "this browser" is one host's answer
- * rather than the interface's.
- */
-function caption({
-   authoritative,
-   mutable,
-   pinnedPackageSave,
-   workspace,
-   readFailure,
-   versionId,
-}: {
-   authoritative: boolean;
-   mutable: boolean;
-   pinnedPackageSave: boolean;
-   workspace?: Workspace;
-   readFailure?: string;
-   versionId?: string;
-}): string {
-   if (readFailure !== undefined)
-      return `The saved copy could not be read, so Save is off: ${readFailure}`;
-   if (authoritative && workspace)
-      return workspace.writeable
-         ? workspace.description
-         : `${workspace.description}: you cannot save into it.`;
-   if (pinnedPackageSave)
-      return `Reading version ${versionId}: a version is a fixed point in history, so Save is off.`;
-   if (mutable) return "Save writes the file into the package.";
-   if (workspace)
-      return `${workspace.description}: this server does not take writes.`;
-   return "This server does not take writes.";
 }
 
 /**
@@ -935,17 +887,4 @@ function Surface({
          </Box>
       </Stack>
    );
-}
-
-/** What a storage backend said went wrong, for a reader who has to act on it. */
-function storageErrorMessage(error: unknown): string {
-   return error instanceof Error ? error.message : String(error);
-}
-
-/** The server's own reason for a refused write, when it gave one. */
-function apiErrorMessage(error: unknown): string {
-   const data = (error as { response?: { data?: { message?: string } } })
-      .response?.data;
-   if (data?.message) return data.message;
-   return error instanceof Error ? error.message : String(error);
 }

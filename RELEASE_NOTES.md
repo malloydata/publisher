@@ -31,6 +31,28 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Console can edit notebooks
+
+A tagged `notebooks/*.malloy` notebook now has an **Edit** button in the Console. The editor lets you
+rewrite, add and remove markdown cells and reorder cells (definitions stay put, and a query stays
+below what it reads). Save writes the file back into the package and leaves the rest of the file as
+it was: an edited cell is written in the `(markdown)` spelling, and removing a cell removes the
+comment lines directly above it. Save writes to the host's record when the host has one (an
+authoritative workspace), and otherwise to the package, so the Console on a server that does not
+take writes has no Save. A notebook the editor cannot place cell by cell opens read-only and says
+why. The write route (`PUT …/models/{path}`) now accepts tagged `notebooks/*.malloy` as well as
+`dashboards/*.malloy`. The SDK exports `NotebookEditor` from `@malloy-publisher/sdk/builder` for
+hosts that mount it themselves.
+
+## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
+
+Query, compile and write text that carries `#(authorize)` or `#(access_filter)` is still refused,
+except where the tag sits inside the body of a `(markdown)` or `(text)` block note, or after the
+`(markdown)` or `(text)` prefix of a line note: there it is prose, so a notebook that writes about a
+gate can be previewed and saved. The same tag anywhere else, including a line note with any other
+route, a block's opener or closer line, a comment or a string, is refused as before, and text the
+server cannot lex is judged the old way.
+
 ## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
 `@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.

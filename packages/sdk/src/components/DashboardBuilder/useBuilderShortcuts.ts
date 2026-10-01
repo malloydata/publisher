@@ -19,8 +19,8 @@ export interface BuilderShortcutHandlers {
    redo: () => void;
    save?: () => void;
    escape: () => void;
-   /** Nudge the selected tile's width by ±1 column. */
-   nudge: (delta: 1 | -1) => void;
+   /** Nudge the selected tile's width by ±1 column. Absent, the arrow keys are left alone. */
+   nudge?: (delta: 1 | -1) => void;
 }
 
 const isMac =
@@ -73,6 +73,7 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
             return;
          }
          if (
+            current.nudge &&
             !mod &&
             !event.altKey &&
             !event.shiftKey &&

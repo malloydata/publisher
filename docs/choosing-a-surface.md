@@ -73,8 +73,8 @@ ship one.
 
 Interactivity is not the axis to choose on: a notebook and a dashboard run the same givens code,
 so both get URL-addressable parameters, the same controls, starting values and Apply batching (a
-notebook asks for those with file-level `## givens { … }` and `## autorun=false`, a dashboard with
-the same two properties on its artifact tag), and `# drill`. Nor is polish: both are listed by
+served notebook asks for those with `givens { … }` and `autorun=false` inside its `## artifact`
+tag, as a dashboard does), and `# drill`. Nor is polish: both are listed by
 title rather than filename, and the same load-time lint covers the drill tags either one fires.
 Pick on the shape of the deliverable instead.
 
