@@ -7343,14 +7343,17 @@ components:
         file does not publish. That text can include `#(authorize)`
         expressions, `given:` defaults, connection names and raw SQL.
 
-        Only the models list, the model GET and the query route read it. The
-        notebook-cell route, the dashboards route, the MCP tools, and the legacy
-        `/projects/...` aliases of these routes ignore it.
+        Only the models list, the model GET and the query route read it, plus
+        the MCP `execute_query` tool's argument of the same name, which runs a
+        query the way this route does. The notebook-cell route, the dashboards
+        route, the other MCP tools, and the legacy `/projects/...` aliases of
+        these routes ignore it.
 
         Like every route on this server, it is unauthenticated. A deployment
         that authenticates in front of Publisher decides who may send it, and
         should pass it only for callers allowed to work with a package's hidden
-        files, such as its authors.
+        files, such as its authors. A deployment that exposes the MCP port has
+        to make the same decision for the `execute_query` argument.
 
         Only `true` and `false` are accepted. Any other value is refused with
         400.

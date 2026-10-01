@@ -1,10 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { MalloyError } from "@malloydata/malloy";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import {
+   PackageLoadPool,
+   __setPackageLoadPoolForTests,
+} from "../../package_load/package_load_pool";
 import type { EnvironmentStore } from "../../service/environment_store";
+import { Package } from "../../service/package";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
    NotQueryableError,
@@ -89,9 +97,11 @@ function storeCapturingMetadata(
    store: Partial<EnvironmentStore>;
    captured: () => ModelQueryMetadataInput | undefined;
    capturedShape: () => string | undefined;
+   capturedArgs: () => unknown[];
 } {
    let captured: ModelQueryMetadataInput | undefined;
    let capturedShape: string | undefined;
+   let capturedArgs: unknown[] = [];
    const store: Partial<EnvironmentStore> = {
       getEnvironment: async () =>
          ({
@@ -114,6 +124,7 @@ function storeCapturingMetadata(
                      // responseShape. Indexed rather than destructured off the
                      // end, because the argument list has grown twice and a
                      // trailing-element type went stale both times.
+                     capturedArgs = _args;
                      captured = _args[7] as ModelQueryMetadataInput | undefined;
                      capturedShape = _args[8] as string | undefined;
                      return {
@@ -135,6 +146,7 @@ function storeCapturingMetadata(
       store,
       captured: () => captured,
       capturedShape: () => capturedShape,
+      capturedArgs: () => capturedArgs,
    };
 }
 
@@ -263,6 +275,24 @@ describe("execute_query error classification", () => {
       expect(JSON.stringify(parsed.suggestions)).not.toContain(
          "spelled correctly",
       );
+      // The author's way to test it without publishing it.
+      expect(JSON.stringify(parsed.suggestions)).toContain(
+         "includeHiddenFilesAndSources: true",
+      );
+   });
+
+   it("does not offer includeHiddenFilesAndSources on a plain not-found", async () => {
+      // A gated hidden target answers the generic refusal so it reads like a
+      // missing one. Offering the option there would hint that it exists.
+      const handler = captureHandler(
+         storeWhoseQueryThrows(
+            new NotQueryableError('No queryable source "salaries".'),
+         ),
+      );
+      const parsed = parse(await handler(args));
+      expect(JSON.stringify(parsed.suggestions)).not.toContain(
+         "includeHiddenFilesAndSources",
+      );
    });
 
    it("also states the error in a text block", async () => {
@@ -375,5 +405,141 @@ describe("execute_query per-query metadata", () => {
          default: undefined,
          enforced: { tenant: "acme" },
       });
+   });
+});
+
+describe("execute_query includeHiddenFilesAndSources", () => {
+   // getQueryResults positions: 9 is bypassAuthorize, 10 is
+   // includeHiddenFilesAndSources.
+   it("passes true through on both call paths, and never a bypass", async () => {
+      for (const call of [
+         args,
+         { ...args, query: undefined, sourceName: "orders", queryName: "v" },
+      ]) {
+         const { store, capturedArgs } = storeCapturingMetadata();
+         await captureHandler(store)({
+            ...call,
+            includeHiddenFilesAndSources: true,
+         });
+         expect(capturedArgs()[9]).toBe(false);
+         expect(capturedArgs()[10]).toBe(true);
+      }
+   });
+
+   it("sends false when the argument is omitted or false", async () => {
+      for (const extra of [{}, { includeHiddenFilesAndSources: false }]) {
+         const { store, capturedArgs } = storeCapturingMetadata();
+         await captureHandler(store)({ ...args, ...extra });
+         expect(capturedArgs()[9]).toBe(false);
+         expect(capturedArgs()[10]).toBe(false);
+      }
+   });
+});
+
+/**
+ * The same cases as explore_visibility.spec.ts pins for the model, through the
+ * real tool handler and a real loaded Package with a root index.malloy.
+ */
+describe("execute_query includeHiddenFilesAndSources on a real package", () => {
+   const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+   let tempDir: string;
+   let duckdb: { close: () => Promise<void> };
+   let handler: Handler;
+
+   beforeAll(async () => {
+      process.env.PACKAGE_LOAD_WORKERS = "1";
+      await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-hidden-"));
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({ name: "pkg", description: "test package" }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base_source is duckdb.sql("select 1 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "locked.malloy"),
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "base.malloy"
+source: helper is duckdb.sql("select 1 as id")
+source: customers is duckdb.sql("select 1 as id")
+export { customers }`,
+      );
+
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const connection = new DuckDBConnection("duckdb", ":memory:");
+      duckdb = connection;
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () =>
+            new FixedConnectionMap(new Map([["duckdb", connection]]), "duckdb"),
+      );
+      const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+      handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               assertCanAdmitQuery: () => undefined,
+               getApiConnection: () => {
+                  throw new Error("no connection config in this test");
+               },
+               getPackage: async () => pkg,
+            }) as never,
+      });
+   });
+
+   afterAll(async () => {
+      await duckdb?.close();
+      await __setPackageLoadPoolForTests(null);
+      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
+      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+   });
+
+   const run = (
+      modelPath: string,
+      query: string,
+      includeHiddenFilesAndSources?: boolean,
+   ) =>
+      handler({
+         environmentName: "env",
+         packageName: "pkg",
+         modelPath,
+         query,
+         includeHiddenFilesAndSources,
+      });
+
+   it("refuses a hidden file and a hidden source without it, and runs both with it", async () => {
+      for (const [modelPath, query] of [
+         ["base.malloy", "run: base_source -> { select: * }"],
+         ["index.malloy", "run: helper -> { select: * }"],
+      ]) {
+         const refused = await run(modelPath, query);
+         expect(refused.isError).toBe(true);
+         expect(parse(refused).error).toContain("published surface");
+
+         const ran = await run(modelPath, query, true);
+         expect(ran.isError).not.toBe(true);
+         expect(parse(ran).rows).toEqual([{ id: 1 }]);
+      }
+   });
+
+   it("still refuses an #(authorize) false source with it", async () => {
+      const result = await run(
+         "locked.malloy",
+         "run: locked -> { select: * }",
+         true,
+      );
+      expect(result.isError).toBe(true);
+      expect(parse(result).error).toContain(
+         'Access denied for source "locked"',
+      );
    });
 });

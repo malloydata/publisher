@@ -14,6 +14,7 @@ import {
 import { runWithQueryTimeout } from "../../query_timeout";
 import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
 import { EnvironmentStore } from "../../service/environment_store";
+import { OffSurfaceError } from "../../errors";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
    buildMalloyUri,
@@ -78,6 +79,12 @@ const executeQueryShape = {
       .describe(
          "Per-query given values that override model defaults. Keys are given names declared in the model's given: block.",
       ),
+   includeHiddenFilesAndSources: z
+      .boolean()
+      .optional()
+      .describe(
+         "Set true to also run the files and sources this package's index.malloy hides, so an author can test them without publishing them. It never bypasses #(authorize) or #(access_filter). Default false.",
+      ),
 };
 
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
@@ -127,6 +134,7 @@ export function registerExecuteQueryTool(
             queryName,
             filterParams,
             givens,
+            includeHiddenFilesAndSources,
          } = params;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
@@ -243,6 +251,9 @@ export function registerExecuteQueryTool(
                           // a wrapped result measuring over the cap was a 413 for
                           // a payload that would have arrived at 90k characters.
                           "compact",
+                          // MCP sends no #(authorize) bypass, ever.
+                          false,
+                          includeHiddenFilesAndSources === true,
                        )
                      : model.getQueryResults(
                           sourceName,
@@ -254,6 +265,8 @@ export function registerExecuteQueryTool(
                           abortSignal,
                           queryMetadataInput,
                           "compact",
+                          false,
+                          includeHiddenFilesAndSources === true,
                        ),
                getQueryTimeoutMs(),
             );
@@ -328,6 +341,16 @@ export function registerExecuteQueryTool(
             // Point at the reload rather than let them hunt for a typo that
             // isn't there.
             const suggestions = [...errorDetails.suggestions];
+            // Only an ungated hidden target is an OffSurfaceError; a gated one
+            // stays a plain not-found, so this hint names nothing it shouldn't.
+            if (
+               queryError instanceof OffSurfaceError &&
+               includeHiddenFilesAndSources !== true
+            ) {
+               suggestions.push(
+                  "If you are this package's author testing a file or source it does not publish, pass includeHiddenFilesAndSources: true to run it without publishing it.",
+               );
+            }
             if (isUndefinedNameError(errorDetails.message)) {
                suggestions.push(
                   "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
