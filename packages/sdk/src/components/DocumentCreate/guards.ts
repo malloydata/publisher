@@ -1,11 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { AUTHORIZE_TAG_LIKE } from "../DashboardBuilder/annotationText";
 import { isIdentifier } from "../DashboardBuilder/malloyText";
 import type { DocumentType } from "../DocumentStorage";
-
-/** A copy of the server's `AUTHORIZE_TAG_LIKE`, kept in step by a parity spec; a title lands in a tag the server's caller guard reads anywhere. */
-export const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:(?:(?:row|source)[-_]?)?authorize|access[-_]?filter)(?=[)\]}>]|[ \t]|$)`;
 
 export const malloyName = (name: string) =>
    isIdentifier(name) ? name : `\`${name}\``;

@@ -1,13 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
    Alert,
    Box,
+   Button,
    Container,
    IconButton,
+   Menu,
+   MenuItem,
    Table,
    TableBody,
    TableCell,
@@ -17,16 +21,22 @@ import {
    Typography,
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Database } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
-import type { DocumentLocator } from "../DocumentStorage/DocumentStorage";
+import { chooseWorkspace } from "../DashboardBuilder/documentSession";
+import { createRoute, type CreateTarget } from "../DocumentCreate";
+import type {
+   DocumentLocator,
+   DocumentType,
+   Workspace,
+} from "../DocumentStorage/DocumentStorage";
 import { useOptionalDocumentStorage } from "../DocumentStorage/DocumentStorageProvider";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
-import { NewDashboardDialog } from "./NewDashboardDialog";
+import { NewDocumentDialog } from "./NewDocumentDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import ContentTypeIcon, {
@@ -69,7 +79,10 @@ export default function Package({
       parseResourceUri(resourceUri);
 
    const [schemaDatabase, setSchemaDatabase] = useState<Database | null>(null);
-   const [creating, setCreating] = useState(false);
+   const [creating, setCreating] = useState<DocumentType | undefined>(
+      undefined,
+   );
+   const [newMenu, setNewMenu] = useState<HTMLElement | null>(null);
 
    // Dashboards the host keeps for this package and the package does not have:
    // the builder's drafts, listed so they are found rather than stumbled on.
@@ -80,17 +93,30 @@ export default function Package({
       { locator: DocumentLocator; where: string }[]
    >([]);
    const draftPrefix = `${environmentName}/${packageName}/dashboards/`;
+   // Where a create may land is the chosen workspace's to say, so New waits
+   // for the answer; a host whose workspaces cannot be listed gets no New
+   // rather than a guess that could write the package under its record.
+   const [workspace, setWorkspace] = useState<
+      { state: "pending" | "failed" } | { state: "ready"; chosen?: Workspace }
+   >({ state: storage ? "pending" : "ready" });
    const refreshDrafts = useCallback(async () => {
       if (!storage) return;
-      const workspaces = await storage.listWorkspaces(true);
+      let workspaces: Workspace[];
+      try {
+         workspaces = await storage.listWorkspaces(false);
+      } catch {
+         setWorkspace({ state: "failed" });
+         return;
+      }
+      setWorkspace({ state: "ready", chosen: chooseWorkspace(workspaces) });
       const found: { locator: DocumentLocator; where: string }[] = [];
-      for (const workspace of workspaces)
+      for (const candidate of workspaces.filter((w) => w.writeable))
          for (const locator of await storage.listDocuments(
-            workspace,
+            candidate,
             "dashboard",
          ))
             if (locator.path.startsWith(draftPrefix))
-               found.push({ locator, where: workspace.description });
+               found.push({ locator, where: candidate.description });
       setDrafts(found);
    }, [storage, draftPrefix]);
    useEffect(() => {
@@ -234,6 +260,65 @@ export default function Package({
       .slice()
       .sort((a, b) => a.path.localeCompare(b.path));
 
+   // A non-authoritative browser workspace is never a create target: a
+   // document made there would look saved and exist for one reader only.
+   const route =
+      workspace.state === "ready"
+         ? createRoute({
+              authoritative: workspace.chosen?.authoritative === true,
+              mutable,
+              canStore: workspace.chosen?.writeable === true,
+           })
+         : undefined;
+   // `updateModelSource` cannot write against a pinned version.
+   const canCreate =
+      route === "storage" || (route === "package" && versionId === undefined);
+   const createTarget = useMemo((): CreateTarget | undefined => {
+      if (route === "storage" && storage && workspace.state === "ready") {
+         if (!workspace.chosen) return undefined;
+         return {
+            route,
+            storage,
+            workspace: workspace.chosen,
+            environmentName,
+            packageName,
+         };
+      }
+      if (route !== "package") return undefined;
+      return {
+         route,
+         existing: [
+            ...(dashboardsQuery.data?.data ?? []).flatMap((d) =>
+               d.path ? [d.path] : [],
+            ),
+            ...(notebooksQuery.data?.data ?? []).flatMap((n) =>
+               n.path ? [n.path] : [],
+            ),
+            ...(modelsQuery.data?.data ?? []).flatMap((m) =>
+               m.path ? [m.path] : [],
+            ),
+         ],
+         write: async (path, source) => {
+            await apiClients.models.updateModelSource(
+               environmentName,
+               packageName,
+               path,
+               { source },
+            );
+         },
+      };
+   }, [
+      route,
+      storage,
+      workspace,
+      environmentName,
+      packageName,
+      apiClients,
+      dashboardsQuery.data,
+      notebooksQuery.data,
+      modelsQuery.data,
+   ]);
+
    const description = pkgQuery.data?.data?.description ?? "";
    // The root `.malloynb` wins when both exist, so a listing order never flips the pin.
    const readmePath = (
@@ -307,34 +392,70 @@ export default function Package({
                   {description}
                </Typography>
             )}
+            {canCreate && (
+               <>
+                  <Button
+                     variant="outlined"
+                     size="small"
+                     endIcon={<ArrowDropDownIcon />}
+                     aria-haspopup="menu"
+                     aria-label="New"
+                     sx={{ mt: 2 }}
+                     onClick={(event) => setNewMenu(event.currentTarget)}
+                  >
+                     New
+                  </Button>
+                  <Menu
+                     anchorEl={newMenu}
+                     open={newMenu !== null}
+                     onClose={() => setNewMenu(null)}
+                  >
+                     {(["dashboard", "notebook"] as const).map((kind) => (
+                        <MenuItem
+                           key={kind}
+                           onClick={() => {
+                              setNewMenu(null);
+                              setCreating(kind);
+                           }}
+                        >
+                           {kind === "dashboard" ? "Dashboard" : "Notebook"}
+                        </MenuItem>
+                     ))}
+                  </Menu>
+               </>
+            )}
          </Box>
 
          {isLoading && <Loading text="Loading package..." />}
 
-         <NewDashboardDialog
-            open={creating}
-            environmentName={environmentName}
-            packageName={packageName}
-            models={models
-               .map((model) => model.path)
-               .filter(
-                  (path): path is string =>
-                     typeof path === "string" &&
-                     path.endsWith(".malloy") &&
-                     !path.startsWith("dashboards/"),
-               )}
-            existing={dashboards
-               .map((dashboard) => dashboard.name)
-               .filter((name): name is string => typeof name === "string")}
-            onClose={() => setCreating(false)}
-            onCreated={(slug) => {
-               setCreating(false);
-               void queryClient.invalidateQueries({ queryKey: ["dashboards"] });
-               onClick(
-                  `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(slug)}/edit`,
-               );
-            }}
-         />
+         {createTarget && (
+            <NewDocumentDialog
+               open={creating !== undefined}
+               kind={creating ?? "dashboard"}
+               environmentName={environmentName}
+               packageName={packageName}
+               models={models
+                  .map((model) => model.path)
+                  .filter(
+                     (path): path is string =>
+                        typeof path === "string" &&
+                        path.endsWith(".malloy") &&
+                        !path.startsWith("dashboards/") &&
+                        !path.startsWith("notebooks/"),
+                  )}
+               target={createTarget}
+               onClose={() => setCreating(undefined)}
+               onCreated={(created) => {
+                  setCreating(undefined);
+                  for (const key of ["dashboards", "notebooks", "models"])
+                     void queryClient.invalidateQueries({ queryKey: [key] });
+                  void refreshDrafts();
+                  onClick(
+                     `/${environmentName}/${packageName}/${created.kind}s/${encodeURIComponent(created.slug)}/edit`,
+                  );
+               }}
+            />
+         )}
 
          {!isLoading && (
             <>
@@ -358,15 +479,15 @@ export default function Package({
                      </Alert>
                   </Box>
                )}
-               {(dashboards.length > 0 || mutable) && (
+               {(dashboards.length > 0 || canCreate) && (
                   <PackageSection
                      title="Dashboards"
                      count={dashboards.length}
                      action={
-                        mutable ? (
+                        canCreate ? (
                            <AddButton
                               label="Dashboard"
-                              onClick={() => setCreating(true)}
+                              onClick={() => setCreating("dashboard")}
                            />
                         ) : undefined
                      }
@@ -444,8 +565,22 @@ export default function Package({
                    that holds no notebooks is not a package missing them, and a
                    heading over the words "No notebooks" is a row of furniture
                    saying nothing. */}
-               {notebooks.length > 0 && (
-                  <PackageSection title="Notebooks" count={notebooks.length}>
+               {(notebooks.length > 0 || canCreate) && (
+                  <PackageSection
+                     title="Notebooks"
+                     count={notebooks.length}
+                     action={
+                        canCreate ? (
+                           <AddButton
+                              label="Notebook"
+                              onClick={() => setCreating("notebook")}
+                           />
+                        ) : undefined
+                     }
+                  >
+                     {notebooks.length === 0 && (
+                        <EmptyRow label="No notebooks yet" />
+                     )}
                      {notebooks.map((notebook) => {
                         // Named the way dashboards and data apps are: a notebook
                         // that titles itself is listed by that title, with the

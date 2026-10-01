@@ -23,11 +23,11 @@ import {
 import {
    isDocumentNotFound,
    useOptionalDocumentStorage,
-   type DocumentLocator,
    type Workspace,
 } from "../DocumentStorage";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
+import { locatorFor } from "../DocumentCreate/documentPath";
 import { importedCatalog, notebookImports } from "./imports";
 import { NotebookBuilder } from "./NotebookBuilder";
 import {
@@ -69,18 +69,6 @@ export type NotebookEditorProps = (
    /** Whether there are edits the record does not have, on every change and on open. */
    onDirtyChange?: (dirty: boolean) => void;
 };
-
-/** The storage key for a notebook's copy; see the storage seam's locator rule. */
-const notebookLocator = (
-   workspace: string,
-   environmentName: string,
-   packageName: string,
-   modelPath: string,
-): DocumentLocator => ({
-   workspace,
-   type: "notebook",
-   path: `${environmentName}/${packageName}/${modelPath}`,
-});
 
 const LEGACY_REFUSAL =
    "a .malloynb notebook is read, not edited. Fix: rewrite it as a `.malloy` notebook under notebooks/ to edit it here.";
@@ -280,7 +268,8 @@ function NotebookSession({
             const record = workspace?.authoritative
                ? await storage
                     .getDocument(
-                       notebookLocator(
+                       locatorFor(
+                          "notebook",
                           workspace.name,
                           environmentName,
                           packageName,
@@ -473,7 +462,8 @@ function NotebookSession({
    const locator =
       workspace === undefined
          ? undefined
-         : notebookLocator(
+         : locatorFor(
+              "notebook",
               workspace.name,
               environmentName,
               packageName,

@@ -10,7 +10,7 @@ import {
    type DocumentType,
    type Workspace,
 } from "../DocumentStorage/DocumentStorage";
-import { documentPathForTitle } from "./documentPath";
+import { documentPathForTitle, locatorFor } from "./documentPath";
 import type { DocumentCreatedEvent } from "./events";
 import { newDocumentProblem, type NewDocument } from "./guards";
 import { newNotebookSource } from "./newNotebook";
@@ -66,19 +66,6 @@ export interface CreateDocumentOptions {
    onCreated?: (created: CreatedDocument) => void;
    onEvent?: (event: DocumentCreatedEvent) => void;
 }
-
-/** The storage key for a document's copy; the editors mint theirs the same way. */
-const locatorFor = (
-   kind: DocumentType,
-   workspace: string,
-   environmentName: string,
-   packageName: string,
-   path: string,
-): DocumentLocator => ({
-   workspace,
-   type: kind,
-   path: `${environmentName}/${packageName}/${path}`,
-});
 
 const slugOf = (path: string) =>
    path.slice(path.indexOf("/") + 1, -".malloy".length);

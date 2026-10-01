@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { slugFor } from "../DashboardBuilder/newDashboard";
-import type { DocumentType } from "../DocumentStorage";
+import type { DocumentLocator, DocumentType } from "../DocumentStorage";
 
 export { newDashboardSource, slugFor } from "../DashboardBuilder/newDashboard";
 
@@ -25,3 +25,16 @@ export function documentPathForTitle(
    const slug = slugOrFallback(title);
    return documentPathFor(kind, suffix > 1 ? `${slug}-${suffix}` : slug);
 }
+
+/** The storage key for a document's copy; the Console's editors and `createDocument` mint it the same way. */
+export const locatorFor = (
+   kind: DocumentType,
+   workspace: string,
+   environmentName: string,
+   packageName: string,
+   path: string,
+): DocumentLocator => ({
+   workspace,
+   type: kind,
+   path: `${environmentName}/${packageName}/${path}`,
+});

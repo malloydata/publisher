@@ -68,9 +68,10 @@ test.describe("dashboard-create", () => {
       page,
    }) => {
       await page.goto(`/${env}/${PKG}`);
-      await page.getByRole("button", { name: "Add dashboard" }).click({
+      await page.getByRole("button", { name: "New", exact: true }).click({
          timeout: 60_000,
       });
+      await page.getByRole("menuitem", { name: "Dashboard" }).click();
 
       const dialog = page.getByRole("dialog");
       // The model and a first tile fill themselves in; only the ones with a

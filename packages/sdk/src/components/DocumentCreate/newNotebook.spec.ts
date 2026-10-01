@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { AUTHORIZE_TAG_LIKE as SERVER_AUTHORIZE_TAG_LIKE } from "../../../../server/src/service/authorize";
 import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
 import { readNotebookSource } from "../NotebookBuilder/readNotebookSource";
 import { documentPathFor, documentPathForTitle, slugFor } from "./documentPath";
-import { AUTHORIZE_TAG_LIKE, newDocumentProblem } from "./guards";
+import { newDocumentProblem } from "./guards";
 import { newNotebookSource } from "./newNotebook";
 
 const INPUT = {
@@ -55,10 +54,6 @@ describe("newNotebookSource", () => {
 });
 
 describe("newDocumentProblem", () => {
-   it("keeps the authorize copy in step with the server", () => {
-      expect(AUTHORIZE_TAG_LIKE).toBe(SERVER_AUTHORIZE_TAG_LIKE);
-   });
-
    it("refuses names that cannot be written", () => {
       expect(
          newDocumentProblem("dashboard", { ...INPUT, view: "a`b" }),

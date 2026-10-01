@@ -12,6 +12,7 @@ export {
 export {
    documentPathFor,
    documentPathForTitle,
+   locatorFor,
    newDashboardSource,
    slugFor,
    slugOrFallback,

@@ -18,7 +18,6 @@ import { parseResourceUri } from "../../utils/formatting";
 import {
    isDocumentNotFound,
    useOptionalDocumentStorage,
-   type DocumentLocator,
    type Workspace,
 } from "../DocumentStorage";
 import { GivensPanel } from "../given";
@@ -32,6 +31,7 @@ import {
    visibleToDashboard,
    type PackageCatalog,
 } from "./catalog";
+import { locatorFor } from "../DocumentCreate/documentPath";
 import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument } from "./document";
 import { previewGivens, previewTileQuery } from "./preview";
@@ -99,18 +99,6 @@ export type DashboardEditorProps = (
     */
    onDirtyChange?: (dirty: boolean) => void;
 };
-
-/** The Console's key for a dashboard's copy; see the storage seam's locator rule. */
-const dashboardLocator = (
-   workspace: string,
-   environmentName: string,
-   packageName: string,
-   modelPath: string,
-): DocumentLocator => ({
-   workspace,
-   type: "dashboard",
-   path: `${environmentName}/${packageName}/${modelPath}`,
-});
 
 export function DashboardEditor(props: DashboardEditorProps) {
    const { onExit, onEvent, onDirtyChange } = props;
@@ -211,7 +199,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
             if (chosen !== undefined) {
                const text = await storage
                   .getDocument(
-                     dashboardLocator(
+                     locatorFor(
+                        "dashboard",
                         chosen.name,
                         environmentName,
                         packageName,
@@ -366,7 +355,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
    const locator =
       workspace === undefined
          ? undefined
-         : dashboardLocator(
+         : locatorFor(
+              "dashboard",
               workspace.name,
               environmentName,
               packageName,
