@@ -34,6 +34,29 @@ import {
    type RetrievalReason,
 } from "./get_context_tool";
 
+/** Plain code-unit order, so the result does not depend on the host's locale. */
+function compareText(a: string, b: string): number {
+   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * The order of semantic rows: score descending, then source, name, kind and
+ * model path. The score is the rounded one the response publishes, so two rows
+ * that show the same relevance are listed in a fixed order, not in whatever
+ * order the scan happened to return them. The scan has the same tie-break in
+ * SQL (it decides which tied rows fit a window); this one covers the fan-out of
+ * one embedded row to several model paths, which the scan cannot see.
+ */
+function compareRanked(a: ResultEntity, b: ResultEntity): number {
+   return (
+      (b.score ?? 0) - (a.score ?? 0) ||
+      compareText(a.source ?? "", b.source ?? "") ||
+      compareText(a.name, b.name) ||
+      compareText(a.kind, b.kind) ||
+      compareText(a.modelPath, b.modelPath)
+   );
+}
+
 export const semanticRetriever: Retriever = {
    name: "semantic",
    async retrieve(ctx: PipelineContext) {
@@ -187,9 +210,7 @@ export const semanticRetriever: Retriever = {
                }
             }
             if (merged.size > 0 || searchFailure === undefined) {
-               const ranked = [...merged.values()].sort(
-                  (a, b) => (b.score ?? 0) - (a.score ?? 0),
-               );
+               const ranked = [...merged.values()].sort(compareRanked);
                // Collapse, windowing and serialization are finishRanked's,
                // shared with the lexical path so the two cannot drift.
                // Straight from the scan, which counts entities whose BEST

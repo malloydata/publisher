@@ -2115,3 +2115,63 @@ describe("trySemanticSearch", () => {
       expect(counts.size).toBe(0);
    });
 });
+
+describe("equal scores are ordered and cut the same way every time", () => {
+   // The same field name in two sources embeds identically, so the two rows
+   // tie exactly. Which one comes first, and which one fits a window of one,
+   // used to depend on the order the rows were written.
+   const run = async (
+      sources: string[],
+      packageName: string,
+      limit: number,
+   ) => {
+      const { provider } = mapProvider({
+         "total amount": [1, 0, 0],
+         "find total": [1, 0, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName,
+         entities: sources.map((s) => entity("total_amount", s)),
+         queries: [{ targetIndex: 0, text: "find total", kinds: ["measure"] }],
+         limit,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      return result.hits.map((h) => h.source);
+   };
+
+   it("lists tied rows by source, whichever was written first", async () => {
+      expect(await run(["zeta", "alpha", "mid"], "tie-1", 10)).toEqual([
+         "alpha",
+         "mid",
+         "zeta",
+      ]);
+      expect(await run(["mid", "alpha", "zeta"], "tie-2", 10)).toEqual([
+         "alpha",
+         "mid",
+         "zeta",
+      ]);
+   });
+
+   it("keeps the same tied row when the window cannot hold them all", async () => {
+      expect(await run(["zeta", "alpha", "mid"], "tie-3", 1)).toEqual([
+         "alpha",
+      ]);
+      expect(await run(["mid", "zeta", "alpha"], "tie-4", 1)).toEqual([
+         "alpha",
+      ]);
+   });
+
+   it("gives the same order on repeated queries", async () => {
+      const orders = new Set<string>();
+      for (let i = 0; i < 5; i++) {
+         orders.add(
+            JSON.stringify(await run(["c", "a", "b"], `tie-repeat-${i}`, 10)),
+         );
+      }
+      expect([...orders]).toEqual([JSON.stringify(["a", "b", "c"])]);
+   });
+});
