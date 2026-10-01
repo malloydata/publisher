@@ -334,6 +334,17 @@ query: broken is orders -> { aggregate: no_such_measure }
       ).rejects.toThrow();
    });
 
+   it("rolls back a new notebook whose only tag is inside a string, so no unserved file lands", async () => {
+      const res = await put("notebooks/string_tag.malloy", {
+         source:
+            'import \'../orders.malloy\'\nrun: orders -> {\n  select: note is """\n## artifact { kind=notebook }\n"""\n}\n',
+      });
+      expect(res.status).toBe(500);
+      await expect(
+         fs.access(path.join(location, "notebooks/string_tag.malloy")),
+      ).rejects.toThrow();
+   });
+
    for (const [name, source] of [
       ["crlf", "## artifact { kind=notebook }\r\n\r\n##(markdown) Prose.\r\n"],
       [

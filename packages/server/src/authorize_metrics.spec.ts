@@ -12,6 +12,7 @@ import {
    recordRowLevelGateRejected,
    resetAuthorizeGuardTelemetryForTesting,
 } from "./authorize_metrics";
+import { hasCallerAuthorizeAnnotation } from "./service/authorize";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -54,6 +55,26 @@ describe("authorize_metrics", () => {
             },
          ),
       ).toBe(1);
+   });
+
+   it("publisher_authorize_guard_rejected_total labels a lexed refusal 'lexed' and an unlexable one 'whole_text'", async () => {
+      expect(hasCallerAuthorizeAnnotation("#(authorize) true\nrun: x\n")).toBe(
+         true,
+      );
+      recordAuthorizeGuardRejection("query");
+      expect(
+         hasCallerAuthorizeAnnotation("#|(markdown)\n#(authorize) true\n"),
+      ).toBe(true);
+      recordAuthorizeGuardRejection("query");
+      recordAuthorizeGuardRejection("query");
+
+      const count = (match: string) =>
+         harness.collectCounter("publisher_authorize_guard_rejected_total", {
+            field: "query",
+            match,
+         });
+      expect(await count("lexed")).toBe(1);
+      expect(await count("whole_text")).toBe(2);
    });
 
    it("publisher_authorize_bypass_total ticks per call, labeled by entry_point", async () => {
