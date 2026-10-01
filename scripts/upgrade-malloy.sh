@@ -93,9 +93,3 @@ bun scripts/sync-duckdb-version.js --write
 echo "Syncing the pg resolution to @malloydata/db-postgres..."
 bun scripts/sync-pg-version.js --write
 bun install
-
-# The storefront example's page loads a committed browser copy of
-# @malloydata/malloy-filter, and test:examples fails until that copy's banner
-# names the installed version. Regenerate it from what bun just installed.
-echo "Re-vendoring @malloydata/malloy-filter for the storefront example..."
-node scripts/vendor-malloy-filter.mjs
