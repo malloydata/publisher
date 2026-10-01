@@ -81,4 +81,14 @@ describe("useCellReorder", () => {
       act(() => view.result.current.onDragEnd(ended("0", true)));
       expect(commit).not.toHaveBeenCalled();
    });
+
+   it("drops a legal preview without writing when the drag is cancelled", () => {
+      const { view, commit } = mount();
+      act(() => view.result.current.onDragStart("3"));
+      act(() => view.result.current.onDragOver(over("3", "2").event));
+      expect(view.result.current.preview).toEqual(["0", "1", "3", "2"]);
+      act(() => view.result.current.onDragEnd(ended("3", true)));
+      expect(commit).not.toHaveBeenCalled();
+      expect(view.result.current.preview).toBeUndefined();
+   });
 });

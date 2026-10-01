@@ -23,6 +23,7 @@ import {
 } from "react";
 import type { Given } from "../../client";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
+import { GIVEN_SETTLE_MS, useSettled } from "../../hooks/useSettled";
 import { now } from "../Dashboard/telemetry";
 import { BuilderToolbar } from "../DashboardBuilder/BuilderToolbar";
 import { DiffDialog } from "../DashboardBuilder/DiffDialog";
@@ -259,10 +260,13 @@ export function NotebookBuilder({
       documentName: modelPath,
    });
    const { applied, declaredTypes } = controls;
-   const request = useMemo(
+   const typed = useMemo(
       () => givensToRequest(applied, declaredTypes),
       [applied, declaredTypes],
    );
+   // A text control autoruns per keystroke; every query cell would put a query on the warehouse each time. Apply is a click, so it runs at once.
+   const settled = useSettled(typed, GIVEN_SETTLE_MS);
+   const request = autorun ? settled : typed;
    const target = useMemo(
       () => ({
          environmentName,

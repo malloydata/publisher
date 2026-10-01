@@ -932,7 +932,7 @@ describe("NotebookEditor, when the host's store changes while open", () => {
       const record = new FakeStorage(RECORD);
       record.documents.set(PATH, withIntro("Recorded."));
       swapTo(view, record);
-      await alertWith("Save is off");
+      await alertWith("Where this notebook saves changed");
       noSave();
       expect(within(introCell()).getByText("Intro, edited.")).toBeDefined();
       expect(record.documents.get(PATH)).toBe(withIntro("Recorded."));
@@ -948,7 +948,7 @@ describe("NotebookEditor, when the host's store changes while open", () => {
       );
       editIntro("Recorded, edited.");
       swapTo(view, new FakeStorage(NOT_RECORD));
-      await alertWith("Save is off");
+      await alertWith("Where this notebook saves changed");
       noSave();
       expect(within(introCell()).getByText("Recorded, edited.")).toBeDefined();
       expect(updateModelSource).not.toHaveBeenCalled();
@@ -978,6 +978,30 @@ describe("NotebookEditor, the notebook's own control settings", () => {
       });
       await settle();
       expect(executeQueryModel).toHaveBeenCalledTimes(1);
+   });
+
+   it("lets an autorun text control settle before its previews run, once for a burst of typing", async () => {
+      getNotebook.mockImplementationOnce(async () => ({
+         data: { autorun: true, startingGivens: { REGION: "EU" } },
+      }));
+      mount(undefined, { name: "settings" });
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(1));
+      for (const value of ["W", "We", "West"])
+         fireEvent.change(screen.getByLabelText("REGION"), {
+            target: { value },
+         });
+      await settle();
+      expect(executeQueryModel).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
+      const last = executeQueryModel.mock.calls.at(-1) as unknown as [
+         string,
+         string,
+         string,
+         { givens?: Record<string, unknown> },
+      ];
+      expect(last[3].givens).toEqual({ REGION: "West" });
+      await settle();
+      expect(executeQueryModel).toHaveBeenCalledTimes(2);
    });
 
    it("waits for the model's givens before a record open runs its first preview", async () => {
