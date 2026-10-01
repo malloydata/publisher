@@ -368,5 +368,29 @@ vulnerabilities:
       command-line utilities. The server is not an interactive terminal program and
       no ncurses utility is invoked on untrusted input. Not removable (essential
       packages). Debian has published no fix.
+  # HIGH, runtime package, unreached code: basic-ftp is a transitive dependency of
+  # get-uri, itself reached through proxy-agent's PAC-script support. The package.json
+  # resolution holds it at ^5.3.1 because every parent admits only 5.x (get-uri 8.0.1,
+  # the latest, declares ^5.3.1). Retire when get-uri admits basic-ftp 6.2.1 or later.
+  - id: CVE-2026-102990
+    paths: ["bun.lock", "publisher/node_modules/basic-ftp/package.json"]
+    expired_at: 2026-12-31
+    statement: >
+      basic-ftp 5.3.1, via get-uri 8.0.1 -> pac-proxy-agent -> proxy-agent. Denial of
+      service from a crafted Unix directory listing returned by an FTP server.
+      Reached only if an operator points a proxy configuration at an ftp:// PAC
+      script; Publisher opens no FTP connection of its own. Fixed in basic-ftp 6.2.1,
+      a major no parent admits.
+  # HIGH, Debian packages in the base image, no fixed version published (arm64 image
+  # only at the time of writing). Bare id for the same reason as the entries above.
+  - id: CVE-2026-16742
+    expired_at: 2026-12-31
+    statement: >
+      Debian systemd 257.13-1~deb13u1 (libsystemd0, libudev1), in the oven/bun base
+      image of the runtime stage. Local privilege escalation through missing
+      home-record signature verification in systemd-homed. Only the shared libraries
+      are installed; systemd-homed does not exist in the image and the server runs as
+      uid 1000. Not removable: other base-image packages depend on the libraries. Debian
+      has published no fix.
 misconfigurations: []
 secrets: []
