@@ -5,6 +5,7 @@ import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
@@ -463,6 +464,16 @@ export function DashboardEditor(props: DashboardEditorProps) {
                modelPath,
                versionId,
             ],
+         });
+         // A cached result is keyed on the query text, not the file, so a
+         // changed chart would otherwise be drawn from the old rows.
+         void queryClient.invalidateQueries({
+            queryKey: modelResultsKey({
+               environmentName,
+               packageName,
+               versionId,
+               modelPath,
+            }),
          });
          for (const key of [
             "dashboard-editor-manifest",

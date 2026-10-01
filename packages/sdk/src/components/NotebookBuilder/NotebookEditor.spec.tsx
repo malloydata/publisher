@@ -16,6 +16,7 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   TEST_SERVER,
 } from "../../../test/serverProvider";
 import { globalQueryClient } from "../../utils/queryClient";
 import { sha256Hex } from "../../utils/sha256";
@@ -1040,5 +1041,39 @@ describe("NotebookEditor, the notebook's own control settings", () => {
       expect(
          screen.queryByRole("button", { name: "Apply", hidden: true }),
       ).toBeNull();
+   });
+});
+
+describe("NotebookEditor, after a package save", () => {
+   it("drops the cached results of the saved model and leaves other models' alone", async () => {
+      const key = (modelPath: string) => [
+         "queryResult",
+         "env",
+         "pkg",
+         undefined,
+         modelPath,
+         undefined,
+         "run: a -> { select: x }",
+         undefined,
+         "{}",
+         TEST_SERVER,
+      ];
+      globalQueryClient.setQueryData(key("notebooks/tour.malloy"), "old");
+      globalQueryClient.setQueryData(key("notebooks/other.malloy"), "other");
+      mount(undefined);
+      await screen.findByRole("group", { name: "Cell 1, text", hidden: true });
+      editIntro("Intro, edited.");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+         expect(
+            globalQueryClient.getQueryState(key("notebooks/tour.malloy"))
+               ?.isInvalidated,
+         ).toBe(true),
+      );
+      expect(
+         globalQueryClient.getQueryState(key("notebooks/other.malloy"))
+            ?.isInvalidated,
+      ).toBe(false);
    });
 });

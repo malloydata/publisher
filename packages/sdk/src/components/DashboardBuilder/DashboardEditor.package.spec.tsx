@@ -8,7 +8,9 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   TEST_SERVER,
 } from "../../../test/serverProvider";
+import { globalQueryClient } from "../../utils/queryClient";
 import { sha256Hex } from "../../utils/sha256";
 import { BrowserDocumentStorage } from "../DocumentStorage/BrowserDocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
@@ -159,5 +161,40 @@ describe("DashboardEditor, when the server takes writes", () => {
          ),
       );
       expect(button("Save changes")).toBeDefined();
+   });
+
+   it("drops the cached results of the saved file, which are keyed on query text, not content", async () => {
+      const key = (modelPath: string) => [
+         "queryResult",
+         "env",
+         "pkg",
+         undefined,
+         modelPath,
+         undefined,
+         "run: a -> by_cat",
+         undefined,
+         "{}",
+         TEST_SERVER,
+      ];
+      globalQueryClient.setQueryData(key("dashboards/overview.malloy"), "old");
+      globalQueryClient.setQueryData(key("dashboards/other.malloy"), "other");
+      mount();
+      await screen.findByText("Storefront");
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.change(screen.getByLabelText("Tile title"), {
+         target: { value: "Categories" },
+      });
+      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      fireEvent.click(button("Save changes"));
+      await waitFor(() =>
+         expect(
+            globalQueryClient.getQueryState(key("dashboards/overview.malloy"))
+               ?.isInvalidated,
+         ).toBe(true),
+      );
+      expect(
+         globalQueryClient.getQueryState(key("dashboards/other.malloy"))
+            ?.isInvalidated,
+      ).toBe(false);
    });
 });

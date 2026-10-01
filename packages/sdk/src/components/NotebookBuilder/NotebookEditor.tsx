@@ -6,6 +6,7 @@ import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CompiledModel, Given, RawNotebook } from "../../client";
+import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -500,6 +501,14 @@ function NotebookSession({
          }
          savedHashRef.current = result.data.contentHash;
          void queryClient.invalidateQueries({ queryKey: modelKey });
+         void queryClient.invalidateQueries({
+            queryKey: modelResultsKey({
+               environmentName,
+               packageName,
+               versionId,
+               modelPath,
+            }),
+         });
          // The viewer keys its notebook on the resource URI.
          void queryClient.invalidateQueries({
             queryKey: [
@@ -512,6 +521,7 @@ function NotebookSession({
          environmentName,
          packageName,
          modelPath,
+         versionId,
          modelKey,
          queryClient,
       ],
