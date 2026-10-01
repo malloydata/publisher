@@ -103,6 +103,20 @@ describe("AddQueryDialog", () => {
       expect(button("Add query").hasAttribute("disabled")).toBe(false);
    });
 
+   it("names an import that could not be read instead of saying the notebook reads no source", () => {
+      render(
+         <AddQueryDialog
+            open
+            sources={[]}
+            failedImports={["shop.malloy"]}
+            onClose={() => {}}
+            onAdd={() => {}}
+         />,
+      );
+      expect(screen.getByText(/Could not read shop\.malloy/)).toBeDefined();
+      expect(screen.queryByText(/reads no source/)).toBeNull();
+   });
+
    it("says the sources could not be read, not that they are loading, after a failed read", () => {
       cleanup();
       render(

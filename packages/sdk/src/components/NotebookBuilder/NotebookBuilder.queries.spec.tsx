@@ -79,6 +79,7 @@ const mount = async (
       source?: string;
       sources?: CatalogSource[] | null;
       sourcesFailed?: boolean;
+      importsFailed?: string[];
       onSourcesWanted?: () => void;
       onSave?: (source: string) => Promise<void> | void;
       onEvent?: (event: NotebookEvent) => void;
@@ -93,6 +94,9 @@ const mount = async (
          notebook={notebook}
          {...(sources ? { sources } : {})}
          {...(options.sourcesFailed ? { sourcesFailed: true } : {})}
+         {...(options.importsFailed
+            ? { importsFailed: options.importsFailed }
+            : {})}
          {...(options.onSourcesWanted
             ? { onSourcesWanted: options.onSourcesWanted }
             : {})}
@@ -437,6 +441,9 @@ run: a -> by_cat
       expect(onSave).not.toHaveBeenCalled();
       expect(screen.getByText(/Saving this clears undo/)).toBeDefined();
       expect(screen.getByText(/A chart line was changed/)).toBeDefined();
+      expect(
+         screen.getByText(/cells and chart lines this save changes/),
+      ).toBeDefined();
       expect(screen.queryByText(/added or removed/)).toBeNull();
    });
 });
@@ -485,6 +492,41 @@ describe("the Add menu", () => {
             /sources could not be read/,
          ),
       ).not.toHaveLength(0);
+   });
+
+   it("names the import that could not be read, not 'reads no source'", async () => {
+      await mount({
+         source: `## artifact { kind=notebook }
+import "../shop.malloy"
+
+run: a -> by_cat
+`,
+         sources: [],
+         importsFailed: ["shop.malloy"],
+      });
+      expect(
+         within(cell("Cell 2, query")).getAllByLabelText(
+            /Could not read shop\.malloy/,
+         ),
+      ).not.toHaveLength(0);
+      expect(screen.queryAllByLabelText(/reads no source/)).toHaveLength(0);
+   });
+
+   it("shows a refused caption on an added cell and does not commit it", async () => {
+      await mount({ onSave: async () => {} });
+      fireEvent.click(inCell("Cell 6, query", "Add query below"));
+      fireEvent.click(button("View by_cat"));
+      fireEvent.click(button("Add query"));
+      const field = within(cell("Cell 7, query")).getByLabelText(
+         "Query caption",
+      );
+      fireEvent.change(field, { target: { value: "# authorize" } });
+      fireEvent.blur(field);
+      expect(
+         within(cell("Cell 7, query")).getByText(/access-control tag/),
+      ).toBeDefined();
+      // Not in the cell's text, so not in the file.
+      expect(ran().some((q) => q.includes("authorize"))).toBe(false);
    });
 
    it("asks for the imported sources when the dialog or a picker opens, not before", async () => {

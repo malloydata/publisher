@@ -17,6 +17,8 @@ export interface AddQueryDialogProps {
    failed?: boolean;
    /** Sources the notebook imports are still being read. */
    pending?: boolean;
+   /** Package paths of imports that could not be read. */
+   failedImports?: string[];
    onClose: () => void;
    onAdd: (run: QueryRun) => void;
 }
@@ -27,6 +29,7 @@ export function AddQueryDialog({
    sources,
    failed,
    pending,
+   failedImports,
    onClose,
    onAdd,
 }: AddQueryDialogProps) {
@@ -47,6 +50,7 @@ export function AddQueryDialog({
       if (open && source === "" && first) setSource(first);
    }, [open, source, first]);
 
+   const unreadable = failedImports?.join(", ");
    const trimmed = caption.trim();
    const problem = trimmed ? captionProblem(trimmed) : undefined;
    const canAdd = source !== "" && view !== "" && problem === undefined;
@@ -84,7 +88,9 @@ export function AddQueryDialog({
                        ? "The notebook's sources are still loading."
                        : pending
                          ? "Reading the sources this notebook imports…"
-                         : "This notebook reads no source, so there is nothing to query."}
+                         : unreadable
+                           ? `Could not read ${unreadable}, which this notebook imports, so its sources are not offered.`
+                           : "This notebook reads no source, so there is nothing to query."}
                </Typography>
             ) : (
                <>
@@ -98,6 +104,15 @@ export function AddQueryDialog({
                      }}
                      onView={setView}
                   />
+                  {unreadable && (
+                     <Typography
+                        variant="caption"
+                        sx={{ color: theme.tileTitle }}
+                     >
+                        Could not read {unreadable}, which this notebook
+                        imports, so its sources are not offered.
+                     </Typography>
+                  )}
                   {pending && (
                      <Typography
                         variant="caption"

@@ -59,6 +59,16 @@ const getModel = mock(
       _versionId?: string,
       _hidden?: boolean,
    ) => {
+      if (path === "gone.malloy") throw new Error("not found");
+      if (path === "notebooks/broken.malloy")
+         return {
+            data: {
+               modelPath: path,
+               sourceText: NAMED_IMPORT.replace("shop", "gone"),
+               givens: [],
+               sources: [],
+            },
+         };
       // A curated package: the imported file's sources, and none of them in the notebook's own.
       if (path === "shop.malloy")
          return {
@@ -261,4 +271,21 @@ describe("NotebookEditor, adding a query on a curated package", () => {
          );
          expect(importReads()).toBe(1);
       });
+
+   it("names an import that could not be read, once", async () => {
+      const query = await open("broken");
+      fireEvent.click(
+         within(query).getByRole("button", {
+            name: "Add query below",
+            hidden: true,
+         }),
+      );
+      expect(
+         await screen.findAllByText(/Could not read gone\.malloy/),
+      ).not.toHaveLength(0);
+      expect(screen.queryByText(/reads no source/)).toBeNull();
+      expect(
+         getModel.mock.calls.filter((call) => call[2] === "gone.malloy"),
+      ).toHaveLength(1);
+   });
 });

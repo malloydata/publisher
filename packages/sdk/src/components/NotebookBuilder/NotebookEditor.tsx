@@ -404,6 +404,7 @@ function NotebookSession({
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [importList, importPaths, importsVersion],
    );
+   const importsFailed = importPaths.filter((_, i) => importModels[i]?.isError);
    const importsPending = wantImports && importModels.some((q) => q.isFetching);
    const routeRef = useRef(route);
    routeRef.current = route;
@@ -636,6 +637,7 @@ function NotebookSession({
                : {})}
             importedSources={importedSources}
             {...(importsPending ? { importsPending: true } : {})}
+            {...(importsFailed.length > 0 ? { importsFailed } : {})}
             onSourcesWanted={wantSources}
             environmentName={environmentName}
             packageName={packageName}

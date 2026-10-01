@@ -71,6 +71,8 @@ export interface NotebookBuilderProps extends QueryTarget {
    importedSources?: CatalogSource[];
    /** Imported sources are still being read. */
    importsPending?: boolean;
+   /** Package paths of imports that could not be read, so their sources are not offered. */
+   importsFailed?: string[];
    /** The add-query dialog or a chart picker was opened: the host may now read the imported sources. */
    onSourcesWanted?: () => void;
    /** The notebook's `given:` declarations, for the control row. */
@@ -165,6 +167,7 @@ export function NotebookBuilder({
    sourcesFailed,
    importedSources,
    importsPending,
+   importsFailed,
    onSourcesWanted,
    environmentName,
    packageName,
@@ -198,7 +201,9 @@ export function NotebookBuilder({
          ? [
               ...new Set([
                  ...offered.map((s) => s.name),
-                 ...imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
+                 ...imports.flatMap((i) =>
+                    i.kind === "names" ? i.names.map((n) => n.as) : [],
+                 ),
               ]),
            ]
          : null,
@@ -367,6 +372,8 @@ export function NotebookBuilder({
             : "The notebook's sources are loading.";
       if (sources.length === 0 && imports.length === 0)
          return "This notebook reads no source.";
+      if (offered?.length === 0 && importsFailed?.length)
+         return `Could not read ${importsFailed.join(", ")}, which this notebook imports.`;
       if (!canInsertQuery(doc, at))
          return "A query cannot go above a definition: Malloy reads nothing below it.";
       return undefined;
@@ -764,6 +771,7 @@ export function NotebookBuilder({
             sources={offered}
             {...(sourcesFailed ? { failed: true } : {})}
             {...(importsPending ? { pending: true } : {})}
+            {...(importsFailed?.length ? { failedImports: importsFailed } : {})}
             onClose={() => setAdding(undefined)}
             onAdd={(run) => {
                if (adding !== undefined) addQuery(adding, run);
@@ -780,8 +788,8 @@ export function NotebookBuilder({
                   {pendingSave?.structural
                      ? "A text or query cell was added or removed."
                      : "A chart line was changed."}{" "}
-                  Lines outside those cells and chart lines are kept as they
-                  were; check they still read right.
+                  Lines outside the cells and chart lines this save changes are
+                  kept as they were; check they still read right.
                   {pendingSave?.clearsHistory && (
                      <>
                         {" "}

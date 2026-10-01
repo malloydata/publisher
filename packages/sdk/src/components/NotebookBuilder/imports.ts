@@ -5,10 +5,16 @@ import type { CompiledModel } from "../../client";
 import { buildCatalog, type CatalogSource } from "../DashboardBuilder/catalog";
 import type { NotebookSource } from "./readNotebookSource";
 
+/** One name an import brings in: the source as its file calls it, and as this notebook does. */
+export interface ImportedName {
+   from: string;
+   as: string;
+}
+
 /** One `import` of the notebook, with the package path it names. */
 export type NotebookImport =
    | { kind: "all"; path: string }
-   | { kind: "names"; names: string[]; path: string };
+   | { kind: "names"; names: ImportedName[]; path: string };
 
 const NAMED = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])(.+?)\2/g;
 const WHOLE = /\bimport\s*(["'])(.+?)\1/g;
@@ -24,12 +30,40 @@ function resolve(from: string, modelPath: string): string | undefined {
    }
 }
 
-/** The name an import item brings in: `a is b` brings `a`. */
-const broughtName = (item: string) =>
-   item
-      .split(/\s+is\s+/)[0]
-      .trim()
-      .replace(/^`|`$/g, "");
+/** `x is orders` brings `orders` in as `x`; a bare name brings itself. */
+function importedName(item: string): ImportedName | undefined {
+   const unquote = (name: string) => name.trim().replace(/^`|`$/g, "");
+   const [as, from] = item.split(/\s+is\s+/);
+   const brought = { from: unquote(from ?? as), as: unquote(as) };
+   return brought.as && brought.from ? brought : undefined;
+}
+
+/** The text with comments blanked, newlines kept, and string and back-quoted contents left alone. */
+function withoutComments(text: string): string {
+   let out = "";
+   let i = 0;
+   while (i < text.length) {
+      const c = text[i];
+      const two = text.slice(i, i + 2);
+      if (c === '"' || c === "'" || c === "`") {
+         const end = text.indexOf(c, i + 1);
+         const stop = end < 0 ? text.length : end + 1;
+         out += text.slice(i, stop);
+         i = stop;
+      } else if (two === "/*") {
+         const end = text.indexOf("*/", i + 2);
+         const stop = end < 0 ? text.length : end + 2;
+         out += text.slice(i, stop).replace(/[^\n]/g, " ");
+         i = stop;
+      } else if (two === "//" || two === "--" || c === "#") {
+         while (i < text.length && text[i] !== "\n") i++;
+      } else {
+         out += c;
+         i++;
+      }
+   }
+   return out;
+}
 
 /**
  * The imports a notebook's text declares, read from its definition cells.
@@ -43,14 +77,15 @@ export function notebookImports(
    const found: NotebookImport[] = [];
    for (const cell of notebook.cells) {
       if (cell.kind !== "definition") continue;
-      const text = notebook.text
-         .slice(cell.span.start, cell.span.end)
-         .split(/\r?\n/)
-         .filter((line) => !/^\s*(\/\/|--|#)/.test(line))
-         .join("\n");
+      const text = withoutComments(
+         notebook.text.slice(cell.span.start, cell.span.end),
+      );
       for (const m of text.matchAll(NAMED)) {
          const path = resolve(m[3], modelPath);
-         const names = m[1].split(",").map(broughtName).filter(Boolean);
+         const names = m[1]
+            .split(",")
+            .map(importedName)
+            .filter((n): n is ImportedName => n !== undefined);
          if (path) found.push({ kind: "names", names, path });
       }
       for (const m of text.matchAll(WHOLE)) {
@@ -73,12 +108,15 @@ export function importedCatalog(
       const { sources } = buildCatalog([
          { ...model, modelPath: imported.path } as CompiledModel,
       ]);
-      for (const source of sources)
-         if (
-            !out.has(source.name) &&
-            (imported.kind === "all" || imported.names.includes(source.name))
-         )
-            out.set(source.name, source);
+      const brought: CatalogSource[] =
+         imported.kind === "all"
+            ? sources
+            : imported.names.flatMap(({ from, as }) => {
+                 const found = sources.find((s) => s.name === from);
+                 return found ? [{ ...found, name: as }] : [];
+              });
+      for (const source of brought)
+         if (!out.has(source.name)) out.set(source.name, source);
    }
    return [...out.values()];
 }
