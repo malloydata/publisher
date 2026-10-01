@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { parseAnnotation } from "@malloydata/malloy-tag";
 import { describe, expect, it } from "bun:test";
 import {
    CHART_TAGS,
@@ -80,6 +81,49 @@ describe("chartLineText", () => {
       for (const pick of CHART_TAGS.filter(isChartPick))
          expect(chartStateOf([chartLineText(pick)])).toBe(pick);
       expect(chartStateOf([chartLineText("none")])).toBe("none");
+   });
+});
+
+describe("chartLineText through the tag parser", () => {
+   const PLUGINS = [
+      "line_chart",
+      "bar_chart",
+      "big_value",
+      "scatter_chart",
+      "shape_map",
+      "segment_map",
+   ] as const;
+   const BASES = [
+      "# bar_chart",
+      "# line_chart",
+      "# viz=line",
+      "# big_value",
+      "# scatter_chart",
+   ];
+
+   it("leaves exactly the picked tag over any base, stacked as the renderer inherits", () => {
+      for (const base of BASES)
+         for (const pick of PLUGINS) {
+            const { tag, log } = parseAnnotation([
+               base,
+               `${chartLineText(pick)}\n`,
+            ]);
+            expect(log).toEqual([]);
+            for (const name of [...PLUGINS, "viz"])
+               expect(tag.has(name)).toBe(name === pick);
+         }
+   });
+
+   it("turns every chart and viz off for none", () => {
+      for (const base of BASES) {
+         const { tag, log } = parseAnnotation([
+            base,
+            `${chartLineText("none")}\n`,
+         ]);
+         expect(log).toEqual([]);
+         for (const name of [...PLUGINS, "viz"])
+            expect(tag.has(name)).toBe(false);
+      }
    });
 });
 

@@ -82,12 +82,15 @@ async function refused(
 describe("spliceNotebookDocument: query cells", () => {
    it("reads a query cell's chart state into the document", async () => {
       const doc = await docOf(TEXT);
+      // A bare `# bar_chart` is not the writer's spelling, so the document leaves it untouched until a re-pick.
       expect(doc.cells.map((c) => c.chart)).toEqual([
          undefined,
          undefined,
-         "bar_chart",
+         undefined,
          undefined,
       ]);
+      const canonical = TEXT.replace("# bar_chart", BAR);
+      expect((await docOf(canonical)).cells[2].chart).toBe("bar_chart");
       expect(await splice(TEXT, () => {})).toEqual({ ok: true, source: TEXT });
    });
 
@@ -248,6 +251,18 @@ describe("spliceNotebookDocument: query cells", () => {
          });
          expect(reason).toContain(line);
       }
+   });
+
+   it("rewrites a bare pick to the canonical line on a re-pick, and leaves a canonical one alone", async () => {
+      const out = await written(TEXT, (doc) => {
+         doc.cells[2].chart = "bar_chart";
+      });
+      expect(out).toBe(TEXT.replace("# bar_chart", BAR));
+      expect(
+         await written(out, (doc) => {
+            doc.cells[2].chart = "bar_chart";
+         }),
+      ).toBe(out);
    });
 
    it("replaces a bare recognized line, and refuses a cell with two", async () => {

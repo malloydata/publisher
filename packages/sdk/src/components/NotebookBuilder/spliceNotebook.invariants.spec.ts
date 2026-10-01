@@ -8,6 +8,7 @@ import {
    chartLineText,
    chartStateOf,
    parseChartLine,
+   type ChartState,
 } from "../DashboardBuilder/chartLine";
 import { spliceFailed } from "../DashboardBuilder/spliceResult";
 import { syntaxErrors } from "../DashboardBuilder/spliceDocument";
@@ -94,6 +95,17 @@ interface Edit {
 
 /** The sources an added query may name; the writer only checks membership. */
 const REACHABLE = ["s"];
+
+/** Whether a chart request leaves the cell's lines as they are: none asked, or the very line the writer would emit. */
+const chartUntouched = (want: ChartState | undefined, lines: string[]) => {
+   if (want === undefined) return true;
+   const have = chartStateOf(lines);
+   if (want !== have) return false;
+   if (have === "custom") return true;
+   return have === "default"
+      ? lines.length === 0
+      : lines.length === 1 && lines[0].trim() === chartLineText(have);
+};
 
 const CHART_EDITS = ["line_chart", "bar_chart", "none", "default"] as const;
 
@@ -244,11 +256,11 @@ async function expectInvariants(
          tags(was).filter((l) => !parseChartLine(l)),
       );
       expect(got.caption).toBe(was.caption);
-      const have = chartStateOf(
-         original.cells[index].chart!.lines.map((l) => l.text),
-      );
       expect(gotChart).toEqual(
-         cell.chart === have
+         chartUntouched(
+            cell.chart,
+            original.cells[index].chart!.lines.map((l) => l.text),
+         )
             ? tags(was).filter((l) => parseChartLine(l))
             : cell.chart === "default"
               ? []
@@ -263,7 +275,10 @@ async function expectInvariants(
       if (cell.kind === "markdown" && cell.markdown !== was.markdown) return;
       if (
          cell.kind === "query" &&
-         cell.chart !== chartStateOf(was.chart!.lines.map((l) => l.text))
+         !chartUntouched(
+            cell.chart,
+            was.chart!.lines.map((l) => l.text),
+         )
       )
          return;
       expect(

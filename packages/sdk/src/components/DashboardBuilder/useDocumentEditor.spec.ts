@@ -29,6 +29,37 @@ const open = (extra: { onSave?: (s: string) => void } = {}) =>
       }),
    );
 
+describe("useDocumentEditor: clearing history on save", () => {
+   it("keeps an edit typed while the write was in flight", async () => {
+      let finish!: () => void;
+      const view = renderHook(() =>
+         useDocumentEditor<Doc>({
+            source: "a",
+            document: { items: ["a"] },
+            splice,
+            clearsHistory: () => true,
+            onSave: () => new Promise<void>((resolve) => (finish = resolve)),
+         }),
+      );
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      let saving!: Promise<unknown>;
+      act(() => {
+         saving = view.result.current.save();
+      });
+      await act(async () => {
+         await Promise.resolve();
+      });
+      act(() => view.result.current.update((d) => void d.items.push("typed")));
+      await act(async () => {
+         finish();
+         await saving;
+      });
+      expect(view.result.current.document.items).toEqual(["a", "b", "typed"]);
+      expect(view.result.current.canUndo).toBe(false);
+      expect(view.result.current.dirty).toBe(true);
+   });
+});
+
 describe("useDocumentEditor", () => {
    it("reports structural only through the supplied comparison", () => {
       const { result } = open();

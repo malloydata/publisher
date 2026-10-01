@@ -15,8 +15,8 @@ import {
 import {
    canMove,
    leadingComments,
-   removesReadQuery,
    spliceNotebookDocument,
+   undoUnsafeAfter,
    type DefinitionsAbove,
    type NotebookDocument,
 } from "./spliceNotebook";
@@ -28,7 +28,20 @@ export interface NotebookEditor extends DocumentEditor<NotebookDocument> {
    canMove: (from: number, to: number) => boolean;
    /** The comment lines that saving now would remove along with the cells they open, from the file as last saved. */
    removedComments: () => Promise<string[]>;
+   /** Whether the cell is in the file as last saved, which is when an added query's run and caption can no longer change. */
+   isInFile: (id: string) => boolean;
 }
+
+const runKey = (cell: NotebookDocument["cells"][number]) =>
+   JSON.stringify(cell.run ?? null);
+
+/** The runs of the added query cells in `doc`, by doc id. */
+const runsOf = (doc: NotebookDocument): Map<string, string> =>
+   new Map(
+      doc.cells
+         .filter((cell) => cell.added && cell.kind === "query" && cell.run)
+         .map((cell) => [cell.id, runKey(cell)]),
+   );
 
 /** A cell was added or removed, which is when the file's diff is shown before a save. */
 const cellsChanged = (saved: NotebookDocument, next: NotebookDocument) => {
@@ -127,11 +140,27 @@ export function useNotebookEditor(options: {
    // `undefined` until a save, since an empty placement (every cell removed) is still a save.
    const placed = useRef<Placement | undefined>(undefined);
    const pending = useRef(new Map<string, Placement>());
+   // What each saved added query was written from: once it is in the file its run and caption are no longer the writer's to change.
+   const written = useRef(new Map<string, string>());
+   const pendingRuns = useRef(new Map<string, Map<string, string>>());
    // A save never lowers a query's count, so the file as opened is the highest any query may rise.
    const [opened] = useState(() => definitionsAboveOf(options.document));
 
    const splice = useCallback(
       async (source: string, doc: NotebookDocument): Promise<SpliceResult> => {
+         const changed = doc.cells.find(
+            (cell) =>
+               cell.kind === "query" &&
+               placed.current?.has(cell.id) &&
+               written.current.has(cell.id) &&
+               written.current.get(cell.id) !== runKey(cell),
+         );
+         if (changed)
+            return {
+               ok: false,
+               reason:
+                  "A query that is already saved cannot have its source, view or caption changed here. Remove it and add a new one. Your changes are still here.",
+            };
          const onDisk = rebased(doc, placed.current);
          const result = await spliceNotebookDocument(
             source,
@@ -142,8 +171,14 @@ export function useNotebookEditor(options: {
          if (result.ok) {
             pending.current.delete(result.source);
             pending.current.set(result.source, placementOf(doc));
+            pendingRuns.current.delete(result.source);
+            pendingRuns.current.set(result.source, runsOf(doc));
             while (pending.current.size > PENDING_LIMIT)
                pending.current.delete(pending.current.keys().next().value!);
+            while (pendingRuns.current.size > PENDING_LIMIT)
+               pendingRuns.current.delete(
+                  pendingRuns.current.keys().next().value!,
+               );
          }
          return result;
       },
@@ -153,8 +188,11 @@ export function useNotebookEditor(options: {
    const save = useCallback(
       async (source: string) => {
          const placement = takePlacement(pending.current, source);
+         const runs = pendingRuns.current.get(source) ?? new Map();
+         pendingRuns.current.clear();
          await onSave?.(source);
          placed.current = placement;
+         written.current = runs;
       },
       [onSave],
    );
@@ -165,7 +203,7 @@ export function useNotebookEditor(options: {
       ...(onSave ? { onSave: save } : {}),
       splice,
       structural: cellsChanged,
-      clearsHistory: removesReadQuery,
+      clearsHistory: undoUnsafeAfter,
    });
 
    const { document, source } = editor;
@@ -200,5 +238,16 @@ export function useNotebookEditor(options: {
          });
    }, [document, source]);
 
-   return { ...editor, canMove: canMoveHere, removedComments };
+   const isInFile = useCallback(
+      (id: string) => {
+         const cell = document.cells.find((c) => c.id === id);
+         return (
+            cell !== undefined &&
+            (!cell.added || placed.current?.has(id) === true)
+         );
+      },
+      [document],
+   );
+
+   return { ...editor, canMove: canMoveHere, removedComments, isInFile };
 }

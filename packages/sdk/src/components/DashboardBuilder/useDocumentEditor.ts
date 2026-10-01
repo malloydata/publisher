@@ -172,8 +172,9 @@ export function useDocumentEditor<T>(
       // now on disk rather than re-deriving from the text this session opened.
       setSource(result.source);
       setSaved(document);
+      // Whatever is current when the write resolves survives, including edits typed during it.
       if (isClearing?.(saved, document))
-         setHistory({ stack: [document], index: 0 });
+         setHistory((p) => ({ stack: [p.stack[p.index]], index: 0 }));
       setError(undefined);
       return { ok: true };
    }, [document, splice, onSave, source, saved, isClearing]);

@@ -41,6 +41,20 @@ export interface NotebookDocument {
    cells: NotebookDocumentCell[];
 }
 
+/** Whether the lines are exactly what the writer would emit for their state, which a re-pick then leaves alone. */
+const isCanonical = (lines: string[], state: ChartState) =>
+   state === "default"
+      ? lines.length === 0
+      : state === "custom"
+        ? true
+        : lines.length === 1 && lines[0].trim() === chartLineText(state);
+
+/** A cell's chart in the document; absent for a line the writer would spell differently, so only a re-pick rewrites it. */
+const chartOfLines = (lines: string[]) => {
+   const state = chartStateOf(lines);
+   return isCanonical(lines, state) ? { chart: state } : {};
+};
+
 /** The document a freshly read notebook opens as. */
 export function notebookDocumentOf(source: NotebookSource): NotebookDocument {
    return {
@@ -48,9 +62,7 @@ export function notebookDocumentOf(source: NotebookSource): NotebookDocument {
          id: cell.id,
          kind: cell.kind,
          ...(cell.kind === "markdown" && { markdown: cell.markdown }),
-         ...(cell.chart && {
-            chart: chartStateOf(cell.chart.lines.map((line) => line.text)),
-         }),
+         ...(cell.chart && chartOfLines(cell.chart.lines.map((l) => l.text))),
       })),
    };
 }
@@ -105,6 +117,21 @@ export function removesReadQuery(
    const after = new Set(next.cells.map((cell) => cell.id));
    return saved.cells.some(
       (cell) => cell.kind === "query" && !cell.added && !after.has(cell.id),
+   );
+}
+
+/** Whether stepping back after saving `next` over `saved` could land on a state the writer cannot write: a removed read query, or a `custom` chart line that was replaced. */
+export function undoUnsafeAfter(
+   saved: NotebookDocument,
+   next: NotebookDocument,
+): boolean {
+   if (removesReadQuery(saved, next)) return true;
+   const now = new Map(next.cells.map((cell) => [cell.id, cell]));
+   return saved.cells.some(
+      (cell) =>
+         cell.kind === "query" &&
+         cell.chart === "custom" &&
+         now.get(cell.id)?.chart !== "custom",
    );
 }
 
@@ -286,10 +313,12 @@ export async function spliceNotebookDocument(
             continue;
          }
          const wanted = cell.chart;
-         const have = chartStateOf(
-            (was?.chart?.lines ?? []).map((line) => line.text),
-         );
-         if (wanted === undefined || wanted === have) {
+         const lines = (was?.chart?.lines ?? []).map((line) => line.text);
+         const have = chartStateOf(lines);
+         if (
+            wanted === undefined ||
+            (wanted === have && isCanonical(lines, have))
+         ) {
             emitted.push({ cell, original: was, index, fresh: false });
             continue;
          }
