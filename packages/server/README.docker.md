@@ -55,7 +55,7 @@ See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher
 | `/publisher/packages/server/dist/` | The bundled server (built by `bun run build` in CI). |
 | `/publisher/packages/app/dist/` | The static SPA the server serves. |
 | `/publisher/publisher_data/` | Per-environment package clones, DuckDB extension cache, and per-package sandbox DBs. Created at runtime; **persist this as a named volume if you want first-run sample clones to survive a container restart.** |
-| `/root/.duckdb/` | DuckDB CLI + extension install dir. Bundled into the image. |
+| `/home/bun/.duckdb/` | DuckDB CLI + extension install dir. Bundled into the image. |
 
 To keep `publisher_data/` across restarts:
 
@@ -72,6 +72,49 @@ The first request after a fresh start clones sample packages from GitHub — a n
 
 For the same pattern as a complete Compose file (with a healthcheck against `/api/v0/status` and both ports mapped), see [`docker-compose.example.yml`](../../docker-compose.example.yml) at the repo root.
 
+## The server runs as a non-root user
+
+The image runs the server as `bun`, uid 1000 and gid 1000, the user the `oven/bun` base image ships. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`.
+
+Every application file is root-owned, so the server cannot modify one in place. It writes to three places, all owned by uid 1000:
+
+- `/publisher/`, the server root, where it creates `publisher.db`. Because it owns this directory, the server can also rename aside and replace any of its top-level entries: `package.json`, `bun.lock`, and the `packages/` and `node_modules/` directories. Such a change lasts as long as the container. Some storage drivers, Docker's default overlayfs among them, refuse to rename a directory that comes from an image layer, but that is the driver's limit, not the image's.
+- `/publisher/publisher_data/`.
+- `/home/bun/.duckdb/extensions/`, for an extension the image did not bake.
+
+What you mount has to be writable by uid 1000 too:
+
+- **A new named volume on `/publisher/publisher_data`** works as-is. Docker seeds an empty named volume from the image's directory, ownership included, and that is the only writable mount point the image prepares.
+- **A new named volume anywhere else** starts owned by root, because the image has no directory there to copy ownership from. That includes a DuckLake storage destination whose `bucketUrl` is a local path. Prepare it yourself: build a derived image with `RUN mkdir -p /path && chown 1000:1000 /path` (new named volumes there are then seeded correctly), chown the volume once with `--user 0`, or bind-mount a host directory owned by uid 1000. DuckDB reports the unprepared case as `No such file or directory` (for example `Failed to create directory "/data/lake/main/daily_orders"`), not as `EACCES`. The one-time chown names the mount path twice, as the mount target and as chown's argument:
+
+  ```bash
+  docker run --rm --user 0 --entrypoint chown \
+    -v <volume>:/data/lake \
+    ms2data/malloy-publisher -R 1000:1000 /data/lake
+  ```
+
+- **A named volume an older, root-run image already wrote to** holds root-owned files, and the server cannot write to them. It still reaches `serving`, but each environment it cannot write is missing from the catalog, and `GET /api/v0/status` lists it under `loadErrors` with an `EACCES: permission denied` message. Chown the volume once, before starting the new image. With `docker run`, name the volume you mount:
+
+  ```bash
+  docker run --rm --user 0 --entrypoint chown \
+    -v publisher_data:/publisher/publisher_data \
+    ms2data/malloy-publisher -R 1000:1000 /publisher/publisher_data
+  ```
+
+  With Compose, do not use that command: Compose prefixes the volume with the project name (`<project>_publisher_data`), so `-v publisher_data:` creates a new, empty volume, chowns it, and exits 0 while the real one stays root-owned. Run it through Compose instead, from the directory holding your `docker-compose.yml`, so the service's own volume is mounted:
+
+  ```bash
+  docker compose run --rm --no-deps --user 0 --entrypoint chown \
+    publisher -R 1000:1000 /publisher/publisher_data
+  ```
+
+  `docker volume ls` shows the volume's full name if you would rather use the `docker run` form.
+
+- **A bind mount** keeps the host directory's ownership. On Linux, `chown -R 1000:1000` the host directory. Docker Desktop on macOS and Windows maps ownership for you. Running the container as some other uid to match the host is not a substitute: `/home/bun` is private to uid 1000, so that uid cannot read the baked DuckDB extensions.
+- **A read-only mount**, such as the config file, only needs to be readable.
+
+If you cannot change the ownership yet, `--user 0` runs the server as root, as earlier images did. The image sets `HOME=/home/bun`, so a root run still finds the baked DuckDB extensions.
+
 ## Configuration via environment variables
 
 All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, so they're easy to set from `docker run -e` or compose:
@@ -83,7 +126,7 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `MCP_HOST` | `--mcp_host <h>` | `127.0.0.1` | MCP bind address. Takes precedence over `PUBLISHER_HOST`. |
 | `MCP_CORS_ORIGINS` | | (none) | Comma-separated origins allowed cross-origin access to MCP; `*` allows any. Unset means none. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
-| `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | `1` **in this image** | Suppresses the `.mcp.json` the server otherwise writes into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a root-owned file, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_NO_MCP_CONFIG=` to turn it back on. Note this is the one env var the image sets for you: `docker run -e PUBLISHER_NO_MCP_CONFIG` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
+| `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | `1` **in this image** | Suppresses the `.mcp.json` the server otherwise writes into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a file there, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_NO_MCP_CONFIG=` to turn it back on. Note this is the one env var the image sets for you: `docker run -e PUBLISHER_NO_MCP_CONFIG` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
 | `SERVER_ROOT` | `--server_root <path>` | `.` (cwd) at the server level; overridden to `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--server_root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. If you override CMD with your own entrypoint, set `SERVER_ROOT` yourself to keep this behaviour. |
 | `PUBLISHER_CONFIG_PATH` | `--config <path>` | unset | Absolute path to a `publisher.config.json`. Wins over `<SERVER_ROOT>/publisher.config.json`. Use this if you want to mount your config somewhere other than `/publisher/`. |
 | `INITIALIZE_STORAGE` | `--init` | `false` | Wipes `publisher_data/` and re-syncs it from the config on boot. A first boot with empty storage loads the config automatically, so set this only to reset state or resync after the on-disk config has drifted from `publisher_data/`. Re-initializing discards any state there that isn't reproducible from the config. See [configuration.md](../../docs/configuration.md#environment-variables--cli-flags). |
