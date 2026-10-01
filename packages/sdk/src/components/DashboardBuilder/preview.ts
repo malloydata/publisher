@@ -6,6 +6,7 @@ import type { GivenValue } from "../../hooks/givenValue";
 import { malloyLiteral } from "../../utils/malloyLiteral";
 import { chartLineText, isChartPick } from "./chartLine";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import { malloyPath } from "./malloyText";
 
 /**
  * What a reader would see if the DOCUMENT were the file: the controls, and
@@ -89,6 +90,20 @@ function givenFromLocal(local: LocalGiven): Given {
       ...(local.rangeMin === undefined ? {} : { rangeMin: local.rangeMin }),
       ...(local.rangeMax === undefined ? {} : { rangeMax: local.rangeMax }),
    };
+}
+
+/**
+ * Whether dropping the wrapper's chart line leaves a view with no chart of its own: an inline
+ * body, a `{ … } + { … }` compound or a `->` pipeline. Any other opaque body starts from a
+ * named view and inherits that view's chart, which a preview must not hide.
+ */
+function dropsBaseChart(declaration: DashboardTile["declaration"]): boolean {
+   if (declaration.kind === "inline") return true;
+   return (
+      declaration.kind === "opaque" &&
+      (declaration.why.includes("compound") ||
+         declaration.why.includes("pipeline"))
+   );
 }
 
 /** A tile's query as the document has it, and the givens it sends. */
@@ -178,7 +193,7 @@ export function previewTileQuery(
    const sent: string[] = [];
    const clauses: string[] = [];
    for (const filter of tile.filters ?? []) {
-      const comparison = `where: ${filter.field} ${filter.op ?? "~"}`;
+      const comparison = `where: ${malloyPath(filter.field)} ${filter.op ?? "~"}`;
       if (runnable.has(filter.given)) {
          sent.push(filter.given);
          clauses.push(`${comparison} $${filter.given}`);
@@ -198,7 +213,7 @@ export function previewTileQuery(
          ? chartLineText(chart)
          : chart === "custom" && tile.chartLines?.length
            ? tile.chartLines.join("\n")
-           : chart === "default" && tile.declaration.kind !== "reference"
+           : chart === "default" && dropsBaseChart(tile.declaration)
              ? chartLineText("none")
              : undefined;
    return {

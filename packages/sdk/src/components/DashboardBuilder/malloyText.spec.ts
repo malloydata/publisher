@@ -6,7 +6,10 @@ import {
    artifactLine,
    blockSpans,
    closesBlock,
+   isBareName,
    isIdentifier,
+   isStrictName,
+   malloyPath,
    markdownNote,
    tileSteps,
 } from "./malloyText";
@@ -110,5 +113,26 @@ describe("blockSpans", () => {
          "*/",
       ];
       expect(blockSpans(lines, (i) => i >= 4)).toEqual([[0, 3]]);
+   });
+});
+
+describe("reserved words", () => {
+   it("keeps statement keywords bare as source and view names, but not as given names or fields", () => {
+      for (const name of ["top", "index", "type", "limit", "view", "where"]) {
+         expect(isBareName(name)).toBe(true);
+         expect(isStrictName(name)).toBe(false);
+      }
+      for (const name of ["date", "Source", "IS", "year"]) {
+         expect(isBareName(name)).toBe(false);
+         expect(isStrictName(name)).toBe(false);
+      }
+      expect(isStrictName("revenue")).toBe(true);
+   });
+
+   it("back-quotes each reserved segment of a field path", () => {
+      expect(malloyPath("date")).toBe("`date`");
+      expect(malloyPath("orders.type.name")).toBe("orders.`type`.name");
+      expect(malloyPath("products.category")).toBe("products.category");
+      expect(malloyPath("`odd name`.x")).toBe("`odd name`.x");
    });
 });

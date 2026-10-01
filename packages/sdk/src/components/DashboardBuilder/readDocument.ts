@@ -26,6 +26,7 @@ import {
    blockLines,
    descriptionNotes,
    markdownNote,
+   readPath,
    tileSteps,
 } from "./malloyText";
 
@@ -187,7 +188,11 @@ function filtersOf(
       for (const clause of where.clauses) {
          if (!clause.binding) continue;
          const { field, op, given } = clause.binding;
-         out.push({ field, given, ...(op === "~" ? {} : { op }) });
+         out.push({
+            field: readPath(field),
+            given,
+            ...(op === "~" ? {} : { op }),
+         });
       }
    return out.length > 0 ? out : undefined;
 }

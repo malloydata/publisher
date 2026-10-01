@@ -21,7 +21,8 @@ import {
    descriptionNotes,
    hasNonQuotedTiles,
    isBareName,
-   isIdentifier,
+   isStrictName,
+   malloyPath,
 } from "./malloyText";
 import {
    parseMalloy,
@@ -994,7 +995,7 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
             ? tile.declaration.from
             : tile.name;
       const bindings = (tile.filters ?? [])
-         .map((f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`)
+         .map((f) => `where: ${malloyPath(f.field)} ${f.op ?? "~"} $${f.given}`)
          .join(", ");
       return [
          ...tagsFor(tile).map((tag) => `${indent}${tag}`),
@@ -1336,7 +1337,7 @@ function unwritable(
    for (const given of next.localGivens ?? []) {
       const was = givens.get(given.name);
       if (was === undefined) {
-         const problem = nameProblem(given.name, isIdentifier);
+         const problem = nameProblem(given.name, isStrictName);
          if (problem) return problem;
       }
       const source = given.suggest?.source;
@@ -1413,7 +1414,7 @@ function collisionRefusal(tileName: string, given: string): SpliceFailure {
 }
 
 const bindingText = (f: { field: string; given: string; op?: string }) =>
-   `where: ${f.field} ${f.op ?? "~"} $${f.given}`;
+   `where: ${malloyPath(f.field)} ${f.op ?? "~"} $${f.given}`;
 
 /**
  * THE RULE the three removal paths obey: a comment goes only with a

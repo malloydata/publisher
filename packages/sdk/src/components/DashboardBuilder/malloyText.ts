@@ -12,16 +12,38 @@ const IDENT = "[A-Za-z_][A-Za-z0-9_]*";
 export const isIdentifier = (text: string) =>
    new RegExp(`^${IDENT}$`).test(text);
 
-/** Malloy's keywords (case-insensitive), from the lexer; a name spelled like one needs back-quotes. Static so the main entry never imports the compiler. */
-const RESERVED = new Set(
-   `accept aggregate all and as asc avg boolean by calculate calculation case cast compose connection count date day declare desc dimension distinct drill else end except exclude export extend false filter for from full given group_by grouped_by has having hour import in include index inner internal is join_cross join_many join_one json left like limit max measure min minute month nest not now null number on or order_by partition_by pick primary_key private public quarter query rename right run sample second select source sql string sum table then this timestamp timestamptz timezone to top true type view virtual week when where with year`.split(
+/** Statement keywords: they lex as keywords only before `:` (`where: …`), so they stand bare as a source, view or tile name but not as a given name or filter field. */
+const STATEMENT_KEYWORDS = new Set(
+   `accept aggregate calculate calculation connection declare dimension drill except given group_by grouped_by having index join_cross join_many join_one limit measure nest order_by partition_by primary_key query rename run sample select timezone top type view where`.split(
       " ",
    ),
 );
 
-/** A name that can stand bare in Malloy text: identifier-shaped and not a keyword. */
+/** Keywords that fail to compile as a bare name anywhere (case-insensitive), from Malloy's lexer. Static so the main entry never imports the compiler. */
+const ALWAYS_RESERVED = new Set(
+   `all and as asc avg boolean by case cast compose count date day desc distinct else end exclude export extend false filter for from full has hour import in include inner internal is json left like max min minute month not now null number on or pick private public quarter right second source sql string sum table then this timestamp timestamptz to true virtual week when with year`.split(
+      " ",
+   ),
+);
+
+/** A name that can stand bare as a source, view or tile name: identifier-shaped and never reserved. */
 export const isBareName = (text: string) =>
-   isIdentifier(text) && !RESERVED.has(text.toLowerCase());
+   isIdentifier(text) && !ALWAYS_RESERVED.has(text.toLowerCase());
+
+/** A name that can stand bare as a given name or filter field: also not a statement keyword. */
+export const isStrictName = (text: string) =>
+   isBareName(text) && !STATEMENT_KEYWORDS.has(text.toLowerCase());
+
+/** A field path with each segment back-quoted where it would not compile bare; a segment already quoted or oddly shaped is left as written. */
+export const malloyPath = (path: string) =>
+   path
+      .split(".")
+      .map((segment) =>
+         isIdentifier(segment) && !isStrictName(segment)
+            ? `\`${segment}\``
+            : segment,
+      )
+      .join(".");
 
 /** The server's rule for the tag line: `## artifact` at the start of a line. */
 export const ARTIFACT_LINE = /^##[ \t]*artifact\b/;
@@ -223,3 +245,7 @@ export function tileSteps(
       ...(refinement === undefined ? {} : { refinement }),
    };
 }
+
+/** The inverse of {@link malloyPath}: a back-quoted identifier segment is read as the plain name. */
+export const readPath = (path: string) =>
+   path.replace(/`([A-Za-z_][A-Za-z0-9_]*)`/g, "$1");

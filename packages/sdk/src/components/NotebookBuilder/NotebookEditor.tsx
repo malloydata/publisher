@@ -510,6 +510,8 @@ function NotebookSession({
                versionId,
                modelPath,
             }),
+            // The editor's own previews key on their text; the viewer runs its cells when opened, so stale-marking is enough.
+            refetchType: "none",
          });
          // The viewer keys its notebook on the resource URI.
          void queryClient.invalidateQueries({

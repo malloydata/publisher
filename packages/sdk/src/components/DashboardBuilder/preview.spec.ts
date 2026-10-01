@@ -125,7 +125,20 @@ describe("previewTileQuery", () => {
             runnable,
          ).annotation;
       expect(annotationOf({ kind: "inline" }, "default")).toBe(NONE);
-      expect(annotationOf({ kind: "opaque", why: "?" }, "default")).toBe(NONE);
+      for (const why of [
+         "a `{ … } + { … }` compound refinement",
+         "a `->` pipeline from a named view",
+      ])
+         expect(annotationOf({ kind: "opaque", why }, "default")).toBe(NONE);
+      // These start from a named view, whose own chart the saved dashboard shows.
+      for (const why of [
+         "a chained refinement",
+         "a parenthesized expression",
+         "an unreadable refinement",
+      ])
+         expect(
+            annotationOf({ kind: "opaque", why }, "default"),
+         ).toBeUndefined();
       expect(annotationOf({ kind: "inline" }, undefined)).toBeUndefined();
       expect(
          annotationOf({ kind: "reference", from: "v" }, "default"),
@@ -202,5 +215,18 @@ describe("previewTileQuery", () => {
          expression: "orders -> by_brand",
          givenNames: undefined,
       });
+   });
+});
+
+describe("previewTileQuery: a filter on a reserved field name", () => {
+   it("back-quotes the field in the preview's where clause", () => {
+      const q = previewTileQuery(
+         document,
+         tile("t", "v", [{ field: "date", given: "CATEGORY" }]),
+         new Set(["CATEGORY"]),
+      );
+      expect(q.expression).toBe(
+         "overview -> v + { where: `date` ~ $CATEGORY }",
+      );
    });
 });

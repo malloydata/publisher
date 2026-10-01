@@ -115,6 +115,19 @@ source: a is scoped_orders extend {
          "  # colspan=4\n  view: by_cat is by_category + { where: category ~ $CATEGORY }",
       );
    });
+
+   it("back-quotes a reserved filter field, and refuses a reserved new given name", async () => {
+      const out = await spliced(UNTAGGED, (d) => {
+         d.tiles[0].filters = [{ field: "date", given: "WHEN_" }];
+      });
+      expect(out).toContain("+ { where: `date` ~ $WHEN_ }");
+      const reason = await refused(UNTAGGED, (d) => {
+         d.localGivens = [
+            { name: "DATE", type: "filter<string>", default: "f''" },
+         ];
+      });
+      expect(reason).toContain("cannot be written as a Malloy name");
+   });
 });
 
 /**

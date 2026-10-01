@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import { isStrictName } from "./malloyText";
 
 /**
  * The builder's view of the dashboard's filter controls, and the pure edits it
@@ -198,7 +199,9 @@ export function givenNameFor(field: string, taken: Iterable<string>): string {
       .split(/[^A-Za-z0-9]+/)
       .filter(Boolean);
    const base = words.join("_").toUpperCase() || "FILTER";
-   const stem = /^[A-Z_]/.test(base) ? base : `F_${base}`;
+   const shaped = /^[A-Z_]/.test(base) ? base : `F_${base}`;
+   // Reserved words are case-insensitive, so `DATE` would not compile as a given name.
+   const stem = isStrictName(shaped) ? shaped : `${shaped}_FILTER`;
    const used = new Set(taken);
    if (!used.has(stem)) return stem;
    for (let n = 2; ; n++) if (!used.has(`${stem}_${n}`)) return `${stem}_${n}`;

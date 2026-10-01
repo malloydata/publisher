@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { isStrictName } from "./malloyText";
 import {
    acceptsField,
    kindForFieldType,
@@ -91,6 +92,15 @@ describe("givenNameFor", () => {
       expect(givenNameFor("created_at", [])).toBe("CREATED_AT");
       expect(givenNameFor("category", ["CATEGORY"])).toBe("CATEGORY_2");
       expect(givenNameFor("2nd-tier", [])).toBe("F_2ND_TIER");
+   });
+
+   it("never generates a reserved word, which Malloy refuses in any case", () => {
+      for (const field of ["date", "type", "source", "year", "orders.filter"]) {
+         const name = givenNameFor(field, []);
+         expect(isStrictName(name)).toBe(true);
+         expect(name).toBe(`${field.split(".").at(-1)!.toUpperCase()}_FILTER`);
+      }
+      expect(givenNameFor("date", ["DATE_FILTER"])).toBe("DATE_FILTER_2");
    });
 });
 
