@@ -199,6 +199,8 @@ gets unwieldy.
 - **Check for duplicate rows** before building measures
 - When both a combined table (all types) and filtered/split tables exist, prefer the split tables
 - **DRY: define measures/dimensions in base source files, not inline in views**
+- **Lay out a new file the same way throughout**: two-space indentation, no tabs, one blank line between top-level declarations, no trailing whitespace, and a long line broken after a comma or before an operator, at whatever width the project keeps to.
+- **An edit keeps the file's own layout**: change only the lines the request needs, and never reindent or rewrap a line you weren't asked to change, so the diff shows the change and nothing else.
 - **Never write a threshold, tier boundary, or bucket cutoff you chose yourself.** Every boundary in a `pick` expression or filtered measure is user-supplied, distribution-derived (query `min`/`p25`/`p50`/`p75`/`p95` first and show the evidence; see `skill:malloy-define` § Data-driven proposals), or explicitly flagged as an assumption in its `#(doc)`. A hardcoded cutoff nobody confirmed is a business decision shipped as fact.
 
 ## Parameterizing sources with `given:` (preferred)

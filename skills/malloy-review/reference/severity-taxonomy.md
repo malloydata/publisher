@@ -121,6 +121,7 @@ The rubric files set the default severity per rule. Defaults (can be overridden 
 | Access modifier missing when flag is on (G-02) | `major` | `blocking` (governance) |
 | `public: *` used (G-01, documentation discipline) | `minor` | `non-blocking` |
 | Business-language naming suggestion (Y-02) | `nit` | `non-blocking` |
+| Inconsistent layout, or an edit that reflows lines it didn't need (Y-04) | `nit` | `non-blocking` |
 
 ## ID conventions
 
