@@ -66,7 +66,7 @@ Use the Compose form under Compose. Compose names the volume `<project>_publishe
 
 A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it from the image, ownership included. It is the only writable mount point the image prepares. A new named volume anywhere else, such as a local DuckLake `bucketUrl`, starts root-owned and must be chowned to uid 1000 first; DuckDB reports that case as `No such file or directory`, not `EACCES`. A bind mount the server writes to must be writable by uid 1000. A read-only mount, such as the config file, only has to be readable. Until you can change the ownership, `--user 0` runs the server as root, as before. [`packages/server/README.docker.md`](packages/server/README.docker.md#the-server-runs-as-a-non-root-user) has the details.
 
-### Console can edit notebooks, and create notebooks and dashboards
+## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
 
 A tagged `notebooks/*.malloy` notebook now has an **Edit** button in the Console. The editor lets you
 rewrite, add and remove markdown cells and reorder cells (definitions stay put, and a query stays
