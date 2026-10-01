@@ -23,7 +23,9 @@ describe("parseIndexTag: tags the service also accepts", () => {
    });
 
    it("finds the tag among other annotations", () => {
-      expect(parseIndexTag(["#(doc) Status.", '#(index freshness.window="1h")'])).not.toBeNull();
+      expect(
+         parseIndexTag(["#(doc) Status.", '#(index freshness.window="1h")']),
+      ).not.toBeNull();
    });
 
    it("reads annotation objects as well as strings", () => {

@@ -12,18 +12,11 @@ import {
 } from "../cards";
 import { parseRerankReply } from "../llm_json";
 import { REPAIR_NOTE } from "../prompts/refine";
-import {
-   buildRerankPrompt,
-   type RerankSource,
-} from "../prompts/rerank";
+import { buildRerankPrompt, type RerankSource } from "../prompts/rerank";
 import type { EgressClasses, RetrievalConfig } from "../retrieval_config";
 import type { RunLlm } from "../run";
 import { round4 } from "../scoring";
-import type {
-   SearchTargetText,
-   StageOutcome,
-   StageRow,
-} from "../stage_types";
+import type { SearchTargetText, StageOutcome, StageRow } from "../stage_types";
 
 /**
  * Source rerank: one LLM call ranks the best few source cards against the
@@ -115,7 +108,9 @@ export async function runRerank<T extends StageRow>(args: {
             // Values are customer data, so they go only with their own class.
             const values =
                egress.dimensionalValues && cfg.valuesPerEntity > 0
-                  ? (r.values ?? []).slice(0, cfg.valuesPerEntity).map((v) => v.value)
+                  ? (r.values ?? [])
+                       .slice(0, cfg.valuesPerEntity)
+                       .map((v) => v.value)
                   : [];
             return {
                name: r.name,
@@ -129,7 +124,9 @@ export async function runRerank<T extends StageRow>(args: {
          });
       const docs = egress.docs ? args.docsFor(key) : undefined;
       // The LLM-written summary is generated from the docs, so it travels with them.
-      const summary = egress.docs ? args.summaryFor?.(head.source ?? head.name) : undefined;
+      const summary = egress.docs
+         ? args.summaryFor?.(head.source ?? head.name)
+         : undefined;
       return {
          source: head.source ?? head.name,
          modelPath: head.modelPath,
@@ -238,7 +235,11 @@ export async function runRerank<T extends StageRow>(args: {
    let floor = Infinity;
    for (const key of survivors) {
       const r = round4(
-         publishCardRelevance(rerankRaw.get(top.indexOf(key)) ?? 0, true, config.scoring.knots),
+         publishCardRelevance(
+            rerankRaw.get(top.indexOf(key)) ?? 0,
+            true,
+            config.scoring.knots,
+         ),
       );
       relevance.set(key, r);
       floor = Math.min(floor, r);

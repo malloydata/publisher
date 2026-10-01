@@ -125,7 +125,8 @@ export function beginRun(
             if (overrideCache.size >= 64) overrideCache.clear();
             overrideCache.set(key, result);
          }
-         if (result.errors.length > 0) return { ok: false, errors: result.errors };
+         if (result.errors.length > 0)
+            return { ok: false, errors: result.errors };
          config = result.config;
          overridden = true;
       }
@@ -147,7 +148,8 @@ export function beginRun(
    const llmStagesOn =
       config.refine.enabled ||
       config.rerank.enabled ||
-      (config.dimensionalValues.mode !== "off" && config.dimensionalValues.refine.enabled);
+      (config.dimensionalValues.mode !== "off" &&
+         config.dimensionalValues.refine.enabled);
    const runner = llmStagesOn ? getLlmRunner(config) : null;
    return {
       ok: true,

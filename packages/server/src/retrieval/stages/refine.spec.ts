@@ -5,7 +5,11 @@
 // reach cheaply (two targets, one entity at several model paths, join damping).
 
 import { describe, expect, it } from "bun:test";
-import { LlmBudget, LlmRunner, runnerSettingsFrom } from "../../service/llm_runner";
+import {
+   LlmBudget,
+   LlmRunner,
+   runnerSettingsFrom,
+} from "../../service/llm_runner";
 import type { LlmProvider, LlmRequest } from "../../service/llm_provider";
 import { resolveEgress, resolveRetrievalConfig } from "../retrieval_config";
 import type { RunLlm } from "../run";
@@ -22,7 +26,9 @@ const row = (
    source: "orders",
    modelPath: "m.malloy",
    embedDoc: `${name} doc`,
-   candidateScores: new Map(Object.entries(scores).map(([t, s]) => [Number(t), s])),
+   candidateScores: new Map(
+      Object.entries(scores).map(([t, s]) => [Number(t), s]),
+   ),
    rankScore: Math.max(...Object.values(scores)),
    ...extra,
 });
@@ -30,7 +36,9 @@ const row = (
 function llmFor(
    reply: (req: LlmRequest) => string,
    seen: LlmRequest[] = [],
-   config = resolveRetrievalConfig({ llm: { model: "m", cache: { enabled: false } } }),
+   config = resolveRetrievalConfig({
+      llm: { model: "m", cache: { enabled: false } },
+   }),
 ): RunLlm {
    const provider: LlmProvider = {
       id: "fake",
@@ -53,7 +61,10 @@ const run = (
    rows: StageRow[],
    searches: Array<{ targetIndex: number; text: string }>,
    llm: RunLlm,
-   config = resolveRetrievalConfig({ refine: { enabled: true }, llm: { model: "m" } }),
+   config = resolveRetrievalConfig({
+      refine: { enabled: true },
+      llm: { model: "m" },
+   }),
 ) =>
    runRefine({
       rows,
@@ -72,7 +83,14 @@ describe("scoring.joinDampingMode", () => {
          scoring: { joinDepthDamping: 0.9, joinDampingMode: mode },
          llm: { model: "m", cache: { enabled: false } },
       });
-      const llm = llmFor((req) => JSON.stringify([{ index: idxOf(req, "zip"), score: "HIGH", reason: "x" }]), [], config);
+      const llm = llmFor(
+         (req) =>
+            JSON.stringify([
+               { index: idxOf(req, "zip"), score: "HIGH", reason: "x" },
+            ]),
+         [],
+         config,
+      );
       const out = await run(
          [row("zip", { 0: 0.5 }, { joinPath: "users.address" })],
          [{ targetIndex: 0, text: "postal code" }],
@@ -97,7 +115,11 @@ describe("refine.concurrency", () => {
    /** The most batches ever in flight at once, for six one-row batches. */
    async function peak(refineConcurrency: number | null): Promise<number> {
       const config = resolveRetrievalConfig({
-         refine: { enabled: true, batchSize: 1, concurrency: refineConcurrency },
+         refine: {
+            enabled: true,
+            batchSize: 1,
+            concurrency: refineConcurrency,
+         },
          llm: { model: "m", concurrency: 6, cache: { enabled: false } },
       });
       let inFlight = 0;
@@ -117,7 +139,9 @@ describe("refine.concurrency", () => {
          budget: new LlmBudget(50, 60_000),
          model: undefined,
       };
-      const rows = ["a", "b", "c", "d", "e", "f"].map((n) => row(`m_${n}`, { 0: 0.5 }));
+      const rows = ["a", "b", "c", "d", "e", "f"].map((n) =>
+         row(`m_${n}`, { 0: 0.5 }),
+      );
       await runRefine({
          rows,
          searches: [{ targetIndex: 0, text: "x" }],
@@ -149,10 +173,24 @@ describe("runRefine on hand-built rows", () => {
       const llm = llmFor((req) => {
          const phrase = req.user.match(/PHRASE:\nText: "([^"]+)"/)![1];
          return phrase === "revenue"
-            ? JSON.stringify([{ index: idxOf(req, "revenue_total"), score: "HIGH", reason: "a" }])
+            ? JSON.stringify([
+                 {
+                    index: idxOf(req, "revenue_total"),
+                    score: "HIGH",
+                    reason: "a",
+                 },
+              ])
             : JSON.stringify([
-                 { index: idxOf(req, "customer_count"), score: "HIGH", reason: "b" },
-                 { index: idxOf(req, "revenue_total"), score: "LOW", reason: "c" },
+                 {
+                    index: idxOf(req, "customer_count"),
+                    score: "HIGH",
+                    reason: "b",
+                 },
+                 {
+                    index: idxOf(req, "revenue_total"),
+                    score: "LOW",
+                    reason: "c",
+                 },
               ]);
       }, seen);
       const out = await run(
@@ -167,10 +205,14 @@ describe("runRefine on hand-built rows", () => {
       expect(seen).toHaveLength(2); // one call per target
       const byName = new Map(out.rows.map((r) => [r.name, r]));
       // revenue_total: HIGH for target 0, LOW (pruned) for target 1.
-      expect([...byName.get("revenue_total")!.targetScores!.keys()]).toEqual([0]);
+      expect([...byName.get("revenue_total")!.targetScores!.keys()]).toEqual([
+         0,
+      ]);
       expect(byName.get("revenue_total")!.matchReasons!.get(0)).toBe("a");
       expect(byName.get("revenue_total")!.bestTarget).toBe(0);
-      expect([...byName.get("customer_count")!.targetScores!.keys()]).toEqual([1]);
+      expect([...byName.get("customer_count")!.targetScores!.keys()]).toEqual([
+         1,
+      ]);
       expect(out.dropped).toEqual({});
    });
 
@@ -182,12 +224,21 @@ describe("runRefine on hand-built rows", () => {
       ];
       const llm = llmFor(
          (req) =>
-            JSON.stringify([{ index: idxOf(req, "revenue_total"), score: "HIGH", reason: "x" }]),
+            JSON.stringify([
+               {
+                  index: idxOf(req, "revenue_total"),
+                  score: "HIGH",
+                  reason: "x",
+               },
+            ]),
          seen,
       );
       const out = await run(rows, [{ targetIndex: 0, text: "revenue" }], llm);
       expect(seen[0].user.match(/- \[\d+\]/g)).toHaveLength(1);
-      expect(out.rows.map((r) => r.modelPath)).toEqual(["a.malloy", "b.malloy"]);
+      expect(out.rows.map((r) => r.modelPath)).toEqual([
+         "a.malloy",
+         "b.malloy",
+      ]);
       expect(out.rows[0].score).toBe(out.rows[1].score);
    });
 
@@ -215,20 +266,36 @@ describe("runRefine on hand-built rows", () => {
          config,
       );
       const out = await run(rows, [{ targetIndex: 0, text: "x" }], llm, config);
-      const raw = Object.fromEntries(out.rows.map((r) => [r.name, r.rankScore]));
+      const raw = Object.fromEntries(
+         out.rows.map((r) => [r.name, r.rankScore]),
+      );
       // level HIGH = 3, plus similarity 0.8 discounted 0.5 per hop.
       expect(raw["own"]).toBeCloseTo(3.8, 6);
       expect(raw["customer.joined"]).toBeCloseTo(3 + 0.8 * 0.5, 6);
       expect(raw["a.b.deep"]).toBeCloseTo(3 + 0.8 * 0.25, 6);
       // Still HIGH: a joined field never falls a whole level.
-      expect(Math.min(...Object.values(raw).map((v) => v as number))).toBeGreaterThan(3);
-      expect(out.rows.map((r) => r.name)).toEqual(["own", "customer.joined", "a.b.deep"]);
+      expect(
+         Math.min(...Object.values(raw).map((v) => v as number)),
+      ).toBeGreaterThan(3);
+      expect(out.rows.map((r) => r.name)).toEqual([
+         "own",
+         "customer.joined",
+         "a.b.deep",
+      ]);
    });
 
    it("does not damp at all by default", async () => {
-      const rows = [row("customer.joined", { 0: 0.8 }, { joinPath: "customer" })];
+      const rows = [
+         row("customer.joined", { 0: 0.8 }, { joinPath: "customer" }),
+      ];
       const llm = llmFor((req) =>
-         JSON.stringify([{ index: idxOf(req, "customer\\.joined"), score: "HIGH", reason: "r" }]),
+         JSON.stringify([
+            {
+               index: idxOf(req, "customer\\.joined"),
+               score: "HIGH",
+               reason: "r",
+            },
+         ]),
       );
       const out = await run(rows, [{ targetIndex: 0, text: "x" }], llm);
       expect(out.rows[0].rankScore).toBeCloseTo(3.8, 6);
@@ -268,7 +335,13 @@ describe("runRefine on hand-built rows", () => {
    it("uses a keyphrase when there is no doc", async () => {
       const seen: LlmRequest[] = [];
       await run(
-         [row("a", { 0: 0.5 }, { embedDoc: "", keyphrase: "total order revenue" })],
+         [
+            row(
+               "a",
+               { 0: 0.5 },
+               { embedDoc: "", keyphrase: "total order revenue" },
+            ),
+         ],
          [{ targetIndex: 0, text: "x" }],
          llmFor(() => "[]", seen),
       );

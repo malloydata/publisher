@@ -3,7 +3,15 @@
 
 // Source rerank through the get_context handler, against a scripted LLM.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -40,9 +48,24 @@ import {
 
 // Three sources, each with one measure at a known cosine to "revenue".
 const SOURCES = [
-   { source: "orders", measure: "total_revenue", cos: 1, doc: "Every order placed." },
-   { source: "customers", measure: "customer_revenue", cos: 0.95, doc: "Every customer." },
-   { source: "shipments", measure: "freight_revenue", cos: 0.8, doc: "Every shipment sent." },
+   {
+      source: "orders",
+      measure: "total_revenue",
+      cos: 1,
+      doc: "Every order placed.",
+   },
+   {
+      source: "customers",
+      measure: "customer_revenue",
+      cos: 0.95,
+      doc: "Every customer.",
+   },
+   {
+      source: "shipments",
+      measure: "freight_revenue",
+      cos: 0.8,
+      doc: "Every shipment sent.",
+   },
 ];
 const humanize = (n: string) => n.replace(/_/g, " ");
 const vec = (c: number) => [c, Math.sqrt(1 - c * c)];
@@ -63,8 +86,14 @@ const model = {
       })),
    getQueries: () => [],
 };
-const pkg = { listModels: async () => [{ path: "m.malloy" }], getModel: () => model };
-const VECTORS: Record<string, number[]> = { revenue: [1, 0], "revenue by customer": [1, 0] };
+const pkg = {
+   listModels: async () => [{ path: "m.malloy" }],
+   getModel: () => model,
+};
+const VECTORS: Record<string, number[]> = {
+   revenue: [1, 0],
+   "revenue by customer": [1, 0],
+};
 for (const s of SOURCES) {
    VECTORS[s.source] = [0, 1];
    VECTORS[`${s.source}: ${s.doc}`] = [0, 1];
@@ -105,11 +134,15 @@ describe("get_context source rerank", () => {
    });
    afterEach(() => {
       _clearRetrievalConfigForTests();
-      if (savedGate === undefined) delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
+      if (savedGate === undefined)
+         delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
       else process.env.PUBLISHER_RETRIEVAL_OVERRIDES = savedGate;
    });
 
-   function configure(rerank: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+   function configure(
+      rerank: Record<string, unknown>,
+      extra: Record<string, unknown> = {},
+   ) {
       _setRetrievalConfigForTests({
          rerank: { enabled: true, ...rerank },
          llm: { model: "m", backoffMs: 0, cache: { enabled: false } },
@@ -130,7 +163,11 @@ describe("get_context source rerank", () => {
       );
       const payload = await run();
       // orders is the best similarity match but the model ranked it below.
-      expect(sourceNames(payload)).toEqual(["shipments", "customers", "orders"]);
+      expect(sourceNames(payload)).toEqual([
+         "shipments",
+         "customers",
+         "orders",
+      ]);
       expect(payload.retrieval_stages).toEqual({ rerank: "ok" });
    });
 
@@ -145,7 +182,11 @@ describe("get_context source rerank", () => {
          ),
       );
       const payload = await run();
-      expect(sourceNames(payload)).toEqual(["customers", "orders", "shipments"]);
+      expect(sourceNames(payload)).toEqual([
+         "customers",
+         "orders",
+         "shipments",
+      ]);
    });
 
    it("trusts the score over the listed order when the model sorts them badly", async () => {
@@ -160,7 +201,11 @@ describe("get_context source rerank", () => {
          ),
       );
       const payload = await run();
-      expect(sourceNames(payload)).toEqual(["customers", "orders", "shipments"]);
+      expect(sourceNames(payload)).toEqual([
+         "customers",
+         "orders",
+         "shipments",
+      ]);
    });
 
    it("publishes card relevance that never contradicts the order", async () => {
@@ -174,6 +219,7 @@ describe("get_context source rerank", () => {
          ),
       );
       const payload = await run();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rel = payload.sources.map((c: any) => c.relevance);
       expect([...rel].sort((a, b) => b - a)).toEqual(rel);
       expect(rel[0]).toBeGreaterThan(rel[1]);
@@ -196,10 +242,18 @@ describe("get_context source rerank", () => {
          ),
       );
       const payload = await run();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rel = (p: any, name: string) =>
-         p.sources.flatMap((c: any) => c.entities ?? []).find((e: any) => e.name === name)
-            .relevance;
-      for (const name of ["total_revenue", "customer_revenue", "freight_revenue"]) {
+         p.sources
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .flatMap((c: any) => c.entities ?? [])
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .find((e: any) => e.name === name).relevance;
+      for (const name of [
+         "total_revenue",
+         "customer_revenue",
+         "freight_revenue",
+      ]) {
          expect(rel(payload, name)).toBe(rel(base, name));
       }
    });
@@ -219,7 +273,10 @@ describe("get_context source rerank", () => {
          requestInfo: { headers: { "x-publisher-retrieval-trace": "summary" } },
       });
       expect(sourceNames(payload)).toEqual(["customers"]);
-      const gate = payload.retrieval_trace.gates.find((g: any) => g.gate === "rerank");
+      const gate = payload.retrieval_trace.gates.find(
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         (g: any) => g.gate === "rerank",
+      );
       expect(gate.in).toBe(3);
       expect(gate.out).toBe(1);
       expect(gate.dropped_by_reason).toEqual({ rerank_below_min: 2 });
@@ -232,7 +289,11 @@ describe("get_context source rerank", () => {
          fakeLlm((req) => rankReply([[sourceIndex(req, "customers"), 3]])),
       );
       const payload = await run();
-      expect(sourceNames(payload)).toEqual(["customers", "orders", "shipments"]);
+      expect(sourceNames(payload)).toEqual([
+         "customers",
+         "orders",
+         "shipments",
+      ]);
    });
 
    describe("sources past topSources", () => {
@@ -252,7 +313,12 @@ describe("get_context source rerank", () => {
          const payload = await run();
          // shipments was third by similarity, so the model never saw it.
          expect(seen[0].user).not.toContain("Source: shipments");
-         expect(sourceNames(payload)).toEqual(["customers", "orders", "shipments"]);
+         expect(sourceNames(payload)).toEqual([
+            "customers",
+            "orders",
+            "shipments",
+         ]);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const rel = payload.sources.map((c: any) => c.relevance);
          expect([...rel].sort((a, b) => b - a)).toEqual(rel);
       });
@@ -278,11 +344,17 @@ describe("get_context source rerank", () => {
          _setLlmProviderForTests(fakeLlm(() => rankReply([]), seen));
          await run().catch(() => undefined);
          const req = seen[0];
-         expect(req.system).toContain("expert at matching natural language queries to data sources");
+         expect(req.system).toContain(
+            "expert at matching natural language queries to data sources",
+         );
          expect(req.user).toContain("## Natural Language Query\n\nrevenue");
-         expect(req.user).toContain("Source: orders, Model: m.malloy, Package: p");
+         expect(req.user).toContain(
+            "Source: orders, Model: m.malloy, Package: p",
+         );
          expect(req.user).toContain("Description: Every order placed.");
-         expect(req.user).toContain("- total_revenue (measure): Revenue from orders.");
+         expect(req.user).toContain(
+            "- total_revenue (measure): Revenue from orders.",
+         );
       });
 
       it("sends no docs or descriptions when the docs class is off", async () => {
@@ -298,12 +370,23 @@ describe("get_context source rerank", () => {
 
    describe("failing soft", () => {
       it("keeps the earlier order with a warning when the call fails", async () => {
-         _setLlmProviderForTests(fakeLlm(() => new LlmError("down", "http", false, 500)));
-         configure({}, { llm: { model: "m", maxAttempts: 1, cache: { enabled: false } } });
+         _setLlmProviderForTests(
+            fakeLlm(() => new LlmError("down", "http", false, 500)),
+         );
+         configure(
+            {},
+            { llm: { model: "m", maxAttempts: 1, cache: { enabled: false } } },
+         );
          const payload = await run();
-         expect(sourceNames(payload)).toEqual(["orders", "customers", "shipments"]);
+         expect(sourceNames(payload)).toEqual([
+            "orders",
+            "customers",
+            "shipments",
+         ]);
          expect(payload.retrieval_stages).toEqual({ rerank: "failed:http" });
-         expect(payload.warnings.join(" ")).toContain("LLM rerank unavailable (http)");
+         expect(payload.warnings.join(" ")).toContain(
+            "LLM rerank unavailable (http)",
+         );
       });
 
       it("retries once on a garbled reply", async () => {
@@ -327,18 +410,29 @@ describe("get_context source rerank", () => {
          const seen: LlmRequest[] = [];
          _setLlmProviderForTests(fakeLlm(() => rankReply([]), seen));
          const one = {
-            search_targets: [{ target_type: "measure", search_text: "revenue" }],
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+            ],
             scopes: [{ environment: "rerank", package: "p", source: "orders" }],
          };
-         const payload = await afterWarmup(captureHandler(storeFor(pkg, db)), one);
+         const payload = await afterWarmup(
+            captureHandler(storeFor(pkg, db)),
+            one,
+         );
          expect(seen).toHaveLength(0);
-         expect(payload.retrieval_stages).toEqual({ rerank: "skipped:few_candidates" });
+         expect(payload.retrieval_stages).toEqual({
+            rerank: "skipped:few_candidates",
+         });
       });
 
       it("skips with no LLM configured", async () => {
          const payload = await run();
          expect(payload.retrieval_stages).toEqual({ rerank: "skipped:no_llm" });
-         expect(sourceNames(payload)).toEqual(["orders", "customers", "shipments"]);
+         expect(sourceNames(payload)).toEqual([
+            "orders",
+            "customers",
+            "shipments",
+         ]);
       });
    });
 
@@ -352,9 +446,15 @@ describe("get_context source rerank", () => {
          _setLlmProviderForTests(
             fakeLlm((req) => {
                if (req.stage === "refine") {
-                  const idx = [...req.user.matchAll(/- \[(\d+)\]/g)].map((m) => Number(m[1]));
+                  const idx = [...req.user.matchAll(/- \[(\d+)\]/g)].map((m) =>
+                     Number(m[1]),
+                  );
                   return JSON.stringify(
-                     idx.map((index) => ({ index, score: "MEDIUM", reason: "r" })),
+                     idx.map((index) => ({
+                        index,
+                        score: "MEDIUM",
+                        reason: "r",
+                     })),
                   );
                }
                return rankReply([
@@ -365,8 +465,15 @@ describe("get_context source rerank", () => {
             }),
          );
          const payload = await run();
-         expect(sourceNames(payload)).toEqual(["shipments", "orders", "customers"]);
-         expect(payload.retrieval_stages).toEqual({ refine: "ok", rerank: "ok" });
+         expect(sourceNames(payload)).toEqual([
+            "shipments",
+            "orders",
+            "customers",
+         ]);
+         expect(payload.retrieval_stages).toEqual({
+            refine: "ok",
+            rerank: "ok",
+         });
          expect(entityNames(payload)).toHaveLength(3);
       });
    });
@@ -382,14 +489,24 @@ describe("get_context source rerank", () => {
 
       it("is off by default, so a card ranks on its best hit", async () => {
          configure({ enabled: false });
-         const payload = await afterWarmup(captureHandler(storeFor(pkg, db)), twoPhrases);
+         const payload = await afterWarmup(
+            captureHandler(storeFor(pkg, db)),
+            twoPhrases,
+         );
          expect(sourceNames(payload)[0]).toBe("orders");
       });
 
       it("orders cards on how many phrases they answer when switched on", async () => {
-         configure({ enabled: false }, { scoring: { sourceRelevance: "coverage" } });
-         const payload = await afterWarmup(captureHandler(storeFor(pkg, db)), twoPhrases);
+         configure(
+            { enabled: false },
+            { scoring: { sourceRelevance: "coverage" } },
+         );
+         const payload = await afterWarmup(
+            captureHandler(storeFor(pkg, db)),
+            twoPhrases,
+         );
          // The published relevances must agree with the order.
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const rel = payload.sources.map((c: any) => c.relevance);
          expect([...rel].sort((a, b) => b - a)).toEqual(rel);
          expect(payload.retrieval_config).toMatch(/^[0-9a-f]{12}$/);

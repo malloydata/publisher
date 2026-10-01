@@ -5,7 +5,11 @@
 // and the values of a value-indexed dimension, each behind its own egress class.
 
 import { describe, expect, it } from "bun:test";
-import { LlmBudget, LlmRunner, runnerSettingsFrom } from "../../service/llm_runner";
+import {
+   LlmBudget,
+   LlmRunner,
+   runnerSettingsFrom,
+} from "../../service/llm_runner";
 import type { LlmProvider, LlmRequest } from "../../service/llm_provider";
 import { resolveEgress, resolveRetrievalConfig } from "../retrieval_config";
 import type { RunLlm } from "../run";
@@ -30,14 +34,22 @@ const row = (
 
 const ROWS = [
    row("customers", "tier", 0.9, {
-      values: [{ value: "Premium" }, { value: "Basic" }, { value: "Enterprise" }],
+      values: [
+         { value: "Premium" },
+         { value: "Basic" },
+         { value: "Enterprise" },
+      ],
    }),
    row("orders", "status", 0.5),
 ];
 
 async function promptFor(over: Record<string, unknown>): Promise<string> {
    const config = resolveRetrievalConfig({
-      rerank: { enabled: true, skipIfAtMost: 0, ...((over.rerank as object) ?? {}) },
+      rerank: {
+         enabled: true,
+         skipIfAtMost: 0,
+         ...((over.rerank as object) ?? {}),
+      },
       egress: over.egress ?? {},
       llm: { model: "m", cache: { enabled: false } },
    });
@@ -69,8 +81,10 @@ async function promptFor(over: Record<string, unknown>): Promise<string> {
       lexical: false,
       egress: resolveEgress(config),
       packageName: "p",
-      docsFor: (key) => (key.includes("customers") ? "Customer accounts." : undefined),
-      summaryFor: (source) => (source === "customers" ? "Generated summary of customers." : undefined),
+      docsFor: (key) =>
+         key.includes("customers") ? "Customer accounts." : undefined,
+      summaryFor: (source) =>
+         source === "customers" ? "Generated summary of customers." : undefined,
       scoredByLlm: false,
    });
    return seen[0].user;

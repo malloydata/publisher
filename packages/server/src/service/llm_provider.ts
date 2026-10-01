@@ -215,7 +215,11 @@ export class OpenAiCompatLlmProvider implements LlmProvider {
       } catch (error) {
          const name = (error as Error)?.name;
          if (request.signal?.aborted) {
-            throw new LlmError(`LLM request to ${url} was aborted`, "aborted", false);
+            throw new LlmError(
+               `LLM request to ${url} was aborted`,
+               "aborted",
+               false,
+            );
          }
          if (name === "TimeoutError" || name === "AbortError") {
             throw new LlmError(
@@ -254,7 +258,9 @@ export class OpenAiCompatLlmProvider implements LlmProvider {
       if (!choice || !text) {
          throw new LlmError(
             `LLM response from ${url} malformed: no message content` +
-               (choice?.finish_reason ? ` (finish_reason ${choice.finish_reason})` : ""),
+               (choice?.finish_reason
+                  ? ` (finish_reason ${choice.finish_reason})`
+                  : ""),
             "malformed",
             true,
          );
@@ -262,7 +268,9 @@ export class OpenAiCompatLlmProvider implements LlmProvider {
       return {
          text,
          model: json.model ?? request.model,
-         ...(choice.finish_reason ? { finishReason: choice.finish_reason } : {}),
+         ...(choice.finish_reason
+            ? { finishReason: choice.finish_reason }
+            : {}),
          ...(json.usage
             ? {
                  usage: {

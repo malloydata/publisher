@@ -5,7 +5,15 @@
 // embedding nothing to match becomes findable once the LLM has written a
 // keyphrase for it, without the request path ever waiting on the LLM.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -60,14 +68,21 @@ const model = {
             fields: [
                // Cryptic name, no doc: nothing for an embedding to match.
                { kind: "dimension", name: "cust_ltv", annotations: [] },
-               { kind: "measure", name: "total_revenue", annotations: ["#(doc) Revenue."] },
+               {
+                  kind: "measure",
+                  name: "total_revenue",
+                  annotations: ["#(doc) Revenue."],
+               },
             ],
          },
       },
    ],
    getQueries: () => [],
 };
-const pkg = { listModels: async () => [{ path: "m.malloy" }], getModel: () => model };
+const pkg = {
+   listModels: async () => [{ path: "m.malloy" }],
+   getModel: () => model,
+};
 
 const VECTORS: Record<string, number[]> = {
    [QUERY]: [1, 0],
@@ -125,19 +140,27 @@ describe("get_context enrichment", () => {
       _clearOverrideCacheForTests();
       process.env.PUBLISHER_RETRIEVAL_OVERRIDES = "1";
       _setRetrievalConfigForTests({
-         enrichment: { enabled: true, sourceSummary: { enabled: true }, keyphrase: { batchSize: 1 } },
+         enrichment: {
+            enabled: true,
+            sourceSummary: { enabled: true },
+            keyphrase: { batchSize: 1 },
+         },
          llm: { model: "m", backoffMs: 0, cache: { enabled: false } },
       });
    });
    afterEach(() => {
       _clearRetrievalConfigForTests();
-      if (savedGate === undefined) delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
+      if (savedGate === undefined)
+         delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
       else process.env.PUBLISHER_RETRIEVAL_OVERRIDES = savedGate;
    });
 
    const handler = () => captureHandler(storeFor(pkg, db));
 
-   async function untilSemantic(h: ReturnType<typeof handler>, extra = STAGES_OFF) {
+   async function untilSemantic(
+      h: ReturnType<typeof handler>,
+      extra = STAGES_OFF,
+   ) {
       for (let i = 0; i < 400; i++) {
          const payload = parse(await h(params, extra));
          if (payload.retrieval === "semantic") return payload;
@@ -192,7 +215,11 @@ describe("get_context enrichment", () => {
       const h = handler();
       await untilSemantic(h);
       await _settleEnrichmentForTests(ENV, PKG);
-      const status = await getPackageEmbeddingStatus(storeFor(pkg, db) as never, ENV, PKG);
+      const status = await getPackageEmbeddingStatus(
+         storeFor(pkg, db) as never,
+         ENV,
+         PKG,
+      );
       expect(status?.status).toBe("ready");
       expect(status?.enrichment).toMatchObject({
          status: "ready",
@@ -207,7 +234,11 @@ describe("get_context enrichment", () => {
       _setRetrievalConfigForTests({});
       const h = handler();
       await untilSemantic(h);
-      const status = await getPackageEmbeddingStatus(storeFor(pkg, db) as never, ENV, PKG);
+      const status = await getPackageEmbeddingStatus(
+         storeFor(pkg, db) as never,
+         ENV,
+         PKG,
+      );
       expect(status?.status).toBe("ready");
       expect(status).not.toHaveProperty("enrichment");
    });
@@ -235,7 +266,11 @@ describe("get_context enrichment", () => {
 
    describe("showing what the model wrote", () => {
       const enabled = {
-         enrichment: { enabled: true, sourceSummary: { enabled: true }, keyphrase: { batchSize: 1 } },
+         enrichment: {
+            enabled: true,
+            sourceSummary: { enabled: true },
+            keyphrase: { batchSize: 1 },
+         },
          llm: { model: "m", backoffMs: 0, cache: { enabled: false } },
       };
 
@@ -249,13 +284,18 @@ describe("get_context enrichment", () => {
       });
 
       it("returns it apart from the authored docs when the operator asks", async () => {
-         _setRetrievalConfigForTests({ ...enabled, response: { surfaceGenerated: true } });
+         _setRetrievalConfigForTests({
+            ...enabled,
+            response: { surfaceGenerated: true },
+         });
          const h = handler();
          await untilSemantic(h);
          await _settleEnrichmentForTests(ENV, PKG);
          const after = await untilSemantic(h);
          const card = after.sources[0];
-         expect(card.source_info.generated_summary).toBe("Every order placed, one row each.");
+         expect(card.source_info.generated_summary).toBe(
+            "Every order placed, one row each.",
+         );
          expect(card.source_info.generated_one_line_summary).toBe("Orders.");
          // The author's own doc is untouched beside it.
          expect(card.source_info.docs).toBe("Every order placed.");
@@ -264,7 +304,10 @@ describe("get_context enrichment", () => {
       });
 
       it("shows nothing before there is anything to show", async () => {
-         _setRetrievalConfigForTests({ ...enabled, response: { surfaceGenerated: true } });
+         _setRetrievalConfigForTests({
+            ...enabled,
+            response: { surfaceGenerated: true },
+         });
          const before = await untilSemantic(handler());
          expect(JSON.stringify(before)).not.toContain("generated_");
       });
@@ -273,13 +316,20 @@ describe("get_context enrichment", () => {
    describe("with refine", () => {
       it("describes an undocumented field to the model by what was written for it", async () => {
          _setRetrievalConfigForTests({
-            enrichment: { enabled: true, sourceSummary: { enabled: true }, keyphrase: { batchSize: 1 } },
+            enrichment: {
+               enabled: true,
+               sourceSummary: { enabled: true },
+               keyphrase: { batchSize: 1 },
+            },
             refine: { enabled: true },
             llm: { model: "m", backoffMs: 0, cache: { enabled: false } },
          });
          const seen: LlmRequest[] = [];
          _setLlmProviderForTests(
-            fakeLlm((req) => (req.stage === "refine" ? "[]" : llmReply(req)), seen),
+            fakeLlm(
+               (req) => (req.stage === "refine" ? "[]" : llmReply(req)),
+               seen,
+            ),
          );
          const h = handler();
          await untilSemantic(h);
@@ -303,7 +353,10 @@ describe("get_context enrichment", () => {
       await new Promise((r) => setTimeout(r, 30));
       expect(seen).toHaveLength(0);
       expect(entityNames(p)).not.toContain("cust_ltv");
-      const rows = await db.all<any>("SELECT count(*) AS n FROM entity_enrichment");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows = await db.all<any>(
+         "SELECT count(*) AS n FROM entity_enrichment",
+      );
       expect(Number(rows[0].n)).toBe(0);
    });
 });

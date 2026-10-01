@@ -2118,42 +2118,68 @@ describe("trySemanticSearch", () => {
 
 describe("entityFacets with one vector per entity", () => {
    const entity = (name: string, embedDoc: string): EmbeddableEntity =>
-      ({ kind: "measure", name, source: "orders", embedDoc }) as EmbeddableEntity;
+      ({
+         kind: "measure",
+         name,
+         source: "orders",
+         embedDoc,
+      }) as EmbeddableEntity;
 
    it("is one facet, the generated keyphrase first", () => {
       const facets = entityFacets(
          entity("cust_ltv", "A long doc that the keyphrase replaces."),
-         { keyphrase: "lifetime spend of a customer", kw: "cust ltv: lifetime spend of a customer" },
+         {
+            keyphrase: "lifetime spend of a customer",
+            kw: "cust ltv: lifetime spend of a customer",
+         },
          "single",
       );
-      expect(facets).toEqual([{ facet: "one", text: "lifetime spend of a customer" }]);
+      expect(facets).toEqual([
+         { facet: "one", text: "lifetime spend of a customer" },
+      ]);
    });
 
    it("uses the doc as written when there is no keyphrase, with no name in front of it", () => {
-      expect(entityFacets(entity("total_sales", "Total revenue.\nAll lines."), undefined, "single")).toEqual([
-         { facet: "one", text: "Total revenue. All lines." },
-      ]);
+      expect(
+         entityFacets(
+            entity("total_sales", "Total revenue.\nAll lines."),
+            undefined,
+            "single",
+         ),
+      ).toEqual([{ facet: "one", text: "Total revenue. All lines." }]);
    });
 
    it("falls back to the humanized name when there is neither", () => {
-      expect(entityFacets(entity("gamma_total", ""), undefined, "single")).toEqual([
-         { facet: "one", text: "gamma total" },
-      ]);
+      expect(
+         entityFacets(entity("gamma_total", ""), undefined, "single"),
+      ).toEqual([{ facet: "one", text: "gamma total" }]);
    });
 
    it("ignores a generated summary: only the keyphrase and the doc are embedded", () => {
-      const facets = entityFacets(entity("x", "Doc."), { sum: "A summary.", summary: "A summary." }, "single");
+      const facets = entityFacets(
+         entity("x", "Doc."),
+         { sum: "A summary.", summary: "A summary." },
+         "single",
+      );
       expect(facets.map((f) => f.text)).toEqual(["Doc."]);
    });
 
    it("cuts a text longer than the provider's input cap to one row", () => {
-      const facets = entityFacets(entity("x", "word ".repeat(2_000)), undefined, "single");
+      const facets = entityFacets(
+         entity("x", "word ".repeat(2_000)),
+         undefined,
+         "single",
+      );
       expect(facets).toHaveLength(1);
       expect(facets[0].text.length).toBeLessThanOrEqual(1_024);
    });
 
    it("leaves the default facets alone", () => {
-      const names = entityFacets(entity("total_sales", "Total revenue."), undefined, "facets").map((f) => f.facet);
+      const names = entityFacets(
+         entity("total_sales", "Total revenue."),
+         undefined,
+         "facets",
+      ).map((f) => f.facet);
       expect(names).toEqual(["name", "doc:0"]);
    });
 });

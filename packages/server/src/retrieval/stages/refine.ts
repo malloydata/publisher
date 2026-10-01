@@ -5,12 +5,12 @@ import { createHash } from "node:crypto";
 import { entityRowKey } from "../../mcp/tools/embedding_index";
 import { LlmError } from "../../service/llm_provider";
 import { parseRefineReply, type RefineItem } from "../llm_json";
-import {
-   REPAIR_NOTE,
-   buildRefinePrompt,
-   refineLine,
-} from "../prompts/refine";
-import type { EgressClasses, RelevanceLevel, RetrievalConfig } from "../retrieval_config";
+import { REPAIR_NOTE, buildRefinePrompt, refineLine } from "../prompts/refine";
+import type {
+   EgressClasses,
+   RelevanceLevel,
+   RetrievalConfig,
+} from "../retrieval_config";
 import { mapWithLimit } from "../pool";
 import type { RunLlm } from "../run";
 import { finalizeRelevance, levelBelow, levelValue, round4 } from "../scoring";
@@ -61,7 +61,9 @@ function describe<T extends StageRow>(
 ): string {
    if (!egress.docs) return "";
    const text = rep.embedDoc || rep.keyphrase || "";
-   return text.length > cfg.descChars ? `${text.slice(0, cfg.descChars)}…` : text;
+   return text.length > cfg.descChars
+      ? `${text.slice(0, cfg.descChars)}…`
+      : text;
 }
 
 function sha(parts: string[]): string {
@@ -216,7 +218,11 @@ export async function runRefine<T extends StageRow>(args: {
 
    // `refine.concurrency` caps how many of this request's batches are in flight
    // at once, below the process-wide `llm.concurrency` that every stage shares.
-   const results = await mapWithLimit(batches, cfg.concurrency ?? batches.length, rateBatch);
+   const results = await mapWithLimit(
+      batches,
+      cfg.concurrency ?? batches.length,
+      rateBatch,
+   );
 
    // Everything failed: leave the rows exactly as they came, and say so.
    if (batches.length > 0 && failedBatches === batches.length) {
@@ -308,7 +314,10 @@ export async function runRefine<T extends StageRow>(args: {
             config.scoring.joinDampingMode === "whole"
                ? (levelValue(level) + cosine) * damp
                : levelValue(level) + cosine * damp;
-         targetScores.set(t, round4(finalizeRelevance(raw, config.scoring.knots)));
+         targetScores.set(
+            t,
+            round4(finalizeRelevance(raw, config.scoring.knots)),
+         );
          if (reason) reasons.set(t, reason);
          if (raw > bestRaw) {
             bestRaw = raw;
@@ -352,5 +361,12 @@ export async function runRefine<T extends StageRow>(args: {
          verdicts.set(key, byTarget);
       }
    }
-   return { rows: kept, status, warnings, dropped, rowsIn: rows.length, verdicts };
+   return {
+      rows: kept,
+      status,
+      warnings,
+      dropped,
+      rowsIn: rows.length,
+      verdicts,
+   };
 }

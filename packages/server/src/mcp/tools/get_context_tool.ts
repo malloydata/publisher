@@ -622,7 +622,10 @@ function toSourceResults(
       // A dimension found only by its values has no relevance of its own, so
       // its best value stands in: a matched card is never reported at null.
       const own = r.score ?? r.values?.[0]?.relevance;
-      if (own !== undefined && (entry.relevance === undefined || own > entry.relevance)) {
+      if (
+         own !== undefined &&
+         (entry.relevance === undefined || own > entry.relevance)
+      ) {
          entry.relevance = own;
       }
    }
@@ -1017,7 +1020,12 @@ function fitToMaxChars(
    note: string | undefined;
 } {
    if (JSON.stringify(build(sources)).length <= maxChars) {
-      return { sources, entitiesDropped: 0, sourcesDropped: 0, note: undefined };
+      return {
+         sources,
+         entitiesDropped: 0,
+         sourcesDropped: 0,
+         note: undefined,
+      };
    }
    const noteFor = (entities: number, cards: number) =>
       `Trimmed to fit response.maxChars (${maxChars}): dropped ${entities} ${entities === 1 ? "entity" : "entities"} and ${cards} ${cards === 1 ? "source" : "sources"}, lowest ranked first.`;
@@ -1241,7 +1249,11 @@ export function resolveRequest(
          // A value target is a real search when value search is on and it
          // carries text; otherwise it stays unsupported, with its warning.
          const text = target.search_text?.trim();
-         if (options.valueSearch && target.target_type === "dimensional_value" && text) {
+         if (
+            options.valueSearch &&
+            target.target_type === "dimensional_value" &&
+            text
+         ) {
             valueSearches.push({
                targetIndex,
                targetType: target.target_type,
@@ -1715,9 +1727,9 @@ function collectJoinedFields(args: {
 }
 
 /** `{ indexValues }` for a dimension carrying `#(index)`, else nothing. */
-function indexValuesFor(
-   annotations?: Array<string | { value: string }>,
-): { indexValues?: { n?: number } } {
+function indexValuesFor(annotations?: Array<string | { value: string }>): {
+   indexValues?: { n?: number };
+} {
    const tag = parseIndexTag(annotations);
    return tag ? { indexValues: tag } : {};
 }
@@ -2395,7 +2407,9 @@ function kickPackageValues(
          undefined,
          "compact",
       );
-      return res.compactResult as unknown as ReadonlyArray<Record<string, unknown>>;
+      return res.compactResult as unknown as ReadonlyArray<
+         Record<string, unknown>
+      >;
    };
    // Values share the package's item budget with the entity facets and the
    // generated text, which is placed first (summaries, keyphrases, then values).
@@ -2418,7 +2432,10 @@ function kickPackageValues(
  * Rows `indexing.maxItemsPerPackage` leaves for everything added on top of the
  * entities' own facets (generated text, then dimension values).
  */
-function generatedTextBudget(pkgIndex: PackageIndex, cfg: RetrievalConfig): number {
+function generatedTextBudget(
+   pkgIndex: PackageIndex,
+   cfg: RetrievalConfig,
+): number {
    const baseRows = pkgIndex.retrievalEntities.reduce(
       (n, e) => n + entityFacets(e).length,
       0,
@@ -2615,7 +2632,14 @@ async function runContextQuery(
       valueDims.map((d) => [d.source, d.dimension].join(KEY_SEPARATOR)),
    );
    const valueProvider = safeEmbeddingProvider;
-   kickPackageValues(pkgIndex, valueDims, cfg, environmentStore, environmentName, packageName);
+   kickPackageValues(
+      pkgIndex,
+      valueDims,
+      cfg,
+      environmentStore,
+      environmentName,
+      packageName,
+   );
 
    const uri = buildMalloyUri(
       { environment: environmentName, package: packageName },
@@ -2894,7 +2918,9 @@ async function runContextQuery(
             // An LLM rates each matched value against its phrase and drops the
             // ones it leaves out (Credible's value refine).
             if (valueCfg.refine.enabled && valueHits.length > 0) {
-               const before = run?.llm ? { ...run.llm.budget.usage } : undefined;
+               const before = run?.llm
+                  ? { ...run.llm.budget.usage }
+                  : undefined;
                const started = Date.now();
                const outcome = await runValueRefine({
                   hits: valueHits,
@@ -2909,7 +2935,8 @@ async function runContextQuery(
                valueRefineStatus = outcome.status;
                valueWarnings.push(...outcome.warnings);
                const applied =
-                  outcome.status === "ok" || outcome.status.startsWith("partial");
+                  outcome.status === "ok" ||
+                  outcome.status.startsWith("partial");
                trace?.gate(
                   "value_refine",
                   outcome.rowsIn,
@@ -2935,7 +2962,7 @@ async function runContextQuery(
          }
          if (valueDims.length === 0) {
             valueWarnings.push(
-               "No dimension in this package is set up for value search. Tag one with #(index) in the model, or set retrieval.dimensionalValues.mode to \"auto\".",
+               'No dimension in this package is set up for value search. Tag one with #(index) in the model, or set retrieval.dimensionalValues.mode to "auto".',
             );
          } else if (valueHits.length === 0) {
             const st = getValueIndexStatus(environmentName, packageName);
@@ -3015,11 +3042,19 @@ async function runContextQuery(
             const fuseWithLexical = (rows: Map<string, ResultEntity>) => {
                const lexical = new Map<string, Map<number, number>>();
                const lexRows = new Map<string, ResultEntity>();
-               for (const [ref, ts] of lunrTargetScores(index, byId, request.searches)) {
+               for (const [ref, ts] of lunrTargetScores(
+                  index,
+                  byId,
+                  request.searches,
+               )) {
                   const e = byId.get(ref);
                   if (!e || (sourceName && e.source !== sourceName)) continue;
                   if (!matchesScope(e, request)) continue;
-                  const projected = projectEntity(e, environmentName, packageName);
+                  const projected = projectEntity(
+                     e,
+                     environmentName,
+                     packageName,
+                  );
                   const key = entityCardKey(projected);
                   lexical.set(key, ts);
                   lexRows.set(key, {
@@ -3284,7 +3319,11 @@ async function runContextQuery(
          }));
          const [source, dimension] = k.split(KEY_SEPARATOR);
          for (const r of out) {
-            if (r.kind === "dimension" && r.source === source && r.name === dimension) {
+            if (
+               r.kind === "dimension" &&
+               r.source === source &&
+               r.name === dimension
+            ) {
                r.values = matches;
             }
          }
@@ -3318,7 +3357,9 @@ async function runContextQuery(
       // keep the order they arrived in.
       return out
          .map((r, i) => ({ r, i }))
-         .sort((a, b) => (b.r.rankScore ?? 0) - (a.r.rankScore ?? 0) || a.i - b.i)
+         .sort(
+            (a, b) => (b.r.rankScore ?? 0) - (a.r.rankScore ?? 0) || a.i - b.i,
+         )
          .map((x) => x.r);
    };
 
@@ -3372,7 +3413,9 @@ async function runContextQuery(
       const withValues = attachValues(scoredRows);
       let rows = extras
          ? withValues.map((r) => {
-              const kp = extras.get(entityRowKey(r.kind, r.source ?? "", r.name))?.keyphrase;
+              const kp = extras.get(
+                 entityRowKey(r.kind, r.source ?? "", r.name),
+              )?.keyphrase;
               return kp ? { ...r, keyphrase: kp } : r;
            })
          : withValues;
@@ -3423,24 +3466,30 @@ async function runContextQuery(
                );
                trace.annotate((c) => {
                   const key = `${c.model_path}\u0000${c.entity_id}`;
-                  const byTarget = outcome.verdicts?.get(verdictKey.get(key) ?? "");
+                  const byTarget = outcome.verdicts?.get(
+                     verdictKey.get(key) ?? "",
+                  );
                   const levels: Record<string, string> = {};
                   for (const [t, v] of byTarget ?? []) {
                      levels[String(t)] = v.level ?? v.outcome;
                   }
                   const r = survivors.get(key);
-                  const own = c.target === undefined ? undefined : byTarget?.get(c.target);
+                  const own =
+                     c.target === undefined
+                        ? undefined
+                        : byTarget?.get(c.target);
                   const level = own?.level;
                   if (!r) {
                      // Why, in the stage's own words, so a reader can tell a
                      // low rating from an omission from the cap.
-                     const why = own?.outcome === "scored"
-                        ? "below_min_level"
-                        : own?.outcome === "omitted"
-                          ? "llm_omitted"
-                          : own?.outcome === "capped"
-                            ? "refine_cap"
-                            : "refine";
+                     const why =
+                        own?.outcome === "scored"
+                           ? "below_min_level"
+                           : own?.outcome === "omitted"
+                             ? "llm_omitted"
+                             : own?.outcome === "capped"
+                               ? "refine_cap"
+                               : "refine";
                      return {
                         kept: false,
                         dropped_by: `refine:${why}`,
@@ -3451,7 +3500,8 @@ async function runContextQuery(
                   const t = r.bestTarget;
                   return {
                      score: r.rankScore,
-                     reason: t === undefined ? undefined : r.matchReasons?.get(t),
+                     reason:
+                        t === undefined ? undefined : r.matchReasons?.get(t),
                      levels,
                      ...(level ? { level } : {}),
                   };
@@ -3615,7 +3665,9 @@ async function runContextQuery(
                const src = c.source_info.resource_id.source;
                return [
                   `${path}\u0000${entityId("source", src, src)}`,
-                  ...(c.entities ?? []).map((e) => `${path}\u0000${e.entity_id}`),
+                  ...(c.entities ?? []).map(
+                     (e) => `${path}\u0000${e.entity_id}`,
+                  ),
                ];
             }),
          );
@@ -3635,7 +3687,9 @@ async function runContextQuery(
 
    if (semanticRanked !== undefined) {
       const distinctHits = new Set(
-         semanticRanked.map((r) => entityRowKey(r.kind, r.source ?? "", r.name)),
+         semanticRanked.map((r) =>
+            entityRowKey(r.kind, r.source ?? "", r.name),
+         ),
       ).size;
       const inCount = totalEntities ?? distinctHits;
       return jsonResource(
@@ -3886,7 +3940,11 @@ export function registerGetContextTool(
       convergedContextShape,
       async (
          params: GetContextParams,
-         extra?: { requestInfo?: { headers?: Record<string, string | string[] | undefined> } },
+         extra?: {
+            requestInfo?: {
+               headers?: Record<string, string | string[] | undefined>;
+            };
+         },
       ) => {
          // Tuning for THIS call: the server's config, plus an eval's override
          // header when the operator has opened that gate. Resolved before any
@@ -4008,12 +4066,31 @@ export async function getPackageEmbeddingStatus(
    let valueIndex: ValueIndexStatus | undefined;
    if (cfg.dimensionalValues.mode !== "off") {
       const dims = packageValueDimensions(pkgIndex, cfg);
-      kickPackageValues(pkgIndex, dims, cfg, environmentStore, environmentName, packageName);
+      kickPackageValues(
+         pkgIndex,
+         dims,
+         cfg,
+         environmentStore,
+         environmentName,
+         packageName,
+      );
       valueIndex =
          getValueIndexStatus(environmentName, packageName) ??
          (dims.length === 0
-            ? { status: "ready", dimensions: 0, values: 0, truncated: 0, failed: 0 }
-            : { status: "building", dimensions: dims.length, values: 0, truncated: 0, failed: 0 });
+            ? {
+                 status: "ready",
+                 dimensions: 0,
+                 values: 0,
+                 truncated: 0,
+                 failed: 0,
+              }
+            : {
+                 status: "building",
+                 dimensions: dims.length,
+                 values: 0,
+                 truncated: 0,
+                 failed: 0,
+              });
    }
    const enrichment = cfg.enrichment.enabled
       ? getEnrichmentStatus(environmentName, packageName)

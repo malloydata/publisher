@@ -16,7 +16,10 @@ export async function mapWithLimit<T, R>(
       }
    };
    await Promise.all(
-      Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker),
+      Array.from(
+         { length: Math.max(1, Math.min(limit, items.length)) },
+         worker,
+      ),
    );
    return out;
 }

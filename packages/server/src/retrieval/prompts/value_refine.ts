@@ -64,10 +64,10 @@ export function buildValueRefinePrompt(args: {
    lines: string[];
    wrapForJsonMode: boolean;
 }): { system: string; user: string } {
-   const user = BODY.replace("##PHRASE##", () => `Text: "${args.phrase}"`).replace(
-      "##ENTITIES##",
-      () => args.lines.join("\n"),
-   );
+   const user = BODY.replace(
+      "##PHRASE##",
+      () => `Text: "${args.phrase}"`,
+   ).replace("##ENTITIES##", () => args.lines.join("\n"));
    return {
       system: VALUE_REFINE_ROLE,
       user: args.wrapForJsonMode ? user + JSON_MODE_NOTE : user,

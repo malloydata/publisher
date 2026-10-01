@@ -145,7 +145,9 @@ export class EmbeddingProvider {
       role: EmbeddingRole = "document",
    ): Promise<number[][]> {
       const prefix =
-         role === "query" ? this.tuning.queryPrefix : this.tuning.documentPrefix;
+         role === "query"
+            ? this.tuning.queryPrefix
+            : this.tuning.documentPrefix;
       const extra =
          role === "query"
             ? { ...this.tuning.extraBody, ...this.tuning.queryExtraBody }

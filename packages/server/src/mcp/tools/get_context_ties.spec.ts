@@ -7,7 +7,15 @@
 // fell inside the per-target window and in what order the cards came back, so
 // two identical requests could return different answers.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -24,7 +32,12 @@ import {
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
-import { captureHandler, parse, sourceNames, storeFor } from "./retrieval_test_kit";
+import {
+   captureHandler,
+   parse,
+   sourceNames,
+   storeFor,
+} from "./retrieval_test_kit";
 
 const SOURCES = ["delta", "alpha", "charlie", "bravo"];
 const source = (name: string) => ({
@@ -32,12 +45,22 @@ const source = (name: string) => ({
    annotations: [`#(doc) Rows of ${name}.`],
    schema: {
       fields: [
-         { kind: "measure", name: "total", annotations: ["#(doc) The total amount."] },
+         {
+            kind: "measure",
+            name: "total",
+            annotations: ["#(doc) The total amount."],
+         },
       ],
    },
 });
-const model = { getSourceInfos: () => SOURCES.map(source), getQueries: () => [] };
-const pkg = { listModels: async () => [{ path: "m.malloy" }], getModel: () => model };
+const model = {
+   getSourceInfos: () => SOURCES.map(source),
+   getQueries: () => [],
+};
+const pkg = {
+   listModels: async () => [{ path: "m.malloy" }],
+   getModel: () => model,
+};
 
 // Every embedded text maps to the same vector, so every `total` ties.
 function provider(): EmbeddingProvider {

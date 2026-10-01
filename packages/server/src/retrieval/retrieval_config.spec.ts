@@ -25,7 +25,9 @@ const problems = (raw: unknown): string[] => {
 
 describe("resolveRetrievalConfig", () => {
    it("yields the defaults for a missing or null block", () => {
-      expect(resolveRetrievalConfig(undefined)).toEqual(DEFAULT_RETRIEVAL_CONFIG);
+      expect(resolveRetrievalConfig(undefined)).toEqual(
+         DEFAULT_RETRIEVAL_CONFIG,
+      );
       expect(resolveRetrievalConfig(null)).toEqual(DEFAULT_RETRIEVAL_CONFIG);
       expect(resolveRetrievalConfig({})).toEqual(DEFAULT_RETRIEVAL_CONFIG);
    });
@@ -126,15 +128,36 @@ describe("resolveRetrievalConfig", () => {
       expect(problems({ scoring: { knots: ok } })).toEqual([]);
       // x must strictly increase
       expect(
-         problems({ scoring: { knots: [[0, 0], [0, 1]] } }),
+         problems({
+            scoring: {
+               knots: [
+                  [0, 0],
+                  [0, 1],
+               ],
+            },
+         }),
       ).toHaveLength(1);
       // y must not decrease
       expect(
-         problems({ scoring: { knots: [[0, 1], [1, 0]] } }),
+         problems({
+            scoring: {
+               knots: [
+                  [0, 1],
+                  [1, 0],
+               ],
+            },
+         }),
       ).toHaveLength(1);
       // y within [0, 1]
       expect(
-         problems({ scoring: { knots: [[0, 0], [1, 2]] } }),
+         problems({
+            scoring: {
+               knots: [
+                  [0, 0],
+                  [1, 2],
+               ],
+            },
+         }),
       ).toHaveLength(1);
       expect(problems({ scoring: { knots: [[0, 0]] } })).toHaveLength(1);
    });
@@ -203,7 +226,9 @@ describe("egress", () => {
       const classes = Object.keys(
          resolveEgress(resolveRetrievalConfig(undefined)),
       );
-      expect(classes.join(",")).not.toMatch(/predicate|access|authorize|filter/i);
+      expect(classes.join(",")).not.toMatch(
+         /predicate|access|authorize|filter/i,
+      );
    });
 });
 
@@ -320,7 +345,11 @@ describe("the Credible-parity settings", () => {
    it("default to Publisher's own behavior, so an unconfigured server is unchanged", () => {
       const c = resolveRetrievalConfig(undefined);
       expect(c.embedding.representation).toBe("facets");
-      expect(c.candidates).toEqual({ perTargetLimit: null, window: "global", perSourceLimit: 10 });
+      expect(c.candidates).toEqual({
+         perTargetLimit: null,
+         window: "global",
+         perSourceLimit: 10,
+      });
       expect(c.scoring.joinDampingMode).toBe("fraction");
       expect(c.dimensionalValues.refine).toEqual({
          enabled: false,
@@ -345,22 +374,36 @@ describe("the Credible-parity settings", () => {
    });
 
    it("reject a bad value with the setting's name", () => {
-      expect(problems({ embedding: { representation: "double" } })[0]).toContain(
-         "retrieval.embedding.representation",
+      expect(
+         problems({ embedding: { representation: "double" } })[0],
+      ).toContain("retrieval.embedding.representation");
+      expect(problems({ candidates: { window: "local" } })[0]).toContain(
+         "retrieval.candidates.window",
       );
-      expect(problems({ candidates: { window: "local" } })[0]).toContain("retrieval.candidates.window");
-      expect(problems({ candidates: { perSourceLimit: 0 } })[0]).toContain("retrieval.candidates.perSourceLimit");
-      expect(problems({ scoring: { joinDampingMode: "all" } })[0]).toContain("retrieval.scoring.joinDampingMode");
-      expect(problems({ dimensionalValues: { refine: { batchSize: 0 } } })[0]).toContain(
-         "retrieval.dimensionalValues.refine.batchSize",
+      expect(problems({ candidates: { perSourceLimit: 0 } })[0]).toContain(
+         "retrieval.candidates.perSourceLimit",
       );
+      expect(problems({ scoring: { joinDampingMode: "all" } })[0]).toContain(
+         "retrieval.scoring.joinDampingMode",
+      );
+      expect(
+         problems({ dimensionalValues: { refine: { batchSize: 0 } } })[0],
+      ).toContain("retrieval.dimensionalValues.refine.batchSize");
    });
 
    it("let a request change the window and value refine, but not the index's representation", () => {
       const base = resolveRetrievalConfig({});
-      expect(applyOverride(base, { candidates: { window: "per-source" } }).errors).toEqual([]);
-      expect(applyOverride(base, { dimensionalValues: { refine: { enabled: true } } }).errors).toEqual([]);
-      const bad = applyOverride(base, { embedding: { representation: "single" } });
+      expect(
+         applyOverride(base, { candidates: { window: "per-source" } }).errors,
+      ).toEqual([]);
+      expect(
+         applyOverride(base, {
+            dimensionalValues: { refine: { enabled: true } },
+         }).errors,
+      ).toEqual([]);
+      const bad = applyOverride(base, {
+         embedding: { representation: "single" },
+      });
       expect(bad.errors[0]).toContain("embedding.representation");
    });
 });
@@ -368,8 +411,14 @@ describe("the Credible-parity settings", () => {
 describe("retrievalOverridesEnabled", () => {
    it("is off unless the gate is set", () => {
       expect(retrievalOverridesEnabled({})).toBe(false);
-      expect(retrievalOverridesEnabled({ PUBLISHER_RETRIEVAL_OVERRIDES: "0" })).toBe(false);
-      expect(retrievalOverridesEnabled({ PUBLISHER_RETRIEVAL_OVERRIDES: "1" })).toBe(true);
-      expect(retrievalOverridesEnabled({ PUBLISHER_RETRIEVAL_OVERRIDES: "true" })).toBe(true);
+      expect(
+         retrievalOverridesEnabled({ PUBLISHER_RETRIEVAL_OVERRIDES: "0" }),
+      ).toBe(false);
+      expect(
+         retrievalOverridesEnabled({ PUBLISHER_RETRIEVAL_OVERRIDES: "1" }),
+      ).toBe(true);
+      expect(
+         retrievalOverridesEnabled({ PUBLISHER_RETRIEVAL_OVERRIDES: "true" }),
+      ).toBe(true);
    });
 });

@@ -100,7 +100,9 @@ export class TraceBuilder {
       inCount: number,
       outCount: number,
       reasons: Record<string, number> = {},
-      extra: Partial<Omit<GateRecord, "gate" | "in" | "out" | "dropped_by_reason">> = {},
+      extra: Partial<
+         Omit<GateRecord, "gate" | "in" | "out" | "dropped_by_reason">
+      > = {},
    ): GateRecord {
       const dropped: Record<string, number> = {};
       let sum = 0;

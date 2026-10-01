@@ -10,7 +10,14 @@
 // To re-record after a deliberate default-path change:
 //    UPDATE_GET_CONTEXT_GOLDEN=1 bun test src/mcp/tools/get_context_payload_pin.spec.ts
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";

@@ -55,7 +55,9 @@ export function storeFor(
 }
 
 /** An embedding provider over an explicit text -> vector map; unknown text throws. */
-export function embeddingsFor(vectors: Record<string, number[]>): EmbeddingProvider {
+export function embeddingsFor(
+   vectors: Record<string, number[]>,
+): EmbeddingProvider {
    const fetchStub = (async (_u: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: string[] };
       return new Response(
@@ -123,10 +125,12 @@ export async function afterWarmup(
    handler: Handler,
    params: Record<string, unknown>,
    extra?: Extra,
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
    for (let i = 0; i < 400; i++) {
       const warm = parse(await handler(params, STAGES_OFF));
-      if (warm.retrieval === "semantic") return parse(await handler(params, extra));
+      if (warm.retrieval === "semantic")
+         return parse(await handler(params, extra));
       await new Promise((r) => setTimeout(r, 5));
    }
    throw new Error("retrieval never became semantic");
@@ -135,12 +139,18 @@ export async function afterWarmup(
 /** `[{index, score, reason}]` in the refine reply shape. */
 export const rateReply = (items: Array<[number, string, string?]>) =>
    JSON.stringify(
-      items.map(([index, score, reason]) => ({ index, score, reason: reason ?? "r" })),
+      items.map(([index, score, reason]) => ({
+         index,
+         score,
+         reason: reason ?? "r",
+      })),
    );
 
 /** `[{index, score}]` in the rerank reply shape. */
 export const rankReply = (items: Array<[number, number]>) =>
-   JSON.stringify(items.map(([index, score]) => ({ source: "s", index, score })));
+   JSON.stringify(
+      items.map(([index, score]) => ({ source: "s", index, score })),
+   );
 
 /** The index a source has in a rerank prompt. */
 export function sourceIndex(req: LlmRequest, source: string): number {
@@ -156,8 +166,15 @@ export function entityIndex(req: LlmRequest, name: string): number {
    return Number(m[1]);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const entityNames = (payload: any): string[] =>
-   payload.sources.flatMap((c: any) => (c.entities ?? []).map((e: any) => e.name));
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   payload.sources.flatMap((c: any) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c.entities ?? []).map((e: any) => e.name),
+   );
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const sourceNames = (payload: any): string[] =>
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
    payload.sources.map((c: any) => c.source_info.resource_id.source);

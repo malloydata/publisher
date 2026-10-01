@@ -245,7 +245,10 @@ function fill(template: string, f: KeyphraseField): string {
       .replaceAll("##MODEL_FILE_PATH##", () => f.modelPath || "unknown");
 }
 
-export function buildKeyphrasePrompt(f: KeyphraseField): { system: string; user: string } {
+export function buildKeyphrasePrompt(f: KeyphraseField): {
+   system: string;
+   user: string;
+} {
    return { system: KEYPHRASE_ROLE, user: fill(KEYPHRASE_BODY, f) };
 }
 

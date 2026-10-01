@@ -77,7 +77,9 @@ export interface RunnerSettings {
    cacheMaxEntries: number;
 }
 
-export function runnerSettingsFrom(llm: RetrievalConfig["llm"]): RunnerSettings {
+export function runnerSettingsFrom(
+   llm: RetrievalConfig["llm"],
+): RunnerSettings {
    return {
       timeoutMs: llm.timeoutMs,
       maxAttempts: llm.maxAttempts,
@@ -210,7 +212,10 @@ export class LlmRunner {
             );
          }
          const timeoutMs = budget
-            ? Math.max(1, Math.min(this.settings.timeoutMs, budget.remainingMs()))
+            ? Math.max(
+                 1,
+                 Math.min(this.settings.timeoutMs, budget.remainingMs()),
+              )
             : this.settings.timeoutMs;
          const started = this.clock.now();
          try {
@@ -243,7 +248,10 @@ export class LlmRunner {
             // stopped by the budget, not by a slow endpoint. Reported as a
             // timeout it would count toward the circuit breaker and be marked
             // failed, when all it needs is another go with a fresh budget.
-            if (llmError.kind === "timeout" && timeoutMs < this.settings.timeoutMs) {
+            if (
+               llmError.kind === "timeout" &&
+               timeoutMs < this.settings.timeoutMs
+            ) {
                llmError = new LlmError(
                   `LLM call ran out of the time budget (${timeoutMs}ms left)`,
                   "budget",
@@ -276,10 +284,15 @@ export class LlmRunner {
       }
 
       // Aborts and budget exhaustion say nothing about the endpoint's health.
-      if (lastError && lastError.kind !== "aborted" && lastError.kind !== "budget") {
+      if (
+         lastError &&
+         lastError.kind !== "aborted" &&
+         lastError.kind !== "budget"
+      ) {
          this.consecutiveFailures++;
          if (this.consecutiveFailures >= this.settings.breaker.failures) {
-            this.openUntil = this.clock.now() + this.settings.breaker.cooldownMs;
+            this.openUntil =
+               this.clock.now() + this.settings.breaker.cooldownMs;
          }
       }
       throw lastError!;
@@ -351,7 +364,11 @@ export function getLlmRunner(config: RetrievalConfig): LlmRunner | null {
    if (!provider) return null;
    const settings = runnerSettingsFrom(config.llm);
    const key = `${provider.id}\u0000${JSON.stringify(settings)}`;
-   if (!shared || shared.key !== key || shared.runner["provider"] !== provider) {
+   if (
+      !shared ||
+      shared.key !== key ||
+      shared.runner["provider"] !== provider
+   ) {
       shared = { key, runner: new LlmRunner(provider, settings) };
    }
    return shared.runner;

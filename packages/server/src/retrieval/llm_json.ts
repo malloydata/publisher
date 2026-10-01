@@ -149,7 +149,10 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 
 function asIndex(v: unknown, n: number): number | null {
    const num = typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : v;
-   return typeof num === "number" && Number.isInteger(num) && num >= 0 && num < n
+   return typeof num === "number" &&
+      Number.isInteger(num) &&
+      num >= 0 &&
+      num < n
       ? num
       : null;
 }
@@ -165,7 +168,8 @@ const LEVEL_NAMES: Record<string, RelevanceLevel | "NONE"> = {
 
 /** LOW | MEDIUM | HIGH (any case), or null when it is anything else. */
 export function asLevel(v: unknown): RelevanceLevel | "NONE" | null {
-   if (typeof v === "string") return LEVEL_NAMES[v.trim().toUpperCase()] ?? null;
+   if (typeof v === "string")
+      return LEVEL_NAMES[v.trim().toUpperCase()] ?? null;
    return null;
 }
 
@@ -254,7 +258,8 @@ export function parseRerankReply(reply: string, n: number): Parsed<RerankItem> {
       let score: number | null = null;
       const s = raw.score ?? raw.level ?? raw.relevance;
       if (typeof s === "number" && Number.isFinite(s)) score = s;
-      else if (typeof s === "string" && /^\s*\d+(\.\d+)?\s*$/.test(s)) score = Number(s);
+      else if (typeof s === "string" && /^\s*\d+(\.\d+)?\s*$/.test(s))
+         score = Number(s);
       else {
          const level = asLevel(s);
          if (level) score = level === "NONE" ? 0 : LEVEL_INDEX[level] + 1;
@@ -271,7 +276,10 @@ export interface ValueItem {
 }
 
 /** `[{"index": i, "score": "LOW|MEDIUM|HIGH"}]` with no reason. */
-export function parseValueRefineReply(reply: string, n: number): Parsed<ValueItem> {
+export function parseValueRefineReply(
+   reply: string,
+   n: number,
+): Parsed<ValueItem> {
    const parsed = parseRefineReply(reply, n);
    return {
       ...parsed,

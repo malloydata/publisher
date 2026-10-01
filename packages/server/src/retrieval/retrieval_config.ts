@@ -36,7 +36,7 @@ export interface RetrievalConfig {
          rerank: string | null;
          keyphrase: string | null;
          summary: string | null;
-      valueRefine: string | null;
+         valueRefine: string | null;
       };
       temperature: number;
       seed: number;
@@ -352,7 +352,13 @@ type Leaf =
    | { t: "bool"; nullable?: boolean }
    | { t: "autoBool" }
    | { t: "int"; min: number; max: number; nullable?: boolean }
-   | { t: "num"; min: number; max: number; maxExclusive?: boolean; nullable?: boolean }
+   | {
+        t: "num";
+        min: number;
+        max: number;
+        maxExclusive?: boolean;
+        nullable?: boolean;
+     }
    | { t: "enum"; values: readonly string[] }
    | { t: "str"; nullable?: boolean }
    | { t: "strList"; nullable?: boolean }
@@ -405,7 +411,13 @@ const SCHEMA: Node = g({
       dimensionalValues: nbool,
    }),
    embedding: g({
-      minSimilarity: { t: "num", min: 0, max: 1, maxExclusive: true, nullable: true },
+      minSimilarity: {
+         t: "num",
+         min: 0,
+         max: 1,
+         maxExclusive: true,
+         nullable: true,
+      },
       queryPrefix: { t: "str" },
       documentPrefix: { t: "str" },
       extraBody: { t: "record" },
@@ -487,7 +499,13 @@ const SCHEMA: Node = g({
       refreshMinutes: int(1, 525_600),
       embed: bool,
       lexical: bool,
-      minSimilarity: { t: "num", min: 0, max: 1, maxExclusive: true, nullable: true },
+      minSimilarity: {
+         t: "num",
+         min: 0,
+         max: 1,
+         maxExclusive: true,
+         nullable: true,
+      },
       maxHitsPerTarget: int(1, 1_000),
       template: { t: "str" },
       refine: g({
@@ -502,7 +520,9 @@ const SCHEMA: Node = g({
       mode: { t: "enum", values: ["off", "rerank-only", "union"] },
       rrfK: int(1, 1_000),
    }),
-   trace: g({ defaultLevel: { t: "enum", values: ["off", "summary", "full"] } }),
+   trace: g({
+      defaultLevel: { t: "enum", values: ["off", "summary", "full"] },
+   }),
 });
 
 // ---------------------------------------------------------------------------
@@ -527,9 +547,7 @@ function editDistance(a: string, b: string): number {
       for (let j = 1; j <= b.length; j++) {
          const tmp = dp[j];
          dp[j] =
-            a[i - 1] === b[j - 1]
-               ? prev
-               : 1 + Math.min(prev, dp[j], dp[j - 1]);
+            a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
          prev = tmp;
       }
    }
@@ -566,7 +584,9 @@ function describeLeaf(leaf: Leaf): string {
       case "str":
          return leaf.nullable ? "a string or null" : "a string";
       case "strList":
-         return leaf.nullable ? "a list of strings or null" : "a list of strings";
+         return leaf.nullable
+            ? "a list of strings or null"
+            : "a list of strings";
       case "record":
          return "an object";
       case "knots":
@@ -577,7 +597,10 @@ function describeLeaf(leaf: Leaf): string {
 function checkLeaf(leaf: Leaf, value: unknown): boolean {
    switch (leaf.t) {
       case "bool":
-         return typeof value === "boolean" || (leaf.nullable === true && value === null);
+         return (
+            typeof value === "boolean" ||
+            (leaf.nullable === true && value === null)
+         );
       case "autoBool":
          return typeof value === "boolean" || value === "auto";
       case "int":
@@ -599,10 +622,15 @@ function checkLeaf(leaf: Leaf, value: unknown): boolean {
       case "enum":
          return typeof value === "string" && leaf.values.includes(value);
       case "str":
-         return typeof value === "string" || (leaf.nullable === true && value === null);
+         return (
+            typeof value === "string" ||
+            (leaf.nullable === true && value === null)
+         );
       case "strList":
          if (value === null) return leaf.nullable === true;
-         return Array.isArray(value) && value.every((v) => typeof v === "string");
+         return (
+            Array.isArray(value) && value.every((v) => typeof v === "string")
+         );
       case "record":
          return isPlainObject(value);
       case "knots": {
@@ -820,11 +848,10 @@ export function applyOverride(
 
 function deepMerge(base: unknown, patch: unknown): unknown {
    if (!isPlainObject(patch)) return patch;
-   const out: Record<string, unknown> = isPlainObject(base)
-      ? { ...base }
-      : {};
+   const out: Record<string, unknown> = isPlainObject(base) ? { ...base } : {};
    for (const [k, v] of Object.entries(patch)) {
-      out[k] = isPlainObject(v) && isPlainObject(out[k]) ? deepMerge(out[k], v) : v;
+      out[k] =
+         isPlainObject(v) && isPlainObject(out[k]) ? deepMerge(out[k], v) : v;
    }
    return out;
 }
@@ -846,10 +873,15 @@ function canonical(v: unknown): string {
 
 /** Stable short hash of a config, for run records and mixed-config checks. */
 export function retrievalConfigFingerprint(config: RetrievalConfig): string {
-   return createHash("sha256").update(canonical(config)).digest("hex").slice(0, 12);
+   return createHash("sha256")
+      .update(canonical(config))
+      .digest("hex")
+      .slice(0, 12);
 }
 
-const DEFAULT_FINGERPRINT = retrievalConfigFingerprint(DEFAULT_RETRIEVAL_CONFIG);
+const DEFAULT_FINGERPRINT = retrievalConfigFingerprint(
+   DEFAULT_RETRIEVAL_CONFIG,
+);
 
 /** True when nothing about retrieval was changed from the defaults. */
 export function isDefaultRetrievalConfig(config: RetrievalConfig): boolean {

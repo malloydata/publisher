@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -24,7 +31,10 @@ import {
    type ValueCandidate,
    type ValueDimension,
 } from "./dim_values";
-import { resolveRetrievalConfig, type RetrievalConfig } from "./retrieval_config";
+import {
+   resolveRetrievalConfig,
+   type RetrievalConfig,
+} from "./retrieval_config";
 
 const ENV = "env";
 const PKG = "pkg";
@@ -43,7 +53,10 @@ const dim = (
 });
 
 const cfgOf = (over: Record<string, unknown> = {}): RetrievalConfig =>
-   resolveRetrievalConfig({ dimensionalValues: { mode: "annotated" }, ...over });
+   resolveRetrievalConfig({
+      dimensionalValues: { mode: "annotated" },
+      ...over,
+   });
 
 describe("discoverValueDimensions", () => {
    const never = () => false;
@@ -53,7 +66,11 @@ describe("discoverValueDimensions", () => {
    it("finds nothing when the feature is off", () => {
       const c = resolveRetrievalConfig({});
       expect(
-         discoverValueDimensions([dim("s", "a", { indexValues: {} })], c.dimensionalValues, never),
+         discoverValueDimensions(
+            [dim("s", "a", { indexValues: {} })],
+            c.dimensionalValues,
+            never,
+         ),
       ).toEqual([]);
    });
 
@@ -70,7 +87,11 @@ describe("discoverValueDimensions", () => {
    it("takes every string dimension in auto mode, and only strings", () => {
       const c = cfgOf({ dimensionalValues: { mode: "auto" } });
       const found = discoverValueDimensions(
-         [dim("s", "a"), dim("s", "n", { dataType: "number" }), dim("s", "d", { dataType: "date" })],
+         [
+            dim("s", "a"),
+            dim("s", "n", { dataType: "number" }),
+            dim("s", "d", { dataType: "date" }),
+         ],
          c.dimensionalValues,
          never,
       );
@@ -78,15 +99,29 @@ describe("discoverValueDimensions", () => {
    });
 
    it("narrows auto with include, and lets include add to annotated", () => {
-      const auto = cfgOf({ dimensionalValues: { mode: "auto", include: ["s.a"] } });
-      expect(
-         names(discoverValueDimensions([dim("s", "a"), dim("s", "b")], auto.dimensionalValues, never)),
-      ).toEqual(["s.a"]);
-      const annotated = cfgOf({ dimensionalValues: { mode: "annotated", include: ["s.b"] } });
+      const auto = cfgOf({
+         dimensionalValues: { mode: "auto", include: ["s.a"] },
+      });
       expect(
          names(
             discoverValueDimensions(
-               [dim("s", "a", { indexValues: {} }), dim("s", "b"), dim("s", "c")],
+               [dim("s", "a"), dim("s", "b")],
+               auto.dimensionalValues,
+               never,
+            ),
+         ),
+      ).toEqual(["s.a"]);
+      const annotated = cfgOf({
+         dimensionalValues: { mode: "annotated", include: ["s.b"] },
+      });
+      expect(
+         names(
+            discoverValueDimensions(
+               [
+                  dim("s", "a", { indexValues: {} }),
+                  dim("s", "b"),
+                  dim("s", "c"),
+               ],
                annotated.dimensionalValues,
                never,
             ),
@@ -95,7 +130,9 @@ describe("discoverValueDimensions", () => {
    });
 
    it("removes what exclude names, in either mode", () => {
-      const c = cfgOf({ dimensionalValues: { mode: "auto", exclude: ["*.email", "audit.*"] } });
+      const c = cfgOf({
+         dimensionalValues: { mode: "auto", exclude: ["*.email", "audit.*"] },
+      });
       expect(
          names(
             discoverValueDimensions(
@@ -108,9 +145,14 @@ describe("discoverValueDimensions", () => {
    });
 
    it("never takes a gated source, whatever else says to", () => {
-      const c = cfgOf({ dimensionalValues: { mode: "auto", include: ["secure.*"] } });
+      const c = cfgOf({
+         dimensionalValues: { mode: "auto", include: ["secure.*"] },
+      });
       const found = discoverValueDimensions(
-         [dim("secure", "tenant_name", { indexValues: {} }), dim("open", "name")],
+         [
+            dim("secure", "tenant_name", { indexValues: {} }),
+            dim("open", "name"),
+         ],
          c.dimensionalValues,
          (_path, source) => source === "secure",
       );
@@ -156,7 +198,9 @@ describe("discoverValueDimensions", () => {
    });
 
    it("caps at the smaller of the author's n and the config", () => {
-      const c = cfgOf({ dimensionalValues: { mode: "annotated", maxValuesPerDimension: 100 } });
+      const c = cfgOf({
+         dimensionalValues: { mode: "annotated", maxValuesPerDimension: 100 },
+      });
       const found = discoverValueDimensions(
          [
             dim("s", "small", { indexValues: { n: 20 } }),
@@ -233,7 +277,16 @@ describe("fetchDimensionValues", () => {
 
    it("drops null, blank and oversize values and stringifies numbers", async () => {
       const out = await fetchDimensionValues(
-         runReturning(rows([null, 9], ["  ", 8], ["x".repeat(200), 7], [42, 6], [true, 5], ["  padded ", 4])),
+         runReturning(
+            rows(
+               [null, 9],
+               ["  ", 8],
+               ["x".repeat(200), 7],
+               [42, 6],
+               [true, 5],
+               ["  padded ", 4],
+            ),
+         ),
          dimension,
          10,
          50,
@@ -243,7 +296,9 @@ describe("fetchDimensionValues", () => {
    });
 
    it("hands the query the model path and a signal", async () => {
-      let seen: { modelPath: string; query: string; signal: AbortSignal } | undefined;
+      let seen:
+         | { modelPath: string; query: string; signal: AbortSignal }
+         | undefined;
       await fetchDimensionValues(
          async (modelPath, query, signal) => {
             seen = { modelPath, query, signal };
@@ -270,7 +325,12 @@ function embedder(
       asked.push(...body.input);
       role.push(body.input.length === 1 ? "single" : "batch");
       return new Response(
-         JSON.stringify({ data: body.input.map((t, index) => ({ index, embedding: vectorFor(t) })) }),
+         JSON.stringify({
+            data: body.input.map((t, index) => ({
+               index,
+               embedding: vectorFor(t),
+            })),
+         }),
          { status: 200 },
       );
    }) as typeof fetch;
@@ -324,6 +384,7 @@ describe("value index storage and search", () => {
       });
 
    const stored = () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       db.all<any>(
          "SELECT source_name, dimension_name, value, CAST(weight AS DOUBLE) AS weight, embedding IS NOT NULL AS has_vec, embedded_text FROM dimension_values ORDER BY source_name, dimension_name, value",
       );
@@ -332,15 +393,27 @@ describe("value index storage and search", () => {
 
    describe("syncing", () => {
       it("stores values with their counts and what was embedded", async () => {
-         const status = await sync(twoValues, embedder(() => [1, 0]));
-         expect(status).toMatchObject({ status: "ready", dimensions: 1, values: 2, truncated: 0, failed: 0 });
+         const status = await sync(
+            twoValues,
+            embedder(() => [1, 0]),
+         );
+         expect(status).toMatchObject({
+            status: "ready",
+            dimensions: 1,
+            values: 2,
+            truncated: 0,
+            failed: 0,
+         });
          const all = await stored();
-         expect(all.map((r: any) => `${r.value}:${r.weight}:${r.has_vec}`)).toEqual([
-            "Basic:30:true",
-            "Premium:50:true",
-         ]);
+         expect(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            all.map((r: any) => `${r.value}:${r.weight}:${r.has_vec}`),
+         ).toEqual(["Basic:30:true", "Premium:50:true"]);
          expect(all[0].embedded_text).toBe("Basic");
-         const state = await db.all<any>("SELECT truncated, status, kept FROM dimension_value_state");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         const state = await db.all<any>(
+            "SELECT truncated, status, kept FROM dimension_value_state",
+         );
          expect(state[0]).toMatchObject({ truncated: false, status: "ok" });
          expect(Number(state[0].kept)).toBe(2);
       });
@@ -349,6 +422,7 @@ describe("value index storage and search", () => {
          await sync(twoValues, null);
          const all = await stored();
          expect(all).toHaveLength(2);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          expect(all.every((r: any) => r.has_vec === false)).toBe(true);
          const hits = await searchDimensionValues({
             db,
@@ -364,11 +438,16 @@ describe("value index storage and search", () => {
 
       it("does not re-embed a value that has not changed, and drops one that is gone", async () => {
          const asked: string[] = [];
-         await sync(twoValues, embedder(() => [1, 0], asked));
+         await sync(
+            twoValues,
+            embedder(() => [1, 0], asked),
+         );
          expect(asked).toEqual(["Premium", "Basic"]);
          asked.length = 0;
          // Age the fetch so the next run is due to read the warehouse again.
-         await db.run("UPDATE dimension_value_state SET fetched_at = TIMESTAMP '2000-01-01 00:00:00'");
+         await db.run(
+            "UPDATE dimension_value_state SET fetched_at = TIMESTAMP '2000-01-01 00:00:00'",
+         );
          await sync(
             async () => rows(["Premium", 60], ["Trial", 5]),
             embedder(() => [1, 0], asked),
@@ -377,19 +456,32 @@ describe("value index storage and search", () => {
          // Premium's text is unchanged, so only Trial is embedded, and Basic goes.
          expect(asked).toEqual(["Trial"]);
          const all = await stored();
-         expect(all.map((r: any) => `${r.value}:${r.weight}`)).toEqual(["Premium:60", "Trial:5"]);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(all.map((r: any) => `${r.value}:${r.weight}`)).toEqual([
+            "Premium:60",
+            "Trial:5",
+         ]);
       });
 
       it("keeps the top values by count and marks the dimension truncated", async () => {
          const status = await sync(
             async () => rows(["a", 5], ["b", 4], ["c", 3], ["d", 2]),
             null,
-            { dimensionalValues: { mode: "annotated", maxValuesPerDimension: 2 } },
+            {
+               dimensionalValues: {
+                  mode: "annotated",
+                  maxValuesPerDimension: 2,
+               },
+            },
             [{ ...dimension, cap: 2 }],
          );
          expect(status).toMatchObject({ values: 2, truncated: 1 });
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          expect((await stored()).map((r: any) => r.value)).toEqual(["a", "b"]);
-         const state = await db.all<any>("SELECT truncated FROM dimension_value_state");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         const state = await db.all<any>(
+            "SELECT truncated FROM dimension_value_state",
+         );
          expect(state[0].truncated).toBe(true);
       });
 
@@ -402,7 +494,10 @@ describe("value index storage and search", () => {
          );
          expect(status.values).toBe(0);
          expect(await stored()).toEqual([]);
-         const state = await db.all<any>("SELECT status, truncated FROM dimension_value_state");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         const state = await db.all<any>(
+            "SELECT status, truncated FROM dimension_value_state",
+         );
          expect(state[0]).toMatchObject({ status: "skipped", truncated: true });
       });
 
@@ -419,11 +514,24 @@ describe("value index storage and search", () => {
                { [d]: `${d}3`, value_weight__: 1 },
             ];
          };
-         const status = await sync(run, null, { dimensionalValues: { mode: "annotated", maxValuesPerPackage: 4 } }, dims);
+         const status = await sync(
+            run,
+            null,
+            {
+               dimensionalValues: { mode: "annotated", maxValuesPerPackage: 4 },
+            },
+            dims,
+         );
          expect(status.values).toBe(4);
          const all = await stored();
-         expect(all.filter((r: any) => r.dimension_name === "a")).toHaveLength(3);
-         expect(all.filter((r: any) => r.dimension_name === "b")).toHaveLength(1);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(all.filter((r: any) => r.dimension_name === "a")).toHaveLength(
+            3,
+         );
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(all.filter((r: any) => r.dimension_name === "b")).toHaveLength(
+            1,
+         );
       });
 
       it("shares the item budget with the entity facets", async () => {
@@ -441,10 +549,16 @@ describe("value index storage and search", () => {
             return rows(["Premium", 5]);
          };
          const status = await sync(run, null, {}, dims);
-         expect(status).toMatchObject({ status: "partial", values: 1, failed: 1 });
+         expect(status).toMatchObject({
+            status: "partial",
+            values: 1,
+            failed: 1,
+         });
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const state = await db.all<any>(
             "SELECT dimension_name, status, last_error FROM dimension_value_state ORDER BY dimension_name",
          );
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          expect(state.map((s: any) => s.status)).toEqual(["failed", "ok"]);
          expect(state[0].last_error).toContain("column not found");
       });
@@ -468,13 +582,25 @@ describe("value index storage and search", () => {
                baseUrl: "https://stub.example.com/v1",
                minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
             },
-            (async () => new Response("down", { status: 500 })) as unknown as typeof fetch,
+            (async () =>
+               new Response("down", {
+                  status: 500,
+               })) as unknown as typeof fetch,
          );
          const first = await sync(twoValues, down);
          expect(first.status).toBe("ready");
-         expect((await stored()).every((r: any) => r.has_vec === false)).toBe(true);
-         await sync(twoValues, embedder(() => [1, 0]));
-         expect((await stored()).every((r: any) => r.has_vec === true)).toBe(true);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect((await stored()).every((r: any) => r.has_vec === false)).toBe(
+            true,
+         );
+         await sync(
+            twoValues,
+            embedder(() => [1, 0]),
+         );
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect((await stored()).every((r: any) => r.has_vec === true)).toBe(
+            true,
+         );
       });
 
       it("forgets a dimension that is no longer selected", async () => {
@@ -482,14 +608,23 @@ describe("value index storage and search", () => {
          expect(await stored()).toHaveLength(2);
          await sync(twoValues, null, {}, []);
          expect(await stored()).toEqual([]);
-         expect(await db.all("SELECT * FROM dimension_value_state")).toEqual([]);
+         expect(await db.all("SELECT * FROM dimension_value_state")).toEqual(
+            [],
+         );
       });
 
       it("renders the embedded text through the template", async () => {
          const asked: string[] = [];
-         await sync(twoValues, embedder(() => [1, 0], asked), {
-            dimensionalValues: { mode: "annotated", template: "{dimension}: {value}" },
-         });
+         await sync(
+            twoValues,
+            embedder(() => [1, 0], asked),
+            {
+               dimensionalValues: {
+                  mode: "annotated",
+                  template: "{dimension}: {value}",
+               },
+            },
+         );
          expect(asked).toEqual(["tier: Premium", "tier: Basic"]);
       });
    });
@@ -498,11 +633,20 @@ describe("value index storage and search", () => {
       const seed = async () => {
          await sync(
             async () =>
-               rows(["Premium", 50], ["Premier League", 10], ["Basic", 30], ["Enterprise", 5]),
+               rows(
+                  ["Premium", 50],
+                  ["Premier League", 10],
+                  ["Basic", 30],
+                  ["Enterprise", 5],
+               ),
             embedder((t) => (/premium|premier/i.test(t) ? [1, 0] : [0, 1])),
          );
       };
-      const search = (text: string, provider: EmbeddingProvider | null, over: Record<string, unknown> = {}) =>
+      const search = (
+         text: string,
+         provider: EmbeddingProvider | null,
+         over: Record<string, unknown> = {},
+      ) =>
          searchDimensionValues({
             db,
             provider,
@@ -516,15 +660,26 @@ describe("value index storage and search", () => {
       it("finds an exact value first, ignoring case", async () => {
          await seed();
          const hits = await search("premium", null);
-         expect(hits[0]).toMatchObject({ value: "Premium", score: 1, source: "customers", dimension: "tier", targetIndex: 2 });
+         expect(hits[0]).toMatchObject({
+            value: "Premium",
+            score: 1,
+            source: "customers",
+            dimension: "tier",
+            targetIndex: 2,
+         });
       });
 
       it("finds values that start with, or contain, the phrase", async () => {
          await seed();
          const hits = await search("prem", null);
-         expect(hits.map((h) => `${h.value}:${h.score}`)).toEqual(["Premium:0.95", "Premier League:0.95"]);
+         expect(hits.map((h) => `${h.value}:${h.score}`)).toEqual([
+            "Premium:0.95",
+            "Premier League:0.95",
+         ]);
          const contains = await search("league", null);
-         expect(contains.map((h) => `${h.value}:${h.score}`)).toEqual(["Premier League:0.9"]);
+         expect(contains.map((h) => `${h.value}:${h.score}`)).toEqual([
+            "Premier League:0.9",
+         ]);
       });
 
       it("finds a near spelling", async () => {
@@ -538,7 +693,14 @@ describe("value index storage and search", () => {
 
       it("ranks exact, prefix, contains and near spelling in that order", async () => {
          await sync(
-            async () => rows(["car", 1], ["cart", 1], ["scar", 1], ["caar", 1], ["dog", 1]),
+            async () =>
+               rows(
+                  ["car", 1],
+                  ["cart", 1],
+                  ["scar", 1],
+                  ["caar", 1],
+                  ["dog", 1],
+               ),
             null,
          );
          const hits = await search("car", null);
@@ -558,16 +720,23 @@ describe("value index storage and search", () => {
 
       it("adds the semantic arm when vectors exist, and keeps the better score per value", async () => {
          await seed();
-         const provider = embedder((t) => (/premium|premier|top tier/i.test(t) ? [1, 0] : [0, 1]));
+         const provider = embedder((t) =>
+            /premium|premier|top tier/i.test(t) ? [1, 0] : [0, 1],
+         );
          const hits = await search("top tier", provider);
          // No text overlap, so only the vectors can find these.
-         expect(hits.map((h) => h.value).sort()).toEqual(["Premier League", "Premium"]);
+         expect(hits.map((h) => h.value).sort()).toEqual([
+            "Premier League",
+            "Premium",
+         ]);
          expect(hits.every((h) => h.score === 1)).toBe(true);
       });
 
       it("ranks a heavier value first among equal scores", async () => {
          await seed();
-         const provider = embedder((t) => (/premium|premier|top tier/i.test(t) ? [1, 0] : [0, 1]));
+         const provider = embedder((t) =>
+            /premium|premier|top tier/i.test(t) ? [1, 0] : [0, 1],
+         );
          const hits = await search("top tier", provider);
          expect(hits[0].value).toBe("Premium");
       });
@@ -583,11 +752,16 @@ describe("value index storage and search", () => {
 
       it("uses only the semantic arm when the lexical one is off", async () => {
          await seed();
-         const provider = embedder((t) => (/premium|premier|premuim/i.test(t) ? [1, 0] : [0, 1]));
+         const provider = embedder((t) =>
+            /premium|premier|premuim/i.test(t) ? [1, 0] : [0, 1],
+         );
          const hits = await search("premuim", provider, {
             dimensionalValues: { mode: "annotated", lexical: false },
          });
-         expect(hits.map((h) => h.value).sort()).toEqual(["Premier League", "Premium"]);
+         expect(hits.map((h) => h.value).sort()).toEqual([
+            "Premier League",
+            "Premium",
+         ]);
       });
 
       it("honours the per-target hit cap", async () => {
@@ -650,23 +824,29 @@ describe("value index storage and search", () => {
          expect(getValueIndexStatus(ENV, PKG)?.status).toBe("building");
          await _settleValueIndexForTests(ENV, PKG);
          expect(calls).toBe(1);
-         expect(getValueIndexStatus(ENV, PKG)).toMatchObject({ status: "ready", values: 1 });
+         expect(getValueIndexStatus(ENV, PKG)).toMatchObject({
+            status: "ready",
+            values: 1,
+         });
          kickValueIndex(instance, args);
          await _settleValueIndexForTests(ENV, PKG);
          expect(calls).toBe(1); // finished, and not yet due to refresh
       });
 
       it("does nothing when no dimension is selected", async () => {
-         kickValueIndex({}, {
-            db,
-            provider: null,
-            environmentName: ENV,
-            packageName: PKG,
-            dims: [],
-            run: (async () => []) as RunQuery,
-            config: cfgOf(),
-            itemBudget: 1000,
-         });
+         kickValueIndex(
+            {},
+            {
+               db,
+               provider: null,
+               environmentName: ENV,
+               packageName: PKG,
+               dims: [],
+               run: (async () => []) as RunQuery,
+               config: cfgOf(),
+               itemBudget: 1000,
+            },
+         );
          expect(getValueIndexStatus(ENV, PKG)).toBeUndefined();
       });
    });

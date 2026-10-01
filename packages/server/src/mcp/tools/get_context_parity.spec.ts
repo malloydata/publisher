@@ -5,7 +5,15 @@
 // hosted retrieval, seen through the handler: value refine, the per-source
 // candidate window, and one vector per entity.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -23,7 +31,10 @@ import {
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
-import { _setLlmProviderForTests, type LlmRequest } from "../../service/llm_provider";
+import {
+   _setLlmProviderForTests,
+   type LlmRequest,
+} from "../../service/llm_provider";
 import { _resetLlmRunnerForTests } from "../../service/llm_runner";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import {
@@ -34,7 +45,12 @@ import {
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { captureHandler, fakeLlm, parse, storeFor } from "./retrieval_test_kit";
 
-const field = (kind: string, name: string, doc?: string, annotations: string[] = []) => ({
+const field = (
+   kind: string,
+   name: string,
+   doc?: string,
+   annotations: string[] = [],
+) => ({
    kind,
    name,
    type: { kind: "string_type" },
@@ -44,7 +60,10 @@ const field = (kind: string, name: string, doc?: string, annotations: string[] =
 /** A package whose sources each hold the given measures. */
 function packageOf(
    sources: Record<string, Array<{ name: string; doc?: string }>>,
-   dimensions: Record<string, Array<{ name: string; values: Array<[string, number]> }>> = {},
+   dimensions: Record<
+      string,
+      Array<{ name: string; values: Array<[string, number]> }>
+   > = {},
 ) {
    const values = new Map<string, Array<[string, number]>>();
    const infos = Object.entries(sources).map(([name, ms]) => ({
@@ -55,7 +74,9 @@ function packageOf(
             ...ms.map((m) => field("measure", m.name, m.doc)),
             ...(dimensions[name] ?? []).map((d) => {
                values.set(d.name, d.values);
-               return field("dimension", d.name, `The ${d.name}.`, ["#(index)"]);
+               return field("dimension", d.name, `The ${d.name}.`, [
+                  "#(index)",
+               ]);
             }),
          ],
       },
@@ -67,10 +88,17 @@ function packageOf(
       getQueryResults: async (_s: unknown, _q: unknown, query: string) => {
          const dim = [...values.keys()].find((d) => query.includes(`\`${d}\``));
          if (!dim) throw new Error(`unexpected query: ${query}`);
-         return { compactResult: values.get(dim)!.map(([v, w]) => ({ [dim]: v, value_weight__: w })) };
+         return {
+            compactResult: values
+               .get(dim)!
+               .map(([v, w]) => ({ [dim]: v, value_weight__: w })),
+         };
       },
    };
-   return { listModels: async () => [{ path: "m.malloy" }], getModel: () => model };
+   return {
+      listModels: async () => [{ path: "m.malloy" }],
+      getModel: () => model,
+   };
 }
 
 /** cosine to the query "sales" ([1, 0]): "strong" is 0.9, "weak" 0.3, anything else 0. */
@@ -86,7 +114,12 @@ function embedder(asked: string[] = []): EmbeddingProvider {
       const body = JSON.parse(String(init?.body)) as { input: string[] };
       asked.push(...body.input);
       return new Response(
-         JSON.stringify({ data: body.input.map((t, index) => ({ index, embedding: vectorFor(t) })) }),
+         JSON.stringify({
+            data: body.input.map((t, index) => ({
+               index,
+               embedding: vectorFor(t),
+            })),
+         }),
          { status: 200 },
       );
    }) as typeof fetch;
@@ -120,7 +153,11 @@ describe("Credible-parity settings", () => {
       _clearEmbeddingProviderForTests();
    });
    beforeEach(async () => {
-      for (const t of ["entity_embeddings", "dimension_values", "dimension_value_state"]) {
+      for (const t of [
+         "entity_embeddings",
+         "dimension_values",
+         "dimension_value_state",
+      ]) {
          await db.run(`DELETE FROM ${t}`);
       }
       _setEmbeddingProviderForTests(null);
@@ -131,7 +168,11 @@ describe("Credible-parity settings", () => {
    });
    afterEach(() => _clearRetrievalConfigForTests());
 
-   const ask = (pkg: unknown, searches: unknown[], extra: Record<string, unknown> = {}) =>
+   const ask = (
+      pkg: unknown,
+      searches: unknown[],
+      extra: Record<string, unknown> = {},
+   ) =>
       captureHandler(storeFor(pkg, db))({
          search_targets: searches,
          scopes: [{ environment: ENV, package: "p", ...extra }],
@@ -139,6 +180,7 @@ describe("Credible-parity settings", () => {
 
    /** Ask until the semantic index is warm, then return that answer. */
    async function semantic(pkg: unknown, searches: unknown[]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let last: any;
       for (let i = 0; i < 400; i++) {
          last = parse(await ask(pkg, searches));
@@ -150,10 +192,12 @@ describe("Credible-parity settings", () => {
       );
    }
 
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const entityNamesBySource = (payload: any): Record<string, string[]> => {
       const out: Record<string, string[]> = {};
       for (const c of payload.sources) {
          const s = c.source_info.resource_id.source;
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          out[s] = [...(out[s] ?? []), ...c.entities.map((e: any) => e.name)];
       }
       return out;
@@ -161,16 +205,47 @@ describe("Credible-parity settings", () => {
 
    describe("value refine", () => {
       const pkg = packageOf(
-         { customers: [{ name: "customer_count", doc: "Number of customers." }] },
-         { customers: [{ name: "tier", values: [["Premium", 50], ["Premium Plus", 20], ["Basic", 30]] }] },
+         {
+            customers: [
+               { name: "customer_count", doc: "Number of customers." },
+            ],
+         },
+         {
+            customers: [
+               {
+                  name: "tier",
+                  values: [
+                     ["Premium", 50],
+                     ["Premium Plus", 20],
+                     ["Basic", 30],
+                  ],
+               },
+            ],
+         },
       );
-      const VALUE = [{ target_type: "dimensional_value", search_text: "premium" }];
+      const VALUE = [
+         { target_type: "dimensional_value", search_text: "premium" },
+      ];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const valuesOf = (payload: any) =>
-         payload.sources.flatMap((c: any) => c.entities.flatMap((e: any) => (e.values ?? []).map((v: any) => v.value)));
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         payload.sources.flatMap((c: any) =>
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            c.entities.flatMap((e: any) =>
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               (e.values ?? []).map((v: any) => v.value),
+            ),
+         );
 
-      async function withRefine(refine: Record<string, unknown> | null, reply?: (r: LlmRequest) => string) {
+      async function withRefine(
+         refine: Record<string, unknown> | null,
+         reply?: (r: LlmRequest) => string,
+      ) {
          _setRetrievalConfigForTests({
-            dimensionalValues: { mode: "annotated", ...(refine ? { refine } : {}) },
+            dimensionalValues: {
+               mode: "annotated",
+               ...(refine ? { refine } : {}),
+            },
             egress: { dimensionalValues: true },
             llm: { model: "m", cache: { enabled: false }, backoffMs: 0 },
          });
@@ -179,8 +254,15 @@ describe("Credible-parity settings", () => {
             fakeLlm(
                reply ??
                   ((req) => {
-                     const line = (v: string) => Number(req.user.match(new RegExp(`- \\[(\\d+)\\] ${v}:`))![1]);
-                     return JSON.stringify([{ index: line("Premium"), score: "HIGH" }]);
+                     const line = (v: string) =>
+                        Number(
+                           req.user.match(
+                              new RegExp(`- \\[(\\d+)\\] ${v}:`),
+                           )![1],
+                        );
+                     return JSON.stringify([
+                        { index: line("Premium"), score: "HIGH" },
+                     ]);
                   }),
                seen,
             ),
@@ -205,17 +287,27 @@ describe("Credible-parity settings", () => {
       });
 
       it("a failing model leaves the matches as they were, with a warning", async () => {
-         const { payload } = await withRefine({ enabled: true }, () => "not json at all");
+         const { payload } = await withRefine(
+            { enabled: true },
+            () => "not json at all",
+         );
          expect(valuesOf(payload).sort()).toEqual(["Premium", "Premium Plus"]);
          expect(payload.retrieval_stages.valueRefine).toBe("failed:malformed");
-         expect(payload.warnings.join(" ")).toContain("value refine unavailable");
+         expect(payload.warnings.join(" ")).toContain(
+            "value refine unavailable",
+         );
       });
    });
 
    describe("candidate window", () => {
       const pkg = packageOf({
-         big: ["strong_1", "strong_2", "strong_3", "strong_4", "strong_5"].map((n) => ({ name: n, doc: `${n} sales` })),
-         small: ["weak_1", "weak_2"].map((n) => ({ name: n, doc: `${n} sales` })),
+         big: ["strong_1", "strong_2", "strong_3", "strong_4", "strong_5"].map(
+            (n) => ({ name: n, doc: `${n} sales` }),
+         ),
+         small: ["weak_1", "weak_2"].map((n) => ({
+            name: n,
+            doc: `${n} sales`,
+         })),
       });
       const SALES = [{ target_type: "measure", search_text: "sales" }];
 
@@ -232,13 +324,19 @@ describe("Credible-parity settings", () => {
       });
 
       it("per-source keeps each source's best rows, so the weak source still contributes", async () => {
-         const got = await windowed({ window: "per-source", perSourceLimit: 2 });
+         const got = await windowed({
+            window: "per-source",
+            perSourceLimit: 2,
+         });
          expect(got.big).toEqual(["strong_1", "strong_2"]);
          expect(got.small).toEqual(["weak_1", "weak_2"]);
       });
 
       it("per-source with a limit of one takes the single best of each", async () => {
-         const got = await windowed({ window: "per-source", perSourceLimit: 1 });
+         const got = await windowed({
+            window: "per-source",
+            perSourceLimit: 1,
+         });
          expect(got.big).toHaveLength(1);
          expect(got.small).toHaveLength(1);
       });
@@ -256,13 +354,21 @@ describe("Credible-parity settings", () => {
             ],
          });
       const rows = async () =>
-         Number((await db.all<{ n: number }>("SELECT count(*) AS n FROM entity_embeddings"))[0].n);
+         Number(
+            (
+               await db.all<{ n: number }>(
+                  "SELECT count(*) AS n FROM entity_embeddings",
+               )
+            )[0].n,
+         );
 
       async function indexed(representation: "facets" | "single") {
          _setRetrievalConfigForTests({ embedding: { representation } });
          const asked: string[] = [];
          _setEmbeddingProviderForTests(embedder(asked));
-         await semantic(make(), [{ target_type: "measure", search_text: "sales" }]);
+         await semantic(make(), [
+            { target_type: "measure", search_text: "sales" },
+         ]);
          return asked;
       }
 

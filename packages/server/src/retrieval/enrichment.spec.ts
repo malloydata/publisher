@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -34,7 +41,10 @@ import {
    runEnrichment,
    _settleEnrichmentForTests,
 } from "./enrichment";
-import { resolveRetrievalConfig, type RetrievalConfig } from "./retrieval_config";
+import {
+   resolveRetrievalConfig,
+   type RetrievalConfig,
+} from "./retrieval_config";
 
 const ENV = "env";
 const PKG = "pkg";
@@ -56,7 +66,10 @@ const entity = (
 
 const ENTITIES: EnrichableEntity[] = [
    entity("source", "orders", "orders", "Every order placed."),
-   entity("dimension", "cust_ltv", "orders", "", { dataType: "number", code: "sum(amount)" }),
+   entity("dimension", "cust_ltv", "orders", "", {
+      dataType: "number",
+      code: "sum(amount)",
+   }),
    entity("measure", "total_revenue", "orders", "Revenue."),
    entity(
       "measure",
@@ -90,7 +103,8 @@ function llm(
          seen.push(req);
          const custom = reply?.(req);
          if (custom instanceof LlmError) throw custom;
-         if (custom !== undefined) return { text: custom, model: req.model, latencyMs: 1 };
+         if (custom !== undefined)
+            return { text: custom, model: req.model, latencyMs: 1 };
          if (req.stage === "summary") {
             return {
                text: JSON.stringify({
@@ -120,7 +134,9 @@ function embedder(asked: string[] = []): EmbeddingProvider {
       const body = JSON.parse(String(init?.body)) as { input: string[] };
       asked.push(...body.input);
       return new Response(
-         JSON.stringify({ data: body.input.map((_, index) => ({ index, embedding: [1, 0] })) }),
+         JSON.stringify({
+            data: body.input.map((_, index) => ({ index, embedding: [1, 0] })),
+         }),
          { status: 200 },
       );
    }) as typeof fetch;
@@ -157,7 +173,11 @@ describe("enrichment", () => {
       await db.run("DELETE FROM entity_enrichment");
    });
 
-   const args = (cfg: RetrievalConfig, provider: LlmProvider, extra: Partial<Parameters<typeof runEnrichment>[0]> = {}) => ({
+   const args = (
+      cfg: RetrievalConfig,
+      provider: LlmProvider,
+      extra: Partial<Parameters<typeof runEnrichment>[0]> = {},
+   ) => ({
       db,
       provider: embedder(),
       environmentName: ENV,
@@ -179,7 +199,9 @@ describe("enrichment", () => {
             models: { keyphrase: "m", summary: "m" },
          });
       const names = async (cfg: RetrievalConfig) =>
-         (await plan(cfg)).pending.map((i) => `${i.what}:${i.entity.name}`).sort();
+         (await plan(cfg)).pending
+            .map((i) => `${i.what}:${i.entity.name}`)
+            .sort();
 
       it("asks for a keyphrase where the doc is missing or long, and a summary per source", async () => {
          expect(await names(config())).toEqual([
@@ -196,22 +218,38 @@ describe("enrichment", () => {
 
       it("covers every field in always mode, and none in never mode", async () => {
          const always = await names(
-            config({ enrichment: { enabled: true, keyphrase: { mode: "always" } } }),
+            config({
+               enrichment: { enabled: true, keyphrase: { mode: "always" } },
+            }),
          );
          expect(always).toContain("keyphrase:total_revenue");
          const never = await names(
-            config({ enrichment: { enabled: true, keyphrase: { mode: "never" }, sourceSummary: { enabled: true } } }),
+            config({
+               enrichment: {
+                  enabled: true,
+                  keyphrase: { mode: "never" },
+                  sourceSummary: { enabled: true },
+               },
+            }),
          );
          expect(never).toEqual(["source_summary:orders"]);
       });
 
       it("uses a stricter threshold for views than for fields", async () => {
          const c = config({
-            enrichment: { enabled: true, keyphrase: { wordThreshold: 1, viewWordThreshold: 50 } },
+            enrichment: {
+               enabled: true,
+               keyphrase: { wordThreshold: 1, viewWordThreshold: 50 },
+            },
          });
          const entities = [
             entity("measure", "m1", "s", "two words"),
-            entity("view", "v1", "s", "a view doc with quite a lot of words in it, really"),
+            entity(
+               "view",
+               "v1",
+               "s",
+               "a view doc with quite a lot of words in it, really",
+            ),
          ];
          const p = await planEnrichment({
             db,
@@ -227,7 +265,9 @@ describe("enrichment", () => {
       it("asks for summaries first, then the emptiest docs", async () => {
          const p = await plan(config());
          expect(p.pending[0].what).toBe("source_summary");
-         const kp = p.pending.filter((i) => i.what === "keyphrase").map((i) => i.entity.name);
+         const kp = p.pending
+            .filter((i) => i.what === "keyphrase")
+            .map((i) => i.entity.name);
          // the two with no doc come before the one with a long doc
          expect(kp.indexOf("net_revenue")).toBe(2);
       });
@@ -240,26 +280,46 @@ describe("enrichment", () => {
          const status = await runEnrichment(
             args(cfg, llm(), { provider: embedder(asked) }),
          );
-         expect(status).toMatchObject({ status: "ready", eligible: 4, enriched: 4, failed: 0 });
+         expect(status).toMatchObject({
+            status: "ready",
+            eligible: 4,
+            enriched: 4,
+            failed: 0,
+         });
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const rows = await db.all<any>(
             "SELECT entity_name, enrichment, status, text, text2 FROM entity_enrichment ORDER BY entity_name, enrichment",
          );
-         expect(rows.map((r: any) => `${r.enrichment}:${r.entity_name}:${r.status}`)).toEqual([
+         expect(
+            rows.map(
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               (r: any) => `${r.enrichment}:${r.entity_name}:${r.status}`,
+            ),
+         ).toEqual([
             "keyphrase:by_month:ok",
             "keyphrase:cust_ltv:ok",
             "keyphrase:net_revenue:ok",
             "source_summary:orders:ok",
          ]);
-         expect(rows.find((r: any) => r.enrichment === "keyphrase" && r.entity_name === "cust_ltv").text).toBe(
-            "Keyphrase for cust_ltv.",
+         expect(
+            rows.find(
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               (r: any) =>
+                  r.enrichment === "keyphrase" && r.entity_name === "cust_ltv",
+            ).text,
+         ).toBe("Keyphrase for cust_ltv.");
+         const summary = rows.find(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (r: any) => r.enrichment === "source_summary",
          );
-         const summary = rows.find((r: any) => r.enrichment === "source_summary");
          expect(summary.text).toBe("A summary of the source.");
          expect(summary.text2).toBe("Orders.");
          // The generated facets are embedded rows, rendered through the template.
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const facets = await db.all<any>(
             "SELECT entity_name, facet FROM entity_embeddings WHERE facet = 'kw' OR facet LIKE 'sum:%' ORDER BY entity_name, facet",
          );
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          expect(facets.map((f: any) => `${f.entity_name}:${f.facet}`)).toEqual([
             "by_month:kw",
             "cust_ltv:kw",
@@ -277,7 +337,9 @@ describe("enrichment", () => {
          const first = seen.length;
          expect(first).toBe(4);
          const asked: string[] = [];
-         const again = await runEnrichment(args(cfg, llm(seen), { provider: embedder(asked) }));
+         const again = await runEnrichment(
+            args(cfg, llm(seen), { provider: embedder(asked) }),
+         );
          expect(seen.length).toBe(first);
          expect(again.status).toBe("ready");
          expect(asked).toEqual([]);
@@ -285,20 +347,40 @@ describe("enrichment", () => {
 
       it.each([
          // The field's own keyphrase, and the source summary that lists its doc.
-         ["a changed doc", (e: EnrichableEntity[]) => e.map((x) => (x.name === "net_revenue" ? { ...x, embedDoc: `${x.embedDoc} And more.` } : x)), undefined, 2],
-         ["a changed model", undefined, { llm: { model: "other", backoffMs: 0, cache: { enabled: false } } }, 4],
+         [
+            "a changed doc",
+            (e: EnrichableEntity[]) =>
+               e.map((x) =>
+                  x.name === "net_revenue"
+                     ? { ...x, embedDoc: `${x.embedDoc} And more.` }
+                     : x,
+               ),
+            undefined,
+            2,
+         ],
+         [
+            "a changed model",
+            undefined,
+            {
+               llm: { model: "other", backoffMs: 0, cache: { enabled: false } },
+            },
+            4,
+         ],
          ["a switched egress class", undefined, { egress: { code: true } }, 4],
-      ] as const)("asks again when it saw something different: %s", async (_label, mutate, over, expected) => {
-         const seen: LlmRequest[] = [];
-         await runEnrichment(args(config(), llm(seen)));
-         seen.length = 0;
-         await runEnrichment(
-            args(config(over as never), llm(seen), {
-               entities: mutate ? mutate(ENTITIES) : ENTITIES,
-            }),
-         );
-         expect(seen.length).toBe(expected);
-      });
+      ] as const)(
+         "asks again when it saw something different: %s",
+         async (_label, mutate, over, expected) => {
+            const seen: LlmRequest[] = [];
+            await runEnrichment(args(config(), llm(seen)));
+            seen.length = 0;
+            await runEnrichment(
+               args(config(over as never), llm(seen), {
+                  entities: mutate ? mutate(ENTITIES) : ENTITIES,
+               }),
+            );
+            expect(seen.length).toBe(expected);
+         },
+      );
 
       it("does not ask again for an edit to a field it does not enrich", async () => {
          const seen: LlmRequest[] = [];
@@ -309,7 +391,9 @@ describe("enrichment", () => {
          await runEnrichment(
             args(config(), llm(seen), {
                entities: ENTITIES.map((x) =>
-                  x.name === "total_revenue" ? { ...x, embedDoc: "Revenue, edited." } : x,
+                  x.name === "total_revenue"
+                     ? { ...x, embedDoc: "Revenue, edited." }
+                     : x,
                ),
             }),
          );
@@ -317,13 +401,22 @@ describe("enrichment", () => {
       });
 
       it("stores a failure, and does not retry it until the delay has passed", async () => {
-         const cfg = config({ enrichment: { enabled: true, keyphrase: { batchSize: 1 }, retryAfterMs: 60_000 } });
+         const cfg = config({
+            enrichment: {
+               enabled: true,
+               keyphrase: { batchSize: 1 },
+               retryAfterMs: 60_000,
+            },
+         });
          const bad = llm([], (req) =>
-            req.user.includes("Field name: cust_ltv") ? "no json here at all" : undefined as never,
+            req.user.includes("Field name: cust_ltv")
+               ? "no json here at all"
+               : (undefined as never),
          );
          const first = await runEnrichment(args(cfg, bad));
          expect(first.status).toBe("partial");
          expect(first.failed).toBe(1);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const row = await db.all<any>(
             "SELECT status, attempts, last_error FROM entity_enrichment WHERE entity_name = 'cust_ltv'",
          );
@@ -334,9 +427,16 @@ describe("enrichment", () => {
          await runEnrichment(args(cfg, llm(seen)));
          expect(seen).toHaveLength(0); // still waiting out retryAfterMs
          _resetEnrichmentStateForTests();
-         const retry = config({ enrichment: { enabled: true, keyphrase: { batchSize: 1 }, retryAfterMs: 0 } });
+         const retry = config({
+            enrichment: {
+               enabled: true,
+               keyphrase: { batchSize: 1 },
+               retryAfterMs: 0,
+            },
+         });
          await runEnrichment(args(retry, llm(seen)));
          expect(seen).toHaveLength(1);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const healed = await db.all<any>(
             "SELECT status, attempts FROM entity_enrichment WHERE entity_name = 'cust_ltv'",
          );
@@ -350,37 +450,59 @@ describe("enrichment", () => {
          const seen: LlmRequest[] = [];
          const first = await runEnrichment(args(cfg, llm(seen)));
          expect(seen).toHaveLength(2);
-         expect(first).toMatchObject({ status: "partial", enriched: 2, deferredByBudget: 2 });
+         expect(first).toMatchObject({
+            status: "partial",
+            enriched: 2,
+            deferredByBudget: 2,
+         });
          // The summary went first, then the emptiest doc.
          expect(seen[0].stage).toBe("summary");
          seen.length = 0;
          const second = await runEnrichment(args(cfg, llm(seen)));
          expect(seen).toHaveLength(2);
-         expect(second).toMatchObject({ status: "ready", enriched: 4, deferredByBudget: 0 });
+         expect(second).toMatchObject({
+            status: "ready",
+            enriched: 4,
+            deferredByBudget: 0,
+         });
       });
 
       it("adds no more rows than the package's item budget leaves, summaries first", async () => {
          const cfg = config();
          const seen: LlmRequest[] = [];
-         const status = await runEnrichment(args(cfg, llm(seen), { itemBudget: 2 }));
+         const status = await runEnrichment(
+            args(cfg, llm(seen), { itemBudget: 2 }),
+         );
          // Nothing past the budget is asked, so no LLM call is spent on it.
          expect(seen).toHaveLength(2);
          expect(seen[0].stage).toBe("summary");
-         expect(status).toMatchObject({ status: "partial", enriched: 2, deferredByBudget: 2 });
+         expect(status).toMatchObject({
+            status: "partial",
+            enriched: 2,
+            deferredByBudget: 2,
+         });
       });
 
       it("adds nothing when the entities' own rows already fill the budget", async () => {
          const seen: LlmRequest[] = [];
-         const status = await runEnrichment(args(config(), llm(seen), { itemBudget: 0 }));
+         const status = await runEnrichment(
+            args(config(), llm(seen), { itemBudget: 0 }),
+         );
          expect(seen).toHaveLength(0);
-         expect(status).toMatchObject({ status: "partial", enriched: 0, deferredByBudget: 4 });
+         expect(status).toMatchObject({
+            status: "partial",
+            enriched: 0,
+            deferredByBudget: 4,
+         });
       });
 
       it("leaves cached text over a lowered budget out of the index, without clearing it", async () => {
          const cfg = config();
          await runEnrichment(args(cfg, llm([])));
          const seen: LlmRequest[] = [];
-         const lowered = await runEnrichment(args(cfg, llm(seen), { itemBudget: 1 }));
+         const lowered = await runEnrichment(
+            args(cfg, llm(seen), { itemBudget: 1 }),
+         );
          // The cache still answers, so nothing is asked again ...
          expect(seen).toHaveLength(0);
          // ... but only one row (the summary) is installed, and the rest wait.
@@ -398,24 +520,37 @@ describe("enrichment", () => {
          const seen: LlmRequest[] = [];
          const p = llm(seen, (req) =>
             req.stage === "keyphrase"
-               ? JSON.stringify([0, 1, 2].map((index) => ({ index, keyphrase: `Batch phrase ${index}.` })))
-               : undefined as never,
+               ? JSON.stringify(
+                    [0, 1, 2].map((index) => ({
+                       index,
+                       keyphrase: `Batch phrase ${index}.`,
+                    })),
+                 )
+               : (undefined as never),
          );
          const status = await runEnrichment(args(cfg, p));
          expect(seen.filter((r) => r.stage === "keyphrase")).toHaveLength(1);
          expect(status.enriched).toBe(3);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const kp = await db.all<any>(
             "SELECT text FROM entity_enrichment WHERE enrichment = 'keyphrase' ORDER BY text",
          );
-         expect(kp.map((r: any) => r.text)).toEqual(["Batch phrase 0.", "Batch phrase 1.", "Batch phrase 2."]);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(kp.map((r: any) => r.text)).toEqual([
+            "Batch phrase 0.",
+            "Batch phrase 1.",
+            "Batch phrase 2.",
+         ]);
       });
 
       it("marks a field the batch reply skipped as failed, not enriched", async () => {
-         const cfg = config({ enrichment: { enabled: true, keyphrase: { batchSize: 10 } } });
+         const cfg = config({
+            enrichment: { enabled: true, keyphrase: { batchSize: 10 } },
+         });
          const p = llm([], (req) =>
             req.stage === "keyphrase"
                ? JSON.stringify([{ index: 0, keyphrase: "Only one." }])
-               : undefined as never,
+               : (undefined as never),
          );
          const status = await runEnrichment(args(cfg, p));
          expect(status.failed).toBe(2);
@@ -430,14 +565,22 @@ describe("enrichment", () => {
                baseUrl: "https://stub.example.com/v1",
                minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
             },
-            (async () => new Response("down", { status: 500 })) as unknown as typeof fetch,
+            (async () =>
+               new Response("down", {
+                  status: 500,
+               })) as unknown as typeof fetch,
          );
          const cfg = config();
-         const status = await runEnrichment(args(cfg, llm(), { provider: down }));
+         const status = await runEnrichment(
+            args(cfg, llm(), { provider: down }),
+         );
          expect(status.status).toBe("failed");
          expect(status.error).toContain("500");
          // The generated text is still stored, so a retry costs no LLM calls.
-         const rows = await db.all<any>("SELECT count(*) AS n FROM entity_enrichment");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         const rows = await db.all<any>(
+            "SELECT count(*) AS n FROM entity_enrichment",
+         );
          expect(Number(rows[0].n)).toBe(4);
          expect(enrichmentOverlayVersion(ENV, PKG)).toBe(0);
       });
@@ -481,49 +624,73 @@ describe("enrichment", () => {
          ["the default classes", {}],
          ["every class on", { egress: { preset: "full" } }],
          ["code alone", { egress: { code: true, schemaContext: true } }],
-      ])("never sends a predicate annotation to the provider: %s", async (_label, over) => {
-         const seen: LlmRequest[] = [];
-         const cfg = config(over);
-         await runEnrichment(args(cfg, llm(seen), { entities: sensitive }));
-         expect(seen.length).toBeGreaterThan(0);
-         const everything = seen.map((r) => `${r.system}\n${r.user}`).join("\n");
-         expect(everything).not.toContain("acme");
-         expect(everything).not.toContain("TENANT");
-         expect(everything).not.toContain("access_filter");
-         expect(everything).not.toContain("#(authorize)");
-         expect(everything).not.toContain("admin");
-      });
+      ])(
+         "never sends a predicate annotation to the provider: %s",
+         async (_label, over) => {
+            const seen: LlmRequest[] = [];
+            const cfg = config(over);
+            await runEnrichment(args(cfg, llm(seen), { entities: sensitive }));
+            expect(seen.length).toBeGreaterThan(0);
+            const everything = seen
+               .map((r) => `${r.system}\n${r.user}`)
+               .join("\n");
+            expect(everything).not.toContain("acme");
+            expect(everything).not.toContain("TENANT");
+            expect(everything).not.toContain("access_filter");
+            expect(everything).not.toContain("#(authorize)");
+            expect(everything).not.toContain("admin");
+         },
+      );
 
       it("sends the expression itself only when the code class is on", async () => {
          const off: LlmRequest[] = [];
          await runEnrichment(args(config(), llm(off), { entities: sensitive }));
-         expect(off.map((r) => r.user).join("\n")).not.toContain("region = 'west'");
+         expect(off.map((r) => r.user).join("\n")).not.toContain(
+            "region = 'west'",
+         );
          const on: LlmRequest[] = [];
          _resetEnrichmentStateForTests();
          await db.run("DELETE FROM entity_enrichment");
          await runEnrichment(
-            args(config({ egress: { code: true } }), llm(on), { entities: sensitive }),
+            args(config({ egress: { code: true } }), llm(on), {
+               entities: sensitive,
+            }),
          );
-         expect(on.map((r) => r.user).join("\n")).toContain("sum(amount) { where: region = 'west' }");
+         expect(on.map((r) => r.user).join("\n")).toContain(
+            "sum(amount) { where: region = 'west' }",
+         );
       });
 
       it("says a withheld input was withheld, so the model does not invent it", async () => {
          const seen: LlmRequest[] = [];
-         await runEnrichment(args(config(), llm(seen), { entities: sensitive }));
+         await runEnrichment(
+            args(config(), llm(seen), { entities: sensitive }),
+         );
          const kp = seen.find((r) => r.stage === "keyphrase")!;
-         expect(kp.user).toContain("Sibling fields (schema context):\n(not provided)");
+         expect(kp.user).toContain(
+            "Sibling fields (schema context):\n(not provided)",
+         );
          expect(kp.user).toContain("Field code:\n(not provided)");
       });
 
       it("sends no descriptions when the docs class is off", async () => {
          const seen: LlmRequest[] = [];
          const withDoc = [
-            entity("measure", "net_revenue", "orders", "Revenue after refunds, discounts, taxes, shipping, and every other adjustment we make."),
+            entity(
+               "measure",
+               "net_revenue",
+               "orders",
+               "Revenue after refunds, discounts, taxes, shipping, and every other adjustment we make.",
+            ),
          ];
          await runEnrichment(
-            args(config({ egress: { docs: false } }), llm(seen), { entities: withDoc }),
+            args(config({ egress: { docs: false } }), llm(seen), {
+               entities: withDoc,
+            }),
          );
-         expect(seen.map((r) => r.user).join("\n")).not.toContain("Revenue after refunds");
+         expect(seen.map((r) => r.user).join("\n")).not.toContain(
+            "Revenue after refunds",
+         );
       });
    });
 
@@ -545,11 +712,16 @@ describe("enrichment", () => {
             envModel: undefined,
          });
          expect(enrichmentOverlayVersion(ENV, PKG)).toBe(1);
-         expect(getEnrichmentStatus(ENV, PKG)).toMatchObject({ status: "ready", enriched: 4 });
+         expect(getEnrichmentStatus(ENV, PKG)).toMatchObject({
+            status: "ready",
+            enriched: 4,
+         });
          // A later run over the same cache changes nothing and asks for nothing.
          const seen: LlmRequest[] = [];
          const asked: string[] = [];
-         await runEnrichment(args(cfg, llm(seen), { provider: embedder(asked) }));
+         await runEnrichment(
+            args(cfg, llm(seen), { provider: embedder(asked) }),
+         );
          expect(seen).toHaveLength(0);
          expect(asked).toEqual([]);
       });
@@ -575,7 +747,10 @@ describe("enrichment", () => {
       it("removes a deleted package's generated text with its embeddings", async () => {
          await runEnrichment(args(config(), llm()));
          await deletePackageEmbeddings(db, ENV, PKG);
-         const n = await db.all<any>("SELECT count(*) AS n FROM entity_enrichment");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         const n = await db.all<any>(
+            "SELECT count(*) AS n FROM entity_enrichment",
+         );
          expect(Number(n[0].n)).toBe(0);
       });
    });
@@ -598,7 +773,15 @@ describe("enrichment", () => {
       });
 
       it("goes again for unfinished work once retryAfterMs has passed", async () => {
-         const cfg = config({ indexing: { maxLlmCallsPerSync: 2 }, enrichment: { enabled: true, sourceSummary: { enabled: true }, keyphrase: { batchSize: 1 }, retryAfterMs: 1000 } });
+         const cfg = config({
+            indexing: { maxLlmCallsPerSync: 2 },
+            enrichment: {
+               enabled: true,
+               sourceSummary: { enabled: true },
+               keyphrase: { batchSize: 1 },
+               retryAfterMs: 1000,
+            },
+         });
          const seen: LlmRequest[] = [];
          const instance = {};
          const a = args(cfg, llm(seen));
@@ -617,10 +800,16 @@ describe("enrichment", () => {
 
    describe("renderKeyphrase", () => {
       it("fills the template with the humanized name and the phrase", () => {
-         expect(renderKeyphrase("{name}: {keyphrase}", "cust_ltv", "Lifetime spend.")).toBe(
-            "cust ltv: Lifetime spend.",
+         expect(
+            renderKeyphrase(
+               "{name}: {keyphrase}",
+               "cust_ltv",
+               "Lifetime spend.",
+            ),
+         ).toBe("cust ltv: Lifetime spend.");
+         expect(renderKeyphrase("{keyphrase}", "x", "Only this.")).toBe(
+            "Only this.",
          );
-         expect(renderKeyphrase("{keyphrase}", "x", "Only this.")).toBe("Only this.");
       });
    });
 });

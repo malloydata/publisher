@@ -24,10 +24,14 @@ const REQUEST: LlmRequest = {
 interface Captured {
    url: string;
    headers: Record<string, string>;
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
    body: Record<string, any>;
 }
 
-function reply(content: unknown, extra: Record<string, unknown> = {}): Response {
+function reply(
+   content: unknown,
+   extra: Record<string, unknown> = {},
+): Response {
    return new Response(
       JSON.stringify({
          model: "test-model",
@@ -41,7 +45,11 @@ function reply(content: unknown, extra: Record<string, unknown> = {}): Response 
 
 function stub(
    captured: Captured[],
-   respond: (n: number, body: Record<string, any>) => Response | Promise<Response>,
+   respond: (
+      n: number,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      body: Record<string, any>,
+   ) => Response | Promise<Response>,
 ): typeof fetch {
    return (async (url: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
@@ -68,8 +76,16 @@ afterEach(() => _clearLlmProviderForTests());
 describe("OpenAiCompatLlmProvider", () => {
    it("posts a chat completion and returns the text, usage and model", async () => {
       const captured: Captured[] = [];
-      const p = new OpenAiCompatLlmProvider(CONFIG, stub(captured, () => reply("hello")));
-      const r = await p.complete({ ...REQUEST, temperature: 0, seed: 7, maxTokens: 50 });
+      const p = new OpenAiCompatLlmProvider(
+         CONFIG,
+         stub(captured, () => reply("hello")),
+      );
+      const r = await p.complete({
+         ...REQUEST,
+         temperature: 0,
+         seed: 7,
+         maxTokens: 50,
+      });
       expect(r.text).toBe("hello");
       expect(r.model).toBe("test-model");
       expect(r.finishReason).toBe("stop");
@@ -92,7 +108,10 @@ describe("OpenAiCompatLlmProvider", () => {
 
    it("omits the system message and merges extraBody last", async () => {
       const captured: Captured[] = [];
-      const p = new OpenAiCompatLlmProvider(CONFIG, stub(captured, () => reply("x")));
+      const p = new OpenAiCompatLlmProvider(
+         CONFIG,
+         stub(captured, () => reply("x")),
+      );
       await p.complete({
          ...REQUEST,
          system: undefined,
@@ -119,7 +138,10 @@ describe("OpenAiCompatLlmProvider", () => {
 
    it("asks for JSON mode only when requested", async () => {
       const captured: Captured[] = [];
-      const p = new OpenAiCompatLlmProvider(CONFIG, stub(captured, () => reply("{}")));
+      const p = new OpenAiCompatLlmProvider(
+         CONFIG,
+         stub(captured, () => reply("{}")),
+      );
       await p.complete(REQUEST);
       await p.complete({ ...REQUEST, jsonMode: "json_object" });
       expect(captured[0].body.response_format).toBeUndefined();
@@ -132,7 +154,9 @@ describe("OpenAiCompatLlmProvider", () => {
          CONFIG,
          stub(captured, (_n, body) =>
             body.response_format
-               ? new Response("unsupported parameter: response_format", { status: 400 })
+               ? new Response("unsupported parameter: response_format", {
+                    status: 400,
+                 })
                : reply("ok"),
          ),
       );
@@ -149,7 +173,10 @@ describe("OpenAiCompatLlmProvider", () => {
    it("does not swallow an unrelated 400 as a JSON-mode problem", async () => {
       const p = new OpenAiCompatLlmProvider(
          CONFIG,
-         stub([], () => new Response("model 'nope' not found", { status: 400 })),
+         stub(
+            [],
+            () => new Response("model 'nope' not found", { status: 400 }),
+         ),
       );
       const e = await fail(p.complete({ ...REQUEST, jsonMode: "json_object" }));
       expect(e.kind).toBe("http");
@@ -202,7 +229,11 @@ describe("OpenAiCompatLlmProvider", () => {
    it("classifies an empty or non-JSON response as malformed and retryable", async () => {
       const empty = new OpenAiCompatLlmProvider(
          CONFIG,
-         stub([], () => new Response(JSON.stringify({ choices: [] }), { status: 200 })),
+         stub(
+            [],
+            () =>
+               new Response(JSON.stringify({ choices: [] }), { status: 200 }),
+         ),
       );
       const e1 = await fail(empty.complete(REQUEST));
       expect(e1.kind).toBe("malformed");
@@ -232,7 +263,9 @@ describe("OpenAiCompatLlmProvider", () => {
          stub(
             [],
             () =>
-               new Response(`upstream said sk-secret ${"x".repeat(500)}`, { status: 502 }),
+               new Response(`upstream said sk-secret ${"x".repeat(500)}`, {
+                  status: 502,
+               }),
          ),
       );
       const e = await fail(p.complete(REQUEST));
@@ -274,7 +307,9 @@ describe("OpenAiCompatLlmProvider", () => {
    it("names a timeout", async () => {
       const hang = ((_u: unknown, init?: RequestInit) =>
          new Promise((_, reject) => {
-            init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+            init?.signal?.addEventListener("abort", () =>
+               reject(init.signal!.reason),
+            );
          })) as unknown as typeof fetch;
       const p = new OpenAiCompatLlmProvider(CONFIG, hang);
       const e = await fail(p.complete({ ...REQUEST, timeoutMs: 20 }));
@@ -296,10 +331,14 @@ describe("OpenAiCompatLlmProvider", () => {
       const controller = new AbortController();
       const hang = ((_u: unknown, init?: RequestInit) =>
          new Promise((_, reject) => {
-            init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+            init?.signal?.addEventListener("abort", () =>
+               reject(init.signal!.reason),
+            );
          })) as unknown as typeof fetch;
       const p = new OpenAiCompatLlmProvider(CONFIG, hang);
-      const pending = fail(p.complete({ ...REQUEST, signal: controller.signal }));
+      const pending = fail(
+         p.complete({ ...REQUEST, signal: controller.signal }),
+      );
       controller.abort();
       const e = await pending;
       expect(e.kind).toBe("aborted");

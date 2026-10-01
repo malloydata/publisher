@@ -7,7 +7,15 @@
 // a result; the default path is pinned separately in
 // get_context_payload_pin.spec.ts.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -139,8 +147,13 @@ const H = (override?: unknown, trace?: string): Extra => ({
    },
 });
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const entityNames = (payload: any): string[] =>
-   payload.sources.flatMap((c: any) => (c.entities ?? []).map((e: any) => e.name));
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   payload.sources.flatMap((c: any) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c.entities ?? []).map((e: any) => e.name),
+   );
 
 describe("get_context tuning", () => {
    let tempDir: string;
@@ -169,7 +182,8 @@ describe("get_context tuning", () => {
 
    afterEach(() => {
       _clearRetrievalConfigForTests();
-      if (savedGate === undefined) delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
+      if (savedGate === undefined)
+         delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
       else process.env.PUBLISHER_RETRIEVAL_OVERRIDES = savedGate;
    });
 
@@ -203,9 +217,14 @@ describe("get_context tuning", () => {
          delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
          const handler = captureHandler(store());
          const payload = parse(
-            await handler(params(), H({ response: { maxEntitiesPerSourceTarget: 1 } })),
+            await handler(
+               params(),
+               H({ response: { maxEntitiesPerSourceTarget: 1 } }),
+            ),
          );
-         expect(payload.warnings.join(" ")).toContain("PUBLISHER_RETRIEVAL_OVERRIDES");
+         expect(payload.warnings.join(" ")).toContain(
+            "PUBLISHER_RETRIEVAL_OVERRIDES",
+         );
          expect(payload.retrieval_config).toBeUndefined();
          // Not applied: the default cap of 10 still admits every match.
          expect(entityNames(payload).length).toBeGreaterThan(1);
@@ -214,7 +233,10 @@ describe("get_context tuning", () => {
       it("is applied when the gate is open, and stamps a config fingerprint", async () => {
          const handler = captureHandler(store());
          const payload = parse(
-            await handler(params(), H({ response: { maxEntitiesPerSourceTarget: 1 } })),
+            await handler(
+               params(),
+               H({ response: { maxEntitiesPerSourceTarget: 1 } }),
+            ),
          );
          expect(payload.retrieval_config).toMatch(/^[0-9a-f]{12}$/);
          for (const card of payload.sources) {
@@ -224,7 +246,10 @@ describe("get_context tuning", () => {
 
       it("fails the call on an invalid override instead of half applying it", async () => {
          const handler = captureHandler(store());
-         const result = await handler(params(), H({ refine: { batchSize: 0 } }));
+         const result = await handler(
+            params(),
+            H({ refine: { batchSize: 0 } }),
+         );
          expect(result.isError).toBe(true);
          const payload = parse(result);
          expect(payload.sources).toEqual([]);
@@ -233,7 +258,10 @@ describe("get_context tuning", () => {
 
       it("refuses a key it may not set, naming it", async () => {
          const handler = captureHandler(store());
-         const result = await handler(params(), H({ egress: { preset: "full" } }));
+         const result = await handler(
+            params(),
+            H({ egress: { preset: "full" } }),
+         );
          expect(result.isError).toBe(true);
          expect(parse(result).error).toContain("egress.preset");
       });
@@ -251,9 +279,13 @@ describe("get_context tuning", () => {
       });
 
       it("leaves the operator's block in force under the override", async () => {
-         _setRetrievalConfigForTests({ response: { maxEntitiesPerSourceTarget: 2 } });
+         _setRetrievalConfigForTests({
+            response: { maxEntitiesPerSourceTarget: 2 },
+         });
          const handler = captureHandler(store());
-         const payload = parse(await handler(params(), H({ hybrid: { rrfK: 30 } })));
+         const payload = parse(
+            await handler(params(), H({ hybrid: { rrfK: 30 } })),
+         );
          for (const card of payload.sources) {
             expect((card.entities ?? []).length).toBeLessThanOrEqual(2);
          }
@@ -263,16 +295,22 @@ describe("get_context tuning", () => {
    describe("the trace", () => {
       it("lists gates whose drop reasons add up, on the lexical path", async () => {
          const handler = captureHandler(store());
-         const payload = parse(await handler(params("revenue"), H(undefined, "summary")));
+         const payload = parse(
+            await handler(params("revenue"), H(undefined, "summary")),
+         );
          const t = payload.retrieval_trace;
          expect(t.level).toBe("summary");
          expect(t.retrieval).toBe("lexical");
-         expect(t.gates.map((g: any) => g.gate)).toEqual(["candidate", "page", "delivered"]);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(t.gates.map((g: any) => g.gate)).toEqual([
+            "candidate",
+            "page",
+            "delivered",
+         ]);
          for (const g of t.gates) {
-            const dropped = Object.values(g.dropped_by_reason as Record<string, number>).reduce(
-               (a, b) => a + b,
-               0,
-            );
+            const dropped = Object.values(
+               g.dropped_by_reason as Record<string, number>,
+            ).reduce((a, b) => a + b, 0);
             expect(dropped).toBe(g.in - g.out);
             expect(g.dropped_by_reason.unattributed).toBeUndefined();
          }
@@ -283,10 +321,19 @@ describe("get_context tuning", () => {
       it("accounts for the floor and the window on the semantic path", async () => {
          _setEmbeddingProviderForTests(stubProvider());
          const handler = captureHandler(store());
-         const payload = await semantic(handler, params(), H(undefined, "summary"));
-         const candidate = payload.retrieval_trace.gates.find((g: any) => g.gate === "candidate");
+         const payload = await semantic(
+            handler,
+            params(),
+            H(undefined, "summary"),
+         );
+         const candidate = payload.retrieval_trace.gates.find(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (g: any) => g.gate === "candidate",
+         );
          expect(candidate.in).toBe(payload.total_entities);
-         expect(candidate.dropped_by_reason.below_floor).toBe(payload.below_cutoff_count);
+         expect(candidate.dropped_by_reason.below_floor).toBe(
+            payload.below_cutoff_count,
+         );
          expect(candidate.dropped_by_reason.unattributed).toBeUndefined();
       });
 
@@ -296,7 +343,10 @@ describe("get_context tuning", () => {
          const cands = payload.retrieval_trace.candidates;
          expect(cands.length).toBeGreaterThan(0);
          expect(cands[0]).toHaveProperty("entity_id");
-         expect(cands.every((c: any) => typeof c.kept === "boolean")).toBe(true);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(cands.every((c: any) => typeof c.kept === "boolean")).toBe(
+            true,
+         );
       });
 
       it("says why a candidate was dropped, in full mode", async () => {
@@ -307,9 +357,15 @@ describe("get_context tuning", () => {
                H({ response: { maxEntitiesPerSourceTarget: 1 } }, "full"),
             ),
          );
-         const dropped = payload.retrieval_trace.candidates.filter((c: any) => !c.kept);
+         const dropped = payload.retrieval_trace.candidates.filter(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (c: any) => !c.kept,
+         );
          expect(dropped.length).toBeGreaterThan(0);
-         expect(dropped.every((c: any) => typeof c.dropped_by === "string")).toBe(true);
+         expect(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            dropped.every((c: any) => typeof c.dropped_by === "string"),
+         ).toBe(true);
       });
 
       it("can be the operator's default without any header", async () => {
@@ -325,20 +381,33 @@ describe("get_context tuning", () => {
          const handler = captureHandler(store());
          const wide = parse(await handler(params("revenue"), H()));
          const capped = parse(
-            await handler(params("revenue"), H({ response: { maxEntitiesPerSourceTarget: 1 } })),
+            await handler(
+               params("revenue"),
+               H({ response: { maxEntitiesPerSourceTarget: 1 } }),
+            ),
          );
-         expect(entityNames(capped).length).toBeLessThan(entityNames(wide).length);
-         expect(capped.warnings.join(" ")).toContain("cut at 1 per source per target");
+         expect(entityNames(capped).length).toBeLessThan(
+            entityNames(wide).length,
+         );
+         expect(capped.warnings.join(" ")).toContain(
+            "cut at 1 per source per target",
+         );
       });
 
       it("cuts entities far below their target's best (gap cut, lexical)", async () => {
          const handler = captureHandler(store());
          const all = parse(await handler(params("total revenue"), H()));
          const cut = parse(
-            await handler(params("total revenue"), H({ response: { gapCut: 0.9 } }, "summary")),
+            await handler(
+               params("total revenue"),
+               H({ response: { gapCut: 0.9 } }, "summary"),
+            ),
          );
          expect(entityNames(cut).length).toBeLessThan(entityNames(all).length);
-         const gate = cut.retrieval_trace.gates.find((g: any) => g.gate === "gap_cut");
+         const gate = cut.retrieval_trace.gates.find(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (g: any) => g.gate === "gap_cut",
+         );
          expect(gate.dropped_by_reason.gap_cut).toBeGreaterThan(0);
          // The target's own best hit always survives.
          expect(entityNames(cut)).toContain("total_revenue");
@@ -348,7 +417,11 @@ describe("get_context tuning", () => {
          _setEmbeddingProviderForTests(stubProvider());
          const handler = captureHandler(store());
          const all = await semantic(handler, params());
-         const cut = await semantic(handler, params(), H({ response: { gapCut: 0.8 } }));
+         const cut = await semantic(
+            handler,
+            params(),
+            H({ response: { gapCut: 0.8 } }),
+         );
          expect(entityNames(cut).length).toBeLessThan(entityNames(all).length);
          expect(entityNames(cut)).toContain("total_revenue");
          // 0.3 and 0.6 are under 0.8 * 1.0; 0.9 and 0.95 are not.
@@ -360,13 +433,19 @@ describe("get_context tuning", () => {
          _setEmbeddingProviderForTests(stubProvider());
          const handler = captureHandler(store());
          const base = await semantic(handler, params());
-         const strict = await semantic(handler, params(), H({ embedding: { minSimilarity: 0.92 } }));
+         const strict = await semantic(
+            handler,
+            params(),
+            H({ embedding: { minSimilarity: 0.92 } }),
+         );
          // 1.0 and 0.95 clear 0.92; 0.9, 0.6 and 0.3 do not.
          expect([...entityNames(strict)].sort()).toEqual([
             "customer_revenue",
             "total_revenue",
          ]);
-         expect(strict.below_cutoff_count).toBeGreaterThan(base.below_cutoff_count);
+         expect(strict.below_cutoff_count).toBeGreaterThan(
+            base.below_cutoff_count,
+         );
          expect(strict.total_entities).toBe(base.total_entities);
       });
 
@@ -388,7 +467,12 @@ describe("get_context tuning", () => {
          // "orders"/"customers" sources sit at cosine 0 to this query.
          const none = parse(
             await handler(
-               { ...params(), search_targets: [{ target_type: "source", search_text: "revenue" }] },
+               {
+                  ...params(),
+                  search_targets: [
+                     { target_type: "source", search_text: "revenue" },
+                  ],
+               },
                H({ embedding: { minSimilarity: 0.5 } }),
             ),
          );
@@ -400,12 +484,18 @@ describe("get_context tuning", () => {
          _setEmbeddingProviderForTests(stubProvider());
          const handler = captureHandler(store());
          const both = await semantic(handler, params());
-         const nameOnly = await semantic(handler, params(), H({ embedding: { facets: ["name"] } }));
+         const nameOnly = await semantic(
+            handler,
+            params(),
+            H({ embedding: { facets: ["name"] } }),
+         );
          // Every entity's name and doc facet share a vector here, so the
          // ranking is the same; what changes is that a facet list which
          // matches nothing weighs nothing at all.
          expect(entityNames(nameOnly)).toEqual(entityNames(both));
-         const kwOnly = parse(await handler(params(), H({ embedding: { facets: ["kw"] } })));
+         const kwOnly = parse(
+            await handler(params(), H({ embedding: { facets: ["kw"] } })),
+         );
          expect(kwOnly.sources).toEqual([]);
          expect(kwOnly.total_entities).toBe(0);
       });
@@ -413,10 +503,19 @@ describe("get_context tuning", () => {
       it("limits the candidate window per target", async () => {
          _setEmbeddingProviderForTests(stubProvider());
          const handler = captureHandler(store());
-         const payload = await semantic(handler, params(), H({ candidates: { perTargetLimit: 2 } }, "summary"));
+         const payload = await semantic(
+            handler,
+            params(),
+            H({ candidates: { perTargetLimit: 2 } }, "summary"),
+         );
          expect(entityNames(payload).length).toBeLessThanOrEqual(2);
-         const cand = payload.retrieval_trace.gates.find((g: any) => g.gate === "candidate");
-         expect(cand.dropped_by_reason.outside_candidate_window).toBeGreaterThan(0);
+         const cand = payload.retrieval_trace.gates.find(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (g: any) => g.gate === "candidate",
+         );
+         expect(
+            cand.dropped_by_reason.outside_candidate_window,
+         ).toBeGreaterThan(0);
       });
    });
 
@@ -427,24 +526,41 @@ describe("get_context tuning", () => {
          const size = JSON.stringify(full).length;
          const budget = Math.floor(size * 0.6);
          const trimmed = parse(
-            await handler(params("revenue"), H({ response: { maxChars: budget } }, "summary")),
+            await handler(
+               params("revenue"),
+               H({ response: { maxChars: budget } }, "summary"),
+            ),
          );
-         expect(JSON.stringify({ ...trimmed, retrieval_trace: undefined, retrieval_config: undefined }).length).toBeLessThanOrEqual(budget);
-         expect(trimmed.warnings.join(" ")).toContain("Trimmed to fit response.maxChars");
+         expect(
+            JSON.stringify({
+               ...trimmed,
+               retrieval_trace: undefined,
+               retrieval_config: undefined,
+            }).length,
+         ).toBeLessThanOrEqual(budget);
+         expect(trimmed.warnings.join(" ")).toContain(
+            "Trimmed to fit response.maxChars",
+         );
          expect(trimmed.sources.length).toBeGreaterThanOrEqual(1);
          expect(trimmed.returned).toBe(trimmed.sources.length);
          // Best-first survives: the first card is the first card.
          expect(trimmed.sources[0].source_info.resource_id.source).toBe(
             full.sources[0].source_info.resource_id.source,
          );
-         const gate = trimmed.retrieval_trace.gates.find((g: any) => g.gate === "budget");
+         const gate = trimmed.retrieval_trace.gates.find(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (g: any) => g.gate === "budget",
+         );
          expect(gate.dropped_by_reason.char_budget).toBeGreaterThan(0);
       });
 
       it("does nothing when the response already fits", async () => {
          const handler = captureHandler(store());
          const payload = parse(
-            await handler(params("revenue"), H({ response: { maxChars: 1_000_000 } })),
+            await handler(
+               params("revenue"),
+               H({ response: { maxChars: 1_000_000 } }),
+            ),
          );
          expect((payload.warnings ?? []).join(" ")).not.toContain("Trimmed");
       });
@@ -452,7 +568,10 @@ describe("get_context tuning", () => {
       it("never empties the response to nothing", async () => {
          const handler = captureHandler(store());
          const payload = parse(
-            await handler(params("revenue"), H({ response: { maxChars: 1_000 } })),
+            await handler(
+               params("revenue"),
+               H({ response: { maxChars: 1_000 } }),
+            ),
          );
          expect(payload.sources.length).toBe(1);
       });

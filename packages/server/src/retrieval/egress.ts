@@ -67,7 +67,8 @@ export function egressSignature(classes: EgressClasses): string {
       .join("+");
 }
 
-const words = (s: string): number => (s.trim() ? s.trim().split(/\s+/).length : 0);
+const words = (s: string): number =>
+   s.trim() ? s.trim().split(/\s+/).length : 0;
 
 /**
  * Whether a field gets an LLM keyphrase.
@@ -109,7 +110,10 @@ export function schemaLines(
             s.name !== self.name,
       )
       .slice(0, maxLines)
-      .map((s) => `- ${s.name} (${s.kind}${s.dataType ? ` / ${s.dataType}` : ""})`);
+      .map(
+         (s) =>
+            `- ${s.name} (${s.kind}${s.dataType ? ` / ${s.dataType}` : ""})`,
+      );
    return lines.length > 0 ? lines.join("\n") : "(none)";
 }
 

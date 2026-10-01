@@ -5,7 +5,15 @@
 // value ("Premium") finds the dimension that holds it, a gated source's values
 // are never indexed, and the default response is untouched.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -32,7 +40,13 @@ import {
 } from "../../storage/duckdb/schema";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { getPackageEmbeddingStatus } from "./get_context_tool";
-import { captureHandler, entityNames, parse, sourceNames, storeFor } from "./retrieval_test_kit";
+import {
+   captureHandler,
+   entityNames,
+   parse,
+   sourceNames,
+   storeFor,
+} from "./retrieval_test_kit";
 
 const ENV = "vals";
 const PKG = "p";
@@ -41,12 +55,27 @@ const PKG = "p";
 const asked: string[] = [];
 
 const VALUES: Record<string, Array<[string, number]>> = {
-   tier: [["Premium", 50], ["Basic", 30], ["Enterprise", 5]],
-   city: [["Paris", 9], ["Berlin", 4]],
-   tenant_name: [["Acme", 10], ["Globex", 8]],
+   tier: [
+      ["Premium", 50],
+      ["Basic", 30],
+      ["Enterprise", 5],
+   ],
+   city: [
+      ["Paris", 9],
+      ["Berlin", 4],
+   ],
+   tenant_name: [
+      ["Acme", 10],
+      ["Globex", 8],
+   ],
 };
 
-const field = (kind: string, name: string, type: string, annotations: string[] = []) => ({
+const field = (
+   kind: string,
+   name: string,
+   type: string,
+   annotations: string[] = [],
+) => ({
    kind,
    name,
    type: { kind: `${type}_type` },
@@ -60,9 +89,14 @@ const model = {
          annotations: ["#(doc) Every customer."],
          schema: {
             fields: [
-               field("dimension", "tier", "string", ["#(doc) Pricing tier.", "#(index)"]),
+               field("dimension", "tier", "string", [
+                  "#(doc) Pricing tier.",
+                  "#(index)",
+               ]),
                field("dimension", "city", "string"),
-               field("measure", "customer_count", "number", ["#(doc) Number of customers."]),
+               field("measure", "customer_count", "number", [
+                  "#(doc) Number of customers.",
+               ]),
             ],
          },
       },
@@ -76,7 +110,10 @@ const model = {
    ],
    getQueries: () => [],
    // `tenants` is gated: its rows differ per caller.
-   getSources: () => [{ name: "customers" }, { name: "tenants", accessFilter: ["tenant = $TENANT"] }],
+   getSources: () => [
+      { name: "customers" },
+      { name: "tenants", accessFilter: ["tenant = $TENANT"] },
+   ],
    getQueryResults: async (
       _source: unknown,
       _queryName: unknown,
@@ -86,13 +123,22 @@ const model = {
       const dim = Object.keys(VALUES).find((d) => query.includes(`\`${d}\``));
       if (!dim) throw new Error(`unexpected query: ${query}`);
       return {
-         compactResult: VALUES[dim].map(([v, w]) => ({ [dim]: v, value_weight__: w })),
+         compactResult: VALUES[dim].map(([v, w]) => ({
+            [dim]: v,
+            value_weight__: w,
+         })),
       };
    },
 };
-const pkg = { listModels: async () => [{ path: "m.malloy" }], getModel: () => model };
+const pkg = {
+   listModels: async () => [{ path: "m.malloy" }],
+   getModel: () => model,
+};
 
-const valueTarget = (text: string) => ({ target_type: "dimensional_value", search_text: text });
+const valueTarget = (text: string) => ({
+   target_type: "dimensional_value",
+   search_text: text,
+});
 const req = (targets: unknown[], extra: Record<string, unknown> = {}) => ({
    search_targets: targets,
    scopes: [{ environment: ENV, package: PKG, ...extra }],
@@ -102,7 +148,12 @@ function embedder(vectorFor: (text: string) => number[]): EmbeddingProvider {
    const fetchStub = (async (_u: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: string[] };
       return new Response(
-         JSON.stringify({ data: body.input.map((t, index) => ({ index, embedding: vectorFor(t) })) }),
+         JSON.stringify({
+            data: body.input.map((t, index) => ({
+               index,
+               embedding: vectorFor(t),
+            })),
+         }),
          { status: 200 },
       );
    }) as typeof fetch;
@@ -147,7 +198,10 @@ describe("get_context value search", () => {
    });
    afterEach(() => _clearRetrievalConfigForTests());
 
-   function configure(values: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+   function configure(
+      values: Record<string, unknown>,
+      extra: Record<string, unknown> = {},
+   ) {
       _setRetrievalConfigForTests({
          dimensionalValues: { mode: "annotated", ...values },
          ...extra,
@@ -168,7 +222,9 @@ describe("get_context value search", () => {
          _setRetrievalConfigForTests({});
          const payload = parse(await handler()(req([valueTarget("Premium")])));
          expect(payload.sources).toEqual([]);
-         expect(payload.warnings[0]).toContain("No index for target_type dimensional_value");
+         expect(payload.warnings[0]).toContain(
+            "No index for target_type dimensional_value",
+         );
          expect(asked).toEqual([]);
       });
    });
@@ -181,7 +237,9 @@ describe("get_context value search", () => {
          const tier = payload.sources[0].entities[0];
          expect(tier.name).toBe("tier");
          expect(tier.entity_type).toBe("dimension");
-         expect(tier.values).toEqual([{ value: "Premium", relevance: 1, search_text: "premium" }]);
+         expect(tier.values).toEqual([
+            { value: "Premium", relevance: 1, search_text: "premium" },
+         ]);
          expect(tier.values_indexed).toBe(true);
          // No relevance of its own, so the card takes its best value's.
          expect(tier).not.toHaveProperty("relevance");
@@ -207,7 +265,11 @@ describe("get_context value search", () => {
          const h = await indexed();
          expect(asked.join("\n")).not.toContain("tenants");
          expect(asked.join("\n")).not.toContain("tenant_name");
-         const rows = await db.all<any>("SELECT DISTINCT source_name FROM dimension_values");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         const rows = await db.all<any>(
+            "SELECT DISTINCT source_name FROM dimension_values",
+         );
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          expect(rows.map((r: any) => r.source_name)).toEqual(["customers"]);
          const payload = parse(await h(req([valueTarget("Acme")])));
          expect(payload.sources).toEqual([]);
@@ -223,10 +285,19 @@ describe("get_context value search", () => {
       it("marks the dimensions whose values can be searched on an ordinary result", async () => {
          const h = await indexed();
          const payload = parse(
-            await h(req([{ target_type: "dimension", search_text: "tier" }, { target_type: "dimension", search_text: "city" }])),
+            await h(
+               req([
+                  { target_type: "dimension", search_text: "tier" },
+                  { target_type: "dimension", search_text: "city" },
+               ]),
+            ),
          );
          const byName = Object.fromEntries(
-            payload.sources.flatMap((c: any) => c.entities.map((e: any) => [e.name, e])),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            payload.sources.flatMap((c: any) =>
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               c.entities.map((e: any) => [e.name, e]),
+            ),
          );
          expect(byName.tier.values_indexed).toBe(true);
          expect(byName.city.values_indexed).toBeUndefined();
@@ -243,8 +314,13 @@ describe("get_context value search", () => {
                ]),
             ),
          );
-         const tiers = payload.sources.flatMap((c: any) => c.entities).filter((e: any) => e.name === "tier");
+         const tiers = payload.sources
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .flatMap((c: any) => c.entities)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .filter((e: any) => e.name === "tier");
          expect(tiers).toHaveLength(1);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          expect(tiers[0].values.map((v: any) => v.value)).toEqual(["Basic"]);
          expect(tiers[0].entity_type).toBe("dimension");
       });
@@ -285,12 +361,16 @@ describe("get_context value search", () => {
          configure({ mode: "annotated", exclude: ["*.*"] });
          const h = handler();
          const payload = parse(await h(req([valueTarget("premium")])));
-         expect(payload.warnings.join(" ")).toContain("No dimension in this package is set up");
+         expect(payload.warnings.join(" ")).toContain(
+            "No dimension in this package is set up",
+         );
          expect(payload.warnings.join(" ")).toContain("#(index)");
       });
 
       it("finds a value by meaning when an embedding provider is set", async () => {
-         const provider = embedder((t) => (/premium|top tier/i.test(t) ? [1, 0] : [0, 1]));
+         const provider = embedder((t) =>
+            /premium|top tier/i.test(t) ? [1, 0] : [0, 1],
+         );
          _setEmbeddingProviderForTests(provider);
          const h = await indexed();
          const payload = parse(await h(req([valueTarget("top tier")])));
@@ -300,9 +380,13 @@ describe("get_context value search", () => {
 
       it("honours a drill-down to one source", async () => {
          const h = await indexed();
-         const inScope = parse(await h(req([valueTarget("premium")], { source: "customers" })));
+         const inScope = parse(
+            await h(req([valueTarget("premium")], { source: "customers" })),
+         );
          expect(sourceNames(inScope)).toEqual(["customers"]);
-         const outOfScope = parse(await h(req([valueTarget("premium")], { source: "tenants" })));
+         const outOfScope = parse(
+            await h(req([valueTarget("premium")], { source: "tenants" })),
+         );
          expect(outOfScope.sources).toEqual([]);
       });
 
@@ -311,7 +395,11 @@ describe("get_context value search", () => {
          const h = handler();
          await h(req([{ target_type: "source" }]));
          await _settleValueIndexForTests(ENV, PKG);
-         const status = await getPackageEmbeddingStatus(storeFor(pkg, db) as never, ENV, PKG);
+         const status = await getPackageEmbeddingStatus(
+            storeFor(pkg, db) as never,
+            ENV,
+            PKG,
+         );
          expect(status?.valueIndex).toMatchObject({
             status: "ready",
             dimensions: 1,

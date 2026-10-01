@@ -5,7 +5,15 @@
 // LLM answers with canned ratings, and the response shows what the pipeline
 // did with them. The prompts themselves are checked by what the fake sees.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -43,7 +51,8 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
    const handlers = new Map<string, Handler>();
    registerGetContextTool(
       {
-         tool: (n: string, _d: string, _s: unknown, h: Handler) => handlers.set(n, h),
+         tool: (n: string, _d: string, _s: unknown, h: Handler) =>
+            handlers.set(n, h),
       } as never,
       store as EnvironmentStore,
    );
@@ -70,14 +79,20 @@ const model = {
             fields: MEASURES.map((m) => ({
                kind: "measure",
                name: m.name,
-               annotations: [`#(doc) ${m.doc}`, "#(access_filter) \"$TENANT = 'acme'\""],
+               annotations: [
+                  `#(doc) ${m.doc}`,
+                  "#(access_filter) \"$TENANT = 'acme'\"",
+               ],
             })),
          },
       },
    ],
    getQueries: () => [],
 };
-const pkg = { listModels: async () => [{ path: "m.malloy" }], getModel: () => model };
+const pkg = {
+   listModels: async () => [{ path: "m.malloy" }],
+   getModel: () => model,
+};
 
 const VECTORS: Record<string, number[]> = {
    orders: [0, 1],
@@ -139,15 +154,24 @@ function indexOfName(req: LlmRequest, name: string): number {
 
 const rate = (items: Array<[number, string, string?]>) =>
    JSON.stringify(
-      items.map(([index, score, reason]) => ({ index, score, reason: reason ?? "r" })),
+      items.map(([index, score, reason]) => ({
+         index,
+         score,
+         reason: reason ?? "r",
+      })),
    );
 
 const params = {
    search_targets: [{ target_type: "measure", search_text: "revenue" }],
    scopes: [{ environment: "refine", package: "p" }],
 };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const names = (payload: any): string[] =>
-   payload.sources.flatMap((c: any) => (c.entities ?? []).map((e: any) => e.name));
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   payload.sources.flatMap((c: any) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c.entities ?? []).map((e: any) => e.name),
+   );
 
 describe("get_context entity refine", () => {
    let tempDir: string;
@@ -180,13 +204,17 @@ describe("get_context entity refine", () => {
    });
    afterEach(() => {
       _clearRetrievalConfigForTests();
-      if (savedGate === undefined) delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
+      if (savedGate === undefined)
+         delete process.env.PUBLISHER_RETRIEVAL_OVERRIDES;
       else process.env.PUBLISHER_RETRIEVAL_OVERRIDES = savedGate;
    });
 
    const store = (): Partial<EnvironmentStore> => ({
       getEnvironment: async () =>
-         ({ getPackage: async () => pkg, getStaleCompileErrors: () => new Map() }) as never,
+         ({
+            getPackage: async () => pkg,
+            getStaleCompileErrors: () => new Map(),
+         }) as never,
       storageManager: { getDuckDbConnection: () => db } as never,
    });
 
@@ -208,7 +236,8 @@ describe("get_context entity refine", () => {
       };
       for (let i = 0; i < 400; i++) {
          const warm = parse(await handler(params, off));
-         if (warm.retrieval === "semantic") return parse(await handler(params, extra));
+         if (warm.retrieval === "semantic")
+            return parse(await handler(params, extra));
          await new Promise((r) => setTimeout(r, 5));
       }
       throw new Error("never became semantic");
@@ -220,8 +249,16 @@ describe("get_context entity refine", () => {
          _setLlmProviderForTests(
             fakeLlm((req) =>
                rate([
-                  [indexOfName(req, "total_revenue"), "HIGH", "Directly measures revenue."],
-                  [indexOfName(req, "net_revenue"), "MEDIUM", "Revenue net of refunds."],
+                  [
+                     indexOfName(req, "total_revenue"),
+                     "HIGH",
+                     "Directly measures revenue.",
+                  ],
+                  [
+                     indexOfName(req, "net_revenue"),
+                     "MEDIUM",
+                     "Revenue net of refunds.",
+                  ],
                   [indexOfName(req, "avg_discount"), "LOW", "Loosely related."],
                   // gross_revenue and order_count are omitted
                ]),
@@ -231,8 +268,12 @@ describe("get_context entity refine", () => {
          const payload = await semantic(handler);
          expect(names(payload)).toEqual(["total_revenue", "net_revenue"]);
          const [first, second] = payload.sources[0].entities;
-         expect(first.matched_targets[0].match_reason).toBe("Directly measures revenue.");
-         expect(second.matched_targets[0].match_reason).toBe("Revenue net of refunds.");
+         expect(first.matched_targets[0].match_reason).toBe(
+            "Directly measures revenue.",
+         );
+         expect(second.matched_targets[0].match_reason).toBe(
+            "Revenue net of refunds.",
+         );
          // HIGH outranks MEDIUM whatever the cosine.
          expect(first.relevance).toBeGreaterThan(second.relevance);
          expect(payload.retrieval_stages).toEqual({ refine: "ok" });
@@ -269,7 +310,10 @@ describe("get_context entity refine", () => {
             ),
          );
          const payload = await semantic(captureHandler(store()));
-         expect(names(payload).sort()).toEqual(["avg_discount", "total_revenue"]);
+         expect(names(payload).sort()).toEqual([
+            "avg_discount",
+            "total_revenue",
+         ]);
       });
 
       it("keeps an omitted candidate when dropOmitted is off", async () => {
@@ -279,7 +323,9 @@ describe("get_context entity refine", () => {
          });
          _setEmbeddingProviderForTests(embeddings());
          _setLlmProviderForTests(
-            fakeLlm((req) => rate([[indexOfName(req, "total_revenue"), "HIGH"]])),
+            fakeLlm((req) =>
+               rate([[indexOfName(req, "total_revenue"), "HIGH"]]),
+            ),
          );
          const payload = await semantic(captureHandler(store()));
          expect(names(payload)).toHaveLength(5);
@@ -293,7 +339,9 @@ describe("get_context entity refine", () => {
          await semantic(captureHandler(store()));
          const req = seen[0];
          expect(req.model).toBe("test-model");
-         expect(req.system).toContain("expert at evaluating how well database entities");
+         expect(req.system).toContain(
+            "expert at evaluating how well database entities",
+         );
          expect(req.user).toContain('PHRASE:\nText: "revenue"');
          expect(req.user).toContain("QUERY:\nrevenue");
          expect(req.user).toContain(
@@ -315,7 +363,9 @@ describe("get_context entity refine", () => {
          const seen: LlmRequest[] = [];
          _setLlmProviderForTests(fakeLlm(() => "[]", seen));
          await semantic(captureHandler(store()));
-         expect(seen[0].user).toContain("- [0] total_revenue (measure, source: orders): \n");
+         expect(seen[0].user).toContain(
+            "- [0] total_revenue (measure, source: orders): \n",
+         );
          expect(seen[0].user).not.toContain("Sum of all order revenue");
       });
 
@@ -328,7 +378,9 @@ describe("get_context entity refine", () => {
          const seen: LlmRequest[] = [];
          _setLlmProviderForTests(
             fakeLlm((req) => {
-               const idx = [...req.user.matchAll(/- \[(\d+)\]/g)].map((m) => Number(m[1]));
+               const idx = [...req.user.matchAll(/- \[(\d+)\]/g)].map((m) =>
+                  Number(m[1]),
+               );
                return rate(idx.map((i) => [i, "MEDIUM"] as [number, string]));
             }, seen),
          );
@@ -346,7 +398,9 @@ describe("get_context entity refine", () => {
          const seen: LlmRequest[] = [];
          _setLlmProviderForTests(
             fakeLlm((req) => {
-               const idx = [...req.user.matchAll(/- \[(\d+)\]/g)].map((m) => Number(m[1]));
+               const idx = [...req.user.matchAll(/- \[(\d+)\]/g)].map((m) =>
+                  Number(m[1]),
+               );
                return rate(idx.map((i) => [i, "HIGH"] as [number, string]));
             }, seen),
          );
@@ -365,7 +419,9 @@ describe("get_context entity refine", () => {
          _setLlmProviderForTests(fakeLlm(() => "[]", seen));
          const payload = await semantic(captureHandler(store()));
          expect(seen).toHaveLength(0);
-         expect(payload.retrieval_stages).toEqual({ refine: "skipped:few_candidates" });
+         expect(payload.retrieval_stages).toEqual({
+            refine: "skipped:few_candidates",
+         });
          expect(names(payload)).toHaveLength(5);
       });
 
@@ -373,11 +429,13 @@ describe("get_context entity refine", () => {
          _setEmbeddingProviderForTests(embeddings());
          const seen: LlmRequest[] = [];
          _setLlmProviderForTests(
-            fakeLlm((req, n) =>
-               n === 1
-                  ? "Sure, here are my thoughts on these measures."
-                  : rate([[indexOfName(req, "total_revenue"), "HIGH"]]),
-            seen),
+            fakeLlm(
+               (req, n) =>
+                  n === 1
+                     ? "Sure, here are my thoughts on these measures."
+                     : rate([[indexOfName(req, "total_revenue"), "HIGH"]]),
+               seen,
+            ),
          );
          const payload = await semantic(captureHandler(store()));
          expect(seen).toHaveLength(2);
@@ -408,7 +466,10 @@ describe("get_context entity refine", () => {
          _setEmbeddingProviderForTests(embeddings());
          const seen: LlmRequest[] = [];
          _setLlmProviderForTests(
-            fakeLlm((req) => rate([[indexOfName(req, "total_revenue"), "HIGH"]]), seen),
+            fakeLlm(
+               (req) => rate([[indexOfName(req, "total_revenue"), "HIGH"]]),
+               seen,
+            ),
          );
          const handler = captureHandler(store());
          await semantic(handler);
@@ -426,12 +487,14 @@ describe("get_context entity refine", () => {
          });
          _setEmbeddingProviderForTests(embeddings());
          _setLlmProviderForTests(
-            fakeLlm((req) => rate([[indexOfName(req, "total_revenue"), "HIGH", "why"]])),
+            fakeLlm((req) =>
+               rate([[indexOfName(req, "total_revenue"), "HIGH", "why"]]),
+            ),
          );
          const payload = await semantic(captureHandler(store()));
-         expect(payload.sources[0].entities[0].matched_targets[0]).not.toHaveProperty(
-            "match_reason",
-         );
+         expect(
+            payload.sources[0].entities[0].matched_targets[0],
+         ).not.toHaveProperty("match_reason");
       });
    });
 
@@ -446,15 +509,21 @@ describe("get_context entity refine", () => {
             refine: { enabled: true },
             llm: { model: "m", maxAttempts: 1, cache: { enabled: false } },
          });
-         _setLlmProviderForTests(fakeLlm(() => new LlmError("down", "http", false, 500)));
+         _setLlmProviderForTests(
+            fakeLlm(() => new LlmError("down", "http", false, 500)),
+         );
          const payload = await semantic(captureHandler(store()));
          expect(names(payload)).toEqual(names(before));
          expect(payload.retrieval_stages).toEqual({ refine: "failed:http" });
-         expect(payload.warnings.join(" ")).toContain("LLM refine unavailable (http)");
-         // Cosine relevances are untouched: no half-applied level scores.
-         expect(payload.sources[0].entities.map((e: any) => e.relevance)).toEqual(
-            before.sources[0].entities.map((e: any) => e.relevance),
+         expect(payload.warnings.join(" ")).toContain(
+            "LLM refine unavailable (http)",
          );
+         // Cosine relevances are untouched: no half-applied level scores.
+         expect(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            payload.sources[0].entities.map((e: any) => e.relevance),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         ).toEqual(before.sources[0].entities.map((e: any) => e.relevance));
       });
 
       it("keeps the candidates of a failed batch at their similarity order", async () => {
@@ -481,7 +550,9 @@ describe("get_context entity refine", () => {
          );
          const payload = await semantic(captureHandler(store()));
          expect(payload.retrieval_stages.refine).toMatch(/^partial:1\/3$/);
-         expect(payload.warnings.join(" ")).toContain("failed for 1 of 3 batches");
+         expect(payload.warnings.join(" ")).toContain(
+            "failed for 1 of 3 batches",
+         );
          // Nothing is lost to the failure: all five survive.
          expect(names(payload)).toHaveLength(5);
       });
@@ -516,7 +587,9 @@ describe("get_context entity refine", () => {
          try {
             const payload = await semantic(captureHandler(store()));
             expect(seen).toHaveLength(0);
-            expect(payload.retrieval_stages).toEqual({ refine: "skipped:no_model" });
+            expect(payload.retrieval_stages).toEqual({
+               refine: "skipped:no_model",
+            });
          } finally {
             if (saved !== undefined) process.env.LLM_MODEL = saved;
          }
@@ -542,7 +615,9 @@ describe("get_context entity refine", () => {
          const calls = seen.length;
          const payload = parse(await handler(params));
          expect(seen.length).toBe(calls);
-         expect(payload.retrieval_stages).toEqual({ refine: "skipped:cooldown" });
+         expect(payload.retrieval_stages).toEqual({
+            refine: "skipped:cooldown",
+         });
       });
    });
 
@@ -573,7 +648,9 @@ describe("get_context entity refine", () => {
          _setLlmProviderForTests(fakeLlm(() => "[]", seen));
          const payload = parse(await captureHandler(store())(params));
          expect(seen).toHaveLength(0);
-         expect(payload.retrieval_stages).toEqual({ refine: "skipped:lexical" });
+         expect(payload.retrieval_stages).toEqual({
+            refine: "skipped:lexical",
+         });
       });
    });
 
@@ -592,15 +669,27 @@ describe("get_context entity refine", () => {
          const payload = await semantic(captureHandler(store()), {
             requestInfo: { headers: { "x-publisher-retrieval-trace": "full" } },
          });
-         const gate = payload.retrieval_trace.gates.find((g: any) => g.gate === "refine");
+         const gate = payload.retrieval_trace.gates.find(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (g: any) => g.gate === "refine",
+         );
          expect(gate.status).toBe("ok");
          expect(gate.in).toBe(5);
          expect(gate.out).toBe(1);
-         expect(gate.dropped_by_reason).toEqual({ llm_omitted: 3, below_min_level: 1 });
+         expect(gate.dropped_by_reason).toEqual({
+            llm_omitted: 3,
+            below_min_level: 1,
+         });
          expect(gate.llm_calls).toBe(1);
          expect(payload.retrieval_trace.llm.calls).toBe(1);
-         const kept = payload.retrieval_trace.candidates.filter((c: any) => c.kept);
-         expect(kept.map((c: any) => c.entity_id)).toEqual(["measure:orders:total_revenue"]);
+         const kept = payload.retrieval_trace.candidates.filter(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (c: any) => c.kept,
+         );
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(kept.map((c: any) => c.entity_id)).toEqual([
+            "measure:orders:total_revenue",
+         ]);
       });
 
       it("gives every candidate its level, dropped ones too, so a level sweep can be replayed", async () => {
@@ -618,7 +707,11 @@ describe("get_context entity refine", () => {
             requestInfo: { headers: { "x-publisher-retrieval-trace": "full" } },
          });
          const byId = Object.fromEntries(
-            payload.retrieval_trace.candidates.map((c: any) => [c.entity_id, c]),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            payload.retrieval_trace.candidates.map((c: any) => [
+               c.entity_id,
+               c,
+            ]),
          );
          const kept = byId["measure:orders:total_revenue"];
          expect(kept.level).toBe("HIGH");
@@ -630,10 +723,14 @@ describe("get_context entity refine", () => {
          expect(low.dropped_by).toBe("refine:below_min_level");
          // Left out by the model: no level, and the reason says so.
          const omitted = payload.retrieval_trace.candidates.filter(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (c: any) => c.dropped_by === "refine:llm_omitted",
          );
          expect(omitted).toHaveLength(3);
-         expect(omitted.every((c: any) => c.levels["0"] === "omitted")).toBe(true);
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         expect(omitted.every((c: any) => c.levels["0"] === "omitted")).toBe(
+            true,
+         );
       });
 
       it("can turn refine off for one call with the override header", async () => {
@@ -643,7 +740,11 @@ describe("get_context entity refine", () => {
          _setLlmProviderForTests(fakeLlm(() => "[]", seen));
          const payload = await semantic(captureHandler(store()), {
             requestInfo: {
-               headers: { "x-publisher-retrieval": JSON.stringify({ refine: { enabled: false } }) },
+               headers: {
+                  "x-publisher-retrieval": JSON.stringify({
+                     refine: { enabled: false },
+                  }),
+               },
             },
          });
          expect(seen).toHaveLength(0);

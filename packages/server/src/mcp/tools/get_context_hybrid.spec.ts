@@ -4,7 +4,15 @@
 // Hybrid retrieval through the handler: fusing lunr's ranking into the
 // embedding ranking, off by default.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -21,7 +29,12 @@ import {
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
-import { captureHandler, entityNames, parse, storeFor } from "./retrieval_test_kit";
+import {
+   captureHandler,
+   entityNames,
+   parse,
+   storeFor,
+} from "./retrieval_test_kit";
 
 // Cosine to the query "sku": alpha_score 0.9, sku_count 0.6, sku_legacy 0
 // (under the floor). lunr finds the two whose docs say "sku".
@@ -46,7 +59,10 @@ const model = {
    ],
    getQueries: () => [],
 };
-const pkg = { listModels: async () => [{ path: "m.malloy" }], getModel: () => model };
+const pkg = {
+   listModels: async () => [{ path: "m.malloy" }],
+   getModel: () => model,
+};
 
 const vectorFor = (text: string): number[] => {
    if (text === "sku") return [1, 0];
@@ -59,7 +75,12 @@ function provider(): EmbeddingProvider {
    const fetchStub = (async (_u: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: string[] };
       return new Response(
-         JSON.stringify({ data: body.input.map((t, index) => ({ index, embedding: vectorFor(t) })) }),
+         JSON.stringify({
+            data: body.input.map((t, index) => ({
+               index,
+               embedding: vectorFor(t),
+            })),
+         }),
          { status: 200 },
       );
    }) as typeof fetch;
@@ -125,7 +146,11 @@ describe("get_context hybrid retrieval", () => {
    it("keeps the published relevance as the cosine", async () => {
       const payload = await ask({ mode: "rerank-only" });
       const byName = Object.fromEntries(
-         payload.sources.flatMap((c: any) => c.entities.map((e: any) => [e.name, e])),
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         payload.sources.flatMap((c: any) =>
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            c.entities.map((e: any) => [e.name, e]),
+         ),
       );
       expect(byName.sku_count.relevance).toBe(0.6);
       expect(byName.alpha_score.relevance).toBe(0.9);
@@ -135,7 +160,9 @@ describe("get_context hybrid retrieval", () => {
       const payload = await ask({ mode: "union" });
       expect(entityNames(payload)).toContain("sku_legacy");
       const legacy = payload.sources
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          .flatMap((c: any) => c.entities)
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
          .find((e: any) => e.name === "sku_legacy");
       expect(legacy.relevance).toBeUndefined();
    });

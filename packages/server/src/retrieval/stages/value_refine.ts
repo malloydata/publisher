@@ -7,8 +7,15 @@ import type { ValueHit } from "../dim_values";
 import { parseValueRefineReply } from "../llm_json";
 import { mapWithLimit } from "../pool";
 import { REPAIR_NOTE } from "../prompts/refine";
-import { buildValueRefinePrompt, valueRefineLine } from "../prompts/value_refine";
-import type { EgressClasses, RelevanceLevel, RetrievalConfig } from "../retrieval_config";
+import {
+   buildValueRefinePrompt,
+   valueRefineLine,
+} from "../prompts/value_refine";
+import type {
+   EgressClasses,
+   RelevanceLevel,
+   RetrievalConfig,
+} from "../retrieval_config";
 import type { RunLlm } from "../run";
 import { finalizeRelevance, levelBelow, levelValue, round4 } from "../scoring";
 import type { SearchTargetText } from "../stage_types";
@@ -101,7 +108,11 @@ export async function runValueRefine(args: {
       const picked = capped.slice(0, cfg.maxCandidates);
       for (const h of picked) sent.add(keyOf(h));
       for (let i = 0; i < picked.length; i += cfg.batchSize) {
-         batches.push({ target, phrase, items: picked.slice(i, i + cfg.batchSize) });
+         batches.push({
+            target,
+            phrase,
+            items: picked.slice(i, i + cfg.batchSize),
+         });
       }
    }
    if (batches.length === 0) return skip("no_candidates");
@@ -109,12 +120,28 @@ export async function runValueRefine(args: {
    let failed = 0;
    let firstFailure: LlmError | undefined;
 
-   const rate = async (b: Batch): Promise<Map<number, RelevanceLevel> | null> => {
+   const rate = async (
+      b: Batch,
+   ): Promise<Map<number, RelevanceLevel> | null> => {
       const lines = b.items.map((h, i) =>
-         valueRefineLine(i, { value: h.value, source: h.source, dimension: h.dimension }),
+         valueRefineLine(i, {
+            value: h.value,
+            source: h.source,
+            dimension: h.dimension,
+         }),
       );
-      const prompt = buildValueRefinePrompt({ phrase: b.phrase, lines, wrapForJsonMode: wrap });
-      const cacheKey = sha(["valueRefine", model, String(wrap), b.phrase, lines.join("\n")]);
+      const prompt = buildValueRefinePrompt({
+         phrase: b.phrase,
+         lines,
+         wrapForJsonMode: wrap,
+      });
+      const cacheKey = sha([
+         "valueRefine",
+         model,
+         String(wrap),
+         b.phrase,
+         lines.join("\n"),
+      ]);
       const attempt = async (note: string, key: string | undefined) => {
          const res = await llm.runner.complete(llm.budget, {
             stage: "valueRefine",
@@ -140,7 +167,9 @@ export async function runValueRefine(args: {
       } catch (error) {
          failed++;
          firstFailure ??=
-            error instanceof LlmError ? error : new LlmError(String(error), "network", false);
+            error instanceof LlmError
+               ? error
+               : new LlmError(String(error), "network", false);
          return null;
       }
    };
@@ -196,10 +225,17 @@ export async function runValueRefine(args: {
       }
       kept.push({
          ...h,
-         score: round4(finalizeRelevance(levelValue(lv) + h.score, config.scoring.knots)),
+         score: round4(
+            finalizeRelevance(levelValue(lv) + h.score, config.scoring.knots),
+         ),
       });
    }
-   kept.sort((a, b) => b.score - a.score || b.weight - a.weight || (a.value < b.value ? -1 : 1));
+   kept.sort(
+      (a, b) =>
+         b.score - a.score ||
+         b.weight - a.weight ||
+         (a.value < b.value ? -1 : 1),
+   );
 
    const warnings: string[] = [];
    let status = "ok";

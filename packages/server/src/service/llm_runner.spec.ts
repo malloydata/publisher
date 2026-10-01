@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { LlmError, type LlmProvider, type LlmRequest, type LlmResponse } from "./llm_provider";
+import {
+   LlmError,
+   type LlmProvider,
+   type LlmRequest,
+   type LlmResponse,
+} from "./llm_provider";
 import {
    LlmBudget,
    LlmRunner,
@@ -114,7 +119,10 @@ describe("LlmRunner retries", () => {
    it("honors Retry-After over the computed backoff", async () => {
       const clock = fakeClock();
       const r = new LlmRunner(
-         scripted([new LlmError("slow", "rate_limit", true, 429, 2500), ok("a")]),
+         scripted([
+            new LlmError("slow", "rate_limit", true, 429, 2500),
+            ok("a"),
+         ]),
          SETTINGS,
          clock,
       );
@@ -202,31 +210,47 @@ describe("LlmRunner budget", () => {
          Array.from({ length: 6 }, () => r.complete(budget, ARGS)),
       );
       expect(seen).toHaveLength(3);
-      const failed = results.filter((x) => x.status === "rejected") as PromiseRejectedResult[];
+      const failed = results.filter(
+         (x) => x.status === "rejected",
+      ) as PromiseRejectedResult[];
       expect(failed).toHaveLength(3);
-      expect(failed.every((f) => (f.reason as LlmError).kind === "budget")).toBe(true);
+      expect(
+         failed.every((f) => (f.reason as LlmError).kind === "budget"),
+      ).toBe(true);
    });
 
    it("reports a timeout the budget caused as the budget, and does not count it against the endpoint", async () => {
       const clock = fakeClock();
-      const r = new LlmRunner(scripted([retryable("timeout")]), SETTINGS, clock);
+      const r = new LlmRunner(
+         scripted([retryable("timeout")]),
+         SETTINGS,
+         clock,
+      );
       // 50ms left, under the 1000ms per-call timeout: the call was cut short.
       for (let i = 0; i < 3; i++) {
-         const err = await r.complete(new LlmBudget(5, 50, clock.now), ARGS).catch((e) => e);
+         const err = await r
+            .complete(new LlmBudget(5, 50, clock.now), ARGS)
+            .catch((e) => e);
          expect((err as LlmError).kind).toBe("budget");
       }
       // Three such calls with a breaker at two failures, and it is still closed.
       expect(r.breakerOpen()).toBe(false);
       // A timeout at the full per-call limit is the endpoint's, and does count.
       for (let i = 0; i < 2; i++) {
-         await r.complete(new LlmBudget(5, 60_000, clock.now), ARGS).catch(() => {});
+         await r
+            .complete(new LlmBudget(5, 60_000, clock.now), ARGS)
+            .catch(() => {});
       }
       expect(r.breakerOpen()).toBe(true);
    });
 
    it("tallies calls, tokens and failures on the budget", async () => {
       const clock = fakeClock();
-      const r = new LlmRunner(scripted([retryable(), ok("a")]), SETTINGS, clock);
+      const r = new LlmRunner(
+         scripted([retryable(), ok("a")]),
+         SETTINGS,
+         clock,
+      );
       const budget = new LlmBudget(5, 60_000, clock.now);
       await r.complete(budget, ARGS);
       expect(budget.usage.calls).toBe(2);
@@ -366,7 +390,11 @@ describe("LlmRunner concurrency", () => {
             return ok("a");
          },
       };
-      const r = new LlmRunner(provider, { ...SETTINGS, concurrency: 2 }, fakeClock());
+      const r = new LlmRunner(
+         provider,
+         { ...SETTINGS, concurrency: 2 },
+         fakeClock(),
+      );
       await Promise.all(
          Array.from({ length: 8 }, () => r.complete(null, ARGS)),
       );
@@ -384,7 +412,12 @@ describe("LlmRunner concurrency", () => {
       };
       const r = new LlmRunner(
          provider,
-         { ...SETTINGS, concurrency: 1, maxAttempts: 1, breaker: { failures: 100, cooldownMs: 1 } },
+         {
+            ...SETTINGS,
+            concurrency: 1,
+            maxAttempts: 1,
+            breaker: { failures: 100, cooldownMs: 1 },
+         },
          fakeClock(),
       );
       const results = await Promise.allSettled(

@@ -339,7 +339,8 @@ export function chunkDoc(doc: string): string[] {
 export function entityFacets(
    entity: EmbeddableEntity,
    extras?: FacetExtras,
-   representation: "facets" | "single" = getRetrievalConfig().embedding.representation,
+   representation: "facets" | "single" = getRetrievalConfig().embedding
+      .representation,
 ): EntityFacet[] {
    const name = humanizeName(entity.name) || entity.name;
    if (representation === "single") {
@@ -347,8 +348,12 @@ export function entityFacets(
       // generated keyphrase when there is one, else the entity's own doc, else
       // its name. The name is NOT added to the doc, and no summary is embedded.
       const text =
-         extras?.keyphrase?.trim() || entity.embedDoc.replace(/\s+/g, " ").trim() || name;
-      return [{ facet: ONE_FACET, text: splitToFit(text, MAX_EMBED_INPUT_CHARS)[0] }];
+         extras?.keyphrase?.trim() ||
+         entity.embedDoc.replace(/\s+/g, " ").trim() ||
+         name;
+      return [
+         { facet: ONE_FACET, text: splitToFit(text, MAX_EMBED_INPUT_CHARS)[0] },
+      ];
    }
    const facets: EntityFacet[] = [{ facet: NAME_FACET, text: name }];
    // The prefix is only known here, so this is the only place that can tell
@@ -746,7 +751,9 @@ function fingerprintFor(
    // cache key: the same frozen array fingerprints differently once enriched.
    const overlay = overlayFor(environmentName, packageName);
    const cacheKey = `${metaKey(environmentName, packageName)}#${overlay?.version ?? 0}`;
-   const cached = frozen ? fingerprintCache.get(entities)?.get(cacheKey) : undefined;
+   const cached = frozen
+      ? fingerprintCache.get(entities)?.get(cacheKey)
+      : undefined;
    if (cached !== undefined) return cached;
    const fingerprint = desiredFingerprint(
       desiredFacets(uniqueByEntityKey(entities), overlay?.extras),
@@ -1442,7 +1449,11 @@ export async function trySemanticSearch(args: {
    const entryGeneration = meta.generation;
    // The caller's array, not the deduped copy: the copy is new every call,
    // so only the caller's array can hit the cache.
-   const fingerprint = fingerprintFor(args.entities, environmentName, packageName);
+   const fingerprint = fingerprintFor(
+      args.entities,
+      environmentName,
+      packageName,
+   );
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -1759,7 +1770,12 @@ export async function trySemanticSearch(args: {
          `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
           WHERE environment_name = ? AND package_name = ?
             AND NOT (embedding_model = ? AND dims = ?)`,
-         [environmentName, packageName, provider.rowModel, queryVectors[0].length],
+         [
+            environmentName,
+            packageName,
+            provider.rowModel,
+            queryVectors[0].length,
+         ],
       );
       if ((staleRows?.n ?? 0) > 0) {
          // The check-and-purge runs under the package-name mutex so it

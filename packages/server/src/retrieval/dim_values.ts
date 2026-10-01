@@ -89,7 +89,8 @@ export function discoverValueDimensions(
    const seen = new Set<string>();
    const out: ValueDimension[] = [];
    for (const e of entities) {
-      if (e.kind !== "dimension" || e.joinPath || e.aliasOf || !e.source) continue;
+      if (e.kind !== "dimension" || e.joinPath || e.aliasOf || !e.source)
+         continue;
       const label = `${e.source}.${e.name}`;
       const tagged = e.indexValues !== undefined;
       const isString = e.dataType === "string";
@@ -132,7 +133,11 @@ export function quoteIdentifier(name: string): string {
 }
 
 /** The query that reads a dimension's most common values, one over the cap. */
-export function valuesQuery(source: string, dimension: string, limit: number): string {
+export function valuesQuery(
+   source: string,
+   dimension: string,
+   limit: number,
+): string {
    const s = quoteIdentifier(source);
    const d = quoteIdentifier(dimension);
    return `run: ${s} -> { group_by: ${d}; aggregate: ${quoteIdentifier(WEIGHT)} is count(); order_by: ${quoteIdentifier(WEIGHT)} desc; limit: ${limit} }`;
@@ -148,7 +153,11 @@ export interface FetchedValues {
 
 function asValue(v: unknown): string | null {
    if (typeof v === "string") return v;
-   if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") {
+   if (
+      typeof v === "number" ||
+      typeof v === "boolean" ||
+      typeof v === "bigint"
+   ) {
       return String(v);
    }
    return null; // null, dates and objects are not text a person would type
@@ -216,7 +225,11 @@ export function _resetValueIndexStateForTests(): void {
    kicked = new WeakMap();
 }
 
-const renderValue = (template: string, d: ValueDimension, value: string): string =>
+const renderValue = (
+   template: string,
+   d: ValueDimension,
+   value: string,
+): string =>
    template
       .replaceAll("{value}", () => value)
       .replaceAll("{dimension}", () => d.dimension.replace(/_/g, " "))
@@ -273,17 +286,18 @@ async function syncOne(
 
    // A value needs a vector when it is new, its text changed, it was embedded
    // under another model or setup, or it has none and a provider now exists.
-   const toEmbed = cfg.embed && provider
-      ? desired.filter((d) => {
-           const row = existing.get(d.value);
-           return (
-              !row ||
-              row.content_hash !== d.hash ||
-              row.embedding_model !== model ||
-              !row.has_embedding
-           );
-        })
-      : [];
+   const toEmbed =
+      cfg.embed && provider
+         ? desired.filter((d) => {
+              const row = existing.get(d.value);
+              return (
+                 !row ||
+                 row.content_hash !== d.hash ||
+                 row.embedding_model !== model ||
+                 !row.has_embedding
+              );
+           })
+         : [];
 
    const vectors = new Map<string, number[]>();
    if (toEmbed.length > 0 && provider) {
@@ -297,13 +311,16 @@ async function syncOne(
       } catch (error) {
          // Keep the text; the lexical arm still finds it, and the next run
          // sees the missing vector and tries again.
-         logger.warn("[MCP Tool getContext] Embedding dimensional values failed; keeping them as text", {
-            environmentName,
-            packageName,
-            source: dim.source,
-            dimension: dim.dimension,
-            error: error instanceof Error ? error.message : String(error),
-         });
+         logger.warn(
+            "[MCP Tool getContext] Embedding dimensional values failed; keeping them as text",
+            {
+               environmentName,
+               packageName,
+               source: dim.source,
+               dimension: dim.dimension,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
       }
    }
 
@@ -361,7 +378,13 @@ async function syncOne(
 async function writeState(
    args: ValueSyncArgs,
    dim: ValueDimension,
-   state: { distinct: number; kept: number; truncated: boolean; status: string; error?: string },
+   state: {
+      distinct: number;
+      kept: number;
+      truncated: boolean;
+      status: string;
+      error?: string;
+   },
 ): Promise<void> {
    await args.db.run(
       `INSERT INTO dimension_value_state (
@@ -404,7 +427,13 @@ export async function syncDimensionValues(
       statuses.set(key, { ...s, updatedAt: new Date().toISOString() });
       return statuses.get(key)!;
    };
-   set({ status: "building", dimensions: dims.length, values: 0, truncated: 0, failed: 0 });
+   set({
+      status: "building",
+      dimensions: dims.length,
+      values: 0,
+      truncated: 0,
+      failed: 0,
+   });
 
    const selected = new Set(dims.map((d) => [d.source, d.dimension].join(SEP)));
    let kept = 0;
@@ -456,7 +485,9 @@ export async function syncDimensionValues(
             prior.status === "ok" &&
             prior.age_ms < cfg.refreshMinutes * 60_000;
          const failedRecently =
-            prior && prior.status === "failed" && prior.age_ms < RETRY_AFTER_FAILURE_MS;
+            prior &&
+            prior.status === "failed" &&
+            prior.age_ms < RETRY_AFTER_FAILURE_MS;
 
          const remaining = Math.min(
             cfg.maxValuesPerPackage - kept,
@@ -479,10 +510,19 @@ export async function syncDimensionValues(
                   `SELECT value, CAST(weight AS DOUBLE) AS weight FROM dimension_values
                    WHERE environment_name = ? AND package_name = ? AND source_name = ? AND dimension_name = ?
                    ORDER BY weight DESC LIMIT ?`,
-                  [environmentName, packageName, dim.source, dim.dimension, cap],
+                  [
+                     environmentName,
+                     packageName,
+                     dim.source,
+                     dim.dimension,
+                     cap,
+                  ],
                );
                await syncOne(args, dim, {
-                  values: stored.map((r) => ({ value: r.value, weight: Number(r.weight) })),
+                  values: stored.map((r) => ({
+                     value: r.value,
+                     weight: Number(r.weight),
+                  })),
                   truncated: prior!.truncated,
                   distinctSeen: prior!.kept,
                });
@@ -522,14 +562,18 @@ export async function syncDimensionValues(
             if (fetched.truncated) truncatedDims++;
          } catch (error) {
             failed++;
-            const message = error instanceof Error ? error.message : String(error);
-            logger.warn("[MCP Tool getContext] Could not index a dimension's values", {
-               environmentName,
-               packageName,
-               source: dim.source,
-               dimension: dim.dimension,
-               error: message,
-            });
+            const message =
+               error instanceof Error ? error.message : String(error);
+            logger.warn(
+               "[MCP Tool getContext] Could not index a dimension's values",
+               {
+                  environmentName,
+                  packageName,
+                  source: dim.source,
+                  dimension: dim.dimension,
+                  error: message,
+               },
+            );
             await writeState(args, dim, {
                distinct: 0,
                kept: 0,
@@ -552,7 +596,13 @@ export async function syncDimensionValues(
          packageName,
          error: error instanceof Error ? error.message : String(error),
       });
-      return set({ status: "failed", dimensions: dims.length, values: kept, truncated: truncatedDims, failed: dims.length });
+      return set({
+         status: "failed",
+         dimensions: dims.length,
+         values: kept,
+         truncated: truncatedDims,
+         failed: dims.length,
+      });
    }
 }
 
@@ -572,7 +622,9 @@ export function kickValueIndex(
    const cfg = args.config.dimensionalValues;
    const last = kicked.get(instance);
    if (last) {
-      const wait = last.done ? cfg.refreshMinutes * 60_000 : RETRY_AFTER_FAILURE_MS;
+      const wait = last.done
+         ? cfg.refreshMinutes * 60_000
+         : RETRY_AFTER_FAILURE_MS;
       if (now - last.at < wait) return;
    }
    if (!statuses.has(key)) {
@@ -623,13 +675,20 @@ export async function loadTruncation(
    packageName: string,
 ): Promise<TruncationMap> {
    try {
-      const rows = await db.all<{ source_name: string; dimension_name: string; truncated: boolean }>(
+      const rows = await db.all<{
+         source_name: string;
+         dimension_name: string;
+         truncated: boolean;
+      }>(
          `SELECT source_name, dimension_name, truncated FROM dimension_value_state
           WHERE environment_name = ? AND package_name = ?`,
          [environmentName, packageName],
       );
       return new Map(
-         rows.map((r) => [[r.source_name, r.dimension_name].join(SEP), Boolean(r.truncated)]),
+         rows.map((r) => [
+            [r.source_name, r.dimension_name].join(SEP),
+            Boolean(r.truncated),
+         ]),
       );
    } catch {
       return new Map();
@@ -687,7 +746,16 @@ export async function searchDimensionValues(args: {
                WHERE environment_name = ? AND package_name = ? ${scope}
              ) WHERE score >= ${NEAR_MATCH_FLOOR}
              ORDER BY score DESC, weight DESC LIMIT ?`,
-            [lq, lq, lq, lq, environmentName, packageName, ...scopeParam, cfg.maxHitsPerTarget],
+            [
+               lq,
+               lq,
+               lq,
+               lq,
+               environmentName,
+               packageName,
+               ...scopeParam,
+               cfg.maxHitsPerTarget,
+            ],
          );
          for (const r of rows) {
             offer({
@@ -711,9 +779,12 @@ export async function searchDimensionValues(args: {
             "query",
          );
       } catch (error) {
-         logger.warn("[MCP Tool getContext] Query embedding for values failed; using the text arm only", {
-            error: error instanceof Error ? error.message : String(error),
-         });
+         logger.warn(
+            "[MCP Tool getContext] Query embedding for values failed; using the text arm only",
+            {
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
       }
       if (vectors) {
          for (let i = 0; i < args.queries.length; i++) {
@@ -754,6 +825,9 @@ export async function searchDimensionValues(args: {
       }
    }
    return [...best.values()].sort(
-      (a, b) => b.score - a.score || b.weight - a.weight || (a.value < b.value ? -1 : 1),
+      (a, b) =>
+         b.score - a.score ||
+         b.weight - a.weight ||
+         (a.value < b.value ? -1 : 1),
    );
 }

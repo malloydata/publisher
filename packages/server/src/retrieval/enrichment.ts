@@ -205,7 +205,11 @@ export async function planEnrichment(args: {
    const signature = egressSignature(classes);
    const now = args.now ?? Date.now();
    const entities = uniqueByEntityKey(args.entities);
-   const cache = await loadCache(args.db, args.environmentName, args.packageName);
+   const cache = await loadCache(
+      args.db,
+      args.environmentName,
+      args.packageName,
+   );
 
    const items: Item[] = [];
    if (cfg.keyphrase.mode !== "never") {
@@ -220,7 +224,12 @@ export async function planEnrichment(args: {
          ) {
             continue;
          }
-         const field = keyphraseField(e, entities, classes, cfg.keyphrase.maxCodeChars);
+         const field = keyphraseField(
+            e,
+            entities,
+            classes,
+            cfg.keyphrase.maxCodeChars,
+         );
          items.push({
             what: KEYPHRASE,
             entity: e,
@@ -273,17 +282,26 @@ export async function planEnrichment(args: {
             );
             const slot = extras.get(key) ?? {};
             if (item.what === KEYPHRASE) {
-               slot.kw = renderKeyphrase(cfg.keyphrase.template, item.entity.name, cached.text);
+               slot.kw = renderKeyphrase(
+                  cfg.keyphrase.template,
+                  item.entity.name,
+                  cached.text,
+               );
                slot.keyphrase = cached.text;
             } else {
-               slot.sum = cached.text2 ? `${cached.text2} ${cached.text}` : cached.text;
+               slot.sum = cached.text2
+                  ? `${cached.text2} ${cached.text}`
+                  : cached.text;
                slot.summary = cached.text;
                if (cached.text2) slot.oneLine = cached.text2;
             }
             extras.set(key, slot);
             continue;
          }
-         if (cached.status === "failed" && now - cached.updated_ms < cfg.retryAfterMs) {
+         if (
+            cached.status === "failed" &&
+            now - cached.updated_ms < cfg.retryAfterMs
+         ) {
             waiting++;
             continue;
          }
@@ -299,7 +317,11 @@ export async function planEnrichment(args: {
       (a, b) =>
          rank(a) - rank(b) ||
          b.entity.embedDoc.length - a.entity.embedDoc.length ||
-         (a.entity.name < b.entity.name ? -1 : a.entity.name > b.entity.name ? 1 : 0),
+         (a.entity.name < b.entity.name
+            ? -1
+            : a.entity.name > b.entity.name
+              ? 1
+              : 0),
    );
 
    // `indexing.maxItemsPerPackage` is a budget for every row this package
@@ -334,7 +356,8 @@ export async function planEnrichment(args: {
 /** How many embedding rows these extras add: one per keyphrase, one per summary. */
 function rowsOf(extras: ReadonlyMap<string, FacetExtras>): number {
    let n = 0;
-   for (const v of extras.values()) n += (v.kw !== undefined ? 1 : 0) + (v.sum !== undefined ? 1 : 0);
+   for (const v of extras.values())
+      n += (v.kw !== undefined ? 1 : 0) + (v.sum !== undefined ? 1 : 0);
    return n;
 }
 
@@ -518,19 +541,38 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
             item.what === KEYPHRASE
                ? cfg.keyphrase.promptVersion
                : cfg.sourceSummary.promptVersion;
-         await upsert(db, environmentName, packageName, item, result, model, version, signature);
+         await upsert(
+            db,
+            environmentName,
+            packageName,
+            item,
+            result,
+            model,
+            version,
+            signature,
+         );
          if (!result.ok) {
             failed++;
             return;
          }
          enriched++;
-         const ek = entityRowKey(item.entity.kind, item.entity.source ?? "", item.entity.name);
+         const ek = entityRowKey(
+            item.entity.kind,
+            item.entity.source ?? "",
+            item.entity.name,
+         );
          const slot = results.get(ek) ?? {};
          if (item.what === KEYPHRASE) {
-            slot.kw = renderKeyphrase(cfg.keyphrase.template, item.entity.name, result.text);
+            slot.kw = renderKeyphrase(
+               cfg.keyphrase.template,
+               item.entity.name,
+               result.text,
+            );
             slot.keyphrase = result.text;
          } else {
-            slot.sum = result.text2 ? `${result.text2} ${result.text}` : result.text;
+            slot.sum = result.text2
+               ? `${result.text2} ${result.text}`
+               : result.text;
             slot.summary = result.text;
             if (result.text2) slot.oneLine = result.text2;
          }
@@ -542,12 +584,21 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
          const e =
             error instanceof LlmError
                ? error
-               : new LlmError(String((error as Error)?.message ?? error), "network", false);
-         if (e.kind === "budget" || e.kind === "breaker" || e.kind === "aborted") {
+               : new LlmError(
+                    String((error as Error)?.message ?? error),
+                    "network",
+                    false,
+                 );
+         if (
+            e.kind === "budget" ||
+            e.kind === "breaker" ||
+            e.kind === "aborted"
+         ) {
             deferred += items.length;
             return;
          }
-         for (const item of items) await record(item, { ok: false, error: e.message });
+         for (const item of items)
+            await record(item, { ok: false, error: e.message });
       };
 
       const ask = async (
@@ -574,7 +625,9 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
                try {
                   const prompt = buildSummaryPrompt(item.summary!);
                   const model = models.summary!;
-                  let parsed = parseSummaryReply(await ask("summary", model, prompt));
+                  let parsed = parseSummaryReply(
+                     await ask("summary", model, prompt),
+                  );
                   if (!parsed) {
                      parsed = parseSummaryReply(
                         await ask("summary", model, {
@@ -583,8 +636,17 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
                         }),
                      );
                   }
-                  if (!parsed) throw new LlmError("the summary reply could not be read", "malformed", false);
-                  await record(item, { ok: true, text: parsed.summary, text2: parsed.oneLine });
+                  if (!parsed)
+                     throw new LlmError(
+                        "the summary reply could not be read",
+                        "malformed",
+                        false,
+                     );
+                  await record(item, {
+                     ok: true,
+                     text: parsed.summary,
+                     text2: parsed.oneLine,
+                  });
                } catch (error) {
                   await settle([item], error);
                }
@@ -610,7 +672,9 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
                   try {
                      if (batch.length === 1 && size === 1) {
                         const prompt = buildKeyphrasePrompt(batch[0].field!);
-                        let kp = parseKeyphraseReply(await ask("keyphrase", model, prompt));
+                        let kp = parseKeyphraseReply(
+                           await ask("keyphrase", model, prompt),
+                        );
                         if (!kp) {
                            kp = parseKeyphraseReply(
                               await ask("keyphrase", model, {
@@ -619,12 +683,25 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
                               }),
                            );
                         }
-                        if (!kp) throw new LlmError("the keyphrase reply could not be read", "malformed", false);
-                        await record(batch[0], { ok: true, text: kp.slice(0, MAX_KEYPHRASE_CHARS) });
+                        if (!kp)
+                           throw new LlmError(
+                              "the keyphrase reply could not be read",
+                              "malformed",
+                              false,
+                           );
+                        await record(batch[0], {
+                           ok: true,
+                           text: kp.slice(0, MAX_KEYPHRASE_CHARS),
+                        });
                         return;
                      }
-                     const prompt = buildKeyphraseBatchPrompt(batch.map((b) => b.field!));
-                     let got = parseKeyphraseBatchReply(await ask("keyphrase", model, prompt), batch.length);
+                     const prompt = buildKeyphraseBatchPrompt(
+                        batch.map((b) => b.field!),
+                     );
+                     let got = parseKeyphraseBatchReply(
+                        await ask("keyphrase", model, prompt),
+                        batch.length,
+                     );
                      if (got.size === 0) {
                         got = parseKeyphraseBatchReply(
                            await ask("keyphrase", model, {
@@ -639,8 +716,14 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
                         await record(
                            batch[n],
                            kp
-                              ? { ok: true, text: kp.slice(0, MAX_KEYPHRASE_CHARS) }
-                              : { ok: false, error: "the model returned no keyphrase for this field" },
+                              ? {
+                                   ok: true,
+                                   text: kp.slice(0, MAX_KEYPHRASE_CHARS),
+                                }
+                              : {
+                                   ok: false,
+                                   error: "the model returned no keyphrase for this field",
+                                },
                         );
                      }
                   } catch (error) {
@@ -686,11 +769,14 @@ export async function runEnrichment(args: RunArgs): Promise<EnrichmentStatus> {
       });
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn("[MCP Tool getContext] Enrichment failed; serving the base index", {
-         environmentName,
-         packageName,
-         error: message,
-      });
+      logger.warn(
+         "[MCP Tool getContext] Enrichment failed; serving the base index",
+         {
+            environmentName,
+            packageName,
+            error: message,
+         },
+      );
       return setStatus({
          status: "failed",
          eligible: prior?.eligible ?? 0,
@@ -716,7 +802,10 @@ export function kickEnrichment(
    const key = pkgKey(args.environmentName, args.packageName);
    if (running.has(key)) return;
    const last = kicked.get(instance);
-   if (last && (!last.unfinished || now - last.at < args.config.enrichment.retryAfterMs)) {
+   if (
+      last &&
+      (!last.unfinished || now - last.at < args.config.enrichment.retryAfterMs)
+   ) {
       return;
    }
    if (!statuses.has(key)) {
@@ -733,7 +822,8 @@ export function kickEnrichment(
       .then((status) => {
          kicked.set(instance, {
             at: Date.now(),
-            unfinished: status.status === "partial" || status.status === "failed",
+            unfinished:
+               status.status === "partial" || status.status === "failed",
          });
       })
       .finally(() => running.delete(key));
@@ -765,16 +855,23 @@ export async function hydrateEnrichment(
    if (hydrated.has(instance)) return;
    hydrated.add(instance);
    const key = pkgKey(args.environmentName, args.packageName);
-   if (enrichmentOverlayVersion(args.environmentName, args.packageName) > 0) return;
+   if (enrichmentOverlayVersion(args.environmentName, args.packageName) > 0)
+      return;
    try {
       const models = enrichmentModels(args.config, args.envModel);
       const plan = await planEnrichment({ ...args, models });
       if (plan.extras.size === 0) return;
-      installEnrichmentOverlay(args.environmentName, args.packageName, plan.extras);
+      installEnrichmentOverlay(
+         args.environmentName,
+         args.packageName,
+         plan.extras,
+      );
       installedSignature.set(key, signatureOf(plan.extras));
       statuses.set(key, {
          status:
-            plan.pending.length === 0 && plan.deferredByRows === 0 ? "ready" : "partial",
+            plan.pending.length === 0 && plan.deferredByRows === 0
+               ? "ready"
+               : "partial",
          eligible: plan.eligible,
          enriched: plan.enriched,
          failed: plan.waiting,

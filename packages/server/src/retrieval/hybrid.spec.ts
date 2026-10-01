@@ -57,19 +57,37 @@ describe("rrfFuse", () => {
          ["c", new Map([[0, 0.7]])],
          ["d", new Map([[1, 0.4]])],
       ]);
-      const out = rrfFuse({ semantic, lexical: new Map(), k: 60, mode: "union" });
+      const out = rrfFuse({
+         semantic,
+         lexical: new Map(),
+         k: 60,
+         mode: "union",
+      });
       // d is first for target 1, exactly as a is for target 0.
       expect(out.get("d")).toBe(out.get("a"));
    });
 
    it("is empty when there is nothing to fuse", () => {
-      expect(rrfFuse({ semantic: new Map(), lexical: new Map(), k: 60, mode: "union" }).size).toBe(0);
+      expect(
+         rrfFuse({
+            semantic: new Map(),
+            lexical: new Map(),
+            k: 60,
+            mode: "union",
+         }).size,
+      ).toBe(0);
    });
 
    it("smaller k weights the top ranks more", () => {
-      const args = { semantic: scores({ a: 0.9, b: 0.8 }), lexical: new Map(), mode: "union" as const };
+      const args = {
+         semantic: scores({ a: 0.9, b: 0.8 }),
+         lexical: new Map(),
+         mode: "union" as const,
+      };
       const sharp = rrfFuse({ ...args, k: 1 });
       const flat = rrfFuse({ ...args, k: 100 });
-      expect(sharp.get("b")! / sharp.get("a")!).toBeLessThan(flat.get("b")! / flat.get("a")!);
+      expect(sharp.get("b")! / sharp.get("a")!).toBeLessThan(
+         flat.get("b")! / flat.get("a")!,
+      );
    });
 });

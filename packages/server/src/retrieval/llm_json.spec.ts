@@ -15,13 +15,22 @@ import {
 
 describe("extractJson", () => {
    it("parses a bare array and object", () => {
-      expect(extractJson('[{"a":1}]')).toEqual({ ok: true, value: [{ a: 1 }], salvaged: false });
-      expect(extractJson('{"a":1}')).toMatchObject({ ok: true, value: { a: 1 } });
+      expect(extractJson('[{"a":1}]')).toEqual({
+         ok: true,
+         value: [{ a: 1 }],
+         salvaged: false,
+      });
+      expect(extractJson('{"a":1}')).toMatchObject({
+         ok: true,
+         value: { a: 1 },
+      });
    });
 
    it("unwraps a code fence, with or without the language tag", () => {
-      expect(extractJson('```json\n[1,2]\n```')).toMatchObject({ value: [1, 2] });
-      expect(extractJson('```\n[1,2]\n```')).toMatchObject({ value: [1, 2] });
+      expect(extractJson("```json\n[1,2]\n```")).toMatchObject({
+         value: [1, 2],
+      });
+      expect(extractJson("```\n[1,2]\n```")).toMatchObject({ value: [1, 2] });
    });
 
    it("finds JSON inside prose", () => {
@@ -43,7 +52,9 @@ describe("extractJson", () => {
 
    it("drops trailing commas", () => {
       expect(extractJson('[{"a":1,},]')).toMatchObject({ value: [{ a: 1 }] });
-      expect(extractJson('{"a":[1,2,],}')).toMatchObject({ value: { a: [1, 2] } });
+      expect(extractJson('{"a":[1,2,],}')).toMatchObject({
+         value: { a: [1, 2] },
+      });
    });
 
    it("keeps a comma inside a string that precedes a bracket", () => {
@@ -52,12 +63,20 @@ describe("extractJson", () => {
 
    it("salvages an array cut off mid-element", () => {
       const r = extractJson('[{"index":0,"score":"HIGH"},{"index":1,"sco');
-      expect(r).toEqual({ ok: true, value: [{ index: 0, score: "HIGH" }], salvaged: true });
+      expect(r).toEqual({
+         ok: true,
+         value: [{ index: 0, score: "HIGH" }],
+         salvaged: true,
+      });
    });
 
    it("salvages an unterminated fence", () => {
       const r = extractJson('```json\n[{"index":0},{"index":1}');
-      expect(r).toMatchObject({ ok: true, salvaged: true, value: [{ index: 0 }, { index: 1 }] });
+      expect(r).toMatchObject({
+         ok: true,
+         salvaged: true,
+         value: [{ index: 0 }, { index: 1 }],
+      });
    });
 
    it("fails cleanly on no JSON, and on an unrepairable one", () => {
@@ -66,7 +85,7 @@ describe("extractJson", () => {
          error: "no JSON found in the reply",
       });
       expect(extractJson("[1, 2, oops]").ok).toBe(false);
-      expect(extractJson("{\"a\":").ok).toBe(false);
+      expect(extractJson('{"a":').ok).toBe(false);
    });
 });
 
@@ -220,7 +239,9 @@ describe("parseValueRefineReply", () => {
 
 describe("keyphrase and summary replies", () => {
    it("reads a single keyphrase", () => {
-      expect(parseKeyphraseReply('{"keyphrase":"  order total. "}')).toBe("order total.");
+      expect(parseKeyphraseReply('{"keyphrase":"  order total. "}')).toBe(
+         "order total.",
+      );
       expect(parseKeyphraseReply('{"keyphrase":""}')).toBeNull();
       expect(parseKeyphraseReply("nope")).toBeNull();
    });
@@ -244,7 +265,9 @@ describe("keyphrase and summary replies", () => {
 
    it("reads a summary and collapses whitespace", () => {
       expect(
-         parseSummaryReply('{"summary":"one\\n two","one_line_summary":" short. "}'),
+         parseSummaryReply(
+            '{"summary":"one\\n two","one_line_summary":" short. "}',
+         ),
       ).toEqual({ summary: "one two", oneLine: "short." });
       expect(parseSummaryReply('{"summary":"x"}')).toBeNull();
       expect(parseSummaryReply("[]")).toBeNull();

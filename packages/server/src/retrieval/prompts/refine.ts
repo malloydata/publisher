@@ -70,7 +70,9 @@ const flatten = (s: string): string => s.replace(/\s+/g, " ").trim();
 
 /** `- [i] name (type / dtype, source: S): description`, on one line. */
 export function refineLine(index: number, e: RefineLine): string {
-   const typePart = e.dataType ? `${e.entityType} / ${e.dataType}` : e.entityType;
+   const typePart = e.dataType
+      ? `${e.entityType} / ${e.dataType}`
+      : e.entityType;
    return `- [${index}] ${e.name} (${typePart}, source: ${e.source}): ${flatten(e.description)}`;
 }
 

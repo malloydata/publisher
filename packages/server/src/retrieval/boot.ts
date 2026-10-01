@@ -36,11 +36,17 @@ export function enabledStages(config: RetrievalConfig): LlmStage[] {
    const stages: LlmStage[] = [];
    if (config.refine.enabled) stages.push("refine");
    if (config.rerank.enabled) stages.push("rerank");
-   if (config.enrichment.enabled && config.enrichment.keyphrase.mode !== "never")
+   if (
+      config.enrichment.enabled &&
+      config.enrichment.keyphrase.mode !== "never"
+   )
       stages.push("keyphrase");
    if (config.enrichment.enabled && config.enrichment.sourceSummary.enabled)
       stages.push("summary");
-   if (config.dimensionalValues.mode !== "off" && config.dimensionalValues.refine.enabled)
+   if (
+      config.dimensionalValues.mode !== "off" &&
+      config.dimensionalValues.refine.enabled
+   )
       stages.push("valueRefine");
    return stages;
 }
@@ -89,7 +95,11 @@ export function checkRetrievalAgainstEnvironment(
          "retrieval.enrichment.enabled needs embeddings (set EMBEDDING_API_BASE or EMBEDDING_API_KEY) to have any effect; enrichment will not run.",
       );
    }
-   if (config.dimensionalValues.mode !== "off" && !config.dimensionalValues.lexical && !embeddingConfigured) {
+   if (
+      config.dimensionalValues.mode !== "off" &&
+      !config.dimensionalValues.lexical &&
+      !embeddingConfigured
+   ) {
       warnings.push(
          "retrieval.dimensionalValues has neither an embedding provider nor the lexical arm on; value targets will find nothing.",
       );
