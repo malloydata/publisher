@@ -15,6 +15,7 @@ import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
+   EnvironmentNotFoundError,
    NotQueryableError,
    OffSurfaceError,
    QueryTimeoutError,
@@ -158,6 +159,28 @@ const args = {
 };
 
 describe("execute_query error classification", () => {
+   it("names an unknown environment and the ones that exist", async () => {
+      // Goes through getModelForQuery's own catch, not the tool's, so it is
+      // pinned separately from the other tools.
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
+         },
+      });
+      const parsed = parse(
+         await handler({ ...args, environmentName: "analytics" }),
+      );
+      expect(parsed.error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
+   });
+
    it("tells an at-capacity caller to retry, not to check its Malloy", async () => {
       // The reported bug. tryAcquireQuerySlot runs inside the tool's try, so at
       // the concurrency cap its ServiceUnavailableError landed in a catch that

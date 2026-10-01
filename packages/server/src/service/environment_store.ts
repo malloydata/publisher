@@ -1618,6 +1618,13 @@ export class EnvironmentStore {
          if (!environmentPath) {
             throw new EnvironmentNotFoundError(
                `Environment "${environmentName}" could not be resolved to a path.`,
+               {
+                  environmentName,
+                  // The loaded set, which is what list_packages shows.
+                  availableEnvironments: Array.from(
+                     this.environments.keys(),
+                  ).sort(),
+               },
             );
          }
          return await this.addEnvironment({

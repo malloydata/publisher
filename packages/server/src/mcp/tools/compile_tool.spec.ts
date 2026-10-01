@@ -4,7 +4,11 @@
 import { describe, expect, it } from "bun:test";
 import { formatDiagnosticsText, registerCompileTool } from "./compile_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { PackageNotFoundError, ServiceUnavailableError } from "../../errors";
+import {
+   EnvironmentNotFoundError,
+   PackageNotFoundError,
+   ServiceUnavailableError,
+} from "../../errors";
 
 // Capture the handler registerCompileTool passes to McpServer.tool, so it can
 // be exercised against a mocked EnvironmentStore. The tool builds a
@@ -223,6 +227,26 @@ describe("compile_model tool", () => {
       expect(result.isError).toBe(true);
       const parsed = parse(result);
       expect(parsed.error).toBeDefined();
+   });
+
+   it("names an unknown environment and the ones that exist", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
+         },
+      });
+      const parsed = parse(
+         await handler({ ...args, environmentName: "analytics" }),
+      );
+      expect(parsed.error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
    });
 
    it("reports a missing package as not-found, not as a Malloy syntax problem", async () => {
