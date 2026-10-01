@@ -63,7 +63,6 @@ import {
    tagNumeric,
    tagText,
    unwrapFilterLiteral,
-   UNSAFE_TO_PARSE,
    ENV_REFERENCE_DROPPED,
    ANNOTATION_TOO_LONG,
 } from "./motly";
@@ -1399,16 +1398,13 @@ export function lintDashboard(
 /**
  * How a `motlyParseErrors` message should be introduced to an author.
  *
- * Three of the four messages are REFUSALS rather than syntax errors: the
- * annotation is well formed and was not parsed, by policy or by a guard. Saying
+ * Two of the three messages are REFUSALS rather than syntax errors: the
+ * annotation is well formed and was not parsed, by policy. Saying
  * "does not parse" for those sends the author hunting a syntax error in a line
  * that has none. Kept as one function because the set has grown twice and both
  * times a call site was left behind.
  */
 function describeParseFailure(message: string): string {
-   if (message === UNSAFE_TO_PARSE) {
-      return `was refused rather than parsed (${message}), which can be caused by something outside this file`;
-   }
    if (message === ENV_REFERENCE_DROPPED) {
       return `was dropped rather than parsed (${message}), so nothing on that line took effect`;
    }

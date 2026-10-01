@@ -46,6 +46,11 @@ that holds the Parquet data. Publisher reaches it through DuckDB's `ducklake` ex
 - `storage.bucketUrl` (**required**) — the object-storage data path.
 - `storage.s3Connection` **or** `storage.gcsConnection` — credentials for the data path.
 
+In the Docker image, a local-path `bucketUrl` must be writable by uid 1000, the user the server runs
+as. A new named volume mounted there starts root-owned, and the build fails with `No such file or
+directory` rather than a permission error. [`packages/server/README.docker.md`](../packages/server/README.docker.md#the-server-runs-as-a-non-root-user)
+gives three ways to prepare it.
+
 ## Several catalogs in one database
 
 By default a DuckLake catalog keeps its `ducklake_*` metadata tables in the catalog connection's
