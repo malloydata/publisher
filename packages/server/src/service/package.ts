@@ -327,6 +327,11 @@ export class Package {
    private dashboardWarnings: ApiPackageWarning[] = [];
    /** Served notebooks whose cells the reader refused; set by {@link discoverDashboards}. */
    private notebookWarnings: ApiPackageWarning[] = [];
+   // Set only on the scratch package {@link dryRunFindings} builds. Discovery
+   // then records no notebook metric and logs no finding: the metric counts
+   // discovery passes over served packages, and a compile of unsaved text is
+   // neither a pass nor served. Failures are still logged.
+   private dryRun = false;
    // Dashboards discovered in `dashboards/`, keyed by slug, in path order.
    // Computed once per load/reload rather than per request: the artifact tag is
    // a property of the compiled model, so it can only change when the models do.
@@ -2833,12 +2838,19 @@ export class Package {
     * negative hides a real broken dashboard, which is still worse than either.
     * Never throws: an unreadable file is simply not a dashboard.
     */
-   private async claimsToBeADashboard(modelPath: string): Promise<boolean> {
+   private async claimsToBeADashboard(
+      model: Model,
+      modelPath: string,
+   ): Promise<boolean> {
       try {
-         const source = await fs.readFile(
-            safeJoinUnderRoot(this.packagePath, modelPath),
-            "utf8",
-         );
+         // The text the compile read first: a package compile's replacement
+         // is not on disk, and the saved file would answer for the old text.
+         const source =
+            model.getCompiledSourceText() ??
+            (await fs.readFile(
+               safeJoinUnderRoot(this.packagePath, modelPath),
+               "utf8",
+            ));
          return hasArtifactLineOutsideBlocks(source, /^##?[ \t]*artifact\b/);
       } catch {
          return false;
@@ -2857,10 +2869,12 @@ export class Package {
       try {
          if (model.getModelDef()) return model.carriesNotebookArtifactNote();
          if (!model.getCompilationError()) return false;
-         const source = await fs.readFile(
-            safeJoinUnderRoot(this.packagePath, modelPath),
-            "utf8",
-         );
+         const source =
+            model.getCompiledSourceText() ??
+            (await fs.readFile(
+               safeJoinUnderRoot(this.packagePath, modelPath),
+               "utf8",
+            ));
          return claimsToBeANotebook(source);
       } catch {
          return false;
@@ -2869,19 +2883,22 @@ export class Package {
 
    /**
     * The findings a package would carry if this compile outcome were loaded,
-    * without loading it: the renderer-tag warnings and the dashboard lint, from
+    * without loading it: the render-tag warnings and the dashboard lint, from
     * the same code a real load runs.
     *
     * Builds a scratch Package that nothing holds a reference to, so it is never
-    * served, and runs the load's own discovery over it. That is why curation
-    * findings (a dashboard held back by `explores`, a tile reading a source the
-    * surface refuses) are reported here at all: they depend on Package state,
-    * and this is the one place that state is derived. A failed model goes in as
-    * a placeholder, as it does on a reload, so a dashboard that does not compile
-    * still counts as a dashboard that exists.
+    * served, and runs the load's own discovery over it. Curation findings (a
+    * dashboard held back by `explores`, a tile reading a source the surface
+    * refuses) depend on Package state, and discovery is where that state is
+    * derived. A failed model goes in as a placeholder, as it does on a reload,
+    * so a dashboard that does not compile still counts as a dashboard.
     *
-    * Never throws on a finding. A scratch package that cannot be built says
-    * nothing rather than costing the caller the compiler diagnostics.
+    * `replacement` is the what-if text, when the compile had one. A compiled
+    * model already carries the text it read; a placeholder does not, so it is
+    * handed the replacement here, or discovery would read the saved file.
+    *
+    * A check that throws is reported as a finding rather than dropped: a
+    * shorter list reads exactly like a cleaner package.
     */
    static async dryRunFindings(
       environmentName: string,
@@ -2889,32 +2906,69 @@ export class Package {
       packagePath: string,
       malloyConfig: MalloyConfig,
       outcome: LoadPackageOutcome,
-   ): Promise<ApiPackageWarning[]> {
+      replacement?: { modelPath: string; source: string },
+   ): Promise<{
+      renderTags: ApiPackageWarning[];
+      dashboards: ApiPackageWarning[];
+   }> {
       const models = new Map<string, Model>();
-      const renderTagWarnings: ApiPackageWarning[] = [];
+      const renderTags: ApiPackageWarning[] = [];
+      const placeholder = (
+         sm: LoadPackageOutcome["models"][number],
+         error: Error,
+      ) =>
+         Model.fromCompilationError(
+            packageName,
+            sm.modelPath,
+            sm.modelType,
+            error,
+            sm.modelPath === replacement?.modelPath
+               ? replacement.source
+               : undefined,
+         );
       for (const sm of outcome.models) {
          if (sm.compilationError) {
             models.set(
                sm.modelPath,
-               Model.fromCompilationError(
-                  packageName,
-                  sm.modelPath,
-                  sm.modelType,
+               placeholder(
+                  sm,
                   Model.deserializeCompilationError(sm.compilationError),
                ),
             );
             continue;
          }
-         const model = Model.fromSerialized(
-            packageName,
-            packagePath,
-            malloyConfig,
-            sm,
-         );
+         let model: Model;
+         try {
+            model = Model.fromSerialized(
+               packageName,
+               packagePath,
+               malloyConfig,
+               sm,
+            );
+         } catch (err) {
+            // As `reloadAllModels` does: one model that will not hydrate costs
+            // that model, not every other file's findings.
+            models.set(
+               sm.modelPath,
+               placeholder(
+                  sm,
+                  err instanceof Error ? err : new Error(String(err)),
+               ),
+            );
+            renderTags.push({
+               model: sm.modelPath,
+               message:
+                  `The load-time checks could not read this model ` +
+                  `(${errMessage(err)}), so its render-tag findings are ` +
+                  `unknown rather than clean.`,
+               severity: "warn",
+            });
+            continue;
+         }
          models.set(sm.modelPath, model);
          try {
             for (const w of await model.validateRenderTags()) {
-               renderTagWarnings.push({
+               renderTags.push({
                   model: sm.modelPath,
                   subject: w.subject,
                   message: w.message,
@@ -2927,6 +2981,13 @@ export class Package {
                modelPath: sm.modelPath,
                error: errMessage(err),
             });
+            renderTags.push({
+               model: sm.modelPath,
+               message:
+                  `The render-tag check did not finish for this model, so its ` +
+                  `render-tag findings are unknown rather than clean.`,
+               severity: "warn",
+            });
          }
       }
       const scratch = new Package(
@@ -2938,8 +2999,9 @@ export class Package {
          models,
          malloyConfig,
       );
+      scratch.dryRun = true;
       await scratch.discoverDashboards();
-      return [...renderTagWarnings, ...scratch.dashboardWarnings];
+      return { renderTags, dashboards: scratch.dashboardWarnings };
    }
 
    /**
@@ -3055,7 +3117,10 @@ export class Package {
             // be read from a model that did not compile, so it is read from the
             // source text, a heuristic used ONLY on this already-broken path.
             const error = model.getCompilationError();
-            if (!error || !(await this.claimsToBeADashboard(modelPath))) {
+            if (
+               !error ||
+               !(await this.claimsToBeADashboard(model, modelPath))
+            ) {
                // Reached with no facts AND no compile error to show, so the
                // branch above drops the file. If it claims to be a dashboard,
                // that is one disappearing with nothing said, which is the case
@@ -3080,7 +3145,10 @@ export class Package {
                // short-circuits before calling it again. Do not "simplify" it
                // away; that reinstates a second `readFile` per uncompilable
                // non-dashboard.
-               if (!error && (await this.claimsToBeADashboard(modelPath))) {
+               if (
+                  !error &&
+                  (await this.claimsToBeADashboard(model, modelPath))
+               ) {
                   logger.warn("Dashboard file produced no facts and no error", {
                      packageName: this.packageName,
                      modelPath,
@@ -3134,9 +3202,13 @@ export class Package {
          const model = this.models.get(manifest.entryFile);
          if (!model) continue;
          try {
+            // The compiled text when the loader recorded it, as for notebooks
+            // below: the file on disk can be newer than the compile, or, in a
+            // package compile's what-if, not the text being checked at all.
             dashboardFileText.set(
                manifest.entryFile,
-               await model.getFileText(this.packagePath),
+               model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath)),
             );
          } catch {
             // Unreadable text only costs the file its own derived sources:
@@ -3186,24 +3258,28 @@ export class Package {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.models) {
          if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
-            recordNotebookDiscovery(
-               "malloynb",
-               model.getCompilationError() ? "broken" : "ok",
-            );
+            if (!this.dryRun) {
+               recordNotebookDiscovery(
+                  "malloynb",
+                  model.getCompilationError() ? "broken" : "ok",
+               );
+            }
             continue;
          }
          const text = this.notebookFileText.get(modelPath);
          if (text === undefined) continue;
          const outcome = model.attachServedNotebookCells(text);
-         recordNotebookDiscovery("malloy", outcome);
+         if (!this.dryRun) recordNotebookDiscovery("malloy", outcome);
          const refusal = model.getNotebookReaderRefusal();
          if (outcome !== "refused" || !refusal) continue;
-         logger.warn("Notebook cells could not be read", {
-            packageName: this.packageName,
-            modelPath,
-            line: refusal.line,
-            detail: refusal.message,
-         });
+         if (!this.dryRun) {
+            logger.warn("Notebook cells could not be read", {
+               packageName: this.packageName,
+               modelPath,
+               line: refusal.line,
+               detail: refusal.message,
+            });
+         }
          warnings.push({
             model: modelPath,
             message: refusal.message,
@@ -3245,11 +3321,13 @@ export class Package {
                !this.isServedNotebook(modelPath)
             )
                continue;
-            logger.warn("Notebook lint", {
-               packageName: this.packageName,
-               model: modelPath,
-               detail: finding.message,
-            });
+            if (!this.dryRun) {
+               logger.warn("Notebook lint", {
+                  packageName: this.packageName,
+                  model: modelPath,
+                  detail: finding.message,
+               });
+            }
             warnings.push({
                model: modelPath,
                message: finding.message,
@@ -3285,6 +3363,7 @@ export class Package {
          inputs.dashboardSlugs,
          inputs.droppedByError,
       );
+      if (this.dryRun) return;
       for (const warning of this.dashboardWarnings) {
          logger.warn("Dashboard lint", {
             packageName: this.packageName,

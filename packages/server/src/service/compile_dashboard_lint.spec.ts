@@ -4,15 +4,12 @@
 /**
  * What `compile_model` at scope "package" reports about dashboards.
  *
- * The gap this pins: every file in `tests/fixtures/dashboards-lint` compiles
- * cleanly. A tile naming a view that does not exist, a `# dashboard { columns }`
- * that is not a number, a `# drill` pointing at nothing -- the Malloy compiler
- * has no opinion about any of them, so before this the authoring tool said
- * "success" right up until the page was served. That is why the fixture is
- * reused rather than a new one written: it is the exact set of defects the
- * compiler cannot see, already curated, and already pinned on the load path by
- * `tests/integration/dashboards`. If a case is removed from it, the two suites
- * disagree and that is worth noticing.
+ * Every defect in `tests/fixtures/dashboards-lint` compiles cleanly: a tile
+ * naming a view that does not exist, a `# dashboard { columns }` that is not a
+ * number, a `# drill` pointing at nothing. Only the package's load-time checks
+ * see them. The fixture is reused because it is that exact set, already pinned
+ * on the load path by `tests/integration/dashboards`; if a case is removed
+ * from it, the two suites disagree.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
@@ -66,11 +63,15 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
    });
 
    it("reports a tile naming a source the file does not import", async () => {
-      expect((await messages()).join("\n")).toContain("ghost");
+      expect((await messages()).join("\n")).toContain(
+         'tile "ghost -> x" does not resolve',
+      );
    });
 
    it("reports a grid width that is not a positive integer", async () => {
-      expect((await messages()).join("\n")).toContain("columns");
+      expect((await messages()).join("\n")).toContain(
+         "must be a positive integer",
+      );
    });
 
    it("reports a drill pointing at no dashboard in the package", async () => {
@@ -81,7 +82,7 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
       // `v1.2` is served despite its name, so its drill is not dangling. This
       // is the one the naming advisory must not leak into.
       const joined = (await messages()).join("\n");
-      expect(joined).not.toContain('"v1.2" is not a dashboard');
+      expect(joined).not.toContain('targets "v1.2"');
    });
 
    it("reports a suggest naming a query nothing defines", async () => {
@@ -93,18 +94,47 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
     * findings never fail a package load, so compile must not call them errors.
     * If it did, an edit the server would serve happily would look rejected.
     */
-   it("reports them as warnings, so a clean compile still reads as success", async () => {
+   it("reports the dashboard lint as warnings, under its own code", async () => {
       const { problems } = await compilePackage();
-      const dashboardFindings = problems.filter(
-         (p) =>
-            p.message.includes("missing_view") ||
-            p.message.includes("no_such_dashboard"),
+      const lint = problems.filter(
+         (p) => (p as { code?: string }).code === "dashboard-lint",
       );
 
-      expect(dashboardFindings.length).toBeGreaterThan(0);
-      for (const finding of dashboardFindings) {
-         expect(finding.severity).toBe("warn");
-      }
+      expect(lint.map((p) => p.message).join("\n")).toContain("missing_view");
+      expect(lint.map((p) => p.message).join("\n")).toContain(
+         "no_such_dashboard",
+      );
+      for (const finding of lint) expect(finding.severity).toBe("warn");
+   });
+
+   /**
+    * The notebook lint already reports an unparsed `## artifact` on a
+    * dashboard file as an error, with a line. The dashboard lint says the same
+    * thing, and the load path keeps only one; so does compile.
+    */
+   it("reports an unparsed dashboard tag once, as the notebook lint's error", async () => {
+      const { problems } = await compilePackage();
+      const unparsed = problems.filter(
+         (p) =>
+            p.model === "dashboards/malformed.malloy" &&
+            p.message.includes("does not parse"),
+      );
+
+      expect(unparsed).toHaveLength(1);
+      expect((unparsed[0] as { code?: string }).code).toBe(
+         "notebook-artifact-unparsed",
+      );
+      expect(unparsed[0].severity).toBe("error");
+   });
+
+   it("leaves a package-wide finding unattributed rather than pinned on a file", async () => {
+      const { problems } = await compilePackage();
+      const drill = problems.find((p) =>
+         p.message.includes("no_such_dashboard"),
+      );
+
+      expect(drill).toBeDefined();
+      expect("model" in (drill as object)).toBe(false);
    });
 
    it("keeps the load-time severity in the message rather than dropping it", async () => {
@@ -121,20 +151,32 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
 
    /**
     * The compiler diagnostics are what the caller asked for; the lint is
-    * additional. A lint that swallowed them, or that threw, would be worse than
-    * not running at all.
+    * additional. It must neither swallow them nor be dropped because of them.
     */
-   it("still returns compiler diagnostics for a real compile error", async () => {
+   it("returns compiler errors and the dashboard lint side by side", async () => {
       const { problems } = await env.compileSource(
          "dashboards-lint",
-         "orders.malloy",
-         "source: bad is nonexistent_connection.table('nope')",
+         "dashboards/broken.malloy",
+         (await fs.readFile(
+            path.join(FIXTURE, "dashboards", "broken.malloy"),
+            "utf8",
+         )) + "\nsource: bad is nonexistent_connection.table('nope')\n",
          false,
          undefined,
          "package",
       );
 
-      expect(problems.some((p) => p.severity === "error")).toBe(true);
+      expect(
+         problems.some(
+            (p) =>
+               p.severity === "error" &&
+               p.model === "dashboards/broken.malloy" &&
+               (p as { code?: string }).code !== "notebook-artifact-unparsed",
+         ),
+      ).toBe(true);
+      expect(problems.map((p) => p.message).join("\n")).toContain(
+         "no_such_dashboard",
+      );
    });
 });
 
@@ -165,15 +207,21 @@ describe("compile_model, package scope: curation findings", () => {
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
-   const compilePackage = (fixture: string) =>
+   const compilePackage = (
+      fixture: string,
+      replacement?: { modelPath: string; source: string },
+   ) =>
       env.compileSource(
          fixture,
-         "index.malloy",
-         undefined,
+         replacement?.modelPath ?? "index.malloy",
+         replacement?.source,
          false,
          undefined,
          "package",
       );
+
+   const refusals = (problems: { message: string }[]) =>
+      problems.filter((p) => p.message.includes("won't load"));
 
    it("reports a tile reading a source the package's surface does not export", async () => {
       await install("dashboards-convention");
@@ -191,13 +239,57 @@ describe("compile_model, package scope: curation findings", () => {
       await install("dashboards-convention");
       const { problems } = await compilePackage("dashboards-convention");
 
-      // The fixture's artifact tags are well formed, so the only findings are
-      // the three tiles the surface withholds. A malformed tag shows up here as
-      // an "Unknown render tag" on the dashboard.
-      expect(problems.map((p) => p.message)).toHaveLength(3);
+      // The fixture's artifact tags are well formed, so the only refusals are
+      // the three the surface withholds. A malformed tag shows up here as an
+      // "Unknown render tag" on the dashboard.
+      expect(refusals(problems)).toHaveLength(3);
       expect(
          problems.some((p) => p.message.includes("Unknown render tag")),
       ).toBe(false);
+   });
+
+   /**
+    * The edit is what gets judged, not the saved file. A new dashboard that
+    * declares its own source on top of an exported one may read it; judged
+    * against the disk, where the file does not exist yet, its source was
+    * unknown and the tile was refused with a fix that could not work.
+    */
+   it("judges a what-if dashboard by its replacement text, not the saved file", async () => {
+      await install("dashboards-convention");
+      const { problems } = await compilePackage("dashboards-convention", {
+         modelPath: "dashboards/new.malloy",
+         source: [
+            'import "../orders.malloy"',
+            "source: b is orders extend {}",
+            '## artifact { title="New" tiles=["b -> by_status"] }',
+            "",
+         ].join("\n"),
+      });
+
+      expect(
+         refusals(problems).filter((p) => p.model === "dashboards/new.malloy"),
+      ).toEqual([]);
+      // The three on the saved files are still reported.
+      expect(refusals(problems)).toHaveLength(3);
+   });
+
+   it("still refuses a what-if dashboard that re-bases onto a hidden source", async () => {
+      await install("dashboards-convention");
+      const { problems } = await compilePackage("dashboards-convention", {
+         modelPath: "dashboards/new.malloy",
+         source: [
+            'import "../orders.malloy"',
+            "source: b is orders_staging extend {}",
+            '## artifact { title="New" tiles=["b -> by_flag"] }',
+            "",
+         ].join("\n"),
+      });
+
+      const mine = refusals(problems).filter(
+         (p) => p.model === "dashboards/new.malloy",
+      );
+      expect(mine).toHaveLength(1);
+      expect(mine[0].message).toContain("reads orders_staging");
    });
 
    it("reports nothing of the kind for a package with no curated surface", async () => {

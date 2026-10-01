@@ -31,6 +31,14 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — `compile_model` at package scope reports dashboard findings before you save
+
+A tile naming a view that does not exist, a `# drill` pointing at no dashboard, a `suggest` naming a missing query, and a tile reading a source the package's surface does not export all compile cleanly. Until now only a package load reported them, so an agent got `status: "success"` from `compile_model` and found the problem after saving and reloading.
+
+`compile_model` and `POST …/compile` at `scope: "package"` now run the same load-time render-tag and dashboard checks a reload runs, over the compiled result, what-if replacement included. Each finding comes back as a `warn` diagnostic with code `render-tag` or `dashboard-lint`. They are warnings because none of them fails a load. When the load reports one as an error, the message ends `(reported as an error at package load)`. `scope: "file"` is unchanged and does not run these checks.
+
+`publisher_notebook_discovery_total` still counts discovery passes over served packages only. The package-scope compile runs discovery over a copy that is never served, and records nothing.
+
 ## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
 `@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.
