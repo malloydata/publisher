@@ -476,20 +476,20 @@ describe("spliceNotebookDocument: refusals", () => {
       );
    });
 
-   it("refuses a query or definition removed", async () => {
+   it("refuses a definition removed", async () => {
       expect(
          await refused(TEXT, (doc) => {
-            doc.cells.splice(2, 1);
+            doc.cells.splice(3, 1);
          }),
-      ).toContain("only markdown cells can be removed");
+      ).toContain("only markdown and query cells can be removed");
    });
 
-   it("refuses an added cell that is not markdown", async () => {
+   it("refuses an added definition", async () => {
       expect(
          await refused(TEXT, (doc) => {
-            doc.cells.push({ id: "new", kind: "query", added: true });
+            doc.cells.push({ id: "new", kind: "definition", added: true });
          }),
-      ).toContain("only markdown cells can be added");
+      ).toContain("only markdown and query cells can be added");
    });
 
    it("refuses a cell the file does not have, or one listed twice", async () => {

@@ -4,6 +4,11 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import {
+   chartLineText,
+   chartStateOf,
+   parseChartLine,
+} from "../DashboardBuilder/chartLine";
 import { spliceFailed } from "../DashboardBuilder/spliceResult";
 import { syntaxErrors } from "../DashboardBuilder/spliceDocument";
 import {
@@ -12,6 +17,7 @@ import {
    type NotebookSource,
 } from "./readNotebookSource";
 import {
+   canInsertQuery,
    canMove,
    notebookDocumentOf,
    spliceNotebookDocument,
@@ -86,12 +92,31 @@ interface Edit {
    doc: NotebookDocument;
 }
 
+/** The sources an added query may name; the writer only checks membership. */
+const REACHABLE = ["s"];
+
+const CHART_EDITS = ["line_chart", "bar_chart", "none", "default"] as const;
+
 /** Every edit the builder offers on this notebook: edit, add above and below, remove, and every legal move. */
-function legalEdits(base: NotebookDocument): Edit[] {
+function legalEdits(base: NotebookDocument, original: NotebookSource): Edit[] {
    const edits: Edit[] = [];
    const cells = base.cells;
    const clone = () => structuredClone(base);
    cells.forEach((cell, i) => {
+      if (cell.kind === "query") {
+         const found = original.cells[i].chart;
+         // A cell the rule leaves alone is refused a chart change, which the refusal specs cover.
+         if (found && found.unmodelled === undefined && found.lines.length <= 1)
+            for (const chart of CHART_EDITS) {
+               const doc = clone();
+               doc.cells[i].chart = chart;
+               edits.push({ name: `chart ${i} to ${chart}`, doc });
+            }
+         const doc = clone();
+         doc.cells.splice(i, 1);
+         edits.push({ name: `remove query ${i}`, doc });
+         return;
+      }
       if (cell.kind !== "markdown") return;
       for (const [label, markdown] of [
          ["one line", "Edited prose."],
@@ -114,6 +139,22 @@ function legalEdits(base: NotebookDocument): Edit[] {
          added: true,
       });
       edits.push({ name: `add at ${at}`, doc });
+      if (!canInsertQuery(base, at)) continue;
+      for (const [label, chart, caption] of [
+         ["plain", undefined, undefined],
+         ["with a chart and caption", "line_chart", "Added caption"],
+         ["as a table", "none", undefined],
+      ] as const) {
+         const query = clone();
+         query.cells.splice(at, 0, {
+            id: "added-query",
+            kind: "query",
+            added: true,
+            chart,
+            run: { source: "s", view: "v", ...(caption && { caption }) },
+         });
+         edits.push({ name: `add query ${label} at ${at}`, doc: query });
+      }
    }
    for (let from = 0; from < cells.length; from++)
       for (let to = 0; to < cells.length; to++) {
@@ -134,7 +175,12 @@ async function expectInvariants(
    edit: Edit,
    crlf: boolean,
 ) {
-   const result = await spliceNotebookDocument(original.text, edit.doc);
+   const result = await spliceNotebookDocument(
+      original.text,
+      edit.doc,
+      undefined,
+      REACHABLE,
+   );
    if (spliceFailed(result))
       throw new Error(`${file}: ${edit.name}: ${result.reason}`);
    const out = result.source;
@@ -165,11 +211,61 @@ async function expectInvariants(
       ),
    ).toEqual([]);
 
+   // The server's reader agrees with ours on each query cell's caption, statement and tag lines.
+   const before = serverCells(original.text).filter((c) => c.kind === "query");
+   const queries = theirs.filter((c) => c.kind === "query");
+   const wantedQueries = edit.doc.cells.filter((c) => c.kind === "query");
+   expect(queries.length).toBe(wantedQueries.length);
+   type Server = (typeof queries)[number];
+   const lines = (c: Server) => c.text.replace(/\r\n/g, "\n").split("\n");
+   const tags = (c: Server) => lines(c).slice(0, c.codeLine ?? 0);
+   const code = (c: Server) => lines(c).slice(c.codeLine ?? 0);
+   wantedQueries.forEach((cell, n) => {
+      const got = queries[n];
+      const gotChart = tags(got).filter((line) => parseChartLine(line));
+      if (cell.added) {
+         expect(code(got).join("\n").trim()).toBe("run: s -> v");
+         expect(got.caption).toBe(cell.run?.caption);
+         expect(gotChart).toEqual(
+            cell.chart && cell.chart !== "default"
+               ? [chartLineText(cell.chart as "none")]
+               : [],
+         );
+         return;
+      }
+      const index = original.cells.findIndex((c) => c.id === cell.id);
+      const was =
+         before[
+            original.cells.slice(0, index).filter((c) => c.kind === "query")
+               .length
+         ];
+      expect(code(got)).toEqual(code(was));
+      expect(tags(got).filter((l) => !parseChartLine(l))).toEqual(
+         tags(was).filter((l) => !parseChartLine(l)),
+      );
+      expect(got.caption).toBe(was.caption);
+      const have = chartStateOf(
+         original.cells[index].chart!.lines.map((l) => l.text),
+      );
+      expect(gotChart).toEqual(
+         cell.chart === have
+            ? tags(was).filter((l) => parseChartLine(l))
+            : cell.chart === "default"
+              ? []
+              : [chartLineText(cell.chart as "none")],
+      );
+   });
+
    // Every cell the edit did not rewrite keeps its bytes.
    edit.doc.cells.forEach((cell, i) => {
       const was = original.cells.find((c) => c.id === cell.id);
       if (cell.added || !was) return;
       if (cell.kind === "markdown" && cell.markdown !== was.markdown) return;
+      if (
+         cell.kind === "query" &&
+         cell.chart !== chartStateOf(was.chart!.lines.map((l) => l.text))
+      )
+         return;
       expect(
          withoutNewline(
             out.slice(mine.cells[i].span.start, mine.cells[i].span.end),
@@ -189,7 +285,7 @@ describe("spliceNotebookDocument: invariants over every fixture", () => {
             const unchanged = await spliceNotebookDocument(text, base);
             expect(unchanged).toEqual({ ok: true, source: text });
 
-            for (const edit of legalEdits(base))
+            for (const edit of legalEdits(base, original))
                await expectInvariants(
                   file,
                   original,

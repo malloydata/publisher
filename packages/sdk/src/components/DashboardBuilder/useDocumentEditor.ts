@@ -50,6 +50,8 @@ export interface DocumentEditor<T> {
     * before it is saved.
     */
    structural: boolean;
+   /** Whether saving the unsaved change empties the undo stack, as the caller defines it (false when it defines nothing). */
+   clearsHistory: boolean;
 }
 
 export type SaveOutcome = { ok: true } | { ok: false; reason: string };
@@ -82,12 +84,19 @@ export interface DocumentEditorOptions<T> {
    splice: (source: string, document: T) => Promise<SpliceResult>;
    /** Whether `document` differs structurally from `saved`; omit for never. */
    structural?: (saved: T, document: T) => boolean;
+   /** Whether saving `document` over `saved` makes the history unsafe to step back into; the stack is then emptied on save. */
+   clearsHistory?: (saved: T, document: T) => boolean;
 }
 
 export function useDocumentEditor<T>(
    options: DocumentEditorOptions<T>,
 ): DocumentEditor<T> {
-   const { splice, onSave, structural: isStructural } = options;
+   const {
+      splice,
+      onSave,
+      structural: isStructural,
+      clearsHistory: isClearing,
+   } = options;
    const [history, setHistory] = useState<History<T>>({
       stack: [options.document],
       index: 0,
@@ -163,9 +172,11 @@ export function useDocumentEditor<T>(
       // now on disk rather than re-deriving from the text this session opened.
       setSource(result.source);
       setSaved(document);
+      if (isClearing?.(saved, document))
+         setHistory({ stack: [document], index: 0 });
       setError(undefined);
       return { ok: true };
-   }, [document, splice, onSave, source]);
+   }, [document, splice, onSave, source, saved, isClearing]);
 
    const dirty = useMemo(
       () => JSON.stringify(document) !== JSON.stringify(saved),
@@ -174,6 +185,10 @@ export function useDocumentEditor<T>(
    const structural = useMemo(
       () => isStructural?.(saved, document) ?? false,
       [document, saved, isStructural],
+   );
+   const clearsHistory = useMemo(
+      () => isClearing?.(saved, document) ?? false,
+      [document, saved, isClearing],
    );
    const preview = useCallback(async () => {
       const result = await splice(source, document);
@@ -195,5 +210,6 @@ export function useDocumentEditor<T>(
       save,
       preview,
       structural,
+      clearsHistory,
    };
 }

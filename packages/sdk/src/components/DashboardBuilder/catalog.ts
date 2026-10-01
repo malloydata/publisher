@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { CompiledModel } from "../../client";
+import { CHART_TAGS } from "./chartLine";
+
+export { CHART_TAGS };
 
 /**
  * What a package offers a dashboard: the sources, the views on them, and the
@@ -51,17 +54,6 @@ export interface CatalogSource {
 export interface PackageCatalog {
    sources: CatalogSource[];
 }
-
-/** The renderer's chart tags, as they are spelled in a model. */
-const CHART_TAGS = [
-   "bar_chart",
-   "line_chart",
-   "scatter_chart",
-   "shape_map",
-   "segment_map",
-   "big_value",
-   "sparkline",
-];
 
 /** `#(doc) Revenue by product category\n` -> `Revenue by product category`. */
 export function docOf(annotations: string[] | undefined): string | undefined {

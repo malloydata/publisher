@@ -15,6 +15,7 @@ import {
 import {
    canMove,
    leadingComments,
+   removesReadQuery,
    spliceNotebookDocument,
    type DefinitionsAbove,
    type NotebookDocument,
@@ -58,6 +59,9 @@ export function rebased(
          // Absent from the saved file (a removal undone), so its old read index would name some other cell there.
          if (!cell.added && cell.kind === "markdown")
             return { ...cell, id: `restored-${cell.id}`, added: true };
+         // A read query cannot be re-authored, so it stays unplaceable and the writer refuses it.
+         if (!cell.added && cell.kind === "query")
+            return { ...cell, id: `restored-${cell.id}` };
          return cell;
       }),
    };
@@ -115,8 +119,10 @@ export function useNotebookEditor(options: {
    document: NotebookDocument;
    /** Persist the patched file. Rejecting leaves the editor dirty. */
    onSave?: (source: string) => Promise<void> | void;
+   /** The sources the notebook's compiled model offers, which an added query cell must pick from. */
+   reachableSources?: readonly string[];
 }): NotebookEditor {
-   const { onSave } = options;
+   const { onSave, reachableSources } = options;
    // Cell ids are read indices of the file as opened; after a save they are mapped onto the saved file's read.
    // `undefined` until a save, since an empty placement (every cell removed) is still a save.
    const placed = useRef<Placement | undefined>(undefined);
@@ -131,6 +137,7 @@ export function useNotebookEditor(options: {
             source,
             onDisk,
             rekeyed(opened, doc, onDisk),
+            reachableSources,
          );
          if (result.ok) {
             pending.current.delete(result.source);
@@ -140,7 +147,7 @@ export function useNotebookEditor(options: {
          }
          return result;
       },
-      [opened],
+      [opened, reachableSources],
    );
 
    const save = useCallback(
@@ -158,6 +165,7 @@ export function useNotebookEditor(options: {
       ...(onSave ? { onSave: save } : {}),
       splice,
       structural: cellsChanged,
+      clearsHistory: removesReadQuery,
    });
 
    const { document, source } = editor;
@@ -179,12 +187,17 @@ export function useNotebookEditor(options: {
       );
       const { text, cells } = read.source;
       return cells
-         .filter((cell) => cell.kind === "markdown" && !kept.has(cell.id))
-         .flatMap((cell) =>
-            (leadingComments(text.slice(cell.span.start, cell.span.end)) ?? "")
-               .split(/\r?\n/)
-               .filter((line) => line.trim() !== ""),
-         );
+         .filter((cell) => cell.kind !== "definition" && !kept.has(cell.id))
+         .flatMap((cell) => {
+            const span = text.slice(cell.span.start, cell.span.end);
+            const lines = (leadingComments(span) ?? "").split(/\r?\n/);
+            // A query's span can also carry comments between its tags and its run.
+            if (cell.kind === "query")
+               lines.push(
+                  ...span.split(/\r?\n/).filter((l) => /^\s*(\/\/|--)/.test(l)),
+               );
+            return [...new Set(lines.filter((line) => line.trim() !== ""))];
+         });
    }, [document, source]);
 
    return { ...editor, canMove: canMoveHere, removedComments };

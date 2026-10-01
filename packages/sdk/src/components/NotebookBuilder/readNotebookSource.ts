@@ -21,8 +21,28 @@ import {
    type Span,
    type TokenStream,
 } from "../DashboardBuilder/malloyTree";
+import {
+   mentionsChartTag,
+   parseChartLine,
+} from "../DashboardBuilder/chartLine";
 
 export type { Span };
+
+/** A `# <chart>` line the chart rule recognizes, whole line including its newline. */
+export interface ChartLineSpan {
+   span: Span;
+   /** The line less its newline. */
+   text: string;
+}
+
+/** The chart tag lines of a query cell. */
+export interface QueryChart {
+   lines: ChartLineSpan[];
+   /** A `#` line that names a chart tag but is not one the rule recognizes, kept byte for byte. */
+   unmodelled?: string;
+   /** Where a new chart line goes: the start of the line holding the statement's code. */
+   insertAt: number;
+}
 
 export interface NotebookSourceCell {
    kind: "markdown" | "query" | "definition";
@@ -32,6 +52,8 @@ export interface NotebookSourceCell {
    markdown?: string;
    /** Statement cells: the attached `(markdown)`/`(text)` notes and `"` captions, each a whole note token run. */
    prose?: Span[];
+   /** Query cells only. */
+   chart?: QueryChart;
    /** Stable id for React keys and history; its index in the read. */
    id: string;
 }
@@ -108,6 +130,7 @@ type Item =
         run: boolean;
         markdown?: string;
         prose: Span[];
+        chart: QueryChart;
         startLine: number;
         endLine: number;
      }
@@ -227,16 +250,20 @@ export async function readNotebookSource(
    const attachedProse = (
       startCp: number,
       stopCp: number,
-   ): { markdown: string | undefined; prose: Span[] } => {
+   ): { markdown: string | undefined; prose: Span[]; chart: QueryChart } => {
       const segments: string[] = [];
       const prose: Span[] = [];
+      const chart: QueryChart = { lines: [], insertAt: r.utf16(startCp) };
       let lineEnd = -2;
       for (let i = firstTokenAt(startCp); i < tokens.length; i++) {
          const token = tokens[i];
          if (token.startIndex > stopCp) break;
          if (token.channel !== 0) continue;
          const name = symbolOf(token);
-         if (name !== "ANNOTATION" && name !== "BLOCK_ANNOTATION_BEGIN") break;
+         if (name !== "ANNOTATION" && name !== "BLOCK_ANNOTATION_BEGIN") {
+            chart.insertAt = r.lineStarts[r.line(r.utf16(token.startIndex))];
+            break;
+         }
          const note = normalizeNewlines(tokenText(token));
          const bodyTexts: string[] = [];
          if (name === "BLOCK_ANNOTATION_BEGIN") {
@@ -256,6 +283,23 @@ export async function readNotebookSource(
                end: r.utf16(tokens[i].stopIndex + 1),
             });
          }
+         if (name === "ANNOTATION") {
+            const line = note.replace(/\n$/, "");
+            if (parseChartLine(line)) {
+               const start = r.utf16(token.startIndex);
+               const lineStart = r.lineStarts[r.line(start)];
+               chart.lines.push({
+                  span: {
+                     start: /^[ \t]*$/.test(text.slice(lineStart, start))
+                        ? lineStart
+                        : start,
+                     end: r.utf16(token.stopIndex + 1),
+                  },
+                  text: line,
+               });
+            } else if (mentionsChartTag(line) && chart.unmodelled === undefined)
+               chart.unmodelled = line.trim();
+         }
          if (routeOf(note) !== "markdown") {
             lineEnd = -2;
          } else if (name === "BLOCK_ANNOTATION_BEGIN") {
@@ -272,6 +316,7 @@ export async function readNotebookSource(
       return {
          markdown: segments.length > 0 ? segments.join("\n\n") : undefined,
          prose,
+         chart,
       };
    };
 
@@ -323,12 +368,16 @@ export async function readNotebookSource(
       covered.push([span.startCp, span.stopCp]);
       const [accessor, kind] = match;
       if (kind !== "notes") {
-         const { markdown, prose } = attachedProse(span.startCp, span.stopCp);
+         const { markdown, prose, chart } = attachedProse(
+            span.startCp,
+            span.stopCp,
+         );
          items.push({
             kind: "statement",
             run: kind === "run",
             ...(markdown !== undefined && { markdown }),
             prose,
+            chart,
             startLine: span.startLine,
             endLine: span.endLine,
          });
@@ -455,6 +504,7 @@ export async function readNotebookSource(
                kind: item.run ? "query" : "definition",
                ...(item.markdown !== undefined && { markdown: item.markdown }),
                ...(item.prose.length > 0 && { prose: item.prose }),
+               ...(item.run && { chart: item.chart }),
                id: "",
             },
             startLine: item.startLine,
