@@ -288,5 +288,85 @@ vulnerabilities:
       recursion in toml.parse on deeply nested input. Reached only through the
       connections.toml loaders, which Publisher never calls (see CVE-2026-63376).
       Fixed in toml 4.2.0, a major the parents do not admit.
+  # HIGH, runtime package, image only: vega-lite 5.23.0 (a dependency of
+  # @malloydata/render, which pins vega-lite ^5.2.0 through 0.0.434) declares a peer on
+  # vega ^5.24, which the root vega 6 does not satisfy, so Bun nests a vega 5 copy
+  # under vega-lite. The lockfile scan does not see nested copies; the image scan does.
+  # Retire when @malloydata/render moves to vega-lite 6 (peer vega ^6).
+  - id: CVE-2025-59840
+    paths:
+      - "publisher/node_modules/vega-lite/node_modules/vega/package.json"
+      - "publisher/node_modules/vega-lite/node_modules/vega-expression/package.json"
+    expired_at: 2026-12-31
+    statement: >
+      vega 5.33.0 and vega-expression 5.1.2, nested under vega-lite 5.23.0 via
+      @malloydata/render. Cross-site scripting through expressions that abuse
+      toString, in environments that set the VEGA_DEBUG global. The server process
+      renders no charts and sets no VEGA_DEBUG. Fixed in vega 6.2.0 and
+      vega-expression 5.2.1 / 6.1.0, which vega-lite 5 does not admit.
+  - id: CVE-2025-66648
+    paths:
+      - "publisher/node_modules/vega-lite/node_modules/vega/node_modules/vega-functions/package.json"
+    expired_at: 2026-12-31
+    statement: >
+      vega-functions 5.18.0, nested under vega 5.33.0 under vega-lite 5.23.0 via
+      @malloydata/render. Cross-site scripting through untrusted input to vega
+      expression functions, a browser-side concern; the server process renders no
+      charts. Fixed in vega-functions 6.1.1, reached only through the vega-lite 6
+      migration (see CVE-2025-59840).
+  # HIGH, Debian packages in the base image, no fixed version published (Trivy status
+  # `affected` or `fix_deferred`). Debian findings carry no package path, so these
+  # entries cannot be path-scoped; they are safe as bare ids because the filesystem
+  # scan never reports OS packages. Re-check on each expiry: `apt-get upgrade` in the
+  # Dockerfile picks up a fix as soon as Debian ships one, and the entry then only
+  # hides a package version that no longer exists in the image.
+  - id: CVE-2026-76642
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1 (packages util-linux, mount, login, bsdutils
+      and the libmount/libblkid family), in the oven/bun base image of the runtime
+      stage. A failed external mount helper still runs privileged X-mount
+      post-hooks. Needs a local caller of mount(8); the server runs as uid 1000 and
+      never invokes mount. Not removable: the packages are essential to the base.
+      Debian has published no fix.
+  - id: CVE-2026-78408
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
+      nsenter --join-cgroup leaks root cgroup migration authority. Needs a local
+      caller of nsenter(1); the server runs as uid 1000 and never invokes it. Not
+      removable (essential packages). Debian has published no fix.
+  - id: CVE-2026-78409
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
+      X-mount.subdir detached-tree resolution can escape through intermediate
+      symlinks. Needs a local caller of mount(8); the server runs as uid 1000 and
+      never invokes mount. Not removable (essential packages). Debian has published
+      no fix.
+  - id: CVE-2026-78410
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
+      Restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode
+      redirection. Needs a local caller of mount(8); the server runs as uid 1000 and
+      never invokes mount. Not removable (essential packages). Debian has published
+      no fix.
+  - id: CVE-2026-9538
+    expired_at: 2026-12-31
+    statement: >
+      Debian perl 5.40.1-6+deb13u1 (perl, perl-base, perl-modules-5.40), installed as
+      a dependency of git. Archive::Tar denial of service from a crafted tar header
+      with a large entry size. Publisher runs git only to clone packages and runs no
+      perl code on archives. git is a runtime dependency (simple-git), so perl cannot
+      be removed. Debian has deferred the fix.
+  - id: CVE-2025-69720
+    expired_at: 2026-12-31
+    statement: >
+      Debian ncurses 6.5+20250216-2 (ncurses-base, ncurses-bin, libncursesw6), in the
+      oven/bun base image of the runtime stage. Buffer overflow in the ncurses
+      command-line utilities. The server is not an interactive terminal program and
+      no ncurses utility is invoked on untrusted input. Not removable (essential
+      packages). Debian has published no fix.
 misconfigurations: []
 secrets: []
