@@ -5,8 +5,6 @@
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
 
-FROM node:24.21.0-trixie-slim AS node-runtime
-
 FROM oven/bun:1.3.13-slim AS base-deps
 
 # `apt-get upgrade` because the Debian packages in oven/bun's layer are frozen at
@@ -49,15 +47,11 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
     echo "Snowflake verification skipped (offline build)" && \
     chown -R bun:bun /home/bun/.duckdb
 
-# A Node runtime for anything in the image that shells out to `node`. Taken as the
-# single binary from the official Node image rather than the NodeSource apt
-# package: that package hard-depends on python3, which would put the Debian
-# python3.13 packages (and their unfixed CVEs) into the runtime image for a
-# runtime nothing here uses. The binary needs only libc and libstdc++, both already
-# present. npm and npx are not copied, and the server runs under Bun and never
-# invokes them. Tracks the current LTS line; bump with the Node release schedule.
-COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
-RUN node --version
+# No Node runtime. The server runs under Bun (CMD below) and nothing in it spawns
+# `node`; where a `node` command is needed, the oven/bun base provides one that
+# resolves to Bun. The NodeSource apt package is deliberately not installed: it
+# hard-depends on python3, which brings the Debian python3.13 packages and their
+# unfixed CVEs into the runtime image for a runtime nothing here uses.
 
 # ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
 # compiler never reaches the runtime image and so a broken driver/shim pair

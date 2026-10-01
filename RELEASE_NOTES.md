@@ -31,6 +31,12 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] - The Docker image no longer ships Node or Python, and refreshes Debian packages daily
+
+`ms2data/malloy-publisher` no longer installs Node.js from the NodeSource repository, which also removes the Debian `python3.13` packages that NodeSource's `nodejs` package depends on. The server runs under Bun and does not use either. A `node` command inside the image now resolves to the Bun-backed fallback that the `oven/bun` base provides, rather than `/usr/bin/node` (Node 20); `python3` is no longer present. A `FROM ms2data/malloy-publisher` image or a `docker exec` script that calls `/usr/bin/node` or `python3` by path needs to install it, or to use `/usr/bin/env node`, which still resolves.
+
+Image builds also pick up Debian security updates the day they are published, instead of waiting for the ISO week to roll over.
+
 ## [Unreleased] — The Docker image runs the server as a non-root user
 
 `ms2data/malloy-publisher` now runs the server as `bun`, uid 1000 and gid 1000, instead of root. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`. The DuckDB CLI and the baked extensions move from `/root/.duckdb/` to `/home/bun/.duckdb/`, and the image sets `HOME=/home/bun`.

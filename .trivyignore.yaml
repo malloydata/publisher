@@ -326,7 +326,7 @@ vulnerabilities:
       Debian util-linux 2.41.5-0+deb13u1 (packages util-linux, mount, login, bsdutils
       and the libmount/libblkid family), in the oven/bun base image of the runtime
       stage. A failed external mount helper still runs privileged X-mount
-      post-hooks. Needs a local caller of mount(8); the server runs as uid 1000 and
+      post-hooks. Needs a local caller of mount(8); the server runs as uid 1000 by default and
       never invokes mount. Not removable: the packages are essential to the base.
       Debian has published no fix.
   - id: CVE-2026-78408
@@ -334,14 +334,14 @@ vulnerabilities:
     statement: >
       Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
       nsenter --join-cgroup leaks root cgroup migration authority. Needs a local
-      caller of nsenter(1); the server runs as uid 1000 and never invokes it. Not
+      caller of nsenter(1); the server runs as uid 1000 by default and never invokes it. Not
       removable (essential packages). Debian has published no fix.
   - id: CVE-2026-78409
     expired_at: 2026-12-31
     statement: >
       Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
       X-mount.subdir detached-tree resolution can escape through intermediate
-      symlinks. Needs a local caller of mount(8); the server runs as uid 1000 and
+      symlinks. Needs a local caller of mount(8); the server runs as uid 1000 by default and
       never invokes mount. Not removable (essential packages). Debian has published
       no fix.
   - id: CVE-2026-78410
@@ -349,7 +349,7 @@ vulnerabilities:
     statement: >
       Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
       Restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode
-      redirection. Needs a local caller of mount(8); the server runs as uid 1000 and
+      redirection. Needs a local caller of mount(8); the server runs as uid 1000 by default and
       never invokes mount. Not removable (essential packages). Debian has published
       no fix.
   - id: CVE-2026-9538
@@ -390,7 +390,7 @@ vulnerabilities:
       image of the runtime stage. Local privilege escalation through missing
       home-record signature verification in systemd-homed. Only the shared libraries
       are installed; systemd-homed does not exist in the image and the server runs as
-      uid 1000. Not removable: other base-image packages depend on the libraries. Debian
+      uid 1000 by default. Not removable: other base-image packages depend on the libraries. Debian
       has published no fix.
   # HIGH, Debian packages with no fixed version published. curl and libcurl are
   # installed explicitly in the Dockerfile (build-time downloads) and libcurl is also
@@ -459,13 +459,13 @@ vulnerabilities:
       Debian acl 2.3.2-2+b1 (libacl1), in the oven/bun base image of the runtime
       stage. Symlink traversal privilege escalation through libacl functions,
       needing a local caller that applies ACLs to attacker-influenced paths; the
-      server runs as uid 1000 and does not. Not removable: base utilities link the
+      server runs as uid 1000 by default and does not. Not removable: base utilities link the
       library. Debian has published no fix.
   # CVE-2026-41907 is rated MEDIUM by the uuid advisory; GitHub surfaces it as high.
-  # The nested uuid 8.3.2 and 9.0.1 copies are exact-pinned by their parents
-  # (node-cron 3.0.3 pins uuid 8.3.2; snowflake-sdk and @azure/msal-node declare ^8;
-  # gaxios, teeny-request, @google-cloud/bigquery and @databricks/sql declare ^9), and
-  # Bun has no nested overrides. The server's own direct dependency is uuid ^11, which
+  # The nested uuid 8.3.2 and 9.0.1 copies come from parent ranges that stop below 11
+  # (node-cron 3.0.3 pins uuid 8.3.2 exactly; snowflake-sdk and @azure/msal-node
+  # declare ^8; gaxios, teeny-request, @google-cloud/bigquery and @databricks/sql
+  # declare ^9), and Bun has no nested overrides. The server's own direct dependency is uuid ^11, which
   # is past the fix. Retire as the parents move to uuid 11.1.1 or later.
   - id: CVE-2026-41907
     paths:
