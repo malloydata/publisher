@@ -168,7 +168,7 @@ function NotebookSession({
    const legacy = /\.malloynb$/i.test(slug);
    const modelPath = `notebooks/${slug}.malloy`;
 
-   const { apiClients, mutable, isLoadingStatus } = useServer();
+   const { apiClients, mutable, isLoadingStatus, server } = useServer();
    const queryClient = useQueryClient();
    const startedAt = useRef(now());
    const onEventRef = useRef(onEvent);
@@ -361,6 +361,8 @@ function NotebookSession({
             packageName,
             path,
             versionId,
+            // `useQueries` bypasses `useQueryWithApiError`, so the server is added here to keep two servers' caches apart.
+            server,
          ],
          queryFn: async () =>
             (

@@ -441,6 +441,7 @@ export default function Package({
                kind={creating ?? "dashboard"}
                environmentName={environmentName}
                packageName={packageName}
+               {...(versionId !== undefined ? { versionId } : {})}
                models={models
                   .map((model) => model.path)
                   .filter(

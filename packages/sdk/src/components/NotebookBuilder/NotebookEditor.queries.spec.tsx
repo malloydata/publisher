@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   act,
    cleanup,
    fireEvent,
    render,
@@ -74,6 +75,12 @@ const getModel = mock(
          return {
             data: {
                modelPath: path,
+               modelInfo: JSON.stringify({
+                  entries: [
+                     { kind: "source", name: "a" },
+                     { kind: "source", name: "other" },
+                  ],
+               }),
                sources: [
                   {
                      name: "a",
@@ -129,6 +136,12 @@ const { NotebookEditor } = await import("./NotebookEditor");
 const button = (name: string) =>
    screen.getByRole("button", { name, hidden: true });
 
+const settle = async () => {
+   await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+   });
+};
+
 beforeEach(() => {
    cleanup();
    clearCache();
@@ -169,6 +182,7 @@ describe("NotebookEditor, adding a query", () => {
       expect(
          screen.getByRole("group", { name: "Cell 4, query", hidden: true }),
       ).toBeDefined();
+      await settle();
       // The dialog read the cached model: no request of its own.
       expect([
          getModel.mock.calls.length,
@@ -238,8 +252,19 @@ describe("NotebookEditor, adding a query on a curated package", () => {
          );
          expect(importReads()).toBe(1);
          expect(getModel.mock.calls.length).toBe(loadReads + 1);
-         // Only what the import names is offered; the file's other sources are not.
-         expect(screen.queryByText("other")).toBeNull();
+         // A named import offers what it names; a whole one, everything the file exports.
+         fireEvent.mouseDown(
+            screen.getByRole("combobox", { name: /Source/, hidden: true }),
+         );
+         expect(
+            within(screen.getAllByRole("listbox", { hidden: true }).at(-1)!)
+               .getAllByRole("option", { hidden: true })
+               .map((option) => option.textContent),
+         ).toEqual(name === "named" ? ["a"] : ["a", "other"]);
+         fireEvent.keyDown(
+            screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
+            { key: "Escape" },
+         );
          fireEvent.click(button("Add query"));
 
          fireEvent.click(button("Save changes"));
@@ -269,6 +294,7 @@ describe("NotebookEditor, adding a query on a curated package", () => {
                }),
             ).getByRole("button", { name: "Add query below", hidden: true }),
          );
+         await settle();
          expect(importReads()).toBe(1);
       });
 

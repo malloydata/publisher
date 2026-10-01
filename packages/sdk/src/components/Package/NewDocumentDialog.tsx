@@ -31,6 +31,7 @@ export function NewDocumentDialog({
    kind: initialKind,
    environmentName,
    packageName,
+   versionId,
    models,
    target,
    onClose,
@@ -42,6 +43,7 @@ export function NewDocumentDialog({
    kind: DocumentType;
    environmentName: string;
    packageName: string;
+   versionId?: string;
    /** The package's model files, relative to its root, to pick a source from. */
    models: string[];
    /** Where the file is written, and (on the package route) which names are taken. */
@@ -65,6 +67,7 @@ export function NewDocumentDialog({
    const { choices, isLoading, isSuccess } = useDocumentChoices({
       environmentName,
       packageName,
+      ...(versionId !== undefined ? { versionId } : {}),
       models,
       enabled: open && models.length > 0,
    });

@@ -8,6 +8,7 @@ import {
    clearCache,
    mockServerProvider,
    serverWrapper,
+   TEST_SERVER,
 } from "../../../test/serverProvider";
 import type { CreateTarget } from "../DocumentCreate";
 import {
@@ -273,8 +274,8 @@ describe("NewDocumentDialog", () => {
          await titleFilled("by category");
          expect(getModel).toHaveBeenCalledTimes(2);
          expect(cacheKeys("new-document-model")).toEqual([
-            '["new-document-model","env","pkg","storefront.malloy"]',
-            '["new-document-model","env","pkg","other.malloy"]',
+            `["new-document-model","env","pkg",null,"storefront.malloy","${TEST_SERVER}"]`,
+            `["new-document-model","env","pkg",null,"other.malloy","${TEST_SERVER}"]`,
          ]);
 
          // Closing and reopening reads the cache, not the server.
@@ -359,5 +360,21 @@ describe("NewDocumentDialog", () => {
             locator: { workspace: "record", type: "notebook" },
          });
       });
+   });
+});
+
+describe("NewDocumentDialog: what a model read is cached under", () => {
+   it("reads each model at the package's version, under a key that names the version and the server", async () => {
+      mount({ versionId: "v3" });
+      await titleFilled("by category");
+      expect(getModel.mock.calls[0]).toEqual([
+         "env",
+         "pkg",
+         "storefront.malloy",
+         "v3",
+      ]);
+      const [key] = cacheKeys("new-document-model");
+      expect(key).toContain('"v3"');
+      expect(key).toContain(TEST_SERVER);
    });
 });

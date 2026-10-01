@@ -4,33 +4,11 @@
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { useServer } from "../ServerProvider";
+import { exportedSources } from "./exportedSources";
 
 export interface DocumentChoice {
    source: string;
    view: string;
-}
-
-/**
- * The sources a model exports. `sources` also lists names the model only
- * imports, and `import { x } from "../model"` cannot reach those; no
- * `modelInfo`, or one that does not parse, offers nothing rather than a
- * choice that would write a file that does not compile.
- */
-function exportedSources(modelInfo: string | undefined): Set<string> {
-   try {
-      const parsed = JSON.parse(modelInfo ?? "") as {
-         entries?: { kind?: string; name?: string }[];
-      };
-      return new Set(
-         (parsed.entries ?? []).flatMap((entry) =>
-            entry.kind === "source" && typeof entry.name === "string"
-               ? [entry.name]
-               : [],
-         ),
-      );
-   } catch {
-      return new Set();
-   }
 }
 
 /**
@@ -42,11 +20,14 @@ function exportedSources(modelInfo: string | undefined): Set<string> {
 export function useDocumentChoices({
    environmentName,
    packageName,
+   versionId,
    models,
    enabled,
 }: {
    environmentName: string;
    packageName: string;
+   /** The package version the model list was read at. */
+   versionId?: string;
    /** The package's model files, relative to its root. */
    models: readonly string[];
    enabled: boolean;
@@ -55,16 +36,25 @@ export function useDocumentChoices({
    isLoading: boolean;
    isSuccess: boolean;
 } {
-   const { apiClients } = useServer();
+   const { apiClients, server } = useServer();
    const results = useQueries({
       queries: models.map((path) => ({
-         queryKey: ["new-document-model", environmentName, packageName, path],
+         // `useQueries` bypasses `useQueryWithApiError`, so the server is added here to keep two servers' caches apart.
+         queryKey: [
+            "new-document-model",
+            environmentName,
+            packageName,
+            versionId,
+            path,
+            server,
+         ],
          queryFn: async () =>
             (
                await apiClients.models.getModel(
                   environmentName,
                   packageName,
                   path,
+                  versionId,
                )
             ).data,
          enabled,

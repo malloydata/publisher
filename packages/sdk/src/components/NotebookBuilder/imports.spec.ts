@@ -18,10 +18,22 @@ const importsOf = async (body: string, modelPath = "notebooks/n.malloy") => {
    return notebookImports(read.source, modelPath);
 };
 
-const model = (...sources: string[]) =>
+/** A model that exports `exported` (default: every source) and lists `sources`, each with one view. */
+const modelOf = (
+   sources: Record<string, string>,
+   exported: string[] = Object.keys(sources),
+) =>
    ({
-      sources: sources.map((name) => ({ name, views: [{ name: "v" }] })),
+      sources: Object.entries(sources).map(([name, view]) => ({
+         name,
+         views: [{ name: view }],
+      })),
+      modelInfo: JSON.stringify({
+         entries: exported.map((name) => ({ kind: "source", name })),
+      }),
    }) as unknown as CompiledModel;
+const model = (...sources: string[]) =>
+   modelOf(Object.fromEntries(sources.map((name) => [name, "v"])));
 
 const source = (name: string): CatalogSource => ({
    name,
@@ -168,7 +180,7 @@ describe("importedCatalog", () => {
    });
 
    it("does not offer the file's own source of the same name when it is renamed away", () => {
-      const names = importedCatalog(
+      const [only, ...rest] = importedCatalog(
          [
             {
                kind: "names",
@@ -176,26 +188,38 @@ describe("importedCatalog", () => {
                path: "shop.malloy",
             },
          ],
-         new Map([["shop.malloy", model("orders", "raw_orders")]]),
-      ).map((s) => s.name);
-      expect(names).toEqual(["orders"]);
-      const [only] = importedCatalog(
-         [
-            {
-               kind: "names",
-               names: [{ from: "raw_orders", as: "orders" }],
-               path: "shop.malloy",
-            },
-         ],
-         new Map([["shop.malloy", model("orders", "raw_orders")]]),
+         new Map([
+            [
+               "shop.malloy",
+               modelOf({ orders: "own_view", raw_orders: "raw_view" }),
+            ],
+         ]),
       );
+      expect(rest).toEqual([]);
       // It is raw_orders' catalog entry, renamed, not the file's `orders`.
-      expect(only.views).toEqual(
+      expect(only.name).toBe("orders");
+      expect(only.views.map((v) => v.name)).toEqual(["raw_view"]);
+   });
+
+   it("offers only what a whole-file import can reach: the sources the model exports", () => {
+      const middle = new Map([
+         ["middle.malloy", modelOf({ s: "v", own: "v" }, ["own"])],
+      ]);
+      expect(
+         importedCatalog([{ kind: "all", path: "middle.malloy" }], middle).map(
+            (s) => s.name,
+         ),
+      ).toEqual(["own"]);
+      // No `modelInfo` to say what is exported offers nothing.
+      const bare = {
+         sources: [{ name: "s", views: [] }],
+      } as unknown as CompiledModel;
+      expect(
          importedCatalog(
-            [{ kind: "all", path: "shop.malloy" }],
-            new Map([["shop.malloy", model("raw_orders")]]),
-         )[0].views,
-      );
+            [{ kind: "all", path: "bare.malloy" }],
+            new Map([["bare.malloy", bare]]),
+         ),
+      ).toEqual([]);
    });
 
    it("brings nothing from a model that could not be read, and counts each name once", () => {

@@ -3,6 +3,7 @@
 
 import type { CompiledModel } from "../../client";
 import { buildCatalog, type CatalogSource } from "../DashboardBuilder/catalog";
+import { exportedSources } from "../DocumentCreate/exportedSources";
 import type { NotebookSource } from "./readNotebookSource";
 
 /** One name an import brings in: the source as its file calls it, and as this notebook does. */
@@ -101,7 +102,7 @@ export function notebookImports(
    return found;
 }
 
-/** The sources the imports bring in, with their views, from the models those imports name. A model that could not be read brings nothing. */
+/** The sources the imports bring in, with their views, from the models those imports name. A whole-file import brings only what the model exports; a model that could not be read brings nothing. */
 export function importedCatalog(
    imports: readonly NotebookImport[],
    models: ReadonlyMap<string, CompiledModel>,
@@ -113,9 +114,10 @@ export function importedCatalog(
       const { sources } = buildCatalog([
          { ...model, modelPath: imported.path } as CompiledModel,
       ]);
+      const exported = exportedSources(model.modelInfo);
       const brought: CatalogSource[] =
          imported.kind === "all"
-            ? sources
+            ? sources.filter((s) => exported.has(s.name))
             : imported.names.flatMap(({ from, as }) => {
                  const found = sources.find((s) => s.name === from);
                  return found ? [{ ...found, name: as }] : [];
