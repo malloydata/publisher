@@ -104,7 +104,7 @@ import {
    hasArtifactLineOutsideBlocks,
    isNotebookModelPath,
 } from "./notebook";
-import { lintNotebookText } from "./notebook_lint";
+import { lintNotebookText, reportedByDashboardLint } from "./notebook_lint";
 import {
    buildDashboardManifest,
    COMPONENT_FILE_SUFFIXES,
@@ -2948,9 +2948,10 @@ export class Package {
    }
 
    /**
-    * Re-read the package's dashboards from its compiled models. Called at load
-    * and after every reload, because a dashboard is defined by an annotation on
-    * a compiled model — it cannot change without the models changing.
+    * Re-read the package's dashboards from its compiled models. Called at load,
+    * after every reload, and as a dry run from a package-scope compile, because
+    * a dashboard is defined by an annotation on a compiled model — it cannot
+    * change without the models changing.
     *
     * Never throws: a package whose dashboards can't be read still serves its
     * models. A file in `dashboards/` with no artifact tag is a shared include
@@ -3258,12 +3259,7 @@ export class Package {
             }
          }
          for (const finding of lintNotebookText(modelPath, text)) {
-            // A dashboard whose tag does not parse is already reported by the dashboard lint.
-            if (
-               finding.code === "notebook-artifact-unparsed" &&
-               !this.isServedNotebook(modelPath)
-            )
-               continue;
+            if (reportedByDashboardLint(finding, modelPath)) continue;
             logger.warn("Notebook lint", {
                packageName: this.packageName,
                model: modelPath,

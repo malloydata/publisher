@@ -281,13 +281,11 @@ query: x is sales -> by_n
       problems.filter(
          (p) => p.code === "render-tag" || p.code === "dashboard-lint",
       );
-
-   it("package: reports the render-tag and dashboard findings a reload would", async () => {
-      await writeDashboard(BROKEN_DASHBOARD);
+   const compilePackage = async () => {
       const { CompileController } = await import(
          "../controller/compile.controller"
       );
-      const result = await new CompileController({
+      return new CompileController({
          getEnvironment: async () => env,
       } as never).compile(
          "testEnv",
@@ -298,6 +296,24 @@ query: x is sales -> by_n
          undefined,
          "package",
       );
+   };
+   // The oracle is a real reload of the same files. Compared both ways, so a
+   // finding only one side reports, or one side reports twice, fails.
+   const expectSameAsReload = async (
+      problems: { severity?: string; message: string }[],
+   ) => {
+      const reloaded = await env.getPackage("pkg", true);
+      const served = (reloaded.getPackageMetadata().warnings ?? []).map(
+         (w) => `${w.severity} ${w.message}`,
+      );
+      expect(problems.map((p) => `${p.severity} ${p.message}`).sort()).toEqual(
+         served.sort(),
+      );
+   };
+
+   it("package: reports the render-tag and dashboard findings a reload would", async () => {
+      await writeDashboard(BROKEN_DASHBOARD);
+      const result = await compilePackage();
       expect(result.status).toBe("error");
       expect(reloadFindings(result.problems)).toEqual([
          {
@@ -326,15 +342,21 @@ query: x is sales -> by_n
          },
       ]);
 
-      // The oracle is a real reload of the same files: it must report the
-      // same findings, so the two cannot quietly disagree.
-      const reloaded = await env.getPackage("pkg", true);
-      const served = (reloaded.getPackageMetadata().warnings ?? []).map(
-         (w) => w.message,
+      await expectSameAsReload(result.problems);
+   });
+
+   it("package: reports a dashboard tag that does not parse once, as a reload does", async () => {
+      await writeDashboard(
+         `## artifact { title="X" tiles: ["a -> v"] }\n` +
+            `source: a is duckdb.sql("select 1 as x") extend { view: v is { select: x } }\n`,
       );
-      for (const finding of reloadFindings(result.problems)) {
-         expect(served).toContain(finding.message);
-      }
+      const result = await compilePackage();
+      expect(
+         result.problems
+            .filter((p) => p.model === "dashboards/x.malloy")
+            .map((p) => p.code),
+      ).toEqual(["dashboard-lint"]);
+      await expectSameAsReload(result.problems);
    });
 
    it("package: a clean dashboard adds no findings", async () => {

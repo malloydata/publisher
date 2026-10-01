@@ -5781,7 +5781,8 @@ export class Model {
     *     ignores it (`# colspan` outside `# dashboard { columns=N }`, or a
     *     colspan wider than the grid, which is clamped). Nothing looks broken at
     *     query time -- the layout just is not what the author wrote -- which is
-    *     why load time is the only place this becomes visible.
+    *     why a load, a reload or a package-scope compile is the only place this
+    *     becomes visible.
     *
     * `warn` and `error` are the only severities the renderer emits, so no
     * finding is dropped here.

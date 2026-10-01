@@ -10,7 +10,7 @@ import type {
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
 import { isDashboardModelPath } from "./dashboard";
-import { notebookLintProblems } from "./notebook_lint";
+import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -1026,6 +1026,12 @@ export class Environment {
                         pathToFileURL(
                            path.join(packagePath, compiled.modelPath),
                         ).toString(),
+                     ).filter(
+                        (problem) =>
+                           !reportedByDashboardLint(
+                              problem,
+                              compiled.modelPath,
+                           ),
                      ),
                      compiled.modelPath,
                   );

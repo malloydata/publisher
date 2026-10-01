@@ -800,6 +800,21 @@ export function lintNotebookText(
    }
 }
 
+/**
+ * True for a finding the dashboard lint reports in its own words: a dashboard
+ * whose `## artifact` tag does not parse. A caller that runs both lints drops
+ * this one, so the file is reported once.
+ */
+export function reportedByDashboardLint(
+   finding: { code?: string },
+   modelPath: string,
+): boolean {
+   return (
+      finding.code === "notebook-artifact-unparsed" &&
+      isDashboardModelPath(modelPath)
+   );
+}
+
 /** The findings as compile problems, at their lines, for a /compile of a notebook or dashboard file. */
 export function notebookLintProblems(
    modelPath: string,
