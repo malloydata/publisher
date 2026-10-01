@@ -139,6 +139,42 @@ describe("useNotebookEditor: query cells", () => {
       expect(view.result.current.isInFile("2")).toBe(true);
    });
 
+   it("clears undo after a re-pick of a bare line, so a stepped-back save cannot silently keep the new chart", async () => {
+      const { view, saves } = await open();
+      expect(view.result.current.document.cells[2].chart).toBeUndefined();
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells[2].chart = "line_chart";
+         }),
+      );
+      await act(async () => void (await view.result.current.save()));
+      expect(view.result.current.canUndo).toBe(false);
+      expect(saves[0]).toContain("viz line_chart\nrun: a");
+   });
+
+   it("clears undo after a chart is first picked on an added query saved without one", async () => {
+      const { view } = await open();
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells.push({
+               id: "added-q",
+               kind: "query",
+               added: true,
+               run: { source: "a", view: "v" },
+            });
+         }),
+      );
+      await act(async () => void (await view.result.current.save()));
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells[d.cells.length - 1].chart = "bar_chart";
+         }),
+      );
+      expect(view.result.current.clearsHistory).toBe(true);
+      await act(async () => void (await view.result.current.save()));
+      expect(view.result.current.canUndo).toBe(false);
+   });
+
    it("knows an added query is not in the file until it is saved", async () => {
       const { view } = await open();
       addQuery(view);

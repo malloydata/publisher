@@ -130,8 +130,9 @@ export function undoUnsafeAfter(
    return saved.cells.some(
       (cell) =>
          cell.kind === "query" &&
-         cell.chart === "custom" &&
-         now.get(cell.id)?.chart !== "custom",
+         // Both mean "as the file has it", which stops being what undo would restore once the chart changes.
+         (cell.chart === "custom" || cell.chart === undefined) &&
+         now.get(cell.id)?.chart !== cell.chart,
    );
 }
 
