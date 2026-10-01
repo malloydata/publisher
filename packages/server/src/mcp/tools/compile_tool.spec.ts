@@ -163,6 +163,44 @@ describe("compile_model tool", () => {
       expect(parsed.diagnostics[0].severity).toBe("warn");
    });
 
+   it("fails a package-scope compile on an error-severity dashboard finding", async () => {
+      // The package-scope findings a reload would report carry no position.
+      // One at error severity is a dashboard that is really broken, so it
+      // fails the compile; a warn-severity render tag alone would not.
+      const handler = captureHandler(
+         storeReturning([
+            {
+               severity: "warn",
+               message: "Unknown render tag 'hidden' on field 'min_value'",
+               code: "render-tag",
+               model: "dashboards/x.malloy",
+            },
+            {
+               severity: "error",
+               message:
+                  'given "DEPARTMENT" suggests options from "sales -> ' +
+                  'products.department", but that source has no field ' +
+                  '"products.department".',
+               code: "dashboard-lint",
+               model: "dashboards/x.malloy",
+            },
+         ]),
+      );
+      const result = await handler({
+         ...args,
+         scope: "package",
+         source: undefined,
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).status).toBe("error");
+      expect(textBlock(result)).toBe(
+         "Compile failed with 1 error (positions are 0-based):\n\n" +
+            '- dashboards/x.malloy: given "DEPARTMENT" suggests options from ' +
+            '"sales -> products.department", but that source has no field ' +
+            '"products.department". [dashboard-lint]',
+      );
+   });
+
    it("passes scope through to compileSource, defaulting to append", async () => {
       const scopes: unknown[] = [];
       const handler = captureHandler({

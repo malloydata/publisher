@@ -239,6 +239,132 @@ source: broken is duckdb.sql("select 1 as id") extend {
       expect(inBase.length).toBe(keys.size);
    });
 
+   // -- scope "package": the findings a reload adds after the worker --------
+
+   // A dashboard with each kind of finding a reload reports on the main thread
+   // and the worker compile never sees: a given annotation line that does not
+   // parse, a suggest naming a field the source lacks, and a render tag the
+   // renderer does not know.
+   const BROKEN_DASHBOARD = `##! experimental.givens
+import { base_source } from '../base.malloy'
+
+# label="Department" control=select suggest { source=sales dimension="products.department" }
+# placeholder=Pick one!
+given: DEPARTMENT :: filter<string> is f''
+
+source: sales is base_source extend {
+  dimension: dept is 'a'
+  view: by_n is {
+    where: dept ~ $DEPARTMENT
+    group_by: n
+    # hidden
+    aggregate: min_value is n.min()
+  }
+}
+
+# artifact { title="X" }
+query: x is sales -> by_n
+`;
+   const CLEAN_DASHBOARD = BROKEN_DASHBOARD.replace(
+      'dimension="products.department"',
+      "dimension=dept",
+   )
+      .replace("# placeholder=Pick one!\n", "")
+      .replace("    # hidden\n", "");
+
+   const writeDashboard = async (text: string) => {
+      const dir = path.join(rootDir, "env", "pkg", "dashboards");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "x.malloy"), text);
+   };
+   const reloadFindings = <T extends { code?: string }>(problems: T[]) =>
+      problems.filter(
+         (p) => p.code === "render-tag" || p.code === "dashboard-lint",
+      );
+
+   it("package: reports the render-tag and dashboard findings a reload would", async () => {
+      await writeDashboard(BROKEN_DASHBOARD);
+      const { CompileController } = await import(
+         "../controller/compile.controller"
+      );
+      const result = await new CompileController({
+         getEnvironment: async () => env,
+      } as never).compile(
+         "testEnv",
+         "pkg",
+         "base.malloy",
+         undefined,
+         false,
+         undefined,
+         "package",
+      );
+      expect(result.status).toBe("error");
+      expect(reloadFindings(result.problems)).toEqual([
+         {
+            severity: "warn",
+            message: "Unknown render tag 'hidden' on field 'min_value'",
+            code: "render-tag",
+            model: "dashboards/x.malloy",
+         },
+         {
+            severity: "error",
+            message:
+               'given "DEPARTMENT" suggests options from "sales -> ' +
+               'products.department", but "sales" has no join "products".',
+            code: "dashboard-lint",
+            model: "dashboards/x.malloy",
+         },
+         {
+            severity: "error",
+            message:
+               'given "DEPARTMENT" has an annotation that does not parse ' +
+               "(Expected an identifier), so the whole line is discarded and " +
+               "the given loses any label, control, range or suggest it " +
+               "declared. It still accepts values; only its presentation is " +
+               "lost.",
+            code: "dashboard-lint",
+         },
+      ]);
+
+      // The oracle is a real reload of the same files: it must report the
+      // same findings, so the two cannot quietly disagree.
+      const reloaded = await env.getPackage("pkg", true);
+      const served = (reloaded.getPackageMetadata().warnings ?? []).map(
+         (w) => w.message,
+      );
+      for (const finding of reloadFindings(result.problems)) {
+         expect(served).toContain(finding.message);
+      }
+   });
+
+   it("package: a clean dashboard adds no findings", async () => {
+      await writeDashboard(CLEAN_DASHBOARD);
+      const { problems } = await compile("base.malloy", undefined, "package");
+      expect(problems).toEqual([]);
+   });
+
+   it("package: the dashboard lint leaves the served package untouched", async () => {
+      await writeDashboard(CLEAN_DASHBOARD);
+      const pkg = await env.getPackage("pkg", true);
+      const before = pkg.getPackageMetadata().warnings;
+      const servedModel = pkg.getModel("dashboards/x.malloy");
+      expect(pkg.listDashboards().map((d) => d.name)).toEqual(["x"]);
+
+      // A what-if that breaks the dashboard: compile reports it, and the
+      // served package keeps its models, dashboards and warnings as they were.
+      const { problems } = await compile(
+         "dashboards/x.malloy",
+         BROKEN_DASHBOARD,
+         "package",
+      );
+      expect(reloadFindings(problems).length).toBe(3);
+      expect(await env.getPackage("pkg")).toBe(pkg);
+      expect(pkg.getModel("dashboards/x.malloy")).toBe(servedModel);
+      expect(pkg.getPackageMetadata().warnings).toEqual(before);
+      expect(pkg.listDashboards().map((d) => d.name)).toEqual(["x"]);
+      expect(env.getFailedPackages().size).toBe(0);
+   });
+
    // -- validation ---------------------------------------------------------
 
    it("rejects a missing source at append and file scope, naming the fix", async () => {

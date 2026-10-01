@@ -782,8 +782,10 @@ export class Package {
     * misconfigured tag never fails the load; its findings are returned to ride
     * the package response as non-fatal `warnings`.
     *
-    * One function for both the load and the in-place reload, so the two
-    * cannot hydrate or validate differently. It touches no package state.
+    * One function for the load, the in-place reload and the package-scope
+    * compile ({@link lintWorkerOutcome}), so the render-tag findings a compile
+    * reports cannot drift from the ones a reload reports. It touches no
+    * package state.
     *
     * `onCompileError` is the one way the callers differ. A load ("throw")
     * fails on the first model that did not compile. A reload ("placeholder")
@@ -886,6 +888,60 @@ export class Package {
          models.set(sm.modelPath, model);
       }
       return { models, renderTagWarnings };
+   }
+
+   /**
+    * The render-tag and dashboard findings a reload of this worker outcome
+    * would put on the package's `warnings`, for the package-scope compile.
+    *
+    * Runs the reload's own two steps, {@link hydrateWorkerModels} (keeping
+    * failed models, as a reload does) and {@link discoverDashboards}, on a
+    * throwaway Package built from the outcome. The served package is never
+    * read or written, so a what-if cannot leak into what is served. The
+    * outcome's metadata carries the surface the worker resolved from
+    * publisher.json or a root index.malloy, so the tile lint answers against
+    * the same surface a reload would.
+    *
+    * Not covered: notebook findings (the compile reports those itself), and
+    * every warning that needs the build plan or a bound manifest (storage,
+    * persist, materialization, collision), which only a real load computes.
+    *
+    * With a replacement source, the hydrated models already reflect it. One
+    * lint input is still read from disk: a dashboard file that failed to
+    * compile carries no text back, so `claimsToBeADashboard` reads the saved
+    * copy to decide whether it is a dashboard at all.
+    */
+   public static async lintWorkerOutcome(
+      environmentName: string,
+      packageName: string,
+      packagePath: string,
+      malloyConfig: MalloyConfig,
+      outcome: LoadPackageOutcome,
+      buildManifest?: BuildManifest["entries"],
+   ): Promise<{
+      renderTagWarnings: ApiPackageWarning[];
+      dashboardWarnings: ApiPackageWarning[];
+   }> {
+      const { models, renderTagWarnings } = await Package.hydrateWorkerModels(
+         outcome,
+         { packageName, packagePath, malloyConfig, buildManifest },
+         "placeholder",
+      );
+      const pkg = new Package(
+         environmentName,
+         packageName,
+         packagePath,
+         Package.packageConfigFromOutcome(
+            environmentName,
+            packageName,
+            outcome,
+         ),
+         [],
+         models,
+         malloyConfig,
+      );
+      await pkg.discoverDashboards({ dryRun: true });
+      return { renderTagWarnings, dashboardWarnings: pkg.dashboardWarnings };
    }
 
    /**
@@ -2899,8 +2955,15 @@ export class Package {
     * Never throws: a package whose dashboards can't be read still serves its
     * models. A file in `dashboards/` with no artifact tag is a shared include
     * and is skipped, exactly as Malloyyo treats it.
+    *
+    * `dryRun` is for the throwaway package {@link lintWorkerOutcome} builds:
+    * it skips the notebook pass (the package-scope compile reports notebook
+    * findings itself, with positions), its discovery metric, and the per-
+    * finding log lines, so a compile neither counts nor logs as a load.
     */
-   private async discoverDashboards(): Promise<void> {
+   private async discoverDashboards(
+      options: { dryRun?: boolean } = {},
+   ): Promise<void> {
       const discovered = new Map<
          string,
          DashboardManifest & { error?: string }
@@ -3083,9 +3146,14 @@ export class Package {
          const model = this.models.get(manifest.entryFile);
          if (!model) continue;
          try {
+            // The compiled text when the loader recorded it, as for notebooks
+            // below, so the boundary derives from the text the IR came from.
+            // At package-scope compile that is also the caller's replacement,
+            // where the file on disk is the old version.
             dashboardFileText.set(
                manifest.entryFile,
-               await model.getFileText(this.packagePath),
+               model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath)),
             );
          } catch {
             // Unreadable text only costs the file its own derived sources:
@@ -3112,10 +3180,12 @@ export class Package {
       }
       this.notebookFileText = notebookFileText;
       this.applyQueryBoundaryToModels();
-      this.notebookWarnings = [
-         ...this.attachNotebookCells(),
-         ...(await this.lintNotebookFiles()),
-      ];
+      if (!options.dryRun) {
+         this.notebookWarnings = [
+            ...this.attachNotebookCells(),
+            ...(await this.lintNotebookFiles()),
+         ];
+      }
       this.lintInputs = {
          factsByPath,
          allFacts,
@@ -3123,7 +3193,7 @@ export class Package {
          dashboardSlugs,
          droppedByError,
       };
-      await this.relintDashboards();
+      await this.relintDashboards({ log: !options.dryRun });
    }
 
    /**
@@ -3224,7 +3294,9 @@ export class Package {
     * it; so does a metadata PATCH, which can change the surface without
     * changing any file, so the tile findings stay true to what is served.
     */
-   public async relintDashboards(): Promise<void> {
+   public async relintDashboards(
+      options: { log?: boolean } = {},
+   ): Promise<void> {
       const inputs = this.lintInputs;
       if (!inputs) return;
       this.dashboardWarnings = await this.lintDashboards(
@@ -3234,6 +3306,7 @@ export class Package {
          inputs.dashboardSlugs,
          inputs.droppedByError,
       );
+      if (options.log === false) return;
       for (const warning of this.dashboardWarnings) {
          logger.warn("Dashboard lint", {
             packageName: this.packageName,

@@ -1031,6 +1031,35 @@ export class Environment {
                   );
                }
             }
+            // The findings a reload would add on the main thread after this
+            // same worker compile: render tags and the dashboard, given and
+            // drill lints. Each keeps its own severity, so a broken dashboard
+            // makes the compile an error, as it should. They carry no
+            // position; the model and the message name what is wrong.
+            const { renderTagWarnings, dashboardWarnings } =
+               await Package.lintWorkerOutcome(
+                  this.environmentName,
+                  packageName,
+                  packagePath,
+                  pkg.getMalloyConfig(),
+                  outcome,
+                  boundManifestEntries,
+               );
+            const asProblem = (
+               warning: (typeof renderTagWarnings)[number],
+               code: string,
+            ): LogMessage =>
+               ({
+                  severity: warning.severity ?? "warn",
+                  message: warning.message,
+                  code,
+               }) as LogMessage;
+            for (const warning of renderTagWarnings) {
+               collect([asProblem(warning, "render-tag")], warning.model);
+            }
+            for (const warning of dashboardWarnings) {
+               collect([asProblem(warning, "dashboard-lint")], warning.model);
+            }
             if (
                source !== undefined &&
                outcome.replacementMatchedExisting === false

@@ -5950,10 +5950,15 @@ components:
             "package" runs the same worker compiler and file selection as
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
-            against the replacement. Package diagnostics can name files hidden
-            from discovery. No rows or SQL are returned, and caller-provided
-            source remains subject to authorize gates. includeSql is not
-            available at "package".
+            against the replacement. It also reports the render-tag findings
+            (code "render-tag") and the dashboard, given and drill findings
+            (code "dashboard-lint") a reload would put on the package's
+            warnings, at their own severity and with no position. Warnings that
+            need the build plan or a bound manifest (storage, persist,
+            materialization) are not reported. Package diagnostics can name
+            files hidden from discovery. No rows or SQL are returned, and
+            caller-provided source remains subject to authorize gates.
+            includeSql is not available at "package".
 
             "append" text is checked against the model's PUBLISHED surface, so
             it may not declare its own data roots: import, connection.table(…),
