@@ -112,6 +112,26 @@ describe("previewTileQuery", () => {
       expect(withChart(undefined)).toBeUndefined();
    });
 
+   it("clears the saved view's own chart line for an inline or opaque tile on Default", () => {
+      const NONE =
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz";
+      const annotationOf = (
+         declaration: DashboardTile["declaration"],
+         chart: DashboardTile["chart"],
+      ) =>
+         previewTileQuery(
+            document,
+            { name: "x", source: "overview", declaration, chart },
+            runnable,
+         ).annotation;
+      expect(annotationOf({ kind: "inline" }, "default")).toBe(NONE);
+      expect(annotationOf({ kind: "opaque", why: "?" }, "default")).toBe(NONE);
+      expect(annotationOf({ kind: "inline" }, undefined)).toBeUndefined();
+      expect(
+         annotationOf({ kind: "reference", from: "v" }, "default"),
+      ).toBeUndefined();
+   });
+
    it("sends a tile only the givens it binds", () => {
       // `trend` binds CATEGORY alone: SINCE moving must not re-run it, and
       // unbinding a tile is what takes a control's effect off it.

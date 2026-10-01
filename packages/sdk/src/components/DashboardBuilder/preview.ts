@@ -96,10 +96,12 @@ export interface PreviewTileQuery {
    /** A run expression, without `run:` — what `DashboardTile.tile` takes. */
    expression: string;
    /**
-    * The chart line the tile's wrapper carries, to sit above the `run:`. The
-    * preview runs the base view, which has never seen the wrapper, so without
-    * it the tile would draw the view's own chart whatever the picker says.
-    * Absent when the wrapper adds none.
+    * The chart line the tile's wrapper carries, to sit above the `run:`. A
+    * reference tile runs its base view, which has never seen the wrapper, so
+    * without it the tile would draw the view's own chart whatever the picker
+    * says. An inline or opaque tile runs the SAVED view, wrapper line and all,
+    * so Default there carries the all-negating line: the saved line is what
+    * Default removes. Absent when a reference tile's wrapper adds none.
     */
    annotation?: string;
    /**
@@ -196,7 +198,9 @@ export function previewTileQuery(
          ? chartLineText(chart)
          : chart === "custom" && tile.chartLines?.length
            ? tile.chartLines.join("\n")
-           : undefined;
+           : chart === "default" && tile.declaration.kind !== "reference"
+             ? chartLineText("none")
+             : undefined;
    return {
       ...(annotation ? { annotation } : {}),
       expression:
