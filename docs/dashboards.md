@@ -624,11 +624,23 @@ and a reload that fails to compile leaves the previously compiled model serving.
 ### Editing in the Console
 
 If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
-dashboard page has an **Edit** button, and the package page has an **Add dashboard** control: pick a
-model, a source, the view for the first tile and a title, and the file is written into the package
-and opened in the builder. From there it is the classic loop — **drag a tile by its grip to move
-it, drag its right edge to resize it, pick its view and label from its own menu, and add filters
-from the strip above the grid.**
+dashboard page has an **Edit** button, and the package page has a **New** menu (and an **Add
+dashboard** action on the Dashboards section): pick a model, a source, the view for the first tile
+and a title, and the file is written into the package and opened in the builder. From there it is
+the classic loop — **drag a tile by its grip to move it, drag its right edge to resize it, pick its
+view, label and chart from its own menu, and add filters from the strip above the grid.**
+
+The chart choices are Default (the view's own chart), No chart (a table), Line, Bar, Big value
+(offered only when every output of the view is an aggregate), Scatter, and a map when the view already
+carries one. A choice writes one chart line on the tile's wrapper that turns off the other chart
+tags. A chart line it does not model, such as `# bar_chart { size=spark }`, is kept byte for byte on
+every edit, and the picker is disabled for that tile with the reason shown; so is a tile inherited
+from a declaration on the source, which has no wrapper to carry the line.
+
+A dashboard with `tiles=[]` opens in the builder, so an empty one can be started there, but it is not
+served (the manifest 404s and the load lint warns) until it has a tile, and the builder will not
+remove the last one. A filter on a dimension reached through a join keeps its full dotted path
+(`products.category`), written quoted, and the lint accepts one level of join there.
 
 What makes it different from a classic BI tool is not the editing, it is what the editing produces.
 There is no proprietary layout document: the builder reads and writes the same

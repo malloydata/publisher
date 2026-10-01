@@ -31,11 +31,13 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — Console can edit notebooks
+## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
 
 A tagged `notebooks/*.malloy` notebook now has an **Edit** button in the Console. The editor lets you
 rewrite, add and remove markdown cells and reorder cells (definitions stay put, and a query stays
-below what it reads). Save writes the file back into the package and leaves the rest of the file as
+below what it reads). It also adds and removes query cells: pick a source the notebook reaches, one
+of its views, a chart and a caption, and the editor writes the caption, the chart line and the
+`run:` for you. Save writes the file back into the package and leaves the rest of the file as
 it was: an edited cell is written in the `(markdown)` spelling, and removing a cell removes the
 comment lines directly above it. Save writes to the host's record when the host has one (an
 authoritative workspace), and otherwise to the package, so the Console on a server that does not
@@ -43,6 +45,36 @@ take writes has no Save. A notebook the editor cannot place cell by cell opens r
 why. The write route (`PUT …/models/{path}`) now accepts tagged `notebooks/*.malloy` as well as
 `dashboards/*.malloy`. The SDK exports `NotebookEditor` from `@malloy-publisher/sdk/builder` for
 hosts that mount it themselves.
+
+The package page has a **New** menu with **Dashboard** and **Notebook**: choose a model, the first
+view and a title, and the file is created and opened in its editor. On the Console it creates the
+file in the package and refuses to overwrite one that exists; on a host with an authoritative record
+it creates the document there. A workspace that only keeps drafts in the browser is never offered
+the menu. The same primitives (`createDocument`, `createRoute`, `useDocumentChoices`,
+`newNotebookSource`, `locatorFor`) are exported from `@malloy-publisher/sdk/builder`, and
+`dashboard.created` and `notebook.created` are new events (`{ where }` only; additive, so a host
+that switches exhaustively over event types will see two new cases).
+
+A dashboard tile and a notebook query cell each get a **chart picker**: Default (the view's own
+chart), No chart (table), Line, Bar, Big value (offered when every output of the view is an
+aggregate), Scatter, and a map only when the view already carries one. The picker writes one chart
+line that turns off the other chart tags. A chart line it did not write (for example
+`# bar_chart { size=spark }`) is kept byte for byte on every edit, and the picker is disabled for
+that tile or cell with the reason shown.
+
+A dashboard with no tiles now opens in the editor instead of being refused. It is not served until it
+has a tile (its page 404s and the load lint warns), and the editor will not remove the last tile.
+
+Limits to know about: a query cell added in the editor is not mapped to the notebook's controls, so
+its result follows them only if its source reads a given as `$NAME`; a query can only be added below
+every definition in the notebook; and a save that removes a query cell that was already in the file
+clears the editor's undo history.
+
+**Fixed: a filter on a joined dimension.** A dashboard filter added in the builder on a dimension
+reached through a join (`products.category`) was written with only its last segment, so its options
+came from the wrong field. It now keeps the full path, always quoted in the file. The dashboard lint
+now accepts one level of join in a control's `suggest { dimension=… }`, where it used to warn that
+the source had no such field.
 
 ## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
 

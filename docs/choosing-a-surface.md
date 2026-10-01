@@ -31,7 +31,9 @@ The one-line version:
 
 If you have built dashboards in a classic BI tool, the dashboard is the surface that will feel
 familiar: [the Console's builder](dashboards.md#editing-in-the-console) is drag-to-move,
-drag-the-edge-to-resize, pick-a-tile-from-a-menu. The difference is what it writes. There is no
+drag-the-edge-to-resize, pick-a-tile-and-its-chart-from-a-menu. A notebook has an editor too (text,
+query cells and their charts; see [the Console](console.md)), and the package page's **New** menu
+starts either one. The difference is what it writes. There is no
 proprietary layout document behind it — it edits the `dashboards/*.malloy` file in your package,
 which you can read, diff, review and commit like any other source file, and which an agent can
 write just as well as the builder can.

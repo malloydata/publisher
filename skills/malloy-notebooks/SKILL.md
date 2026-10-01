@@ -203,6 +203,24 @@ run: main_source -> [drill into finding]
 run: main_source -> [further breakdown]
 ```
 
+## Editing in the Console
+
+A person can edit a `notebooks/*.malloy` notebook in the Console (an **Edit** button; `New` on the
+package page starts one). The editor rewrites, adds, removes and reorders markdown cells, and adds or
+removes query cells from a source the notebook reaches, one of its views, a chart and a caption.
+Save splices into the file, so a notebook you wrote by hand survives it. What it does not do:
+
+- It never edits a definition (`given:`, `source:`, `import`) or the text of an existing query; it
+  changes only that query's chart line, and leaves a chart line it does not model (for example
+  `# bar_chart { size=spark }`) alone, with the chart picker disabled for that cell.
+- A query can be added only below every definition, so keep definitions together near the top.
+- A query added in the editor is not mapped to the notebook's controls. It follows them only if its
+  source reads a given as `$NAME`.
+- Removing a query cell that was already in the file clears undo at Save.
+
+Chart choices are Default, No chart (table), Line, Bar, Big value (only for a view whose outputs are
+all aggregates), Scatter, and a map only when the view already carries one.
+
 ## Existing `.malloynb` files
 
 A `.malloynb` notebook (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format. Publisher keeps read-only support so existing notebooks still open and run, and the bundled examples no longer ship one. **Do not create a new `.malloynb`.** To give a story a new home, write a `.malloy` notebook as above. Two things to know when maintaining an existing one:
