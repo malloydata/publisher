@@ -18,8 +18,8 @@ FROM oven/bun:1.3.13-slim AS base-deps
 # APT_REFRESH exists to invalidate this layer. BuildKit caches a RUN by its
 # parent layer and its command text, so while the base tag keeps its digest the
 # upgrade would run once and its package versions would freeze in the build
-# cache. CI passes the ISO week (for example 2026-W40), so the layer, and every
-# layer after it, rebuilds at least weekly. A local build that passes nothing
+# cache. CI passes the UTC date (for example 2026-10-01), so the layer, and every
+# layer after it, rebuilds at least daily. A local build that passes nothing
 # caches as before.
 ARG APT_REFRESH=
 RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
