@@ -214,9 +214,10 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
                    allow: bool) -> int:
     """Refuse a pair whose runs used different retrievers.
 
-    Local retrieval falls back to lexical SILENTLY when no embedding key is
-    set, and partway through a run when the provider fails. Either way the two
-    arms searched differently, and the flips that produces read as a model
+    Local retrieval is lexical when no embedding key is set. With a key, the
+    server never answers lexically: it returns `indexing` or `error` instead,
+    which reads as an empty or failed call. Either way the two arms searched
+    differently, and the flips that produces read as a model
     change. eval-mvp's standing gate: no A/B is scored under an unavailable
     semantic path. A run written before the harness recorded this carries
     nothing, and an unrecorded mode is not evidence that it matched -- so that

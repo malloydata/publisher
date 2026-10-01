@@ -127,9 +127,10 @@ not carry a number over from another configuration or from another set.
 ## Which retriever answered
 
 Retrieval is part of the configuration, and locally it changes without being
-asked to: with no embedding key the semantic path degrades to lexical
-**silently**, and a provider that fails partway leaves one run searching two
-ways. Compared across that, the flips read as a model change.
+asked to: with no embedding key the server is lexical, **silently**, and with a
+key a provider that fails partway leaves some calls returning `error` or
+`indexing` (no sources) while others rank semantically. Compared across that,
+the flips read as a model change.
 
 So every run records `retrievalMode` (`semantic`, `lexical`, `mixed` or
 `unreported`) and `retrievalCalls` from the `retrieval` field of the responses
