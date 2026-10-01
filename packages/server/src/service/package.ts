@@ -21,7 +21,10 @@ import {
 import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
-import { getPackageLoadPool } from "../package_load/package_load_pool";
+import {
+   getPackageLoadPool,
+   type LoadPackageOutcome,
+} from "../package_load/package_load_pool";
 import {
    API_PREFIX,
    INDEX_MODEL_NAME,
@@ -731,6 +734,161 @@ export class Package {
    }
 
    /**
+    * The package's API metadata as the worker read it from publisher.json.
+    */
+   private static packageConfigFromOutcome(
+      environmentName: string,
+      packageName: string,
+      outcome: LoadPackageOutcome,
+   ): ApiPackage {
+      // Override the manifest-derived resource URI — the worker only
+      // returns name/description from publisher.json, but the rest of
+      // the API surface expects a `resource` field too.
+      return {
+         name: outcome.packageMetadata.name,
+         description: outcome.packageMetadata.description,
+         resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
+         explores: outcome.packageMetadata.explores,
+         queryableSources: outcome.packageMetadata.queryableSources,
+         manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
+         // Always surface a non-null `materialization` object once the package
+         // has loaded (schedule null when the manifest declares no policy). The
+         // control plane treats object-present as the authoritative "this is
+         // what the manifest says" signal and object-absent as "metadata not
+         // available this request" — so it must never be dropped to null on a
+         // successfully loaded package, or the CP can misread a transient
+         // absence as a schedule removal. See `parsePackageMaterialization`.
+         materialization: outcome.packageMetadata.materialization ?? {
+            schedule: null,
+            freshness: null,
+         },
+         // The canonical home for the package's declared tags, mirrored from the
+         // block above — which is where the wire originally carried them. Both
+         // are populated for as long as the deprecated home is supported, so a
+         // client migrates when it chooses rather than when this ships.
+         queryMetadata:
+            outcome.packageMetadata.materialization?.queryMetadata ?? null,
+         // Package-level persist scope mode, applied uniformly to every persist
+         // source/index. Defaults to "package" (cross-version reuse) when the
+         // manifest omits it.
+         scope: outcome.packageMetadata.scope ?? "package",
+      };
+   }
+
+   /**
+    * Turn the worker's compiled models into live `Model`s and validate their
+    * render tags. Render tags are checked here, on the main thread, because the
+    * renderer is too heavy to load inside the pure-CPU package-load worker. A
+    * misconfigured tag never fails the load; its findings are returned to ride
+    * the package response as non-fatal `warnings`.
+    *
+    * One function for both the load and the in-place reload, so the two
+    * cannot hydrate or validate differently. It touches no package state.
+    *
+    * `onCompileError` is the one way the callers differ. A load ("throw")
+    * fails on the first model that did not compile. A reload ("placeholder")
+    * keeps a failed model as `Model.fromCompilationError`, and likewise keeps a
+    * model whose render-tag validation threw unexpectedly, so one bad file does
+    * not cost the package its other models. `afterHydrate` runs once per
+    * compiled model, in order, before it is added (the load path's
+    * persist-name check).
+    */
+   private static async hydrateWorkerModels(
+      outcome: LoadPackageOutcome,
+      ctx: {
+         packageName: string;
+         packagePath: string;
+         malloyConfig: MalloyConfig;
+         buildManifest?: BuildManifest["entries"];
+      },
+      onCompileError: "throw" | "placeholder",
+      afterHydrate?: (
+         sm: LoadPackageOutcome["models"][number],
+      ) => Promise<void>,
+   ): Promise<{
+      models: Map<string, Model>;
+      renderTagWarnings: ApiPackageWarning[];
+   }> {
+      const { packageName, packagePath, malloyConfig, buildManifest } = ctx;
+      const models = new Map<string, Model>();
+      const renderTagWarnings: ApiPackageWarning[] = [];
+      const placeholder = (
+         sm: LoadPackageOutcome["models"][number],
+         err: Error,
+      ): Model =>
+         Model.fromCompilationError(
+            packageName,
+            sm.modelPath,
+            sm.modelType,
+            err,
+         );
+      for (const sm of outcome.models) {
+         if (sm.compilationError) {
+            const err = Model.deserializeCompilationError(sm.compilationError);
+            if (onCompileError === "throw") {
+               logger.error("Model compilation failed", {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+               // The outer catch in Package.create records the total metric +
+               // cleans the package directory.
+               throw err;
+            }
+            logger.warn("Model compilation failed during reload", {
+               packageName,
+               modelPath: sm.modelPath,
+               error: err.message,
+            });
+            models.set(sm.modelPath, placeholder(sm, err));
+            continue;
+         }
+         const model = Model.fromSerialized(
+            packageName,
+            packagePath,
+            malloyConfig,
+            sm,
+            buildManifest ? { buildManifest } : undefined,
+         );
+         let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
+         try {
+            warnings = await model.validateRenderTags();
+         } catch (renderErr) {
+            // Defensive: validateRenderTags logs its findings and does not
+            // throw. On reload an unexpected internal failure is recorded as
+            // this model's compilationError rather than aborting the reload.
+            if (onCompileError === "throw") throw renderErr;
+            const err =
+               renderErr instanceof Error
+                  ? renderErr
+                  : new Error(String(renderErr));
+            logger.warn("Render-tag validation failed during reload", {
+               packageName,
+               modelPath: sm.modelPath,
+               error: err.message,
+            });
+            models.set(sm.modelPath, placeholder(sm, err));
+            continue;
+         }
+         for (const w of warnings) {
+            renderTagWarnings.push({
+               model: sm.modelPath,
+               // Spelled out rather than spread. A spread is exempt from
+               // excess-property checking exactly like a named interface, so
+               // `...w` would carry a stale field name through a rename in
+               // `api-doc.yaml` without the compiler noticing.
+               subject: w.subject,
+               message: w.message,
+               severity: w.severity,
+            });
+         }
+         await afterHydrate?.(sm);
+         models.set(sm.modelPath, model);
+      }
+      return { models, renderTagWarnings };
+   }
+
+   /**
     * Load the package via the package-load worker pool. The worker
     * performs the CPU-bound bulk of the load off-thread (manifest
     * read, every `.malloy` / `.malloynb` compile) and ships back a
@@ -815,101 +973,42 @@ export class Package {
          databaseCount: databases.length,
       });
 
-      // Override the manifest-derived resource URI — the worker only
-      // returns name/description from publisher.json, but the rest of
-      // the API surface expects a `resource` field too.
-      const packageConfig: ApiPackage = {
-         name: outcome.packageMetadata.name,
-         description: outcome.packageMetadata.description,
-         resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
-         explores: outcome.packageMetadata.explores,
-         queryableSources: outcome.packageMetadata.queryableSources,
-         manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
-         // Always surface a non-null `materialization` object once the package
-         // has loaded (schedule null when the manifest declares no policy). The
-         // control plane treats object-present as the authoritative "this is
-         // what the manifest says" signal and object-absent as "metadata not
-         // available this request" — so it must never be dropped to null on a
-         // successfully loaded package, or the CP can misread a transient
-         // absence as a schedule removal. See `parsePackageMaterialization`.
-         materialization: outcome.packageMetadata.materialization ?? {
-            schedule: null,
-            freshness: null,
-         },
-         // The canonical home for the package's declared tags, mirrored from the
-         // block above — which is where the wire originally carried them. Both
-         // are populated for as long as the deprecated home is supported, so a
-         // client migrates when it chooses rather than when this ships.
-         queryMetadata:
-            outcome.packageMetadata.materialization?.queryMetadata ?? null,
-         // Package-level persist scope mode, applied uniformly to every persist
-         // source/index. Defaults to "package" (cross-version reuse) when the
-         // manifest omits it.
-         scope: outcome.packageMetadata.scope ?? "package",
-      };
+      const packageConfig = Package.packageConfigFromOutcome(
+         environmentName,
+         packageName,
+         outcome,
+      );
 
       // Build live `Model`s from worker output. Any per-model compile
       // failure aborts the load — matches the historical behaviour of
       // `Package.create` failing the whole package on the first model
       // error. (`Package.reloadAllModels` keeps the failed-model
-      // placeholders instead; that branch goes through a different
-      // hydration path.)
-      const models = new Map<string, Model>();
-      const renderTagWarnings: ApiPackageWarning[] = [];
+      // placeholders instead.)
+      let models: Map<string, Model>;
+      let renderTagWarnings: ApiPackageWarning[];
       try {
-         for (const sm of outcome.models) {
-            if (sm.compilationError) {
-               const err = Model.deserializeCompilationError(
-                  sm.compilationError,
-               );
-               logger.error("Model compilation failed", {
-                  packageName,
-                  modelPath: sm.modelPath,
-                  error: err.message,
-               });
-               // The outer catch in Package.create records the total metric +
-               // cleans the package directory.
-               throw err;
-            }
-            const model = Model.fromSerialized(
-               packageName,
-               packagePath,
-               malloyConfig,
-               sm,
-            );
-            // Validate renderer tags on the main thread (the renderer is too
-            // heavy to load inside the pure-CPU package-load worker). A
-            // misconfigured tag is logged as a warning naming the subject; it
-            // does not fail the load. The findings also ride the package
-            // response as non-fatal `warnings`.
-            for (const w of await model.validateRenderTags()) {
-               renderTagWarnings.push({
-                  model: sm.modelPath,
-                  // Spelled out rather than spread. A spread is exempt from
-                  // excess-property checking exactly like a named interface, so
-                  // `...w` would carry a stale field name through a rename in
-                  // `api-doc.yaml` without the compiler noticing.
-                  subject: w.subject,
-                  message: w.message,
-                  severity: w.severity,
-               });
-            }
-            // Reject unquoted `#@ persist name=` annotations the same way: an
-            // unquoted name is dropped from the build plan, so the source would
-            // publish but never materialize. Scan the raw `.malloy` source (the
-            // ground truth for quoting); throws a ModelCompilationError (424).
-            // `.malloy` only: `#@ persist` is a model-file directive and does not
-            // appear in `.malloynb` notebooks. If that ever changes, widen this
-            // guard so the identifier-injection check still covers notebooks.
-            if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-               const modelSource = await fs.readFile(
-                  path.join(packagePath, sm.modelPath),
-                  "utf-8",
-               );
-               assertPersistNamesQuoted(modelSource, sm.modelPath);
-            }
-            models.set(sm.modelPath, model);
-         }
+         ({ models, renderTagWarnings } = await Package.hydrateWorkerModels(
+            outcome,
+            { packageName, packagePath, malloyConfig },
+            "throw",
+            async (sm) => {
+               // Reject unquoted `#@ persist name=` annotations at load:
+               // an unquoted name is dropped from the build plan, so the source
+               // would publish but never materialize. Scan the raw `.malloy`
+               // source (the ground truth for quoting); throws a
+               // ModelCompilationError (424). `.malloy` only: `#@ persist` is a
+               // model-file directive and does not appear in `.malloynb`
+               // notebooks. If that ever changes, widen this guard so the
+               // identifier-injection check still covers notebooks.
+               if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+                  const modelSource = await fs.readFile(
+                     path.join(packagePath, sm.modelPath),
+                     "utf-8",
+                  );
+                  assertPersistNamesQuoted(modelSource, sm.modelPath);
+               }
+            },
+         ));
       } catch (err) {
          // Record the load's phase cost tagged with the terminal status before
          // the error propagates to the outer catch (which records the total).
@@ -2589,72 +2688,17 @@ export class Package {
          );
       }
 
-      const nextModels = new Map<string, Model>();
-      const renderTagWarnings: ApiPackageWarning[] = [];
-      for (const sm of outcome.models) {
-         if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
-            logger.warn("Model compilation failed during reload", {
+      const { models: nextModels, renderTagWarnings } =
+         await Package.hydrateWorkerModels(
+            outcome,
+            {
                packageName: this.packageName,
-               modelPath: sm.modelPath,
-               error: err.message,
-            });
-            nextModels.set(
-               sm.modelPath,
-               Model.fromCompilationError(
-                  this.packageName,
-                  sm.modelPath,
-                  sm.modelType,
-                  err,
-               ),
-            );
-         } else {
-            const model = Model.fromSerialized(
-               this.packageName,
-               this.packagePath,
-               this.malloyConfig,
-               sm,
-               { buildManifest },
-            );
-            // Validate renderer tags here too (loadViaWorker does it for the
-            // create path). Render-tag findings are logged as warnings inside
-            // validateRenderTags and never throw. The catch is defensive: an
-            // unexpected internal failure is recorded as this model's
-            // compilationError rather than aborting the whole reload.
-            try {
-               for (const w of await model.validateRenderTags()) {
-                  renderTagWarnings.push({
-                     model: sm.modelPath,
-                     // Spelled out rather than spread, for the reason given at
-                     // the sibling call site on the load path.
-                     subject: w.subject,
-                     message: w.message,
-                     severity: w.severity,
-                  });
-               }
-               nextModels.set(sm.modelPath, model);
-            } catch (renderErr) {
-               const err =
-                  renderErr instanceof Error
-                     ? renderErr
-                     : new Error(String(renderErr));
-               logger.warn("Render-tag validation failed during reload", {
-                  packageName: this.packageName,
-                  modelPath: sm.modelPath,
-                  error: err.message,
-               });
-               nextModels.set(
-                  sm.modelPath,
-                  Model.fromCompilationError(
-                     this.packageName,
-                     sm.modelPath,
-                     sm.modelType,
-                     err,
-                  ),
-               );
-            }
-         }
-      }
+               packagePath: this.packagePath,
+               malloyConfig: this.malloyConfig,
+               buildManifest,
+            },
+            "placeholder",
+         );
       this.models = nextModels;
       // The freshly-compiled models start with no serve bindings and no serve
       // connections; re-apply both so a reload preserves serve routing.
