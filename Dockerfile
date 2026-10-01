@@ -52,7 +52,7 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
     echo "Snowflake verification skipped (offline build)" && \
     chown -R bun:bun /home/bun/.duckdb && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx
 
@@ -170,14 +170,19 @@ FROM base-deps AS final
 WORKDIR /publisher
 
 # The server runs as `bun` (uid 1000), not root; USER is set just before CMD so
-# the build steps below still run as root. The application files stay
-# root-owned and read-only to the server. What it writes is the server root
-# itself (publisher.db sits directly in it) and publisher_data/ beneath it.
+# the build steps below still run as root. The code under packages/ and
+# node_modules/ stays root-owned and read-only to the server. The server root
+# directory itself is owned by uid 1000, because publisher.db is created
+# directly in it, so the root-owned files at its top level (package.json,
+# bun.lock) can be replaced or removed by the server, though not written in
+# place.
+#
 # publisher_data/ is created here, owned by that user, because Docker seeds a
 # new named volume from the image's directory, ownership included: a volume
-# mounted there on first run is writable without a chown. A volume an older,
-# root-run image already populated is not; packages/server/README.docker.md
-# has the one-time fix.
+# mounted there on first run is writable without a chown. It is the only mount
+# point the image prepares; a new volume at any path the image lacks starts
+# root-owned. A volume an older, root-run image already populated is not
+# writable either. packages/server/README.docker.md covers both.
 RUN mkdir -p /publisher/publisher_data && \
     chown bun:bun /publisher /publisher/publisher_data
 

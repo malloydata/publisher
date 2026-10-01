@@ -76,22 +76,32 @@ For the same pattern as a complete Compose file (with a healthcheck against `/ap
 
 The image runs the server as `bun`, uid 1000 and gid 1000, the user the `oven/bun` base image ships. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`.
 
-The application files are root-owned and read-only to the server. It writes to three places, all owned by uid 1000:
+The code under `/publisher/packages/` and `/publisher/node_modules/` is root-owned and read-only to the server. It writes to three places, all owned by uid 1000:
 
-- `/publisher/`, the server root, where it creates `publisher.db`.
+- `/publisher/`, the server root, where it creates `publisher.db`. Because the directory is the server's, it can also replace or remove the root-owned files at its top level, `package.json` and `bun.lock`, though not write to them in place.
 - `/publisher/publisher_data/`.
 - `/home/bun/.duckdb/extensions/`, for an extension the image did not bake.
 
 What you mount has to be writable by uid 1000 too:
 
-- **A new named volume** on `/publisher/publisher_data` works as-is. Docker seeds an empty named volume from the image's directory, ownership included.
-- **A named volume an older, root-run image already wrote to** holds root-owned files, and the server cannot write to them. It still reaches `serving`, but each environment it cannot write is missing from the catalog, and `GET /api/v0/status` lists it under `loadErrors` with an `EACCES: permission denied` message. Chown the volume once, before starting the new image:
+- **A new named volume on `/publisher/publisher_data`** works as-is. Docker seeds an empty named volume from the image's directory, ownership included, and that is the only writable mount point the image prepares.
+- **A new named volume anywhere else** starts owned by root, because the image has no directory there to copy ownership from. That includes a DuckLake storage destination whose `bucketUrl` is a local path. Prepare it yourself: build a derived image with `RUN mkdir -p /path && chown 1000:1000 /path` (new named volumes there are then seeded correctly), chown the volume once with `--user 0` as shown below, or bind-mount a host directory owned by uid 1000. DuckDB reports the unprepared case as `No such file or directory` (for example `Failed to create directory "/data/lake/main/daily_orders"`), not as `EACCES`.
+- **A named volume an older, root-run image already wrote to** holds root-owned files, and the server cannot write to them. It still reaches `serving`, but each environment it cannot write is missing from the catalog, and `GET /api/v0/status` lists it under `loadErrors` with an `EACCES: permission denied` message. Chown the volume once, before starting the new image. With `docker run`, name the volume you mount:
 
   ```bash
   docker run --rm --user 0 --entrypoint chown \
     -v publisher_data:/publisher/publisher_data \
     ms2data/malloy-publisher -R 1000:1000 /publisher/publisher_data
   ```
+
+  With Compose, do not use that command: Compose prefixes the volume with the project name (`<project>_publisher_data`), so `-v publisher_data:` creates a new, empty volume, chowns it, and exits 0 while the real one stays root-owned. Run it through Compose instead, from the directory holding your `docker-compose.yml`, so the service's own volume is mounted:
+
+  ```bash
+  docker compose run --rm --no-deps --user 0 --entrypoint chown \
+    publisher -R 1000:1000 /publisher/publisher_data
+  ```
+
+  `docker volume ls` shows the volume's full name if you would rather use the `docker run` form.
 
 - **A bind mount** keeps the host directory's ownership. On Linux, `chown -R 1000:1000` the host directory. Docker Desktop on macOS and Windows maps ownership for you. Running the container as some other uid to match the host is not a substitute: `/home/bun` is private to uid 1000, so that uid cannot read the baked DuckDB extensions.
 - **A read-only mount**, such as the config file, only needs to be readable.
