@@ -49,6 +49,7 @@ import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
+import type { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 type ApiEnvironment = components["schemas"]["Environment"];
@@ -482,6 +483,11 @@ export class EnvironmentStore {
    // process-wide. Set once at server start via setMemoryGovernor;
    // new Environments pick it up at construction.
    private memoryGovernor: PackageMemoryGovernor | null = null;
+   // Called for every package that enters any Environment's package map.
+   // Set once at server start; new Environments pick it up at creation.
+   private packageLoadedHook:
+      | ((environmentName: string, pkg: Package) => void)
+      | null = null;
 
    /**
     * Set of environment names that should be loaded "in place" — i.e. the
@@ -546,6 +552,29 @@ export class EnvironmentStore {
       for (const env of this.environments.values()) {
          env.setMemoryGovernor(governor);
       }
+   }
+
+   /**
+    * Attach (or detach with `null`) a callback run for every package that
+    * enters an Environment's package map: at boot, on add, on install and on
+    * reload. It must only schedule work, because a restart fires it for
+    * every package at once. Remembered, so Environments created after this
+    * call also use it.
+    */
+   public setPackageLoadedHook(
+      hook: ((environmentName: string, pkg: Package) => void) | null,
+   ): void {
+      this.packageLoadedHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachPackageLoadedHook(env);
+      }
+   }
+
+   private attachPackageLoadedHook(env: Environment): void {
+      const hook = this.packageLoadedHook;
+      env.setPackageLoadedHook(
+         hook ? (pkg) => hook(env.getEnvironmentName(), pkg) : null,
+      );
    }
 
    /**
@@ -779,6 +808,7 @@ export class EnvironmentStore {
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
                         );
+                        this.attachPackageLoadedHook(environmentInstance);
                         // Re-establish serve routing when a package loads, from
                         // its latest successful materialization — so serving
                         // survives a restart, not only a fresh build. The full
@@ -1716,6 +1746,7 @@ export class EnvironmentStore {
          environment.storageDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
+      this.attachPackageLoadedHook(newEnvironment);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;

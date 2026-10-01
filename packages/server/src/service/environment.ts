@@ -398,6 +398,9 @@ export class Environment {
    // EnvironmentStore.setMemoryGovernor at server start so we keep the
    // governor as the single owner of the back-pressure boolean.
    private memoryGovernor: PackageMemoryGovernor | null = null;
+   // Called with each package the moment it enters `this.packages`. Set by
+   // EnvironmentStore (see setPackageLoadedHook); null means nobody listens.
+   private packageLoadedHook: ((pkg: Package) => void) | null = null;
 
    /** Absolute path on disk where this environment's package files live. */
    public getEnvironmentPath(): string {
@@ -1921,6 +1924,33 @@ export class Environment {
    }
 
    /**
+    * Attach (or detach with `null`) a callback run each time a package
+    * enters this environment's package map: at boot, on add, on install, and
+    * on reload. The callback must only schedule work; see
+    * {@link notifyPackageLoaded}.
+    */
+   public setPackageLoadedHook(hook: ((pkg: Package) => void) | null): void {
+      this.packageLoadedHook = hook;
+   }
+
+   /**
+    * Tell the hook a package is now served. Called straight after each
+    * `this.packages.set`. A throwing hook is logged and swallowed: an
+    * observer of the load must never fail it.
+    */
+   private notifyPackageLoaded(pkg: Package): void {
+      try {
+         this.packageLoadedHook?.(pkg);
+      } catch (error) {
+         logger.warn("Package-loaded hook failed", {
+            environmentName: this.environmentName,
+            packageName: pkg.getPackageName(),
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
+   }
+
+   /**
     * Inject the resolver that fetches a package's latest persisted
     * materialization entries — both tiers (see {@link storageBindingResolver}).
     */
@@ -2140,6 +2170,7 @@ export class Environment {
             );
          }
          this.packages.set(packageName, _package);
+         this.notifyPackageLoaded(_package);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
          // It loaded, so any earlier failure is stale. A package that failed at
          // boot can be fixed on disk and reloaded without a restart.
@@ -2232,6 +2263,7 @@ export class Environment {
          );
          this.attachDestinationServeConfig(addedPackage);
          this.packages.set(packageName, addedPackage);
+         this.notifyPackageLoaded(addedPackage);
       } catch (error) {
          logger.error("Error adding package", { error });
          this.deletePackageStatus(packageName);
@@ -2431,6 +2463,7 @@ export class Environment {
          await this.rebindServeBindingsFromLocalStore(newPackage);
 
          this.packages.set(packageName, newPackage);
+         this.notifyPackageLoaded(newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
          // Publishing a fixed package clears the boot failure it replaces.
          this.clearPackageLoadFailure(packageName);

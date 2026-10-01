@@ -794,6 +794,61 @@ describe("EnvironmentStore Service", () => {
       expect(healthy.loadErrors).toBeUndefined();
    });
 
+   it("calls the package-loaded hook for each package loaded at boot, and again on reload", async () => {
+      // The hook is how the semantic index starts building before anyone asks
+      // a question. It is set in the same synchronous turn as the store is
+      // constructed, exactly as server.ts does, so it is in place before
+      // initialization creates the first Environment.
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(projectPath, "model.malloy"),
+         'source: s1 is duckdb.sql("SELECT 1 as n")\n',
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const loaded: Array<{ environmentName: string; packageName: string }> =
+         [];
+      const instances: unknown[] = [];
+      const store = new EnvironmentStore(serverRootPath);
+      store.setPackageLoadedHook((environmentName, pkg) => {
+         loaded.push({ environmentName, packageName: pkg.getPackageName() });
+         instances.push(pkg);
+      });
+      await store.finishedInitialization;
+
+      expect(loaded).toEqual([
+         { environmentName: projectName, packageName: projectName },
+      ]);
+
+      // Looking the package up again is not a load.
+      const environment = await store.getEnvironment(projectName);
+      await environment.getPackage(projectName, false);
+      expect(loaded.length).toBe(1);
+
+      // A reload is a new Package instance, and so a new notification.
+      const reloaded = await environment.getPackage(projectName, true);
+      expect(loaded.length).toBe(2);
+      expect(instances[1]).toBe(reloaded);
+      expect(instances[1]).not.toBe(instances[0]);
+   });
+
    it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
       // Packages grouped under ONE location share a single download, then each
       // is extracted separately. A failure in one extract must not strand the

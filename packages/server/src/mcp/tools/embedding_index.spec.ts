@@ -922,10 +922,9 @@ describe("trySemanticSearch", () => {
       expect(status.embeddedEntities).toBe(1);
    });
 
-   it("reports a package past the cap as too-many-entities, not as indexing", async () => {
+   it("reports a package past the cap as an error, not as indexing", async () => {
       // A permanent condition an operator must act on, not a transient one to
-      // wait out: reporting it as "indexing" would poll forever. Named the
-      // same as getContext's retrieval_reason for the identical condition.
+      // wait out: reporting it as "indexing" would poll forever.
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       const status = await getEmbeddingIndexStatus(
          db,
@@ -936,7 +935,11 @@ describe("trySemanticSearch", () => {
             entity(`e${i}`, "src"),
          ),
       );
-      expect(status.status).toBe("too-many-entities");
+      expect(status.status).toBe("error");
+      expect(status.reason).toBe("too-many-entities");
+      expect(status.lastError?.message).toContain(
+         `${MAX_EMBEDDED_ENTITIES + 1} entities`,
+      );
    });
 
    it("counts the entities that matched only below the floor", async () => {
