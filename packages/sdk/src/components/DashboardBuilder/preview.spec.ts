@@ -93,6 +93,25 @@ describe("previewTileQuery", () => {
       expect(q.givenNames).toEqual(["CATEGORY", "SINCE"]);
    });
 
+   it("carries the wrapper's chart line above the run, and nothing for the view's own", () => {
+      const base = document.tiles[2];
+      const withChart = (chart: DashboardTile["chart"]) =>
+         previewTileQuery(
+            document,
+            { ...base, chart, chartLines: ["# bar_chart { size=spark }"] },
+            runnable,
+         ).annotation;
+      expect(withChart("bar_chart")).toBe(
+         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -viz bar_chart",
+      );
+      expect(withChart("none")).toBe(
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz",
+      );
+      expect(withChart("custom")).toBe("# bar_chart { size=spark }");
+      expect(withChart("default")).toBeUndefined();
+      expect(withChart(undefined)).toBeUndefined();
+   });
+
    it("sends a tile only the givens it binds", () => {
       // `trend` binds CATEGORY alone: SINCE moving must not re-run it, and
       // unbinding a tile is what takes a control's effect off it.

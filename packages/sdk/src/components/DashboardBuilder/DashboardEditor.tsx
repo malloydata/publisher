@@ -28,6 +28,7 @@ import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
 import {
    buildCatalog,
+   isDashboardModel,
    visibleToDashboard,
    type PackageCatalog,
 } from "./catalog";
@@ -698,7 +699,7 @@ function Surface({
       [opened.generation, opened.document],
    );
 
-   const { data, isSuccess } = useQueryWithApiError({
+   const { data, isSuccess, isError } = useQueryWithApiError({
       queryKey: [
          "dashboard-editor-manifest",
          environmentName,
@@ -770,7 +771,10 @@ function Surface({
                packageName,
                versionId,
             )
-         ).data.filter((m) => m.path && !m.error);
+         ).data.filter(
+            // The catalog leaves dashboards out, and this file's own text is already fetched above.
+            (m) => m.path && !m.error && !isDashboardModel(m.path),
+         );
          // One model that fails to load (a reload racing this fetch, say)
          // costs the catalog that model's sources, not every suggestion.
          const settled = await Promise.allSettled(
@@ -830,9 +834,12 @@ function Surface({
       documentName: slug,
    });
 
+   const manifestSettled = !served || isSuccess || isError;
    const renderTile = useMemo(
       () =>
          function LiveTile(tile: DashboardDocument["tiles"][number]) {
+            // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
+            if (!manifestSettled) return <Loading text="Running…" />;
             const query = previewTileQuery(doc, tile, runnable, applied);
             return (
                <DashboardTile
@@ -841,6 +848,9 @@ function Surface({
                   versionId={versionId}
                   modelPath={modelPath}
                   tile={query.expression}
+                  {...(query.annotation
+                     ? { annotation: query.annotation }
+                     : {})}
                   label={
                      tile.label ?? tileTitle(`${tile.source} -> ${tile.name}`)
                   }
@@ -855,6 +865,7 @@ function Surface({
          },
       [
          doc,
+         manifestSettled,
          runnable,
          environmentName,
          packageName,

@@ -114,12 +114,6 @@ test.describe("builder request budget", () => {
                },
             ),
          link: /Overview|Storefront overview/,
-         // Measured over budget: the model file is fetched twice by two
-         // callers on open, and reader-to-editor costs 18 against 15 because
-         // the five tiles run once unbound and again with the document's
-         // bindings. Expected to fail until those are fixed.
-         overBudget:
-            "dashboard editor fetches its model twice and re-runs every tile on open",
       },
       {
          name: "notebook",
@@ -131,7 +125,6 @@ test.describe("builder request budget", () => {
                },
             ),
          link: /Category review/,
-         overBudget: undefined as string | undefined,
       },
    ];
 
@@ -147,7 +140,6 @@ test.describe("builder request budget", () => {
       };
 
       test(`${editor.name} editor: first load`, async ({ page }) => {
-         if (editor.overBudget) test.fail(true, editor.overBudget);
          const counted = await measure(
             page,
             () =>
@@ -165,7 +157,6 @@ test.describe("builder request budget", () => {
       test(`${editor.name} editor: navigation from the package page`, async ({
          page,
       }) => {
-         if (editor.overBudget) test.fail(true, editor.overBudget);
          await page.goto(`/${pe.env}/${pe.pkg}`);
          await expect(
             page.getByRole("button", { name: editor.link }).first(),

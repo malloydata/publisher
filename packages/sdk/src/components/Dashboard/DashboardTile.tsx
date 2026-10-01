@@ -22,6 +22,8 @@ export interface DashboardTileProps {
    queryName?: string;
    /** A run expression (a composite tile). */
    tile?: string;
+   /** Annotation lines placed above the tile's `run:`, which stack on the view's own. */
+   annotation?: string;
    /** `# label` on the view the tile names, when it has one. */
    label?: string;
    /** `# subtitle` on it: a second line under the heading. */
@@ -85,6 +87,7 @@ export function DashboardTile({
    modelPath,
    queryName,
    tile,
+   annotation,
    label,
    subtitle,
    borderless,
@@ -103,7 +106,10 @@ export function DashboardTile({
       modelPath,
       versionId,
       queryName,
-      query: tile !== undefined ? `run: ${tile}` : undefined,
+      query:
+         tile !== undefined
+            ? `${annotation ? `${annotation}\n` : ""}run: ${tile}`
+            : undefined,
       // Narrowed to the givens this tile references: see `givenNames`.
       givens: givensToRequest(givens, declaredTypes, givenNames),
    });

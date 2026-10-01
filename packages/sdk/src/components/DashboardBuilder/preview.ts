@@ -4,6 +4,7 @@
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
 import { malloyLiteral } from "../../utils/malloyLiteral";
+import { chartLineText, isChartPick } from "./chartLine";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 
 /**
@@ -95,6 +96,13 @@ export interface PreviewTileQuery {
    /** A run expression, without `run:` — what `DashboardTile.tile` takes. */
    expression: string;
    /**
+    * The chart line the tile's wrapper carries, to sit above the `run:`. The
+    * preview runs the base view, which has never seen the wrapper, so without
+    * it the tile would draw the view's own chart whatever the picker says.
+    * Absent when the wrapper adds none.
+    */
+   annotation?: string;
+   /**
     * The givens this tile binds and the server can take, for narrowing the
     * request. Undefined for a tile whose bindings live in the model, where the
     * document cannot know them: send the whole row, as the reader does.
@@ -182,7 +190,15 @@ export function previewTileQuery(
       if (literal !== undefined) clauses.push(`${comparison} ${literal}`);
    }
    const refinement = clauses.join(", ");
+   const chart = tile.chart;
+   const annotation =
+      chart === "none" || isChartPick(chart)
+         ? chartLineText(chart)
+         : chart === "custom" && tile.chartLines?.length
+           ? tile.chartLines.join("\n")
+           : undefined;
    return {
+      ...(annotation ? { annotation } : {}),
       expression:
          `${on} -> ${baseView}` + (refinement ? ` + { ${refinement} }` : ""),
       givenNames: sent,

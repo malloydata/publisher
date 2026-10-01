@@ -233,14 +233,11 @@ test.describe("builder chart type", () => {
       }
    });
 
-   // The editor previews a reference tile by running its BASE view
-   // (preview.ts), which never carries the tile wrapper's chart line, so the
-   // picker changes the file and the reader but not the tile under the author's
-   // cursor. Expected to fail until the preview carries the chart line.
+   // The editor previews the base view, so the tile's chart line has to ride
+   // on the preview query or the tile would keep drawing the view's own chart.
    test("a new dashboard: the editor's own tile follows the picker", async ({
       page,
    }) => {
-      test.fail(true, "tile preview runs the base view, not the chart line");
       await createDocument(page, "Dashboard", "Chart preview");
       const tile = page.locator('[aria-label^="Tile "]');
       await expect(renderAs(tile)).toHaveAttribute(
@@ -252,7 +249,21 @@ test.describe("builder chart type", () => {
       await expect(renderAs(tile)).toHaveAttribute(
          "data-malloy-render-as",
          "bar",
-         { timeout: 10_000 },
+         { timeout: 30_000 },
       );
+      for (const [option, drawn] of [
+         ["No chart (table)", "table"],
+         ["Default", "line"],
+      ] as const) {
+         await page.getByLabel(/^Settings for /).click();
+         await page.getByRole("combobox", { name: /^Chart, / }).click();
+         await page.getByRole("option", { name: option, exact: true }).click();
+         await page.keyboard.press("Escape");
+         await expect(renderAs(tile)).toHaveAttribute(
+            "data-malloy-render-as",
+            drawn,
+            { timeout: 30_000 },
+         );
+      }
    });
 });
