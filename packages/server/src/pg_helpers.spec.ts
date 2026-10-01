@@ -238,6 +238,114 @@ describe("redactPgSecrets", () => {
       expect(redacted).toContain("postgres://alice:***@127.0.0.1:5432/mydb");
       expect(redacted).not.toContain("supersecretpw");
    });
+
+   it.each([
+      // The scheme starts at the first letter of the scheme-character run.
+      ["1+a://u:p@h", "1+a://u:***@h"],
+      // A run with no letter is no scheme.
+      ["1+.://u:p@h", "1+.://u:p@h"],
+      // A password holds at least one character before its `@`.
+      ["postgres://u:@h/d", "postgres://u:@h/d"],
+      ["postgres://u:@@h/d", "postgres://u:***@h/d"],
+      // A match ends at its `@`, and the next URI starts after it.
+      ["a://u:p@b://v:q@h", "a://u:***@b://v:***@h"],
+      // The pg pass runs to the first `@`, across `/` and into a later URI.
+      ["postgres://u:a/postgres://v:b@h", "postgres://u:***@h"],
+      // ...but never across whitespace.
+      [
+         "postgres://u:a/b postgres://v:c/d@h",
+         "postgres://u:a/b postgres://v:***@h",
+      ],
+      ["Postgresql://u:x/y@h", "Postgresql://u:***@h"],
+      ["xpostgresql://u:x/y@h", "xpostgresql://u:***@h"],
+   ])("redacts %p as %p", (input, expected) => {
+      expect(redactPgSecrets(input)).toBe(expected);
+   });
+
+   // Each input made the regex form of a URI pass quadratic: 2.5s and more
+   // at these sizes. The bound is generous so a slow machine stays green while
+   // a quadratic implementation does not.
+   it.each([
+      ["a run of letters", "a".repeat(50_000)],
+      [
+         "a run of letters after an empty password",
+         "a://:" + "a".repeat(50_000),
+      ],
+      ["many pg URIs with no @", "postgres://:".repeat(10_000)],
+   ])("redacts %s in linear time", (_name, input) => {
+      const started = performance.now();
+      const out = redactPgSecrets(input);
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(out).toBe(input);
+   });
+
+   it("matches the regular-expression form of each URI pass", () => {
+      // The regex form is the specification the scanners implement. It is
+      // quadratic on long input, so it is exercised here on short strings
+      // drawn from the characters each pass branches on.
+      const regexForm = (s: string) =>
+         s
+            .replace(
+               /([a-z][a-z0-9+.-]*:\/\/[^:/?#\s]*):([^/\s]+)@/gi,
+               "$1:***@",
+            )
+            .replace(
+               /((?:postgres|postgresql):\/\/[^:/?#\s]*):([^@\s]+)@/gi,
+               "$1:***@",
+            )
+            .replace(
+               /password=('(?:\\.|[^'\\])*'|"[^"]*"|\S+)/gi,
+               "password=***",
+            );
+      const pieces = [
+         "postgres",
+         "postgresql",
+         "POSTGRES",
+         "postgres://",
+         "a://",
+         "u:p@",
+         "://",
+         ":",
+         "/",
+         "@",
+         "?",
+         "#",
+         " ",
+         "\n",
+         "\u00a0",
+         "a",
+         "Z",
+         "1",
+         "+",
+         ".",
+         "-",
+         "_",
+         "password=",
+         "'",
+         "\u212a",
+      ];
+      // A fixed-seed generator, so a failure reproduces.
+      let seed = 1;
+      const next = () => {
+         seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+         return seed / 0x80000000;
+      };
+      const mismatches: string[] = [];
+      let redacted = 0;
+      for (let i = 0; i < 20_000; i++) {
+         let s = "";
+         const length = 1 + Math.floor(next() * 16);
+         for (let j = 0; j < length; j++) {
+            s += pieces[Math.floor(next() * pieces.length)];
+         }
+         const expected = regexForm(s);
+         if (redactPgSecrets(s) !== expected) mismatches.push(s);
+         if (expected.includes(":***@")) redacted++;
+      }
+      expect(mismatches).toEqual([]);
+      // The comparison means something only if the URI passes fire often.
+      expect(redacted).toBeGreaterThan(1_000);
+   });
 });
 
 describe("redactConnectionSecretShapes", () => {

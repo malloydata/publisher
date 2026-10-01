@@ -52,14 +52,120 @@
 // the match early. A valid URI/libpq string encodes whitespace, and
 // dropping the `\s` bound would let a match run across surrounding
 // message text.
+//
+// The two URI passes are scanners rather than regular expressions, because
+// both regex forms are quadratic on input an attacker controls (the message
+// echoes a user-supplied connection string). Pass 1's scheme has no anchor, so
+// a backtracking engine retries it at every position of a long run of letters,
+// rescanning the rest of the run each time. Pass 2's password class crosses
+// `/`, so each of many `postgres://` occurrences with no `@` rescans to the end
+// of the message. Each pass below matches exactly what its regex
+// (`[a-z][a-z0-9+.-]*://[^:/?#\s]*:[^/\s]+@` and
+// `(?:postgres|postgresql)://[^:/?#\s]*:[^@\s]+@`, case-insensitive) matched,
+// in one left-to-right pass. Measured on 40,000 repeated letters: 1.6s for the
+// pass-1 regex, under 1ms for its scanner. The keyword pass is linear and
+// stays a regex.
 export function redactPgSecrets(s: string): string {
-   return s
-      .replace(/([a-z][a-z0-9+.-]*:\/\/[^:/?#\s]*):([^/\s]+)@/gi, "$1:***@")
-      .replace(
-         /((?:postgres|postgresql):\/\/[^:/?#\s]*):([^@\s]+)@/gi,
-         "$1:***@",
-      )
-      .replace(/password=('(?:\\.|[^'\\])*'|"[^"]*"|\S+)/gi, "password=***");
+   return redactUserinfoPasswords(
+      redactUserinfoPasswords(s, ANY_SCHEME_LAST_AT),
+      PG_SCHEME_FIRST_AT,
+   ).replace(/password=('(?:\\.|[^'\\])*'|"[^"]*"|\S+)/gi, "password=***");
+}
+
+// One URI-userinfo pass: which schemes it accepts and where the password ends.
+interface UserinfoPass {
+   // Whether a scheme this pass accepts ends at `sep` (the index of its `://`)
+   // and starts at or after `floor`, the end of the previous match.
+   hasScheme(s: string, sep: number, floor: number): boolean;
+   // Sticky; reads the run of characters a password may contain.
+   passwordRun: RegExp;
+   // The index of the `@` that ends a password starting at `from` whose run
+   // ends at `stop`, or -1 when the userinfo carries no password.
+   passwordEnd(s: string, from: number, stop: number): number;
+}
+
+// This and each pass's `passwordRun` are sticky, so a read starts exactly at
+// `lastIndex`. Each is a single greedy class with nothing after it, so a read
+// never backtracks and costs the length of the run it returns.
+const USERNAME_RUN = /[^:/?#\s]*/y;
+
+const SCHEME_CHAR = /[a-z0-9+.-]/i;
+const SCHEME_LETTER = /[a-z]/i;
+const PG_SCHEMES = ["postgres", "postgresql"];
+
+// Pass 1. A scheme is a letter and then letters, digits, `+`, `.` or `-`, so a
+// `://` has one iff the run of scheme characters before it holds a letter: the
+// first such letter is where the regex's leftmost match began. The password
+// runs to the LAST `@` before a `/`, and holds at least one character.
+const ANY_SCHEME_LAST_AT: UserinfoPass = {
+   hasScheme(s, sep, floor) {
+      for (let i = sep - 1; i >= floor && SCHEME_CHAR.test(s[i]); i--) {
+         if (SCHEME_LETTER.test(s[i])) return true;
+      }
+      return false;
+   },
+   passwordRun: /[^/\s]*/y,
+   passwordEnd(s, from, stop) {
+      const at = s.slice(from, stop).lastIndexOf("@");
+      return at > 0 ? from + at : -1;
+   },
+};
+
+// Pass 2. The scheme is exactly `postgres` or `postgresql`, and the password
+// runs to the FIRST `@`, across `/`, and holds at least one character.
+// `toLowerCase` agrees with the regex's case-insensitive match on these two
+// words: the only non-ASCII characters that lowercase to ASCII letters become
+// `i` or `k`, which neither contains.
+const PG_SCHEME_FIRST_AT: UserinfoPass = {
+   hasScheme(s, sep, floor) {
+      return PG_SCHEMES.some(
+         (scheme) =>
+            sep - scheme.length >= floor &&
+            s.slice(sep - scheme.length, sep).toLowerCase() === scheme,
+      );
+   },
+   passwordRun: /[^@\s]*/y,
+   passwordEnd(s, from, stop) {
+      return stop > from && s[stop] === "@" ? stop : -1;
+   },
+};
+
+function runEnd(run: RegExp, s: string, from: number): number {
+   run.lastIndex = from;
+   run.exec(s); // A run may be empty, so this always matches.
+   return run.lastIndex;
+}
+
+// Replace each `scheme://user:password@` password with `***`, leaving the
+// scheme and username as they were.
+function redactUserinfoPasswords(s: string, pass: UserinfoPass): string {
+   let out = "";
+   // Everything before `copied` is already in `out`; no match starts before it.
+   let copied = 0;
+   // Where the last password run read stopped. `from` only increases and no
+   // stop character lies between an earlier `from` and its stop, so for any
+   // `from` at or before it, it is still the first stop. Reusing it is what
+   // keeps pass 2 linear: its run crosses `/`, so many `postgres://`
+   // occurrences can share one run.
+   let stop = -1;
+   let sep = s.indexOf("://");
+   while (sep !== -1) {
+      const userEnd = runEnd(USERNAME_RUN, s, sep + 3);
+      let at = -1;
+      if (s[userEnd] === ":" && pass.hasScheme(s, sep, copied)) {
+         const from = userEnd + 1;
+         if (stop < from) stop = runEnd(pass.passwordRun, s, from);
+         at = pass.passwordEnd(s, from, stop);
+      }
+      if (at === -1) {
+         sep = s.indexOf("://", sep + 1);
+         continue;
+      }
+      out += s.slice(copied, userEnd + 1) + "***@";
+      copied = at + 1;
+      sep = s.indexOf("://", copied);
+   }
+   return out + s.slice(copied);
 }
 
 // The secret-bearing field names across every connection type the API accepts,
