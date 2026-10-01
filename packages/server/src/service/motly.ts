@@ -128,101 +128,6 @@ export function hasEnvReference(annotation: string): boolean {
 }
 
 /**
- * The engine's own `Object.prototype.__proto__` getter, captured by reference and
- * never called.
- *
- * `__proto__` is always an accessor on `Object.prototype`, so refusing every
- * accessor would refuse every annotation. It is skipped instead, on the grounds
- * that what it reaches is `Object.prototype`, which is watched anyway. That
- * reasoning holds only for the built-in: measured, redefining `__proto__` as a
- * getter returning some other object let a write land there with the annotation
- * reported clean. Identity against the descriptor captured here is what tells the
- * two apart, and comparing a function reference invokes nothing.
- *
- * If something replaced it before this module loaded, the replacement is what gets
- * captured. Nothing here can see behind its own start, and the alternative,
- * calling the getter to find out, is exactly the probing that had to be abandoned.
- */
-const BUILT_IN_PROTO_GETTER = Object.getOwnPropertyDescriptor(
-   Object.prototype,
-   "__proto__",
-)?.get;
-
-/**
- * Every object the tag parser can be tricked into writing into, as of right now.
- *
- * Derived rather than listed, because listing is what went wrong twice: first a
- * denylist of key spellings, then a hand-picked object. The parser resolves a
- * property path with `key in properties`, and `in` walks the prototype chain, so
- * a MOTLY key of `__proto__` reaches `Object.prototype`, `constructor` reaches the
- * global `Object`, and `toString` reaches the built-in method object. Every
- * nested hop goes through another plain bag with the same chain, so the first
- * escaping write always lands on `Object.prototype` or on the value of one of its
- * own properties. That is the set.
- *
- * Recomputed on every call rather than cached at module load. A cached set goes
- * stale the moment anything extends `Object.prototype` afterwards, and a library
- * that does so creates an unwatched target: measured, a late addition took
- * `location` and `properties` with the cached version and nothing reported it.
- * Twelve objects and a dozen descriptor reads, which is not worth being clever
- * about on a path that is already running a parser.
- */
-function pollutionTargets(): object[] | undefined {
-   const targets: object[] = [Object.prototype];
-   for (const key of Object.getOwnPropertyNames(Object.prototype)) {
-      const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, key);
-      if (!descriptor) continue;
-      let value: unknown;
-      if ("value" in descriptor) {
-         value = descriptor.value;
-      } else {
-         // An accessor is refused, not probed. Reading one to find out what it
-         // guards is what opened three separate holes in as many revisions: a
-         // getter that threw was dropped and its object took the write; one
-         // returning a fresh object each call left the parser writing somewhere
-         // never snapshotted; and a receiver-dependent getter handed this probe a
-         // decoy while the parser, reading the same property off its own bag,
-         // got the real shared object. Each mitigation invited the next, because
-         // any answer a getter gives can be a different answer from the one the
-         // parser gets.
-         //
-         // So no getter is called. An accessor on `Object.prototype` other than
-         // the built-in `__proto__`, whose target is already watched as
-         // `Object.prototype` itself, means this cannot know what a parse would
-         // touch, and the annotation is refused. Fail closed. The cost is that a
-         // deployment which extends `Object.prototype` with an accessor gets no
-         // control contracts at all. That is the safer failure, and as of the
-         // dashboards slice it is no longer a silent one: {@link motlyParseErrors}
-         // now has callers, so a refusal surfaces as a package warning naming the
-         // file rather than only as absent control fields. Note the warning's
-         // wording says the tag does not parse, which is true of the annotation
-         // as presented to the parser but can mislead when the real cause is a
-         // process-wide refusal triggered by another package.
-         // Fail closed if the reference is missing as well as if it differs. It
-         // is `undefined` under `node --disable-proto=delete`, which a hardened
-         // deployment may well set, and a setter-only accessor also has an
-         // undefined getter, so comparing without this check would quietly skip
-         // both instead of refusing them.
-         if (
-            BUILT_IN_PROTO_GETTER === undefined ||
-            descriptor.get !== BUILT_IN_PROTO_GETTER
-         ) {
-            return undefined;
-         }
-         continue;
-      }
-      if (
-         (typeof value === "object" || typeof value === "function") &&
-         value !== null &&
-         !targets.includes(value as object)
-      ) {
-         targets.push(value as object);
-      }
-   }
-   return targets;
-}
-
-/**
  * Longest annotation this will hand to the parser, and the message for one that
  * is refused.
  *
@@ -261,7 +166,7 @@ export const ANNOTATION_TOO_LONG = `annotation exceeds ${MAX_ANNOTATION_CHARS} c
 /**
  * Message used when an annotation was dropped for carrying an `@env.` reference.
  *
- * Fixed text, like {@link UNSAFE_TO_PARSE}, because the annotation is never
+ * Fixed text, like {@link ANNOTATION_TOO_LONG}, because the annotation is never
  * parsed and there is nothing else honest to say about it. Reported rather than
  * dropped in silence: the guard is upstream of the parse, so without this a
  * dashboard whose artifact tag carries one simply does not exist, with no
@@ -272,167 +177,37 @@ export const ENV_REFERENCE_DROPPED =
    "annotation dropped for carrying an @env. reference";
 
 /**
- * Message used when an annotation cannot be parsed without collateral damage.
- * Surfaced through {@link motlyParseErrors} so a reader has something to report
- * rather than a silent empty tag.
+ * `parseAnnotation`, with the length bound applied and a throw caught.
  *
- * Exported so that reader can tell a refusal apart from a genuine syntax error.
- * The distinction matters to the author: a syntax error is in their file,
- * whereas this refusal can be triggered by something entirely outside it,
- * including another package on the same worker having already polluted the
- * prototype through an unguarded parse elsewhere in the server.
+ * The catch is kept because a parse that throws would otherwise fail the whole
+ * package load, and the message is passed on so the author sees why.
+ *
+ * Until Malloy 0.0.434 this also snapshotted every object reachable from
+ * `Object.prototype` and undid whatever a parse added there, because the tag
+ * parser stored properties in a plain object and `# __proto__ { a=b }` wrote
+ * onto the shared prototype. 0.0.434 fixed that in the parser itself, for the
+ * `#` routes read here and for the `##!` and `#@` routes the compiler reads, so
+ * the snapshot was removed. The pollution test in `given.spec.ts` stays, now
+ * pointed at the parser.
  */
-export const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
-
-/**
- * `parseAnnotation`, with any damage it does to the shared prototypes undone.
- *
- * The tag parser writes tag properties into a plain object, so a MOTLY property
- * whose name resolves along that object's prototype chain lands on a shared
- * global instead of in the bag. `# __proto__ { a=b }` puts `location` and
- * `properties` on `Object.prototype` and then throws `RangeError`, after which
- * every later parse throws too; `# __proto__=x` does the same silently with an
- * empty log; and `# constructor { k=v }` writes tenant data onto the global
- * `Object`, which accumulates without bound and which watching `Object.prototype`
- * alone never sees.
- *
- * **This deliberately does not try to recognise the hostile input.** An earlier
- * version refused any annotation containing the substring `__proto__` and was
- * defeated in review, because MOTLY decodes escapes inside a backtick-quoted
- * identifier, so `` # `__prot\o__` { a=b } `` spells the same property with no
- * such substring. Any denylist of spellings invites that.
- *
- * So the effect is observed instead. Every object {@link pollutionTargets} names is
- * snapshotted, the parse runs, and any own property gained is deleted; the
- * annotation is then reported unparseable, since its properties are the ones that
- * went astray. Deleting measurably restores both the prototypes and later parses.
- * Safe because `parseAnnotation` is synchronous, so nothing interleaves and the
- * only keys removed are the ones this call added.
- *
- * **It protects this module's parses and nothing else, and the difference matters
- * more here than it does for the `@env` guard above.** `service/build_plan.ts`
- * calls `annotations.parseAsTag()` on the same default MOTLY route with no guard,
- * and two of its call sites catch the throw and degrade to unset, which leaves the
- * pollution in place. Once that has happened the damage predates this function's
- * snapshot, so it sits inside the baseline and is never repaired: measured, one
- * unguarded parse elsewhere makes `readGivenControlSpec` return `{}` for every
- * given afterwards. Adopting this guard at those call sites, or fixing it
- * upstream, is what actually closes it.
- *
- * Two things are measured about that state, and nothing here claims more than
- * these two. Once `Object.prototype.properties` exists, **every** parse throws
- * `RangeError`, a benign `# label="x"` included, and that holds whether the bag
- * is populated or empty, so in that state annotations are refused by the catch
- * and not by the snapshot.
- *
- * The snapshot's own repair is real but has to be demonstrated somewhere the
- * throw does not mask it, since in the state above nothing parses at all. The
- * case that shows it is `# constructor { k=v }`, which reaches the global
- * `Object` as the value of `Object.prototype.constructor`: measured, it parses
- * with an empty log and no throw, adds `location` and `properties` to `Object`
- * unguarded, and adds nothing through here.
- *
- * What happens in that state beyond those two facts is not characterised. An
- * earlier version of this paragraph generalised from four measured shapes to a
- * claim about containment, and was wrong twice: security review found a
- * hand-built shape (a populated shared tree of null-prototype nodes) where the
- * guard does not refuse and one declaration's fields appear beside another's.
- * That shape looks unreachable, since nothing found a way for MOTLY to build
- * null-prototype nodes, but "looks unreachable" is the most that is measured.
- *
- * **And the class is reachable without this module at all, so do not read this as
- * closing it.** The compiler parses the `##!` and `#@` routes eagerly, inside
- * `getModel()`, before anything here runs: a model file containing
- * `##! __proto__ { a=b }` pollutes at compile time on `main` today. Measured, a
- * second tenant's unchanged, innocent package then stops compiling, which makes it
- * a tenant-authored, process-wide, sticky denial of service on a shared worker.
- * Plain `#`/`##` tags are not parsed eagerly, which is why this slice's reader is
- * the first thing to reach it *by this route* and why the guard belongs here, but
- * the vulnerability predates the slice and outlives the guard.
- *
- * A repair, not a fix. The fix is upstream in `malloydata/motly`
- * (`bindings/typescript/parser`, `interpreter.js` `buildAccessPath`), where the
- * bag wants a `Map` or an `Object.create(null)`; `malloy-tag` is a wrapper over
- * the same `MOTLYSession`, so one change closes both routes. Sequencing when it
- * lands, since these do not commute: this function becomes deletable, and the
- * pollution assertions in `given.spec.ts` stop failing closed and simply succeed.
- * The rule, rather than a count, because two different counts of this were both
- * wrong before it was written as a rule: **every assertion expecting `{}` on a
- * line that also carries a readable control key will flip to that contract**, and
- * only the lines carrying no readable key stay `{}`. That covers the fixture loop
- * and the accessor, throwing-target and decoy-getter cases below it, which are
- * easy to miss because they sit outside the loop. Today's behaviour is already
- * visible without the upstream change: a block key that is NOT on the prototype,
- * `# label="ok" zzNotOnPrototype { k="v" }`, returns `{label: "ok"}` right now,
- * and a prototype-safe bag simply makes the prototype keys behave the same way.
- * `Object.freeze(Object.prototype)` is not a usable stopgap in the meantime: it
- * kills winston at import, through logform and `@colors/colors`.
- */
-function parseGuarded(texts: readonly string[]): {
+function parseBounded(texts: readonly string[]): {
    tag: Tag | undefined;
    messages: string[];
 } {
-   const targets = pollutionTargets();
-   if (targets === undefined) {
-      // An accessor on `Object.prototype` could not be probed safely, so nothing
-      // here can tell whether a parse wrote somewhere it should not have.
-      // Refusing is the only honest answer.
-      return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
-   }
-   // Even reading own keys is wrapped: a target could be exotic enough that the
-   // read itself throws, and this runs on a path where an escape fails the whole
-   // package load.
-   // Fails CLOSED, like the accessor branch. Returning an empty list on a failed
-   // read would tell the caller the target has no keys, which both hides a write
-   // onto it and, if only the first read threw, makes the repair delete every key
-   // it does have. Neither is acceptable, so an unreadable target means the
-   // annotation is refused instead.
-   let unreadable = false;
-   const ownNames = (target: object): string[] => {
-      try {
-         return Object.getOwnPropertyNames(target);
-      } catch {
-         unreadable = true;
-         return [];
-      }
-   };
-   const before = targets.map(ownNames);
-   if (unreadable) return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
-   const undoPollution = (): boolean => {
-      let polluted = false;
-      targets.forEach((target, index) => {
-         for (const key of ownNames(target)) {
-            if (before[index].includes(key)) continue;
-            polluted = true;
-            // Per-key try, because the repair itself must not be able to throw.
-            // Modules are strict, so `delete` on a non-configurable property
-            // raises a TypeError, and this also runs inside the catch below,
-            // where a throw would escape and fail the whole package load: the
-            // outcome the guard exists to prevent.
-            try {
-               delete (target as Record<string, unknown>)[key];
-            } catch {
-               // Left in place. Reporting the annotation unparseable is still
-               // right, and is what the flag below causes.
-            }
-         }
-      });
-      return polluted || unreadable;
-   };
    if (texts.some((text) => text.length > MAX_ANNOTATION_CHARS)) {
       return { tag: undefined, messages: [ANNOTATION_TOO_LONG] };
    }
    try {
       const result = parseAnnotation([...texts]);
-      if (undoPollution())
-         return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
       return {
          tag: result.tag,
          messages: result.log.map((error) => error.message),
       };
-   } catch {
-      undoPollution();
-      return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
+   } catch (error) {
+      return {
+         tag: undefined,
+         messages: [error instanceof Error ? error.message : String(error)],
+      };
    }
 }
 
@@ -774,16 +549,16 @@ function parseMotly(texts: readonly string[]): {
    // The common case is one parse of the whole set. Only a failure pays for the
    // per-line rescue below, so an entity whose annotations are all well formed
    // is not charged for a workaround it does not need.
-   const direct = parseGuarded(motly);
+   const direct = parseBounded(motly);
    if (direct.messages.length === 0)
       return { tag: direct.tag, errors: envErrors };
 
    const rescued = motly.map((text) => {
-      if (parseGuarded([text]).messages.length === 0) return text;
+      if (parseBounded([text]).messages.length === 0) return text;
       const rewritten = quoteFilterLiterals(text);
-      return parseGuarded([rewritten]).messages.length === 0 ? rewritten : text;
+      return parseBounded([rewritten]).messages.length === 0 ? rewritten : text;
    });
-   const after = parseGuarded(rescued);
+   const after = parseBounded(rescued);
    // `envErrors` carried through here too. Returning only `after.messages` lost
    // the env drop whenever a SIBLING line was malformed, so one bad annotation
    // hid the fact that another had been dropped entirely.
@@ -868,13 +643,6 @@ export function tagNumeric(
  * clean parse either. With a single failing line the tag comes back empty.
  * {@link motlyParseErrors} is the closest thing to a signal, and read its caveats
  * before relying on it.
- *
- * One case is per ENTITY rather than per line, and it is deliberate. An annotation
- * that would write onto a shared prototype is refused by {@link parseGuarded}, and
- * that verdict is reached on the combined parse, so the whole entity comes back
- * with no tag. Losing a sibling `label` is the price of not shipping a value that
- * escaped into a global, and it matches how the `@env` guard already treats an
- * annotation it will not read.
  */
 export function motlyTag(texts: readonly string[]): Tag | undefined {
    return parseMotly(texts).tag;
