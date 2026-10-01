@@ -539,6 +539,25 @@ jobs:
             touch /publisher/publisher_data/.write-probe && rm /publisher/publisher_data/.write-probe' \
             || { echo "✗ the server is not writing as uid 1000"; exit 1; }
           echo "✓ publisher.db and the publisher_data volume are owned by uid 1000"
+      - name: Assert the image runs on Bun and carries no Node or Python runtime
+        run: |
+          # The server is a Bun process and nothing in it spawns `node`, so the
+          # image installs no Node: the NodeSource package would also bring in
+          # python3 and its unfixed Debian CVEs. This pins that decision. Three
+          # things are checked against the running container: PID 1 is Bun (the
+          # image's CMD), a `node` command resolves to the Bun fallback the
+          # oven/bun base provides rather than to a real Node, and python3 is
+          # absent. Reaching 'serving' alone shows the server boots, not that
+          # a real Node did not quietly come back.
+          set -e
+          docker exec malloy-publisher-smoke sh -c '
+            exe=$(basename "$(readlink /proc/1/exe)")
+            [ "$exe" = bun ] || { echo "PID 1 is $exe, not bun"; exit 1; }
+            runtime=$(node -e "console.log(typeof Bun)")
+            [ "$runtime" = object ] || { echo "node resolves to a runtime where typeof Bun is $runtime, not Bun"; exit 1; }
+            if command -v python3 >/dev/null 2>&1; then echo "python3 is installed: $(command -v python3)"; exit 1; fi' \
+            || { echo "FAIL: the image is expected to run on Bun with no Node or Python runtime"; exit 1; }
+          echo "OK: PID 1 is Bun, node resolves to Bun, and python3 is absent"
       - name: Container logs (always)
         if: always()
         run: docker logs malloy-publisher-smoke || true
