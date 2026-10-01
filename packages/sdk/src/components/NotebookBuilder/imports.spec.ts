@@ -113,6 +113,15 @@ describe("notebookImports", () => {
       ]);
    });
 
+   it("decodes a percent-encoded name, and refuses an encoded traversal", async () => {
+      expect(await importsOf(`import "../my%20model.malloy"`)).toEqual([
+         { kind: "all", path: "my model.malloy" },
+      ]);
+      expect(await importsOf(`import "..%2f..%2fx.malloy"`)).toEqual([]);
+      expect(await importsOf(`import "a%5c..%5cx.malloy"`)).toEqual([]);
+      expect(await importsOf(`import "../%e0%a4%a.malloy"`)).toEqual([]);
+   });
+
    it("leaves a path outside the package alone", async () => {
       expect(
          await importsOf(`import "https://elsewhere.test/x.malloy"`),

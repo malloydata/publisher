@@ -191,6 +191,56 @@ describe("strings written into annotations", () => {
       expect(out).toContain('# label="Ask about # authorize"');
    });
 
+   const GIVEN = {
+      name: "CATEGORY",
+      type: "filter<string>",
+      default: "f''",
+   };
+
+   it.each([
+      ["source", { source: "products\nx", dimension: "category" }],
+      ["source", { source: "a b", dimension: "category" }],
+      ["query", { query: "run: a\r-> x", dimension: "category" }],
+   ] as const)("refuses a suggest %s of %p", async (key, suggest) => {
+      const reason = await refused(FILE(""), (d) => {
+         d.localGivens = [{ ...GIVEN, suggest }];
+      });
+      expect(reason).toContain(`suggest ${key}`);
+   });
+
+   it("refuses a given name that is not an identifier, and a filter field with a line break", async () => {
+      expect(
+         await refused(FILE(""), (d) => {
+            d.localGivens = [{ ...GIVEN, name: "BAD NAME" }];
+         }),
+      ).toContain('The name "BAD NAME" cannot be written');
+      expect(
+         await refused(FILE(""), (d) => {
+            d.tiles[0].filters = [{ field: "category\n", given: "CATEGORY" }];
+         }),
+      ).toContain("filter field");
+   });
+
+   it("does not judge a given already in the file when something else changes", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+# control=select suggest { source="p q" dimension=category }
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  view: x is vx
+}`;
+      expect(
+         spliceFailed(
+            await splice(source, (d) => {
+               d.tiles[0].colspan = 3;
+            }),
+         ),
+      ).toBe(false);
+   });
+
    it("refuses a tile, source or view name that is not an identifier", async () => {
       const reason = await refused(FILE(""), (d) => {
          d.tiles.push({
@@ -215,7 +265,7 @@ describe("strings written into annotations", () => {
    });
 });
 
-describe("chart lines: review fixes", () => {
+describe("chart lines beside quoted text, omitted charts and custom lines", () => {
    const SALES = '  # label="Sales viz"\n';
 
    it("does not read a word inside a quoted value as a chart tag", async () => {

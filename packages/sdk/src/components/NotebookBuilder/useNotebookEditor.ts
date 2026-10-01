@@ -57,7 +57,7 @@ const cellsChanged = (saved: NotebookDocument, next: NotebookDocument) => {
 type Placement = ReadonlyMap<string, string>;
 
 /** `doc` in the ids of the last saved file, so the writer and `canMove` read it against what is on disk. */
-export function rebased(
+function rebased(
    doc: NotebookDocument,
    placed: Placement | undefined,
 ): NotebookDocument {

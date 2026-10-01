@@ -1292,6 +1292,11 @@ function unwritable(
          !(chart === "custom" && before?.chart === "custom")
       )
          return `"${String(chart)}" is not a chart this editor writes.`;
+      const filtersBefore = new Set(before?.filters?.map((f) => f.field));
+      for (const f of tile.filters ?? []) {
+         if (!filtersBefore.has(f.field) && /[\r\n]/.test(f.field))
+            return "A filter field is one line.";
+      }
       if (before === undefined) {
          const names = [tile.name, tile.source];
          if (tile.declaration.kind === "reference")
@@ -1328,6 +1333,23 @@ function unwritable(
    }
    const givens = new Map((current.localGivens ?? []).map((g) => [g.name, g]));
    for (const given of next.localGivens ?? []) {
+      const was = givens.get(given.name);
+      if (was === undefined) {
+         const problem = nameProblem(given.name);
+         if (problem) return problem;
+      }
+      const source = given.suggest?.source;
+      if (source !== undefined && source !== was?.suggest?.source) {
+         const problem = nameProblem(source);
+         if (problem) return `The suggest source is not a name. ${problem}`;
+      }
+      const query = given.suggest?.query;
+      if (
+         query !== undefined &&
+         query !== was?.suggest?.query &&
+         /[\r\n]/.test(query)
+      )
+         return "A suggest query is one line.";
       for (const key of ["label", "description"] as const) {
          const text = given[key];
          if (text === undefined || text === givens.get(given.name)?.[key])

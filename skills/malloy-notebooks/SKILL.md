@@ -216,7 +216,9 @@ Save splices into the file, so a notebook you wrote by hand survives it. What it
 - A query can be added only below every definition, so keep definitions together near the top.
 - A query added in the editor is not mapped to the notebook's controls. It follows them only if its
   source reads a given as `$NAME`.
-- Removing a query cell that was already in the file clears undo at Save.
+- Undo is cleared at Save when it removes a query cell that was already in the file, or changes the
+  chart of a cell whose chart line the editor cannot rewrite canonically (a bare `# line_chart`, or an
+  unusual spelling).
 
 Chart choices are Default, No chart (table), Line, Bar, Big value (only for a view whose outputs are
 all aggregates), Scatter, and a map only when the view already carries one.

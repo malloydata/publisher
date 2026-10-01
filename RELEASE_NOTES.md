@@ -102,8 +102,9 @@ has a tile (its page 404s and the load lint warns), and the editor will not remo
 
 Limits to know about: a query cell added in the editor is not mapped to the notebook's controls, so
 its result follows them only if its source reads a given as `$NAME`; a query can only be added below
-every definition in the notebook; and a save that removes a query cell that was already in the file
-clears the editor's undo history.
+every definition in the notebook; and a save clears the editor's undo history when it removes a
+query cell that was already in the file, or changes the chart of a cell whose chart line the editor
+cannot rewrite canonically (a bare `# line_chart`, or an unusual spelling).
 
 **Fixed: a filter on a joined dimension.** A dashboard filter added in the builder on a dimension
 reached through a join (`products.category`) was written with only its last segment, so its options

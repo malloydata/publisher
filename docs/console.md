@@ -79,8 +79,9 @@ is a Console convenience.
   `dashboards/*.malloy` back into the package ([dashboards.md](dashboards.md#editing-in-the-console)).
 - **Create a dashboard or notebook** — the package page's **New** menu takes a model, the first view
   and a title, writes the file into the package (it never overwrites an existing one) and opens it in
-  its editor. A host with its own record creates it there instead. It is not offered on a server that
-  does not take writes, nor on a workspace that only keeps drafts in the browser.
+  its editor. A host with its own record creates it there instead. It is not offered when the server
+  does not take writes and no host keeps the record, nor on a workspace that only keeps drafts in the
+  browser; a host that keeps the record gets it regardless of the server.
 - **Edit a notebook** — a notebook page (a tagged `notebooks/*.malloy`, not a legacy `.malloynb`)
   has the same **Edit** button. Click a text cell to rewrite it, add text above or below any cell,
   remove a text cell, or drag cells into a new order (definitions stay put, and a query stays below
@@ -90,8 +91,9 @@ is a Console convenience.
   source the notebook reaches, one of its views, a chart and a caption; each query cell has a chart
   picker (Default, No chart, Line, Bar, Big value, Scatter). A query can be added only below every
   definition, and one added here is not mapped to the notebook's controls: it follows them only if
-  its source reads a given as `$NAME`. Removing a query cell that was already in the file clears
-  undo at Save. The picker is disabled, with the reason, for a cell whose chart line the editor does
+  its source reads a given as `$NAME`. Undo is cleared at Save when it removes a query cell that
+  was already in the file, or changes the chart of a cell whose chart line the editor cannot rewrite
+  canonically (a bare `# line_chart`, or an unusual spelling). The picker is disabled, with the reason, for a cell whose chart line the editor does
   not model (such as `# bar_chart { size=spark }`), and that line is left alone. On a server that
   does not take writes, Save is off. A notebook the editor cannot place cell by cell (for example two statements on one line, text
   after a block closer, or a comment straddling a cell boundary) opens read-only and says why.

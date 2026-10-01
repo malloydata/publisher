@@ -24,7 +24,12 @@ function resolve(from: string, modelPath: string): string | undefined {
    const dir = modelPath.slice(0, modelPath.lastIndexOf("/") + 1);
    try {
       const url = new URL(from, `https://malloy.invalid/${dir}`);
-      return url.host === "malloy.invalid" ? url.pathname.slice(1) : undefined;
+      if (url.host !== "malloy.invalid") return undefined;
+      const segments = url.pathname.slice(1).split("/").map(decodeURIComponent);
+      // An encoded `..` or separator would otherwise reach the fetch as a traversal.
+      return segments.some((s) => s === "." || s === ".." || /[\\/]/.test(s))
+         ? undefined
+         : segments.join("/");
    } catch {
       return undefined;
    }

@@ -87,7 +87,7 @@ export function chartLineText(chart: ChartPick | "none"): string {
 }
 
 /** What a recognized line says: its pick, a table when it negates everything, otherwise a line the picker cannot show. */
-export function chartStateOfParts(parts: ChartLineParts): ChartState {
+function chartStateOfParts(parts: ChartLineParts): ChartState {
    if (parts.pick !== undefined)
       return isChartPick(parts.pick) ? parts.pick : "custom";
    const all = [...PLUGIN_TAGS, "viz"];
