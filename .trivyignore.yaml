@@ -392,5 +392,119 @@ vulnerabilities:
       are installed; systemd-homed does not exist in the image and the server runs as
       uid 1000. Not removable: other base-image packages depend on the libraries. Debian
       has published no fix.
-misconfigurations: []
+  # HIGH, Debian packages with no fixed version published. curl and libcurl are
+  # installed explicitly in the Dockerfile (build-time downloads) and libcurl is also
+  # git's HTTPS transport, so the libraries cannot be removed.
+  - id: CVE-2026-12064
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. SSH host verification bypass for schemeless SFTP/SCP URLs. Neither the
+      server nor git (HTTPS only here) opens an SFTP or SCP transfer through
+      libcurl; the curl binary runs only in Dockerfile build steps. Debian has
+      published no fix.
+  - id: CVE-2026-8286
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. Insecure connection establishment from a TLS configuration mismatch
+      between transfers. The server does not invoke the curl binary; libcurl is used
+      by git for HTTPS clones of operator-configured repositories. Debian has
+      published no fix.
+  - id: CVE-2026-8458
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. Unauthorized connection reuse from a logic error, relevant to one
+      process making transfers with differing credentials. The server does not
+      invoke the curl binary, and each git clone is its own process. Debian has
+      published no fix.
+  - id: CVE-2026-8927
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. Proxy authentication state is not cleared between transfers. The server
+      does not invoke the curl binary, and each git clone is its own process. Debian
+      has published no fix.
+  # HIGH, Debian expat 2.8.3-1~deb13u1 (libexpat1), installed as a dependency of git.
+  # git links expat only for HTTP push (WebDAV); Publisher uses git to clone. Not
+  # removable while git is a runtime dependency (simple-git). Debian has published no
+  # fix for any of the four.
+  - id: CVE-2026-66046
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. Denial of service from quadratic
+      attribute processing in crafted XML. git parses XML only for HTTP push, which
+      Publisher never performs.
+  - id: CVE-2026-76956
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. Denial of service from hash
+      flooding with crafted XML. git parses XML only for HTTP push, which Publisher
+      never performs.
+  - id: CVE-2026-76957
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. Memory corruption from crafted XML.
+      git parses XML only for HTTP push, which Publisher never performs; no other
+      process in the image parses XML with the system library.
+  - id: CVE-2026-93990
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. XML injection from malformed UTF-16
+      input. git parses XML only for HTTP push, which Publisher never performs.
+  - id: CVE-2026-54369
+    expired_at: 2026-12-31
+    statement: >
+      Debian acl 2.3.2-2+b1 (libacl1), in the oven/bun base image of the runtime
+      stage. Symlink traversal privilege escalation through libacl functions,
+      needing a local caller that applies ACLs to attacker-influenced paths; the
+      server runs as uid 1000 and does not. Not removable: base utilities link the
+      library. Debian has published no fix.
+  # CVE-2026-41907 is rated MEDIUM by the uuid advisory; GitHub surfaces it as high.
+  # The nested uuid 8.3.2 and 9.0.1 copies are exact-pinned by their parents
+  # (node-cron 3.0.3 pins uuid 8.3.2; snowflake-sdk and @azure/msal-node declare ^8;
+  # gaxios, teeny-request, @google-cloud/bigquery and @databricks/sql declare ^9), and
+  # Bun has no nested overrides. The server's own direct dependency is uuid ^11, which
+  # is past the fix. Retire as the parents move to uuid 11.1.1 or later.
+  - id: CVE-2026-41907
+    paths:
+      - "publisher/node_modules/@azure/msal-node/node_modules/uuid/package.json"
+      - "publisher/node_modules/@databricks/sql/node_modules/uuid/package.json"
+      - "publisher/node_modules/@google-cloud/bigquery/node_modules/uuid/package.json"
+      - "publisher/node_modules/gaxios/node_modules/uuid/package.json"
+      - "publisher/node_modules/node-cron/node_modules/uuid/package.json"
+      - "publisher/node_modules/snowflake-sdk/node_modules/uuid/package.json"
+      - "publisher/node_modules/teeny-request/node_modules/uuid/package.json"
+      - "packages/server/k6-tests/bun.lock"
+    expired_at: 2026-12-31
+    statement: >
+      uuid 8.3.2, 9.0.1 (runtime, nested under the packages above) and 10.0.0
+      (packages/server/k6-tests, build-time test tooling). Missing buffer bounds
+      check in v3(), v5() and v6() when the caller passes an output buffer; v1(),
+      v4() and v7() already throw on out-of-range writes. A search of each parent's
+      installed sources finds no v3(), v5() or v6() call, only v4(). Fixed in uuid
+      11.1.1, 12.0.1 and 13.0.1, majors the parents do not admit.
+misconfigurations:
+  # docker/Dockerfile.ci is the CI integration-test runner referenced from
+  # docker-compose.yml (profile `ci`). It is never published and not the production
+  # image (see packages/server/README.docker.md). Running as root and installing
+  # recommended packages is what the test container needs: it writes into the
+  # mounted checkout and fetches the JDK repository key over HTTPS, which relies on
+  # ca-certificates arriving as a recommended package.
+  - id: DS-0002
+    paths: ["docker/Dockerfile.ci"]
+    expired_at: 2026-12-31
+    statement: >
+      CI test-runner image with no USER instruction: the test container writes into
+      the mounted checkout and runs as root by design. Not published and not the
+      production image.
+  - id: DS-0029
+    paths: ["docker/Dockerfile.ci"]
+    expired_at: 2026-12-31
+    statement: >
+      apt-get install without --no-install-recommends in the CI test-runner image.
+      The wget and git installs rely on ca-certificates arriving as a recommended
+      package to fetch the Temurin repository key over HTTPS. Not published and not
+      the production image.
 secrets: []
