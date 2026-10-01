@@ -262,16 +262,18 @@ describe("redactPgSecrets", () => {
       expect(redactPgSecrets(input)).toBe(expected);
    });
 
-   // Each input made the regex form of a URI pass quadratic: 2.5s and more
-   // at these sizes. The bound is generous so a slow machine stays green while
-   // a quadratic implementation does not.
+   // Each input made the regex form of a URI pass quadratic. The sizes are
+   // chosen so the quadratic form takes seconds even on a fast machine, while a
+   // linear scan takes a few milliseconds: the 500ms bound then sits orders of
+   // magnitude from both, so a slow machine stays green and a quadratic
+   // implementation fails on any machine.
    it.each([
-      ["a run of letters", "a".repeat(50_000)],
+      ["a run of letters", "a".repeat(200_000)],
       [
          "a run of letters after an empty password",
-         "a://:" + "a".repeat(50_000),
+         "a://:" + "a".repeat(200_000),
       ],
-      ["many pg URIs with no @", "postgres://:".repeat(10_000)],
+      ["many pg URIs with no @", "postgres://:".repeat(40_000)],
    ])("redacts %s in linear time", (_name, input) => {
       const started = performance.now();
       const out = redactPgSecrets(input);
