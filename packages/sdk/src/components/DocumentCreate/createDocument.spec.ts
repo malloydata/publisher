@@ -67,6 +67,7 @@ class FakeStorage implements DocumentStorage {
       this.files.set(this.key(locator), content);
    }
    async deleteDocument() {}
+   async moveDocument() {}
 }
 
 const target = (storage: FakeStorage) =>
@@ -226,7 +227,72 @@ describe("createDocument on the package route", () => {
    });
 });
 
+describe("createDocument names", () => {
+   it("on the storage route, skips a path the package listing has", async () => {
+      const storage = new FakeStorage();
+      const result = await createDocument({
+         kind: "dashboard",
+         document: DOC,
+         target: {
+            ...target(storage),
+            existing: ["dashboards/sales.malloy"],
+         },
+      });
+      expect(result.slug).toBe("sales-2");
+   });
+
+   it("on the package route, moves to the next name when the server answers 409", async () => {
+      const tried: string[] = [];
+      const result = await createDocument({
+         kind: "dashboard",
+         document: DOC,
+         target: {
+            route: "package",
+            existing: [],
+            write: async (path) => {
+               tried.push(path);
+               if (tried.length < 3)
+                  throw Object.assign(new Error("exists"), {
+                     response: { status: 409 },
+                  });
+            },
+         },
+      });
+      expect(tried).toEqual([
+         "dashboards/sales.malloy",
+         "dashboards/sales-2.malloy",
+         "dashboards/sales-3.malloy",
+      ]);
+      expect(result.slug).toBe("sales-3");
+   });
+
+   it("on the package route, any other failure is thrown, not retried", async () => {
+      let writes = 0;
+      await expect(
+         createDocument({
+            kind: "dashboard",
+            document: DOC,
+            target: {
+               route: "package",
+               existing: [],
+               write: async () => {
+                  writes++;
+                  throw new Error("boom");
+               },
+            },
+         }),
+      ).rejects.toThrow("boom");
+      expect(writes).toBe(1);
+   });
+});
+
 describe("createRoute", () => {
+   it("is off on a pinned version for the package, not for a record", () => {
+      const host = { mutable: true, canStore: true, versionId: "v2" };
+      expect(createRoute({ ...host, authoritative: false })).toBeUndefined();
+      expect(createRoute({ ...host, authoritative: true })).toBe("storage");
+   });
+
    it("is off for a browser workspace and on for a package or a record", () => {
       expect(
          createRoute({ authoritative: false, mutable: false, canStore: true }),

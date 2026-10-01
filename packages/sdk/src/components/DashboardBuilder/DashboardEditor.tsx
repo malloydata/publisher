@@ -690,6 +690,14 @@ function Surface({
 }) {
    const { apiClients } = useServer();
 
+   // The server serves a dashboard only once the package file has a tile, so
+   // an empty start becomes servable when a save puts the first one there.
+   const [served, setServed] = useState(opened.document.tiles.length > 0);
+   useEffect(
+      () => setServed(opened.document.tiles.length > 0),
+      [opened.generation, opened.document],
+   );
+
    const { data, isSuccess } = useQueryWithApiError({
       queryKey: [
          "dashboard-editor-manifest",
@@ -706,7 +714,7 @@ function Surface({
             versionId,
          ),
       // The server does not serve a dashboard with no tiles, so asking would 404.
-      enabled: opened.document.tiles.length > 0,
+      enabled: served,
    });
    const manifest = data?.data;
 
@@ -782,6 +790,19 @@ function Surface({
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
+   const docRef = useRef(doc);
+   docRef.current = doc;
+   // Only a package write can make the package serve it; a copy in the host's store does not.
+   const saveThenServe = useMemo(
+      () =>
+         onSave && savesTo === "package"
+            ? async (source: string) => {
+                 await onSave(source);
+                 if (docRef.current.tiles.length > 0) setServed(true);
+              }
+            : onSave,
+      [onSave, savesTo],
+   );
    const modelSpecs = useMemo(() => manifest?.givens ?? [], [manifest]);
    const runnable = useMemo(
       () =>
@@ -869,7 +890,7 @@ function Surface({
             controls={
                isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
             }
-            {...(onSave ? { onSave } : {})}
+            {...(saveThenServe ? { onSave: saveThenServe } : {})}
             savesTo={savesTo}
          />
          <Box sx={{ px: 0.5 }}>

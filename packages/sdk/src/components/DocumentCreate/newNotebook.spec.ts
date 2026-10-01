@@ -3,7 +3,10 @@
 
 import { describe, expect, it } from "bun:test";
 import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
-import { readNotebookSource } from "../NotebookBuilder/readNotebookSource";
+import {
+   notebookSourceRefused,
+   readNotebookSource,
+} from "../NotebookBuilder/readNotebookSource";
 import { documentPathFor, documentPathForTitle, slugFor } from "./documentPath";
 import { newDocumentProblem } from "./guards";
 import { newNotebookSource } from "./newNotebook";
@@ -33,7 +36,7 @@ describe("newNotebookSource", () => {
 
    it("reads back in the notebook reader as the import, a text cell and a query cell", async () => {
       const result = await readNotebookSource(newNotebookSource(INPUT));
-      if (!result.ok) throw new Error(result.refused);
+      if (notebookSourceRefused(result)) throw new Error(result.refused);
       expect(result.source.cells.map((c) => c.kind)).toEqual([
          "definition",
          "markdown",
@@ -54,6 +57,21 @@ describe("newNotebookSource", () => {
 });
 
 describe("newDocumentProblem", () => {
+   it("holds a dashboard to bare identifiers, as its writer does", () => {
+      expect(
+         newDocumentProblem("dashboard", { ...INPUT, source: "order items" }),
+      ).toMatch(/source name/);
+      expect(
+         newDocumentProblem("notebook", { ...INPUT, source: "order items" }),
+      ).toBeUndefined();
+   });
+
+   it("trims the title once, for the tag and the heading", () => {
+      const text = newNotebookSource({ ...INPUT, title: "  Q3  " });
+      expect(text).toContain('title="Q3"');
+      expect(text).toContain("# Q3\n");
+   });
+
    it("refuses names that cannot be written", () => {
       expect(
          newDocumentProblem("dashboard", { ...INPUT, view: "a`b" }),

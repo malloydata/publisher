@@ -11,7 +11,8 @@ import { malloyName, newDocumentProblem, type NewDocument } from "./guards";
 export function newNotebookSource(input: NewDocument): string {
    const problem = newDocumentProblem("notebook", input);
    if (problem) throw new Error(problem);
-   const { title, modelPath, source, view } = input;
+   const { modelPath, source, view } = input;
+   const title = input.title.trim();
    const quoted = `"${title.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
    return [
       "##! experimental.givens",
@@ -19,7 +20,7 @@ export function newNotebookSource(input: NewDocument): string {
       `import { ${malloyName(source)} } from "../${modelPath}"`,
       "",
       "##|(markdown)",
-      `# ${title.trim()}`,
+      `# ${title}`,
       "Say what this notebook is for, then let the queries below answer it.",
       "|##",
       "",

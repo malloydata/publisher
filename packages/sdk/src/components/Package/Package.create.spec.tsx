@@ -39,6 +39,9 @@ const getModel = mock((_env: string, _pkg: string, _path: string) =>
    Promise.resolve({
       data: {
          modelPath: "storefront.malloy",
+         modelInfo: JSON.stringify({
+            entries: [{ kind: "source", name: "order_items" }],
+         }),
          sources: [{ name: "order_items", views: [{ name: "by_category" }] }],
       },
    }),
@@ -93,6 +96,7 @@ function fakeStorage(workspaces: Workspace[] | Error) {
          saved.push(locator);
       },
       deleteDocument: async () => {},
+      moveDocument: async () => {},
    };
    return { storage, saved };
 }
@@ -177,6 +181,14 @@ describe("who is offered New", () => {
       );
    });
 
+   it("nothing until the models listing, which names the taken files, has landed", async () => {
+      listModels.mockImplementationOnce(() => pending());
+      mount();
+      await settled();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(screen.queryByRole("button", { name: "New" })).toBeNull();
+   });
+
    it("nothing while the host's workspaces are still being listed, and nothing when they cannot be", async () => {
       mount(fakeStorage(new Error("backend down")).storage);
       await settled();
@@ -233,13 +245,9 @@ describe("creating", () => {
          'tiles=["order_items_tiles -> by_category_tile"]',
       );
       await waitFor(() => {
-         expect(listDashboards.mock.calls.length).toBeGreaterThan(
-            before.dashboards,
-         );
-         expect(listNotebooks.mock.calls.length).toBeGreaterThan(
-            before.notebooks,
-         );
-         expect(listModels.mock.calls.length).toBeGreaterThan(before.models);
+         expect(listDashboards).toHaveBeenCalledTimes(before.dashboards + 1);
+         expect(listNotebooks).toHaveBeenCalledTimes(before.notebooks + 1);
+         expect(listModels).toHaveBeenCalledTimes(before.models + 1);
       });
    });
 

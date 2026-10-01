@@ -268,12 +268,27 @@ export default function Package({
               authoritative: workspace.chosen?.authoritative === true,
               mutable,
               canStore: workspace.chosen?.writeable === true,
+              ...(versionId === undefined ? {} : { versionId }),
            })
          : undefined;
-   // `updateModelSource` cannot write against a pinned version.
-   const canCreate =
-      route === "storage" || (route === "package" && versionId === undefined);
+   // A name is chosen against the listings, so New waits for all three rather than offering names a still-loading listing would have taken.
+   const listingsSettled = [dashboardsQuery, notebooksQuery, modelsQuery].every(
+      (q) => q.isSuccess || q.isError,
+   );
+   const canCreate = route !== undefined && listingsSettled;
    const createTarget = useMemo((): CreateTarget | undefined => {
+      if (!canCreate) return undefined;
+      const existing = [
+         ...(dashboardsQuery.data?.data ?? []).flatMap((d) =>
+            d.path ? [d.path] : [],
+         ),
+         ...(notebooksQuery.data?.data ?? []).flatMap((n) =>
+            n.path ? [n.path] : [],
+         ),
+         ...(modelsQuery.data?.data ?? []).flatMap((m) =>
+            m.path ? [m.path] : [],
+         ),
+      ];
       if (route === "storage" && storage && workspace.state === "ready") {
          if (!workspace.chosen) return undefined;
          return {
@@ -282,22 +297,13 @@ export default function Package({
             workspace: workspace.chosen,
             environmentName,
             packageName,
+            existing,
          };
       }
       if (route !== "package") return undefined;
       return {
          route,
-         existing: [
-            ...(dashboardsQuery.data?.data ?? []).flatMap((d) =>
-               d.path ? [d.path] : [],
-            ),
-            ...(notebooksQuery.data?.data ?? []).flatMap((n) =>
-               n.path ? [n.path] : [],
-            ),
-            ...(modelsQuery.data?.data ?? []).flatMap((m) =>
-               m.path ? [m.path] : [],
-            ),
-         ],
+         existing,
          write: async (path, source) => {
             await apiClients.models.updateModelSource(
                environmentName,
@@ -308,6 +314,7 @@ export default function Package({
          },
       };
    }, [
+      canCreate,
       route,
       storage,
       workspace,
@@ -449,7 +456,6 @@ export default function Package({
                   setCreating(undefined);
                   for (const key of ["dashboards", "notebooks", "models"])
                      void queryClient.invalidateQueries({ queryKey: [key] });
-                  void refreshDrafts();
                   onClick(
                      `/${environmentName}/${packageName}/${created.kind}s/${encodeURIComponent(created.slug)}/edit`,
                   );

@@ -113,8 +113,7 @@ export function NewDocumentDialog({
       if (title.trim() === "") return undefined;
       for (let n = 1; n <= MAX_SLUG_ATTEMPTS; n++) {
          const candidate = documentPathForTitle(kind, title, n);
-         if (target.route !== "package" || !target.existing.includes(candidate))
-            return candidate;
+         if (!target.existing?.includes(candidate)) return candidate;
       }
       return undefined;
    }, [kind, title, target]);
@@ -283,7 +282,9 @@ export function NewDocumentDialog({
                   problem
                      ? problem
                      : path
-                       ? `Written as ${path}, and opened in the builder.`
+                       ? target.route === "package"
+                          ? `Written as ${path}, and opened in the builder.`
+                          : `Saved as a new ${label} in the host's store, and opened in the builder.`
                        : title.trim() !== ""
                          ? "No free file name for this title; choose another."
                          : "Names the file too."

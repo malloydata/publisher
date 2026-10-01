@@ -17,9 +17,15 @@ import {
    type Workspace,
 } from "../DocumentStorage/DocumentStorage";
 
+const info = (names: string[]) =>
+   JSON.stringify({
+      entries: names.map((name) => ({ kind: "source", name })),
+   });
+
 const MODELS: Record<string, unknown> = {
    "storefront.malloy": {
       modelPath: "storefront.malloy",
+      modelInfo: info(["order_items", "products"]),
       sources: [
          {
             name: "order_items",
@@ -29,6 +35,15 @@ const MODELS: Record<string, unknown> = {
       ],
    },
    "other.malloy": { modelPath: "other.malloy", sources: [] },
+   // Imports `order_items` whole-file: it is in `sources` but not exported, so `import { order_items } from "../mid.malloy"` would not compile.
+   "mid.malloy": {
+      modelPath: "mid.malloy",
+      modelInfo: info(["mid_src"]),
+      sources: [
+         { name: "order_items", views: [{ name: "by_category" }] },
+         { name: "mid_src", views: [{ name: "overview" }] },
+      ],
+   },
 };
 const getModel = mock((_env: string, _pkg: string, path: string) =>
    Promise.resolve({ data: MODELS[path] }),
@@ -198,6 +213,26 @@ describe("NewDocumentDialog", () => {
       expect(onCreated).not.toHaveBeenCalled();
    });
 
+   it("offers only the sources a model exports, not the ones it imports", async () => {
+      mount({ models: ["mid.malloy"] });
+      await titleFilled("overview");
+      fireEvent.mouseDown(screen.getByRole("combobox", { name: /First tile/ }));
+      expect(
+         screen.getAllByRole("option").map((option) => option.textContent),
+      ).toEqual(["mid_src → overview"]);
+   });
+
+   it("offers nothing from a model whose exports are not stated", async () => {
+      MODELS["bare.malloy"] = {
+         modelPath: "bare.malloy",
+         sources: [{ name: "s", views: [{ name: "v" }] }],
+      };
+      mount({ models: ["bare.malloy"] });
+      expect(
+         await screen.findByText(/no model in this package declares one yet/),
+      ).toBeDefined();
+   });
+
    it("says what to do when the package has no models", () => {
       mount({ models: [] });
       expect(screen.getByText(/This package has no models yet/)).toBeDefined();
@@ -293,6 +328,7 @@ describe("NewDocumentDialog", () => {
             saved.push(locator.path);
          },
          deleteDocument: async () => {},
+         moveDocument: async () => {},
       };
 
       it("saves into the store under a name the store does not have", async () => {

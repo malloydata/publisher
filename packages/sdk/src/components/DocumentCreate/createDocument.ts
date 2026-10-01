@@ -28,6 +28,8 @@ export function createRoute(host: {
    mutable: boolean;
    /** The host keeps documents and the chosen workspace takes writes. */
    canStore: boolean;
+   /** A pinned version takes no package writes. */
+   versionId?: string;
 }): "package" | "storage" | undefined {
    const { savesTo, writer } = saveTarget({ ...host, readFailed: false });
    return savesTo === "browser" ? undefined : writer;
@@ -47,6 +49,8 @@ export type CreateTarget =
         workspace: Workspace;
         environmentName: string;
         packageName: string;
+        /** Package-relative paths the package already lists; the store may not know them yet. */
+        existing?: readonly string[];
      };
 
 export interface CreatedDocument {
@@ -95,13 +99,20 @@ export async function createDocument(
       let path: string | undefined;
       for (let n = 1; n <= MAX_SLUG_ATTEMPTS && path === undefined; n++) {
          const candidate = documentPathForTitle(kind, document.title, n);
-         if (!taken.has(candidate)) path = candidate;
+         if (taken.has(candidate)) continue;
+         try {
+            await target.write(candidate, source);
+            path = candidate;
+         } catch (error) {
+            // A create-only write refused as a conflict means the listing was stale; the next name is free to try.
+            if (!isConflict(error)) throw error;
+         }
       }
       if (path === undefined) throw noFreeName(document.title);
-      await target.write(path, source);
       created = { kind, path, slug: slugOf(path) };
    } else {
       const { storage, workspace, environmentName, packageName } = target;
+      const inPackage = new Set(target.existing);
       const listed = new Set(
          (await storage.listDocuments(workspace, kind)).map((l) => l.path),
       );
@@ -115,7 +126,7 @@ export async function createDocument(
             packageName,
             path,
          );
-         if (listed.has(locator.path)) continue;
+         if (listed.has(locator.path) || inPackage.has(path)) continue;
          let present = true;
          try {
             await storage.getDocument(locator);
@@ -138,6 +149,9 @@ export async function createDocument(
    onCreated?.(created);
    return created;
 }
+
+const isConflict = (error: unknown) =>
+   (error as { response?: { status?: number } })?.response?.status === 409;
 
 const noFreeName = (title: string) =>
    new Error(

@@ -11,6 +11,29 @@ export interface DocumentChoice {
 }
 
 /**
+ * The sources a model exports. `sources` also lists names the model only
+ * imports, and `import { x } from "../model"` cannot reach those; no
+ * `modelInfo`, or one that does not parse, offers nothing rather than a
+ * choice that would write a file that does not compile.
+ */
+function exportedSources(modelInfo: string | undefined): Set<string> {
+   try {
+      const parsed = JSON.parse(modelInfo ?? "") as {
+         entries?: { kind?: string; name?: string }[];
+      };
+      return new Set(
+         (parsed.entries ?? []).flatMap((entry) =>
+            entry.kind === "source" && typeof entry.name === "string"
+               ? [entry.name]
+               : [],
+         ),
+      );
+   } catch {
+      return new Set();
+   }
+}
+
+/**
  * What a new dashboard or notebook can start from: model -> the (source, view)
  * pairs it declares. One `getModel` per model under its own key, read only
  * while `enabled` (the dialog is open) and cached after, so opening it costs
@@ -56,8 +79,10 @@ export function useDocumentChoices({
       const out = new Map<string, DocumentChoice[]>();
       results.forEach((result, i) => {
          const pairs: DocumentChoice[] = [];
+         const exported = exportedSources(result.data?.modelInfo);
          for (const source of result.data?.sources ?? []) {
-            if (typeof source.name !== "string") continue;
+            if (typeof source.name !== "string" || !exported.has(source.name))
+               continue;
             for (const view of source.views ?? [])
                if (typeof view.name === "string")
                   pairs.push({ source: source.name, view: view.name });

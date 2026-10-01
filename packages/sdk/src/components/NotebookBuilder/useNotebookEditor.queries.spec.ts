@@ -75,8 +75,8 @@ describe("useNotebookEditor: query cells", () => {
       );
       await act(async () => {
          const outcome = await view.result.current.save();
-         expect(outcome.ok).toBe(false);
-         expect(!outcome.ok && outcome.reason).toContain("already saved");
+         if (!("reason" in outcome)) throw new Error("expected a refusal");
+         expect(outcome.reason).toContain("already saved");
       });
       expect(saves).toHaveLength(2);
    });
