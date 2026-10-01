@@ -5,6 +5,12 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { useSettled } from "./useSettled";
 
+// Bun runs it; its typings do not declare it.
+const advance = (ms: number) =>
+   (
+      jest as unknown as { advanceTimersByTime(ms: number): void }
+   ).advanceTimersByTime(ms);
+
 describe("useSettled", () => {
    beforeEach(() => {
       jest.useFakeTimers();
@@ -23,12 +29,12 @@ describe("useSettled", () => {
       for (const value of ["b", "bc", "bcd"]) {
          view.rerender({ value });
          act(() => {
-            jest.advanceTimersByTime(399);
+            advance(399);
          });
          expect(view.result.current).toBe("a");
       }
       act(() => {
-         jest.advanceTimersByTime(1);
+         advance(1);
       });
       expect(view.result.current).toBe("bcd");
    });

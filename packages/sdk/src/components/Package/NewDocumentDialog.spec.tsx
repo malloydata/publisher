@@ -46,8 +46,9 @@ const MODELS: Record<string, unknown> = {
       ],
    },
 };
-const getModel = mock((_env: string, _pkg: string, path: string) =>
-   Promise.resolve({ data: MODELS[path] }),
+const getModel = mock(
+   (_env: string, _pkg: string, path: string, _versionId?: string) =>
+      Promise.resolve({ data: MODELS[path] }),
 );
 mockServerProvider({ models: { getModel } });
 

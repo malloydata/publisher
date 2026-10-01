@@ -67,7 +67,11 @@ describe("newDocumentProblem", () => {
    });
 
    it("back-quotes a source named like a keyword, and a dashboard refuses it", () => {
-      const text = newNotebookSource({ ...INPUT, source: "source", view: "is" });
+      const text = newNotebookSource({
+         ...INPUT,
+         source: "source",
+         view: "is",
+      });
       expect(text).toContain("import { `source` }");
       expect(text).toContain("run: `source` -> `is`");
       expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);

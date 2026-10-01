@@ -11,11 +11,12 @@ import { expect, type Page } from "@playwright/test";
 export async function saveChanges(page: Page): Promise<void> {
    await page.getByRole("button", { name: "Save changes" }).click();
    const confirm = page.getByRole("button", { name: "Save this" });
+   const saved = page.getByRole("button", { name: "Saved" });
+   // Whichever shows first decides: waiting out a fixed delay for a dialog that never opens only slows the save.
    await confirm
-      .waitFor({ state: "visible", timeout: 3_000 })
-      .then(() => confirm.click())
-      .catch(() => undefined);
-   await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
-      timeout: 30_000,
-   });
+      .or(saved)
+      .first()
+      .waitFor({ state: "visible", timeout: 30_000 });
+   if (await confirm.isVisible()) await confirm.click();
+   await expect(saved).toBeVisible({ timeout: 30_000 });
 }

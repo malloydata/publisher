@@ -16,8 +16,7 @@ export interface QueryRun {
    caption?: string;
 }
 
-const malloyName = (name: string) =>
-   isBareName(name) ? name : `\`${name}\``;
+const malloyName = (name: string) => (isBareName(name) ? name : `\`${name}\``);
 
 /** Why a caption cannot be written, or undefined when it can. */
 export function captionProblem(caption: string): string | undefined {

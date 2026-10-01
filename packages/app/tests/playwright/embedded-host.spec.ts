@@ -74,6 +74,17 @@ test.describe("embedded host", () => {
    let storefront: PackageEnv;
 
    test.beforeAll(async () => {
+      // Without the config's webServer nothing starts the harness, so a missing one is a skip, not a failure.
+      if (process.env.PLAYWRIGHT_USE_WEBSERVER === "0") {
+         const up = await fetch(HARNESS).then(
+            (res) => res.ok,
+            () => false,
+         );
+         test.skip(
+            !up,
+            `the embedded-host harness is not running at ${HARNESS}`,
+         );
+      }
       curated = await registerPackageEnv(
          API,
          "hostcur",

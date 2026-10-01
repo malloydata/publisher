@@ -31,14 +31,18 @@ export default defineConfig({
    // `notebook-readme-links` each write fixture files into
    // `publisher_data/examples/storefront` and POST `?reload=true` on that
    // package; they are the only three specs that do either. A second kind of
-   // contention is environment churn: `packages.spec`, `environments.spec`,
-   // `package-dashboards.spec` and `notebook-builder.spec` each create and
-   // delete a whole environment, which appears and vanishes from the listings
-   // other specs navigate through. All four, not just the first: anyone
-   // relaxing `workers: 1` reads this comment to find out what contends, so a
-   // short list is worse than none. Observed: a `notebook-givens` navigation timed out
-   // waiting for the storefront tile while another file was mid-reload. It
-   // passes 9/9 in isolation, which is the tell that it is contention rather
+   // contention is environment churn: every spec that registers or deletes an
+   // environment (through `registerPackageEnv`, a direct POST or DELETE on
+   // `/environments`, or the Console's own dialogs) makes it appear and vanish
+   // in the listings other specs navigate through. Today that is
+   // `builder-documents`, `builder-request-budget`, `builder-chart-type`,
+   // `embedded-host`, `notebook-cells`, `dashboard-builder`, `dashboard-create`,
+   // `notebook-builder`, `package-dashboards`, `environment-connections`,
+   // `environments` and `packages`. Anyone relaxing `workers: 1` reads this
+   // comment to find out what contends, so a short list is worse than none.
+   // Observed: a `notebook-givens` navigation timed out waiting for the
+   // storefront tile while another file was mid-reload. It passes 9/9 in
+   // isolation, which is the tell that it is contention rather
    // than a broken assertion.
    workers: 1,
    retries: IS_CI ? 1 : 0,
