@@ -18,6 +18,7 @@ import { defineConfig, devices } from "@playwright/test";
 const BASE_URL = process.env.PUBLISHER_URL ?? "http://localhost:4000";
 const USE_WEB_SERVER = process.env.PLAYWRIGHT_USE_WEBSERVER !== "0";
 const IS_CI = !!process.env.CI;
+const HARNESS_URL = process.env.HARNESS_URL ?? "http://localhost:5199";
 
 export default defineConfig({
    testDir: "./tests/playwright",
@@ -61,17 +62,30 @@ export default defineConfig({
    ],
    globalSetup: "./tests/playwright/global-setup.ts",
    webServer: USE_WEB_SERVER
-      ? {
-           // Start the publisher from the repo root so `npm run start:init`
-           // resolves to the server's init-mode start (loads config,
-           // downloads fixture packages, marks ready when done).
-           command: "npm run start:init",
-           cwd: "../../",
-           url: `${BASE_URL}/api/v0/status`,
-           reuseExistingServer: true,
-           timeout: 300_000,
-           stdout: "pipe",
-           stderr: "pipe",
-        }
+      ? [
+           {
+              // Start the publisher from the repo root so `npm run start:init`
+              // resolves to the server's init-mode start (loads config,
+              // downloads fixture packages, marks ready when done).
+              command: "npm run start:init",
+              cwd: "../../",
+              url: `${BASE_URL}/api/v0/status`,
+              reuseExistingServer: true,
+              timeout: 300_000,
+              stdout: "pipe",
+              stderr: "pipe",
+           },
+           {
+              // The embedded-host harness: the Console mounted over a host
+              // store of its own, proxying /api/v0 to the publisher above.
+              command:
+                 "bunx vite --config tests/playwright/harness/vite.config.ts",
+              url: HARNESS_URL,
+              reuseExistingServer: true,
+              timeout: 120_000,
+              stdout: "pipe",
+              stderr: "pipe",
+           },
+        ]
       : undefined,
 });
