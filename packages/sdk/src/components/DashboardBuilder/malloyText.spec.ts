@@ -10,6 +10,7 @@ import {
    isIdentifier,
    isStrictName,
    malloyPath,
+   readPath,
    markdownNote,
    tileSteps,
 } from "./malloyText";
@@ -129,9 +130,15 @@ describe("reserved words", () => {
       expect(isStrictName("revenue")).toBe(true);
    });
 
-   it("back-quotes each reserved segment of a field path", () => {
+   it("back-quotes only a lone reserved field name", () => {
       expect(malloyPath("date")).toBe("`date`");
-      expect(malloyPath("orders.type.name")).toBe("orders.`type`.name");
+      // A dotted path stays verbatim: `.year` is reserved and is an accessor, not a name.
+      expect(malloyPath("orders.type.name")).toBe("orders.type.name");
+      expect(malloyPath("created_at.year")).toBe("created_at.year");
+      expect(malloyPath("type")).toBe("type");
+      expect(readPath("`date`")).toBe("date");
+      expect(readPath("lower(`date`)")).toBe("lower(`date`)");
+      expect(readPath("a.`b`")).toBe("a.`b`");
       expect(malloyPath("products.category")).toBe("products.category");
       expect(malloyPath("`odd name`.x")).toBe("`odd name`.x");
    });

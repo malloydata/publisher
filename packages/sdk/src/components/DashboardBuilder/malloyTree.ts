@@ -531,6 +531,8 @@ function readViewBody(r: Reader, vExpr: Ctx): TreeViewBody {
             return { kind: "unsupported", why: "a chained refinement" };
          base = inner[0];
       }
+      if (base && IS.segParen(base))
+         return { kind: "unsupported", why: "a parenthesized expression" };
       if (!base || !IS.segField(base))
          return {
             kind: "unsupported",

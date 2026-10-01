@@ -30,20 +30,13 @@ const ALWAYS_RESERVED = new Set(
 export const isBareName = (text: string) =>
    isIdentifier(text) && !ALWAYS_RESERVED.has(text.toLowerCase());
 
-/** A name that can stand bare as a given name or filter field: also not a statement keyword. */
+/** A name that can stand bare as a given name: also not a statement keyword, since `NAME ::` is not a statement. */
 export const isStrictName = (text: string) =>
    isBareName(text) && !STATEMENT_KEYWORDS.has(text.toLowerCase());
 
-/** A field path with each segment back-quoted where it would not compile bare; a segment already quoted or oddly shaped is left as written. */
+/** A filter field as written after `where:`: a lone reserved name is back-quoted; a dotted path (`.year` is reserved too) or an expression stays verbatim. */
 export const malloyPath = (path: string) =>
-   path
-      .split(".")
-      .map((segment) =>
-         isIdentifier(segment) && !isStrictName(segment)
-            ? `\`${segment}\``
-            : segment,
-      )
-      .join(".");
+   isIdentifier(path) && !isBareName(path) ? `\`${path}\`` : path;
 
 /** The server's rule for the tag line: `## artifact` at the start of a line. */
 export const ARTIFACT_LINE = /^##[ \t]*artifact\b/;
@@ -246,6 +239,6 @@ export function tileSteps(
    };
 }
 
-/** The inverse of {@link malloyPath}: a back-quoted identifier segment is read as the plain name. */
+/** The inverse of {@link malloyPath}: a field that is exactly one back-quoted identifier is read as the plain name; anything else is verbatim. */
 export const readPath = (path: string) =>
-   path.replace(/`([A-Za-z_][A-Za-z0-9_]*)`/g, "$1");
+   /^`([A-Za-z_][A-Za-z0-9_]*)`$/.test(path) ? path.slice(1, -1) : path;
