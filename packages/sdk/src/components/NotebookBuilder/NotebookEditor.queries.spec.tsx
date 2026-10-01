@@ -27,6 +27,30 @@ source: a is duckdb.table('t')
 run: a -> by_cat
 `;
 
+const NAMED_IMPORT = `## artifact { kind=notebook }
+import { a } from "../shop.malloy"
+
+run: a -> by_cat
+`;
+const WHOLE_IMPORT = NAMED_IMPORT.replace(
+   'import { a } from "../shop.malloy"',
+   'import "../shop.malloy"',
+);
+
+const modelOf = (path: string) => ({
+   data: {
+      modelPath: path,
+      sourceText: FILE,
+      givens: [],
+      sources: [
+         {
+            name: "a",
+            views: [{ name: "by_cat", annotations: ["# bar_chart\n"] }],
+         },
+      ],
+   },
+});
+
 const getModel = mock(
    async (
       _env: string,
@@ -34,19 +58,40 @@ const getModel = mock(
       path: string,
       _versionId?: string,
       _hidden?: boolean,
-   ) => ({
-      data: {
-         modelPath: path,
-         sourceText: FILE,
-         givens: [],
-         sources: [
-            {
-               name: "a",
-               views: [{ name: "by_cat", annotations: ["# bar_chart\n"] }],
+   ) => {
+      // A curated package: the imported file's sources, and none of them in the notebook's own.
+      if (path === "shop.malloy")
+         return {
+            data: {
+               modelPath: path,
+               sources: [
+                  {
+                     name: "a",
+                     views: [
+                        { name: "by_cat", annotations: ["# bar_chart\n"] },
+                     ],
+                  },
+                  { name: "other", views: [{ name: "v" }] },
+               ],
             },
-         ],
-      },
-   }),
+         };
+      if (
+         path === "notebooks/named.malloy" ||
+         path === "notebooks/whole.malloy"
+      )
+         return {
+            data: {
+               modelPath: path,
+               sourceText:
+                  path === "notebooks/named.malloy"
+                     ? NAMED_IMPORT
+                     : WHOLE_IMPORT,
+               givens: [],
+               sources: [],
+            },
+         };
+      return modelOf(path);
+   },
 );
 const getNotebook = mock(async () => ({ data: { autorun: true } }));
 const updateModelSource = mock(
@@ -139,4 +184,81 @@ describe("NotebookEditor, adding a query", () => {
          }),
       );
    });
+});
+
+describe("NotebookEditor, adding a query on a curated package", () => {
+   const open = async (name: string) => {
+      render(
+         <NotebookEditor
+            environmentName="env"
+            packageName="pkg"
+            notebookName={name}
+         />,
+         { wrapper: serverWrapper },
+      );
+      return screen.findByRole("group", {
+         name: "Cell 2, query",
+         hidden: true,
+      });
+   };
+   const importReads = () =>
+      getModel.mock.calls.filter((call) => call[2] === "shop.malloy").length;
+
+   for (const [name, file] of [
+      ["named", NAMED_IMPORT],
+      ["whole", WHOLE_IMPORT],
+   ] as const)
+      it(`offers the sources of a ${name} import that the notebook's own model left out, reading them only when the dialog opens`, async () => {
+         const query = await open(name);
+         const loadReads = getModel.mock.calls.length;
+         // Nothing about the import is read on load or while idle.
+         expect(importReads()).toBe(0);
+
+         fireEvent.click(
+            within(query).getByRole("button", {
+               name: "Add query below",
+               hidden: true,
+            }),
+         );
+         fireEvent.click(
+            await screen.findByRole("button", {
+               name: "View by_cat",
+               hidden: true,
+            }),
+         );
+         expect(importReads()).toBe(1);
+         expect(getModel.mock.calls.length).toBe(loadReads + 1);
+         // Only what the import names is offered; the file's other sources are not.
+         expect(screen.queryByText("other")).toBeNull();
+         fireEvent.click(button("Add query"));
+
+         fireEvent.click(button("Save changes"));
+         const diff = (await screen.findByLabelText("File changes")).closest(
+            '[role="dialog"]',
+         ) as HTMLElement;
+         fireEvent.click(
+            within(diff).getByRole("button", { name: /Save/, hidden: true }),
+         );
+         await waitFor(() =>
+            expect(updateModelSource).toHaveBeenCalledTimes(1),
+         );
+         expect(updateModelSource.mock.calls[0][3].source).toBe(
+            `${file}\nrun: a -> by_cat\n`,
+         );
+
+         // A second look reads nothing again.
+         await screen.findByRole("group", {
+            name: "Cell 3, query",
+            hidden: true,
+         });
+         fireEvent.click(
+            within(
+               screen.getByRole("group", {
+                  name: "Cell 3, query",
+                  hidden: true,
+               }),
+            ).getByRole("button", { name: "Add query below", hidden: true }),
+         );
+         expect(importReads()).toBe(1);
+      });
 });

@@ -3,9 +3,9 @@
 
 import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Given, RawNotebook } from "../../client";
+import type { CompiledModel, Given, RawNotebook } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -28,6 +28,7 @@ import {
 } from "../DocumentStorage";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
+import { importedCatalog, notebookImports } from "./imports";
 import { NotebookBuilder } from "./NotebookBuilder";
 import {
    notebookSourceRefused,
@@ -213,7 +214,7 @@ function NotebookSession({
    const model = modelQuery.data?.data as
       | { sourceText?: string; givens?: Given[] }
       | undefined;
-   // The notebook's own compiled model, already fetched above: its sources include what it imports, so an added query needs no request of its own.
+   // The notebook's own compiled model, already fetched above. A curated package leaves what the notebook imports out of its sources, so those are read separately, and only once someone looks at the choices.
    const compiled = modelQuery.data?.data;
    const catalogSources = useMemo(
       () => (compiled ? buildCatalog([compiled]).sources : undefined),
@@ -351,6 +352,59 @@ function NotebookSession({
       authoritative,
       ...(workspace ? { workspace: workspace.name } : {}),
    };
+   const importList = useMemo(
+      () => (opened ? notebookImports(opened.notebook, modelPath) : []),
+      [opened, modelPath],
+   );
+   const importPaths = useMemo(
+      () => [...new Set(importList.map((i) => i.path))],
+      [importList],
+   );
+   const [wantImports, setWantImports] = useState(false);
+   const wantSources = useCallback(() => setWantImports(true), []);
+   // One query per imported model: read when the add-query dialog or a chart picker opens, never on load, and cached after.
+   const importModels = useQueries({
+      queries: importPaths.map((path) => ({
+         queryKey: [
+            "notebook-editor-import-model",
+            environmentName,
+            packageName,
+            path,
+            versionId,
+         ],
+         queryFn: async () =>
+            (
+               await apiClients.models.getModel(
+                  environmentName,
+                  packageName,
+                  path,
+                  versionId,
+                  true,
+               )
+            ).data,
+         enabled: wantImports,
+         retry: false,
+         staleTime: 5 * 60 * 1000,
+         refetchOnWindowFocus: false,
+      })),
+   });
+   // `useQueries` returns a new array each render; its data changes when `dataUpdatedAt` does.
+   const importsVersion = importModels.map((q) => q.dataUpdatedAt).join();
+   const importedSources = useMemo(
+      () =>
+         importedCatalog(
+            importList,
+            new Map(
+               importPaths.flatMap((path, i): [string, CompiledModel][] => {
+                  const data = importModels[i]?.data;
+                  return data ? [[path, data]] : [];
+               }),
+            ),
+         ),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [importList, importPaths, importsVersion],
+   );
+   const importsPending = wantImports && importModels.some((q) => q.isFetching);
    const routeRef = useRef(route);
    routeRef.current = route;
    useEffect(() => {
@@ -577,6 +631,12 @@ function NotebookSession({
             source={opened.source}
             notebook={opened.notebook}
             {...(catalogSources ? { sources: catalogSources } : {})}
+            {...(modelQuery.isError && !catalogSources
+               ? { sourcesFailed: true }
+               : {})}
+            importedSources={importedSources}
+            {...(importsPending ? { importsPending: true } : {})}
+            onSourcesWanted={wantSources}
             environmentName={environmentName}
             packageName={packageName}
             modelPath={modelPath}

@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { MenuItem, TextField, Tooltip } from "@mui/material";
+import { MenuItem, TextField } from "@mui/material";
+import { useId } from "react";
 import type { CatalogView } from "../DashboardBuilder/catalog";
 import {
    chartStateOf,
@@ -79,17 +80,24 @@ export const pickerState = (
 export function ChartPicker({
    state,
    view,
+   cellLabel,
    disabledReason,
+   onOpen,
    onChange,
 }: {
    state: ChartState;
    /** The catalog's view this cell runs, when it is one the catalog knows. */
    view: Pick<CatalogView, "chart" | "aggregateOnly"> | undefined;
+   /** Which cell this is, so the control is named apart from its neighbours. */
+   cellLabel: string;
    disabledReason?: string;
+   /** The choices are being looked at, which is when a host may fetch what it needs to offer more. */
+   onOpen?: () => void;
    onChange: (next: ChartState) => void;
 }) {
    const choices = chartChoices(view, state);
-   const field = (
+   const reasonId = useId();
+   return (
       <TextField
          select
          size="small"
@@ -98,7 +106,17 @@ export function ChartPicker({
          value={state}
          disabled={disabledReason !== undefined}
          onChange={(event) => onChange(event.target.value as ChartState)}
-         inputProps={{ "aria-label": "Chart" }}
+         // On screen and described-by, not only in a tooltip that a keyboard or screen reader never reaches.
+         helperText={disabledReason}
+         FormHelperTextProps={{ id: reasonId }}
+         SelectProps={{
+            ...(onOpen ? { onOpen } : {}),
+            SelectDisplayProps: {
+               "aria-label": `Chart, ${cellLabel}`,
+               "aria-labelledby": undefined,
+               ...(disabledReason ? { "aria-describedby": reasonId } : {}),
+            },
+         }}
          sx={{ minWidth: 140 }}
       >
          {choices.map((choice) => (
@@ -111,13 +129,5 @@ export function ChartPicker({
             </MenuItem>
          ))}
       </TextField>
-   );
-   // A span, so the reason still shows on a disabled control.
-   return disabledReason ? (
-      <Tooltip title={disabledReason}>
-         <span>{field}</span>
-      </Tooltip>
-   ) : (
-      field
    );
 }

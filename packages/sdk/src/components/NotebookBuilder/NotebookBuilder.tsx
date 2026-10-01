@@ -35,6 +35,7 @@ import { givensToRequest } from "../given/paramCodec";
 import type { ProseLinkContext } from "../Prose";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 import { AddQueryDialog } from "./AddQueryDialog";
+import { mergeSources, notebookImports } from "./imports";
 import { cellQueries, cellSlices, runTargetOf, withChart } from "./cellText";
 import { ChartPicker, chartLocked, pickerState } from "./ChartPicker";
 import {
@@ -64,6 +65,14 @@ export interface NotebookBuilderProps extends QueryTarget {
    notebook: NotebookSource;
    /** What the notebook's own compiled model offers; an added query picks from it. Absent while that model loads. */
    sources?: CatalogSource[];
+   /** The notebook's model could not be read, so `sources` will not arrive. */
+   sourcesFailed?: boolean;
+   /** Sources the notebook imports, with their views, once read; a curated package's model leaves them out of `sources`. */
+   importedSources?: CatalogSource[];
+   /** Imported sources are still being read. */
+   importsPending?: boolean;
+   /** The add-query dialog or a chart picker was opened: the host may now read the imported sources. */
+   onSourcesWanted?: () => void;
    /** The notebook's `given:` declarations, for the control row. */
    givens?: Given[];
    /** Where the controls start, from the notebook's `## givens { … }`. */
@@ -153,6 +162,10 @@ export function NotebookBuilder({
    source,
    notebook,
    sources,
+   sourcesFailed,
+   importedSources,
+   importsPending,
+   onSourcesWanted,
    environmentName,
    packageName,
    modelPath,
@@ -171,7 +184,25 @@ export function NotebookBuilder({
 }: NotebookBuilderProps) {
    const initial = useMemo(() => notebookDocumentOf(notebook), [notebook]);
    // Keyed on the names, so a re-read of the model that changes nothing does not re-create the editor's writer.
-   const reachableKey = JSON.stringify(sources?.map((s) => s.name) ?? null);
+   const imports = useMemo(
+      () => notebookImports(notebook, modelPath),
+      [notebook, modelPath],
+   );
+   const offered = useMemo(
+      () => (sources ? mergeSources(sources, importedSources) : undefined),
+      [sources, importedSources],
+   );
+   // A named import is reachable from the file's own text, before its model has been read.
+   const reachableKey = JSON.stringify(
+      offered
+         ? [
+              ...new Set([
+                 ...offered.map((s) => s.name),
+                 ...imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
+              ]),
+           ]
+         : null,
+   );
    const reachableSources = useMemo(
       () => (JSON.parse(reachableKey) as string[] | null) ?? undefined,
       [reachableKey],
@@ -196,6 +227,7 @@ export function NotebookBuilder({
            after: string;
            removedComments: string[];
            clearsHistory: boolean;
+           structural: boolean;
         }
       | undefined
    >(undefined);
@@ -300,10 +332,22 @@ export function NotebookBuilder({
       setEditing(id);
    };
 
+   const openAddQuery = (at: number) => {
+      onSourcesWanted?.();
+      setAdding(at);
+   };
+
    const addQuery = (at: number, run: QueryRun) => {
       const id = freshId();
       update((draft) => {
-         draft.cells.splice(at, 0, { id, kind: "query", run, added: true });
+         // Explicit, so a later chart pick on the saved cell is a change from "default", which undo can step back over.
+         draft.cells.splice(at, 0, {
+            id,
+            kind: "query",
+            run,
+            chart: "default",
+            added: true,
+         });
       });
       setAdding(undefined);
    };
@@ -317,8 +361,12 @@ export function NotebookBuilder({
 
    /** Why a query cannot be added at `at`, or undefined when it can. */
    const queryBlocked = (at: number) => {
-      if (sources === undefined) return "The notebook's sources are loading.";
-      if (sources.length === 0) return "This notebook reads no source.";
+      if (sources === undefined)
+         return sourcesFailed
+            ? "The notebook's sources could not be read."
+            : "The notebook's sources are loading.";
+      if (sources.length === 0 && imports.length === 0)
+         return "This notebook reads no source.";
       if (!canInsertQuery(doc, at))
          return "A query cannot go above a definition: Malloy reads nothing below it.";
       return undefined;
@@ -359,7 +407,7 @@ export function NotebookBuilder({
 
    const save = useCallback(() => {
       if (!onSave || !editor.dirty || saving) return;
-      if (!editor.structural) {
+      if (!editor.structural && !editor.clearsHistory) {
          commitSave();
          return;
       }
@@ -371,6 +419,7 @@ export function NotebookBuilder({
                   after: result.source,
                   removedComments,
                   clearsHistory: editor.clearsHistory,
+                  structural: editor.structural,
                });
             else commitSave();
          },
@@ -417,12 +466,12 @@ export function NotebookBuilder({
       };
    };
 
-   const chartPicker = (cell: NotebookDocumentCell) => {
+   const chartPicker = (cell: NotebookDocumentCell, index: number) => {
       const read = readById.get(cell.id);
       const run = cell.added
          ? cell.run
          : runTargetOf(slices.get(cell.id) ?? "");
-      const view = sources
+      const view = offered
          ?.find((s) => s.name === run?.source)
          ?.views.find((v) => v.name === run?.view);
       const locked = cell.added ? undefined : chartLocked(read?.chart);
@@ -430,6 +479,8 @@ export function NotebookBuilder({
          <ChartPicker
             state={pickerState(cell.chart, read?.chart)}
             view={view}
+            cellLabel={`cell ${index + 1}`}
+            {...(onSourcesWanted ? { onOpen: onSourcesWanted } : {})}
             {...(locked ? { disabledReason: locked } : {})}
             onChange={(next) =>
                update((draft) => {
@@ -473,7 +524,10 @@ export function NotebookBuilder({
       return (
          <Stack spacing={1}>
             <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-               {chartPicker(cell)}
+               {chartPicker(
+                  cell,
+                  doc.cells.findIndex((c) => c.id === cell.id),
+               )}
                {cell.added && cell.run && !editor.isInFile(cell.id) && (
                   <QueryCaptionField
                      caption={cell.run.caption ?? ""}
@@ -542,7 +596,7 @@ export function NotebookBuilder({
                               <Button
                                  startIcon={<PlaylistAddIcon />}
                                  disabled={queryBlocked(0) !== undefined}
-                                 onClick={() => setAdding(0)}
+                                 onClick={() => openAddQuery(0)}
                               >
                                  Add query
                               </Button>
@@ -664,7 +718,7 @@ export function NotebookBuilder({
                                              queryBlocked(at) !== undefined
                                           }
                                           reason={queryBlocked(at)}
-                                          onClick={() => setAdding(at)}
+                                          onClick={() => openAddQuery(at)}
                                        >
                                           <PlaylistAddIcon fontSize="small" />
                                        </CellButton>
@@ -674,7 +728,7 @@ export function NotebookBuilder({
                                              queryBlocked(at + 1) !== undefined
                                           }
                                           reason={queryBlocked(at + 1)}
-                                          onClick={() => setAdding(at + 1)}
+                                          onClick={() => openAddQuery(at + 1)}
                                        >
                                           <PlaylistAddIcon fontSize="small" />
                                        </CellButton>
@@ -707,7 +761,9 @@ export function NotebookBuilder({
          </CleanNotebookContainer>
          <AddQueryDialog
             open={adding !== undefined}
-            sources={sources}
+            sources={offered}
+            {...(sourcesFailed ? { failed: true } : {})}
+            {...(importsPending ? { pending: true } : {})}
             onClose={() => setAdding(undefined)}
             onAdd={(run) => {
                if (adding !== undefined) addQuery(adding, run);
@@ -721,14 +777,18 @@ export function NotebookBuilder({
             onClose={() => setPendingSave(undefined)}
             description={
                <>
-                  A text or query cell was added or removed. Everything else in
-                  the file is kept as it was; check it still reads right.
+                  {pendingSave?.structural
+                     ? "A text or query cell was added or removed."
+                     : "A chart line was changed."}{" "}
+                  Lines outside those cells and chart lines are kept as they
+                  were; check they still read right.
                   {pendingSave?.clearsHistory && (
                      <>
                         {" "}
-                        Saving this clears undo: a query that is already in the
-                        file cannot be written back once it is removed, so you
-                        cannot step back past this save.
+                        Saving this clears undo: a query already in the file, or
+                        a chart line the editor cannot rewrite, cannot be put
+                        back once it is changed, so you cannot step back past
+                        this save.
                      </>
                   )}
                   {pendingSave && pendingSave.removedComments.length > 0 && (

@@ -81,11 +81,41 @@ describe("AddQueryDialog", () => {
       expect(onAdd).toHaveBeenCalledWith({ source: "orders", view: "detail" });
    });
 
-   it("says the chart will not follow the filters", () => {
+   it("does not claim the query follows the filter controls", () => {
       open();
       expect(
-         screen.getByText(/This chart will not follow the filters/),
+         screen.getByText(/not connected to the filter controls/),
       ).toBeDefined();
+      expect(screen.getByText(/reads a given as \$NAME/)).toBeDefined();
+   });
+
+   it("flags a caption the writer would refuse, before Add", () => {
+      open();
+      fireEvent.click(button("View detail"));
+      fireEvent.change(screen.getByLabelText("Query caption"), {
+         target: { value: "# authorize" },
+      });
+      expect(screen.getByText(/access-control tag/)).toBeDefined();
+      expect(button("Add query").hasAttribute("disabled")).toBe(true);
+      fireEvent.change(screen.getByLabelText("Query caption"), {
+         target: { value: "Fine" },
+      });
+      expect(button("Add query").hasAttribute("disabled")).toBe(false);
+   });
+
+   it("says the sources could not be read, not that they are loading, after a failed read", () => {
+      cleanup();
+      render(
+         <AddQueryDialog
+            open
+            sources={undefined}
+            failed
+            onClose={() => {}}
+            onAdd={() => {}}
+         />,
+      );
+      expect(screen.getByText(/could not be read/)).toBeDefined();
+      expect(screen.queryByText(/still loading/)).toBeNull();
    });
 
    it("says what is wrong when the model is loading or offers no source", () => {

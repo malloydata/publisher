@@ -7,12 +7,16 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { AppDialog } from "../AppDialog";
 import type { CatalogSource } from "../DashboardBuilder/catalog";
 import { SourceViewPicker } from "../DashboardBuilder/SourceViewPicker";
-import type { QueryRun } from "./queryCell";
+import { captionProblem, type QueryRun } from "./queryCell";
 
 export interface AddQueryDialogProps {
    open: boolean;
-   /** The sources the notebook's own compiled model offers; undefined while that model loads. */
+   /** The sources this notebook can read; undefined while its model loads or when that could not be read. */
    sources: CatalogSource[] | undefined;
+   /** The notebook's model could not be read, so `sources` will not arrive. */
+   failed?: boolean;
+   /** Sources the notebook imports are still being read. */
+   pending?: boolean;
    onClose: () => void;
    onAdd: (run: QueryRun) => void;
 }
@@ -21,6 +25,8 @@ export interface AddQueryDialogProps {
 export function AddQueryDialog({
    open,
    sources,
+   failed,
+   pending,
    onClose,
    onAdd,
 }: AddQueryDialogProps) {
@@ -31,12 +37,19 @@ export function AddQueryDialog({
 
    useEffect(() => {
       if (!open) return;
-      setSource(sources?.[0]?.name ?? "");
+      setSource("");
       setView("");
       setCaption("");
-   }, [open, sources]);
+   }, [open]);
+   // Imported sources can arrive after the dialog opens; the first one is picked only if nothing is yet.
+   const first = sources?.[0]?.name;
+   useEffect(() => {
+      if (open && source === "" && first) setSource(first);
+   }, [open, source, first]);
 
-   const canAdd = source !== "" && view !== "";
+   const trimmed = caption.trim();
+   const problem = trimmed ? captionProblem(trimmed) : undefined;
+   const canAdd = source !== "" && view !== "" && problem === undefined;
    return (
       <AppDialog
          open={open}
@@ -53,7 +66,7 @@ export function AddQueryDialog({
                      onAdd({
                         source,
                         view,
-                        ...(caption.trim() ? { caption: caption.trim() } : {}),
+                        ...(trimmed ? { caption: trimmed } : {}),
                      })
                   }
                >
@@ -65,9 +78,13 @@ export function AddQueryDialog({
          <Stack sx={{ gap: 2, pt: 1 }}>
             {!sources || sources.length === 0 ? (
                <Typography variant="body2" sx={{ color: theme.tileTitle }}>
-                  {sources
-                     ? "This notebook reads no source, so there is nothing to query."
-                     : "The notebook's sources are still loading."}
+                  {failed
+                     ? "The notebook's sources could not be read, so a query cannot be added."
+                     : sources === undefined
+                       ? "The notebook's sources are still loading."
+                       : pending
+                         ? "Reading the sources this notebook imports…"
+                         : "This notebook reads no source, so there is nothing to query."}
                </Typography>
             ) : (
                <>
@@ -81,17 +98,27 @@ export function AddQueryDialog({
                      }}
                      onView={setView}
                   />
+                  {pending && (
+                     <Typography
+                        variant="caption"
+                        sx={{ color: theme.tileTitle }}
+                     >
+                        Still reading the sources this notebook imports…
+                     </Typography>
+                  )}
                   <TextField
                      size="small"
                      label="Caption"
                      placeholder="Optional"
                      value={caption}
+                     error={problem !== undefined}
+                     helperText={problem}
                      onChange={(event) => setCaption(event.target.value)}
                      inputProps={{ "aria-label": "Query caption" }}
                   />
                   <Typography variant="caption" sx={{ color: theme.tileTitle }}>
-                     This chart will not follow the filters: an added query runs
-                     as written.
+                     This query is not connected to the filter controls. It
+                     follows them only if its source reads a given as $NAME.
                   </Typography>
                </>
             )}

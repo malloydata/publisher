@@ -21,6 +21,16 @@ export const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:(?:
 const malloyName = (name: string) =>
    isIdentifier(name) ? name : `\`${name}\``;
 
+/** Why a caption cannot be written, or undefined when it can. */
+export function captionProblem(caption: string): string | undefined {
+   if (/[\r\n]/.test(caption))
+      return "A caption is one line; it cannot hold a line break.";
+   if (caption.trim() === "") return "A caption cannot be empty.";
+   if (new RegExp(AUTHORIZE_TAG_LIKE, "iu").test(caption))
+      return "A caption cannot contain what reads as an access-control tag (authorize, row_authorize, source_authorize or access_filter).";
+   return undefined;
+}
+
 /** Why `run` cannot be written, or undefined when it can. */
 export function queryRunProblem(
    run: QueryRun,
@@ -38,11 +48,8 @@ export function queryRunProblem(
    if (!reachable.includes(run.source))
       return `The source "${run.source}" is not one this notebook can read.`;
    if (run.caption !== undefined) {
-      if (/[\r\n]/.test(run.caption))
-         return "A caption is one line; it cannot hold a line break.";
-      if (run.caption.trim() === "") return "A caption cannot be empty.";
-      if (new RegExp(AUTHORIZE_TAG_LIKE, "iu").test(run.caption))
-         return "A caption cannot contain what reads as an access-control tag (authorize, row_authorize, source_authorize or access_filter).";
+      const problem = captionProblem(run.caption);
+      if (problem) return problem;
    }
    if (chart === "custom")
       return "A line the picker does not model cannot be written to a new cell.";

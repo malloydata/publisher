@@ -78,6 +78,8 @@ const mount = async (
    options: {
       source?: string;
       sources?: CatalogSource[] | null;
+      sourcesFailed?: boolean;
+      onSourcesWanted?: () => void;
       onSave?: (source: string) => Promise<void> | void;
       onEvent?: (event: NotebookEvent) => void;
    } = {},
@@ -90,6 +92,10 @@ const mount = async (
          source={source}
          notebook={notebook}
          {...(sources ? { sources } : {})}
+         {...(options.sourcesFailed ? { sourcesFailed: true } : {})}
+         {...(options.onSourcesWanted
+            ? { onSourcesWanted: options.onSourcesWanted }
+            : {})}
          environmentName="env"
          packageName="pkg"
          modelPath="notebooks/tour.malloy"
@@ -185,6 +191,15 @@ run: a -> geo
       expect(optionNames("Cell 7, query")).not.toContain("Segment map");
    });
 
+   it("names each control by its cell", async () => {
+      await mount();
+      expect(
+         within(cell("Cell 3, query"))
+            .getByRole("combobox", { hidden: true })
+            .getAttribute("aria-label"),
+      ).toBe("Chart, cell 3");
+   });
+
    it("starts on the cell's own chart state", async () => {
       await mount({
          source: `## artifact { kind=notebook }
@@ -205,19 +220,21 @@ run: a -> by_cat
             .getByRole("combobox", { hidden: true })
             .getAttribute("aria-disabled"),
       ).toBe("true");
+      // On screen, and the control is described by it.
+      const reason = within(locked).getByText(
+         /does not model \(# bar_chart \{ size=spark \}\)/,
+      );
       expect(
-         within(locked).getByLabelText(
-            /does not model \(# bar_chart \{ size=spark \}\)/,
-         ),
-      ).toBeDefined();
+         within(locked)
+            .getByRole("combobox", { hidden: true })
+            .getAttribute("aria-describedby"),
+      ).toBe(reason.id);
    });
 
    it("is off, with its reason, on a cell with two chart lines", async () => {
       await mount();
       expect(
-         within(cell("Cell 6, query")).getByLabelText(
-            /more than one chart line/,
-         ),
+         within(cell("Cell 6, query")).getByText(/more than one chart line/),
       ).toBeDefined();
    });
 
@@ -271,7 +288,7 @@ describe("adding a query", () => {
       await settled();
       await addBelowLast();
       expect(
-         screen.getByText(/This chart will not follow the filters/),
+         screen.getByText(/not connected to the filter controls/),
       ).toBeDefined();
       fireEvent.change(screen.getByLabelText("Query caption"), {
          target: { value: "Revenue by category" },
@@ -375,6 +392,55 @@ describe("adding a query", () => {
    });
 });
 
+describe("undo around saves", () => {
+   it("keeps undo when the chart of a query added in this session is picked and saved", async () => {
+      const onSave = mock(async (_text: string) => {});
+      await mount({ onSave });
+      fireEvent.click(inCell("Cell 6, query", "Add query below"));
+      fireEvent.click(button("View by_cat"));
+      fireEvent.click(button("Add query"));
+      fireEvent.click(button("Save changes"));
+      fireEvent.click(
+         within(
+            (await screen.findByLabelText("File changes")).closest(
+               '[role="dialog"]',
+            ) as HTMLElement,
+         ).getByRole("button", { name: /Save/, hidden: true }),
+      );
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+
+      choose("Cell 7, query", "Bar");
+      await waitFor(() => expect(button("Save changes")).toBeDefined());
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+   });
+
+   it("shows the diff, and says undo will clear, before saving a chart over a bare chart line", async () => {
+      const onSave = mock(async (_text: string) => {});
+      await mount({
+         onSave,
+         source: `## artifact { kind=notebook }
+source: a is duckdb.table('t')
+
+# line_chart
+run: a -> by_cat
+`,
+      });
+      choose("Cell 2, query", "Bar");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() =>
+         expect(screen.getByLabelText("File changes")).toBeDefined(),
+      );
+      expect(onSave).not.toHaveBeenCalled();
+      expect(screen.getByText(/Saving this clears undo/)).toBeDefined();
+      expect(screen.getByText(/A chart line was changed/)).toBeDefined();
+      expect(screen.queryByText(/added or removed/)).toBeNull();
+   });
+});
+
 describe("the Add menu", () => {
    it("turns query-above off where a definition would end up below it, and says why", async () => {
       await mount();
@@ -410,6 +476,25 @@ describe("the Add menu", () => {
       expect(
          within(cell("Cell 3, query")).getAllByLabelText(/reads no source/),
       ).not.toHaveLength(0);
+   });
+
+   it("says the sources could not be read, not that they load, after a failed read", async () => {
+      await mount({ sources: null, sourcesFailed: true });
+      expect(
+         within(cell("Cell 3, query")).getAllByLabelText(
+            /sources could not be read/,
+         ),
+      ).not.toHaveLength(0);
+   });
+
+   it("asks for the imported sources when the dialog or a picker opens, not before", async () => {
+      const onSourcesWanted = mock(() => {});
+      await mount({ onSourcesWanted });
+      expect(onSourcesWanted).not.toHaveBeenCalled();
+      optionNames("Cell 3, query");
+      expect(onSourcesWanted).toHaveBeenCalledTimes(1);
+      fireEvent.click(inCell("Cell 3, query", "Add query below"));
+      expect(onSourcesWanted).toHaveBeenCalledTimes(2);
    });
 
    it("offers Add text and Add query on an empty notebook", async () => {

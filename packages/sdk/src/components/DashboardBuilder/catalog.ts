@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { parseTag } from "@malloydata/malloy-tag";
 import type { CompiledModel } from "../../client";
 import { CHART_TAGS } from "./chartLine";
 
@@ -143,12 +144,17 @@ function parsedSourceInfos(model: CompiledModel): ParsedSourceInfo[] {
    return infos;
 }
 
-/** An aggregate output column has `calculation` in its `#(malloy)` note; a group-by or nested one does not. */
+/** An aggregate output column has `calculation` as a top-level property of its `#(malloy)` note; a group-by or nested one does not. */
 const isAggregateColumn = (field: Record<string, unknown>) =>
    ((field["annotations"] as Array<{ value?: string }> | undefined) ?? []).some(
-      (note) =>
-         /^#\(malloy\)/.test(note.value ?? "") &&
-         /\bcalculation\b/.test(note.value ?? ""),
+      (note) => {
+         const text = note.value ?? "";
+         return (
+            text.startsWith("#(malloy)") &&
+            parseTag(text.slice("#(malloy)".length)).tag?.has("calculation") ===
+               true
+         );
+      },
    );
 
 /** Per source, the views whose every output column is an aggregate. */
