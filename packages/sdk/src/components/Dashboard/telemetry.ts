@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { DashboardCreatedEvent } from "../DocumentCreate/events";
+
 /**
  * What a dashboard surface reports about itself, for the host to log or
  * count: the operations that matter (open, save, the rows behind a value,
@@ -46,6 +48,7 @@ export type DashboardEvent =
         durationMs: number;
      }
    | { type: "dashboard.save_refused"; reason: string }
+   | DashboardCreatedEvent
    | {
         type: "dashboard.rows_shown";
         source: string;

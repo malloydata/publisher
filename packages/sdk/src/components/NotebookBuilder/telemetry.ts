@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { NotebookCreatedEvent } from "../DocumentCreate/events";
+
 /** What the notebook editor reports about itself, for the host to log; context-free like `DashboardEvent`. */
 export type NotebookEvent =
    | {
@@ -21,6 +23,7 @@ export type NotebookEvent =
         workspace?: string;
         durationMs: number;
      }
-   | { type: "notebook.save_refused"; reason: string };
+   | { type: "notebook.save_refused"; reason: string }
+   | NotebookCreatedEvent;
 
 export type NotebookEventHandler = (event: NotebookEvent) => void;

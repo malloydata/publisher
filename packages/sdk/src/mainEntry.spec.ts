@@ -127,4 +127,23 @@ describe("the main entry", () => {
          );
       expect(builders).toEqual([]);
    });
+
+   it("lets the create primitives in without the parser or the editors", () => {
+      const dir = path.join(SRC, "components/DocumentCreate");
+      const { modules, packages } = staticGraph(path.join(dir, "index.ts"));
+      expect(
+         [...packages].filter((name) => name.startsWith("@malloydata/malloy")),
+      ).toEqual([]);
+      const reached = [...modules]
+         .map((file) => path.relative(SRC, file))
+         .filter(
+            (file) =>
+               file === "builder-entry.ts" ||
+               file.startsWith("components/NotebookBuilder/") ||
+               /(DashboardEditor|NotebookEditor|readDocument|readNotebookSource|malloyTree)\./.test(
+                  file,
+               ),
+         );
+      expect(reached).toEqual([]);
+   });
 });
