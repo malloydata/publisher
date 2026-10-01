@@ -33,6 +33,7 @@ import {
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
    _resetEmbeddingIndexStateForTests,
+   _setSyncRetryForTests,
    _setTimingForTests,
    _syncMetaSizeForTests,
    deleteEnvironmentEmbeddings,
@@ -75,6 +76,10 @@ function mapProvider(
       model?: string;
       dimensions?: number;
       fail?: () => boolean;
+      // The status `fail` answers with (default 500).
+      failStatus?: number;
+      // Requests whose input includes this text answer 503.
+      failForText?: string;
       // Requests whose input includes this text block until the promise
       // resolves, so a test can hold one call mid-flight deterministically.
       gate?: { forText: string; until: Promise<void> };
@@ -83,9 +88,14 @@ function mapProvider(
    const counts = new Map<string, number>();
    const fetchStub = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       if (options.fail?.()) {
-         return new Response("stub failure", { status: 500 });
+         return new Response("stub failure", {
+            status: options.failStatus ?? 500,
+         });
       }
       const body = JSON.parse(String(init?.body)) as { input: string[] };
+      if (options.failForText && body.input.includes(options.failForText)) {
+         return new Response("stub failure", { status: 503 });
+      }
       if (options.gate && body.input.includes(options.gate.forText)) {
          await options.gate.until;
       }
@@ -1524,7 +1534,10 @@ describe("trySemanticSearch", () => {
 
       // A reload instance syncs two changed entities through a DB whose
       // SECOND insert fails: one row was already rewritten, so even
-      // though the sync rejects, snapshots must be invalidated.
+      // though the sync rejects, snapshots must be invalidated. One row per
+      // insert, because a batch is a single statement and lands whole: the
+      // torn state this pins is "an earlier batch landed, a later one died".
+      _setSyncRetryForTests({ batchSize: 1 });
       let inserts = 0;
       const failingDb = new Proxy(db, {
          get(target, prop, receiver) {
@@ -2173,5 +2186,118 @@ describe("equal scores are ordered and cut the same way every time", () => {
          );
       }
       expect([...orders]).toEqual([JSON.stringify(["a", "b", "c"])]);
+   });
+});
+
+describe("sync saves each batch and retries transient failures", () => {
+   const VECTORS = {
+      ...QUERY_VECTORS,
+      ...ENTITY_VECTORS,
+      delta: [0, 1, 0],
+   };
+   const four = ["alpha", "beta", "gamma", "delta"].map((n) =>
+      entity(n, "src"),
+   );
+   const baseArgs = (provider: EmbeddingProvider) => ({
+      db,
+      provider,
+      pkg: {} as unknown as Package,
+      environmentName: "env",
+      packageName: "pkg",
+      entities: four,
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      limit: 10,
+   });
+   const storedNames = async () =>
+      (
+         await db.all<{ entity_name: string }>(
+            "SELECT entity_name FROM entity_embeddings WHERE environment_name = 'env' ORDER BY entity_name",
+         )
+      ).map((r) => r.entity_name);
+
+   async function untilCooldown(args: ReturnType<typeof baseArgs>) {
+      let r = await trySemanticSearch(args);
+      for (let i = 0; i < 400 && !isCooldown(r); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         r = await trySemanticSearch(args);
+      }
+      expect(r).toEqual({ unavailable: "cooldown" });
+   }
+
+   it("keeps batch 1 when batch 2 fails, and a later sync embeds only the rest", async () => {
+      // Two rows per request. "gamma" sits in the second request, which the
+      // provider rejects on every attempt.
+      _setSyncRetryForTests({ batchSize: 2, policy: { maxAttempts: 2 } });
+      const failing = mapProvider(VECTORS, { failForText: "gamma" });
+      await untilCooldown(baseArgs(failing.provider));
+      expect(await storedNames()).toEqual(["alpha", "beta"]);
+
+      // The provider recovers. Nothing already saved is embedded again.
+      const healthy = mapProvider(VECTORS);
+      _clearProviderCooldownForTests();
+      const result = await searchReady(baseArgs(healthy.provider));
+      expect("hits" in result).toBe(true);
+      const embeddedAgain = [...healthy.counts.keys()].filter(
+         (text) => text !== "find alpha",
+      );
+      expect(embeddedAgain.sort()).toEqual(["delta", "gamma"]);
+      expect(await storedNames()).toEqual(["alpha", "beta", "delta", "gamma"]);
+   });
+
+   it("sends one request per batch", async () => {
+      _setSyncRetryForTests({ batchSize: 3 });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return false;
+         },
+      });
+      await searchReady(baseArgs(provider));
+      // 4 rows at 3 per request is two sync requests, plus the one request
+      // that embeds the query once the index is ready.
+      expect(requests).toBe(3);
+   });
+
+   it("succeeds on the third attempt after two 503s, waiting between tries", async () => {
+      const slept: number[] = [];
+      _setSyncRetryForTests({
+         policy: {
+            sleep: async (ms) => {
+               slept.push(ms);
+            },
+            random: () => 0,
+         },
+      });
+      let failures = 0;
+      const { provider } = mapProvider(VECTORS, {
+         failStatus: 503,
+         fail: () => ++failures <= 2,
+      });
+      const result = await searchReady(baseArgs(provider));
+      expect("hits" in result).toBe(true);
+      expect(slept).toEqual([500, 1_000]);
+   });
+
+   it("does not retry an authentication failure; the cooldown takes over", async () => {
+      const slept: number[] = [];
+      _setSyncRetryForTests({
+         policy: {
+            sleep: async (ms) => {
+               slept.push(ms);
+            },
+         },
+      });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         failStatus: 401,
+         fail: () => {
+            requests++;
+            return true;
+         },
+      });
+      await untilCooldown(baseArgs(provider));
+      expect(requests).toBe(1);
+      expect(slept).toEqual([]);
    });
 });
