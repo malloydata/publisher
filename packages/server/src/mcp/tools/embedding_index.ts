@@ -1538,9 +1538,16 @@ export async function trySemanticSearch(args: {
          -- caller gets an answer for every concept it described.
          ranked_per_target AS (
             SELECT entity_kind, entity_source, entity_name, target_idx, score,
+                   -- Score, then source, name and kind: the full identity, so
+                   -- an exact tie (two sources declaring the same field name
+                   -- embed identically) is cut the same way on every run
+                   -- instead of in whatever order the scan produced the rows.
+                   -- This decides which tied rows fit the window, not just
+                   -- how they are listed.
                    ROW_NUMBER() OVER (
                       PARTITION BY target_idx
-                      ORDER BY score DESC, entity_name
+                      ORDER BY score DESC, entity_source, entity_name,
+                               entity_kind
                    ) AS rn
             FROM scored
             WHERE score >= ?
@@ -1564,7 +1571,8 @@ export async function trySemanticSearch(args: {
            ON s.entity_kind = h.entity_kind
           AND s.entity_source = h.entity_source
           AND s.entity_name = h.entity_name
-         ORDER BY h.best DESC, h.entity_name, s.target_idx`,
+         ORDER BY h.best DESC, h.entity_source, h.entity_name, h.entity_kind,
+                  s.target_idx`,
          [
             ...queryVectors.map((v) => JSON.stringify(v)),
             ...targetKinds.map(({ kind }) => kind),
@@ -1584,7 +1592,7 @@ export async function trySemanticSearch(args: {
 
       // The scan returns one row per (hit entity, target), so fold them back
       // into one hit carrying its per-target scores. Order is preserved from
-      // the SQL, which already sorted by best score then name.
+      // the SQL, which already sorted by best score, then source, name and kind.
       const byEntity = new Map<
          string,
          {
