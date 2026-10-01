@@ -26,10 +26,15 @@ import {
    type EmbeddingIndexStatus,
    type SemanticUnavailableReason,
 } from "./embedding_index";
+import { assembleCards, foldRelevance } from "./get_context_assembly";
 import {
+   runCardStages,
    runQueryStages,
    runRankStages,
+   type CardState,
+   type CardStage,
    type PipelineContext,
+   type PipelineSettings,
    type QueryStage,
    type RankStage,
    type RankedState,
@@ -169,6 +174,14 @@ export interface ResultEntity {
     * target found a row even though it withholds how well.
     */
    bestTarget?: number;
+   /** Unused until a stage sets it. LOW=1, MEDIUM=2, HIGH=3 after refine. */
+   level?: number;
+   /** Unused until a stage sets it. Refine's sentence for matched_targets. */
+   reason?: string;
+   /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
+   joinHops?: number;
+   /** Unused until value attach runs. Nested dimension values. */
+   values?: Array<{ value: string; score: number }>;
 }
 
 /**
@@ -467,7 +480,8 @@ function toSourceResults(
       if (r.kind === "source") {
          // The source itself matched: its score belongs on the container, and
          // its full (untruncated) doc supersedes the truncated context copy.
-         if (r.score !== undefined) entry.relevance = r.score;
+         const relevance = foldRelevance(entry.relevance, r);
+         if (relevance !== undefined) entry.relevance = relevance;
          if (r.doc) entry.source_info.docs = r.doc;
          continue;
       }
@@ -485,14 +499,8 @@ function toSourceResults(
          ...(r.aliases ? { aliases: r.aliases } : {}),
       };
       (entry.entities ??= []).push(entity);
-      // A source with no hit of its own still ranks by its best entity, so a
-      // caller reading source relevance never sees a matched source at null.
-      if (
-         r.score !== undefined &&
-         (entry.relevance === undefined || r.score > entry.relevance)
-      ) {
-         entry.relevance = r.score;
-      }
+      const relevance = foldRelevance(entry.relevance, r);
+      if (relevance !== undefined) entry.relevance = relevance;
    }
    return Array.from(bySource.values());
 }
@@ -532,83 +540,6 @@ function matchedTargetsFor(
  * below prevents between cards.
  */
 const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
-
-/**
- * Window a ranked list into `limit` SOURCE cards, capping the entities each
- * one carries per target.
- *
- * `limit` counts sources because that is what the published contract says it
- * counts, and because counting entities makes targets compete for one pool:
- * with a shared budget of 4, asking for a measure alone returned 3 hits while
- * asking for it alongside a dimension and a view returned 2. The caller had
- * added questions, not removed any, so the answer to the first one should not
- * have shrunk. Bucketing by source removes the competition rather than
- * refereeing it -- targets no longer spend from the same pool, so a target's
- * answer inside a set is the answer it gives alone.
- *
- * Source order is the order sources first appear in the ranked list, which is
- * already best-first; re-sorting here could disagree with the ranking that
- * produced it.
- *
- * A bucket is one (model path, source) pairing, not one source name: that is
- * what `toSourceResults` turns into a card, so it is the unit `limit` has to
- * count and the unit `returned`/`total_available` have to report. Keying on
- * the name alone let one bucket fan out into several cards downstream, which
- * both overran `limit` and made the two counters disagree — `returned`
- * counting cards while `total_available` counted names.
- */
-function windowBySource(
-   rows: ResultEntity[],
-   sourceLimit: number,
-): {
-   rows: ResultEntity[];
-   totalSources: number;
-   returnedSources: number;
-   entitiesDropped: number;
-} {
-   const order: string[] = [];
-   const bySource = new Map<string, ResultEntity[]>();
-   for (const r of rows) {
-      const key = sourceContextKey(r.modelPath, r.source ?? "");
-      let bucket = bySource.get(key);
-      if (!bucket) {
-         bucket = [];
-         bySource.set(key, bucket);
-         order.push(key);
-      }
-      bucket.push(r);
-   }
-   const keptSources = order.slice(0, sourceLimit);
-   const kept: ResultEntity[] = [];
-   let entitiesDropped = 0;
-   for (const key of keptSources) {
-      const perTarget = new Map<number, number>();
-      for (const r of bySource.get(key) ?? []) {
-         // A source row becomes the card itself, so it never spends a slot.
-         if (r.kind === "source") {
-            kept.push(r);
-            continue;
-         }
-         // -1 buckets a row no target claims, so it shares one cap rather
-         // than none. Both ranked paths set bestTarget, so on them this is
-         // only a guard.
-         const target = r.bestTarget ?? -1;
-         const taken = perTarget.get(target) ?? 0;
-         if (taken >= MAX_ENTITIES_PER_SOURCE_TARGET) {
-            entitiesDropped += 1;
-            continue;
-         }
-         perTarget.set(target, taken + 1);
-         kept.push(r);
-      }
-   }
-   return {
-      rows: kept,
-      totalSources: order.length,
-      returnedSources: keptSources.length,
-      entitiesDropped,
-   };
-}
 
 /** The target index with the highest score, or undefined when there is none. */
 export function bestTargetOf(scores: Map<number, number>): number | undefined {
@@ -656,47 +587,82 @@ export function projectEntity(
 }
 
 /**
- * The tail both ranked paths share: window by source, then serialize.
- * Semantic and lexical retrieval differ in how they SCORE, not in what happens
- * to the rows afterwards, so the ordering lives here once instead of being
- * restated at two call sites.
+ * The largest whole-card prefix of `cards` whose JSON fits in
+ * `maxChars - reserveChars`. Keeps at least one card, so a budget smaller
+ * than the first card still answers. A null budget returns the input as is.
+ * Nothing calls this with a number yet: settings.maxChars is null.
+ */
+export function fitBudget(
+   cards: SourceCard[],
+   maxChars: number | null,
+   reserveChars: number,
+): { cards: SourceCard[]; dropped: number } {
+   if (maxChars === null) return { cards, dropped: 0 };
+   const room = maxChars - reserveChars;
+   // A JSON array costs 2 for the brackets plus one comma between cards.
+   let used = 2;
+   let keep = 0;
+   for (const card of cards) {
+      used += JSON.stringify(card).length + (keep > 0 ? 1 : 0);
+      if (used > room && keep > 0) break;
+      keep += 1;
+   }
+   return { cards: cards.slice(0, keep), dropped: cards.length - keep };
+}
+
+/**
+ * The tail both ranked paths share: page the cards, serialize them, then fit
+ * the byte budget. Semantic and lexical retrieval differ in how they SCORE,
+ * not in what happens to the rows afterwards, so the ordering lives here once
+ * instead of being restated at two call sites.
  *
- * Nothing is folded across sources. Two sources exposing a same-named measure
- * are two different numbers -- `in_store_sales.sales` and `online_sales.sales`,
- * or a source and a filtered extension of it -- and the response nests each
- * under its own card with its own `source_info.docs`, which is what tells a
- * caller which to use. An earlier version merged them into one row naming the
- * others; it was written when this returned a flat `results[]` with no source
- * cards to separate them, and it dropped the losing row's doc, data_type and
- * entity_id to do it.
+ * `limit` counts SOURCE cards, because that is what the published contract
+ * says it counts. Counting entities made targets compete for one pool: with
+ * a budget of 4, asking for a measure alone returned 3 hits while asking for
+ * it alongside a dimension and a view returned 2. Cards are paged in the
+ * order sources first appear in the ranked rows, which is already best-first;
+ * re-sorting here could disagree with the ranking that produced it.
+ * `totalSources` counts the same unit, so `returned` and `total_available`
+ * cannot disagree.
  *
  * The envelope stays with the caller: `retrieval`, `below_cutoff_count` and
- * `retrieval_reason` are each meaningful on one path only.
+ * `retrieval_reason` are each meaningful on one path only. Assembly
+ * (get_context_assembly.ts) has already grouped rows by source and capped
+ * each card per target; nothing is folded across sources.
  */
-function finishRanked(args: {
-   rows: ResultEntity[];
-   max: number;
-   sourceContext: Map<string, SourceContextEntry>;
-   environmentName: string;
-   packageName: string;
-   searchTexts: Map<number, string>;
-   includeCode: boolean;
-   droppedSources: Set<string>;
-}): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
-   const windowed = windowBySource(args.rows, args.max);
+function shapeCards(
+   state: CardState,
+   ctx: PipelineContext,
+): {
+   sources: SourceCard[];
+   totalSources: number;
+   entitiesDropped: number;
+   budgetDropped: number;
+} {
+   const { request, pkgIndex, settings } = ctx;
+   const paged = state.cards.slice(0, request.limit);
    const sources = toSourceResults(
-      windowed.rows,
-      args.sourceContext,
-      args.environmentName,
-      args.packageName,
-      args.searchTexts,
-      args.includeCode,
-      args.droppedSources,
+      paged.flatMap((card) => card.rows),
+      pkgIndex.sourceContext,
+      request.environmentName,
+      request.packageName,
+      // One lookup from target index back to the text the caller wrote, so
+      // matched_targets can name a target without re-walking the request.
+      new Map(
+         request.searches.map((search) => [search.targetIndex, search.text]),
+      ),
+      request.includeCode,
+      pkgIndex.droppedSources,
    );
+   const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
    return {
-      sources,
-      totalSources: windowed.totalSources,
-      entitiesDropped: windowed.entitiesDropped,
+      sources: fitted.cards,
+      totalSources: state.cards.length,
+      entitiesDropped: paged.reduce(
+         (sum, card) => sum + card.entitiesDropped,
+         0,
+      ),
+      budgetDropped: fitted.dropped,
    };
 }
 
@@ -1796,6 +1762,19 @@ function collapseAliases(entities: Entity[]): Entity[] {
    return entities.filter((e) => !dropped.has(droppedKey(e)));
 }
 
+/** One source reachable from a root source by joins. */
+export interface JoinReach {
+   /** sourceContextKey of the source the fields live on. */
+   targetKey: string;
+   /** Join names from the root, root not included. Aliases, not source names. */
+   path: string[];
+   /** Widest relationship on the path; "many" anywhere means fan-out. */
+   fanout: Relationship;
+}
+
+/** For each root source key, every source reachable by joins. */
+export type JoinTopology = ReadonlyMap<string, readonly JoinReach[]>;
+
 export interface PackageIndex {
    pkg: Package;
    byId: Map<string, Entity>;
@@ -1807,6 +1786,17 @@ export interface PackageIndex {
     * in embedding_index).
     */
    retrievalEntities: readonly Entity[];
+   /**
+    * `retrievalEntities` without the joined copies (those with a joinPath),
+    * frozen once so it can be fingerprinted and cached the same way. Nothing
+    * searches it yet.
+    */
+   directEntities: readonly Entity[];
+   /**
+    * Which sources each source reaches by joins. Empty while joined copies
+    * are index rows; nothing reads it yet.
+    */
+   topology: JoinTopology;
    index: lunr.Index;
    entityCount: number;
    /** Per-source context, keyed by source name. Built once with the index. */
@@ -1827,7 +1817,7 @@ export interface PackageIndex {
  * joining on it is not injective — ("a|b", "c") and ("a", "b|c") produce one
  * key. A control character cannot appear in an identifier, nor in a path.
  */
-function sourceContextKey(modelPath: string, source: string): string {
+export function sourceContextKey(modelPath: string, source: string): string {
    return [modelPath, source].join(KEY_SEPARATOR);
 }
 
@@ -1950,10 +1940,15 @@ async function getPackageIndex(
          });
       }
    });
+   const retrievalEntities = Object.freeze(Array.from(byId.values()));
    const built: PackageIndex = {
       pkg,
       byId,
-      retrievalEntities: Object.freeze(Array.from(byId.values())),
+      retrievalEntities,
+      directEntities: Object.freeze(
+         retrievalEntities.filter((e) => !e.joinPath),
+      ),
+      topology: new Map(),
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
@@ -2276,6 +2271,21 @@ function runListing(
 const QUERY_STAGES: QueryStage[] = [];
 const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
 const RANK_STAGES: RankStage[] = [];
+const CARD_STAGES: CardStage[] = [];
+
+/** Today's behaviour, spelled out. Changing a value here changes responses. */
+const PIPELINE_SETTINGS: PipelineSettings = {
+   joins: "index",
+   entityWindow: {
+      where: "post-rank",
+      perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
+   },
+   joinMaxDepth: MAX_JOIN_PATH_DEPTH,
+   joinDamping: null,
+   scoring: "cosine",
+   maxChars: null,
+   reserveChars: 1_000,
+};
 
 /**
  * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
@@ -2329,7 +2339,6 @@ async function runContextQuery(
       );
    }
 
-   const { sourceContext, droppedSources } = pkgIndex;
    const uri = buildMalloyUri(
       { environment: environmentName, package: packageName },
       "get-context",
@@ -2348,6 +2357,7 @@ async function runContextQuery(
          (warning): warning is string => Boolean(warning),
       ),
       embeddingConfigured: embeddingConfigured(),
+      settings: PIPELINE_SETTINGS,
    };
    const warningsFor = makeWarningsFor(ctx);
 
@@ -2391,22 +2401,11 @@ async function runContextQuery(
    if (!ranked) throw new Error("No retriever produced a result");
    ranked = await runRankStages(RANK_STAGES, ranked, ctx);
 
-   // Collapse, windowing and serialization are finishRanked's, shared by
-   // both retrievers so the two cannot drift.
-   const { sources, totalSources, entitiesDropped } = finishRanked({
-      rows: ranked.rows,
-      max: request.limit,
-      sourceContext,
-      environmentName,
-      packageName,
-      // One lookup from target index back to the text the caller wrote, so
-      // matched_targets can name a target without re-walking the request.
-      searchTexts: new Map(
-         request.searches.map((search) => [search.targetIndex, search.text]),
-      ),
-      includeCode: request.includeCode,
-      droppedSources,
-   });
+   // Grouping into cards, paging and serialization are shared by both
+   // retrievers so the two cannot drift.
+   let cards = assembleCards(ranked, ctx);
+   cards = await runCardStages(CARD_STAGES, cards, ctx);
+   const { sources, totalSources, entitiesDropped } = shapeCards(cards, ctx);
    if (ranked.retrieval === "semantic") {
       return jsonResource(uri, {
          sources,
