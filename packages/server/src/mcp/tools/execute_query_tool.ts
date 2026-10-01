@@ -53,7 +53,7 @@ const executeQueryShape = {
       .string()
       .optional()
       .describe(
-         `Ad-hoc Malloy query code. Runs in restricted mode: it may not use ${RESTRICTED_CONSTRUCTS} — put those in a model file and reload instead.`,
+         `Ad-hoc Malloy query code with exactly one run: statement; source: and query: definitions may come before it. Text with more than one run: is refused, so send each as its own call. Runs in restricted mode: it may not use ${RESTRICTED_CONSTRUCTS} — put those in a model file and reload instead.`,
       ),
    sourceName: z
       .string()
@@ -93,7 +93,8 @@ const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return
 - Check _limit_hit before reporting any total, count, or "top N". True means the server's default cap cut the result off and more rows exist, so what came back is a partial set, not the answer.
 - Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
 - _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.
-- Use source, view, and field names exactly as get_context returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a second statement) in query.
+- Use source, view, and field names exactly as get_context returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a definition) in query.
+- One run: per call. query may define sources and queries first, but more than one run: statement is refused rather than run; send each question as its own call.
 - query is RESTRICTED: no raw SQL/import/##! (see its param doc).
 
 ## Response

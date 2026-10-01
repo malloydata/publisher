@@ -41,6 +41,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import {
+   BadRequestError,
    NotQueryableError,
    OffSurfaceError,
    QueryCompileError,
@@ -659,14 +660,18 @@ source: track_analysis is tracks extend {
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
-         // All-curated multi-statement is legitimate and admitted (no false
-         // denial from the old fail-closed-on-shape heuristic).
-         const { result } = await model.getQueryResults(
+         // All-curated multi-statement passes the boundary, then is refused as
+         // more than one `run:`. The two denials above stay 404s rather than
+         // that 400: the count is checked only after every gate.
+         const allCurated = model.getQueryResults(
             undefined,
             undefined,
             "run: customers -> { aggregate: total }\nrun: customers -> { group_by: id }",
          );
-         expect(result.data).toBeDefined();
+         await expect(allCurated).rejects.toBeInstanceOf(BadRequestError);
+         await expect(allCurated).rejects.toThrow(
+            "The query has 2 run: statements",
+         );
       } finally {
          await duckdb.close();
       }

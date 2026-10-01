@@ -4548,7 +4548,9 @@ components:
           type: string
           description:
             Query string to execute on the model. If the query parameter is
-            set, the queryName parameter must be empty.
+            set, the queryName parameter must be empty. It may hold one run
+            statement, after any source or query definitions; text with more
+            than one run statement is a 400, since only the last would run.
         sourceName:
           type: string
           description: |

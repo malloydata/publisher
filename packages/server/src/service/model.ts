@@ -583,6 +583,37 @@ async function compileErrorOf(runnable: {
 }
 
 /**
+ * How many `run:` statements the compiled text holds, or undefined when it does
+ * not compile (the run path then answers that failure itself). Malloy counts
+ * only the text's own `run:` statements here: `source:` and `query:`
+ * definitions add none, and the base model's statements are not carried into
+ * an extension. Reads the memoized compile, so it costs nothing extra.
+ */
+async function runStatementCount(runnable: {
+   getPreparedQuery(): Promise<unknown>;
+}): Promise<number | undefined> {
+   let prepared: { model?: { queries?(): { unnamed: number } } } | undefined;
+   try {
+      prepared = (await runnable.getPreparedQuery()) as typeof prepared;
+   } catch {
+      return undefined;
+   }
+   return prepared?.model?.queries?.().unnamed;
+}
+
+/**
+ * Malloy runs only the LAST `run:` of a text and drops the rest without a word,
+ * so a caller that sends several would silently lose every answer but one.
+ */
+function multipleRunStatementsError(count: number): BadRequestError {
+   return new BadRequestError(
+      `The query has ${count} run: statements; only one runs per call, so the ` +
+         "others would be ignored. Send each as its own request. (source: and " +
+         "query: definitions before a single run: are fine.)",
+   );
+}
+
+/**
  * Whether a run-time store failure may be retried against the live warehouse,
  * decided from the bindings that produced the serve shape.
  *
@@ -7559,6 +7590,16 @@ export class Model {
          }
       }
 
+      // Counted here, off a compile already in hand (the gate below may swap
+      // `runnable` for a recompile of the same text), but refused only after
+      // every gate: a request any gate denies keeps exactly the denial it got
+      // before this check existed, so the count cannot tell a caller whether a
+      // hidden or locked source exists.
+      const runCount =
+         !sourceName && !queryName && query
+            ? await runStatementCount(runnable)
+            : undefined;
+
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
 
@@ -7617,6 +7658,19 @@ export class Model {
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
       });
+      if (runCount !== undefined && runCount > 1) {
+         this.queryExecutionHistogram.record(
+            performance.now() - startTime,
+            this.queryMetricAttributes({
+               environment: queryMetadataInput?.environment,
+               queryName,
+               sourceName,
+               status: "error",
+               servedFrom,
+            }),
+         );
+         throw multipleRunStatementsError(runCount);
+      }
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
