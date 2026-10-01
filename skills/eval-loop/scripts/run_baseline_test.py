@@ -867,7 +867,7 @@ class HostedProbe(unittest.TestCase):
             ("assistant", [self.use("t1")]),
             ("user", [self.res("nope", "t1", err=True)]),
             ("assistant", [self.use("t2")]),
-            ("user", [self.res(json.dumps({"retrieval": "lexical"}), "t2")]))
+            ("user", [self.res(json.dumps({"retrieval": "indexing"}), "t2")]))
         self.assertEqual(rb.probe_outcome(ev, self.TOOLS)[0], "reached")
 
     def test_a_call_with_no_result_is_not_a_missing_login(self):
