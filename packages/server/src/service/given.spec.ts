@@ -266,17 +266,21 @@ describe("readGivenControlSpec", () => {
          // The prototype CHAIN, not just Object.prototype: `constructor` resolves
          // to the global `Object` and `toString` to the built-in method object,
          // and writes there accumulate for the life of the process.
-         // EVERY fixture carries a real control key on purpose. `# toString=x` alone
-         // yields `{}` whether or not the guard runs, so asserting `{}` on it
-         // would prove nothing; with a `label` present, the guard is the only
-         // reason the result is empty rather than `{label: "ok"}`.
+         // EVERY fixture carries a real control key on purpose, so the
+         // assertion below can tell a hostile key leaking into the spec apart
+         // from a clean parse: `label` may survive, nothing else may.
          `# label="ok" constructor { tenant_key="payload" }`,
          `# label="ok" toString=x`,
          `# label="ok" valueOf { a=b }`,
          `# label="ok" hasOwnProperty=y`,
       ]) {
          expect(() => readGivenControlSpec([hostile])).not.toThrow();
-         expect(readGivenControlSpec([hostile])).toEqual({});
+         // From Malloy 0.0.434 the tag parser no longer writes through the
+         // prototype chain, so the guard has nothing to undo and a real control
+         // key beside the hostile one survives. What must hold on every version:
+         // nothing is polluted, and only real control keys come back.
+         const spec = readGivenControlSpec([hostile]);
+         expect(Object.keys(spec).filter((key) => key !== "label")).toEqual([]);
          expect(polluted()).toBe(false);
       }
 
