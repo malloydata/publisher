@@ -1,23 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   Box,
-   Button,
-   Chip,
-   List,
-   ListItemButton,
-   ListItemText,
-   MenuItem,
-   Stack,
-   TextField,
-   Typography,
-} from "@mui/material";
+import { Button, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogSource, PackageCatalog } from "./catalog";
 import type { DashboardDocument } from "./document";
 import { AppDialog } from "../AppDialog";
+import { SourceViewPicker } from "./SourceViewPicker";
 
 /**
  * What a new tile is: a view, picked from the package, on a source this file
@@ -95,7 +85,6 @@ export function AddTileDialog({
       setColspan(Math.ceil(columns / 2));
    }, [open, document, sources, columns]);
 
-   const source = sources.find((s) => s.name === base);
    const canAdd = base !== "" && view !== "";
 
    return (
@@ -133,81 +122,16 @@ export function AddTileDialog({
                </Typography>
             ) : (
                <>
-                  <TextField
-                     select
-                     size="small"
-                     label="Source"
-                     value={base}
-                     onChange={(event) => {
-                        setBase(event.target.value);
+                  <SourceViewPicker
+                     sources={sources}
+                     source={base}
+                     view={view}
+                     onSource={(name) => {
+                        setBase(name);
                         setView("");
                      }}
-                     inputProps={{ "aria-label": "Source" }}
-                  >
-                     {sources.map((s) => (
-                        <MenuItem key={s.name} value={s.name}>
-                           {s.name}
-                           {s.description && (
-                              <Typography
-                                 component="span"
-                                 variant="caption"
-                                 sx={{ ml: 1, opacity: 0.6 }}
-                              >
-                                 {s.description}
-                              </Typography>
-                           )}
-                        </MenuItem>
-                     ))}
-                  </TextField>
-                  <Box>
-                     <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                        View
-                     </Typography>
-                     <List
-                        dense
-                        disablePadding
-                        aria-label="Views"
-                        sx={{
-                           maxHeight: 280,
-                           overflowY: "auto",
-                           border: theme.border,
-                           borderRadius: 1,
-                        }}
-                     >
-                        {(source?.views ?? []).map((v) => (
-                           <ListItemButton
-                              key={v.name}
-                              selected={view === v.name}
-                              onClick={() => setView(v.name)}
-                              aria-label={`View ${v.name}`}
-                           >
-                              <ListItemText
-                                 primary={v.name}
-                                 secondary={v.description}
-                                 primaryTypographyProps={{
-                                    fontFamily: "ui-monospace, monospace",
-                                    fontSize: 13,
-                                 }}
-                              />
-                              {v.chart && (
-                                 <Chip
-                                    size="small"
-                                    variant="outlined"
-                                    label={v.chart.replace(/_chart$/, "")}
-                                 />
-                              )}
-                           </ListItemButton>
-                        ))}
-                        {source && source.views.length === 0 && (
-                           <Typography
-                              variant="body2"
-                              sx={{ p: 1.5, color: theme.tileTitle }}
-                           >
-                              This source declares no views.
-                           </Typography>
-                        )}
-                     </List>
-                  </Box>
+                     onView={setView}
+                  />
                   <Stack direction="row" sx={{ gap: 1.5 }}>
                      <TextField
                         size="small"

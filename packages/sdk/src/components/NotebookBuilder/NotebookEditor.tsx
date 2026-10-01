@@ -11,6 +11,7 @@ import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { SecondaryButton } from "../buttons";
 import { now } from "../Dashboard/telemetry";
+import { buildCatalog } from "../DashboardBuilder/catalog";
 import {
    apiErrorMessage,
    chooseWorkspace,
@@ -212,6 +213,12 @@ function NotebookSession({
    const model = modelQuery.data?.data as
       | { sourceText?: string; givens?: Given[] }
       | undefined;
+   // The notebook's own compiled model, already fetched above: its sources include what it imports, so an added query needs no request of its own.
+   const compiled = modelQuery.data?.data;
+   const catalogSources = useMemo(
+      () => (compiled ? buildCatalog([compiled]).sources : undefined),
+      [compiled],
+   );
    // Only a fetch since this mount that succeeded: a failed one keeps the cached data, which is the copy a remount must not open.
    const fetched = modelQuery.isFetchedAfterMount && modelQuery.isSuccess;
    const packageText = fetched ? model?.sourceText : undefined;
@@ -569,6 +576,7 @@ function NotebookSession({
             key={opened.generation}
             source={opened.source}
             notebook={opened.notebook}
+            {...(catalogSources ? { sources: catalogSources } : {})}
             environmentName={environmentName}
             packageName={packageName}
             modelPath={modelPath}

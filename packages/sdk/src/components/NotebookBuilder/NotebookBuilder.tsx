@@ -6,6 +6,7 @@ import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
+import PlaylistAddIcon from "@mui/icons-material/PlaylistAdd";
 import VerticalAlignBottomIcon from "@mui/icons-material/VerticalAlignBottom";
 import VerticalAlignTopIcon from "@mui/icons-material/VerticalAlignTop";
 import { DragDropProvider } from "@dnd-kit/react";
@@ -25,6 +26,7 @@ import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { now } from "../Dashboard/telemetry";
 import { BuilderToolbar } from "../DashboardBuilder/BuilderToolbar";
 import { DiffDialog } from "../DashboardBuilder/DiffDialog";
+import type { CatalogSource } from "../DashboardBuilder/catalog";
 import { builderSensors } from "../DashboardBuilder/sortable";
 import { useBuilderShortcuts } from "../DashboardBuilder/useBuilderShortcuts";
 import type { NavigationClick } from "../click_helper";
@@ -32,15 +34,20 @@ import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
 import type { ProseLinkContext } from "../Prose";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
-import { cellQueries, cellSlices } from "./cellText";
+import { AddQueryDialog } from "./AddQueryDialog";
+import { cellQueries, cellSlices, runTargetOf, withChart } from "./cellText";
+import { ChartPicker, chartLocked, pickerState } from "./ChartPicker";
 import {
    DefinitionCell,
    MarkdownCell,
    QueryCell,
    type QueryTarget,
 } from "./EditorCells";
+import { queryCellText, type QueryRun } from "./queryCell";
+import { QueryCaptionField } from "./QueryCaptionField";
 import type { NotebookSource } from "./readNotebookSource";
 import {
+   canInsertQuery,
    notebookDocumentOf,
    type NotebookDocument,
    type NotebookDocumentCell,
@@ -55,6 +62,8 @@ export interface NotebookBuilderProps extends QueryTarget {
    source: string;
    /** `readNotebookSource(source)`: where each cell is in that file. */
    notebook: NotebookSource;
+   /** What the notebook's own compiled model offers; an added query picks from it. Absent while that model loads. */
+   sources?: CatalogSource[];
    /** The notebook's `given:` declarations, for the control row. */
    givens?: Given[];
    /** Where the controls start, from the notebook's `## givens { … }`. */
@@ -112,16 +121,19 @@ function CellSortable({
 function CellButton({
    label,
    disabled,
+   reason,
    onClick,
    children,
 }: {
    label: string;
    disabled?: boolean;
+   /** Why the button is off, shown with its name. */
+   reason?: string;
    onClick: () => void;
    children: ReactNode;
 }) {
    return (
-      <Tooltip title={label}>
+      <Tooltip title={disabled && reason ? `${label}: ${reason}` : label}>
          {/* A span, so the tooltip still shows on a disabled button. */}
          <span>
             <IconButton
@@ -140,6 +152,7 @@ function CellButton({
 export function NotebookBuilder({
    source,
    notebook,
+   sources,
    environmentName,
    packageName,
    modelPath,
@@ -157,20 +170,34 @@ export function NotebookBuilder({
    maxResultSize,
 }: NotebookBuilderProps) {
    const initial = useMemo(() => notebookDocumentOf(notebook), [notebook]);
+   // Keyed on the names, so a re-read of the model that changes nothing does not re-create the editor's writer.
+   const reachableKey = JSON.stringify(sources?.map((s) => s.name) ?? null);
+   const reachableSources = useMemo(
+      () => (JSON.parse(reachableKey) as string[] | null) ?? undefined,
+      [reachableKey],
+   );
    const editor = useNotebookEditor({
       source,
       document: initial,
       ...(onSave ? { onSave } : {}),
+      ...(reachableSources ? { reachableSources } : {}),
    });
    const { document: doc } = editor;
-   // Display always reads the file as opened: query and definition cells are never rewritten, so their text there stays theirs.
+   // The file as opened: a read cell's text there, which the document overrides for a chart edit or an added query.
    const slices = useMemo(() => cellSlices(notebook), [notebook]);
    const queries = useMemo(() => cellQueries(notebook), [notebook]);
    const [editing, setEditing] = useState<string | undefined>(undefined);
    const [notice, setNotice] = useState<string | undefined>(undefined);
    const [saving, setSaving] = useState(false);
+   const [adding, setAdding] = useState<number | undefined>(undefined);
    const [pendingSave, setPendingSave] = useState<
-      { before: string; after: string; removedComments: string[] } | undefined
+      | {
+           before: string;
+           after: string;
+           removedComments: string[];
+           clearsHistory: boolean;
+        }
+      | undefined
    >(undefined);
    const nextId = useRef(0);
 
@@ -252,11 +279,16 @@ export function NotebookBuilder({
       }
    };
 
-   const addText = (at: number) => {
+   const freshId = () => {
       const taken = new Set(doc.cells.map((cell) => cell.id));
       let id: string;
       do id = `added-${++nextId.current}`;
       while (taken.has(id));
+      return id;
+   };
+
+   const addText = (at: number) => {
+      const id = freshId();
       update((draft) => {
          draft.cells.splice(at, 0, {
             id,
@@ -268,11 +300,28 @@ export function NotebookBuilder({
       setEditing(id);
    };
 
-   const removeText = (index: number) => {
+   const addQuery = (at: number, run: QueryRun) => {
+      const id = freshId();
+      update((draft) => {
+         draft.cells.splice(at, 0, { id, kind: "query", run, added: true });
+      });
+      setAdding(undefined);
+   };
+
+   const removeCell = (index: number) => {
       setEditing(undefined);
       update((draft) => {
          draft.cells.splice(index, 1);
       });
+   };
+
+   /** Why a query cannot be added at `at`, or undefined when it can. */
+   const queryBlocked = (at: number) => {
+      if (sources === undefined) return "The notebook's sources are loading.";
+      if (sources.length === 0) return "This notebook reads no source.";
+      if (!canInsertQuery(doc, at))
+         return "A query cannot go above a definition: Malloy reads nothing below it.";
+      return undefined;
    };
 
    const { preview, dragging, onDragStart, onDragOver, onDragEnd } =
@@ -287,6 +336,7 @@ export function NotebookBuilder({
       setSaving(true);
       const started = now();
       const cells = editor.document.cells.length;
+      const structural = editor.structural;
       void editor
          .save()
          .then((outcome) => {
@@ -295,6 +345,7 @@ export function NotebookBuilder({
                   type: "notebook.saved",
                   cells,
                   where: savesTo,
+                  structural,
                   durationMs: now() - started,
                });
             else
@@ -319,6 +370,7 @@ export function NotebookBuilder({
                   before: editor.source,
                   after: result.source,
                   removedComments,
+                  clearsHistory: editor.clearsHistory,
                });
             else commitSave();
          },
@@ -344,6 +396,51 @@ export function NotebookBuilder({
       : doc.cells;
    const readById = new Map(notebook.cells.map((cell) => [cell.id, cell]));
 
+   /** A query cell's text and runnable text from the document: an added cell's own, a read cell's with the chart line the picker holds. */
+   const queryDisplay = (cell: NotebookDocumentCell) => {
+      if (cell.added && cell.run)
+         return {
+            text: queryCellText(cell.run, cell.chart),
+            query: queryCellText(
+               { source: cell.run.source, view: cell.run.view },
+               cell.chart,
+            ),
+         };
+      const text = slices.get(cell.id) ?? "";
+      const query = queries.get(cell.id) ?? "";
+      const chart = readById.get(cell.id)?.chart;
+      if (!chart || chartLocked(chart)) return { text, query };
+      const lines = chart.lines.map((line) => line.text);
+      return {
+         text: withChart(text, cell.chart, lines),
+         query: withChart(query, cell.chart, lines),
+      };
+   };
+
+   const chartPicker = (cell: NotebookDocumentCell) => {
+      const read = readById.get(cell.id);
+      const run = cell.added
+         ? cell.run
+         : runTargetOf(slices.get(cell.id) ?? "");
+      const view = sources
+         ?.find((s) => s.name === run?.source)
+         ?.views.find((v) => v.name === run?.view);
+      const locked = cell.added ? undefined : chartLocked(read?.chart);
+      return (
+         <ChartPicker
+            state={pickerState(cell.chart, read?.chart)}
+            view={view}
+            {...(locked ? { disabledReason: locked } : {})}
+            onChange={(next) =>
+               update((draft) => {
+                  const target = draft.cells.find((c) => c.id === cell.id);
+                  if (target) target.chart = next;
+               })
+            }
+         />
+      );
+   };
+
    const renderCell = (cell: NotebookDocumentCell) => {
       if (cell.kind === "markdown")
          return (
@@ -363,26 +460,47 @@ export function NotebookBuilder({
                }
             />
          );
-      const text = slices.get(cell.id) ?? "";
       const markdown = readById.get(cell.id)?.markdown;
       if (cell.kind === "definition")
          return (
             <DefinitionCell
-               text={text}
+               text={slices.get(cell.id) ?? ""}
                {...(markdown ? { markdown } : {})}
                links={links}
             />
          );
+      const { text, query } = queryDisplay(cell);
       return (
-         <QueryCell
-            text={text}
-            query={queries.get(cell.id) ?? ""}
-            {...(markdown ? { markdown } : {})}
-            links={links}
-            target={target}
-            givens={request}
-            {...(maxResultSize !== undefined ? { maxResultSize } : {})}
-         />
+         <Stack spacing={1}>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+               {chartPicker(cell)}
+               {cell.added && cell.run && !editor.isInFile(cell.id) && (
+                  <QueryCaptionField
+                     caption={cell.run.caption ?? ""}
+                     onCommit={(next) =>
+                        update((draft) => {
+                           const target = draft.cells.find(
+                              (c) => c.id === cell.id,
+                           );
+                           if (target?.run) {
+                              if (next.trim()) target.run.caption = next.trim();
+                              else delete target.run.caption;
+                           }
+                        })
+                     }
+                  />
+               )}
+            </Stack>
+            <QueryCell
+               text={text}
+               query={query}
+               {...(markdown ? { markdown } : {})}
+               links={links}
+               target={target}
+               givens={request}
+               {...(maxResultSize !== undefined ? { maxResultSize } : {})}
+            />
+         </Stack>
       );
    };
 
@@ -412,14 +530,25 @@ export function NotebookBuilder({
                      </Alert>
                   )}
                   {doc.cells.length === 0 && (
-                     <Box>
+                     <Stack direction="row" spacing={1}>
                         <Button
                            startIcon={<AddIcon />}
                            onClick={() => addText(0)}
                         >
                            Add text
                         </Button>
-                     </Box>
+                        <Tooltip title={queryBlocked(0) ?? ""}>
+                           <span>
+                              <Button
+                                 startIcon={<PlaylistAddIcon />}
+                                 disabled={queryBlocked(0) !== undefined}
+                                 onClick={() => setAdding(0)}
+                              >
+                                 Add query
+                              </Button>
+                           </span>
+                        </Tooltip>
+                     </Stack>
                   )}
                   <DragDropProvider
                      sensors={builderSensors}
@@ -529,10 +658,38 @@ export function NotebookBuilder({
                                        >
                                           <VerticalAlignBottomIcon fontSize="small" />
                                        </CellButton>
+                                       <CellButton
+                                          label="Add query above"
+                                          disabled={
+                                             queryBlocked(at) !== undefined
+                                          }
+                                          reason={queryBlocked(at)}
+                                          onClick={() => setAdding(at)}
+                                       >
+                                          <PlaylistAddIcon fontSize="small" />
+                                       </CellButton>
+                                       <CellButton
+                                          label="Add query below"
+                                          disabled={
+                                             queryBlocked(at + 1) !== undefined
+                                          }
+                                          reason={queryBlocked(at + 1)}
+                                          onClick={() => setAdding(at + 1)}
+                                       >
+                                          <PlaylistAddIcon fontSize="small" />
+                                       </CellButton>
                                        {cell.kind === "markdown" && (
                                           <CellButton
                                              label="Remove text"
-                                             onClick={() => removeText(at)}
+                                             onClick={() => removeCell(at)}
+                                          >
+                                             <DeleteOutlineIcon fontSize="small" />
+                                          </CellButton>
+                                       )}
+                                       {cell.kind === "query" && (
+                                          <CellButton
+                                             label="Remove query"
+                                             onClick={() => removeCell(at)}
                                           >
                                              <DeleteOutlineIcon fontSize="small" />
                                           </CellButton>
@@ -548,6 +705,14 @@ export function NotebookBuilder({
                </Stack>
             </CleanNotebookSection>
          </CleanNotebookContainer>
+         <AddQueryDialog
+            open={adding !== undefined}
+            sources={sources}
+            onClose={() => setAdding(undefined)}
+            onAdd={(run) => {
+               if (adding !== undefined) addQuery(adding, run);
+            }}
+         />
          <DiffDialog
             open={pendingSave !== undefined}
             before={pendingSave?.before ?? ""}
@@ -556,13 +721,21 @@ export function NotebookBuilder({
             onClose={() => setPendingSave(undefined)}
             description={
                <>
-                  A text cell was added or removed. Everything else in the file
-                  is kept as it was; check it still reads right.
+                  A text or query cell was added or removed. Everything else in
+                  the file is kept as it was; check it still reads right.
+                  {pendingSave?.clearsHistory && (
+                     <>
+                        {" "}
+                        Saving this clears undo: a query that is already in the
+                        file cannot be written back once it is removed, so you
+                        cannot step back past this save.
+                     </>
+                  )}
                   {pendingSave && pendingSave.removedComments.length > 0 && (
                      <>
                         {" "}
-                        Removing a text cell also removes the comment directly
-                        above it, which travels with the cell:
+                        Removing a cell also removes the comment directly above
+                        it, which travels with the cell:
                         {/* A span: the description is a paragraph, which cannot hold a pre. */}
                         <Box
                            component="span"

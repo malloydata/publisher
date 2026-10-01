@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { chartLineText, type ChartState } from "../DashboardBuilder/chartLine";
 import type { NotebookSource } from "./readNotebookSource";
 
 /** Each read cell's exact text by id: what a query cell sends to run, byte for byte. */
@@ -73,4 +74,69 @@ export function captionOf(slice: string): string | undefined {
       if (trimmed.startsWith('#"')) lines.push(trimmed.slice(2).trim());
    }
    return lines.length > 0 ? lines.join(" ") : undefined;
+}
+
+/** Whether a line can sit above a statement's code: blank, a tag or a comment. */
+const isHeaderLine = (trimmed: string) =>
+   trimmed === "" ||
+   trimmed.startsWith("#") ||
+   trimmed.startsWith("//") ||
+   trimmed.startsWith("--");
+
+/**
+ * A query cell's text with its chart line set to `chart`, as the writer leaves it: the recognized line replaced or removed, or a new one put directly above the code.
+ * `existing` is the recognized chart lines the cell was read with; more than one leaves the text alone, as the writer refuses that.
+ */
+export function withChart(
+   text: string,
+   chart: ChartState | undefined,
+   existing: readonly string[],
+): string {
+   if (chart === undefined || chart === "custom" || existing.length > 1)
+      return text;
+   const nl = text.includes("\r\n") ? "\r\n" : "\n";
+   const lines: string[] = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+   const fresh = chart === "default" ? [] : [chartLineText(chart) + nl];
+   if (existing.length === 1) {
+      const found = lines.findIndex(
+         (line) => line.trim() === existing[0].trim(),
+      );
+      if (found < 0) return text;
+      lines.splice(found, 1, ...fresh);
+      return lines.join("");
+   }
+   let inBlock = false;
+   let at = lines.length;
+   for (const [i, line] of lines.entries()) {
+      const trimmed = line.trim();
+      if (inBlock) {
+         if (trimmed.startsWith("|#")) inBlock = false;
+         continue;
+      }
+      if (/^#\|\(/.test(trimmed)) {
+         inBlock = true;
+         continue;
+      }
+      if (!isHeaderLine(trimmed)) {
+         at = i;
+         break;
+      }
+   }
+   lines.splice(at, 0, ...fresh);
+   return lines.join("");
+}
+
+const NAME = "(`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)";
+const RUN_TARGET = new RegExp(
+   `(?:^|\\n)\\s*run:\\s*${NAME}\\s*->\\s*${NAME}\\s*$`,
+);
+
+/** The `source -> view` a query cell runs, when its code is a plain `run:` of one. */
+export function runTargetOf(
+   text: string,
+): { source: string; view: string } | undefined {
+   const match = RUN_TARGET.exec(queryCode(text));
+   if (!match) return undefined;
+   const bare = (name: string) => name.replace(/^`|`$/g, "");
+   return { source: bare(match[1]), view: bare(match[2]) };
 }
