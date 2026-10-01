@@ -1344,7 +1344,7 @@ export async function trySemanticSearch(args: {
       if (!oversizeWarned.has(key)) {
          oversizeWarned.add(key);
          logger.warn(
-            "[MCP Tool getContext] Package exceeds the semantic index entity cap; using lexical ranking",
+            "[MCP Tool getContext] Package exceeds the semantic index entity cap; semantic search is unavailable for it",
             {
                environmentName,
                packageName,
@@ -1406,7 +1406,7 @@ export async function trySemanticSearch(args: {
       const message = error instanceof Error ? error.message : String(error);
       markProviderFailure(meta, message);
       logger.warn(
-         "[MCP Tool getContext] Query embedding failed; falling back to lexical ranking",
+         "[MCP Tool getContext] Query embedding failed; semantic search cooling down",
          { environmentName, packageName, error: message },
       );
       return { unavailable: "error" };
@@ -1784,10 +1784,11 @@ export async function trySemanticSearch(args: {
       };
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn(
-         "[MCP Tool getContext] Semantic search failed; falling back to lexical ranking",
-         { environmentName, packageName, error: message },
-      );
+      logger.warn("[MCP Tool getContext] Semantic search failed", {
+         environmentName,
+         packageName,
+         error: message,
+      });
       return { unavailable: "error" };
    }
 }

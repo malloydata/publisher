@@ -39,6 +39,7 @@ import * as os from "os";
 import * as path from "path";
 import { registerGetContextTool } from "./get_context_tool";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
+import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -401,7 +402,7 @@ describe("get_context payload pin: no embedding key configured", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Embedding key configured (semantic, and every way it falls back)
+// Embedding key configured (semantic, indexing, and every way it errors)
 // ---------------------------------------------------------------------------
 
 describe("get_context payload pin: embedding configured", () => {
@@ -446,11 +447,17 @@ describe("get_context payload pin: embedding configured", () => {
       return v.map((x) => x / norm);
    }
 
-   function stubProvider(fail = false): EmbeddingProvider {
+   function stubProvider(
+      fail = false,
+      // Every request waits for this before it answers, so a test can read
+      // the response to a question while the index is provably still empty.
+      hold?: Promise<void>,
+   ): EmbeddingProvider {
       const fetchStub = (async (
          _url: RequestInfo | URL,
          init?: RequestInit,
       ) => {
+         if (hold) await hold;
          if (fail) return new Response("down", { status: 500 });
          const body = JSON.parse(String(init?.body)) as { input: string[] };
          const data = body.input.map((text, index) => ({
@@ -576,27 +583,48 @@ describe("get_context payload pin: embedding configured", () => {
       { pkg: empty },
    );
 
-   // -- Falling back to lexical, one reason at a time ------------------------
+   // -- Cases a configured server cannot rank, one reason at a time ------
+
+   /**
+    * Ask while the embedding provider is held, so the answer is read with the
+    * index provably empty, then let the sync finish so it cannot hold the
+    * process-wide sync queue against the scenarios after this one.
+    */
+   async function askWhileIndexing(
+      handler: Handler,
+      params: Record<string, unknown>,
+   ) {
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => {
+         release = resolve;
+      });
+      _setEmbeddingProviderForTests(stubProvider(false, hold));
+      try {
+         return await call(handler, params);
+      } finally {
+         release();
+         await embeddingSyncQueue.idle();
+      }
+   }
 
    it("fallback: indexing (first call, sync not done)", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(storeFor(shop()));
-      const payload = await call(handler, {
+      const payload = await askWhileIndexing(handler, {
          search_targets: [target("dimension", "state the order ships to")],
          scopes: [{ environment: "pin", package: "fb-indexing" }],
       });
-      expect(payload.retrieval_reason).toBe("indexing");
+      expect(payload.retrieval).toBe("indexing");
+      expect(payload.retrieval_progress.embedded).toBe(0);
       pin("fallback/indexing", payload);
    });
 
    it("fallback: indexing with a stale note", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(storeFor(shop(), staleFor("fb-stale")));
-      const payload = await call(handler, {
+      const payload = await askWhileIndexing(handler, {
          search_targets: [target("dimension", "state the order ships to")],
          scopes: [{ environment: "pin", package: "fb-stale" }],
       });
-      expect(payload.retrieval_reason).toBe("indexing");
+      expect(payload.retrieval).toBe("indexing");
       pin("fallback/indexing with stale note", payload);
    });
 
@@ -610,13 +638,23 @@ describe("get_context payload pin: embedding configured", () => {
       await untilSemantic(handler, params);
 
       _setEmbeddingProviderForTests(stubProvider(true));
+      // Both errors name the time the next try is allowed, which moves with
+      // the clock. Check it is a time still ahead, then pin the rest.
+      const withoutRetryTime = (payload: unknown) => {
+         const text = JSON.stringify(payload);
+         const retryAt = text.match(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/)?.[0];
+         expect(retryAt).toBeDefined();
+         expect(Date.parse(retryAt as string)).toBeGreaterThan(Date.now());
+         return JSON.parse(text.replace(retryAt as string, "<retry-at>"));
+      };
+
       const failed = await call(handler, params);
       expect(failed.retrieval_reason).toBe("provider-error");
-      pin("fallback/provider-error", failed);
+      pin("fallback/provider-error", withoutRetryTime(failed));
 
       const cooled = await call(handler, params);
       expect(cooled.retrieval_reason).toBe("cooldown");
-      pin("fallback/cooldown", cooled);
+      pin("fallback/cooldown", withoutRetryTime(cooled));
    });
 
    it("fallback: too-many-entities", async () => {

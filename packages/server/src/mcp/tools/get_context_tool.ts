@@ -41,6 +41,7 @@ import {
    type RankStage,
    type RankedState,
    type Retriever,
+   type Unavailable,
 } from "./get_context_pipeline";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 
@@ -305,10 +306,10 @@ export const MAX_LIMIT = 150;
 const DEFAULT_RANKED_LIMIT = 20;
 
 /**
- * Why a server that HAS an embedding provider answered lexically. Reported
- * so an agent can act on it: "indexing" is a cold index that clears on its
- * own within seconds and is worth one retry, while the rest are conditions
- * an immediate retry cannot fix.
+ * Why a server that HAS an embedding provider could not rank a search. Reported
+ * so an agent can act on it: "indexing" is an index still building, answered
+ * with an empty result (retrieval: "indexing") that is worth asking again, while the rest are errors
+ * (retrieval_reason) an immediate retry cannot fix.
  */
 export type RetrievalReason =
    | "indexing"
@@ -1986,7 +1987,7 @@ search_targets: one per concept, {target_type, search_text}; target_type is sour
 ## Response
 sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
-Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
+Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon; errors carry retrieval_reason.
 
 ## Example
 {"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
@@ -2372,32 +2373,26 @@ async function runContextQuery(
 
    // Tier 4: retrieval over the package's entities. With an
    // embedding provider configured, ranking is semantic (DuckDB
-   // cosine over cached entity embeddings); otherwise, or whenever
-   // the semantic path is unavailable (index still building,
-   // provider down, oversized package), it is lexical lunr. The
-   // `retrieval` marker and per-entity `score` appear ONLY when a
-   // provider is configured, so the unconfigured payload stays
-   // byte-identical to the lexical-only releases.
-   //
-   // Why a configured server answered lexically. Without it "lexical"
-   // is a dead end: an agent cannot tell a cold index, which clears in
-   // seconds and is worth retrying, from a down provider, which is not.
-   let retrievalReason: RetrievalReason | undefined;
+   // cosine over cached entity embeddings) and ONLY semantic: when the
+   // index is still building the answer says so (`retrieval:
+   // "indexing"`, no results), and when it cannot serve the answer is
+   // an error that names the reason. A configured server never answers
+   // a search lexically, because a ranking that quietly differs from
+   // the one the finished index gives makes results hard to trust.
+   // Lexical lunr is the mode only when no provider is configured, and
+   // then the payload carries no `retrieval` marker and no per-entity
+   // `score`, byte-identical to the lexical-only releases.
    let ranked: RankedState | undefined;
    for (const retriever of RETRIEVERS) {
       const result = await retriever.retrieve(ctx);
       if ("unavailable" in result) {
-         // "unconfigured" is not a reason to report: no provider, no marker.
-         if (result.unavailable !== "unconfigured") {
-            retrievalReason = result.unavailable;
-         }
-         continue;
+         // "unconfigured" means no provider: the next retriever is the mode.
+         if (result.unavailable === "unconfigured") continue;
+         return result.unavailable === "indexing"
+            ? indexingResponse(uri, ctx, result)
+            : semanticUnavailableError(uri, result);
       }
-      ranked = {
-         ...result,
-         retrieval: retriever.name,
-         retrievalReason,
-      };
+      ranked = { ...result, retrieval: retriever.name };
       break;
    }
    if (!ranked) throw new Error("No retriever produced a result");
@@ -2434,28 +2429,110 @@ async function runContextQuery(
          ),
       });
    }
-   const envelope = {
+   // Lexical, which is only reached with no embedding provider: no
+   // `retrieval` marker, so the payload is what it has always been.
+   return jsonResource(uri, {
       sources,
       ranking: "relevance" as const,
       total_available: totalSources,
       returned: sources.length,
-   };
-   const lexicalWarnings = warningsFor(
-      sourceCutWarning(sources.length, totalSources),
-      entityCutWarning(entitiesDropped),
-   );
-   return jsonResource(
+      ...warningsFor(
+         sourceCutWarning(sources.length, totalSources),
+         entityCutWarning(entitiesDropped),
+      ),
+   });
+}
+
+/**
+ * The answer while a package's semantic index is still building: a normal
+ * result with no sources, `retrieval: "indexing"` and how far the build has
+ * got. It is not an error, because the condition clears by itself and the
+ * right response is to ask again shortly. It is not a lexical answer either:
+ * with an embedding provider configured, a keyword ranking would differ from
+ * what the finished index returns, and an agent cannot tell the two apart.
+ */
+function indexingResponse(
+   uri: string,
+   ctx: PipelineContext,
+   result: Unavailable,
+) {
+   const status = result.status;
+   const progress = status
+      ? { embedded: status.embeddedRows, total: status.totalRows }
+      : undefined;
+   const built = progress
+      ? ` (${progress.embedded} of ${progress.total} vectors built)`
+      : "";
+   return jsonResource(uri, {
+      sources: [],
+      ranking: "relevance" as const,
+      total_available: 0,
+      returned: 0,
+      retrieval: "indexing",
+      ...(progress ? { retrieval_progress: progress } : {}),
+      ...makeWarningsFor(ctx)(
+         `This package's semantic index is still being built${built}, so there are no results yet. ` +
+            `Nothing is wrong: ask the same question again in a few seconds. ` +
+            `It was not answered by keyword search because an embedding provider is configured, ` +
+            `and a keyword ranking would differ from what the finished index returns. ` +
+            `A request with no search_text (a listing) works now.`,
+      ),
+   });
+}
+
+/**
+ * The answer when a configured server cannot rank a search at all: an error
+ * result that names the reason and says what to do. Still carries
+ * `sources: []` like every get_context error, so a caller can read the
+ * payload without branching on success first.
+ */
+function semanticUnavailableError(uri: string, result: Unavailable) {
+   const reason = result.unavailable;
+   const status = result.status;
+   const lastError = status?.lastError;
+   const retryAt = lastError?.retryAt;
+   const listing =
+      "A request with no search_text (a listing) still works; it needs no embeddings.";
+   let message: string;
+   let suggestions: string[];
+   switch (reason) {
+      case "too-many-entities":
+         // The status text already says the count, the cap and the key to raise.
+         message =
+            lastError?.message ??
+            "This package has more entities than the semantic index cap (retrieval.indexing.maxEntities in publisher.config.json).";
+         suggestions = [
+            "Ask the operator to raise retrieval.indexing.maxEntities in publisher.config.json and restart the server.",
+            listing,
+         ];
+         break;
+      case "cooldown":
+      case "provider-error": {
+         const cause = lastError?.message ?? "the embedding provider failed";
+         message =
+            reason === "provider-error"
+               ? `The embedding provider failed to embed the search text: ${cause}`
+               : `Semantic search for this package is paused after an embedding failure: ${cause}`;
+         suggestions = [
+            retryAt
+               ? `Try again after ${retryAt}; the server retries then.`
+               : "Try again in a minute.",
+            "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
+            listing,
+         ];
+         break;
+      }
+      default:
+         message = `Semantic search is unavailable: ${result.detail ?? lastError?.message ?? "the embedding configuration or index storage could not be used"}`;
+         suggestions = [
+            "The operator should check the server log. For an invalid embedding configuration, fix the named variable (EMBEDDING_API_BASE, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS) and restart the server.",
+            listing,
+         ];
+   }
+   return jsonToolError(
       uri,
-      ctx.embeddingConfigured
-         ? {
-              ...envelope,
-              retrieval: "lexical",
-              ...(ranked.retrievalReason
-                 ? { retrieval_reason: ranked.retrievalReason }
-                 : {}),
-              ...lexicalWarnings,
-           }
-         : { ...envelope, ...lexicalWarnings },
+      { message, suggestions },
+      { sources: [], retrieval: "error", retrieval_reason: reason },
    );
 }
 
