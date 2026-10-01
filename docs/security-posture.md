@@ -60,7 +60,9 @@ Concretely:
   is read as discovery reads it, off the compiled model (off the text only for a file that does not
   compile): a write whose only `## artifact` sits inside a `/* */` comment or a string passes the
   first textual check, but the reload verify finds no model-level note and rolls it back with a 500,
-  so no unserved file lands in `notebooks/`. A tagged write
+  so no unserved file lands in `notebooks/`. The text goes through the same caller-text guard as
+  `/compile`, so a dashboard or notebook save that declares a real `#(authorize)` or
+  `#(access_filter)` gate outside prose is refused with 400; gates live in the model file. A tagged write
   over an existing file in `notebooks/` that the package does not serve as a notebook is refused
   with 400, including one whose only tag is commented out, so a shared include cannot be
   overwritten into a notebook. `dashboards/` has no tag gate at all.

@@ -624,9 +624,8 @@ and a reload that fails to compile leaves the previously compiled model serving.
 ### Editing in the Console
 
 If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
-dashboard page has an **Edit** button, and the package page has a **New** menu (and an **Add
-dashboard** action on the Dashboards section): pick a model, a source, the view for the first tile
-and a title, and the file is written into the package and opened in the builder. From there it is
+dashboard page has an **Edit** button, and the package page has a **New** menu (and an **Add** button on the Dashboards section): pick a
+source and its view (one select), a type (Dashboard or Notebook), and a title, and the file is written into the package and opened in the builder. From there it is
 the classic loop — **drag a tile by its grip to move it, drag its right edge to resize it, pick its
 view, label and chart from its own menu, and add filters from the strip above the grid.**
 
@@ -637,8 +636,8 @@ tags. A chart line it does not model, such as `# bar_chart { size=spark }`, is k
 every edit, and the picker is disabled for that tile with the reason shown; so is a tile inherited
 from a declaration on the source, which has no wrapper to carry the line.
 
-A dashboard with `tiles=[]` opens in the builder, so an empty one can be started there, but it is not
-served (the manifest 404s and the load lint warns) until it has a tile, and the builder will not
+A dashboard with `tiles=[]` (only possible by hand-editing, since New always seeds a first tile)
+opens in the builder, but it is not served (the manifest 404s and the load lint warns) until it has a tile, and the builder will not
 remove the last one. A filter on a dimension reached through a join keeps its full dotted path
 (`products.category`), written quoted, and the lint accepts one level of join there.
 
@@ -769,6 +768,13 @@ import {
   />
 </ServerProvider>;
 ```
+
+Hosts can use the other exports of `@malloy-publisher/sdk/builder` too. `NotebookEditor` is the
+notebook counterpart of `DashboardEditor`. `createRoute` says whether a host can create documents
+(`"package"`, `"storage"`, or `undefined`), `useDocumentChoices` lists the models and views the New
+dialog offers, `createDocument` writes the new file by that route, and `newNotebookSource` /
+`newDashboardSource` build the starting text. `locatorFor` names a created document's address in a
+host's own store. The events are `DashboardEvent` and `NotebookEvent`.
 
 An older host may still pass `environmentName`, `packageName` and `dashboardName` in place of
 `resourceUri` and `dashboard`; that form is deprecated but not removed, so a 0.4.1 integration keeps

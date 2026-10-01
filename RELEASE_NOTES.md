@@ -84,11 +84,13 @@ hosts that mount it themselves.
 The package page has a **New** menu with **Dashboard** and **Notebook**: choose a model, the first
 view and a title, and the file is created and opened in its editor. On the Console it creates the
 file in the package and refuses to overwrite one that exists; on a host with an authoritative record
-it creates the document there. A workspace that only keeps drafts in the browser is never offered
-the menu. The same primitives (`createDocument`, `createRoute`, `useDocumentChoices`,
+it creates the document there. The menu is offered when the server takes writes or a host keeps the
+record and can store; it is not offered when neither route exists, on a record that cannot store, or
+on a pinned version of a package. The same primitives (`createDocument`, `createRoute`, `useDocumentChoices`,
 `newNotebookSource`, `locatorFor`) are exported from `@malloy-publisher/sdk/builder`, and
-`dashboard.created` and `notebook.created` are new events (`{ where }` only; additive, so a host
-that switches exhaustively over event types will see two new cases).
+`dashboard.created` is a new case on `DashboardEvent`, and `NotebookEvent` is a new event type
+that carries `notebook.created` (both `{ where }` only; additive, but a host that switches
+exhaustively over `DashboardEvent` will see one new case).
 
 A dashboard tile and a notebook query cell each get a **chart picker**: Default (the view's own
 chart), No chart (table), Line, Bar, Big value (offered when every output of the view is an
@@ -103,8 +105,9 @@ has a tile (its page 404s and the load lint warns), and the editor will not remo
 Limits to know about: a query cell added in the editor is not mapped to the notebook's controls, so
 its result follows them only if its source reads a given as `$NAME`; a query can only be added below
 every definition in the notebook; and a save clears the editor's undo history when it removes a
-query cell that was already in the file, or changes the chart of a cell whose chart line the editor
-cannot rewrite canonically (a bare `# line_chart`, or an unusual spelling).
+query cell that was already in the file, changes the chart of a cell whose chart line the editor
+cannot rewrite canonically (a bare `# line_chart`, or an unusual spelling), or is the first chart
+pick on an added query saved without a chart.
 
 **Fixed: a filter on a joined dimension.** A dashboard filter added in the builder on a dimension
 reached through a join (`products.category`) was written with only its last segment, so its options

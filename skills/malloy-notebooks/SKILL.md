@@ -205,20 +205,23 @@ run: main_source -> [further breakdown]
 
 ## Editing in the Console
 
-A person can edit a `notebooks/*.malloy` notebook in the Console (an **Edit** button; `New` on the
+A person can edit a `notebooks/*.malloy` notebook in the Console (an **Edit** button; **New** on the
 package page starts one). The editor rewrites, adds, removes and reorders markdown cells, and adds or
-removes query cells from a source the notebook reaches, one of its views, a chart and a caption.
-Save splices into the file, so a notebook you wrote by hand survives it. What it does not do:
+removes query cells, and Save splices into the file, so a notebook you wrote by hand survives it. Write
+the file so the editor can place it:
 
-- It never edits a definition (`given:`, `source:`, `import`) or the text of an existing query; it
-  changes only that query's chart line, and leaves a chart line it does not model (for example
-  `# bar_chart { size=spark }`) alone, with the chart picker disabled for that cell.
-- A query can be added only below every definition, so keep definitions together near the top.
-- A query added in the editor is not mapped to the notebook's controls. It follows them only if its
-  source reads a given as `$NAME`.
-- Undo is cleared at Save when it removes a query cell that was already in the file, or changes the
-  chart of a cell whose chart line the editor cannot rewrite canonically (a bare `# line_chart`, or an
-  unusual spelling).
+- Keep definitions (`given:`, `source:`, `import`) together near the top, then the queries. The
+  editor never edits a definition or the text of an existing query, and adds a query only below every
+  definition.
+- A query added in the editor follows the notebook's controls only if its source reads a given as
+  `$NAME`.
+- A chart line the editor does not model (for example `# bar_chart { size=spark }`) is left alone.
+- The editor opens a notebook **read-only**, saying why, when it cannot place cells one by one:
+  two statements or notes on one line, text after a block closer, a comment straddling two cells, a
+  lone carriage return (use LF or CRLF), a statement above the `## artifact` tag, or a statement no
+  cell can hold.
+- A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is
+  refused with a 400. Put gates in a model file the notebook imports.
 
 Chart choices are Default, No chart (table), Line, Bar, Big value (only for a view whose outputs are
 all aggregates), Scatter, and a map only when the view already carries one.

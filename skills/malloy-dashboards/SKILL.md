@@ -360,8 +360,9 @@ Two per-dashboard options on the artifact tag:
   that a reader notices two round trips.
 - `givens { CATEGORY=f'Outerwear' }` sets starting values, not a redeclaration. A URL parameter wins.
 
-A notebook takes both at the file level, as `## autorun=false` and `## givens { CATEGORY=f'Outerwear' }`,
-and behaves identically.
+A served `.malloy` notebook takes both inside its `## artifact { … }` tag, as `autorun=false` and
+`givens { CATEGORY=f'Outerwear' }`, and behaves identically. A file-level `## autorun=false` does
+nothing there; only a legacy `.malloynb` reads options at the file level.
 
 ## Drill
 

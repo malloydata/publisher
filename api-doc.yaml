@@ -1691,8 +1691,8 @@ paths:
         Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy` —
         or a notebook file — `notebooks/<slug>.malloy`, which must carry an
         `## artifact` tag (an untagged file there is a shared include and is
-        refused with 400, and so is a write over an existing file the package
-        does not serve as a notebook) — the only paths this endpoint accepts,
+        refused with 400, and so is a write over an existing file that is
+        not a notebook) — the only paths this endpoint accepts,
         into the package, and reloads the package in place so it is served from
         the new text. This is the dashboard and notebook builder's save.
 
@@ -5991,7 +5991,7 @@ components:
 
     ModelSourceWriteRequest:
       type: object
-      description: The text to write into a dashboard file
+      description: The text to write into a dashboard or notebook file
       required:
         - source
       properties:
@@ -6007,7 +6007,7 @@ components:
 
     ModelSourceWriteResult:
       type: object
-      description: What a dashboard write left in the package
+      description: What a dashboard or notebook write left in the package
       required:
         - path
         - contentHash
