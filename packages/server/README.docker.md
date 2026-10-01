@@ -85,7 +85,14 @@ The code under `/publisher/packages/` and `/publisher/node_modules/` is root-own
 What you mount has to be writable by uid 1000 too:
 
 - **A new named volume on `/publisher/publisher_data`** works as-is. Docker seeds an empty named volume from the image's directory, ownership included, and that is the only writable mount point the image prepares.
-- **A new named volume anywhere else** starts owned by root, because the image has no directory there to copy ownership from. That includes a DuckLake storage destination whose `bucketUrl` is a local path. Prepare it yourself: build a derived image with `RUN mkdir -p /path && chown 1000:1000 /path` (new named volumes there are then seeded correctly), chown the volume once with `--user 0` as shown below, or bind-mount a host directory owned by uid 1000. DuckDB reports the unprepared case as `No such file or directory` (for example `Failed to create directory "/data/lake/main/daily_orders"`), not as `EACCES`.
+- **A new named volume anywhere else** starts owned by root, because the image has no directory there to copy ownership from. That includes a DuckLake storage destination whose `bucketUrl` is a local path. Prepare it yourself: build a derived image with `RUN mkdir -p /path && chown 1000:1000 /path` (new named volumes there are then seeded correctly), chown the volume once with `--user 0`, or bind-mount a host directory owned by uid 1000. DuckDB reports the unprepared case as `No such file or directory` (for example `Failed to create directory "/data/lake/main/daily_orders"`), not as `EACCES`. The one-time chown names the mount path twice, as the mount target and as chown's argument:
+
+  ```bash
+  docker run --rm --user 0 --entrypoint chown \
+    -v <volume>:/data/lake \
+    ms2data/malloy-publisher -R 1000:1000 /data/lake
+  ```
+
 - **A named volume an older, root-run image already wrote to** holds root-owned files, and the server cannot write to them. It still reaches `serving`, but each environment it cannot write is missing from the catalog, and `GET /api/v0/status` lists it under `loadErrors` with an `EACCES: permission denied` message. Chown the volume once, before starting the new image. With `docker run`, name the volume you mount:
 
   ```bash
