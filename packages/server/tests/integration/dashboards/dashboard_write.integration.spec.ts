@@ -33,6 +33,7 @@ import {
    spliceNotebookDocument,
    type NotebookDocument,
 } from "../../../../sdk/src/components/NotebookBuilder/spliceNotebook";
+import { newNotebookSource } from "../../../../sdk/src/components/DocumentCreate/newNotebook";
 import { spliceFailed } from "../../../../sdk/src/components/DashboardBuilder/spliceResult";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
@@ -270,6 +271,21 @@ query: broken is orders -> { aggregate: no_such_measure }
       expect(
          ((await served.json()) as { sourceText?: string }).sourceText,
       ).toBe(source);
+   });
+
+   it("creates the notebook the SDK writes for a new one, create-only", async () => {
+      const source = newNotebookSource({
+         title: "Created by the SDK",
+         modelPath: "orders.malloy",
+         source: "orders",
+         view: "totals",
+      });
+      const res = await put("notebooks/sdk-created.malloy", { source });
+      expect(res.status).toBe(201);
+      const again = await put("notebooks/sdk-created.malloy", { source });
+      expect(again.status).toBe(409);
+      const served = await fetch(modelsUrl("notebooks/sdk-created.malloy"));
+      expect(served.status).toBe(200);
    });
 
    it("refuses an untagged notebooks/ file, a shared include, with 400", async () => {
