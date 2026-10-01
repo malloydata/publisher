@@ -52,6 +52,16 @@ Use the Compose form under Compose. Compose names the volume `<project>_publishe
 
 A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it from the image, ownership included. It is the only writable mount point the image prepares. A new named volume anywhere else, such as a local DuckLake `bucketUrl`, starts root-owned and must be chowned to uid 1000 first; DuckDB reports that case as `No such file or directory`, not `EACCES`. A bind mount the server writes to must be writable by uid 1000. A read-only mount, such as the config file, only has to be readable. Until you can change the ownership, `--user 0` runs the server as root, as before. [`packages/server/README.docker.md`](packages/server/README.docker.md#the-server-runs-as-a-non-root-user) has the details.
 
+## [Unreleased] — A `where:` on a composite source is served again
+
+Since 0.8.1, a query against a composite source that carries a `where:` could answer 403 `Access denied for source "<member>"`, with no gate anywhere in the package. Three shapes were refused:
+
+- A `where:` on the composite over a field its members declare (`where: is_monthly` over `compose(daily extend {…}, monthly extend { dimension: is_monthly is true })`), since 0.8.1. Malloy compiles a composite's fields as `compositeField` placeholders, and the filter-binding check compared the placeholder with the resolved member's real definition, which never matches.
+- A `where:` on the composite through a join it declares (`where: customer.segment = 'retail'`), since 0.8.3, which added the columns a join's ON reads. Same comparison, on the ON's columns.
+- A `where:` a member declares itself (`compose(t extend { … }, t extend { where: amount > 15; … })`), since 0.8.1, for any query the composite resolves to that member: the check could not find the anonymous member as the condition's declaring source.
+
+The check now identifies the member the query executes as: the same relation and parameters, with every one of the member's own conditions still applied. It reads a placeholder as that member's definition when the executed field is identical to it, and goes on to check what that definition reads. A member's own condition is checked against that member. This holds when the composite is imported from another file, so the declaring composite comes from a sibling model's compile. A field rebound on the composite or in the caller's text, by `rename:` and `dimension:`, is still refused, as is a rebinding of a column a member's dimension or the composite's join reads, and a rebinding that would move the query onto another member's rows. Excepting a field a filter reads is still refused, as it is on any source. Nothing in a package changes; upgrading is enough. See #1277.
+
 ## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
 `@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.
