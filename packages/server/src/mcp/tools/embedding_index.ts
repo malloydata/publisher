@@ -16,6 +16,7 @@ import {
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
+import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 
 /**
@@ -33,20 +34,25 @@ import { embeddingSyncQueue } from "./embedding_sync_queue";
  * get_context_eval.ts.
  */
 export { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
+
 /**
- * Packages with more entities than this stay lexical: the first embed of
- * such a package would take minutes of provider calls and rate limits.
- * The bundled examples sit around a few hundred entities.
- *
- * Counted in ENTITIES, not rows. Faceting means a documented entity costs
- * more than one embedding (a name row plus its doc rows), so the ceiling on
- * first-sync provider calls is a small multiple of this number rather than
- * this number. The cap is deliberately still expressed in entities: it is
- * checked before facets are computed, and it is the figure an operator can
- * reason about from their model. Undocumented entities, which are the ones
- * that make a package large by accident, still cost exactly one row each.
+ * The most entities a package may have and still be embedded; see
+ * DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES for what the number means and why it is
+ * counted in entities. It is `retrieval.indexing.maxEntities` from
+ * publisher.config.json, set once at startup by {@link setMaxEmbeddedEntities}
+ * and read here, never from the config file on a request.
  */
-export const MAX_EMBEDDED_ENTITIES = 5_000;
+let maxEmbeddedEntities = DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+
+/** The current entity cap. */
+export function getMaxEmbeddedEntities(): number {
+   return maxEmbeddedEntities;
+}
+
+/** Set the entity cap. Called once at server start with the configured value. */
+export function setMaxEmbeddedEntities(cap: number): void {
+   maxEmbeddedEntities = cap;
+}
 /**
  * After a provider failure the semantic path short-circuits to lexical
  * for this long, so a down or misconfigured endpoint costs one timeout
@@ -394,9 +400,10 @@ export function entityRowKey(
  * is correct for the response, where each path is its own card, and wrong for
  * everything downstream of here: the embedding rows have no model_path in
  * their primary key, so the duplicates embed identical text once per path and
- * then upsert onto the same row. They also inflate the MAX_EMBEDDED_ENTITIES
- * cap and `totalEntities`, which would let a package flip to lexical because
- * someone added an importing file rather than because the model grew.
+ * then upsert onto the same row. They also inflate the entity count that is
+ * checked against the cap, and `totalEntities`, which would let a package go
+ * over the cap because someone added an importing file rather than because
+ * the model grew.
  *
  * Collapsed here, at the cache boundary, rather than at either call site, so
  * the guarantee holds for any caller. The response fan-out is unaffected: it
@@ -730,6 +737,7 @@ export function _resetEmbeddingIndexStateForTests(): void {
    // own policy through _setSyncRetryForTests.
    syncRetryPolicy = { ...DEFAULT_EMBEDDING_RETRY, sleep: async () => {} };
    syncBatchSize = MAX_EMBED_BATCH_SIZE;
+   maxEmbeddedEntities = DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
 }
 
 /** Test seam: shrink the timing windows to drive real expiry in tests. */
@@ -1233,7 +1241,7 @@ export function enqueuePackageSync(args: {
       if (!prepared) return;
       const { db, provider } = prepared;
       const entities = uniqueByEntityKey(prepared.entities);
-      if (entities.length > MAX_EMBEDDED_ENTITIES) return;
+      if (entities.length > maxEmbeddedEntities) return;
       const meta = metaFor(environmentName, packageName);
       const providerKey = providerKeyFor(provider);
       const fingerprint = await fingerprintFor(prepared.entities);
@@ -1331,7 +1339,7 @@ export async function trySemanticSearch(args: {
    // embeds them. See uniqueByEntityKey.
    const entities = uniqueByEntityKey(args.entities);
 
-   if (entities.length > MAX_EMBEDDED_ENTITIES) {
+   if (entities.length > maxEmbeddedEntities) {
       const key = `${environmentName}\x00${packageName}`;
       if (!oversizeWarned.has(key)) {
          oversizeWarned.add(key);
@@ -1341,7 +1349,7 @@ export async function trySemanticSearch(args: {
                environmentName,
                packageName,
                entityCount: entities.length,
-               cap: MAX_EMBEDDED_ENTITIES,
+               cap: maxEmbeddedEntities,
             },
          );
       }
@@ -1933,7 +1941,7 @@ export async function getEmbeddingIndexStatus(
    const summary = await desiredSummaryFor(allEntities);
 
    let state: Pick<EmbeddingIndexStatus, "status" | "reason" | "lastError">;
-   if (entityCount > MAX_EMBEDDED_ENTITIES) {
+   if (entityCount > maxEmbeddedEntities) {
       state = {
          status: "error",
          reason: "too-many-entities",
@@ -1974,7 +1982,17 @@ export async function getEmbeddingIndexStatus(
    };
 }
 
-/** Why a package over the entity cap is not embedded. */
+/**
+ * Why a package over the entity cap is not embedded, with the count, the cap
+ * and how to raise it. One definition, used by the status endpoint and by
+ * get_context's error, so the two cannot describe the cap differently.
+ */
 export function tooManyEntitiesMessage(entityCount: number): string {
-   return `The package has ${entityCount} entities, over the semantic index cap of ${MAX_EMBEDDED_ENTITIES}.`;
+   const suggested = Math.max(entityCount, maxEmbeddedEntities * 4);
+   return (
+      `The package has ${entityCount} entities, over the semantic index cap of ${maxEmbeddedEntities}. ` +
+      `Fix: set retrieval.indexing.maxEntities to ${suggested} or more in publisher.config.json ` +
+      `(for example "retrieval": { "indexing": { "maxEntities": ${suggested} } }) and restart the server. ` +
+      `A higher cap makes the first index take longer, in proportion to the number of entities.`
+   );
 }
