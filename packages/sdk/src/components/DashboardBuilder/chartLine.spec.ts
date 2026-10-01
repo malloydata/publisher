@@ -136,3 +136,12 @@ describe("chartStateOf", () => {
       expect(chartStateOf(["# bar_chart"])).toBe("bar_chart");
    });
 });
+
+describe("mentionsChartTag: quoted values", () => {
+   it("ignores words inside a string and still sees real ones", () => {
+      expect(mentionsChartTag('# label="Sales viz"')).toBe(false);
+      expect(mentionsChartTag('# label="a \\" viz"')).toBe(false);
+      expect(mentionsChartTag('# line_chart label="Revenue"')).toBe(true);
+      expect(mentionsChartTag("# viz=line")).toBe(true);
+   });
+});

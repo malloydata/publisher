@@ -13,7 +13,7 @@ import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import type { DashboardTile } from "./document";
-import { ChartPicker } from "../NotebookBuilder/ChartPicker";
+import { ChartPicker } from "./ChartPicker";
 
 /**
  * A tile's own settings, on the tile: a popover off its menu button, so
@@ -40,8 +40,10 @@ export interface TileMenuProps {
    view?: Pick<CatalogView, "chart" | "aggregateOnly">;
 }
 
-const CUSTOM_CHART =
-   "This tile has a chart line the builder does not model, so its chart cannot be changed here.";
+const customChart = (lines: string[] | undefined) =>
+   lines && lines.length === 1
+      ? `This tile's chart line (${lines[0]}) is not one the builder models, so its chart cannot be changed here.`
+      : `This tile has ${lines?.length ?? "several"} chart lines${lines ? ` (${lines.join(" and ")})` : ""}, so its chart cannot be changed here.`;
 const INHERITED_CHART =
    "This tile's view is declared on its source, so its chart is set in the model.";
 
@@ -118,12 +120,11 @@ export function TileMenu({
                         view={view}
                         cellLabel={`${draft.source} ${draft.name}`}
                         {...(draft.chart === "custom"
-                           ? { disabledReason: CUSTOM_CHART }
+                           ? { disabledReason: customChart(draft.chartLines) }
                            : {})}
                         onChange={(next) =>
                            patch((t) => {
-                              if (next === "default") delete t.chart;
-                              else t.chart = next;
+                              t.chart = next;
                            })
                         }
                      />

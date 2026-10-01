@@ -6,10 +6,7 @@ import {
    isChartPick,
    type ChartState,
 } from "../DashboardBuilder/chartLine";
-import {
-   annotationTextProblem,
-   AUTHORIZE_TAG_LIKE,
-} from "../DashboardBuilder/annotationText";
+import { annotationTextProblem } from "../DashboardBuilder/annotationText";
 import { isIdentifier } from "../DashboardBuilder/malloyText";
 
 /** What a query cell the builder adds runs: a view of a source, and an optional caption. */
@@ -18,8 +15,6 @@ export interface QueryRun {
    view: string;
    caption?: string;
 }
-
-export { AUTHORIZE_TAG_LIKE };
 
 const malloyName = (name: string) =>
    isIdentifier(name) ? name : `\`${name}\``;

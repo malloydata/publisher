@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { chartStateOfTagLines, type ChartState } from "./chartLine";
+import {
+   chartLinesOf,
+   chartStateOfTagLines,
+   type ChartState,
+} from "./chartLine";
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -130,10 +134,17 @@ export function blockAbove(
 /** Just the text of a block's tags, which is what `parseAnnotation` takes. */
 const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
 
-/** The tile's `chart` property, absent when its wrapper carries no chart line. */
-function chartField(tags: Array<{ text: string }>): { chart?: ChartState } {
-   const chart = chartStateOfTagLines(tagText(tags));
-   return chart === undefined ? {} : { chart };
+/** The tile's `chart` property, absent when its wrapper carries no chart line; a custom one also carries the lines. */
+function chartField(tags: Array<{ text: string }>): {
+   chart?: ChartState;
+   chartLines?: string[];
+} {
+   const lines = tagText(tags);
+   const chart = chartStateOfTagLines(lines);
+   if (chart === undefined) return {};
+   return chart === "custom"
+      ? { chart, chartLines: chartLinesOf(lines) }
+      : { chart };
 }
 
 /** The model-level `##` lines, which are not symbols and must be read as text. */

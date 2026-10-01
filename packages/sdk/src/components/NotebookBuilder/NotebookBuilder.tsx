@@ -37,7 +37,8 @@ import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 import { AddQueryDialog } from "./AddQueryDialog";
 import { mergeSources, notebookImports } from "./imports";
 import { cellQueries, cellSlices, runTargetOf, withChart } from "./cellText";
-import { ChartPicker, chartLocked, pickerState } from "./ChartPicker";
+import { ChartPicker } from "../DashboardBuilder/ChartPicker";
+import { chartLocked, pickerState } from "./cellChart";
 import {
    DefinitionCell,
    MarkdownCell,

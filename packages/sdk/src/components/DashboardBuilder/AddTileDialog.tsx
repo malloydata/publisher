@@ -6,8 +6,9 @@ import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogSource, PackageCatalog } from "./catalog";
 import type { ChartPick } from "./chartLine";
+import { isIdentifier } from "./malloyText";
 import type { DashboardDocument } from "./document";
-import { ChartPicker } from "../NotebookBuilder/ChartPicker";
+import { ChartPicker } from "./ChartPicker";
 import { AppDialog } from "../AppDialog";
 import { SourceViewPicker } from "./SourceViewPicker";
 
@@ -94,6 +95,12 @@ export function AddTileDialog({
    }, [open, document, sources, columns]);
 
    const canAdd = base !== "" && view !== "";
+   const unwritable = [base, view]
+      .filter((name) => name !== "" && !isIdentifier(name))
+      .map(
+         (name) =>
+            `"${name}" is not a plain Malloy name, so a tile cannot be written for it.`,
+      )[0];
    const picked = sources
       .find((source) => source.name === base)
       ?.views.find((candidate) => candidate.name === view);
@@ -109,7 +116,7 @@ export function AddTileDialog({
                <Button onClick={onClose}>Cancel</Button>
                <Button
                   variant="contained"
-                  disabled={!canAdd}
+                  disabled={!canAdd || unwritable !== undefined}
                   onClick={() =>
                      onAdd({
                         base,
@@ -147,6 +154,11 @@ export function AddTileDialog({
                         setChart("default");
                      }}
                   />
+                  {unwritable && (
+                     <Typography variant="body2" color="error">
+                        {unwritable}
+                     </Typography>
+                  )}
                   <ChartPicker
                      state={chart}
                      view={picked}

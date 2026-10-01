@@ -63,7 +63,7 @@ describe("a tile's chart line", () => {
       });
       expect(reason).toContain("# bar_chart { size=spark }");
       const second = await refused(FILE(LABELLED), (d) => {
-         delete d.tiles[0].chart;
+         d.tiles[0].chart = "default";
       });
       expect(second).toContain('# line_chart label="Revenue"');
    });
@@ -163,7 +163,7 @@ describe("strings written into annotations", () => {
          await refused(FILE(""), (d) => {
             d.title = "a\nb";
          }),
-      ).toContain("title");
+      ).toContain("A title is one line");
       const given = {
          name: "CATEGORY",
          type: "filter<string>",
@@ -173,12 +173,14 @@ describe("strings written into annotations", () => {
          await refused(FILE(""), (d) => {
             d.localGivens = [{ ...given, label: "x\ny" }];
          }),
-      ).toContain("label");
+      ).toContain("A given label is one line");
       expect(
          await refused(FILE(""), (d) => {
             d.localGivens = [{ ...given, description: "#(authorize) me" }];
          }),
-      ).toContain("description");
+      ).toContain(
+         "A given description cannot contain what reads as an access-control tag",
+      );
    });
 
    it("does not refuse a string already in the file when something else changes", async () => {
@@ -197,7 +199,9 @@ describe("strings written into annotations", () => {
             declaration: { kind: "reference", from: "vz" },
          });
       });
-      expect(reason).toContain("bad name");
+      expect(reason).toBe(
+         'The name "bad name" cannot be written as a Malloy name.',
+      );
       const from = await refused(FILE(""), (d) => {
          d.tiles.push({
             name: "z_tile",
@@ -205,6 +209,65 @@ describe("strings written into annotations", () => {
             declaration: { kind: "reference", from: "v z\n" },
          });
       });
-      expect(from).toContain("v z");
+      expect(from).toBe(
+         'The name "v z\\n" cannot be written as a Malloy name.',
+      );
+   });
+});
+
+describe("chart lines: review fixes", () => {
+   const SALES = '  # label="Sales viz"\n';
+
+   it("does not read a word inside a quoted value as a chart tag", async () => {
+      expect((await openDocument(FILE(SALES))).tiles[0].chart).toBeUndefined();
+      const out = await spliced(FILE(""), (d) => {
+         d.tiles[0].label = "Sales viz";
+      });
+      expect(out).toContain('# label="Sales viz"');
+      const picked = await spliced(FILE(SALES), (d) => {
+         d.tiles[0].chart = "bar_chart";
+      });
+      expect(picked).toContain(`  ${chartLineText("bar_chart")}\n`);
+      expect(picked).toContain('# label="Sales viz"');
+   });
+
+   it("keeps a tile's line when the document leaves `chart` out; only default removes it", async () => {
+      const source = FILE("  # big_value\n");
+      const kept = await spliced(source, (d) => {
+         delete d.tiles[0].chart;
+         d.tiles[0].colspan = 3;
+      });
+      expect(kept).toContain("  # big_value\n");
+      const noop = await splice(source, (d) => {
+         delete d.tiles[0].chart;
+      });
+      expect(spliceFailed(noop)).toBe(false);
+      const removed = await spliced(source, (d) => {
+         d.tiles[0].chart = "default";
+      });
+      expect(removed).not.toContain("big_value");
+   });
+
+   it.each(["  # sparkline\n", "  # -bar_chart\n"])(
+      "refuses a chart change on a recognized line the picker cannot show (%p)",
+      async (line) => {
+         expect((await openDocument(FILE(line))).tiles[0].chart).toBe("custom");
+         const reason = await refused(FILE(line), (d) => {
+            d.tiles[0].chart = "line_chart";
+         });
+         expect(reason).toContain(line.trim());
+      },
+   );
+
+   it("reads the lines behind a custom chart", async () => {
+      const doc = await openDocument(FILE("  # bar_chart\n  # line_chart\n"));
+      expect(doc.tiles[0].chartLines).toEqual(["# bar_chart", "# line_chart"]);
+   });
+
+   it("refuses an authorize-like line in a changed description", async () => {
+      const reason = await refused(FILE(""), (d) => {
+         d.description = "fine\nsee ## authorize here";
+      });
+      expect(reason).toContain("A description line cannot contain what reads");
    });
 });

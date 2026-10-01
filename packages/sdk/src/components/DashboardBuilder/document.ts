@@ -154,11 +154,14 @@ export interface DashboardTile {
    label?: string;
    subtitle?: string;
    /**
-    * The chart line on the tile's wrapper. Absent and `"default"` both mean no
-    * line (the view's own chart shows); `"custom"` is a line the builder does
-    * not model, which it keeps and never writes.
+    * The chart line on the tile's wrapper. `"default"` removes the writer's line
+    * and, on a tile read from a file with none, is what absent means; an absent
+    * `chart` handed to the writer means unchanged. `"custom"` is a line the
+    * builder does not model, which it keeps and never writes.
     */
    chart?: ChartState;
+   /** The chart lines behind a `"custom"` chart, as written; read-only, so a picker can say what it will not change. */
+   chartLines?: string[];
    colspan?: number;
    break?: boolean;
    borderless?: boolean;

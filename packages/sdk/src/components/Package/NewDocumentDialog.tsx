@@ -7,6 +7,7 @@ import {
    createDocument,
    documentPathForTitle,
    MAX_SLUG_ATTEMPTS,
+   newDocumentProblem,
    useDocumentChoices,
    type CreatedDocument,
    type CreateTarget,
@@ -117,7 +118,17 @@ export function NewDocumentDialog({
       }
       return undefined;
    }, [kind, title, target]);
-   const canCreate = chosen !== undefined && path !== undefined;
+   const problem =
+      chosen === undefined
+         ? undefined
+         : newDocumentProblem(kind, {
+              title,
+              modelPath,
+              source: chosen.source,
+              view: chosen.view,
+           });
+   const canCreate =
+      chosen !== undefined && path !== undefined && problem === undefined;
    const label = KIND_LABEL[kind].toLowerCase();
    const first = kind === "dashboard" ? "First tile" : "First query";
 
@@ -264,13 +275,18 @@ export function NewDocumentDialog({
                   setTitle(event.target.value);
                }}
                inputProps={{ "aria-label": `${KIND_LABEL[kind]} title` }}
-               error={title.trim() !== "" && path === undefined}
+               error={
+                  problem !== undefined ||
+                  (title.trim() !== "" && path === undefined)
+               }
                helperText={
-                  path
-                     ? `Written as ${path}, and opened in the builder.`
-                     : title.trim() !== ""
-                       ? "No free file name for this title; choose another."
-                       : "Names the file too."
+                  problem
+                     ? problem
+                     : path
+                       ? `Written as ${path}, and opened in the builder.`
+                       : title.trim() !== ""
+                         ? "No free file name for this title; choose another."
+                         : "Names the file too."
                }
             />
             {failure && <Alert severity="error">{failure}</Alert>}

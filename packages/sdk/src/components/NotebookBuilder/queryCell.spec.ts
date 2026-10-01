@@ -2,12 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { AUTHORIZE_TAG_LIKE as SERVER_AUTHORIZE_TAG_LIKE } from "../../../../server/src/service/authorize";
-import {
-   AUTHORIZE_TAG_LIKE,
-   queryCellText,
-   queryRunProblem,
-} from "./queryCell";
+import { queryCellText, queryRunProblem } from "./queryCell";
 
 describe("queryCellText", () => {
    it("writes caption, chart line, then the run, tags last", () => {
@@ -71,11 +66,5 @@ describe("queryRunProblem", () => {
       expect(queryRunProblem(ok, "sparkline" as never, ["a"])).toContain(
          "not a chart",
       );
-   });
-});
-
-describe("AUTHORIZE_TAG_LIKE", () => {
-   it("is the server's pattern", () => {
-      expect(AUTHORIZE_TAG_LIKE).toBe(SERVER_AUTHORIZE_TAG_LIKE);
    });
 });

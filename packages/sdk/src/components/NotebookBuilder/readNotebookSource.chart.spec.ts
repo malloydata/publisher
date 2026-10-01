@@ -67,4 +67,11 @@ describe("readNotebookSource: chart lines", () => {
       expect(source.cells[1].chart!.unmodelled).toBeUndefined();
       expect(source.cells[0].chart).toBeUndefined();
    });
+
+   it("does not take a word inside a quoted tag value for a chart line", async () => {
+      const source = await read(
+         `${HEAD}# label="Sales viz"\nrun: a -> { select: x }\n`,
+      );
+      expect(source.cells[1].chart!.unmodelled).toBeUndefined();
+   });
 });

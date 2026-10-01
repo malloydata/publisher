@@ -35,6 +35,7 @@ const catalog = {
             { name: "by_brand_view" },
             { name: "kpis", aggregateOnly: true },
             { name: "table_view" },
+            { name: "odd view" },
          ],
          givens: [],
          fields: [],
@@ -105,9 +106,7 @@ describe("DashboardBuilder: charts", () => {
             .getByRole("combobox", { name: "Chart, a by_brand", hidden: true })
             .getAttribute("aria-disabled"),
       ).toBe("true");
-      expect(
-         screen.getByText(/chart line the builder does not model/),
-      ).toBeDefined();
+      expect(screen.getByText(/is not one the builder models/)).toBeDefined();
       fireEvent.change(screen.getByLabelText("Tile title"), {
          target: { value: "Brands" },
       });
@@ -172,5 +171,20 @@ describe("DashboardBuilder: charts", () => {
       expect(written).toContain(
          `  ${chartLineText("big_value")}\n  view: kpis_tile is kpis`,
       );
+   });
+
+   it("says why a view the writer cannot name is not addable", async () => {
+      await mount();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Add tile", hidden: true }),
+      );
+      fireEvent.click(screen.getByLabelText("View odd view"));
+      expect(
+         screen.getByText(/"odd view" is not a plain Malloy name/),
+      ).toBeDefined();
+      expect(
+         (screen.getByRole("button", { name: "Add tile" }) as HTMLButtonElement)
+            .disabled,
+      ).toBe(true);
    });
 });

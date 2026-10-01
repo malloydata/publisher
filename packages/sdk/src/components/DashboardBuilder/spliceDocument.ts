@@ -1143,7 +1143,16 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          const blockers = tags.filter((tag) => mentionsChartTag(tag.text));
          const ours = tags.filter((tag) => parseChartLine(tag.text));
          const stuck =
-            blockers.length > 0 ? blockers : ours.length > 1 ? ours : [];
+            was.chart === "custom"
+               ? tags.filter(
+                    (tag) =>
+                       parseChartLine(tag.text) || mentionsChartTag(tag.text),
+                 )
+               : blockers.length > 0
+                 ? blockers
+                 : ours.length > 1
+                   ? ours
+                   : [];
          if (stuck.length > 0) {
             return {
                ok: false,
@@ -1235,11 +1244,30 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 const chartOf = (tile: DashboardTile) =>
    tile.chart === "default" ? undefined : tile.chart;
 
+/** The tile as the writer compares it: "default" is no line, and the read-only `chartLines` are not part of what is asked for. */
 const withoutDefaultChart = (tile: DashboardTile): DashboardTile => {
-   if (tile.chart !== "default") return tile;
-   const { chart: _chart, ...rest } = tile;
-   return rest;
+   const { chartLines: _lines, ...rest } = tile;
+   if (rest.chart !== "default") return rest;
+   const { chart: _chart, ...bare } = rest;
+   return bare;
 };
+
+/** A matched tile with no `chart` stated is unchanged, so only an explicit "default" removes a line. */
+function keepUnstatedCharts(
+   current: DashboardDocument,
+   next: DashboardDocument,
+): DashboardDocument {
+   const was = new Map(current.tiles.map((t) => [tileKey(t), t]));
+   return {
+      ...next,
+      tiles: next.tiles.map((tile) => {
+         const before = was.get(tileKey(tile));
+         return tile.chart === undefined && before?.chart !== undefined
+            ? { ...tile, chart: before.chart }
+            : tile;
+      }),
+   };
+}
 
 /** A name the writer emits unquoted, or why it cannot be written. */
 const nameProblem = (name: string) =>
@@ -1285,6 +1313,12 @@ function unwritable(
       if (knownSources.has(source.name)) continue;
       for (const name of [source.name, source.base]) {
          const problem = nameProblem(name);
+         if (problem) return problem;
+      }
+   }
+   if (next.description !== current.description) {
+      for (const line of (next.description ?? "").split(/\r?\n/)) {
+         const problem = annotationTextProblem("description line", line);
          if (problem) return problem;
       }
    }
@@ -1613,7 +1647,7 @@ function planReferenceFilters(
 
 export async function spliceDashboardDocument(
    sourceText: string,
-   next: DashboardDocument,
+   requested: DashboardDocument,
 ): Promise<SpliceResult> {
    const before = await readDashboardDocument(sourceText);
    if (readFailed(before)) {
@@ -1623,6 +1657,7 @@ export async function spliceDashboardDocument(
       };
    }
    const current = before.document;
+   const next = keepUnstatedCharts(current, requested);
    const shape = checkShape(current, next);
    if ("reason" in shape) return shape;
    const problem = unwritable(current, next);

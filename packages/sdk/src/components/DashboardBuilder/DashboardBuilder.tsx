@@ -292,7 +292,7 @@ export function DashboardBuilder({
       [fieldsBySource, catalog],
    );
    // The catalog's view behind the tile whose menu is open, for the charts the
-   // picker may offer; an inline or opaque tile has none.
+   // picker may offer: a reference tile's base view, else a view of the tile's own name.
    const menuTile =
       menu === undefined ? undefined : editor.document.tiles[menu.index];
    const menuView = (() => {

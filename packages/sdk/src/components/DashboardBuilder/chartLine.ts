@@ -70,7 +70,8 @@ export function parseChartLine(line: string): ChartLineParts | undefined {
 export function mentionsChartTag(line: string): boolean {
    const trimmed = line.trim();
    if (!/^#[ \t]/.test(trimmed) || parseChartLine(trimmed)) return false;
-   return (trimmed.match(/[A-Za-z_]+/g) ?? []).some((word) =>
+   const unquoted = trimmed.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+   return (unquoted.match(/[A-Za-z_]+/g) ?? []).some((word) =>
       LINE_NAMES.has(word),
    );
 }
@@ -107,3 +108,7 @@ export function chartStateOfTagLines(lines: string[]): ChartState | undefined {
    if (lines.some(mentionsChartTag)) return "custom";
    return ours.length === 0 ? undefined : chartStateOf(ours);
 }
+
+/** The lines of `lines` that are about the chart, recognized or not: what a "custom" state is made of. */
+export const chartLinesOf = (lines: string[]): string[] =>
+   lines.filter((line) => parseChartLine(line) || mentionsChartTag(line));
