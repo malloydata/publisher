@@ -418,22 +418,13 @@ function fieldUsageClosure(
    return { paths, truncated: false };
 }
 
-/** Whether `field` is a composite source's stand-in for a field its members
- *  define: `{ node: "compositeField" }` in place of an expression. */
 function isCompositePlaceholder(field: FieldDef): boolean {
    return (field as { e?: { node?: unknown } }).e?.node === "compositeField";
 }
 
-/**
- * Whether the executed struct can be `member` of a composite, as far as which
- * rows it reads: the same relation (`name`), the same parameter bindings, and
- * every one of the member's own `where:` conditions still applied. The
- * executed struct may carry more conditions (the composite's, the caller's),
- * which only narrow it, so its rows are never more than the member's. Compared
- * structurally rather than by object identity, because the declaring
- * composite can come from a different compile than the executed struct (a
- * sibling model's, when the entry model imports the composite).
- */
+/** Structural, not by identity: the declaring composite can come from a
+ *  sibling model's compile. Every member condition must still apply, so the
+ *  executed rows never exceed the member's. */
 function couldExecuteAsMember(member: SourceDef, executed: SourceDef): boolean {
    if (member.name !== executed.name) return false;
    const m = member as unknown as Record<string, unknown>;
@@ -448,8 +439,6 @@ function couldExecuteAsMember(member: SourceDef, executed: SourceDef): boolean {
    );
 }
 
-/** The leaf members of a composite, through nested composites, that the
- *  executed struct could be — see {@link couldExecuteAsMember}. */
 function candidateMembers(
    composite: SourceDef,
    executed: SourceDef,
@@ -468,14 +457,6 @@ function candidateMembers(
    return out;
 }
 
-/**
- * The member of `composite` that wrote `condition` into its own `where:`, when
- * `executed` could be that member ({@link couldExecuteAsMember}) — the
- * declaring source for a filter authored inside `compose(m extend { where: … })`.
- * Matched structurally, like the rest of the member lookup, so the binding
- * check that follows still compares the condition's fields on the member with
- * the executed struct's; `undefined` when no candidate member carries it.
- */
 function memberDeclaringCondition(
    composite: SourceDef,
    executed: SourceDef,
@@ -489,25 +470,9 @@ function memberDeclaringCondition(
    );
 }
 
-/**
- * `declaring` with each composite placeholder replaced by the definition it
- * stands for on THIS execution. A filter declared on a composite
- * (`where: is_monthly` over
- * `compose(daily extend {…}, monthly extend { dimension: is_monthly is true })`)
- * is otherwise compared placeholder-against-definition, which never matches,
- * so every such filter was refused.
- *
- * A placeholder is replaced by a member's own field only when the executed
- * struct could be that member ({@link couldExecuteAsMember}) AND its field of
- * that name is identical to the member's. Fail-closed by construction: a
- * field rebound on the composite or in the caller's text (`rename:` then
- * `dimension:`) is not the member's definition, and a rebinding that
- * reproduces some OTHER member's definition onto the executed rows is not a
- * candidate's — either way the placeholder stays and fails the comparison as
- * before. The substituted field brings the member's `refSummary`, so
- * {@link fieldUsageClosure} goes on to check what that definition reads,
- * which the placeholder never recorded.
- */
+/** A placeholder becomes the candidate member's own field only when the
+ *  executed field is identical to it; otherwise it stays, and fails the
+ *  comparison. */
 function withCompositeMembersResolved(
    declaring: SourceDef,
    executed: SourceDef,
@@ -1305,10 +1270,7 @@ export function assertInheritedSourceFiltersBind(
    depth = 0,
    visited: Set<SourceDef> = new Set(),
    alreadyProven: ReadonlySet<FilterCondition> = new Set(),
-   // The composite run target `struct` was resolved from, when it is a
-   // composite's member: a `where:` written inside `compose(m extend {…})`
-   // belongs to that anonymous member, which no derivation link or registry
-   // entry leads back to. See {@link memberDeclaringCondition}.
+   // A member's own `where:` has no derivation link back to the member.
    compositeRunTarget: SourceDef | undefined = undefined,
 ): void {
    if (visited.has(struct)) return;

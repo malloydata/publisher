@@ -1,20 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-/**
- * An inherited `where:` on a composite source is declared against the
- * composite, whose fields compile to `{ node: "compositeField" }` placeholders,
- * and executed against the member Malloy resolves the query to, which carries
- * the real definitions. These pin that the filter-binding check reads through
- * the placeholder to the member's own field — so the author's filter is served
- * — while a rebinding of that field, or of anything it reads, on the composite
- * is still refused. Through the real `Model.create` / `getQueryResults` path,
- * and through `Package.create` with the composite in an imported file, where
- * the declaring composite comes from a sibling model's own compile.
- *
- * Seed: daily has 3 rows (customers 1, 1, 2; amounts 10, 20, 30), monthly has
- * 4 rows (customers 1, 2, 2, 2). Customer 1 is retail, customer 2 wholesale.
- */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -136,7 +122,6 @@ async function count(model: Model, queryText: string): Promise<unknown> {
    return rows[0]?.n;
 }
 
-/** Denied, and never served: a served result fails with the rows it returned. */
 async function expectDenied(model: Model, queryText: string): Promise<void> {
    let served: unknown = "<not served>";
    try {
@@ -251,8 +236,7 @@ describe("filter binding: a where: declared on a composite member", () => {
    });
 });
 
-/** The seed as inline literals: a package-load worker compiles in its own
- *  process with its own DuckDB, which never sees tables seeded here. */
+// The package-load worker compiles with its own DuckDB, so rows are inline.
 const DAILY_SQL =
    "select 1 as customer_id, 10 as amount union all select 1, 20 union all select 2, 30";
 const MONTHLY_SQL =

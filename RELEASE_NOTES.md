@@ -54,13 +54,7 @@ A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it
 
 ## [Unreleased] — A `where:` on a composite source is served again
 
-Since 0.8.1, a query against a composite source that carries a `where:` could answer 403 `Access denied for source "<member>"`, with no gate anywhere in the package. Three shapes were refused:
-
-- A `where:` on the composite over a field its members declare (`where: is_monthly` over `compose(daily extend {…}, monthly extend { dimension: is_monthly is true })`), since 0.8.1. Malloy compiles a composite's fields as `compositeField` placeholders, and the filter-binding check compared the placeholder with the resolved member's real definition, which never matches.
-- A `where:` on the composite through a join it declares (`where: customer.segment = 'retail'`), since 0.8.3, which added the columns a join's ON reads. Same comparison, on the ON's columns.
-- A `where:` a member declares itself (`compose(t extend { … }, t extend { where: amount > 15; … })`), since 0.8.1, for any query the composite resolves to that member: the check could not find the anonymous member as the condition's declaring source.
-
-The check now identifies the member the query executes as: the same relation and parameters, with every one of the member's own conditions still applied. It reads a placeholder as that member's definition when the executed field is identical to it, and goes on to check what that definition reads. A member's own condition is checked against that member. This holds when the composite is imported from another file, so the declaring composite comes from a sibling model's compile. A field rebound on the composite or in the caller's text, by `rename:` and `dimension:`, is still refused, as is a rebinding of a column a member's dimension or the composite's join reads, and a rebinding that would move the query onto another member's rows. Excepting a field a filter reads is still refused, as it is on any source. Nothing in a package changes; upgrading is enough. See #1277.
+Since 0.8.1, a query on a composite source carrying a `where:` could answer 403 `Access denied for source "<member>"` with no gate in the package: a `where:` on a field the members declare, one written inside a member, and, since 0.8.3, one through a join declared on the composite. These are served again. Rebinding a field such a filter reads is still refused. Upgrading is enough. See #1277.
 
 ## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
