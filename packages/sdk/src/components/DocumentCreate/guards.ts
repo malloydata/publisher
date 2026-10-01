@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { annotationTextProblem } from "../DashboardBuilder/annotationText";
-import { isIdentifier } from "../DashboardBuilder/malloyText";
+import { isBareName } from "../DashboardBuilder/malloyText";
 import type { DocumentType } from "../DocumentStorage";
 
 export const malloyName = (name: string) =>
-   isIdentifier(name) ? name : `\`${name}\``;
+   isBareName(name) ? name : `\`${name}\``;
 
 /** What a new document is made from: a view of a source in a model. */
 export interface NewDocument {
@@ -38,7 +38,7 @@ export function newDocumentProblem(
       if (
          name.trim() === "" ||
          /[`\r\n\\]/.test(name) ||
-         (kind === "dashboard" && !isIdentifier(name))
+         (kind === "dashboard" && !isBareName(name))
       )
          return `The ${what} name ${JSON.stringify(name)} cannot be written as a Malloy name.`;
    return undefined;

@@ -919,6 +919,41 @@ given: CATEGORY :: filter<string> is f''`);
    });
 });
 
+describe("spliceDashboardDocument: a given's suggest", () => {
+   const SUGGESTED = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+# label="Brand" suggest { query=brand_suggest dimension="brand" }
+given: BRAND :: filter<string> is f''
+
+source: a is one extend {
+  view: x is vx
+}`;
+
+   it("relabels a given whose suggest is a query, writing the query quoted", async () => {
+      const out = await spliced(SUGGESTED, (d) => {
+         d.localGivens![0].label = "Brand name";
+      });
+      expect(out).toContain(
+         `# label="Brand name" suggest { query="brand_suggest" dimension="brand" }`,
+      );
+      expect((await openDocument(out)).localGivens![0].suggest).toEqual({
+         query: "brand_suggest",
+         dimension: "brand",
+      });
+   });
+
+   it("refuses a changed suggest dimension or query that reads as an access-control tag", async () => {
+      for (const field of ["dimension", "query"] as const) {
+         const reason = await refused(SUGGESTED, (d) => {
+            d.localGivens![0].suggest![field] = "# authorize";
+         });
+         expect(reason).toContain("access-control");
+      }
+   });
+});
+
 describe("spliceDashboardDocument: drills", () => {
    const WITH_DIMENSION = `## artifact { title="T" tiles=["a -> x"] }
 import "../m.malloy"

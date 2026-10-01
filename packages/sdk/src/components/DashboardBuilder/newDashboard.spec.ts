@@ -42,6 +42,19 @@ describe("a new dashboard", () => {
       expect(document.tiles[0].colspan).toBe(6);
    });
 
+   it("trims the title once, and refuses a source named like a keyword", () => {
+      const base = {
+         title: "  Sales  ",
+         modelPath: "m.malloy",
+         source: "s",
+         view: "v",
+      };
+      expect(newDashboardSource(base)).toContain('title="Sales"');
+      expect(newDashboardProblem({ ...base, source: "date" })).toContain(
+         "cannot be written",
+      );
+   });
+
    it("refuses a title, source or view it cannot write, instead of writing a broken file", () => {
       const base = {
          title: "Sales",

@@ -25,6 +25,15 @@ describe("queryCellText", () => {
       );
    });
 
+   it("back-quotes a name spelled like a Malloy keyword", () => {
+      expect(queryCellText({ source: "source", view: "date" }, undefined)).toBe(
+         "run: `source` -> `date`\n",
+      );
+      expect(queryCellText({ source: "Is", view: "v" }, undefined)).toBe(
+         "run: `Is` -> v\n",
+      );
+   });
+
    it("back-quotes a name that is not a bare identifier", () => {
       expect(queryCellText({ source: "my src", view: "v" }, undefined)).toBe(
          "run: `my src` -> v\n",

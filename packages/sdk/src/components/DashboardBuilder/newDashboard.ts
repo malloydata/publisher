@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { annotationTextProblem } from "./annotationText";
-import { isIdentifier } from "./malloyText";
+import { isBareName } from "./malloyText";
 
 /**
  * A new dashboard file, the way the builder would have written it: the
@@ -39,7 +39,7 @@ export function newDashboardProblem({
       ["source", source],
       ["view", view],
    ] as const)
-      if (!isIdentifier(name))
+      if (!isBareName(name))
          return `The ${what} name ${JSON.stringify(name)} cannot be written as a Malloy name.`;
    if (/["\\\r\n]/.test(modelPath))
       return `The model path ${JSON.stringify(modelPath)} cannot be written into an import.`;
@@ -60,7 +60,7 @@ function writeNewDashboard({
 }: NewDashboard): string {
    const extension = `${source}_tiles`;
    const tile = `${view}_tile`;
-   const quoted = `"${title.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+   const quoted = `"${title.trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
    return [
       "##! experimental.givens",
       `## artifact { title=${quoted} tiles=["${extension} -> ${tile}"] } dashboard { columns=12 }`,

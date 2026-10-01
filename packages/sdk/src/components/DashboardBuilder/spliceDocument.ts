@@ -20,6 +20,7 @@ import {
    artifactLine,
    descriptionNotes,
    hasNonQuotedTiles,
+   isBareName,
    isIdentifier,
 } from "./malloyText";
 import {
@@ -228,7 +229,7 @@ function givenTagLine(given: LocalGiven): string | undefined {
          given.suggest.source !== undefined
             ? `source=${given.suggest.source}`
             : given.suggest.query !== undefined
-              ? `query=${given.suggest.query}`
+              ? `query=${quoted(given.suggest.query)}`
               : undefined;
       parts.push(
          `suggest { ${by ? `${by} ` : ""}dimension=${quoted(given.suggest.dimension)} }`,
@@ -1270,8 +1271,8 @@ function keepUnstatedCharts(
 }
 
 /** A name the writer emits unquoted, or why it cannot be written. */
-const nameProblem = (name: string) =>
-   isIdentifier(name)
+const nameProblem = (name: string, bare = isBareName) =>
+   bare(name)
       ? undefined
       : `The name ${JSON.stringify(name)} cannot be written as a Malloy name.`;
 
@@ -1335,7 +1336,7 @@ function unwritable(
    for (const given of next.localGivens ?? []) {
       const was = givens.get(given.name);
       if (was === undefined) {
-         const problem = nameProblem(given.name);
+         const problem = nameProblem(given.name, isIdentifier);
          if (problem) return problem;
       }
       const source = given.suggest?.source;
@@ -1343,13 +1344,12 @@ function unwritable(
          const problem = nameProblem(source);
          if (problem) return `The suggest source is not a name. ${problem}`;
       }
-      const query = given.suggest?.query;
-      if (
-         query !== undefined &&
-         query !== was?.suggest?.query &&
-         /[\r\n]/.test(query)
-      )
-         return "A suggest query is one line.";
+      for (const key of ["query", "dimension"] as const) {
+         const text = given.suggest?.[key];
+         if (text === undefined || text === was?.suggest?.[key]) continue;
+         const problem = annotationTextProblem(`suggest ${key}`, text);
+         if (problem) return problem;
+      }
       for (const key of ["label", "description"] as const) {
          const text = given[key];
          if (text === undefined || text === givens.get(given.name)?.[key])

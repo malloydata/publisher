@@ -66,6 +66,16 @@ describe("newDocumentProblem", () => {
       ).toBeUndefined();
    });
 
+   it("back-quotes a source named like a keyword, and a dashboard refuses it", () => {
+      const text = newNotebookSource({ ...INPUT, source: "source", view: "is" });
+      expect(text).toContain("import { `source` }");
+      expect(text).toContain("run: `source` -> `is`");
+      expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);
+      expect(
+         newDocumentProblem("dashboard", { ...INPUT, source: "date" }),
+      ).toMatch(/source name/);
+   });
+
    it("trims the title once, for the tag and the heading", () => {
       const text = newNotebookSource({ ...INPUT, title: "  Q3  " });
       expect(text).toContain('title="Q3"');

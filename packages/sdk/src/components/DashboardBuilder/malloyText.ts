@@ -12,6 +12,17 @@ const IDENT = "[A-Za-z_][A-Za-z0-9_]*";
 export const isIdentifier = (text: string) =>
    new RegExp(`^${IDENT}$`).test(text);
 
+/** Malloy's keywords (case-insensitive), from the lexer; a name spelled like one needs back-quotes. Static so the main entry never imports the compiler. */
+const RESERVED = new Set(
+   `accept aggregate all and as asc avg boolean by calculate calculation case cast compose connection count date day declare desc dimension distinct drill else end except exclude export extend false filter for from full given group_by grouped_by has having hour import in include index inner internal is join_cross join_many join_one json left like limit max measure min minute month nest not now null number on or order_by partition_by pick primary_key private public quarter query rename right run sample second select source sql string sum table then this timestamp timestamptz timezone to top true type view virtual week when where with year`.split(
+      " ",
+   ),
+);
+
+/** A name that can stand bare in Malloy text: identifier-shaped and not a keyword. */
+export const isBareName = (text: string) =>
+   isIdentifier(text) && !RESERVED.has(text.toLowerCase());
+
 /** The server's rule for the tag line: `## artifact` at the start of a line. */
 export const ARTIFACT_LINE = /^##[ \t]*artifact\b/;
 

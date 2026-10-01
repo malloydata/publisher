@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogSource, PackageCatalog } from "./catalog";
 import type { ChartPick } from "./chartLine";
-import { isIdentifier } from "./malloyText";
+import { isBareName } from "./malloyText";
 import type { DashboardDocument } from "./document";
 import { ChartPicker } from "./ChartPicker";
 import { AppDialog } from "../AppDialog";
@@ -96,7 +96,7 @@ export function AddTileDialog({
 
    const canAdd = base !== "" && view !== "";
    const unwritable = [base, view]
-      .filter((name) => name !== "" && !isIdentifier(name))
+      .filter((name) => name !== "" && !isBareName(name))
       .map(
          (name) =>
             `"${name}" is not a plain Malloy name, so a tile cannot be written for it.`,

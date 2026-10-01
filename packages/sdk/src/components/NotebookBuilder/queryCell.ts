@@ -7,7 +7,7 @@ import {
    type ChartState,
 } from "../DashboardBuilder/chartLine";
 import { annotationTextProblem } from "../DashboardBuilder/annotationText";
-import { isIdentifier } from "../DashboardBuilder/malloyText";
+import { isBareName } from "../DashboardBuilder/malloyText";
 
 /** What a query cell the builder adds runs: a view of a source, and an optional caption. */
 export interface QueryRun {
@@ -17,7 +17,7 @@ export interface QueryRun {
 }
 
 const malloyName = (name: string) =>
-   isIdentifier(name) ? name : `\`${name}\``;
+   isBareName(name) ? name : `\`${name}\``;
 
 /** Why a caption cannot be written, or undefined when it can. */
 export function captionProblem(caption: string): string | undefined {
