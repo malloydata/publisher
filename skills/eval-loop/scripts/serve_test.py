@@ -221,5 +221,195 @@ class ServerCmd(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--mcp_port") + 1], "4102")
 
 
+def a_set(toml: str, truth_package: bool = True) -> pathlib.Path:
+    d = pathlib.Path(tempfile.mkdtemp(prefix="serve-set-"))
+    (d / "set.json").write_text(json.dumps({"name": "s", "truthPackage": "s-truth"}))
+    (d / "eval.toml").write_text(toml)
+    (d / "pkg").mkdir()
+    if truth_package:
+        (d / "truth-package").mkdir()
+    return d.resolve()
+
+
+TOML = """
+[model]
+environment = "examples"
+package = "storefront"
+repo = "pkg"
+port = 4000
+mcp_port = 4040
+[truth]
+port = 4881
+mcp_port = 4882
+"""
+
+
+class Roles(unittest.TestCase):
+    def test_the_model_role_serves_the_model_package(self):
+        d = a_set(TOML)
+        got = serve.role_config(serve.config.load(d), "model")
+        self.assertEqual(got, {"frozenConfig": False, "environments": [
+            {"name": "examples", "connections": [], "packages": [
+                {"name": "storefront", "location": str((d / "pkg").resolve())}]}]})
+
+    def test_the_truth_role_serves_only_the_truth_package(self):
+        # This is the heredoc the tour README used to have people paste.
+        d = a_set(TOML)
+        got = serve.role_config(serve.config.load(d), "truth")
+        self.assertEqual(got, {"frozenConfig": False, "environments": [
+            {"name": "truth", "connections": [], "packages": [
+                {"name": "s-truth",
+                 "location": str((d / "truth-package").resolve())}]}]})
+
+    def test_a_truth_package_inside_the_model_package_is_refused_by_both_roles(self):
+        # The leak is the MODEL server serving the truth package's .malloy, so
+        # refusing only the truth role would still leave it open.
+        d = a_set(TOML + 'package_dir = "pkg/evals/truth"\n')
+        (d / "pkg" / "evals" / "truth").mkdir(parents=True)
+        for role in ("model", "truth"):
+            with self.subTest(role=role):
+                with self.assertRaises(SystemExit) as e:
+                    serve.role_config(serve.config.load(d), role)
+                self.assertIn("the model server serves it to the answerer",
+                              str(e.exception))
+
+    def test_a_truth_package_at_the_model_package_is_refused(self):
+        d = a_set(TOML + 'package_dir = "pkg"\n')
+        with self.assertRaises(SystemExit) as e:
+            serve.role_config(serve.config.load(d), "truth")
+        self.assertIn("the model server serves it to the answerer", str(e.exception))
+
+    def test_a_truth_package_with_no_model_repo_is_refused_not_passed(self):
+        d = a_set("[truth]\n")
+        with self.assertRaises(SystemExit) as e:
+            serve.role_config(serve.config.load(d), "truth")
+        self.assertIn("names no model package directory", str(e.exception))
+
+    def test_the_truth_role_needs_a_truth_section(self):
+        d = a_set("[model]\nrepo = \"pkg\"\n")
+        with self.assertRaises(SystemExit) as e:
+            serve.main(["--role", "truth", "--set", str(d)])
+        self.assertIn("has no [truth] section", str(e.exception))
+
+    def test_a_keyless_server_says_it_ranks_lexically(self):
+        self.assertIn("ranks get_context lexically", serve.retrieval_note({}))
+        self.assertIn("lexically",
+                      serve.retrieval_note({"EMBEDDING_API_KEY": "  "}))
+        self.assertIsNone(serve.retrieval_note({"EMBEDDING_API_KEY": "k"}))
+
+    def test_a_role_on_the_other_roles_port_is_refused(self):
+        cfg = serve.config.load(a_set(TOML))
+        err = serve.port_clash(cfg, "truth", 4000, 4882)
+        self.assertIn("which the model server uses", err)
+        self.assertIsNone(serve.port_clash(cfg, "truth", 4881, 4882))
+
+    def test_a_changed_config_forces_init(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        self.assertEqual(serve.write_config(root, {"a": 1}), (True, None))
+        self.assertEqual(serve.write_config(root, {"a": 1})[0], False)
+        self.assertEqual(serve.write_config(root, {"a": 2})[0], True)
+        (root / serve.DB_NAME).write_text("")
+        seed, why = serve.init_decision(root, reinit=False, config_changed=True)
+        self.assertTrue(seed)
+        self.assertIn("publisher.config.json changed", why)
+
+    def test_a_store_with_no_config_file_is_re_read(self):
+        """A store seeded by a start without --role has no file to compare."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        (root / serve.DB_NAME).write_text("")
+        changed, _ = serve.write_config(root, {"a": 1})
+        self.assertTrue(changed)
+        self.assertTrue(serve.init_decision(root, False, changed)[0])
+
+    def test_a_failed_start_puts_the_old_config_back(self):
+        """So the next start still sees the change, and still passes --init."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        serve.write_config(root, {"a": 1})
+        _, previous = serve.write_config(root, {"a": 2})
+        serve.restore_config(root, previous)
+        self.assertEqual(serve.write_config(root, {"a": 2})[0], True)
+
+    def test_a_port_flag_that_disagrees_with_eval_toml_is_refused(self):
+        d = a_set(TOML)
+        with self.assertRaises(SystemExit) as e:
+            serve.main(["--role", "model", "--set", str(d), "--port", "4999"])
+        self.assertIn("every later step reads [model] port = 4000", str(e.exception))
+        self.assertIn("Fix: set `port = 4999` under [model]", str(e.exception))
+
+    def test_a_taken_mcp_port_is_refused_not_shared(self):
+        # The REST port is free and the MCP port is not: the case `alive`
+        # missed, where two servers ended up listening on one MCP port.
+        d = a_set(TOML)
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        server = root / "pub" / "dist" / "server.mjs"
+        server.parent.mkdir(parents=True)
+        server.write_text("")
+        with mock.patch.object(serve, "listening", side_effect=lambda p: p == 4040):
+            with self.assertRaises(SystemExit) as e:
+                serve.main(["--role", "model", "--set", str(d),
+                            "--server-root", str(root),
+                            "--publisher-dir", str(root / "pub")])
+        self.assertIn("port 4040 is already in use", str(e.exception))
+        self.assertIn("change `mcp_port` under [model]", str(e.exception))
+
+    def test_listening_sees_a_bound_socket(self):
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        try:
+            self.assertTrue(serve.listening(s.getsockname()[1]))
+        finally:
+            s.close()
+
+    def test_a_relative_publisher_dir_is_resolved_before_use(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        with mock.patch.object(serve, "alive", return_value=False):
+            with self.assertRaises(SystemExit) as e:
+                serve.main(["--server-root", str(root),
+                            "--publisher-dir", "no/such/server"])
+        self.assertIn(str(pathlib.Path("no/such/server").resolve()),
+                      str(e.exception))
+
+    def test_a_start_that_never_answers_is_stopped_and_the_config_restored(self):
+        """A timeout ends like a crash: nothing left running, the old config back."""
+        d = a_set(TOML)
+        root = pathlib.Path(tempfile.mkdtemp(prefix="serve-root-"))
+        (root / "publisher.config.json").write_text('{"old": true}\n')
+        pub = pathlib.Path(tempfile.mkdtemp(prefix="serve-pub-"))
+        (pub / "dist").mkdir()
+        (pub / "dist" / "server.mjs").write_text("")
+        # A process that outlives --wait without binding, the way a stuck start does.
+        stuck = [sys.executable, "-c", "import time; time.sleep(60)"]
+        with mock.patch.object(serve, "listening", return_value=False), \
+             mock.patch.object(serve, "alive", return_value=False), \
+             mock.patch.object(serve, "server_cmd", return_value=stuck):
+            code = serve.main(["--role", "model", "--set", str(d),
+                               "--server-root", str(root),
+                               "--publisher-dir", str(pub), "--wait", "1",
+                               "--no-warm-retrieval"])
+        self.assertEqual(code, 1)
+        self.assertEqual((root / "publisher.config.json").read_text(),
+                         '{"old": true}\n')
+        self.assertFalse((root / "publisher.pid").exists())
+
+
+
+class WarmByDefault(unittest.TestCase):
+    def test_the_model_role_warms_when_there_is_a_key(self):
+        self.assertTrue(serve.warm_by_default("model", False, {"EMBEDDING_API_KEY": "k"}))
+
+    def test_no_key_nothing_to_warm(self):
+        self.assertFalse(serve.warm_by_default("model", False, {}))
+        self.assertFalse(serve.warm_by_default("model", False, {"EMBEDDING_API_KEY": " "}))
+
+    def test_the_flag_opts_out(self):
+        self.assertFalse(serve.warm_by_default("model", True, {"EMBEDDING_API_KEY": "k"}))
+
+    def test_the_truth_server_is_never_warmed(self):
+        """Nothing ranks on it; the answerer never reaches it."""
+        self.assertFalse(serve.warm_by_default("truth", False, {"EMBEDDING_API_KEY": "k"}))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

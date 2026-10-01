@@ -256,7 +256,8 @@ otherwise a modelling agent is dispatched to fix a model that is already right.
 
 ## Step 6: Append events, then stop
 
-Append to `evals/<set>/runs/<runId>/events.jsonl` with `caseId` set. Shapes
+Append to `<workdir>/runs/<runId>/events.jsonl` with `caseId` set (the run
+directory `eval.py run` printed; the workdir is the set's, from `eval.toml`). Shapes
 live in `reference/ledger-schema.md`.
 
 1. `attempt`: qid, sample, phase, question_sha, submitted, final_query,

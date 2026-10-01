@@ -52,15 +52,23 @@ different task with its own turn.
 ## Step 1: build the artifacts, before writing a word
 
 ```bash
-python3 skills/eval-loop/scripts/build_run_package.py \
-    --run <run-dir> --set <set-dir> --out /tmp/eval-<label>
-curl -sS -X POST http://<publisher>/api/v0/environments/<env>/packages \
-    -H 'content-type: application/json' \
-    -d '{"name":"eval-<label>","location":"/tmp/eval-<label>"}'
+python3 skills/eval-loop/scripts/eval.py package --set <set-dir> --label <label>
 ```
 
-That builds a Malloy package over the run's own CSVs and registers it with no
-restart. It gives you two things to link:
+That builds a Malloy package over the run's own CSVs, registers it with no
+restart, and prints the two URLs below. It registers on the TRUTH server,
+because the package holds the answer key and the answerer must not reach it.
+If the truth server is not running it says so and prints the `curl` to run
+once it is. A set with no truth server gets no registration: the only
+Publisher is the answerer's. Add a `[truth]` section and
+`eval.py serve truth`, or pass `--on-model-server`, which prints the `curl`
+and the `DELETE` to run before the next run.
+
+It refuses a run with no diagnosis, since the report's cluster views would be
+empty. Run `eval.py diagnose` first; when this run skipped diagnosis on purpose,
+pass `--without-diagnosis` and say in the report that it has no clusters.
+
+It gives you two things to link:
 
 | Artifact | What it is | URL |
 |---|---|---|

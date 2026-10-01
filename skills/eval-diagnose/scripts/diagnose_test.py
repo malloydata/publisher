@@ -14,6 +14,7 @@ something was checked is how a shape error becomes a false claim."""
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -635,6 +636,41 @@ class MatchedPair(unittest.TestCase):
     def test_the_prompt_says_a_flip_is_not_noise(self):
         # The doctrine change, pinned: a flip is a model-quality finding.
         self.assertIn("not noise", diagnose.DIAGNOSE_PROMPT)
+
+class NothingToDiagnose(unittest.TestCase):
+    """A run where everything passed is diagnosed: the report must not refuse it."""
+
+    def setUp(self):
+        import tempfile
+        root = pathlib.Path(tempfile.mkdtemp()).resolve()
+        self.set_dir, self.run = root / "set", root / "run"
+        self.set_dir.mkdir()
+        self.run.mkdir()
+        (self.set_dir / "set.json").write_text('{"name": "s"}')
+        (self.set_dir / "cases.jsonl").write_text("")
+        (self.set_dir / "eval.toml").write_text(
+            '[model]\nenvironment = "e"\npackage = "p"\n')
+        (self.run / "events.jsonl").write_text("")
+
+    def main(self, *extra):
+        with mock.patch("builtins.print"):
+            return diagnose.main(["--run", str(self.run), "--set",
+                                  str(self.set_dir), "--no-role-skills", *extra])
+
+    def test_it_records_an_empty_diagnosis(self):
+        self.assertEqual(self.main(), 0)
+        self.assertEqual((self.run / "clusters.jsonl").read_text(), "")
+
+    def test_a_narrowed_pass_records_nothing(self):
+        self.main("--only", "q1")
+        self.assertFalse((self.run / "clusters.jsonl").exists())
+
+    def test_earlier_clusters_are_kept(self):
+        (self.run / "clusters.jsonl").write_text('{"clusterId": "c1"}\n')
+        self.main()
+        self.assertEqual((self.run / "clusters.jsonl").read_text(),
+                         '{"clusterId": "c1"}\n')
+
 
 if __name__ == "__main__":
     unittest.main()
