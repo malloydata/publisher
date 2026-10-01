@@ -7,9 +7,12 @@ import { logger } from "../../logger";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { Package } from "../../service/package";
 import {
+   DEFAULT_EMBEDDING_RETRY,
    EmbeddingProvider,
+   EmbeddingRetryPolicy,
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
+   MAX_EMBED_BATCH_SIZE,
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
@@ -560,6 +563,11 @@ const oversizeWarned = new Set<string>();
 // always uses the exported constants.
 let cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
 let purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
+// How the sync's bulk calls retry, and how many rows one call carries. Mutable
+// only so tests can inject a fake sleep and a small batch; production uses
+// the defaults.
+let syncRetryPolicy: EmbeddingRetryPolicy = DEFAULT_EMBEDDING_RETRY;
+let syncBatchSize = MAX_EMBED_BATCH_SIZE;
 
 function metaKey(environmentName: string, packageName: string): string {
    return `${environmentName}\x00${packageName}`;
@@ -666,6 +674,11 @@ export function _resetEmbeddingIndexStateForTests(): void {
    syncMeta.clear();
    cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
    purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
+   // Tests never wait out a backoff: a stub that answers 500 would otherwise
+   // cost the full retry ladder in real time. The retry specs install their
+   // own policy through _setSyncRetryForTests.
+   syncRetryPolicy = { ...DEFAULT_EMBEDDING_RETRY, sleep: async () => {} };
+   syncBatchSize = MAX_EMBED_BATCH_SIZE;
 }
 
 /** Test seam: shrink the timing windows to drive real expiry in tests. */
@@ -676,6 +689,15 @@ export function _setTimingForTests(t: {
    if (t.cooldownMs !== undefined) cooldownMs = t.cooldownMs;
    if (t.purgeSuppressionMs !== undefined)
       purgeSuppressionMs = t.purgeSuppressionMs;
+}
+
+/** Test seam: the sync's retry policy and rows-per-request. */
+export function _setSyncRetryForTests(t: {
+   policy?: Partial<EmbeddingRetryPolicy>;
+   batchSize?: number;
+}): void {
+   if (t.policy) syncRetryPolicy = { ...syncRetryPolicy, ...t.policy };
+   if (t.batchSize !== undefined) syncBatchSize = t.batchSize;
 }
 
 /** Test seam: clear the per-package cool-downs, keeping sync metas. */
@@ -774,6 +796,59 @@ export async function deleteEnvironmentEmbeddings(
    await db.run(`DELETE FROM entity_embeddings WHERE environment_name = ?`, [
       environmentName,
    ]);
+}
+
+/**
+ * Write one batch of embedded rows with a single multi-row INSERT. One
+ * statement is one transaction, so the batch lands whole or not at all; a
+ * BEGIN/COMMIT around separate statements is not an option on this
+ * connection, because other callers' statements would run inside it. The
+ * rows are unique by key (the diff is over deduped entities), which a
+ * multi-row upsert requires.
+ */
+async function upsertEmbeddingRows(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+   model: string,
+   batch: DesiredFacet[],
+   vectors: number[][],
+): Promise<void> {
+   const now = new Date().toISOString();
+   const params: unknown[] = [];
+   batch.forEach((d, i) => {
+      params.push(
+         environmentName,
+         packageName,
+         d.entity.kind,
+         sourceColumn(d.entity.source),
+         d.entity.name,
+         d.facet,
+         d.entity.modelPath,
+         d.hash,
+         model,
+         vectors[i].length,
+         JSON.stringify(vectors[i]),
+         now,
+      );
+   });
+   const row = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)";
+   await db.run(
+      `INSERT INTO entity_embeddings (
+         environment_name, package_name, entity_kind, entity_source,
+         entity_name, facet, model_path, content_hash, embedding_model,
+         dims, embedding, updated_at
+       ) VALUES ${batch.map(() => row).join(", ")}
+       ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
+       DO UPDATE SET
+         model_path = EXCLUDED.model_path,
+         content_hash = EXCLUDED.content_hash,
+         embedding_model = EXCLUDED.embedding_model,
+         dims = EXCLUDED.dims,
+         embedding = EXCLUDED.embedding,
+         updated_at = EXCLUDED.updated_at`,
+      params,
+   );
 }
 
 /**
@@ -900,46 +975,26 @@ async function syncPackageEmbeddings(
       let rowsChanged = false;
       let deleted = 0;
       try {
-         if (toEmbed.length > 0) {
+         // One request, then one write, per batch, one batch after another.
+         // Each batch is saved as soon as it returns, so a failure on batch k
+         // keeps batches 1..k-1, and a restart resumes through the hash diff
+         // above. Failing transient errors are retried inside embedBatch.
+         for (let start = 0; start < toEmbed.length; start += syncBatchSize) {
+            const batch = toEmbed.slice(start, start + syncBatchSize);
             const vectors = await provider.embedBatch(
-               toEmbed.map((d) => d.text),
+               batch.map((d) => d.text),
                EMBEDDING_BATCH_TIMEOUT_MS,
+               syncRetryPolicy,
             );
-            const now = new Date().toISOString();
-            for (let i = 0; i < toEmbed.length; i++) {
-               const d = toEmbed[i];
-               const vector = vectors[i];
-               await db.run(
-                  `INSERT INTO entity_embeddings (
-                     environment_name, package_name, entity_kind, entity_source,
-                     entity_name, facet, model_path, content_hash, embedding_model,
-                     dims, embedding, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)
-                   ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
-                   DO UPDATE SET
-                     model_path = EXCLUDED.model_path,
-                     content_hash = EXCLUDED.content_hash,
-                     embedding_model = EXCLUDED.embedding_model,
-                     dims = EXCLUDED.dims,
-                     embedding = EXCLUDED.embedding,
-                     updated_at = EXCLUDED.updated_at`,
-                  [
-                     environmentName,
-                     packageName,
-                     d.entity.kind,
-                     sourceColumn(d.entity.source),
-                     d.entity.name,
-                     d.facet,
-                     d.entity.modelPath,
-                     d.hash,
-                     provider.model,
-                     vector.length,
-                     JSON.stringify(vector),
-                     now,
-                  ],
-               );
-               rowsChanged = true;
-            }
+            await upsertEmbeddingRows(
+               db,
+               environmentName,
+               packageName,
+               provider.model,
+               batch,
+               vectors,
+            );
+            rowsChanged = true;
          }
 
          for (const [rowKey, row] of existing) {
