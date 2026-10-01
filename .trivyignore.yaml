@@ -288,5 +288,223 @@ vulnerabilities:
       recursion in toml.parse on deeply nested input. Reached only through the
       connections.toml loaders, which Publisher never calls (see CVE-2026-63376).
       Fixed in toml 4.2.0, a major the parents do not admit.
-misconfigurations: []
+  # HIGH, runtime package, image only: vega-lite 5.23.0 (a dependency of
+  # @malloydata/render, which pins vega-lite ^5.2.0 through 0.0.434) declares a peer on
+  # vega ^5.24, which the root vega 6 does not satisfy, so Bun nests a vega 5 copy
+  # under vega-lite. The lockfile scan does not see nested copies; the image scan does.
+  # Retire when @malloydata/render moves to vega-lite 6 (peer vega ^6).
+  - id: CVE-2025-59840
+    paths:
+      - "publisher/node_modules/vega-lite/node_modules/vega/package.json"
+      - "publisher/node_modules/vega-lite/node_modules/vega-expression/package.json"
+    expired_at: 2026-12-31
+    statement: >
+      vega 5.33.0 and vega-expression 5.1.2, nested under vega-lite 5.23.0 via
+      @malloydata/render. Cross-site scripting through expressions that abuse
+      toString, in environments that set the VEGA_DEBUG global. The server process
+      renders no charts and sets no VEGA_DEBUG. Fixed in vega 6.2.0 and
+      vega-expression 5.2.1 / 6.1.0, which vega-lite 5 does not admit.
+  - id: CVE-2025-66648
+    paths:
+      - "publisher/node_modules/vega-lite/node_modules/vega/node_modules/vega-functions/package.json"
+    expired_at: 2026-12-31
+    statement: >
+      vega-functions 5.18.0, nested under vega 5.33.0 under vega-lite 5.23.0 via
+      @malloydata/render. Cross-site scripting through untrusted input to vega
+      expression functions, a browser-side concern; the server process renders no
+      charts. Fixed in vega-functions 6.1.1, reached only through the vega-lite 6
+      migration (see CVE-2025-59840).
+  # HIGH, Debian packages in the base image, no fixed version published (Trivy status
+  # `affected` or `fix_deferred`). Debian findings carry no package path, so these
+  # entries cannot be path-scoped; they are safe as bare ids because the filesystem
+  # scan never reports OS packages. Re-check on each expiry: `apt-get upgrade` in the
+  # Dockerfile picks up a fix as soon as Debian ships one, and the entry then only
+  # hides a package version that no longer exists in the image.
+  - id: CVE-2026-76642
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1 (packages util-linux, mount, login, bsdutils
+      and the libmount/libblkid family), in the oven/bun base image of the runtime
+      stage. A failed external mount helper still runs privileged X-mount
+      post-hooks. Needs a local caller of mount(8); the server runs as uid 1000 by default and
+      never invokes mount. Not removable: the packages are essential to the base.
+      Debian has published no fix.
+  - id: CVE-2026-78408
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
+      nsenter --join-cgroup leaks root cgroup migration authority. Needs a local
+      caller of nsenter(1); the server runs as uid 1000 by default and never invokes it. Not
+      removable (essential packages). Debian has published no fix.
+  - id: CVE-2026-78409
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
+      X-mount.subdir detached-tree resolution can escape through intermediate
+      symlinks. Needs a local caller of mount(8); the server runs as uid 1000 by default and
+      never invokes mount. Not removable (essential packages). Debian has published
+      no fix.
+  - id: CVE-2026-78410
+    expired_at: 2026-12-31
+    statement: >
+      Debian util-linux 2.41.5-0+deb13u1, in the runtime image's base layer.
+      Restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode
+      redirection. Needs a local caller of mount(8); the server runs as uid 1000 by default and
+      never invokes mount. Not removable (essential packages). Debian has published
+      no fix.
+  - id: CVE-2026-9538
+    expired_at: 2026-12-31
+    statement: >
+      Debian perl 5.40.1-6+deb13u1 (perl, perl-base, perl-modules-5.40), installed as
+      a dependency of git. Archive::Tar denial of service from a crafted tar header
+      with a large entry size. Publisher runs git only to clone packages and runs no
+      perl code on archives. git is a runtime dependency (simple-git), so perl cannot
+      be removed. Debian has deferred the fix.
+  - id: CVE-2025-69720
+    expired_at: 2026-12-31
+    statement: >
+      Debian ncurses 6.5+20250216-2 (ncurses-base, ncurses-bin, libncursesw6), in the
+      oven/bun base image of the runtime stage. Buffer overflow in the ncurses
+      command-line utilities. The server is not an interactive terminal program and
+      no ncurses utility is invoked on untrusted input. Not removable (essential
+      packages). Debian has published no fix.
+  # HIGH, runtime package, unreached code: basic-ftp is a transitive dependency of
+  # get-uri, itself reached through proxy-agent's PAC-script support. The package.json
+  # resolution holds it at ^5.3.1 because every parent admits only 5.x (get-uri 8.0.1,
+  # the latest, declares ^5.3.1). Retire when get-uri admits basic-ftp 6.2.1 or later.
+  - id: CVE-2026-102990
+    paths: ["bun.lock", "publisher/node_modules/basic-ftp/package.json"]
+    expired_at: 2026-12-31
+    statement: >
+      basic-ftp 5.3.1, via get-uri 8.0.1 -> pac-proxy-agent -> proxy-agent. Denial of
+      service from a crafted Unix directory listing returned by an FTP server.
+      Reached only if an operator points a proxy configuration at an ftp:// PAC
+      script; Publisher opens no FTP connection of its own. Fixed in basic-ftp 6.2.1,
+      a major no parent admits.
+  # HIGH, Debian packages in the base image, no fixed version published (arm64 image
+  # only at the time of writing). Bare id for the same reason as the entries above.
+  - id: CVE-2026-16742
+    expired_at: 2026-12-31
+    statement: >
+      Debian systemd 257.13-1~deb13u1 (libsystemd0, libudev1), in the oven/bun base
+      image of the runtime stage. Local privilege escalation through missing
+      home-record signature verification in systemd-homed. Only the shared libraries
+      are installed; systemd-homed does not exist in the image and the server runs as
+      uid 1000 by default. Not removable: other base-image packages depend on the libraries. Debian
+      has published no fix.
+  # HIGH, Debian packages with no fixed version published. curl and libcurl are
+  # installed explicitly in the Dockerfile (build-time downloads) and libcurl is also
+  # git's HTTPS transport, so the libraries cannot be removed.
+  - id: CVE-2026-12064
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. SSH host verification bypass for schemeless SFTP/SCP URLs. Neither the
+      server nor git (HTTPS only here) opens an SFTP or SCP transfer through
+      libcurl; the curl binary runs only in Dockerfile build steps. Debian has
+      published no fix.
+  - id: CVE-2026-8286
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. Insecure connection establishment from a TLS configuration mismatch
+      between transfers. The server does not invoke the curl binary; libcurl is used
+      by git for HTTPS clones of operator-configured repositories. Debian has
+      published no fix.
+  - id: CVE-2026-8458
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. Unauthorized connection reuse from a logic error, relevant to one
+      process making transfers with differing credentials. The server does not
+      invoke the curl binary, and each git clone is its own process. Debian has
+      published no fix.
+  - id: CVE-2026-8927
+    expired_at: 2026-12-31
+    statement: >
+      Debian curl 8.14.1-2+deb13u5 (curl, libcurl4t64, libcurl3t64-gnutls), runtime
+      image. Proxy authentication state is not cleared between transfers. The server
+      does not invoke the curl binary, and each git clone is its own process. Debian
+      has published no fix.
+  # HIGH, Debian expat 2.8.3-1~deb13u1 (libexpat1), installed as a dependency of git.
+  # git links expat only for HTTP push (WebDAV); Publisher uses git to clone. Not
+  # removable while git is a runtime dependency (simple-git). Debian has published no
+  # fix for any of the four.
+  - id: CVE-2026-66046
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. Denial of service from quadratic
+      attribute processing in crafted XML. git parses XML only for HTTP push, which
+      Publisher never performs.
+  - id: CVE-2026-76956
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. Denial of service from hash
+      flooding with crafted XML. git parses XML only for HTTP push, which Publisher
+      never performs.
+  - id: CVE-2026-76957
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. Memory corruption from crafted XML.
+      git parses XML only for HTTP push, which Publisher never performs; no other
+      process in the image parses XML with the system library.
+  - id: CVE-2026-93990
+    expired_at: 2026-12-31
+    statement: >
+      Debian libexpat1 2.8.3-1~deb13u1, via git. XML injection from malformed UTF-16
+      input. git parses XML only for HTTP push, which Publisher never performs.
+  - id: CVE-2026-54369
+    expired_at: 2026-12-31
+    statement: >
+      Debian acl 2.3.2-2+b1 (libacl1), in the oven/bun base image of the runtime
+      stage. Symlink traversal privilege escalation through libacl functions,
+      needing a local caller that applies ACLs to attacker-influenced paths; the
+      server runs as uid 1000 by default and does not. Not removable: base utilities link the
+      library. Debian has published no fix.
+  # CVE-2026-41907 is rated MEDIUM by the uuid advisory; GitHub surfaces it as high.
+  # The nested uuid 8.3.2 and 9.0.1 copies come from parent ranges that stop below 11
+  # (node-cron 3.0.3 pins uuid 8.3.2 exactly; snowflake-sdk and @azure/msal-node
+  # declare ^8; gaxios, teeny-request, @google-cloud/bigquery and @databricks/sql
+  # declare ^9), and Bun has no nested overrides. The server's own direct dependency is uuid ^11, which
+  # is past the fix. Retire as the parents move to uuid 11.1.1 or later.
+  - id: CVE-2026-41907
+    paths:
+      - "publisher/node_modules/@azure/msal-node/node_modules/uuid/package.json"
+      - "publisher/node_modules/@databricks/sql/node_modules/uuid/package.json"
+      - "publisher/node_modules/@google-cloud/bigquery/node_modules/uuid/package.json"
+      - "publisher/node_modules/gaxios/node_modules/uuid/package.json"
+      - "publisher/node_modules/node-cron/node_modules/uuid/package.json"
+      - "publisher/node_modules/snowflake-sdk/node_modules/uuid/package.json"
+      - "publisher/node_modules/teeny-request/node_modules/uuid/package.json"
+      - "packages/server/k6-tests/bun.lock"
+    expired_at: 2026-12-31
+    statement: >
+      uuid 8.3.2, 9.0.1 (runtime, nested under the packages above) and 10.0.0
+      (packages/server/k6-tests, build-time test tooling). Missing buffer bounds
+      check in v3(), v5() and v6() when the caller passes an output buffer; v1(),
+      v4() and v7() already throw on out-of-range writes. A search of each parent's
+      installed sources finds no v3(), v5() or v6() call, only v4(). Fixed in uuid
+      11.1.1, 12.0.1 and 13.0.1, majors the parents do not admit.
+misconfigurations:
+  # docker/Dockerfile.ci is the CI integration-test runner referenced from
+  # docker-compose.yml (profile `ci`). It is never published and not the production
+  # image (see packages/server/README.docker.md). Running as root and installing
+  # recommended packages is what the test container needs: it writes into the
+  # mounted checkout and fetches the JDK repository key over HTTPS, which relies on
+  # ca-certificates arriving as a recommended package.
+  - id: DS-0002
+    paths: ["docker/Dockerfile.ci"]
+    expired_at: 2026-12-31
+    statement: >
+      CI test-runner image with no USER instruction: the test container writes into
+      the mounted checkout and runs as root by design. Not published and not the
+      production image.
+  - id: DS-0029
+    paths: ["docker/Dockerfile.ci"]
+    expired_at: 2026-12-31
+    statement: >
+      apt-get install without --no-install-recommends in the CI test-runner image.
+      The wget and git installs rely on ca-certificates arriving as a recommended
+      package to fetch the Temurin repository key over HTTPS. Not published and not
+      the production image.
 secrets: []
