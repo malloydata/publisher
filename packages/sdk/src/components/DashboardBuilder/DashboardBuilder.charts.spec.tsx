@@ -95,6 +95,23 @@ describe("DashboardBuilder: charts", () => {
       );
    });
 
+   it("treats picking a chart and then Default as no edit on a tile with no chart line", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      choose("a by_cat", "Bar");
+      choose("a by_cat", "Default");
+      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      const save = screen.queryByRole("button", {
+         name: "Save changes",
+         hidden: true,
+      });
+      expect(save === null || (save as HTMLButtonElement).disabled).toBe(true);
+      expect(written).toBeUndefined();
+   });
+
    it("shows a line the builder does not model as locked, and keeps it", async () => {
       let written: string | undefined;
       await mount((source) => {

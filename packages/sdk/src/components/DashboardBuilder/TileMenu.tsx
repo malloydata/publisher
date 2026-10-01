@@ -124,7 +124,12 @@ export function TileMenu({
                            : {})}
                         onChange={(next) =>
                            patch((t) => {
-                              t.chart = next;
+                              const was = tile?.chart;
+                              // Back to where it started is no edit, so the draft must not differ from the tile.
+                              if (next === (was ?? "default")) {
+                                 if (was === undefined) delete t.chart;
+                                 else t.chart = was;
+                              } else t.chart = next;
                            })
                         }
                      />
