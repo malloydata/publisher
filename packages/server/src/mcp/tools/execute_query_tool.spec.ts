@@ -34,16 +34,63 @@ type Handler = (params: Record<string, unknown>) => Promise<{
    }>;
 }>;
 
-function captureHandler(store: Partial<EnvironmentStore>): Handler {
+/**
+ * A server root whose publisher.config.json has the given `mcp` block. With no
+ * argument there is no config file at all, which is what a test that does not
+ * care about the setting gets.
+ */
+const serverRoots: string[] = [];
+function serverRootWith(mcp?: unknown): string {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-config-"));
+   serverRoots.push(dir);
+   if (mcp !== undefined) {
+      fs.writeFileSync(
+         path.join(dir, "publisher.config.json"),
+         JSON.stringify({ frozenConfig: false, environments: [], mcp }),
+      );
+   }
+   return dir;
+}
+afterAll(() => {
+   for (const dir of serverRoots)
+      fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const AUTHORING = { includeHiddenFilesAndSources: true };
+
+function captureTool(
+   store: Partial<EnvironmentStore>,
+   serverRootPath: string = serverRootWith(),
+): {
+   handler: Handler;
+   shape: Record<string, unknown>;
+} {
    let handler: Handler | undefined;
+   let shape: Record<string, unknown> | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      tool: (
+         _name: string,
+         _desc: string,
+         s: Record<string, unknown>,
+         h: Handler,
+      ) => {
+         shape = s;
          handler = h;
       },
    };
-   registerExecuteQueryTool(fakeServer as never, store as EnvironmentStore);
-   if (!handler) throw new Error("handler was not registered");
-   return handler;
+   registerExecuteQueryTool(
+      fakeServer as never,
+      {
+         ...store,
+         serverRootPath,
+      } as EnvironmentStore,
+   );
+   if (!handler || !shape) throw new Error("handler was not registered");
+   return { handler, shape };
+}
+
+function captureHandler(store: Partial<EnvironmentStore>): Handler {
+   return captureTool(store).handler;
 }
 
 function parse(result: { content: Array<{ resource?: { text: string } }> }) {
@@ -298,21 +345,8 @@ describe("execute_query error classification", () => {
       expect(JSON.stringify(parsed.suggestions)).not.toContain(
          "spelled correctly",
       );
-      // The author's way to test it without publishing it.
-      expect(JSON.stringify(parsed.suggestions)).toContain(
-         "includeHiddenFilesAndSources: true",
-      );
-   });
-
-   it("does not offer includeHiddenFilesAndSources on a plain not-found", async () => {
-      // A gated hidden target answers the generic refusal so it reads like a
-      // missing one. Offering the option there would hint that it exists.
-      const handler = captureHandler(
-         storeWhoseQueryThrows(
-            new NotQueryableError('No queryable source "salaries".'),
-         ),
-      );
-      const parsed = parse(await handler(args));
+      // Not a way around the surface. Every agent that hits a curated-out
+      // name reads this, and one told to pass the flag would pass it.
       expect(JSON.stringify(parsed.suggestions)).not.toContain(
          "includeHiddenFilesAndSources",
       );
@@ -434,16 +468,20 @@ describe("execute_query per-query metadata", () => {
 describe("execute_query includeHiddenFilesAndSources", () => {
    // getQueryResults positions: 9 is bypassAuthorize, 10 is
    // includeHiddenFilesAndSources.
-   it("passes true through on both call paths, and never a bypass", async () => {
-      for (const call of [
-         args,
-         { ...args, query: undefined, sourceName: "orders", queryName: "v" },
-      ]) {
+   const calls = [
+      args,
+      { ...args, query: undefined, sourceName: "orders", queryName: "v" },
+   ];
+
+   it("is offered, and passes true through on both call paths, when the config turns it on", async () => {
+      for (const call of calls) {
          const { store, capturedArgs } = storeCapturingMetadata();
-         await captureHandler(store)({
-            ...call,
-            includeHiddenFilesAndSources: true,
-         });
+         const { handler, shape } = captureTool(
+            store,
+            serverRootWith(AUTHORING),
+         );
+         expect(shape).toHaveProperty("includeHiddenFilesAndSources");
+         await handler({ ...call, includeHiddenFilesAndSources: true });
          expect(capturedArgs()[9]).toBe(false);
          expect(capturedArgs()[10]).toBe(true);
       }
@@ -452,9 +490,31 @@ describe("execute_query includeHiddenFilesAndSources", () => {
    it("sends false when the argument is omitted or false", async () => {
       for (const extra of [{}, { includeHiddenFilesAndSources: false }]) {
          const { store, capturedArgs } = storeCapturingMetadata();
-         await captureHandler(store)({ ...args, ...extra });
+         const { handler } = captureTool(store, serverRootWith(AUTHORING));
+         await handler({ ...args, ...extra });
          expect(capturedArgs()[9]).toBe(false);
          expect(capturedArgs()[10]).toBe(false);
+      }
+   });
+
+   it("is not offered, and true is ignored, unless the config turns it on", async () => {
+      // No config file is what every server without the block gets, an
+      // eval's included: an agent answering over the curated surface must not
+      // be able to leave it. A non-boolean value is warned about and ignored.
+      for (const mcp of [
+         undefined,
+         {},
+         { includeHiddenFilesAndSources: false },
+         { includeHiddenFilesAndSources: "true" },
+         "on",
+      ]) {
+         for (const call of calls) {
+            const { store, capturedArgs } = storeCapturingMetadata();
+            const { handler, shape } = captureTool(store, serverRootWith(mcp));
+            expect(shape).not.toHaveProperty("includeHiddenFilesAndSources");
+            await handler({ ...call, includeHiddenFilesAndSources: true });
+            expect(capturedArgs()[10]).toBe(false);
+         }
       }
    });
 });
@@ -468,6 +528,7 @@ describe("execute_query includeHiddenFilesAndSources on a real package", () => {
    let tempDir: string;
    let duckdb: { close: () => Promise<void> };
    let handler: Handler;
+   let store: Partial<EnvironmentStore>;
 
    beforeAll(async () => {
       process.env.PACKAGE_LOAD_WORKERS = "1";
@@ -506,7 +567,7 @@ export { customers }`,
             new FixedConnectionMap(new Map([["duckdb", connection]]), "duckdb"),
       );
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-      handler = captureHandler({
+      store = {
          getEnvironment: async () =>
             ({
                assertCanAdmitQuery: () => undefined,
@@ -515,7 +576,8 @@ export { customers }`,
                },
                getPackage: async () => pkg,
             }) as never,
-      });
+      };
+      handler = captureTool(store, serverRootWith(AUTHORING)).handler;
    });
 
    afterAll(async () => {
@@ -564,5 +626,18 @@ export { customers }`,
       expect(parse(result).error).toContain(
          'Access denied for source "locked"',
       );
+   });
+
+   it("refuses a hidden source even with it, on a server whose config leaves it off", async () => {
+      const curated = captureHandler(store);
+      const result = await curated({
+         environmentName: "env",
+         packageName: "pkg",
+         modelPath: "index.malloy",
+         query: "run: helper -> { select: * }",
+         includeHiddenFilesAndSources: true,
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).error).toContain("published surface");
    });
 });

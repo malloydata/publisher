@@ -7352,7 +7352,12 @@ components:
 
         Only the models list, the model GET and the query route read it, plus
         the MCP `execute_query` tool's argument of the same name, which runs a
-        query the way this route does. The notebook-cell route, the dashboards
+        query the way this route does. MCP offers that argument only when
+        `publisher.config.json` sets `"mcp": { "includeHiddenFilesAndSources":
+        true }`, which is for authoring servers. Without it the argument is not
+        in the tool's schema and is ignored if sent, so an agent answering
+        questions stays on the curated surface.
+        This route is not affected by that setting. The notebook-cell route, the dashboards
         route, the other MCP tools, and the legacy `/projects/...` aliases of
         these routes ignore it.
 

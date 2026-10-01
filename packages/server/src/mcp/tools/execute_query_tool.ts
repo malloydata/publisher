@@ -5,7 +5,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
-import { getQueryTimeoutMs } from "../../config";
+import {
+   getQueryTimeoutMs,
+   isMcpIncludeHiddenFilesAndSources,
+} from "../../config";
 import { logger } from "../../logger";
 import {
    tryAcquireQuerySlot,
@@ -14,7 +17,6 @@ import {
 import { runWithQueryTimeout } from "../../query_timeout";
 import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
 import { EnvironmentStore } from "../../service/environment_store";
-import { OffSurfaceError } from "../../errors";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
    buildMalloyUri,
@@ -87,6 +89,12 @@ const executeQueryShape = {
       ),
 };
 
+// The shape without includeHiddenFilesAndSources, which is what a server
+// offers unless its config is for authoring. See
+// isMcpIncludeHiddenFilesAndSources.
+const { includeHiddenFilesAndSources: _authoringOnly, ...curatedShape } =
+   executeQueryShape;
+
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
 
 ## Contract rules
@@ -119,10 +127,17 @@ export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
+   const offerHidden = isMcpIncludeHiddenFilesAndSources(
+      environmentStore.serverRootPath,
+   );
    mcpServer.tool(
       "execute_query",
       EXECUTE_QUERY_DESCRIPTION,
-      executeQueryShape,
+      // Typed as the full shape so the handler can name the parameter; the
+      // offerHidden check below is what holds when it is not offered.
+      (offerHidden
+         ? executeQueryShape
+         : curatedShape) as typeof executeQueryShape,
       /** Handles requests for the execute_query tool */
       async (params) => {
          // Destructure environmentName as well
@@ -135,8 +150,11 @@ export function registerExecuteQueryTool(
             queryName,
             filterParams,
             givens,
-            includeHiddenFilesAndSources,
          } = params;
+         // A caller can send the key even when the schema leaves it out, so
+         // the setting decides, not the argument alone.
+         const includeHiddenFilesAndSources =
+            offerHidden && params.includeHiddenFilesAndSources === true;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
 
@@ -254,7 +272,7 @@ export function registerExecuteQueryTool(
                           "compact",
                           // MCP sends no #(authorize) bypass, ever.
                           false,
-                          includeHiddenFilesAndSources === true,
+                          includeHiddenFilesAndSources,
                        )
                      : model.getQueryResults(
                           sourceName,
@@ -267,7 +285,7 @@ export function registerExecuteQueryTool(
                           queryMetadataInput,
                           "compact",
                           false,
-                          includeHiddenFilesAndSources === true,
+                          includeHiddenFilesAndSources,
                        ),
                getQueryTimeoutMs(),
             );
@@ -342,16 +360,6 @@ export function registerExecuteQueryTool(
             // Point at the reload rather than let them hunt for a typo that
             // isn't there.
             const suggestions = [...errorDetails.suggestions];
-            // Only an ungated hidden target is an OffSurfaceError; a gated one
-            // stays a plain not-found, so this hint names nothing it shouldn't.
-            if (
-               queryError instanceof OffSurfaceError &&
-               includeHiddenFilesAndSources !== true
-            ) {
-               suggestions.push(
-                  "If you are this package's author testing a file or source it does not publish, pass includeHiddenFilesAndSources: true to run it without publishing it.",
-               );
-            }
             if (isUndefinedNameError(errorDetails.message)) {
                suggestions.push(
                   "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
