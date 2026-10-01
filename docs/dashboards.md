@@ -423,8 +423,10 @@ so the state is visible, but the control row is usually where it is noticed firs
 
 Three things it costs, none of them fixable by tagging differently:
 
-- **A tile expression is a string in an annotation, so the compiler never checks it.** Rename a view
-  and the dashboard still compiles; the tile fails at package load, where the lint names it.
+- **A tile expression is a string in an annotation, so the Malloy compiler never checks it.** Rename
+  a view and the dashboard still compiles; the tile fails at package load, where the lint names it.
+  To see the lint before saving, compile at `scope: "package"`, which returns its findings as
+  warnings with code `dashboard-lint`. `scope: "file"` does not run it.
 - **No per-parent-row grouping.** A `# dashboard` nest can repeat its whole grid once per row of a
   parent query; tiles have no parent query, so there is nothing to repeat over.
 - **Filtering lives in what the tiles name, not on the page.** There is no page-level `where:`.

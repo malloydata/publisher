@@ -9,7 +9,10 @@ import type {
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
-import { isDashboardModelPath } from "./dashboard";
+import {
+   isDashboardModelPath,
+   isUnparsedDashboardTagFinding,
+} from "./dashboard";
 import { notebookLintProblems } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -83,7 +86,7 @@ import {
    type FetchedManifest,
 } from "./manifest_loader";
 import { ApiConnection, Model } from "./model";
-import { Package } from "./package";
+import { Package, type ApiPackageWarning } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 
 /**
@@ -263,6 +266,47 @@ export function packageRelativeModelPath(
       return undefined;
    }
    return rel.split(pathModule.sep).join("/");
+}
+
+/**
+ * Dashboard, curation and render-tag findings for a dry-run package compile.
+ *
+ * The Malloy compiler answers "does this parse and resolve". It does not answer
+ * "will this dashboard render, and be served": a tile naming a view that does
+ * not exist, a `# colspan` the renderer ignores, a `# drill` pointing at no
+ * dashboard, and a tile reading a source the package's surface withholds all
+ * compile perfectly. Those are the package's load-time checks, and
+ * {@link Package.dryRunFindings} runs them over the compile outcome.
+ *
+ * Severity is flattened to `warn` deliberately. None of these fail a package
+ * load -- a broken tile draws its error in its own cell and the rest of the
+ * grid renders -- so reporting `error` here would make compile refuse an edit
+ * the server would happily serve. The load-time severity is kept in the message
+ * instead, so nothing is lost.
+ */
+function dryRunFindingsAsDiagnostics(
+   findings: readonly ApiPackageWarning[],
+   code: "render-tag" | "dashboard-lint",
+): TaggedLogMessage[] {
+   return findings.map((finding) => {
+      const diagnostic = {
+         code,
+         severity: "warn",
+         // "error" here means the load would call it an error, not that this
+         // compile failed.
+         message: `${finding.subject ? `${finding.subject}: ` : ""}${
+            finding.message
+         }${
+            finding.severity === "error"
+               ? " (reported as an error at package load)"
+               : ""
+         }`,
+      } as TaggedLogMessage;
+      // A package-wide finding carries no model, and is not pinned on an
+      // arbitrary one of the files that share the defect.
+      if (finding.model !== undefined) diagnostic.model = finding.model;
+      return diagnostic;
+   });
 }
 
 async function denyHiddenAsNotQueryable(
@@ -895,6 +939,9 @@ export class Environment {
             // both .malloy and .malloynb files are compiled, CPU work is kept
             // off the event loop, and the worker's timeout bounds the request.
             // This does not swap the returned models into the served package.
+            // The dashboard and render-tag checks after it are the exception:
+            // they run on this thread, still under the package lock, because
+            // the renderer cannot run in the worker isolate.
             let outcome;
             try {
                outcome = await getPackageLoadPool().loadPackage({
@@ -932,6 +979,9 @@ export class Environment {
             // It returns no rows or SQL; authorize still gates caller text.
             const seen = new Set<string>();
             const problems: TaggedLogMessage[] = [];
+            // Files whose `## artifact` the notebook lint already reported as
+            // unparsed, so the dashboard lint's copy of it is not shown twice.
+            const unparsedArtifact = new Set<string>();
             const collect = (
                batch: LogMessage[],
                fallbackModel?: string,
@@ -1019,18 +1069,80 @@ export class Environment {
                             )
                             .catch(() => undefined)));
                if (lintText !== undefined) {
-                  collect(
-                     notebookLintProblems(
-                        compiled.modelPath,
-                        lintText,
-                        pathToFileURL(
-                           path.join(packagePath, compiled.modelPath),
-                        ).toString(),
-                     ),
+                  const lintProblems = notebookLintProblems(
                      compiled.modelPath,
+                     lintText,
+                     pathToFileURL(
+                        path.join(packagePath, compiled.modelPath),
+                     ).toString(),
                   );
+                  if (
+                     lintProblems.some(
+                        (p) =>
+                           (p as { code?: string }).code ===
+                           "notebook-artifact-unparsed",
+                     )
+                  ) {
+                     unparsedArtifact.add(compiled.modelPath);
+                  }
+                  collect(lintProblems, compiled.modelPath);
                }
             }
+            // The compiler has had its say; now ask the package's own load-time
+            // checks what they would report.
+            try {
+               const findings = await Package.dryRunFindings(
+                  this.environmentName,
+                  packageName,
+                  packagePath,
+                  pkg.getMalloyConfig(),
+                  outcome,
+                  source === undefined
+                     ? undefined
+                     : { modelPath: modelName, source },
+               );
+               collect(
+                  dryRunFindingsAsDiagnostics(
+                     findings.renderTags,
+                     "render-tag",
+                  ) as LogMessage[],
+               );
+               collect(
+                  dryRunFindingsAsDiagnostics(
+                     // The load path keeps this copy and drops the notebook
+                     // lint's; here the notebook lint's is kept, because it
+                     // carries a line and a code.
+                     findings.dashboards.filter(
+                        (f) =>
+                           !(
+                              f.model !== undefined &&
+                              unparsedArtifact.has(f.model) &&
+                              isUnparsedDashboardTagFinding(f.message ?? "")
+                           ),
+                     ),
+                     "dashboard-lint",
+                  ) as LogMessage[],
+               );
+            } catch (error) {
+               logger.warn("Dashboard lint failed during compile", {
+                  packageName,
+                  error: error instanceof Error ? error.message : String(error),
+               });
+               // Said on the response too: a missing finding would otherwise
+               // read as a clean package.
+               collect([
+                  {
+                     code: "dashboard-lint",
+                     severity: "warn",
+                     message:
+                        `The dashboard and render-tag checks did not run, so ` +
+                        `their findings are unknown rather than clean. Reload ` +
+                        `the package to see them. The cause is in the server ` +
+                        `log under "Dashboard lint failed during compile".`,
+                  } as LogMessage,
+               ]);
+            }
+
             if (
                source !== undefined &&
                outcome.replacementMatchedExisting === false

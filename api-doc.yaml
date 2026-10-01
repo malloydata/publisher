@@ -3238,7 +3238,9 @@ components:
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
-            rather than as a clean package. Notebook findings: a `notebooks/`
+            rather than as a clean package. The render-tag and dashboard
+            findings are also returned by `/compile` at package scope, before
+            anything is saved; see `CompileRequest.scope`. Notebook findings: a `notebooks/`
             file with an `## artifact` note whose cells could not be read, which
             names the line and the fix and is reported with severity `error`,
             because the notebook is served with that error instead of opening.
@@ -5949,7 +5951,15 @@ components:
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
             against the replacement. Package diagnostics can name files hidden
-            from discovery. No rows or SQL are returned, and caller-provided
+            from discovery. "package" also runs the load-time render-tag and
+            dashboard checks a reload would (the findings `Package.warnings`
+            lists under those names) over the compiled result, and returns
+            each as a `warn` with code `render-tag` or `dashboard-lint`. They
+            are warnings because none of them fails a load; a finding the load
+            reports as an error says so in its message. A dashboard tag that
+            does not parse is the exception: it is reported once, as the
+            notebook lint's `notebook-artifact-unparsed` error. "file" does not
+            run these checks. No rows or SQL are returned, and caller-provided
             source remains subject to authorize gates. includeSql is not
             available at "package".
 

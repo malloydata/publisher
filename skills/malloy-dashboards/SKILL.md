@@ -64,8 +64,11 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    already-defined errors that reads as broken Malloy rather than a wrong scope. **Editing a shared
    include wants `"scope": "package"`**, which recompiles every file as saved: `file` only checks the
    one you are editing, so renaming a source in `_shared.malloy` passes it while breaking every
-   dashboard that imports it. A clean compile is not a working dashboard: some tag mistakes surface
-   at step 6, and some only when you look at the page in step 7. **A not-yet-saved dashboard wants
+   dashboard that imports it. **`"scope": "file"` does not check tiles, drills or suggest queries.**
+   To see those before you save, compile the same text at `"scope": "package"` with `modelPath` set
+   to the dashboard's path: it runs the lint step 6 reads and returns its findings as warnings with
+   code `dashboard-lint`. Even that is not a working dashboard: some mistakes only show when you look
+   at the page in step 7. **A not-yet-saved dashboard wants
    `"scope": "file"` too**, not the default: a dashboard file opens with an `import`, and the
    default `append` scope refuses one, so the new-file case fails on the import and again on the
    path that does not exist yet. `append` is for a fragment checked against a model that is
@@ -121,8 +124,9 @@ nest's pipeline starts from its own query's source and there is no way to combin
 
 Three things the form costs, so you are not surprised by them:
 
-- **A tile expression is a string in an annotation, so the compiler never checks it.** Rename a view
-  and the file still compiles; the tile fails at package load. Read the lint (step 6).
+- **A tile expression is a string in an annotation, so the Malloy compiler never checks it.** Rename
+  a view and the file still compiles; the tile fails at package load. The lint names it: at step 6,
+  or before saving with `compile_model` at `"scope": "package"` (step 5).
 - **No per-parent-row grouping.** There is no parent query to repeat a grid over.
 - **Filtering lives on the tiles**, not on the page: each view's `+ { where: ... }` names the
   controls it answers to. Below is why, and the one thing that does not work.
