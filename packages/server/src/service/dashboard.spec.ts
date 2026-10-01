@@ -1403,6 +1403,34 @@ describe("service/dashboard lint", () => {
       ]);
    });
 
+   it("accepts a dotted joined dimension and flags one the source lacks", () => {
+      const messages = lint(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ['# artifact { title="Overview" }\n'],
+                  givens: ["A", "B"],
+               },
+            ],
+            sourceFields: new Map([
+               ["orders", new Set(["region", "products.category"])],
+            ]),
+            givens: new Map([
+               given("A", "filter<string>", [
+                  '# suggest { source=orders dimension="products.category" }\n',
+               ]),
+               given("B", "filter<string>", [
+                  '# suggest { source=orders dimension="products.maker.name" }\n',
+               ]),
+            ]),
+         }),
+      );
+      expect(messages).toEqual([
+         expect.stringContaining('has no field "products.maker.name"'),
+      ]);
+   });
+
    describe("a file that produced no dashboard", () => {
       it("is silent when it simply carries no tag", () => {
          // A shared include is a legitimate pattern, not a mistake.

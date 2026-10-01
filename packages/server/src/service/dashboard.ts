@@ -31,7 +31,7 @@
  * an error.
  */
 
-import { isSourceDef } from "@malloydata/malloy";
+import { isJoined, isSourceDef } from "@malloydata/malloy";
 import type {
    ModelDef,
    NamedModelObject,
@@ -465,7 +465,10 @@ export interface DashboardModelFacts {
     * report values the reader drops, which a derived map no longer carries.
     */
    viewAnnotations: Map<string, string[]>;
-   /** Field names per source, for validating `suggest { source= dimension= }`. */
+   /**
+    * Field names per source, for validating `suggest { source= dimension= }`.
+    * Fields of a direct join appear as `join.field`.
+    */
    sourceFields: Map<string, Set<string>>;
    /**
     * Every `# drill` tag reachable in this file, one per tagged dimension. Drill
@@ -608,6 +611,13 @@ export function readDashboardModelFacts(
       for (const field of obj.fields) {
          const fieldName = field.as || field.name;
          fieldNames.add(fieldName);
+         // One join level, as the SDK catalog lists it: `products.category` is a
+         // valid `suggest` dimension, `products.maker.name` is not.
+         if (isJoined(field)) {
+            for (const joined of field.fields) {
+               fieldNames.add(`${fieldName}.${joined.as || joined.name}`);
+            }
+         }
          if (field.type === "turtle") {
             const refs = new Set(sourceGivens);
             collectGivenRefs((field as TurtleDef).pipeline, refs);
