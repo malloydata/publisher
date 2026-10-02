@@ -461,6 +461,15 @@ describe("convertLegacyNotebook: shapes", () => {
       });
    });
 
+   it("converts a statement with a very long run of spaces in linear time", async () => {
+      const started = performance.now();
+      const converted = await convert(
+         `${HEAD}\nrun: orders ->${" ".repeat(80_000)}kpis\n`,
+      );
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(await syntaxErrors(converted)).toEqual([]);
+   });
+
    it("converts a CRLF notebook", async () => {
       const original =
          `${HEAD}\n##(markdown) Hello\n\n# label="K"\nrun: orders -> kpis\n`.replace(

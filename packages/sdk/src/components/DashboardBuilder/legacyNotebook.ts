@@ -819,7 +819,7 @@ export async function convertLegacyNotebook(
                : markdownRemovals
             ).filter((s) => s.end <= statementAt),
          ),
-         statement: text.slice(statementAt, cell.span.end).replace(/\s+$/, ""),
+         statement: text.slice(statementAt, cell.span.end).trimEnd(),
          kept: withoutSpans(cellText, cell.span.start, markdownRemovals),
          ...(cell.kind === "query" &&
             captions.length > 0 && { caption: captions.join(" ") }),
@@ -1082,8 +1082,8 @@ export async function convertLegacyNotebook(
       gap = "";
    }
    gap += text.slice(cursor);
-   out = out.replace(/\s+$/, "\n") + (gap.trim() === "" ? "" : squeeze(gap));
-   out = out.replace(/\s+$/, "\n");
+   out = `${out.trimEnd()}\n` + (gap.trim() === "" ? "" : squeeze(gap));
+   out = `${out.trimEnd()}\n`;
 
    const blocks = [...extensions.values()].map(
       (extension) =>

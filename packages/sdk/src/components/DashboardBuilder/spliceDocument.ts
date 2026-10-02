@@ -729,8 +729,8 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          : " ";
       const append = (property: string) =>
          tag.block
-            ? `${inner.replace(/\s+$/, "")}${lineBreak}${property}\n`
-            : `${inner.replace(/\s+$/, "")} ${property} `;
+            ? `${inner.trimEnd()}${lineBreak}${property}\n`
+            : `${inner.trimEnd()} ${property} `;
       const setProperty = (key: string, value: string | undefined) => {
          const re = new RegExp(
             `${tag.block ? "[ \\t]*" : "\\s*"}\\b${key}=(?:"(?:[^"\\\\]|\\\\.)*"|[^\\s}]+)`,
