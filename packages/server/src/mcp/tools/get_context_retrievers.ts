@@ -24,6 +24,7 @@ import {
    trySemanticSearch,
    type EmbeddingIndexStatus,
 } from "./embedding_index";
+import { compareRanked } from "./get_context_assembly";
 import type { PipelineContext, Retriever } from "./get_context_pipeline";
 import {
    MAX_LIMIT,
@@ -38,29 +39,6 @@ import {
    type ResultEntity,
    type RetrievalReason,
 } from "./get_context_tool";
-
-/** Plain code-unit order, so the result does not depend on the host's locale. */
-function compareText(a: string, b: string): number {
-   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-/**
- * The order of semantic rows: score descending, then source, name, kind and
- * model path. The score is the rounded one the response publishes, so two rows
- * that show the same relevance are listed in a fixed order, not in whatever
- * order the scan happened to return them. The scan has the same tie-break in
- * SQL (it decides which tied rows fit a window); this one covers the fan-out of
- * one embedded row to several model paths, which the scan cannot see.
- */
-function compareRanked(a: ResultEntity, b: ResultEntity): number {
-   return (
-      (b.score ?? 0) - (a.score ?? 0) ||
-      compareText(a.source ?? "", b.source ?? "") ||
-      compareText(a.name, b.name) ||
-      compareText(a.kind, b.kind) ||
-      compareText(a.modelPath, b.modelPath)
-   );
-}
 
 /**
  * The package's index state, read to explain why a search could not be
