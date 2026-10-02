@@ -260,10 +260,11 @@ test.describe("embedded host", () => {
          timeout: 60_000,
       });
       await expect(page.getByText("Record overview")).toBeVisible();
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      // The title is edited where it is shown.
+      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
       const title = page.getByLabel("Dashboard title");
       await title.fill("Record overview, edited");
-      await title.press("Escape");
+      await title.press("Enter");
       await page.getByRole("button", { name: "Save changes" }).click();
       await expect(
          page.getByRole("button", { name: "Saved", exact: true }),

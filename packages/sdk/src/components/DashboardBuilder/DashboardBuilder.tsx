@@ -3,9 +3,17 @@
 
 import { DragDropProvider } from "@dnd-kit/react";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { DashboardProse } from "../Dashboard/Dashboard";
+import {
+   useCallback,
+   useEffect,
+   useMemo,
+   useRef,
+   useState,
+   type ReactNode,
+} from "react";
 import { DashboardGrid, DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
+import { tileTitle } from "../Dashboard/DashboardTile";
+import type { TileHeadingSlots } from "../Dashboard/TileCard";
 import type { SavesTo } from "./documentSession";
 import type { BuilderEvent } from "./telemetry";
 import {
@@ -20,12 +28,16 @@ import {
 } from "./controls";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "./BuilderToolbar";
+import { changedTileKey } from "./changedTile";
+import { InlineMarkdown } from "./InlineMarkdown";
+import { InlineText } from "./InlineText";
 import { filterableFields, type PackageCatalog } from "./catalog";
 import {
    isQueryTile,
    isTextTile,
    tileKey,
    type DashboardDocument,
+   type DashboardTile,
    type LocalGiven,
    type QueryTile,
 } from "./document";
@@ -69,8 +81,8 @@ export type { BuilderGiven } from "./controls";
  *
  * **Everything here is on the thing it changes.** Drag a tile's right edge to
  * set its width, and the tile itself to reorder — into the empty end of a row
- * to change which row it is in. The tile's own menu holds its title and
- * subtitle. FILTERS are configured in exactly one place, the strip under the
+ * to change which row it is in. Click a title, subtitle, description or text
+ * tile to edit it where it stands. FILTERS are configured in exactly one place, the strip under the
  * header: each chip opens the tiles-to-update window for that control,
  * which is where a tile is bound or unbound, and "Add filter" declares a new
  * one in this file — the convention {@link LocalGiven} describes — or binds one
@@ -108,8 +120,13 @@ export interface DashboardBuilderProps {
    /**
     * Renders a tile, card and heading included — this is where a real
     * `DashboardTile` goes. Without it, tiles show what they will run.
+    *
+    * `heading` is the tile's title and subtitle as fields edited in place;
+    * absent for a tile whose title the model owns. A host that draws the
+    * heading itself passes it on (`DashboardTile`'s `heading`), or the tile
+    * cannot be retitled on the page.
     */
-   renderTile?: (tile: QueryTile) => ReactNode;
+   renderTile?: (tile: QueryTile, heading?: TileHeadingSlots) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -210,6 +227,10 @@ export function DashboardBuilder({
       ...(conversion ? { conversion } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
+   // Undo and redo point at the tile they changed: lit briefly, and scrolled to.
+   const [flash, setFlash] = useState<string | undefined>(undefined);
+   const stepping = useRef(false);
+   const lastDocument = useRef(editor.document);
    // A notebook is one column whatever the file says, and the builder never writes its width.
    const notebook = editor.document.kind === "notebook";
    const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
@@ -377,8 +398,42 @@ export function DashboardBuilder({
       }),
       [editor, menu, filterDialog, selected, columns, notebook],
    );
+   useEffect(() => {
+      const before = lastDocument.current;
+      lastDocument.current = editor.document;
+      if (!stepping.current) return;
+      stepping.current = false;
+      const key = changedTileKey(before, editor.document);
+      if (key === undefined) return;
+      setFlash(key);
+      const target = Array.from(
+         gridBox.current?.querySelectorAll<HTMLElement>("[data-tile-key]") ??
+            [],
+      ).find((element) => element.dataset.tileKey === key);
+      // jsdom has no layout, so no scrollIntoView.
+      target?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+   }, [editor.document, gridBox]);
+   useEffect(() => {
+      if (flash === undefined) return;
+      const timer = setTimeout(() => setFlash(undefined), 1500);
+      return () => clearTimeout(timer);
+   }, [flash]);
+   const stepEditor = useMemo(
+      () => ({
+         ...editor,
+         undo: () => {
+            stepping.current = true;
+            editor.undo();
+         },
+         redo: () => {
+            stepping.current = true;
+            editor.redo();
+         },
+      }),
+      [editor],
+   );
    const session = useBuilderSession<DashboardDocument>({
-      editor,
+      editor: stepEditor,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onExit,
@@ -501,6 +556,47 @@ export function DashboardBuilder({
       setSelected(editor.document.tiles.length);
    };
 
+   /** Change one tile where it stands, found by key so a preview order cannot misdirect it. */
+   const editTile = (key: string, change: (tile: DashboardTile) => void) =>
+      editor.update((draft) => {
+         const tile = draft.tiles.find((each) => tileKey(each) === key);
+         if (tile) change(tile);
+      });
+
+   /** A query tile's title and subtitle as fields on the tile, unless the model owns them. */
+   const headingOf = (
+      tile: QueryTile,
+      fallback: string,
+   ): TileHeadingSlots | undefined => {
+      if (tile.declaration.kind === "inherited") return undefined;
+      const key = tileKey(tile);
+      const set = (field: "label" | "subtitle") => (next: string) =>
+         editTile(key, (each) => {
+            if (!isQueryTile(each)) return;
+            if (next === "") delete each[field];
+            else each[field] = next;
+         });
+      return {
+         title: (
+            <InlineText
+               value={tile.label ?? ""}
+               placeholder={fallback}
+               ariaLabel="Tile title"
+               onCommit={set("label")}
+            />
+         ),
+         subtitle: (
+            <InlineText
+               value={tile.subtitle ?? ""}
+               placeholder="Add a subtitle"
+               ariaLabel="Tile subtitle"
+               faintWhenEmpty
+               onCommit={set("subtitle")}
+            />
+         ),
+      };
+   };
+
    const removeTile = (index: number) => {
       setMenu(undefined);
       setSelected(undefined);
@@ -565,6 +661,7 @@ export function DashboardBuilder({
             {...(toolbar ? { actions: toolbar } : {})}
             {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
             onSettings={setSettingsAnchor}
+            savesTo={savesTo}
          />
 
          {/* The ring's inset, minus the top: nothing at the top of this stack
@@ -579,15 +676,33 @@ export function DashboardBuilder({
                </Alert>
             )}
             <SaveNotice {...session.notice} />
-            <DashboardProse
-               title={
-                  editor.document.title ||
-                  (notebook ? "Untitled notebook" : "Untitled dashboard")
-               }
-               {...(editor.document.description
-                  ? { description: editor.document.description }
-                  : {})}
-            />
+            <Box>
+               <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                  <InlineText
+                     value={editor.document.title}
+                     placeholder={
+                        notebook ? "Untitled notebook" : "Untitled dashboard"
+                     }
+                     ariaLabel={notebook ? "Notebook title" : "Dashboard title"}
+                     onCommit={(next) =>
+                        editor.update((draft) => {
+                           draft.title = next;
+                        })
+                     }
+                  />
+               </Typography>
+               <InlineMarkdown
+                  variant="caption"
+                  markdown={editor.document.description ?? ""}
+                  placeholder="Add a description"
+                  onCommit={(next) =>
+                     editor.update((draft) => {
+                        if (next.trim() === "") delete draft.description;
+                        else draft.description = next;
+                     })
+                  }
+               />
+            </Box>
 
             {empty ? (
                <Stack
@@ -662,6 +777,7 @@ export function DashboardBuilder({
                               tile={each}
                               index={index}
                               selected={index === selected}
+                              flash={tileKey(each) === flash}
                               menuOpen={menu?.index === index}
                               resizeSpan={
                                  resize?.index === index
@@ -682,12 +798,31 @@ export function DashboardBuilder({
                               onResizeEnd={endResize}
                            >
                               {isTextTile(each) ? (
-                                 <TextTileBody tile={each} />
+                                 <TextTileBody
+                                    tile={each}
+                                    onChange={(markdown) =>
+                                       editTile(tileKey(each), (tile) => {
+                                          if (isTextTile(tile))
+                                             tile.markdown = markdown;
+                                       })
+                                    }
+                                 />
                               ) : renderTile && !editor.pendingOpen ? (
                                  // Until the conversion is saved the package has none of its views to run.
-                                 renderTile(each)
+                                 renderTile(
+                                    each,
+                                    headingOf(
+                                       each,
+                                       tileTitle(
+                                          `${each.source} -> ${each.name}`,
+                                       ),
+                                    ),
+                                 )
                               ) : (
-                                 <TilePlaceholder tile={each} />
+                                 <TilePlaceholder
+                                    tile={each}
+                                    heading={headingOf(each, each.name)}
+                                 />
                               )}
                            </TileFrame>
                         );
@@ -766,10 +901,6 @@ export function DashboardBuilder({
                   editor.update((draft) => {
                      if (next.kind === undefined) delete draft.kind;
                      else draft.kind = next.kind;
-                     draft.title = next.title;
-                     if (next.description === undefined)
-                        delete draft.description;
-                     else draft.description = next.description;
                      if (next.columns === undefined) delete draft.columns;
                      else draft.columns = next.columns;
                      if (next.autorun === undefined) delete draft.autorun;

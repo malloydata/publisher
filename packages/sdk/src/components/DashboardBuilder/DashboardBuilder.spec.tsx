@@ -12,6 +12,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { DashboardEvent } from "../Dashboard/telemetry";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { openDocument } from "./testing/fixtures";
+import { closeMenu, editInline } from "./testing/inline";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import "../data_app.malloy"
@@ -53,19 +54,15 @@ const tile = (name: string) => screen.getByLabelText(`Tile ${name}`);
 const selectTile = (name: string) => fireEvent.click(tile(name));
 
 /**
- * Retitle a tile from its menu.
+ * Retitle a tile where it is shown.
  *
  * The one on-tile edit a test can drive by clicking. Width and position are
  * dragged, which needs real element geometry that jsdom does not provide, a
  * tile's row is set by dragging it into a gap, and filters are configured
  * only from the strip under the header.
  */
-const retitle = (title: string, next: string) => {
-   fireEvent.click(screen.getByLabelText(`Settings for ${title}`));
-   const field = screen.getByLabelText("Tile title");
-   fireEvent.change(field, { target: { value: next } });
-   fireEvent.keyDown(field, { key: "Escape" });
-};
+const retitle = (title: string, next: string) =>
+   editInline(title, "Tile title", next);
 /**
  * A named button, hidden or not. A window's exit transition never ends under
  * the test runner, so once any window has been open the rest of the page reads
@@ -569,24 +566,27 @@ describe("DashboardBuilder: the last tile", () => {
 });
 
 describe("DashboardBuilder: a tile's own settings", () => {
-   it("retitles a tile from its menu, as one history entry", async () => {
+   it("retitles a tile where it is shown, one history entry per commit", async () => {
       await mount();
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Revenue by category" },
-      });
-      fireEvent.change(screen.getByLabelText("Tile subtitle"), {
-         target: { value: "Net of returns" },
-      });
-      // Closing commits, once.
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Revenue by category");
+      editInline(
+         "Add a subtitle",
+         "Tile subtitle",
+         "Net of returns",
+         "Enter",
+         tile("by_cat"),
+      );
       expect(
          within(tile("by_cat")).getByText("Revenue by category"),
       ).toBeDefined();
       expect(within(tile("by_cat")).getByText("Net of returns")).toBeDefined();
       fireEvent.click(button("Undo"));
-      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
       expect(within(tile("by_cat")).queryByText("Net of returns")).toBeNull();
+      expect(
+         within(tile("by_cat")).getByText("Revenue by category"),
+      ).toBeDefined();
+      fireEvent.click(button("Undo"));
+      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
    });
 
    it("offers no title to a tile the model owns", async () => {
@@ -596,6 +596,9 @@ describe("DashboardBuilder: a tile's own settings", () => {
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(screen.getByText(/Declared on its source/)).toBeDefined();
+      // Nor does its title open into a field on the tile.
+      fireEvent.click(screen.getByText("by_brand"));
+      expect(screen.queryByLabelText("Tile title")).toBeNull();
    });
 });
 
@@ -606,7 +609,7 @@ describe("DashboardBuilder: widths and the page's own settings", () => {
       const third = screen.getByRole("button", { name: "Width ⅓" });
       fireEvent.click(third);
       expect(third.getAttribute("aria-pressed")).toBe("true");
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      closeMenu();
       // 12 columns, a third is 4.
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 4");
       expect(itemStyleOf("by_brand")).toContain("grid-column: span 6");
@@ -617,24 +620,22 @@ describe("DashboardBuilder: widths and the page's own settings", () => {
       await mount((source) => {
          saved = source;
       });
-      fireEvent.click(button("Settings"));
-      fireEvent.change(screen.getByLabelText("Dashboard title"), {
-         target: { value: "Storefront, weekly" },
-      });
-      fireEvent.change(screen.getByLabelText("Dashboard description"), {
+      fireEvent.click(screen.getByText("Add a description"));
+      const description = screen.getByLabelText("Markdown");
+      fireEvent.change(description, {
          target: { value: "What sold, and where." },
       });
+      // Escape is Done: the text commits.
+      fireEvent.keyDown(description, { key: "Escape" });
+      expect(screen.getByText("What sold, and where.")).toBeDefined();
+
+      fireEvent.click(button("Settings"));
       fireEvent.click(screen.getByLabelText("Run as controls change"));
       // Closing commits, once.
-      fireEvent.keyDown(screen.getByLabelText("Dashboard title"), {
-         key: "Escape",
-      });
+      fireEvent.keyDown(screen.getByLabelText("Show as"), { key: "Escape" });
+
+      editInline("Storefront", "Dashboard title", "Storefront, weekly");
       expect(screen.getByText("Storefront, weekly")).toBeDefined();
-      // The popover's own field still holds the text (its exit transition
-      // never ends under the test runner), so look for the page's copy.
-      expect(
-         screen.getAllByText("What sold, and where.").length,
-      ).toBeGreaterThan(0);
 
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(saved).not.toBe(""));
@@ -736,9 +737,10 @@ describe("DashboardBuilder: keyboard", () => {
       expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
 
       // Typing in a field is typing, not editing the document.
-      fireEvent.click(screen.getByLabelText("Settings for Renamed"));
+      fireEvent.click(screen.getByText("Renamed"));
       const field = screen.getByLabelText("Tile title");
       fireEvent.keyDown(field, { key: "z", ctrlKey: true, metaKey: true });
+      fireEvent.keyDown(field, { key: "Escape" });
       expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
    });
 

@@ -1,14 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   Button,
-   Divider,
-   Popover,
-   Stack,
-   TextField,
-   Typography,
-} from "@mui/material";
+import { Button, Divider, Popover, Stack, Typography } from "@mui/material";
 import { useId } from "react";
 import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
@@ -18,8 +11,8 @@ import { ChartPicker } from "./ChartPicker";
 
 /**
  * A tile's own settings, on the tile: a popover off its menu button, so
- * editing it never means scrolling away from it. Its title, subtitle, width
- * presets, clickable cells and removal. Its row is set by dragging it — a drop
+ * editing it never means scrolling away from it. Its chart, width presets,
+ * clickable cells and removal; its title and subtitle are edited on the tile. Its row is set by dragging it — a drop
  * into the empty end of a row is what "start a new row" means — and its card
  * is the reader's to decide, so neither is a toggle here. Which controls it
  * answers to is not here either: filters are configured in one place, the
@@ -161,33 +154,6 @@ export function TileMenu({
 
                {query && editable && (
                   <>
-                     <TextField
-                        size="small"
-                        label="Title"
-                        value={query.label ?? ""}
-                        autoFocus
-                        inputProps={{ "aria-label": "Tile title" }}
-                        onChange={(event) =>
-                           patchQuery((t) => {
-                              const v = event.target.value;
-                              if (v === "") delete t.label;
-                              else t.label = v;
-                           })
-                        }
-                     />
-                     <TextField
-                        size="small"
-                        label="Subtitle"
-                        value={query.subtitle ?? ""}
-                        inputProps={{ "aria-label": "Tile subtitle" }}
-                        onChange={(event) =>
-                           patchQuery((t) => {
-                              const v = event.target.value;
-                              if (v === "") delete t.subtitle;
-                              else t.subtitle = v;
-                           })
-                        }
-                     />
                      <ChartPicker
                         state={query.chart ?? "default"}
                         view={view}

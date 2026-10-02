@@ -27,6 +27,7 @@ import {
 } from "../DocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
 import type { BuilderEvent } from "./telemetry";
+import { editInline } from "./testing/inline";
 
 /**
  * The one editor opened as a notebook: how it reads the file, where it takes
@@ -288,13 +289,7 @@ describe("DashboardEditor as a notebook: the host's record", () => {
       );
       expect(await screen.findByText("From the record.")).toBeDefined();
       expect(store.types).toEqual(["notebook"]);
-      fireEvent.click(button("Settings"));
-      fireEvent.change(screen.getByLabelText("Notebook title"), {
-         target: { value: "Tour, again" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Notebook title"), {
-         key: "Escape",
-      });
+      editInline("Tour", "Notebook title", "Tour, again");
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(store.saved.size).toBe(1));
       expect(store.saved.get("env/pkg/notebooks/tour.malloy")).toContain(

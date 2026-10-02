@@ -83,10 +83,11 @@ test.describe("dashboard-builder", () => {
          page.getByText("Two rows of two, one of them a chart."),
       ).toBeVisible();
 
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      // The title is edited where it is shown.
+      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
       const title = page.getByLabel("Dashboard title");
       await title.fill("Tiled, edited");
-      await title.press("Escape");
+      await title.press("Enter");
       await expect(
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();

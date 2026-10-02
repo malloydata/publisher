@@ -7,3 +7,4 @@ export { TileFilterTag, tileFilterLabels } from "./TileFilterTag";
 export { DashboardTile, type DashboardTileProps } from "./DashboardTile";
 export type { DashboardEvent, DashboardEventHandler } from "./telemetry";
 export { TileCard, TileHeading } from "./TileCard";
+export type { TileHeadingSlots } from "./TileCard";

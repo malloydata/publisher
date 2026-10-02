@@ -20,6 +20,7 @@ import {
 } from "../DocumentStorage";
 import { GivensPanel } from "../given";
 import { DashboardBar } from "../Dashboard/DashboardBar";
+import type { TileHeadingSlots } from "../Dashboard/TileCard";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
@@ -966,7 +967,7 @@ function Surface({
    const manifestSettled = !served || isSuccess || isError;
    const renderTile = useMemo(
       () =>
-         function LiveTile(tile: QueryTile) {
+         function LiveTile(tile: QueryTile, heading?: TileHeadingSlots) {
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             if (!manifestSettled) return <Loading text="Running…" />;
             const query = previewTileQuery(doc, tile, runnable, applied);
@@ -984,6 +985,7 @@ function Surface({
                      tile.label ?? tileTitle(`${tile.source} -> ${tile.name}`)
                   }
                   subtitle={tile.subtitle}
+                  {...(heading ? { heading } : {})}
                   borderless={tile.borderless}
                   givens={applied}
                   declaredTypes={declaredTypes}

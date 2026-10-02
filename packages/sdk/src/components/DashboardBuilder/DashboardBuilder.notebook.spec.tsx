@@ -15,6 +15,7 @@ import { DashboardBuilder } from "./DashboardBuilder";
 import { readForEditor } from "./readForEditor";
 import { openDocument } from "./testing/fixtures";
 import type { BuilderEvent } from "./telemetry";
+import { editInline } from "./testing/inline";
 
 const NOTEBOOK = `## artifact { kind=notebook title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
 import "../data_app.malloy"
@@ -90,11 +91,9 @@ describe("DashboardBuilder: a notebook is one column", () => {
       await mountText(NOTEBOOK);
       expect(screen.queryByLabelText(/^Resize /)).toBeNull();
       fireEvent.click(button("Settings"));
-      expect(screen.getByLabelText("Notebook title")).toBeDefined();
+      expect(screen.getByLabelText("Show as")).toBeDefined();
       expect(screen.queryByLabelText("Grid width")).toBeNull();
-      fireEvent.keyDown(screen.getByLabelText("Notebook title"), {
-         key: "Escape",
-      });
+      fireEvent.keyDown(screen.getByLabelText("Show as"), { key: "Escape" });
       fireEvent.click(screen.getByLabelText("Settings for intro"));
       expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
@@ -132,11 +131,7 @@ describe("DashboardBuilder: a notebook is one column", () => {
    it("reports notebook events, with the cell count", async () => {
       const onEvent = mock((_event: BuilderEvent) => {});
       await mountText(NOTEBOOK, { onSave: () => {}, onEvent });
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("by_cat", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
       expect(onEvent.mock.calls[0][0]).toMatchObject({
@@ -153,7 +148,7 @@ describe("DashboardBuilder: Show as", () => {
    const showAs = (kind: "Dashboard" | "Notebook") => {
       fireEvent.click(button("Settings"));
       fireEvent.click(screen.getByRole("button", { name: kind }));
-      fireEvent.keyDown(screen.getByLabelText(/title$/), { key: "Escape" });
+      fireEvent.keyDown(screen.getByLabelText("Show as"), { key: "Escape" });
    };
 
    it("turns a dashboard into a notebook in place, and drops its width", async () => {
@@ -237,11 +232,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
    it("asks before leaving once the converted notebook is edited", async () => {
       const onExit = mock(() => {});
       await open({ onSave: () => {}, onExit });
-      fireEvent.click(screen.getByLabelText("Settings for Revenue by month"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Monthly revenue" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("Revenue by month", "Tile title", "Monthly revenue");
       fireEvent.click(button("Close"));
       expect(button("Keep editing")).toBeDefined();
       expect(onExit).not.toHaveBeenCalled();
@@ -283,11 +274,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
    it("keeps the edits made before the save through its undo", async () => {
       const writes: string[] = [];
       await open({ onSave: (source) => void writes.push(source) });
-      fireEvent.click(screen.getByLabelText("Settings for Revenue by month"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Monthly revenue" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("Revenue by month", "Tile title", "Monthly revenue");
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(writes).toHaveLength(1));
       expect(writes[0]).toContain('# label="Monthly revenue"');

@@ -11,7 +11,12 @@ import { givensToRequest } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
 import { TileFilterTag } from "./TileFilterTag";
-import { TileCard, TileHeading, type TileChrome } from "./TileCard";
+import {
+   TileCard,
+   TileHeading,
+   type TileChrome,
+   type TileHeadingSlots,
+} from "./TileCard";
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -29,6 +34,8 @@ export interface DashboardTileProps {
    label?: string;
    /** `# subtitle` on it: a second line under the heading. */
    subtitle?: string;
+   /** The heading's text as nodes, which replace `label` and `subtitle` where a surface edits them in place. */
+   heading?: TileHeadingSlots;
    /** `# borderless` on it: no card around the result. */
    borderless?: boolean;
    /**
@@ -95,6 +102,7 @@ export function DashboardTile({
    annotation,
    label,
    subtitle,
+   heading,
    borderless,
    givens,
    declaredTypes,
@@ -141,8 +149,8 @@ export function DashboardTile({
       >
          {tile !== undefined && (
             <TileHeading
-               title={label ?? tileTitle(tile)}
-               subtitle={subtitle}
+               title={heading?.title ?? label ?? tileTitle(tile)}
+               subtitle={heading ? heading.subtitle : subtitle}
                quiet={chrome === "none"}
                // The expression is what actually ran, so it stays reachable as
                // a tooltip rather than as the heading.

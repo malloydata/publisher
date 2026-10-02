@@ -103,10 +103,11 @@ test.describe("dashboard-create", () => {
       ).toBeVisible();
 
       // An edit, saved into the package.
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      // The title is edited where it is shown.
+      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
       const title = page.getByLabel("Dashboard title");
       await title.fill("Created and saved");
-      await title.press("Escape");
+      await title.press("Enter");
       await page.getByRole("button", { name: "Save changes" }).click();
       await expect(
          page.getByRole("button", { name: "Saved", exact: true }),

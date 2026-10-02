@@ -17,25 +17,20 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { DashboardDocument, DocumentKind } from "./document";
 
 /**
- * The page's own settings, off the edit bar: its title, the markdown
- * description under it, the grid's width, and whether controls run as they
- * change or behind an Apply button. Edits commit on close (`useDraft`).
+ * The page's own settings, off the edit bar: what it shows as, the grid's
+ * width, and whether controls run as they change or behind an Apply button.
+ * Its title and description are edited on the page. Edits commit on close
+ * (`useDraft`).
  */
 export interface PageSettings {
    /** Absent reads as a dashboard. */
    kind?: DocumentKind;
-   title: string;
-   description?: string;
    columns?: number;
    autorun?: boolean;
 }
 
 export const settingsOf = (document: DashboardDocument): PageSettings => ({
    ...(document.kind === undefined ? {} : { kind: document.kind }),
-   title: document.title,
-   ...(document.description === undefined
-      ? {}
-      : { description: document.description }),
    ...(document.columns === undefined ? {} : { columns: document.columns }),
    ...(document.autorun === undefined ? {} : { autorun: document.autorun }),
 });
@@ -117,43 +112,6 @@ export function SettingsPopover({
                      </ToggleButton>
                   </ToggleButtonGroup>
                </Stack>
-               <TextField
-                  size="small"
-                  label="Title"
-                  value={draft.title}
-                  autoFocus
-                  inputProps={{
-                     "aria-label": notebook
-                        ? "Notebook title"
-                        : "Dashboard title",
-                  }}
-                  onChange={(event) =>
-                     patch((s) => {
-                        s.title = event.target.value;
-                     })
-                  }
-               />
-               <TextField
-                  size="small"
-                  label="Description"
-                  multiline
-                  minRows={3}
-                  maxRows={10}
-                  value={draft.description ?? ""}
-                  helperText="Markdown. A blank line starts a new paragraph."
-                  inputProps={{
-                     "aria-label": notebook
-                        ? "Notebook description"
-                        : "Dashboard description",
-                  }}
-                  onChange={(event) =>
-                     patch((s) => {
-                        const v = event.target.value;
-                        if (v.trim() === "") delete s.description;
-                        else s.description = v;
-                     })
-                  }
-               />
                {!notebook && (
                   <TextField
                      select

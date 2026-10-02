@@ -47,6 +47,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
 const withTitle = (title: string) =>
    PACKAGE_FILE.replace('title="Storefront"', `title="${title}"`);
 
@@ -217,11 +218,7 @@ const button = (name: string | RegExp) =>
 
 /** Rename the one tile, which is a non-structural edit and saves directly. */
 const renameTile = (to: string, from = "By category") => {
-   fireEvent.click(screen.getByLabelText(`Settings for ${from}`));
-   fireEvent.change(screen.getByLabelText("Tile title"), {
-      target: { value: to },
-   });
-   fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+   editInline(from, "Tile title", to);
 };
 
 /**

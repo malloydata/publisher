@@ -12,6 +12,7 @@ import {
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { openDocument } from "./testing/fixtures";
+import { editInline } from "./testing/inline";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import "../data_app.malloy"
@@ -50,10 +51,7 @@ const button = (name: string) =>
    screen.getByRole("button", { name, hidden: true });
 
 const retitle = () => {
-   fireEvent.click(screen.getByLabelText("Settings for By category"));
-   const field = screen.getByLabelText("Tile title");
-   fireEvent.change(field, { target: { value: "Renamed" } });
-   fireEvent.keyDown(field, { key: "Escape" });
+   editInline("By category", "Tile title", "Renamed");
 };
 
 const shortcut = (key: string) =>

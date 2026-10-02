@@ -12,6 +12,7 @@ import { describe, expect, it } from "bun:test";
 import { chartLineText } from "./chartLine";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { openDocument } from "./testing/fixtures";
+import { closeMenu, editInline } from "./testing/inline";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import { scoped_orders } from "../data_app.malloy"
@@ -89,7 +90,7 @@ describe("DashboardBuilder: charts", () => {
          "Shape map",
       ]);
       choose("a by_cat", "Line");
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      closeMenu();
       fireEvent.click(
          screen.getByRole("button", { name: "Save changes", hidden: true }),
       );
@@ -107,7 +108,7 @@ describe("DashboardBuilder: charts", () => {
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       choose("a by_cat", "Bar");
       choose("a by_cat", "From the view");
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      closeMenu();
       const save = screen.queryByRole("button", {
          name: "Save changes",
          hidden: true,
@@ -131,10 +132,8 @@ describe("DashboardBuilder: charts", () => {
             .getAttribute("aria-disabled"),
       ).toBe("true");
       expect(screen.getByText(/is not one the builder models/)).toBeDefined();
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Brands" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      closeMenu();
+      editInline("by_brand", "Tile title", "Brands");
       fireEvent.click(
          screen.getByRole("button", { name: "Save changes", hidden: true }),
       );

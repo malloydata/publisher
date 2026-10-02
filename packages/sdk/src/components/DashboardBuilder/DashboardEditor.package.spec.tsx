@@ -28,6 +28,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
 
 const getModel = mock((_env: string, _pkg: string, path: string) =>
    Promise.resolve({
@@ -112,11 +113,7 @@ describe("DashboardEditor, when the server takes writes", () => {
          screen.getByText("Save writes the file into the package."),
       ).toBeDefined();
 
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
@@ -149,11 +146,7 @@ describe("DashboardEditor, when the server takes writes", () => {
       );
       mount();
       await screen.findByText("Storefront");
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
       await waitFor(() =>
          expect(screen.getByRole("alert").textContent).toContain(
@@ -180,11 +173,7 @@ describe("DashboardEditor, when the server takes writes", () => {
       globalQueryClient.setQueryData(key("dashboards/other.malloy"), "other");
       mount();
       await screen.findByText("Storefront");
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
       await waitFor(() =>
          expect(

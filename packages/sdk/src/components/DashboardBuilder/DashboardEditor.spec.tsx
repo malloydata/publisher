@@ -33,6 +33,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
 
 let served = PACKAGE_FILE;
 /** Set, and the dashboard's own file fails to fetch: a refetch the server could not answer. */
@@ -180,11 +181,7 @@ describe("DashboardEditor", () => {
    it("keeps the builder and its unsaved edit through a failed refetch", async () => {
       mount();
       await screen.findByText("Storefront");
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Categories");
 
       fetchFailure = new Error("the server went away");
       await act(async () => {
@@ -244,11 +241,7 @@ describe("DashboardEditor", () => {
    it("saves an edit into the browser and marks it saved", async () => {
       const storage = mount();
       await screen.findByText("Storefront");
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
       await waitFor(async () =>
          expect(await storage.getDocument(DRAFT)).toContain(

@@ -7,11 +7,20 @@ import { Box, IconButton, Typography } from "@mui/material";
 import type { PointerEvent, ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
-import { TileCard, TileHeading } from "../Dashboard/TileCard";
-import { isTextTile, tileKey, tileLabel, type DashboardTile } from "./document";
+import {
+   TileCard,
+   TileHeading,
+   type TileHeadingSlots,
+} from "../Dashboard/TileCard";
+import {
+   isTextTile,
+   tileKey,
+   tileLabel,
+   type DashboardTile,
+   type QueryTile,
+} from "./document";
 import { gapId } from "./layout";
 import { GapDroppable, TileSortable } from "./sortable";
-import { TextTileBody } from "./TextTileBody";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the grip,
@@ -23,6 +32,7 @@ export function TileFrame({
    tile,
    index,
    selected,
+   flash = false,
    menuOpen,
    resizeSpan,
    columns,
@@ -37,6 +47,8 @@ export function TileFrame({
    tile: DashboardTile;
    index: number;
    selected: boolean;
+   /** Briefly lit: the tile an undo or redo just changed. */
+   flash?: boolean;
    /** Whether this tile's menu is open, which keeps its button showing. */
    menuOpen: boolean;
    /** The width being previewed while THIS tile is resized. */
@@ -66,6 +78,8 @@ export function TileFrame({
                }}
                aria-label={`Tile ${tile.name}`}
                aria-current={selected}
+               data-tile-key={tileKey(tile)}
+               data-flash={flash || undefined}
                sx={{
                   // Anchors the resize and drag handles to
                   // this tile.
@@ -98,6 +112,10 @@ export function TileFrame({
                      ? `2px solid ${theme.drillLink}`
                      : `2px solid transparent`,
                   outlineOffset: 2,
+                  ...(flash && {
+                     outlineColor: theme.drillLink,
+                     boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.drillLink} 25%, transparent)`,
+                  }),
                   transition:
                      "outline-color 120ms, opacity 120ms, box-shadow 120ms",
                   // The handles, grip and menu are invisible
@@ -185,7 +203,7 @@ export function TileFrame({
                   <DragIndicatorIcon sx={{ fontSize: 16 }} />
                </Box>
 
-               {/* The tile's menu: its title and subtitle.
+               {/* The tile's menu: its chart, width and drill-through.
                 Hidden while a resize badge sits in the same
                 corner. A press here is never the start of a
                 drag: the sensor refuses to activate from a
@@ -311,14 +329,19 @@ export function TileFrame({
  * No host-supplied tile: say what this one will run, so the surface is still
  * legible without a server.
  */
-export function TilePlaceholder({ tile }: { tile: DashboardTile }) {
+export function TilePlaceholder({
+   tile,
+   heading,
+}: {
+   tile: QueryTile;
+   heading?: TileHeadingSlots;
+}) {
    const { theme } = usePublisherTheme();
-   if (isTextTile(tile)) return <TextTileBody tile={tile} />;
    return (
       <TileCard sx={{ minHeight: 140 }}>
          <TileHeading
-            title={tile.label ?? tile.name}
-            subtitle={tile.subtitle}
+            title={heading?.title ?? tile.label ?? tile.name}
+            subtitle={heading ? heading.subtitle : tile.subtitle}
          />
          <Typography
             variant="caption"

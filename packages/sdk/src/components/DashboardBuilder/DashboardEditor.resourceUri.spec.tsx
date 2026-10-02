@@ -33,6 +33,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
 
 const getModel = mock(
    (_env: string, _pkg: string, path: string, _versionId?: string) =>
@@ -238,13 +239,7 @@ describe("versionId", () => {
       serverContext.mutable = true;
       mountByUri();
       await screen.findByText("Storefront");
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), {
-         key: "Escape",
-      });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
@@ -266,13 +261,7 @@ describe("versionId", () => {
          (call) => call[2] === "dashboards/overview.malloy",
       ).length;
 
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), {
-         key: "Escape",
-      });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
 
@@ -318,13 +307,7 @@ describe("Save, pinned to a version", () => {
 
       // Unaffected: a copy kept beside the package never goes through
       // `updateModelSource`, so the version pin has nothing to refuse.
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), {
-         key: "Escape",
-      });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
    });

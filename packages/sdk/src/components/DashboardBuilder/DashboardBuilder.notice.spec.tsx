@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { DashboardBuilder } from "./DashboardBuilder";
 import type { SaveContext } from "./useDocumentEditor";
 import { openDocument } from "./testing/fixtures";
+import { editInline } from "./testing/inline";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import "../data_app.malloy"
@@ -54,10 +55,7 @@ const noButton = (name: string) =>
    screen.queryByRole("button", { name, hidden: true });
 
 const retitle = (next: string) => {
-   fireEvent.click(screen.getByLabelText("Settings for By category"));
-   const field = screen.getByLabelText("Tile title");
-   fireEvent.change(field, { target: { value: next } });
-   fireEvent.keyDown(field, { key: "Escape" });
+   editInline("By category", "Tile title", next);
 };
 const removeTile = () => {
    fireEvent.click(screen.getByLabelText("Settings for By category"));
@@ -98,10 +96,7 @@ describe("the save notice", () => {
       retitle("Renamed");
       fireEvent.click(button("Save changes"));
       await notice();
-      fireEvent.click(screen.getByLabelText("Settings for Renamed"));
-      const field = screen.getByLabelText("Tile title");
-      fireEvent.change(field, { target: { value: "Again" } });
-      fireEvent.keyDown(field, { key: "Escape" });
+      editInline("Renamed", "Tile title", "Again");
       await waitFor(() => expect(noButton("Undo save")).toBeNull());
    });
 

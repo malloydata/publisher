@@ -84,6 +84,12 @@ export function TileCard({
    );
 }
 
+/** The heading's text as nodes, for a surface that makes it editable in place. */
+export interface TileHeadingSlots {
+   title: ReactNode;
+   subtitle: ReactNode;
+}
+
 /**
  * A tile's heading: its `# label`, and its `# subtitle` under it. In the
  * instance theme's title colour and face, so a tile is titled the same
@@ -98,8 +104,8 @@ export function TileHeading({
 }: {
    /** A small caption instead of a heading, for a tile with no card around it. */
    quiet?: boolean;
-   title: string;
-   subtitle?: string;
+   title: ReactNode;
+   subtitle?: ReactNode;
    /** What actually ran, kept reachable without being the heading. */
    tooltip?: string;
    /** A control on the heading's row, hard right — the tile's Explore button. */
