@@ -96,8 +96,10 @@ is a Console convenience.
   the rest of the file as it was: an edited cell is written in the `(markdown)` spelling, and removing
   a cell removes the comment lines directly above it. **Add query** inserts a query cell from a
   source the notebook reaches, one of its views, a chart and a caption; each query cell has a chart
-  picker (Default, No chart, Line, Bar, Big value, Scatter). Big value is offered only for a view
-  whose outputs are all aggregates, and a map only when the view already carries a map tag. A query
+  picker listing all eight choices (Default, No chart, Line, Bar, Big value, Scatter, Shape map and
+  Segment map). A choice the view cannot render stays in the list, greyed, with its reason beside it:
+  Big value needs a view with only totals (no group by), and a map needs a view that already carries
+  a map chart. A query
   can be added only below the setup lines (imports, givens, saved queries), and one added here is not mapped to the notebook's
   controls: it follows them only if its source reads a given as `$NAME`. Undo is cleared at Save when
   it removes a query cell that was already in the file, changes the chart of a cell whose chart line
