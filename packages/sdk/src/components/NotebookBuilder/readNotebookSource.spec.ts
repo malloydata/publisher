@@ -39,8 +39,9 @@ const fixtures = [
 
 const REFUSED = path.join("notebooks-malloyyo", "notebooks", "refused.malloy");
 
+// A Windows checkout may hand fixtures back as CRLF; the specs assert on LF text.
 const read = (file: string) =>
-   fs.readFileSync(path.join(FIXTURES, file), "utf8");
+   fs.readFileSync(path.join(FIXTURES, file), "utf8").replace(/\r\n/g, "\n");
 
 /** The server's own reader over the same text, with a compile stand-in that has one slot per `run:`. */
 function oracle(text: string): NotebookReadResult | { parseError: string } {

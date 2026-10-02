@@ -55,8 +55,9 @@ const fixtures = [
    .filter((file) => file !== REFUSED)
    .sort();
 
+// A Windows checkout may hand fixtures back as CRLF; the specs assert on LF text.
 const read = (file: string) =>
-   fs.readFileSync(path.join(FIXTURES, file), "utf8");
+   fs.readFileSync(path.join(FIXTURES, file), "utf8").replace(/\r\n/g, "\n");
 
 const TRANSFORMS: [string, (text: string) => string][] = [
    ["as-is", (text) => text],
