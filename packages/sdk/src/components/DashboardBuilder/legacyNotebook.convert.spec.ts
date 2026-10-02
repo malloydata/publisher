@@ -477,8 +477,16 @@ describe("convertLegacyNotebook: shapes", () => {
             "\r\n",
          );
       const converted = await convert(original);
+      expect(converted).not.toMatch(/(?<!\r)\n/);
       const doc = await document(converted.replace(/\r\n/g, "\n"));
       expect(doc.tiles.map((t) => t.name)).toEqual(["text_1", "k"]);
+   });
+
+   it("keeps the blank lines inside a block comment between cells", async () => {
+      const converted = await convert(
+         `${HEAD}\nrun: orders -> kpis\n\n/* first\n\n\n   indented */\n\nrun: orders -> by_month\n`,
+      );
+      expect(converted).toContain("/* first\n\n\n   indented */");
    });
 
    it("writes the tag as a block with a tile per line, whether it was a line or a block", async () => {

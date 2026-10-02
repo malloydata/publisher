@@ -719,7 +719,8 @@ export function DashboardBuilder({
                {editor.pendingOpen && (
                   <Alert severity="info">
                      This notebook is in the cell format. Saving rewrites it as
-                     a layout notebook; Undo save puts it back.
+                     a layout notebook, and a named query run once becomes that
+                     tile&apos;s view; Undo save puts it back.
                   </Alert>
                )}
                <SaveNotice {...session.notice} />

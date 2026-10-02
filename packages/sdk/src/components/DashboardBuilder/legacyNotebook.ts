@@ -1059,30 +1059,43 @@ export async function convertLegacyNotebook(
       ...(artifact.block ? rewritten : `${rewritten}\n|##`).split("\n"),
    );
 
-   // Cells that left their place leave their gaps side by side; a run of blank lines is one.
-   const squeeze = (gap: string) => {
-      const lines = gap.split("\n");
+   // Cells that left their place leave their gaps side by side; a run of blank lines is one, except inside a comment.
+   const squeeze = (gap: { text: string; at: number[] }) => {
+      const lines = gap.text.split("\n");
       const tail = lines.pop();
       const kept: string[] = [];
-      for (const line of lines)
-         if (line.trim() !== "" || kept.at(-1)?.trim() !== "") kept.push(line);
+      let offset = 0;
+      for (const line of lines) {
+         const from = gap.at[offset] ?? -1;
+         const inComment = comments.all.some(
+            (c) => from >= c.start && from < c.end,
+         );
+         if (line.trim() !== "" || kept.at(-1)?.trim() !== "" || inComment)
+            kept.push(line);
+         offset += line.length + 1;
+      }
       return kept.map((line) => `${line}\n`).join("") + tail;
    };
+   const gap = { text: "", at: [] as number[] };
+   const addGap = (from: number, to: number) => {
+      gap.text += text.slice(from, to);
+      for (let k = from; k < to; k++) gap.at.push(k);
+   };
    let out = headerLines.join("\n");
-   let gap = "";
    let cursor = header.end;
    for (const [index, cell] of cells.entries()) {
-      gap += text.slice(cursor, cell.span.start);
+      addGap(cursor, cell.span.start);
       cursor = cell.span.end;
       const replacement = placed.get(index);
       if (replacement === undefined) continue;
       out +=
          squeeze(gap) +
          (replacement.endsWith("\n") ? replacement : `${replacement}\n`);
-      gap = "";
+      gap.text = "";
+      gap.at = [];
    }
-   gap += text.slice(cursor);
-   out = `${out.trimEnd()}\n` + (gap.trim() === "" ? "" : squeeze(gap));
+   addGap(cursor, text.length);
+   out = `${out.trimEnd()}\n` + (gap.text.trim() === "" ? "" : squeeze(gap));
    out = `${out.trimEnd()}\n`;
 
    const blocks = [...extensions.values()].map(
@@ -1090,5 +1103,7 @@ export async function convertLegacyNotebook(
          `source: ${extension.name} is ${extension.base} extend {\n${extension.views.join("\n\n")}\n}\n`,
    );
    if (blocks.length > 0) out += `\n${blocks.join("\n")}`;
+   // The generated text is LF; a CRLF file gets CRLF throughout rather than a mix.
+   if (text.includes("\r\n")) out = out.replace(/\r?\n/g, "\r\n");
    return { ok: true, text: out, tiles: entries.length };
 }

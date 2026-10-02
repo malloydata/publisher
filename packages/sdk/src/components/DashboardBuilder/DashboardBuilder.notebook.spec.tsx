@@ -276,7 +276,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       await open({ onSave: () => {}, onDirtyChange });
       expect(
          screen.getByText(
-            /This notebook is in the cell format\. Saving rewrites it as a layout notebook; Undo save puts it back\./,
+            /This notebook is in the cell format\. Saving rewrites it as a layout notebook, and a named query run once becomes that tile's view; Undo save puts it back\./,
          ),
       ).toBeDefined();
       expect(button("Save changes")).toBeDefined();
