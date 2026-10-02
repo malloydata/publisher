@@ -4,7 +4,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "path";
 import { fileURLToPath } from "url";
-import { z } from "zod";
+import { z } from "zod/v3";
 import lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";

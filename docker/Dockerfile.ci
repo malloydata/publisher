@@ -1,13 +1,13 @@
 FROM oven/bun:1.2
 
-RUN apt-get update && apt-get install -y bash libc6 git
+RUN apt-get update && apt-get install -y --no-install-recommends bash libc6 git ca-certificates
 
-RUN apt-get update && apt-get install -y wget apt-transport-https gnupg
+RUN apt-get update && apt-get install -y --no-install-recommends wget apt-transport-https gnupg ca-certificates
 
 # Add Eclipse Temurin repository and install JDK 21
 RUN wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg --dearmor | tee /usr/share/keyrings/adoptium.gpg > /dev/null
 RUN echo "deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(awk -F= '/^VERSION_CODENAME=/{print$2}' /etc/os-release) main" | tee /etc/apt/sources.list.d/adoptium.list
-RUN apt-get update && apt-get install -y temurin-21-jdk
+RUN apt-get update && apt-get install -y --no-install-recommends temurin-21-jdk
 
 ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk
 ENV PATH=$JAVA_HOME/bin:$PATH

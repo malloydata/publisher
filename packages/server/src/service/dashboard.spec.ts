@@ -2295,23 +2295,13 @@ describe("service/dashboard inherits the annotation guards", () => {
       }
    });
 
-   // The parser's property bag is a plain object, so `__proto__` reaches the
-   // prototype chain. The block form throws RangeError and poisons the process
-   // for every later parse; the bare form pollutes silently. Both must be
-   // stopped BEFORE the parse, which is why the guard cannot be a try/catch.
-   //
-   // Read the scope of this narrowly. It proves the guard covers the route
-   // dashboard discovery uses, which is every read going through `motlyTag`.
-   // It does NOT mean the process is safe from `__proto__`, and this comment
-   // says so because the title alone invites that inference. `##!` and `#@` are
-   // parsed EAGERLY BY THE COMPILER during `getModel()`, before any parse of
-   // ours runs, and `motlyAnnotations` drops both routes, so the guard never
-   // sees them and cannot undo damage that predates its snapshot. Measured on
-   // this tree rather than taken on trust: `##! __proto__ { a=b }` leaves
-   // `Object.prototype` carrying `location` and `properties`, and the next
-   // ordinary parse throws RangeError. That is live on `main` today and is not
-   // this slice's to fix; the real repair is upstream in `motly-ts-parser`,
-   // where the property bags want to be `Object.create(null)`.
+   // Before Malloy 0.0.434 the tag parser stored properties in a plain object,
+   // so a `__proto__` key reached the prototype chain. The block form threw
+   // RangeError and broke every later parse in the process; the bare form
+   // polluted silently. 0.0.434 fixed the parser (`motly-ts-parser` 0.9.1,
+   // malloydata/malloy#3078), and Publisher's own guard was removed. This test
+   // now checks the parser on the route dashboard discovery reads: the hostile
+   // tags do not throw, and an ordinary tag parsed afterwards still works.
    it("survives a __proto__ artifact tag without poisoning later parses", () => {
       for (const hostile of [
          "# artifact { __proto__ { a=b } }\n",

@@ -215,6 +215,14 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
                 "`provisional`, then re-derive through the truth package and "
                 "promote (verify_goldens.py --promote)")
 
+    value = golden.get("value")
+    if kind == "scalar" and value is not None and not isinstance(value, dict):
+        findings.append(
+            f"{where} {qid}: `kind: scalar` holds a bare {type(value).__name__}. "
+            "It must name the query's column, or the value check cannot pair "
+            f'it with a result. Fix: `"value": {{"answer": {json.dumps(value)}}}`, '
+            "with the column name the canonical query returns")
+
     if golden.get("verifiedBy") == "authored_query" and not golden.get("canonicalQuery"):
         findings.append(f"{where} {qid}: `verifiedBy: authored_query` with no "
                         "`canonicalQuery`. Fix: store the query they sent, or "

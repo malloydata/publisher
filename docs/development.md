@@ -107,7 +107,7 @@ Open http://localhost:4000.
 ```bash
 make test                # SDK, server (unit + integration), skills, scaffolder, hammer
 make lint && make format # eslint + prettier
-make typecheck           # tsc --noEmit across sdk/app/server
+make typecheck           # tsc --noEmit across sdk/app/server/cli/skills/scaffolder
 ```
 
 The SDK's tests include React components and hooks, which run against a DOM
@@ -125,6 +125,9 @@ bun run generate-api-types
 bun run build:sdk
 bun run typecheck
 ```
+
+The CLI is not part of `make build`, so `typecheck:cli` generates the CLI's API client itself before
+running `tsc`. That step, like the SDK build, needs Java.
 
 After that, `bun run typecheck` works on its own as long as the SDK build artifacts stay current:
 

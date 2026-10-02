@@ -452,7 +452,7 @@ class TheExitContract(unittest.TestCase):
 
     def run_main(self, rows, extra=()):
         argv = ["--model", str(self.model), "--publisher", "http://t",
-                "--package", "p", "--model-path", "m.malloy", "--quiet", *extra]
+                "--environment", "e", "--package", "p", "--model-path", "m.malloy", "--quiet", *extra]
         with mock.patch.object(vd, "try_query", lambda *a, **k: (rows, None)):
             return vd.main(argv)
 
@@ -488,7 +488,8 @@ class TheExitContract(unittest.TestCase):
         with mock.patch.object(vd, "try_query",
                                lambda *a, **k: ([{"stated": 1, "control": 1}], None)):
             code = vd.main(["--model", str(self.model), "--ledger", str(led),
-                            "--publisher", "http://t", "--package", "p",
+                            "--publisher", "http://t", "--environment", "e",
+                            "--package", "p",
                             "--model-path", "m.malloy", "--quiet"])
         self.assertEqual(code, 0)
         back = {r["name"]: r for r in

@@ -1568,12 +1568,12 @@ paths:
       summary: List package models
       description: |
         Retrieves the Malloy models within the specified package. Each model entry includes
-        the relative path, package name, whether the file is on the package's surface, and any
+        the relative path, package name, whether the package hides the file, and any
         compilation errors.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
-        files on that surface are listed, unless `includeOffSurface` is true. With it, every
-        model file is listed and `onSurface` marks the ones on the surface. Dashboard files
+        files on that surface are listed, unless `includeHiddenFilesAndSources` is true. With it, every
+        model file is listed, and `isHidden` marks the ones the package hides. Dashboard files
         are listed by the dashboards route either way. Served notebooks (`.malloy` files under
         `notebooks/` that carry an `## artifact` note) are not models here, with or without a
         surface; they are listed by list-notebooks.
@@ -1596,7 +1596,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
-        - $ref: "#/components/parameters/includeOffSurface"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: A list of models in the package
@@ -1630,7 +1630,7 @@ paths:
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
         that surface answers 404 with the same message a query to it gets, unless
-        `includeOffSurface` is true. With it, the file is returned with its `sourceText`, whatever
+        `includeHiddenFilesAndSources` is true. With it, the file is returned with its `sourceText`, whatever
         sources the text names. Dashboard files and served notebooks (`notebooks/*.malloy` with
         an `## artifact` note) are always returned. A package with no surface, or with
         `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
@@ -1664,7 +1664,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
-        - $ref: "#/components/parameters/includeOffSurface"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: Compiled Malloy model
@@ -1819,7 +1819,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
-        - $ref: "#/components/parameters/includeOffSurface"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       requestBody:
         required: true
         content:
@@ -2876,11 +2876,27 @@ components:
             environments list as intended. Absent once any environment exists, including one created
             at runtime through the API, and absent when a config was found but
             lists no environments.
+        initError:
+          type: string
+          readOnly: true
+          description:
+            Present only when initialization failed, and says why. Such a
+            server stays up but never becomes ready, so operationalState stays
+            initializing; without this field that reads as a server still
+            starting. Typical causes are a config file the server cannot read
+            or parse, and a server root it cannot write (where it creates
+            publisher.db), such as a read-only root filesystem. A package or
+            environment that fails to load is reported under loadErrors
+            instead. Fix the cause and restart.
         loadErrors:
           type: array
           readOnly: true
           description:
-            Configured packages and environments that did not load, and why. A
+            Configured packages and environments that did not load, and why,
+            including a package add through the API that failed on the
+            server's side, carrying the same message the add was answered
+            with (an entry cleared by a later successful add of that package,
+            or by deleting it). A
             load failure is not fatal to the server, so operationalState stays
             serving and the affected packages are absent from environments,
             unless the entry carries stale = true, in which case the package is
@@ -3817,14 +3833,15 @@ components:
         path:
           type: string
           description: Relative path to the model file within its package directory
-        onSurface:
+        isHidden:
           type: boolean
           description: |
-            Whether the file is on the package's surface: the files this route lists without
-            `includeOffSurface`. True for every file of a package with no surface. It does not
-            say whether a query can reach the file, which `queryableSources: "all"` also
-            decides. False only on a file listed because the
-            request set `includeOffSurface`.
+            True for a file this route lists only because the request set
+            `includeHiddenFilesAndSources`: a file the package's `index.malloy` (or a
+            legacy `explores`) does not expose. False for every other file, so every
+            entry is false without that option. It says whether the file is hidden, not
+            whether a query can reach it: under `queryableSources: "all"` a hidden file
+            can still be queried.
         error:
           type: string
           description: Error message if the model failed to compile or load
@@ -7324,8 +7341,8 @@ components:
             gate rejects anyway.
 
   parameters:
-    includeOffSurface:
-      name: includeOffSurface
+    includeHiddenFilesAndSources:
+      name: includeHiddenFilesAndSources
       in: query
       required: false
       description: |

@@ -257,7 +257,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          );
       });
 
-      it("should reject with InvalidParams if required top-level params are missing (e.g., modelPath)", async () => {
+      it("should RESOLVE with InvalidParams if required top-level params are missing (e.g., modelPath)", async () => {
          if (!env) throw new Error("Test environment not initialized");
          const params = {
             // Missing modelPath
@@ -266,17 +266,20 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             query: "run: order_items->{aggregate: c is count()}",
          };
 
-         // Protocol Error (Caught by Zod/MCP): Expect REJECTION
-         await expect(
-            mcpClient.callTool({
-               name: "execute_query",
-               arguments: params,
-            }),
-         ).rejects.toMatchObject({
-            code: ErrorCode.InvalidParams,
-            // Zod error message will likely mention the missing field 'modelPath'
-            message: expect.stringContaining("modelPath"),
+         // The SDK reports an input-schema failure as a tool error result, not a
+         // JSON-RPC rejection, so the calling agent can correct its arguments.
+         const result = await mcpClient.callTool({
+            name: "execute_query",
+            arguments: params,
          });
+
+         expect(result.isError).toBe(true);
+         const text = (result.content as { type: string; text: string }[])[0]
+            ?.text;
+         expect(text).toStartWith(
+            `MCP error ${ErrorCode.InvalidParams}: Input validation error`,
+         );
+         expect(text).toContain("modelPath");
       });
       // --- End Parameter Validation Error Tests ---
 

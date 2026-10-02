@@ -49,10 +49,10 @@
     "typecheck:sdk": "cd packages/sdk && bun run tsc --noEmit && bun run tsc -p tsconfig.spec.json",
     "typecheck:app": "cd packages/app && bun run tsc --noEmit",
     "typecheck:server": "cd packages/server && bun run tsc --noEmit",
-    "typecheck:cli": "cd packages/cli && bun run typecheck",
+    "typecheck:cli": "cd packages/cli && bun run generate-api-types && bun run typecheck",
     "typecheck:skills": "cd packages/skills && bun run typecheck",
     "typecheck:create-malloy-package": "cd packages/create-malloy-package && bun run typecheck",
-    "typecheck": "bun run typecheck:sdk && bun run typecheck:app && bun run typecheck:server && bun run typecheck:skills && bun run typecheck:create-malloy-package",
+    "typecheck": "bun run typecheck:sdk && bun run typecheck:app && bun run typecheck:server && bun run typecheck:cli && bun run typecheck:skills && bun run typecheck:create-malloy-package",
     "format:sdk": "cd packages/sdk && bun run format",
     "format:app": "cd packages/app && bun run format",
     "format:server": "cd packages/server && bun run format",
@@ -78,12 +78,12 @@
     "@types/ssh2": "^1.15.5",
     "eslint": "^8.50.0",
     "gts": "^6.0.2",
-    "@malloydata/malloy-filter": "^0.0.432",
+    "@malloydata/malloy-filter": "^0.0.434",
     "esbuild": "0.25.9",
     "happy-dom": "^20.11.1",
     "prettier": "^3.0.0",
     "rimraf": "^5.0.1",
-    "rollup": "4.45.1",
+    "rollup": "4.63.5",
     "sinon": "^19.0.4",
     "speccy": "^0.11.0"
   },
@@ -99,13 +99,14 @@
   "resolutions": {
     "pg": "8.7.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.432",
+    "@malloydata/malloy-interfaces": "^0.0.434",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.432",
-    "@malloydata/malloy-filter": "^0.0.432",
-    "@malloydata/malloy-tag": "^0.0.432",
+    "@malloydata/malloy-query-builder": "^0.0.434",
+    "@malloydata/malloy-filter": "^0.0.434",
+    "@malloydata/malloy-tag": "^0.0.434",
     "basic-ftp": "^5.3.1",
     "protobufjs": "^7.5.5",
-    "fast-xml-parser": "^5.5.6"
+    "fast-xml-parser": "^5.5.6",
+    "axios": "^1.20.0"
   }
 }

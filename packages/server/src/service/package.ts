@@ -794,6 +794,10 @@ export class Package {
             }
             throw new ServiceUnavailableError(
                `Package-load worker pool unavailable: ${realError.message}`,
+               // The worker's failure may be a refused filesystem access on
+               // the package's own files, which the error mapper reads from
+               // the cause; a bare 503 would read as "retry".
+               { cause: realError },
             );
          });
       const [outcome, databases] = await Promise.all([
@@ -2586,6 +2590,7 @@ export class Package {
          }
          throw new ServiceUnavailableError(
             `Package-load worker pool unavailable: ${realError.message}`,
+            { cause: realError },
          );
       }
 
@@ -2714,7 +2719,7 @@ export class Package {
    }
 
    public async listModels(
-      options: { includeOffSurface?: boolean } = {},
+      options: { includeHiddenFilesAndSources?: boolean } = {},
    ): Promise<ApiModel[]> {
       // When the package resolved a surface — an `explores` in publisher.json
       // or a root `index.malloy` — only those models are listed; every other
@@ -2723,12 +2728,12 @@ export class Package {
       // note that means no surface, not merely no manifest key. Notebooks are
       // unaffected (see listNotebooks) — they are always public.
       //
-      // `includeOffSurface` lists the hidden files too, each marked
-      // `onSurface: false`. Running them takes the same option on the query
+      // `includeHiddenFilesAndSources` lists the hidden files too, each marked
+      // `isHidden: true`. Running them takes the same option on the query
       // route (Model.getQueryResults).
       const exploreSet = this.exploreSet();
-      const onSurface = (modelPath: string) =>
-         !exploreSet || exploreSet.has(modelPath);
+      const isHidden = (modelPath: string) =>
+         !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
@@ -2739,7 +2744,10 @@ export class Package {
                // `explores` lists it: it is listed as a dashboard instead.
                if (!exploreSet) return true;
                if (this.isServedDashboard(modelPath)) return false;
-               return options.includeOffSurface || exploreSet.has(modelPath);
+               return (
+                  options.includeHiddenFilesAndSources ||
+                  exploreSet.has(modelPath)
+               );
             })
             .map(async (modelPath) => {
                let error: string | undefined;
@@ -2755,7 +2763,7 @@ export class Package {
                   environmentName: this.environmentName,
                   path: modelPath,
                   packageName: this.packageName,
-                  onSurface: onSurface(modelPath),
+                  isHidden: isHidden(modelPath),
                   error,
                };
             }),
@@ -3624,7 +3632,12 @@ export class Package {
       );
       try {
          await fs.stat(packageConfigPath);
-      } catch {
+      } catch (error) {
+         // A missing manifest, or a package path that is not a directory,
+         // is "does not exist". Anything else, an EACCES on the package
+         // directory above all, is rethrown so it is reported as what it is.
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          logger.error(`Can't find ${packageConfigPath}`);
          throw new PackageNotFoundError(
             `Package manifest for ${packagePath} does not exist.`,

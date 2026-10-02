@@ -269,22 +269,24 @@ export { customers }`,
       }
    });
 
-   it("lists the files off the surface only when asked, marked onSurface: false", async () => {
+   it("lists the hidden files only when asked, marked isHidden: true", async () => {
       writeManifest(); // the root index.malloy is the surface
       writeLayeredModels();
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const byPath = (models: { path?: string; onSurface?: boolean }[]) =>
-            Object.fromEntries(models.map((m) => [m.path, m.onSurface]));
+         const byPath = (models: { path?: string; isHidden?: boolean }[]) =>
+            Object.fromEntries(models.map((m) => [m.path, m.isHidden]));
 
          expect(byPath(await pkg.listModels())).toEqual({
-            "index.malloy": true,
+            "index.malloy": false,
          });
          expect(
-            byPath(await pkg.listModels({ includeOffSurface: true })),
-         ).toEqual({ "base.malloy": false, "index.malloy": true });
+            byPath(
+               await pkg.listModels({ includeHiddenFilesAndSources: true }),
+            ),
+         ).toEqual({ "base.malloy": true, "index.malloy": false });
 
          // Listing it does not open it: without the option on the query too,
          // the query route still refuses it.
@@ -302,7 +304,7 @@ export { customers }`,
       }
    });
 
-   it("runs a hidden file and a hidden source with includeOffSurface, and keeps the #(authorize) lock", async () => {
+   it("runs a hidden file and a hidden source with includeHiddenFilesAndSources, and keeps the #(authorize) lock", async () => {
       writeManifest(); // the root index.malloy is the surface
       writeLayeredModels();
       fs.writeFileSync(
@@ -318,7 +320,7 @@ source: open_src is duckdb.sql("select 1 as id")`,
          const run = (
             file: string,
             query: string,
-            includeOffSurface: boolean,
+            includeHiddenFilesAndSources: boolean,
          ) =>
             pkg
                .getModel(file)!
@@ -333,7 +335,7 @@ source: open_src is duckdb.sql("select 1 as id")`,
                   undefined,
                   "full",
                   false,
-                  includeOffSurface,
+                  includeHiddenFilesAndSources,
                );
 
          // A hidden file, and a source index.malloy doesn't export, both run.
@@ -384,18 +386,20 @@ run: y -> { group_by: l.id }`,
       }
    });
 
-   it("marks every file onSurface: true in a package with no surface", async () => {
+   it("marks every file isHidden: false in a package with no surface", async () => {
       writeManifest();
       writeLayeredModels("surface.malloy"); // not index.malloy: no surface
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         for (const includeOffSurface of [false, true]) {
-            const models = await pkg.listModels({ includeOffSurface });
-            expect(models.map((m) => [m.path, m.onSurface]).sort()).toEqual([
-               ["base.malloy", true],
-               ["surface.malloy", true],
+         for (const includeHiddenFilesAndSources of [false, true]) {
+            const models = await pkg.listModels({
+               includeHiddenFilesAndSources,
+            });
+            expect(models.map((m) => [m.path, m.isHidden]).sort()).toEqual([
+               ["base.malloy", false],
+               ["surface.malloy", false],
             ]);
          }
       } finally {

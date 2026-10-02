@@ -122,7 +122,7 @@ Yours, after applying step 3 and step 4:
 ```json
 {"qid": "ecom-q-014", "question": "How did denim sell last quarter versus the one before?",
  "questionSha": "<stamped>", "split": "dev", "source": "questions.jsonl",
- "golden": {"status": "provisional", "kind": "scalar", "value": 1830000,
+ "golden": {"status": "provisional", "kind": "scalar", "value": {"denim_change": 1830000},
             "canonicalQuery": "SELECT ...", "verifiedBy": "authored_query",
             "rubric": "Reports the quarter-over-quarter change for denim, and breaks the figure out by channel."},
  "sourceFields": {"difficulty": "hard"}}
