@@ -50,6 +50,7 @@ import { BackLink } from "../BackLink";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
+import { documentRoute, documentSlug } from "./documentLocation";
 
 // The pinned README: the root `.malloynb`, or a served notebook named README in `notebooks/`.
 const README_NOTEBOOK = "README.malloynb";
@@ -57,8 +58,6 @@ const isServedReadme = (path: string | undefined) =>
    path?.toLowerCase() === "notebooks/readme.malloy";
 
 /** A served notebook opens by slug, like a dashboard; a `.malloynb` opens by path. */
-const servedNotebookSlug = (path: string | undefined) =>
-   /^notebooks\/([^/]+)\.malloy$/.exec(path ?? "")?.[1];
 
 interface PackageProps {
    onClickPackageFile?: (to: string, event?: React.MouseEvent) => void;
@@ -460,7 +459,7 @@ export default function Package({
                   for (const key of ["dashboards", "notebooks", "models"])
                      void queryClient.invalidateQueries({ queryKey: [key] });
                   onClick(
-                     `/${environmentName}/${packageName}/${created.kind}s/${encodeURIComponent(created.slug)}/edit`,
+                     `${documentRoute(environmentName, packageName, created.kind, created.slug)}/edit`,
                   );
                }}
             />
@@ -520,12 +519,12 @@ export default function Package({
                               rightLabel={hasTitle ? dashboard.name : undefined}
                               onClick={(event) =>
                                  onClick(
-                                    `/${environmentName}/${packageName}/dashboards/` +
-                                       // The slug comes from a filename, which
-                                       // can hold characters that would read as
-                                       // structure in a path. The server encodes
-                                       // it in `resource` for the same reason.
-                                       encodeURIComponent(dashboard.name ?? ""),
+                                    documentRoute(
+                                       environmentName,
+                                       packageName,
+                                       "dashboard",
+                                       dashboard.name ?? "",
+                                    ),
                                     event,
                                  )
                               }
@@ -595,7 +594,7 @@ export default function Package({
                         // reader needs to find the file is never lost.
                         const hasTitle =
                            !!notebook.title && notebook.title !== notebook.path;
-                        const slug = servedNotebookSlug(notebook.path);
+                        const slug = documentSlug(notebook.path);
                         return (
                            <PackageItemRow
                               key={notebook.path}
@@ -606,7 +605,12 @@ export default function Package({
                                  onClick(
                                     slug === undefined
                                        ? `/${environmentName}/${packageName}/${notebook.path}`
-                                       : `/${environmentName}/${packageName}/notebooks/${encodeURIComponent(slug)}`,
+                                       : documentRoute(
+                                            environmentName,
+                                            packageName,
+                                            "notebook",
+                                            slug,
+                                         ),
                                     event,
                                  )
                               }
