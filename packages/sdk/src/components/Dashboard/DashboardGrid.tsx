@@ -7,6 +7,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 /** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
 export const DEFAULT_COLUMNS = 2;
 
+/** The widest grid the builder offers; the server lints wider ones and the reader still renders them. */
+export const MAX_COLUMNS = 24;
+
+/** A tile's width after an arrow nudge, held to the grid and to what the builder offers. */
+export const nudgedSpan = (current: number, delta: 1 | -1, columns: number) =>
+   Math.min(Math.max(current + delta, 1), Math.min(columns, MAX_COLUMNS));
+
 /**
  * The gutter between tiles, in px.
  *

@@ -14,6 +14,7 @@ import {
    ToggleButtonGroup,
    Typography,
 } from "@mui/material";
+import { DEFAULT_COLUMNS, MAX_COLUMNS } from "../Dashboard/DashboardGrid";
 import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { PackageCatalog } from "./catalog";
@@ -77,8 +78,8 @@ export const withoutSource = (
       return names.length === 0 ? [] : [{ ...i, names }];
    });
 
-/** The widths a grid is usually given; the file may say any other. */
-const WIDTHS = [2, 3, 4, 6, 8, 12, 16, 24];
+/** Widths whose tile-menu presets land on whole columns; the file may say any other. */
+const WIDTHS = [2, 3, 4, 6, 12, MAX_COLUMNS];
 
 export function SettingsPopover({
    anchor,
@@ -118,10 +119,10 @@ export function SettingsPopover({
          !source.modelPath.startsWith("dashboards/") &&
          !source.modelPath.startsWith("notebooks/"),
    );
-   const widths =
-      draft?.columns !== undefined && !WIDTHS.includes(draft.columns)
-         ? [...WIDTHS, draft.columns].sort((a, b) => a - b)
-         : WIDTHS;
+   const shown = draft?.columns ?? DEFAULT_COLUMNS;
+   const widths = WIDTHS.includes(shown)
+      ? WIDTHS
+      : [...WIDTHS, shown].sort((a, b) => a - b);
 
    return (
       <Popover
@@ -176,18 +177,15 @@ export function SettingsPopover({
                      select
                      size="small"
                      label="Grid width"
-                     value={draft.columns ?? ""}
+                     value={shown}
                      helperText="Columns across the page. Tiles are placed in these."
                      inputProps={{ "aria-label": "Grid width" }}
                      onChange={(event) =>
                         patch((s) => {
-                           const v = Number(event.target.value);
-                           if (!v) delete s.columns;
-                           else s.columns = v;
+                           s.columns = Number(event.target.value);
                         })
                      }
                   >
-                     <MenuItem value="">Default (2)</MenuItem>
                      {widths.map((w) => (
                         <MenuItem key={w} value={w}>
                            {w}

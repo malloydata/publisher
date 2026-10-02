@@ -92,6 +92,9 @@ export { DASHBOARDS_DIR };
  * not render these, and keeps the list only to warn that such a file was found
  * and ignored — see `unsupportedComponentWarnings`.
  */
+/** The widest grid the Console builder offers; matches `MAX_COLUMNS` in the SDK. */
+const MAX_BUILDER_COLUMNS = 24;
+
 export const COMPONENT_FILE_SUFFIXES = [".jsx", ".tsx"] as const;
 
 const MODEL_FILE_SUFFIX = ".malloy";
@@ -1337,6 +1340,13 @@ export function lintDashboard(
             `# dashboard { columns=… } must be a positive integer, got ` +
                `${raw === undefined ? "a value that could not be read" : JSON.stringify(raw)}. ` +
                `The grid falls back to the default.`,
+         );
+      } else if (
+         (positiveInteger(tagNumeric(columnsTag, "columns")) ?? 0) >
+         MAX_BUILDER_COLUMNS
+      ) {
+         add(
+            `# dashboard { columns=${positiveInteger(tagNumeric(columnsTag, "columns"))} } is wider than the builder offers (${MAX_BUILDER_COLUMNS}); the reader still renders it.`,
          );
       }
    }

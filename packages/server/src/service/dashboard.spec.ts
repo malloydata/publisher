@@ -985,6 +985,34 @@ describe("service/dashboard per-tile layout", () => {
       ]);
    });
 
+   it("warns on a grid wider than the builder offers, and still serves it", () => {
+      const f = withViews(
+         '## artifact { tiles=["orders -> kpi"] } dashboard { columns=36 }\n',
+         { "orders -> kpi": ["# colspan=6\n"] },
+      );
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(manifest.dashboardColumns).toBe(36);
+      expect(lintDashboard(f, manifest)).toEqual([
+         expect.objectContaining({
+            severity: "warn",
+            message: expect.stringContaining(
+               "wider than the builder offers (24)",
+            ),
+         }),
+      ]);
+   });
+
+   it("says nothing about a grid at the builder's maximum", () => {
+      const f = withViews(
+         '## artifact { tiles=["orders -> kpi"] } dashboard { columns=24 }\n',
+         { "orders -> kpi": ["# colspan=6\n"] },
+      );
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest)).toEqual([]);
+   });
+
    it("reports an unreadable colspan without printing the word undefined", () => {
       const f = withViews('## artifact { tiles=["orders -> kpi"] }\n', {
          "orders -> kpi": ["# colspan=@2024-13-01\n"],

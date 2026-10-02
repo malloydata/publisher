@@ -108,6 +108,19 @@ test.describe("Show as, and a kind that disagrees with its folder", () => {
          )
       ).status;
 
+   test("Settings > Grid width lists each width once, with no separate Default", async ({
+      page,
+   }) => {
+      await openEditor(page, "dashboards", "overview");
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      await page.getByLabel("Grid width").click();
+      const options = await page.getByRole("option").allTextContents();
+      expect(options.filter((o) => o === "12")).toHaveLength(1);
+      expect(new Set(options).size).toBe(options.length);
+      expect(options.some((o) => /default/i.test(o))).toBe(false);
+      expect(options.at(-1)).toBe("24");
+   });
+
    test("a dashboard shown as a notebook reads in one column at its old address; shown as a dashboard again it keeps its tiles but not its grid width", async ({
       page,
    }) => {

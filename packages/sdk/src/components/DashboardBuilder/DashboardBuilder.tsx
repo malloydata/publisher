@@ -12,7 +12,11 @@ import {
    useState,
    type ReactNode,
 } from "react";
-import { DashboardGrid, DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
+import {
+   DashboardGrid,
+   DEFAULT_COLUMNS,
+   nudgedSpan,
+} from "../Dashboard/DashboardGrid";
 import { tileTitle } from "../Dashboard/DashboardTile";
 import type { TileHeadingSlots } from "../Dashboard/TileCard";
 import type { SavesTo } from "./documentSession";
@@ -401,10 +405,7 @@ export function DashboardBuilder({
                (isQueryTile(tile) && tile.declaration.kind === "inherited")
             )
                return;
-            const span = Math.min(
-               Math.max((tile.colspan ?? 1) + delta, 1),
-               columns,
-            );
+            const span = nudgedSpan(tile.colspan ?? 1, delta, columns);
             if (span === (tile.colspan ?? 1)) return;
             editor.update((draft) => {
                draft.tiles[selected].colspan = span;

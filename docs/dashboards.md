@@ -140,7 +140,10 @@ dashboard's `tiles=[…]` Publisher reads them off the view each tile names. (`#
 a package's dashboards is what makes them read as one product rather than as several pages:
 
 - **`columns=12`.** Twelve divides by 2, 3, 4 and 6, so a row comes out even whether it holds three
-  cards or four. Pick one number and use it on every dashboard in the package.
+  cards or four. Pick one number and use it on every dashboard in the package. The Console builder
+  offers widths up to 24 (Settings → Grid width, with no "default" entry: an unset file shows 2 until
+  one is picked). A wider `columns` still renders, with ever-thinner tracks, and the package warnings
+  say it is beyond what the builder offers.
 - **A colspan on every card and every tile, summing to `columns` per row.** Four cards at 3, three at
   4, two tiles at 6, a full-width table at 12. Leave them off and each item takes one column. A
   colspan wider than `columns` is clamped, and said so in the package warnings.

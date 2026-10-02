@@ -46,6 +46,8 @@ Imports are edited there as a source picker.
 
 **A tile's width is set from its menu, not by dragging its edge.** The right-edge drag handle is gone; a drop never changes a tile's width. Pick Full, ½, ⅓ or ¼ from the tile's menu, nudge the selected tile with the arrow keys, or write `# colspan=N`. The arrow keys no longer change the width while a tile is being moved.
 
+**Grid width has one entry per width, and a ceiling of 24.** Settings → Grid width no longer has a "Default (2)" item that duplicated "2" and removed the `columns` tag; it shows the file's width (2 when unset) and writes `columns=N` when you pick one. The list is 2, 3, 4, 6, 12 and 24, the widths whose Full, ½, ⅓ and ¼ presets are whole columns; a file's own width is still shown. A `# dashboard { columns=N }` above 24 now draws a package warning, and the reader still renders it.
+
 **Save writes at once.** There is no review step before a save any more, for notebooks or for
 dashboards (a dashboard's Save used to ask first when it added or removed a tile). The save then
 shows **View change**, the file's diff read-only, and **Undo save**, which writes the file back as
