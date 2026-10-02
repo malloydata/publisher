@@ -88,10 +88,17 @@ const executeQueryModel = mock(() => pending());
 const listModels = mock(() =>
    Promise.resolve({ data: [{ path: "data_app.malloy" }] }),
 );
-mockServerProvider({
-   models: { getModel, executeQueryModel, listModels },
-   dashboards: { getDashboard, listDashboards },
-});
+const serverContext: {
+   mutable: boolean | undefined;
+   isLoadingStatus: boolean;
+} = { mutable: undefined, isLoadingStatus: false };
+mockServerProvider(
+   {
+      models: { getModel, executeQueryModel, listModels },
+      dashboards: { getDashboard, listDashboards },
+   },
+   serverContext,
+);
 
 // Imported after the stub is registered: a static import would hoist above it.
 const { DashboardEditor } = await import("./DashboardEditor");
@@ -130,6 +137,8 @@ beforeEach(() => {
    localStorage.clear();
    served = PACKAGE_FILE;
    fetchFailure = undefined;
+   serverContext.mutable = undefined;
+   serverContext.isLoadingStatus = false;
    getDashboard.mockClear();
 });
 
@@ -188,6 +197,23 @@ describe("DashboardEditor", () => {
       ).toBeDefined();
       expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
       expect(button("Save changes")).toBeDefined();
+   });
+
+   it("does not call an undecided server writable or read-only while its status loads", async () => {
+      serverContext.isLoadingStatus = true;
+      mount();
+      expect(
+         await screen.findByText("Checking whether this server takes writes."),
+      ).toBeDefined();
+   });
+
+   it("says the server did not say whether it takes writes, once status has settled", async () => {
+      mount();
+      expect(
+         await screen.findByText(
+            "This server did not say whether it takes writes, so Save is off.",
+         ),
+      ).toBeDefined();
    });
 
    it("says why when reading the file throws, rather than loading forever", async () => {

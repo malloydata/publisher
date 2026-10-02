@@ -134,7 +134,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
          ? !!parsed?.environmentName && !!parsed?.packageName
          : true;
 
-   const { apiClients, mutable } = useServer();
+   const { apiClients, mutable, isLoadingStatus } = useServer();
    const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
@@ -499,9 +499,11 @@ export function DashboardEditor(props: DashboardEditorProps) {
       ],
    );
    const canWriteWorkspace = workspace?.writeable === true;
+   // Unknown while `/status` loads, and a package write needs a yes.
+   const takesWrites = mutable === true;
    const { savesTo, pinnedPackageSave, writer } = saveTarget({
       authoritative,
-      mutable,
+      mutable: takesWrites,
       ...(versionId !== undefined ? { versionId } : {}),
       canStore: !!storage && !!locator && canWriteWorkspace,
       readFailed: readFailure !== undefined,
@@ -652,14 +654,20 @@ export function DashboardEditor(props: DashboardEditorProps) {
                savesTo={savesTo}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                {...(onExit ? { onExit } : {})}
-               note={saveCaption({
-                  authoritative,
-                  mutable,
-                  pinnedPackageSave,
-                  ...(workspace ? { workspace } : {}),
-                  ...(readFailure !== undefined ? { readFailure } : {}),
-                  ...(versionId !== undefined ? { versionId } : {}),
-               })}
+               note={
+                  !authoritative && mutable === undefined
+                     ? isLoadingStatus
+                        ? "Checking whether this server takes writes."
+                        : "This server did not say whether it takes writes, so Save is off."
+                     : saveCaption({
+                          authoritative,
+                          mutable: takesWrites,
+                          pinnedPackageSave,
+                          ...(workspace ? { workspace } : {}),
+                          ...(readFailure !== undefined ? { readFailure } : {}),
+                          ...(versionId !== undefined ? { versionId } : {}),
+                       })
+               }
             />
          )}
       </Stack>
