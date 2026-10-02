@@ -22,6 +22,7 @@ import {
    claimsToBeANotebook,
    documentKind,
 } from "../service/notebook";
+import { dashboardSlug } from "../service/dashboard";
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
@@ -256,6 +257,14 @@ export class DashboardController {
                      `it is a shared include that other models import, not a document, ` +
                      `so it was not overwritten.`,
                );
+            const slug = dashboardSlug(modelPath);
+            const holder = loaded?.getDashboard(slug)?.path;
+            if (kind === "dashboard" && holder && holder !== modelPath)
+               throw new WriteConflictError(
+                  `\`${modelPath}\` would not be served: \`${holder}\` already holds the ` +
+                     `dashboard name "${slug}", which is the URL and the \`# drill\` target. ` +
+                     `Fix: rename one of the files. Nothing was written.`,
+               );
             if (body.expectedHash === undefined) {
                if (current !== undefined)
                   throw new WriteConflictError(
@@ -285,13 +294,15 @@ export class DashboardController {
                   `\`${modelPath}\` is not in the reloaded package`,
                );
             await written.getModel();
-            // The incoming text's tag check is textual; one inside a comment would land an unserved file.
-            if (
-               (inNotebooksFolder || kind === "notebook") &&
-               !written.carriesNotebookArtifactNote()
-            )
+            // The textual tag check can pass for a file discovery then drops (a tag in a comment, a slug another file holds).
+            const served =
+               kind === "dashboard"
+                  ? reloaded.getDashboard(dashboardSlug(modelPath))?.path ===
+                    modelPath
+                  : reloaded.isServedNotebook(modelPath);
+            if (!served)
                throw new Error(
-                  `\`${modelPath}\` has no \`## artifact\` note once compiled, so it would not be served as a ${kind}`,
+                  `\`${modelPath}\` is not served as a ${kind} once the package reloads`,
                );
          },
       );

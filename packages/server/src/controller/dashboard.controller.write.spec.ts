@@ -42,10 +42,10 @@ function harness(
       current?: string;
       problems?: Array<{ severity: string; message: string }>;
       reloadCompiles?: boolean;
-      /** Whether the reloaded file carries a compiled `## artifact` note. */
-      reloadedNote?: boolean;
-      /** The compiled model the package held for the path before the write. */
-      loaded?: { note: boolean };
+      /** Whether the reloaded package serves the file as the document it was written as. */
+      served?: boolean;
+      /** The compiled model the package held for the path before the write, and the file holding the slug. */
+      loaded?: { note: boolean; holder?: string };
    } = {},
 ) {
    const model = {
@@ -53,14 +53,21 @@ function harness(
          options.reloadCompiles === false
             ? sinon.stub().rejects(new Error("Cannot redefine 'x'"))
             : sinon.stub().resolves({}),
-      carriesNotebookArtifactNote: () => options.reloadedNote ?? true,
    };
-   const pkg = { getModel: sinon.stub().returns(model) };
+   let written = "";
+   const served = options.served ?? true;
+   const pkg = {
+      getModel: sinon.stub().returns(model),
+      getDashboard: () => (served ? { path: written } : undefined),
+      isServedNotebook: () => served,
+   };
    const loaded = options.loaded && {
       getModel: () => ({
          getModelDef: () => ({}),
          carriesNotebookArtifactNote: () => options.loaded?.note,
       }),
+      getDashboard: () =>
+         options.loaded?.holder ? { path: options.loaded.holder } : undefined,
    };
    const environment = {
       getPackage: sinon.stub().resolves(pkg),
@@ -72,11 +79,12 @@ function harness(
          .callsFake(
             async (
                _pkg: string,
-               _path: string,
+               path: string,
                _source: string,
                check: (current: string | undefined, loaded: unknown) => void,
                verify: (reloaded: unknown) => Promise<unknown>,
             ) => {
+               written = path;
                check(options.current, loaded);
                try {
                   return {
@@ -198,6 +206,21 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.writeModelFileTransactional.calledTwice).toBe(true);
    });
 
+   it("serves a written file as the kind its tag names: a notebook in dashboards/ is checked as a notebook", async () => {
+      const { controller, pkg } = harness();
+      pkg.getDashboard = () => undefined;
+      pkg.isServedNotebook = () => true;
+      await controller.putDashboardSource("env", "pkg", PATH, {
+         source: NOTEBOOK,
+      });
+      pkg.isServedNotebook = () => false;
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: NOTEBOOK,
+         }),
+      ).rejects.toBeInstanceOf(WriteRolledBackError);
+   });
+
    it("still refuses an untagged notebooks/ file whatever the kind would have been", async () => {
       const { controller, environment } = harness();
       await expect(
@@ -270,13 +293,59 @@ describe("DashboardController.putDashboardSource", () => {
       expect(result.created).toBe(false);
    });
 
-   it("rolls back a notebook write whose compiled model carries no artifact note", async () => {
-      const { controller } = harness({ reloadedNote: false });
+   it("rolls back a notebook write whose tag is commented out, so the package does not serve it", async () => {
+      const { controller } = harness({ served: false });
       await expect(
          controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
-            source: "/*\n*/\n## artifact { kind=notebook }\n",
+            source:
+               "/*\n## artifact { kind=notebook }\n*/\n##(markdown) Hello\n",
          }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
+   });
+
+   it("rolls back a dashboard write the reloaded package does not serve", async () => {
+      const { controller } = harness({ served: false });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+      ).rejects.toBeInstanceOf(WriteRolledBackError);
+   });
+
+   it("refuses a dashboard whose slug another file already holds, before writing", async () => {
+      const { controller, environment } = harness({
+         current: NOTEBOOK,
+         loaded: { note: true, holder: "dashboards/tour.malloy" },
+      });
+      const error = await controller
+         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: "## artifact { kind=dashboard }\n",
+            expectedHash: contentHashOf(NOTEBOOK),
+         })
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(WriteConflictError);
+      expect(error.message).toContain("dashboards/tour.malloy");
+      expect(error.message).toContain("already holds the dashboard name");
+      expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
+   });
+
+   it("lets the file that holds the slug be re-saved, and a notebook share a slug with a dashboard", async () => {
+      const held = { note: true, holder: "dashboards/tour.malloy" };
+      const resave = await harness({
+         current: BEFORE,
+         loaded: held,
+      }).controller.putDashboardSource("env", "pkg", "dashboards/tour.malloy", {
+         source: AFTER,
+         expectedHash: contentHashOf(BEFORE),
+      });
+      expect(resave.created).toBe(false);
+      // A notebook is keyed by path, so it never contends for the dashboard name.
+      const notebook = await harness({
+         current: NOTEBOOK,
+         loaded: held,
+      }).controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         source: NOTEBOOK.replace("Hello", "Hi"),
+         expectedHash: contentHashOf(NOTEBOOK),
+      });
+      expect(notebook.created).toBe(false);
    });
 
    it("answers a missing path with a BadRequestError, not a TypeError", async () => {

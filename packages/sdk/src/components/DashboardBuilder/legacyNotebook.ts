@@ -885,6 +885,12 @@ export async function convertLegacyNotebook(
          expression = `${definition.expression}${rest === "" ? "" : ` ${rest}`}`;
       }
       const blank = blankNonCode(expression);
+      // The hop limit stopped on a query name; `q -> …` would otherwise convert as a source called `q`.
+      if (named.has(/^[A-Za-z_][A-Za-z0-9_]*/.exec(blank)?.[0] ?? ""))
+         return refuse(
+            statement.line,
+            "this run names a query defined through more than 10 other queries, which the converter does not follow.",
+         );
       const arrows = topLevelArrows(blank);
       if (arrows.length === 0)
          return refuse(

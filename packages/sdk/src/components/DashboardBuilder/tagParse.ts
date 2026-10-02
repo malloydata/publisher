@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /** A MOTLY parse as `parseAnnotation` returns it; only the reads this file makes. */
 type Parsed<T> = { tag: T; log: Array<{ message: string }> };
 type ParseAnnotation<T> = (lines: string[]) => Parsed<T>;
@@ -49,7 +52,8 @@ function endOfDelimited(text: string, start: number): number {
 
 /**
  * Quote each bare filter literal (`f'US'`) so MOTLY reads it as a string, as
- * the server does. The result is a read copy only; it is never written back.
+ * the server does. The rewritten line is never spliced into the file; a changed
+ * `givens { … }` block is re-emitted, quoted, from the values parsed out of it.
  */
 export function quoteFilterLiterals(annotation: string): string {
    const BARE_FILTER_LITERAL = /^([ \t]*)f(['"])((?:\\.|(?!\2)[^\\])*)\2/;

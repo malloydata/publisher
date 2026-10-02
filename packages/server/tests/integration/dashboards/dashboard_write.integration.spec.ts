@@ -19,10 +19,15 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createHash } from "crypto";
+import fsSync from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+   conversionRefused,
+   convertLegacyNotebook,
+} from "../../../../sdk/src/components/DashboardBuilder/legacyNotebook";
 import { newNotebookSource } from "../../../../sdk/src/components/DocumentCreate/newNotebook";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
@@ -71,6 +76,13 @@ describe("PUT model source: dashboards", () => {
       );
       expect(res.status).toBe(200);
       return ((await res.json()) as { title?: string }).title ?? "";
+   };
+
+   /** The text the package holds for a file (its own copy, not the registered location), or undefined when it has none. */
+   const sourceOf = async (modelPath: string): Promise<string | undefined> => {
+      const res = await fetch(modelsUrl(modelPath));
+      if (!res.ok) return undefined;
+      return ((await res.json()) as { sourceText?: string }).sourceText;
    };
 
    const put = (modelPath: string, body: unknown) =>
@@ -305,12 +317,9 @@ query: broken is orders -> { aggregate: no_such_measure }
       });
       expect(res.status).toBe(400);
       expect(await res.text()).toContain("shared include");
-      expect(
-         await fs.readFile(
-            path.join(location, "notebooks/commented.malloy"),
-            "utf8",
-         ),
-      ).toBe(COMMENTED_INCLUDE);
+      expect(await sourceOf("notebooks/commented.malloy")).toBe(
+         COMMENTED_INCLUDE,
+      );
    });
 
    it("rolls back a new notebook whose only tag is inside a block comment, so no unserved file lands", async () => {
@@ -318,9 +327,7 @@ query: broken is orders -> { aggregate: no_such_measure }
          source: "/*\n## artifact { kind=notebook }\n*/\n##(markdown) Prose.\n",
       });
       expect(res.status).toBe(500);
-      await expect(
-         fs.access(path.join(location, "notebooks/hidden_tag.malloy")),
-      ).rejects.toThrow();
+      expect(await sourceOf("notebooks/hidden_tag.malloy")).toBeUndefined();
    });
 
    it("rolls back a new notebook whose only tag is inside a string, so no unserved file lands", async () => {
@@ -329,9 +336,98 @@ query: broken is orders -> { aggregate: no_such_measure }
             'import \'../orders.malloy\'\nrun: orders -> {\n  select: note is """\n## artifact { kind=notebook }\n"""\n}\n',
       });
       expect(res.status).toBe(500);
-      await expect(
-         fs.access(path.join(location, "notebooks/string_tag.malloy")),
-      ).rejects.toThrow();
+      expect(await sourceOf("notebooks/string_tag.malloy")).toBeUndefined();
+   });
+
+   /** A tile-layout document of the given kind, which compiles against the fixture's `orders`. */
+   const layoutSource = (kind: string, title: string) =>
+      `##! experimental.givens\n## artifact { kind=${kind} title="${title}" tiles=["orders -> totals"] }\nimport { orders } from '../orders.malloy'\n`;
+
+   const dashboardPaths = async (): Promise<string[]> => {
+      const listed = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/dashboards`,
+      );
+      return ((await listed.json()) as Array<{ path: string }>).map(
+         (d) => d.path,
+      );
+   };
+
+   describe("a slug another file already holds", () => {
+      const held = layoutSource("dashboard", "Holder");
+      let before: string[];
+
+      beforeAll(async () => {
+         const res = await put("dashboards/dup.malloy", { source: held });
+         expect(res.status).toBe(201);
+         before = await dashboardPaths();
+      });
+
+      it("refuses a notebooks/ file that declares kind=dashboard, with 409 and nothing written", async () => {
+         const res = await put("notebooks/dup.malloy", {
+            source: layoutSource("dashboard", "Shadowed"),
+         });
+         expect(res.status).toBe(409);
+         expect(await res.text()).toContain("already holds the dashboard name");
+         expect(await sourceOf("notebooks/dup.malloy")).toBeUndefined();
+         expect(await dashboardPaths()).toEqual(before);
+      });
+
+      it("refuses flipping a served notebook of that slug to kind=dashboard, leaving the notebook as it was", async () => {
+         const notebook = layoutSource("notebook", "Same slug");
+         expect(
+            (await put("notebooks/dup.malloy", { source: notebook })).status,
+         ).toBe(201);
+         const res = await put("notebooks/dup.malloy", {
+            source: layoutSource("dashboard", "Flipped"),
+            expectedHash: hashOf(notebook),
+         });
+         expect(res.status).toBe(409);
+         expect(await sourceOf("notebooks/dup.malloy")).toBe(notebook);
+         expect(await dashboardPaths()).toEqual(before);
+      });
+
+      it("still re-saves the holder, and flips a notebook of an unheld slug to a dashboard and back", async () => {
+         const resaved = layoutSource("dashboard", "Holder again");
+         const resave = await put("dashboards/dup.malloy", {
+            source: resaved,
+            expectedHash: hashOf(held),
+         });
+         expect(resave.status).toBe(200);
+
+         const notebook = layoutSource("notebook", "Flip me");
+         expect(
+            (await put("notebooks/flip.malloy", { source: notebook })).status,
+         ).toBe(201);
+         const asDashboard = layoutSource("dashboard", "Flip me");
+         const flipped = await put("notebooks/flip.malloy", {
+            source: asDashboard,
+            expectedHash: hashOf(notebook),
+         });
+         expect(flipped.status).toBe(200);
+         expect(await dashboardPaths()).toContain("notebooks/flip.malloy");
+         const back = await put("notebooks/flip.malloy", {
+            source: notebook,
+            expectedHash: hashOf(asDashboard),
+         });
+         expect(back.status).toBe(200);
+         expect(await dashboardPaths()).not.toContain("notebooks/flip.malloy");
+      });
+
+      it("serves a notebook written into dashboards/ as a notebook, not a dashboard", async () => {
+         const res = await put("dashboards/as_notebook.malloy", {
+            source: layoutSource("notebook", "Misfiled"),
+         });
+         expect(res.status).toBe(201);
+         expect(await dashboardPaths()).not.toContain(
+            "dashboards/as_notebook.malloy",
+         );
+         const listed = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/notebooks`,
+         );
+         expect(JSON.stringify(await listed.json())).toContain(
+            "dashboards/as_notebook.malloy",
+         );
+      });
    });
 
    for (const [name, source] of [
@@ -385,9 +481,7 @@ query: broken is orders -> { aggregate: no_such_measure }
       });
       expect(res.status).toBe(400);
       expect(await res.text()).toContain("not permitted in caller-submitted");
-      await expect(
-         fs.access(path.join(location, "notebooks/gate_real.malloy")),
-      ).rejects.toThrow();
+      expect(await sourceOf("notebooks/gate_real.malloy")).toBeUndefined();
    });
 
    const query = (body: unknown) =>
@@ -455,7 +549,7 @@ import { orders } from '../orders.malloy'
    });
 });
 
-/** Only a loaded environment can compile a notebook, so the SDK writer's output gets its real compile here. */
+/** The builder's conversion of each legacy cell notebook is written, served and run by a real environment, and restored byte for byte. */
 describe("PUT model source: notebooks written by the notebook builder", () => {
    const NB_ENV = "notebook-write-env";
    const PLAIN = "notebooks-malloyyo";
@@ -513,6 +607,94 @@ describe("PUT model source: notebooks written by the notebook builder", () => {
       await env?.stop();
       env = null;
       if (root) await fs.rm(root, { recursive: true, force: true });
+   });
+
+   /** Every cell-format notebook in the fixture; `layout` already lists its tiles and `refused` has a statement no cell can hold. */
+   const CELL_NOTEBOOKS = fsSync
+      .readdirSync(path.resolve(__dirname, `../../fixtures/${PLAIN}/notebooks`))
+      .filter(
+         (f) =>
+            f.endsWith(".malloy") &&
+            !["layout.malloy", "refused.malloy"].includes(f),
+      );
+
+   const modelsUrl = (modelPath: string) =>
+      pkgUrl(PLAIN, `/models/${modelPath}`);
+
+   const putPlain = (modelPath: string, body: unknown) =>
+      fetch(modelsUrl(modelPath), {
+         method: "PUT",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify(body),
+      });
+
+   const sourceOf = async (modelPath: string): Promise<string> =>
+      (
+         (await (await fetch(modelsUrl(modelPath))).json()) as {
+            sourceText: string;
+         }
+      ).sourceText;
+
+   it("covers the fixture's cell notebooks", () => {
+      expect(CELL_NOTEBOOKS.length).toBeGreaterThan(5);
+   });
+
+   for (const file of CELL_NOTEBOOKS) {
+      it(`converts ${file}, serves its tiles and runs each, then restores the original byte for byte`, async () => {
+         const modelPath = `notebooks/${file}`;
+         const original = await sourceOf(modelPath);
+         const converted = await convertLegacyNotebook(original);
+         if (conversionRefused(converted)) throw new Error(converted.refused);
+
+         const saved = await putPlain(modelPath, {
+            source: converted.text,
+            expectedHash: hashOf(original),
+         });
+         expect(saved.status).toBe(200);
+
+         const notebook = (await (
+            await fetch(pkgUrl(PLAIN, `/notebooks/${modelPath}`))
+         ).json()) as {
+            dashboard?: { tiles?: Array<{ kind: string; query?: string }> };
+         };
+         const tiles = notebook.dashboard?.tiles ?? [];
+         expect(tiles).toHaveLength(converted.tiles);
+         for (const tile of tiles.filter((t) => t.kind === "query")) {
+            const ran = await fetch(`${modelsUrl(modelPath)}/query`, {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  query: `run: ${tile.query}`,
+                  compactJson: true,
+               }),
+            });
+            expect(ran.status).toBe(200);
+         }
+
+         const restored = await putPlain(modelPath, {
+            source: original,
+            expectedHash: hashOf(converted.text),
+         });
+         expect(restored.status).toBe(200);
+         expect(await sourceOf(modelPath)).toBe(original);
+      });
+   }
+
+   it("serves a dashboard's text tiles over HTTP, with their markdown", async () => {
+      const res = await fetch(pkgUrl(PLAIN, "/dashboards/text_tiles"));
+      expect(res.status).toBe(200);
+      const manifest = (await res.json()) as {
+         tiles?: Array<{
+            kind: string;
+            name?: string;
+            markdown?: string;
+            query?: string;
+         }>;
+      };
+      expect(manifest.tiles).toMatchObject([
+         { kind: "text", name: "intro", markdown: "## How to read this page" },
+         { kind: "query", query: "orders -> kpis" },
+      ]);
    });
 
    it("hands the editor a curated package's notebook text when it asks for the hidden files", async () => {

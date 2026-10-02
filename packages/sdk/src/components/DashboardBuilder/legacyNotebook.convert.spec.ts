@@ -51,6 +51,30 @@ async function document(text: string) {
    return result.document;
 }
 
+/** Compiles `text` as `file` inside the package at `pkg` on DuckDB, and hands back a way to run a tile's view. */
+async function compiled(pkg: string, file: string, text: string) {
+   const { Runtime } = await import("@malloydata/malloy");
+   const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+   const url = new URL(`file://${pkg}/${file}`);
+   const connection = new DuckDBConnection("duckdb", ":memory:", pkg);
+   const runtime = new Runtime({
+      urlReader: {
+         readURL: async (at: URL) =>
+            at.href === url.href ? text : fs.readFileSync(at.pathname, "utf8"),
+      },
+      connections: { lookupConnection: async () => connection },
+   } as never);
+   const model = runtime.loadModel(url);
+   await model.getModel();
+   return {
+      rows: async (source: string, view: string) =>
+         (
+            await model.loadQuery(`run: ${source} -> ${view}`).run()
+         ).data.toObject(),
+      close: () => connection.close(),
+   };
+}
+
 const HEAD = `##! experimental.givens
 ## artifact { kind=notebook title="T" }
 import "../models/orders.malloy"
@@ -135,36 +159,24 @@ describe("convertLegacyNotebook: the storefront category review", () => {
    });
 
    it("compiles under Malloy and its views run", async () => {
-      const { Runtime } = await import("@malloydata/malloy");
-      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
       const pkg = path.join(REPO, "examples/storefront");
       const converted = await convert(read(CATEGORY_REVIEW));
-      const url = new URL(`file://${pkg}/notebooks/converted.malloy`);
-      const connection = new DuckDBConnection("duckdb", ":memory:", pkg);
+      const model = await compiled(
+         pkg,
+         "notebooks/converted.malloy",
+         converted,
+      );
       try {
-         const runtime = new Runtime({
-            urlReader: {
-               readURL: async (at: URL) =>
-                  at.href === url.href
-                     ? converted
-                     : fs.readFileSync(at.pathname, "utf8"),
-            },
-            connections: { lookupConnection: async () => connection },
-         } as never);
-         const model = runtime.loadModel(url);
-         await model.getModel();
          for (const view of [
             "revenue_by_month",
             "top_brands_2",
             "the_ten_best_selling_products_in_the",
-         ]) {
-            const rows = await model
-               .loadQuery(`run: order_items_tiles -> ${view}`)
-               .run();
-            expect(rows.data.toObject().length).toBeGreaterThan(0);
-         }
+         ])
+            expect(
+               (await model.rows("order_items_tiles", view)).length,
+            ).toBeGreaterThan(0);
       } finally {
-         await connection.close();
+         await model.close();
       }
    });
 });
@@ -197,6 +209,18 @@ describe("convertLegacyNotebook: every cell-format notebook in the corpus", () =
          expect(await syntaxErrors(converted)).toEqual([]);
          const doc = await document(converted);
          expect(doc.tiles).toHaveLength(expected);
+         // Syntax is not enough: the file compiles against its package and every view tile runs.
+         const model = await compiled(
+            path.dirname(FIXTURES),
+            `notebooks/${file}`,
+            converted,
+         );
+         try {
+            for (const tile of doc.tiles.filter(isQueryTile))
+               await model.rows(tile.source, tile.name);
+         } finally {
+            await model.close();
+         }
          // Every prose cell's text survives as a text tile.
          const prose = source.source.cells.flatMap((c) =>
             c.markdown === undefined ? [] : [c.markdown],
@@ -421,6 +445,84 @@ describe("convertLegacyNotebook: shapes", () => {
       const doc = await document(converted);
       expect(doc.tiles).toEqual([]);
       expect(doc.kind).toBe("notebook");
+   });
+
+   it("carries the tags above a consumed query onto the view it becomes, and names the view from its label", async () => {
+      const converted = await convert(
+         `${HEAD}\n# label="Mine"\n# big_value\nquery: q is orders -> kpis\n\nrun: q\n`,
+      );
+      expect(converted).not.toContain("query: q");
+      expect(converted).toContain(
+         'source: orders_tiles is orders extend {\n  # label="Mine"\n  # big_value\n  view: mine is kpis\n}',
+      );
+      const [tile] = (await document(converted)).tiles.filter(isQueryTile);
+      expect(tile).toMatchObject({ name: "mine", label: "Mine" });
+   });
+
+   it("names a text tile around an identifier the file already declares", async () => {
+      const converted = await convert(
+         `${HEAD}\nsource: text_1 is orders extend {}\n\n##(markdown) Hello\n\nrun: orders -> kpis\n\n##(markdown) Two\n`,
+      );
+      const doc = await document(converted);
+      expect(doc.tiles.map((t) => t.name)).toEqual([
+         "text_1_2",
+         "tile_1",
+         "text_2",
+      ]);
+      expect(converted).toContain("source: text_1 is orders extend {}");
+      expect(converted).toContain("##|(markdown) text_1_2\nHello\n|##");
+      expect(doc.tiles.filter(isTextTile).map((t) => t.markdown)).toEqual([
+         "Hello",
+         "Two",
+      ]);
+   });
+
+   it("extends a backquoted source and keeps the quotes on it", async () => {
+      const converted = await convert(`${HEAD}\nrun: \`orders\` -> kpis\n`);
+      expect(converted).toContain(
+         "source: orders_tiles is `orders` extend {\n  view: tile_1 is kpis\n}",
+      );
+      expect(await syntaxErrors(converted)).toEqual([]);
+      const [tile] = (await document(converted)).tiles.filter(isQueryTile);
+      expect(tile).toMatchObject({ source: "orders_tiles", name: "tile_1" });
+   });
+
+   it("refuses a run with nothing after the arrow, at the line the reader names", async () => {
+      // The cell reader's parse refuses it before the converter's own empty-body check can run.
+      const result = await refusal(`${HEAD}\nrun: orders ->\n`);
+      expect(result.line).toBeGreaterThan(0);
+      expect(result.refused).toContain("could not parse");
+   });
+
+   it("follows a chain of ten named queries and refuses an eleventh instead of making a source of a query", async () => {
+      const chain = (length: number) => {
+         let text = `${HEAD}\nquery: q1 is orders -> kpis\n\n`;
+         for (let i = 2; i <= length; i++)
+            text += `query: q${i} is q${i - 1} -> { limit: ${i} }\n\n`;
+         return `${text}run: q${length}\n`;
+      };
+      const ten = await convert(chain(10));
+      expect(ten).toContain(
+         "view: tile_1 is kpis -> { limit: 2 } -> { limit: 3 }",
+      );
+      expect(ten).not.toContain("query:");
+      const result = await refusal(chain(11));
+      expect(result.refused).toContain("more than 10 other queries");
+      expect(result.line).toBe(27);
+   });
+
+   it("leaves a given: block of several givens in place above the tiles' sources", async () => {
+      const given =
+         "given:\n  REGION :: filter<string> is f''\n  SINCE :: date is @2023-01-01\n";
+      const converted = await convert(
+         `${HEAD}\n${given}\nrun: orders -> kpis\n`,
+      );
+      expect(converted).toContain(
+         `import "../models/orders.malloy"\n\n${given}\nsource: orders_tiles is orders extend {`,
+      );
+      expect(await syntaxErrors(converted)).toEqual([]);
+      const doc = await document(converted);
+      expect(doc.localGivens?.map((g) => g.name)).toEqual(["REGION", "SINCE"]);
    });
 
    describe("refusals", () => {

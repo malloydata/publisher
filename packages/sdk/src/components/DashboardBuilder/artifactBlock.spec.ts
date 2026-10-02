@@ -169,6 +169,8 @@ describe("the artifact tag written as a ##| block", () => {
          `##| artifact { title="Review"\n  tiles=[\n`,
       );
       expect(asDashboard.document.kind).toBeUndefined();
+      expect(asDashboard.document.columns).toBe(12);
+      expect(asDashboard.out).toContain("dashboard { columns=12 }");
       const back = await writes(
          asDashboard.out,
          (d) => {
@@ -178,7 +180,60 @@ describe("the artifact tag written as a ##| block", () => {
          { changeKind: true },
       );
       expect(back.document.kind).toBe("notebook");
+      expect(back.document.columns).toBeUndefined();
+      expect(back.out).not.toContain("dashboard {");
       expect(back.out).toContain(`\n  tiles=[\n    intro { kind=text },\n`);
+   });
+
+   it("adds, changes and removes starting givens inside the block", async () => {
+      const added = await writes(BLOCK, (d) => {
+         d.startingGivens = { REGION: "f'US'" };
+      });
+      expect(added.out).toContain(`  ]\n  givens { REGION="f'US'" }\n}\n|##\n`);
+      expect(added.document.startingGivens).toEqual({ REGION: "f'US'" });
+
+      const changed = await writes(added.out, (d) => {
+         d.startingGivens = { REGION: "f'US'", SINCE: "2023-01-01" };
+      });
+      expect(changed.out).toContain(
+         `givens { REGION="f'US'" SINCE="2023-01-01" }\n}\n|##\n`,
+      );
+      expect(changed.out.match(/givens \{/g)).toHaveLength(1);
+      expect(changed.document.startingGivens).toEqual({
+         REGION: "f'US'",
+         SINCE: "2023-01-01",
+      });
+
+      const removed = await writes(changed.out, (d) => {
+         d.startingGivens = undefined;
+      });
+      expect(removed.out).toBe(BLOCK);
+   });
+
+   it("takes autorun out again, leaving the block as it was", async () => {
+      const off = await writes(BLOCK, (d) => {
+         d.autorun = false;
+      });
+      const { out, document } = await writes(off.out, (d) => {
+         d.autorun = undefined;
+      });
+      expect(out).toBe(BLOCK);
+      expect(document.autorun).toBeUndefined();
+   });
+
+   it("writes a description above the block and reads it back", async () => {
+      const { out, document } = await writes(BLOCK, (d) => {
+         d.description = "What this review covers.";
+      });
+      expect(document.description).toBe("What this review covers.");
+      expect(out).toContain(`##" What this review covers.\n`);
+      expect(out).toContain(
+         `##| artifact { kind=notebook title="Review"\n  tiles=[\n`,
+      );
+      const cleared = await writes(out, (d) => {
+         d.description = undefined;
+      });
+      expect(cleared.out).toBe(BLOCK);
    });
 
    it("leaves a one-line tag one line through the same edits", async () => {

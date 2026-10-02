@@ -96,6 +96,50 @@ describe("filter-literal givens in the artifact tag", () => {
    });
 });
 
+describe("a filter literal holding a quote", () => {
+   const QUOTED = LINE.replace("f'US'", `f"it's"`);
+
+   it("reads as the wrapped body, and a givens edit re-emits it quoted, reading back the same", async () => {
+      const read = await readDashboardDocument(QUOTED);
+      if (readFailed(read)) throw new Error(read.reason);
+      expect(read.document.startingGivens).toEqual({ REGION: "f'it's'" });
+      const out = await spliceDashboardDocument(QUOTED, {
+         ...read.document,
+         startingGivens: { ...read.document.startingGivens, OTHER: "x" },
+      });
+      if (spliceFailed(out)) throw new Error(out.reason);
+      // The bare f"…" spelling does not survive an edit of the givens block.
+      expect(out.source).toContain(`givens { REGION="f'it's'" OTHER="x" }`);
+      const again = await readDashboardDocument(out.source);
+      if (readFailed(again)) throw new Error(again.reason);
+      expect(again.document.startingGivens).toEqual({
+         REGION: "f'it's'",
+         OTHER: "x",
+      });
+   });
+
+   it("leaves the spelling alone when the givens are not what changed", async () => {
+      const read = await readDashboardDocument(QUOTED);
+      if (readFailed(read)) throw new Error(read.reason);
+      const out = await spliceDashboardDocument(QUOTED, {
+         ...read.document,
+         title: "T",
+      });
+      if (spliceFailed(out)) throw new Error(out.reason);
+      expect(out.source).toBe(QUOTED);
+   });
+});
+
+describe("a tag value Tag.text() throws on", () => {
+   it("is refused with a reason rather than thrown, so the editor can say why", async () => {
+      const read = await readDashboardDocument(
+         LINE.replace("f'US'", "@2024-13-01"),
+      );
+      if (!readFailed(read)) throw new Error("expected a refusal");
+      expect(read.reason).toContain("cannot be read");
+   });
+});
+
 describe("quoteFilterLiterals", () => {
    it("quotes bare literals after = [ and , but not inside strings", () => {
       expect(quoteFilterLiterals(`# a=f'US' b=[f'x', f"y"] c="=f'z'"`)).toBe(

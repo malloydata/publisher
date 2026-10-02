@@ -274,9 +274,21 @@ function gridWidth(
 const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 
+/** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
 export async function readDashboardDocument(
    sourceText: string,
 ): Promise<ReadResult> {
+   try {
+      return await readDocumentText(sourceText);
+   } catch (error) {
+      return {
+         ok: false,
+         reason: `A value in this file's tags cannot be read (${error instanceof Error ? error.message : String(error)}), so it cannot be opened in the builder.`,
+      };
+   }
+}
+
+async function readDocumentText(sourceText: string): Promise<ReadResult> {
    const { parseAnnotation } = await import("@malloydata/malloy-tag");
    const lines = sourceText.split("\n");
 
